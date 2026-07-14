@@ -31,17 +31,27 @@ type AuthLoginResult = { token: string; user: AuthUser | null; mfaEnrollmentRequ
 let currentToken: string | null = null;
 
 export function getAuthToken(): string | null {
-  if (currentToken && userFromToken(currentToken)) {
-    return currentToken;
+  if (currentToken) {
+    if (userFromToken(currentToken)) {
+      return currentToken;
+    }
+    if (isMfaEnrollmentToken(currentToken)) {
+      return null;
+    }
+    currentToken = null;
   }
 
-  currentToken = null;
   if (typeof window === "undefined") {
     return null;
   }
 
   const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
   if (!stored) {
+    return null;
+  }
+
+  if (isMfaEnrollmentToken(stored)) {
+    currentToken = stored;
     return null;
   }
 
@@ -253,9 +263,22 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
     };
   }
 
+  const mfaEnrollmentSnapshot = (): AuthBootstrapSnapshot => ({
+    token: null,
+    user: null,
+    effectiveFormLoginEnabled,
+    passkeyEnabled,
+    mfaRequirePasswordLogin,
+    mfaRequireConfigStepUp,
+    totpRequireJellyfinLogin,
+  });
+
   // When auth is enabled, or the runtime mode is temporarily unknown,
   // prefer preserving an existing valid session over clearing it.
   if (currentToken) {
+    if (isMfaEnrollmentToken(currentToken)) {
+      return mfaEnrollmentSnapshot();
+    }
     const authUser = userFromToken(currentToken);
     if (authUser) {
       return {
@@ -273,6 +296,10 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
 
   const stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
   if (stored) {
+    if (isMfaEnrollmentToken(stored)) {
+      currentToken = stored;
+      return mfaEnrollmentSnapshot();
+    }
     const authUser = userFromToken(stored);
     if (authUser) {
       currentToken = stored;

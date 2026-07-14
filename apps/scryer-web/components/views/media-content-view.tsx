@@ -155,6 +155,7 @@ import type {
 import { buildViewPath } from "@/lib/utils/routing";
 import { selectedSeriesSidePanelTitleId } from "@/lib/utils/selected-overview-policy";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
+import { discoveryItemFacet } from "@/lib/utils/discovery-actions";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import { titleGenreLabels } from "@/lib/utils/title-genres";
 import { cn } from "@/lib/utils";
@@ -220,8 +221,8 @@ type ParsedQualityProfile = {
 const TITLE_OVERVIEW_PANE_MIN_WIDTH = 700;
 const TITLE_WORKSPACE_PANE_GAP = 16;
 const TITLE_POSTER_GRID_MIN_COLUMN_WIDTH = 200;
-const CATALOG_DISCOVERY_INLINE_MIN_WIDTH = 1060;
-const CATALOG_DISCOVERY_POSTER_INLINE_MIN_WIDTH = 980;
+const CATALOG_DISCOVERY_INLINE_MIN_WIDTH = 900;
+const CATALOG_DISCOVERY_POSTER_INLINE_MIN_WIDTH = 900;
 const SELECTED_POSTER_INLINE_MIN_WIDTH =
   TITLE_OVERVIEW_PANE_MIN_WIDTH +
   TITLE_WORKSPACE_PANE_GAP +
@@ -509,15 +510,15 @@ function TitleContextMoreLikeThisStrip({
   items,
   loading,
   view,
-  canManageTitle,
-  canRequestMedia,
+  manageableFacets,
+  requestableFacets,
   onAction,
 }: {
   items: CatalogDiscoveryItem[];
   loading: boolean;
   view: ViewId;
-  canManageTitle: boolean;
-  canRequestMedia: boolean;
+  manageableFacets: ReadonlySet<Facet>;
+  requestableFacets: ReadonlySet<Facet>;
   onAction: (item: CatalogDiscoveryItem) => void;
 }) {
   const t = useTranslate();
@@ -564,8 +565,14 @@ function TitleContextMoreLikeThisStrip({
               : null;
           const titleLabel = discoveryItemDisplayTitle(item);
           const owned = item.ownedInInput;
-          const addable = !owned && canManageTitle;
-          const requestable = !owned && !canManageTitle && canRequestMedia;
+          const facet = discoveryItemFacet(item);
+          const addable =
+            !owned && facet !== null && manageableFacets.has(facet);
+          const requestable =
+            !owned &&
+            facet !== null &&
+            !manageableFacets.has(facet) &&
+            requestableFacets.has(facet);
 
           return (
             <div key={item.id} className="w-24 shrink-0">
@@ -956,6 +963,8 @@ function TitleContextPanel({
   onClearSelection,
   canManageTitle,
   canRequestMedia,
+  manageableDiscoveryFacets,
+  requestableDiscoveryFacets,
   onDiscoveryAction,
   titleFilterValue,
   onTitleFilterValueChange,
@@ -1031,6 +1040,8 @@ function TitleContextPanel({
   onClearSelection: () => void;
   canManageTitle: boolean;
   canRequestMedia: boolean;
+  manageableDiscoveryFacets: ReadonlySet<Facet>;
+  requestableDiscoveryFacets: ReadonlySet<Facet>;
   onDiscoveryAction: (item: CatalogDiscoveryItem) => void;
   titleFilterValue: string;
   onTitleFilterValueChange: (value: string) => void;
@@ -1067,7 +1078,22 @@ function TitleContextPanel({
     "min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-[16px] border border-[var(--scry-border2)] bg-[var(--scry-surfD)]",
     className,
   );
-  const moreLikeThisItems = title?.moreLikeThis ?? [];
+  const moreLikeThisItems = React.useMemo(
+    () =>
+      (title?.moreLikeThis ?? []).filter((item) => {
+        const facet = discoveryItemFacet(item);
+        return (
+          facet !== null &&
+          (manageableDiscoveryFacets.has(facet) ||
+            requestableDiscoveryFacets.has(facet))
+        );
+      }),
+    [
+      manageableDiscoveryFacets,
+      requestableDiscoveryFacets,
+      title?.moreLikeThis,
+    ],
+  );
   const titleMediaFiles = React.useMemo<MediaFileOnDisk[]>(
     () =>
       (title?.mediaFiles ?? []).flatMap((file) => {
@@ -1538,8 +1564,8 @@ function TitleContextPanel({
             items={moreLikeThisItems}
             loading={title?.moreLikeThis === undefined}
             view={view}
-            canManageTitle={canManageTitle}
-            canRequestMedia={canRequestMedia}
+            manageableFacets={manageableDiscoveryFacets}
+            requestableFacets={requestableDiscoveryFacets}
             onAction={onDiscoveryAction}
           />
 
@@ -1829,6 +1855,10 @@ export function MediaContentView({
     catalogDiscoveryGroups: CatalogDiscoveryGroup[];
     canManageTitle: boolean;
     canRequestMedia: boolean;
+    canManageCatalogDiscovery: boolean;
+    canRequestCatalogDiscovery: boolean;
+    manageableDiscoveryFacets: Facet[];
+    requestableDiscoveryFacets: Facet[];
     onCatalogDiscoveryAction: (item: CatalogDiscoveryItem) => void;
     titleQuickFilters: TitleQuickFilters;
     titleQuickFilterCounts: TitleQuickFilterCounts;
@@ -2087,8 +2117,10 @@ export function MediaContentView({
     monitoredTitles,
     titleContextTitles,
     catalogDiscoveryGroups,
-    canManageTitle,
-    canRequestMedia,
+    canManageCatalogDiscovery,
+    canRequestCatalogDiscovery,
+    manageableDiscoveryFacets,
+    requestableDiscoveryFacets,
     onCatalogDiscoveryAction,
     titleQuickFilters,
     titleQuickFilterCounts,
@@ -2174,6 +2206,14 @@ export function MediaContentView({
     React.useDeferredValue(titleContextTitles);
   const deferredCatalogDiscoveryGroups = React.useDeferredValue(
     catalogDiscoveryGroups,
+  );
+  const manageableDiscoveryFacetSet = React.useMemo(
+    () => new Set(manageableDiscoveryFacets),
+    [manageableDiscoveryFacets],
+  );
+  const requestableDiscoveryFacetSet = React.useMemo(
+    () => new Set(requestableDiscoveryFacets),
+    [requestableDiscoveryFacets],
   );
   const routeOverviewSlug = React.useMemo(() => {
     if (!routeOverviewPending) {
@@ -3069,6 +3109,93 @@ export function MediaContentView({
     </div>
   );
 
+  const keepCatalogHeaderOutsideWorkspace =
+    selectedTitleCompactLayoutActive && !selectedTitleListInlineActive;
+  const catalogHeader = (
+    <div className="relative min-h-[5.5rem] shrink-0 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 pb-0 pt-4 sm:px-5 lg:px-6">
+      <div className="min-w-0">
+        <h1 className="text-[22px] font-bold leading-tight tracking-normal text-[var(--scry-ink2)]">
+          {mediaTitle}
+        </h1>
+        <p className="mt-1 text-[12.5px] text-[var(--scry-muted3)]">
+          {mediaSummary}
+        </p>
+      </div>
+      <div className="absolute right-3 top-3 z-10 hidden sm:block sm:right-4 lg:right-5">
+        {titleTableViewControls}
+      </div>
+      {showTitleBulkSelectionBar ? (
+        <div className="mt-4">
+          <TitleQuickFilterBar
+            view={view as "movies" | "series" | "anime"}
+            filters={titleQuickFilters}
+            counts={titleQuickFilterCounts}
+            onToggleMonitoring={toggleTitleQuickMonitoringFilter}
+            onToggleStatus={toggleTitleQuickStatusFilter}
+            onClear={clearTitleQuickFilters}
+            hideFilters
+            trailingContent={
+              <div className="flex w-full flex-col gap-2.5 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+                <div className="flex h-12 w-full items-center justify-end gap-2 rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 py-2 sm:w-[20rem]">
+                  <span className="mr-1 whitespace-nowrap text-sm text-[var(--scry-muted3)]">
+                    {t("title.bulkSelectionCount", {
+                      count: compactSelectedVisibleCount,
+                    })}
+                  </span>
+                  <TitleTableActionButton
+                    tone="enabled"
+                    label={t("title.monitorAction")}
+                    onClick={() => void bulkMonitorTitles(true)}
+                    disabled={bulkActionBusy}
+                    className="rounded-md"
+                  >
+                    <Eye className="h-4 w-4" />
+                  </TitleTableActionButton>
+                  <TitleTableActionButton
+                    tone="disabled"
+                    label={t("title.unmonitorAction")}
+                    onClick={() => void bulkMonitorTitles(false)}
+                    disabled={bulkActionBusy}
+                    className="rounded-md"
+                  >
+                    <EyeOff className="h-4 w-4" />
+                  </TitleTableActionButton>
+                  <TitleTableActionButton
+                    tone="edit"
+                    label={t("label.edit")}
+                    onClick={openBulkTitleEdit}
+                    disabled={bulkActionBusy}
+                    className="rounded-md"
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </TitleTableActionButton>
+                  <TitleTableActionButton
+                    tone="delete"
+                    label={t("label.delete")}
+                    onClick={openBulkTitleDelete}
+                    disabled={bulkActionBusy}
+                    className="rounded-md"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </TitleTableActionButton>
+                  <TitleTableActionButton
+                    tone="neutral"
+                    label={t("label.clear")}
+                    onClick={clearSelectedTitles}
+                    disabled={bulkActionBusy}
+                    className="rounded-md"
+                  >
+                    <X className="h-4 w-4" />
+                  </TitleTableActionButton>
+                </div>
+              </div>
+            }
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       {facetSettingsSection ? (
@@ -3257,90 +3384,7 @@ export function MediaContentView({
           className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border-0 bg-transparent p-0 shadow-none"
         >
           <CardContent className="flex min-h-0 flex-1 flex-col space-y-0 p-0">
-            <div className="relative min-h-[5.5rem] shrink-0 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 pb-0 pt-4 sm:px-5 lg:px-6">
-              <div className="min-w-0">
-                <h1 className="text-[22px] font-bold leading-tight tracking-normal text-[var(--scry-ink2)]">
-                  {mediaTitle}
-                </h1>
-                <p className="mt-1 text-[12.5px] text-[var(--scry-muted3)]">
-                  {mediaSummary}
-                </p>
-              </div>
-              <div className="absolute right-3 top-3 z-10 hidden sm:block sm:right-4 lg:right-5">
-                {titleTableViewControls}
-              </div>
-              {showTitleBulkSelectionBar ? (
-                <div className="mt-4">
-                <TitleQuickFilterBar
-                  view={view}
-                  filters={titleQuickFilters}
-                  counts={titleQuickFilterCounts}
-                  onToggleMonitoring={toggleTitleQuickMonitoringFilter}
-                  onToggleStatus={toggleTitleQuickStatusFilter}
-                  onClear={clearTitleQuickFilters}
-                  hideFilters
-                  trailingContent={
-                    <div className="flex w-full flex-col gap-2.5 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
-                      {showTitleBulkSelectionBar ? (
-                        <div className="flex h-12 w-full items-center justify-end gap-2 rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 py-2 sm:w-[20rem]">
-                          <span className="mr-1 whitespace-nowrap text-sm text-[var(--scry-muted3)]">
-                            {t("title.bulkSelectionCount", {
-                              count: compactSelectedVisibleCount,
-                            })}
-                          </span>
-                          <TitleTableActionButton
-                            tone="enabled"
-                            label={t("title.monitorAction")}
-                            onClick={() => void bulkMonitorTitles(true)}
-                            disabled={bulkActionBusy}
-                            className="rounded-md"
-                          >
-                            <Eye className="h-4 w-4" />
-                          </TitleTableActionButton>
-                          <TitleTableActionButton
-                            tone="disabled"
-                            label={t("title.unmonitorAction")}
-                            onClick={() => void bulkMonitorTitles(false)}
-                            disabled={bulkActionBusy}
-                            className="rounded-md"
-                          >
-                            <EyeOff className="h-4 w-4" />
-                          </TitleTableActionButton>
-                          <TitleTableActionButton
-                            tone="edit"
-                            label={t("label.edit")}
-                            onClick={openBulkTitleEdit}
-                            disabled={bulkActionBusy}
-                            className="rounded-md"
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </TitleTableActionButton>
-                          <TitleTableActionButton
-                            tone="delete"
-                            label={t("label.delete")}
-                            onClick={openBulkTitleDelete}
-                            disabled={bulkActionBusy}
-                            className="rounded-md"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </TitleTableActionButton>
-                          <TitleTableActionButton
-                            tone="neutral"
-                            label={t("label.clear")}
-                            onClick={clearSelectedTitles}
-                            disabled={bulkActionBusy}
-                            className="rounded-md"
-                          >
-                            <X className="h-4 w-4" />
-                          </TitleTableActionButton>
-                        </div>
-                      ) : null}
-                    </div>
-                  }
-                />
-              </div>
-              ) : null}
-            </div>
+            {keepCatalogHeaderOutsideWorkspace ? catalogHeader : null}
             <div
               className={cn(
                 "flex min-h-0 flex-1 flex-col bg-transparent p-3 sm:p-4 lg:p-5",
@@ -3451,8 +3495,8 @@ export function MediaContentView({
                             <TitleContextForYouPanel
                               discoveryGroups={deferredCatalogDiscoveryGroups}
                               view={view}
-                              canManageTitle={canManageTitle}
-                              canRequestMedia={canRequestMedia}
+                              canManageTitle={canManageCatalogDiscovery}
+                              canRequestMedia={canRequestCatalogDiscovery}
                               onDiscoveryAction={onCatalogDiscoveryAction}
                             />
                           </SheetContent>
@@ -3656,7 +3700,7 @@ export function MediaContentView({
                 }
                 const contextPanelGridTemplateColumns =
                   catalogDiscoveryInlineAvailable
-                    ? "minmax(42rem,1fr) minmax(23rem,30rem)"
+                    ? "minmax(0,1fr) minmax(23rem,30rem)"
                     : undefined;
                 const selectedTitleGridTemplateColumns =
                   selectedTitleListInlineActive || selectedTitlePosterLayoutActive
@@ -3860,8 +3904,10 @@ export function MediaContentView({
                       bulkActionBusy={bulkActionBusy}
                       onDelete={handleDeleteCatalogTitle}
                       onClearSelection={onCloseOverview}
-                      canManageTitle={canManageTitle}
-                      canRequestMedia={canRequestMedia}
+                      canManageTitle={canManageCatalogDiscovery}
+                      canRequestMedia={canRequestCatalogDiscovery}
+                      manageableDiscoveryFacets={manageableDiscoveryFacetSet}
+                      requestableDiscoveryFacets={requestableDiscoveryFacetSet}
                       onDiscoveryAction={onCatalogDiscoveryAction}
                       titleFilterValue={titleFilterInputValue}
                       onTitleFilterValueChange={handleTitleFilterValueChange}
@@ -3943,6 +3989,7 @@ export function MediaContentView({
                               : "hidden"),
                       )}
                     >
+                      {!keepCatalogHeaderOutsideWorkspace ? catalogHeader : null}
                       {titleCatalogControlBar}
                       <div
                         className={cn(

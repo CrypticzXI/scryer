@@ -40,7 +40,10 @@ import {
   discoveryItemDisplayTitle,
   usefulDiscoveryTitle,
 } from "@/lib/utils/discovery-display";
-import { richExternalIdsFromDiscoverySignals } from "@/lib/utils/discovery-actions";
+import {
+  discoveryItemFacet,
+  richExternalIdsFromDiscoverySignals,
+} from "@/lib/utils/discovery-actions";
 import { selectBackdropVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 import type {
@@ -48,19 +51,20 @@ import type {
   DiscoveryItem,
   DiscoverySection,
   DiscoverySyncStatus,
+  Facet,
 } from "@/lib/types";
 
 type DiscoveryViewProps = {
   home: DiscoveryHomePayload | null;
   loading: boolean;
   error: string | null;
-  canManageTitle: boolean;
-  canRequestMedia: boolean;
+  manageableFacets: Facet[];
+  requestableFacets: Facet[];
   onRefresh: () => void;
   onAction: (item: DiscoveryItem) => void;
 };
 
-type DiscoveryContentType = "MOVIE" | "SERIES" | "ANIME";
+type DiscoveryContentType = Facet;
 
 const DISCOVERY_CONTENT_TYPES: DiscoveryContentType[] = [
   "MOVIE",
@@ -867,8 +871,8 @@ function DiscoveryRailCard({
 
 function DiscoverySectionRail({
   section,
-  canManageTitle,
-  canRequestMedia,
+  manageableFacets,
+  requestableFacets,
   onAction,
   onDismissItem,
   compact = false,
@@ -876,8 +880,8 @@ function DiscoverySectionRail({
   variant = "default",
 }: {
   section: DiscoverySection;
-  canManageTitle: boolean;
-  canRequestMedia: boolean;
+  manageableFacets: ReadonlySet<Facet>;
+  requestableFacets: ReadonlySet<Facet>;
   onAction: (item: DiscoveryItem) => void;
   onDismissItem?: (item: DiscoveryItem) => void;
   compact?: boolean;
@@ -943,21 +947,24 @@ function DiscoverySectionRail({
           fillHeight && "min-h-0 flex-1",
         )}
       >
-        {items.map((item) => (
-          <DiscoveryRailCard
-            key={itemStableKey(item)}
-            item={item}
-            size={compact ? "sm" : "md"}
-            variant={variant}
-            fillHeight={fillHeight}
-            canManageTitle={canManageTitle}
-            canRequestMedia={canRequestMedia}
-            onAction={onAction}
-            cornerBadge={cornerBadgeFor(item)}
-            onDismiss={onDismissItem}
-            dismissLabel={dismissLabel}
-          />
-        ))}
+        {items.map((item) => {
+          const facet = discoveryItemFacet(item);
+          return (
+            <DiscoveryRailCard
+              key={itemStableKey(item)}
+              item={item}
+              size={compact ? "sm" : "md"}
+              variant={variant}
+              fillHeight={fillHeight}
+              canManageTitle={facet !== null && manageableFacets.has(facet)}
+              canRequestMedia={facet !== null && requestableFacets.has(facet)}
+              onAction={onAction}
+              cornerBadge={cornerBadgeFor(item)}
+              onDismiss={onDismissItem}
+              dismissLabel={dismissLabel}
+            />
+          );
+        })}
       </div>
     </section>
   );
@@ -1205,6 +1212,7 @@ function DiscoveryFilterChips({
 function DiscoveryFilters({
   variant = "desktop",
   items,
+  availableContentTypes,
   selectedContentTypes,
   selectedGenres,
   selectedTags,
@@ -1228,6 +1236,7 @@ function DiscoveryFilters({
 }: {
   variant?: "desktop" | "mobile";
   items: DiscoveryItem[];
+  availableContentTypes: DiscoveryContentType[];
   selectedContentTypes: DiscoveryContentType[];
   selectedGenres: string[];
   selectedTags: string[];
@@ -1286,7 +1295,7 @@ function DiscoveryFilters({
     key: DiscoveryContentType;
     label: string;
     count: number;
-  }> = DISCOVERY_CONTENT_TYPES.map((key) => ({
+  }> = availableContentTypes.map((key) => ({
     key,
     label:
       key === "MOVIE"
@@ -1655,6 +1664,26 @@ function sectionsWithoutHiddenItems(
     .filter((section) => section.items.length > 0);
 }
 
+function sectionsForDiscoveryFacets(
+  sections: DiscoverySection[],
+  allowedFacets: ReadonlySet<Facet>,
+) {
+  return sections
+    .map((section) => {
+      const items = section.items.filter((item) => {
+        const facet = discoveryItemFacet(item);
+        return facet !== null && allowedFacets.has(facet);
+      });
+      const removedCount = section.items.length - items.length;
+      return {
+        ...section,
+        totalCount: Math.max(items.length, section.totalCount - removedCount),
+        items,
+      };
+    })
+    .filter((section) => section.items.length > 0);
+}
+
 // --- Freshness indicator (SW5) ---
 
 // Locale-aware "3 hours ago"-style phrasing without per-locale strings for the
@@ -1762,15 +1791,50 @@ export function DiscoveryView({
   home,
   loading,
   error,
-  canManageTitle,
-  canRequestMedia,
+  manageableFacets,
+  requestableFacets,
   onRefresh,
   onAction,
 }: DiscoveryViewProps) {
   const t = useTranslate();
+  const manageableFacetSet = React.useMemo(
+    () => new Set(manageableFacets),
+    [manageableFacets],
+  );
+  const requestableFacetSet = React.useMemo(
+    () => new Set(requestableFacets),
+    [requestableFacets],
+  );
+  const discoverableFacets = React.useMemo(
+    () =>
+      DISCOVERY_CONTENT_TYPES.filter(
+        (facet) =>
+          manageableFacetSet.has(facet) || requestableFacetSet.has(facet),
+      ),
+    [manageableFacetSet, requestableFacetSet],
+  );
+  const discoverableFacetSet = React.useMemo(
+    () => new Set(discoverableFacets),
+    [discoverableFacets],
+  );
   const [selectedContentTypes, setSelectedContentTypes] = React.useState<
     DiscoveryContentType[]
   >(DEFAULT_DISCOVERY_CONTENT_TYPES);
+  React.useEffect(() => {
+    setSelectedContentTypes((current) => {
+      const visibleSelection = current.filter((contentType) =>
+        discoverableFacetSet.has(contentType),
+      );
+      const next =
+        visibleSelection.length > 0
+          ? visibleSelection
+          : [...discoverableFacets];
+      return current.length === next.length &&
+        current.every((contentType, index) => contentType === next[index])
+        ? current
+        : next;
+    });
+  }, [discoverableFacetSet, discoverableFacets]);
   const [selectedGenres, setSelectedGenres] = React.useState<string[]>([]);
   const [selectedTags, setSelectedTags] = React.useState<string[]>([]);
   const [minimumYear, setMinimumYear] =
@@ -1793,11 +1857,15 @@ export function DiscoveryView({
     () => orderedHomeSections(home),
     [home],
   );
+  const capabilitySections = React.useMemo(
+    () => sectionsForDiscoveryFacets(orderedSections, discoverableFacetSet),
+    [discoverableFacetSet, orderedSections],
+  );
   // Local-only "not interested": drop hidden items before any filtering so
   // filter option lists and counts reflect what the user actually sees.
   const rawSections = React.useMemo(
-    () => sectionsWithoutHiddenItems(orderedSections, hiddenKeys),
-    [orderedSections, hiddenKeys],
+    () => sectionsWithoutHiddenItems(capabilitySections, hiddenKeys),
+    [capabilitySections, hiddenKeys],
   );
   const rawItems = React.useMemo(
     () => rawSections.flatMap((section) => section.items),
@@ -1808,7 +1876,7 @@ export function DiscoveryView({
       return 0;
     }
     const visibleFeedKeys = new Set(
-      orderedSections
+      capabilitySections
         .flatMap((section) => section.items)
         .map((item) => itemStableKey(item)),
     );
@@ -1819,7 +1887,7 @@ export function DiscoveryView({
       }
     }
     return count;
-  }, [hiddenKeys, orderedSections]);
+  }, [capabilitySections, hiddenKeys]);
   const yearBounds = React.useMemo(
     () => ({
       minimum: DEFAULT_MINIMUM_YEAR,
@@ -1835,10 +1903,17 @@ export function DiscoveryView({
     Math.max(minimumYear, yearBounds.minimum),
     effectiveMaximumYear,
   );
+  const effectiveSelectedContentTypes = React.useMemo(
+    () =>
+      selectedContentTypes.filter((contentType) =>
+        discoverableFacetSet.has(contentType),
+      ),
+    [discoverableFacetSet, selectedContentTypes],
+  );
   const sections = React.useMemo(
     () =>
       filterDiscoverySections(rawSections, {
-        contentTypes: selectedContentTypes,
+        contentTypes: effectiveSelectedContentTypes,
         genres: selectedGenres,
         tags: selectedTags,
         relationTypes: selectedRelationTypes,
@@ -1850,9 +1925,9 @@ export function DiscoveryView({
     [
       effectiveMaximumYear,
       effectiveMinimumYear,
+      effectiveSelectedContentTypes,
       minimumRating,
       rawSections,
-      selectedContentTypes,
       selectedGenres,
       selectedRelationTypes,
       selectedStudioSlugs,
@@ -1864,12 +1939,20 @@ export function DiscoveryView({
     [sections],
   );
   const heroItem = React.useMemo(
-    () =>
-      home?.heroItem && discoveryItemHasUsefulTitle(home.heroItem)
+    () => {
+      const configuredHeroFacet = home?.heroItem
+        ? discoveryItemFacet(home.heroItem)
+        : null;
+      return home?.heroItem &&
+        configuredHeroFacet !== null &&
+        discoverableFacetSet.has(configuredHeroFacet) &&
+        discoveryItemHasUsefulTitle(home.heroItem)
         ? home.heroItem
-        : firstHeroItem(heroSections),
-    [heroSections, home?.heroItem],
+        : firstHeroItem(heroSections);
+    },
+    [discoverableFacetSet, heroSections, home?.heroItem],
   );
+  const heroFacet = heroItem ? discoveryItemFacet(heroItem) : null;
   const heroRailSection = React.useMemo(
     () => findHeroRailSection(heroSections),
     [heroSections],
@@ -1927,7 +2010,7 @@ export function DiscoveryView({
     );
   }, []);
   const clearFilters = React.useCallback(() => {
-    setSelectedContentTypes(DEFAULT_DISCOVERY_CONTENT_TYPES);
+    setSelectedContentTypes(discoverableFacets);
     setSelectedGenres([]);
     setSelectedTags([]);
     setSelectedRelationTypes([]);
@@ -1935,7 +2018,7 @@ export function DiscoveryView({
     setMinimumYear(Math.max(yearBounds.minimum, DEFAULT_MINIMUM_YEAR));
     setMaximumYear(yearBounds.maximum);
     setMinimumRating(DEFAULT_MINIMUM_RATING);
-  }, [yearBounds.maximum, yearBounds.minimum]);
+  }, [discoverableFacets, yearBounds.maximum, yearBounds.minimum]);
   React.useEffect(() => {
     if (!filtersOpen || typeof document === "undefined") {
       return undefined;
@@ -1955,7 +2038,8 @@ export function DiscoveryView({
   }, [filtersOpen]);
   const filterProps = {
     items: rawItems,
-    selectedContentTypes,
+    availableContentTypes: discoverableFacets,
+    selectedContentTypes: effectiveSelectedContentTypes,
     selectedGenres,
     selectedTags,
     selectedRelationTypes,
@@ -2025,8 +2109,12 @@ export function DiscoveryView({
           <div className="mb-7 grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-stretch gap-5 max-lg:grid-cols-1 lg:h-[clamp(440px,46vh,520px)]">
             <DiscoveryHero
               item={heroItem}
-              canManageTitle={canManageTitle}
-              canRequestMedia={canRequestMedia}
+              canManageTitle={
+                heroFacet !== null && manageableFacetSet.has(heroFacet)
+              }
+              canRequestMedia={
+                heroFacet !== null && requestableFacetSet.has(heroFacet)
+              }
               onAction={onAction}
             />
             {heroRailSectionWithoutHero ? (
@@ -2038,8 +2126,8 @@ export function DiscoveryView({
                     t("discovery.trendingThisWeek"),
                 }}
                 fillHeight
-                canManageTitle={canManageTitle}
-                canRequestMedia={canRequestMedia}
+                manageableFacets={manageableFacetSet}
+                requestableFacets={requestableFacetSet}
                 onAction={onAction}
                 onDismissItem={hideItem}
               />
@@ -2052,8 +2140,8 @@ export function DiscoveryView({
             <DiscoverySectionRail
               key={section.sectionId}
               section={section}
-              canManageTitle={canManageTitle}
-              canRequestMedia={canRequestMedia}
+              manageableFacets={manageableFacetSet}
+              requestableFacets={requestableFacetSet}
               onAction={onAction}
               onDismissItem={hideItem}
             />
@@ -2075,8 +2163,8 @@ export function DiscoveryView({
             key={section.sectionId}
             section={section}
             variant="upcoming"
-            canManageTitle={canManageTitle}
-            canRequestMedia={canRequestMedia}
+            manageableFacets={manageableFacetSet}
+            requestableFacets={requestableFacetSet}
             onAction={onAction}
             onDismissItem={hideItem}
           />

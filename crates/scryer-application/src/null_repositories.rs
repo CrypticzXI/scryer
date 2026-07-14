@@ -335,6 +335,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
     async fn list_public_discovery_section_items(
         &self,
         _run_id: &str,
+        _allowed_media_kinds: &[String],
         _include_unresolved: bool,
         _limit_per_section: i64,
     ) -> AppResult<Vec<DiscoverySectionItemsRecord>> {
@@ -345,6 +346,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         &self,
         _run_id: &str,
         _readable_library_ids: &[String],
+        _allowed_media_kinds: &[String],
         _include_unresolved: bool,
         _limit: i64,
     ) -> AppResult<Vec<DiscoveryItemRecord>> {
@@ -355,6 +357,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         &self,
         _run_id: &str,
         _readable_library_ids: &[String],
+        _allowed_media_kinds: &[String],
         _include_unresolved: bool,
         _limit: i64,
     ) -> AppResult<Vec<DiscoveryItemRecord>> {
@@ -365,6 +368,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         &self,
         _run_id: &str,
         _readable_library_ids: &[String],
+        _allowed_media_kinds: &[String],
         _include_unresolved: bool,
     ) -> AppResult<Vec<DiscoveryFacetRecord>> {
         Ok(Vec::new())
@@ -375,6 +379,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _public_run_id: Option<&str>,
         _context_run_id: Option<&str>,
         _readable_library_ids: &[String],
+        _allowed_media_kinds: &[String],
         _owned_library_ids: &[String],
         _excluded_identity_keys: &[String],
         _include_unresolved: bool,

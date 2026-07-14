@@ -94,6 +94,34 @@ pub(crate) struct DiscoveryLibrarySubject {
     canonical: CanonicalSubject,
 }
 
+#[derive(Default)]
+struct DiscoveryVisibility {
+    readable_library_ids: HashSet<String>,
+    allowed_media_kinds: HashSet<&'static str>,
+}
+
+impl DiscoveryVisibility {
+    fn allows_facet(&self, facet: &MediaFacet) -> bool {
+        self.allowed_media_kinds
+            .contains(discovery_media_kind_for_facet(facet.clone()))
+    }
+
+    fn allows_item(&self, item: &DiscoveryItemRecord) -> bool {
+        discovery_item_media_kind(item)
+            .is_some_and(|media_kind| self.allowed_media_kinds.contains(media_kind))
+    }
+
+    fn sorted_allowed_media_kinds(&self) -> Vec<String> {
+        let mut media_kinds = self
+            .allowed_media_kinds
+            .iter()
+            .map(|media_kind| (*media_kind).to_string())
+            .collect::<Vec<_>>();
+        media_kinds.sort();
+        media_kinds
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CanonicalSubject {
@@ -234,14 +262,21 @@ impl AppUseCase {
         actor: &User,
         query: DiscoveryHomeQuery,
     ) -> AppResult<DiscoveryHomeResult> {
-        let readable_library_ids = self.discovery_readable_library_ids(actor).await?;
+        let visibility = self.discovery_visibility(actor).await?;
+        let readable_library_ids = &visibility.readable_library_ids;
         let can_view_personalized = !readable_library_ids.is_empty();
         let status = self
             .load_discovery_sync_status_for_visibility(can_view_personalized)
             .await?;
         let limit = discovery_section_limit(query.limit_per_section);
         let include_unresolved = query.include_unresolved;
-        let readable_library_id_list = sorted_discovery_library_ids(&readable_library_ids);
+        let readable_library_id_list = sorted_discovery_library_ids(readable_library_ids);
+        let mut allowed_media_kinds = visibility
+            .allowed_media_kinds
+            .iter()
+            .map(|media_kind| (*media_kind).to_string())
+            .collect::<Vec<_>>();
+        allowed_media_kinds.sort();
         let owned_visibility = self
             .discovery_home_owned_visibility(&readable_library_id_list)
             .await?;
@@ -257,6 +292,7 @@ impl AppUseCase {
                     .discovery
                     .list_public_discovery_section_items(
                         public_run_id,
+                        &allowed_media_kinds,
                         include_unresolved,
                         public_candidate_limit as i64,
                     )
@@ -268,21 +304,28 @@ impl AppUseCase {
                 public_sections = filter_discovery_sections_for_owned_items(
                     public_section_results,
                     &owned_visibility,
+                    &visibility,
                     limit,
                 );
             }
             if public_sections.is_empty() && status.state.last_success_generation_id.is_none() {
                 let live_public_sections = self
-                    .live_public_section_results(include_unresolved, public_candidate_limit)
+                    .live_public_section_results(
+                        &visibility,
+                        include_unresolved,
+                        public_candidate_limit,
+                    )
                     .await?;
                 top_rated_live_public_sections = filter_discovery_sections_for_owned_items(
                     live_public_sections.clone(),
                     &owned_visibility,
+                    &visibility,
                     public_candidate_limit,
                 );
                 public_sections = filter_discovery_sections_for_owned_items(
                     live_public_sections,
                     &owned_visibility,
+                    &visibility,
                     limit,
                 );
             }
@@ -302,10 +345,12 @@ impl AppUseCase {
                 .list_personalized_discovery_home_items(
                     context_run_id,
                     &readable_library_id_list,
+                    &allowed_media_kinds,
                     include_unresolved,
                     personalized_home_candidate_limit(limit) as i64,
                 )
                 .await?;
+            personalized_items.retain(|item| visibility.allows_item(item));
             let submitted_subjects = self
                 .services
                 .library
@@ -313,10 +358,10 @@ impl AppUseCase {
                 .list_discovery_submitted_subjects(context_run_id)
                 .await?;
             let submitted_subjects =
-                filter_submitted_subjects_for_libraries(&submitted_subjects, &readable_library_ids);
+                filter_submitted_subjects_for_libraries(&submitted_subjects, readable_library_ids);
             resolve_discovery_matched_subjects(&mut personalized_items, &submitted_subjects)?;
             let library_profile = self
-                .discovery_library_affinity_profile(&readable_library_ids, &submitted_subjects)
+                .discovery_library_affinity_profile(readable_library_ids, &submitted_subjects)
                 .await?;
             let mut complete_collection_items = self
                 .services
@@ -325,10 +370,12 @@ impl AppUseCase {
                 .list_personalized_complete_collection_items(
                     context_run_id,
                     &readable_library_id_list,
+                    &allowed_media_kinds,
                     include_unresolved,
                     complete_collection_candidate_limit(limit) as i64,
                 )
                 .await?;
+            complete_collection_items.retain(|item| visibility.allows_item(item));
             resolve_discovery_matched_subjects(
                 &mut complete_collection_items,
                 &submitted_subjects,
@@ -348,6 +395,7 @@ impl AppUseCase {
                 .list_personalized_discovery_facets(
                     context_run_id,
                     &readable_library_id_list,
+                    &allowed_media_kinds,
                     include_unresolved,
                 )
                 .await?;
@@ -370,13 +418,15 @@ impl AppUseCase {
                 public_top_rated_run_id,
                 context_top_rated_run_id,
                 &readable_library_id_list,
+                &allowed_media_kinds,
                 &readable_library_id_list,
                 &owned_visibility.excluded_discovery_identity_keys(),
                 include_unresolved,
                 top_rated_home_candidate_limit(limit) as i64,
             )
             .await?;
-        top_rated_items.retain(|item| !owned_visibility.item_is_owned(item));
+        top_rated_items
+            .retain(|item| visibility.allows_item(item) && !owned_visibility.item_is_owned(item));
 
         if let Some(top_rated_section) = top_rated_discovery_home_section(
             &top_rated_items,
@@ -410,6 +460,7 @@ impl AppUseCase {
 
     async fn live_public_section_results(
         &self,
+        visibility: &DiscoveryVisibility,
         include_unresolved: bool,
         limit: usize,
     ) -> AppResult<Vec<DiscoverySectionResult>> {
@@ -436,7 +487,10 @@ impl AppUseCase {
         let run_id = format!("public-feed-live-{}", uuid::Uuid::new_v4());
         let now = self.runtime.environment.now();
         let sections = public_feed_section_records(&run_id, &result, now)?;
-        let items = public_feed_item_records(&run_id, &result, now)?;
+        let items = public_feed_item_records(&run_id, &result, now)?
+            .into_iter()
+            .filter(|item| visibility.allows_item(item))
+            .collect();
         Ok(public_section_results(
             sections,
             items,
@@ -450,9 +504,10 @@ impl AppUseCase {
         actor: &User,
         query: DiscoveryItemsQuery,
     ) -> AppResult<DiscoveryItemsResult> {
-        let readable_library_ids = self.discovery_readable_library_ids(actor).await?;
+        let visibility = self.discovery_visibility(actor).await?;
+        let readable_library_ids = &visibility.readable_library_ids;
         let can_view_personalized = !readable_library_ids.is_empty();
-        let readable_library_id_list = sorted_discovery_library_ids(&readable_library_ids);
+        let readable_library_id_list = sorted_discovery_library_ids(readable_library_ids);
         let state = self
             .services
             .library
@@ -470,6 +525,7 @@ impl AppUseCase {
                 .then(|| state.last_public_feed_generation_id.clone())
                 .flatten(),
             readable_library_ids: readable_library_id_list,
+            allowed_media_kinds: visibility.sorted_allowed_media_kinds(),
             filters: query,
             limit,
             offset,
@@ -488,7 +544,7 @@ impl AppUseCase {
                 .list_discovery_submitted_subjects(context_run_id)
                 .await?;
             let submitted_subjects =
-                filter_submitted_subjects_for_libraries(&submitted_subjects, &readable_library_ids);
+                filter_submitted_subjects_for_libraries(&submitted_subjects, readable_library_ids);
             resolve_discovery_matched_subjects(&mut page.items, &submitted_subjects)?;
         }
 
@@ -509,9 +565,10 @@ impl AppUseCase {
             return Ok(None);
         }
 
-        let readable_library_ids = self.discovery_readable_library_ids(actor).await?;
+        let visibility = self.discovery_visibility(actor).await?;
+        let readable_library_ids = &visibility.readable_library_ids;
         let can_view_personalized = !readable_library_ids.is_empty();
-        let readable_library_id_list = sorted_discovery_library_ids(&readable_library_ids);
+        let readable_library_id_list = sorted_discovery_library_ids(readable_library_ids);
         let state = self
             .services
             .library
@@ -526,6 +583,7 @@ impl AppUseCase {
             context_run_id: context_run_id.clone(),
             public_run_id: state.last_public_feed_generation_id.clone(),
             readable_library_ids: readable_library_id_list,
+            allowed_media_kinds: visibility.sorted_allowed_media_kinds(),
             filters: DiscoveryItemsQuery {
                 target_keys: vec![target_key.to_string()],
                 include_owned: true,
@@ -555,7 +613,7 @@ impl AppUseCase {
                 .list_discovery_submitted_subjects(context_run_id)
                 .await?;
             let submitted_subjects =
-                filter_submitted_subjects_for_libraries(&submitted_subjects, &readable_library_ids);
+                filter_submitted_subjects_for_libraries(&submitted_subjects, readable_library_ids);
             resolve_discovery_matched_subjects(&mut page.items, &submitted_subjects)?;
         }
 
@@ -567,6 +625,14 @@ impl AppUseCase {
         actor: &User,
         query: CatalogDiscoveryQuery,
     ) -> AppResult<CatalogDiscoveryResult> {
+        let visibility = self.discovery_visibility(actor).await?;
+        if !visibility.allows_facet(&query.facet) {
+            return Ok(CatalogDiscoveryResult {
+                groups: Vec::new(),
+                can_view_personalized: false,
+            });
+        }
+
         let readable_library_ids = self
             .authorized_library_ids(actor, Some(query.facet.clone()), LibraryPermission::View)
             .await?
@@ -705,12 +771,54 @@ impl AppUseCase {
         })
     }
 
-    async fn discovery_readable_library_ids(&self, actor: &User) -> AppResult<HashSet<String>> {
-        Ok(self
+    async fn discovery_visibility(&self, actor: &User) -> AppResult<DiscoveryVisibility> {
+        let requestable_library_ids = self
+            .authorized_library_ids(actor, None, LibraryPermission::Request)
+            .await?;
+        let manageable_library_ids = self
+            .authorized_library_ids(actor, None, LibraryPermission::ManageTitles)
+            .await?;
+        let readable_library_ids = self
             .authorized_library_ids(actor, None, LibraryPermission::View)
+            .await?;
+
+        let mut facets_by_library_id = self
+            .services
+            .catalog
+            .libraries
+            .list(None)
             .await?
             .into_iter()
-            .collect())
+            .map(|library| (library.id, library.facet))
+            .collect::<HashMap<_, _>>();
+        for facet in [MediaFacet::Movie, MediaFacet::Series, MediaFacet::Anime] {
+            facets_by_library_id
+                .entry(scryer_domain::default_library_id_for_facet(&facet))
+                .or_insert(facet);
+        }
+
+        let discoverable_library_ids = requestable_library_ids
+            .into_iter()
+            .chain(manageable_library_ids)
+            .collect::<HashSet<_>>();
+        let mut visibility = DiscoveryVisibility::default();
+        for library_id in &discoverable_library_ids {
+            if let Some(facet) = facets_by_library_id.get(library_id) {
+                visibility
+                    .allowed_media_kinds
+                    .insert(discovery_media_kind_for_facet(facet.clone()));
+            }
+        }
+        visibility
+            .readable_library_ids
+            .extend(readable_library_ids.into_iter().filter(|library_id| {
+                facets_by_library_id.get(library_id).is_some_and(|facet| {
+                    visibility
+                        .allowed_media_kinds
+                        .contains(discovery_media_kind_for_facet(facet.clone()))
+                })
+            }));
+        Ok(visibility)
     }
 
     async fn load_discovery_sync_status_for_visibility(
@@ -888,15 +996,16 @@ fn section_items_record_to_result(
 fn filter_discovery_sections_for_owned_items(
     sections: Vec<DiscoverySectionResult>,
     owned_visibility: &CatalogOwnedVisibility,
+    visibility: &DiscoveryVisibility,
     limit: usize,
 ) -> Vec<DiscoverySectionResult> {
     sections
         .into_iter()
         .filter_map(|mut section| {
             let original_len = section.items.len();
-            section
-                .items
-                .retain(|item| !owned_visibility.item_is_owned(item));
+            section.items.retain(|item| {
+                visibility.allows_item(item) && !owned_visibility.item_is_owned(item)
+            });
             if section.items.len() > limit {
                 section.items.truncate(limit);
             }
@@ -3966,6 +4075,10 @@ mod tests {
         let mut refill_item = test_discovery_item("refill", "series", Some("series"));
         refill_item.target_key = "tmdb:series:101".to_string();
         refill_item.display_title = "Refill".to_string();
+        let visibility = DiscoveryVisibility {
+            allowed_media_kinds: HashSet::from(["series"]),
+            ..DiscoveryVisibility::default()
+        };
 
         let sections = filter_discovery_sections_for_owned_items(
             vec![DiscoverySectionResult {
@@ -3977,6 +4090,7 @@ mod tests {
                 items: vec![owned_item, visible_item, refill_item],
             }],
             &owned_visibility,
+            &visibility,
             2,
         );
 

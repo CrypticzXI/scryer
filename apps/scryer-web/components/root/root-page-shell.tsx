@@ -693,6 +693,7 @@ function MainContent({
       canManageLibrarySettings={canManageLibrarySettings}
       canManageTitle={canManageTitle}
       canRequestMedia={canRequestMedia}
+      authorizationSignature={discoveryAuthorizationSignature}
       onOpenOverview={handleOpenOverview}
       routeOverviewTitleId={overviewTitleId}
       routeOverviewPending={overviewTitleRoutePending}

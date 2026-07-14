@@ -192,30 +192,32 @@ export function TitleQuickFilterBar({
           aria-label={t("label.filters")}
           className={
             panelAppearance
-              ? "grid min-w-0 grid-cols-2 gap-2"
+              ? "grid w-full min-w-0 grid-cols-2 gap-2"
               : "relative top-px flex min-h-10 min-w-0 max-w-full flex-1 flex-wrap items-center justify-start gap-x-5 gap-y-1 border-0 bg-transparent p-0 shadow-none"
           }
         >
         {panelAppearance ? (
-          <div className="col-span-2 flex w-full max-w-[32rem] justify-self-center overflow-hidden rounded-[10px] border border-[rgba(var(--scry-accent-rgb),0.55)]">
-            <UnderlineFilterButton
-              selected={filters.monitored}
-              onClick={() => onToggleMonitoring("monitored")}
-              icon={<Eye className="h-3.5 w-3.5" />}
-              label={t("title.monitored")}
-              count={counts?.monitored}
-              tone="success"
-              className={panelSplitButtonClassName(filters.monitored)}
-            />
-            <UnderlineFilterButton
-              selected={filters.unmonitored}
-              onClick={() => onToggleMonitoring("unmonitored")}
-              icon={<EyeOff className="h-3.5 w-3.5" />}
-              label={t("search.monitorType.unmonitored")}
-              count={counts?.unmonitored}
-              tone="danger"
-              className={panelSplitButtonClassName(filters.unmonitored, true)}
-            />
+          <div className="col-span-2 flex w-full justify-center">
+            <div className="flex w-full max-w-[32rem] overflow-hidden rounded-[10px] border border-[rgba(var(--scry-accent-rgb),0.55)]">
+              <UnderlineFilterButton
+                selected={filters.monitored}
+                onClick={() => onToggleMonitoring("monitored")}
+                icon={<Eye className="h-3.5 w-3.5" />}
+                label={t("title.monitored")}
+                count={counts?.monitored}
+                tone="success"
+                className={panelSplitButtonClassName(filters.monitored)}
+              />
+              <UnderlineFilterButton
+                selected={filters.unmonitored}
+                onClick={() => onToggleMonitoring("unmonitored")}
+                icon={<EyeOff className="h-3.5 w-3.5" />}
+                label={t("search.monitorType.unmonitored")}
+                count={counts?.unmonitored}
+                tone="danger"
+                className={panelSplitButtonClassName(filters.unmonitored, true)}
+              />
+            </div>
           </div>
         ) : (
           <>

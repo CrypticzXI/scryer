@@ -1,9 +1,15 @@
 import * as React from "react";
 import {
   AlertTriangle,
+  BookOpen,
+  CalendarDays,
+  Film,
+  Folder,
   RefreshCw,
   Search,
   SlidersHorizontal,
+  Star,
+  Tag,
   X,
 } from "lucide-react";
 
@@ -60,9 +66,16 @@ function defaultMaximumYear() {
   return new Date().getFullYear() + 3;
 }
 
-function FilterLabel({ children }: { children: React.ReactNode }) {
+function FilterLabel({
+  children,
+  icon,
+}: {
+  children: React.ReactNode;
+  icon?: React.ReactNode;
+}) {
   return (
-    <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+    <div className="mb-2.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+      {icon}
       {children}
     </div>
   );
@@ -250,7 +263,7 @@ export function CatalogFiltersPanel({
           placeholder={t("title.filterPlaceholder")}
           value={searchValue}
           onChange={(event) => onSearchValueChange(event.target.value)}
-          className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none placeholder:text-[var(--scry-faint2)] focus-visible:ring-[var(--scry-focus)]"
+          className="h-10 w-full rounded-[10px] border-[rgba(var(--scry-accent-rgb),0.38)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none placeholder:text-[var(--scry-faint2)] focus-visible:ring-[var(--scry-focus)]"
         />
       </div>
 
@@ -289,7 +302,9 @@ export function CatalogFiltersPanel({
 
       <div className="grid gap-x-4 md:grid-cols-2">
         <div className="mb-4 min-w-0">
-          <FilterLabel>{t("settings.librariesLabel")}</FilterLabel>
+          <FilterLabel icon={<BookOpen className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
+            {t("settings.librariesLabel")}
+          </FilterLabel>
           <LibraryMultiSelect
             libraries={libraries}
             selectedLibraryIds={selectedLibraryIds}
@@ -300,7 +315,9 @@ export function CatalogFiltersPanel({
           />
         </div>
         <div className="mb-4 min-w-0">
-          <FilterLabel>{t("title.rootFolder")}</FilterLabel>
+          <FilterLabel icon={<Folder className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
+            {t("title.rootFolder")}
+          </FilterLabel>
           <MultiSelectDropdown
             groups={rootGroups}
             selectedValues={filters.rootFolderIds}
@@ -316,7 +333,9 @@ export function CatalogFiltersPanel({
 
       <div className="grid gap-x-4 md:grid-cols-2">
         <div className="mb-4 min-w-0">
-          <FilterLabel>{t("discovery.genres")}</FilterLabel>
+          <FilterLabel icon={<Film className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
+            {t("discovery.genres")}
+          </FilterLabel>
           <MultiSelectDropdown
             options={genreOptions}
             selectedValues={filters.genreTagKeys}
@@ -348,7 +367,9 @@ export function CatalogFiltersPanel({
           />
         </div>
         <div className="mb-4 min-w-0">
-          <FilterLabel>{t("discovery.tags")}</FilterLabel>
+          <FilterLabel icon={<Tag className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
+            {t("discovery.tags")}
+          </FilterLabel>
           <MultiSelectDropdown
             options={tagOptions}
             selectedValues={filters.themeTagKeys}
@@ -382,7 +403,9 @@ export function CatalogFiltersPanel({
       </div>
 
       <div className="mb-2.5 flex items-center justify-between">
-        <FilterLabel>{t("discovery.releaseYear")}</FilterLabel>
+        <FilterLabel icon={<CalendarDays className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
+          {t("discovery.releaseYear")}
+        </FilterLabel>
         <span className="mb-2.5 text-[11.5px] text-[var(--scry-faint)]">
           {minimumYear} - {maximumYear}
         </span>
@@ -435,7 +458,9 @@ export function CatalogFiltersPanel({
       </div>
 
       <div className="mb-2.5 flex items-center justify-between">
-        <FilterLabel>{t("discovery.minimumRating")}</FilterLabel>
+        <FilterLabel icon={<Star className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
+          {t("discovery.minimumRating")}
+        </FilterLabel>
         <span className="mb-2.5 text-[11.5px] font-bold text-[var(--scry-accent-ring)]">
           {minimumRating.toFixed(1)}+
         </span>

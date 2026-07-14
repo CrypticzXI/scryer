@@ -44,7 +44,6 @@ export type TitleTableSortKey =
   | "ratingMetacriticUser"
   | "ratingLetterboxd"
   | "ratingTmdb"
-  | "ratingTvdb"
   | "ratingTrakt"
   | "ratingMyanimelist"
   | "ratingAnilist"
@@ -74,7 +73,6 @@ export type TitleTableColumnKey =
   | "ratingMetacriticUser"
   | "ratingLetterboxd"
   | "ratingTmdb"
-  | "ratingTvdb"
   | "ratingTrakt"
   | "ratingMyanimelist"
   | "ratingAnilist"
@@ -107,7 +105,6 @@ export const DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS: TitleTableVisibleColumns = {
   ratingMetacriticUser: false,
   ratingLetterboxd: false,
   ratingTmdb: false,
-  ratingTvdb: false,
   ratingTrakt: false,
   ratingMyanimelist: false,
   ratingAnilist: false,
@@ -139,7 +136,6 @@ export const TITLE_TABLE_COLUMN_KEYS: readonly TitleTableColumnKey[] = [
   "ratingMetacriticUser",
   "ratingLetterboxd",
   "ratingTmdb",
-  "ratingTvdb",
   "ratingTrakt",
   "ratingMyanimelist",
   "ratingAnilist",
@@ -163,7 +159,6 @@ export const SERIES_TITLE_TABLE_ONLY_COLUMNS = new Set<TitleTableColumnKey>([
 export const ANIME_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] = [
   "ratingImdb",
   "ratingTmdb",
-  "ratingTvdb",
   "ratingTrakt",
   "ratingMyanimelist",
   "ratingAnilist",
@@ -179,7 +174,6 @@ export const MOVIE_TITLE_TABLE_RATING_COLUMNS: readonly TitleTableColumnKey[] = 
   "ratingMetacriticUser",
   "ratingLetterboxd",
   "ratingTmdb",
-  "ratingTvdb",
   "ratingTrakt",
   "ratingMdblist",
 ];
@@ -696,7 +690,6 @@ const RATING_COLUMN_DEFINITIONS: Partial<
   },
   ratingLetterboxd: { label: "Letterboxd", aliases: ["letterboxd"] },
   ratingTmdb: { label: "TMDB", aliases: ["tmdb"] },
-  ratingTvdb: { label: "TVDB", aliases: ["tvdb", "thetvdb"] },
   ratingTrakt: { label: "Trakt", aliases: ["trakt"] },
   ratingMyanimelist: {
     label: "MyAnimeList",
@@ -732,7 +725,6 @@ export function titleTableRatingColumnWidthRem(
       return 7.25;
     case "ratingImdb":
     case "ratingTmdb":
-    case "ratingTvdb":
     case "ratingTrakt":
     case "ratingAnidb":
     case "ratingScryer":

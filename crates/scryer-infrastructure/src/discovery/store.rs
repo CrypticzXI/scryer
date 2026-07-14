@@ -710,6 +710,7 @@ impl DiscoveryRepository for DiscoveryStore {
     async fn list_public_discovery_section_items(
         &self,
         run_id: &str,
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit_per_section: i64,
     ) -> AppResult<Vec<DiscoverySectionItemsRecord>> {
@@ -720,6 +721,7 @@ impl DiscoveryRepository for DiscoveryStore {
         let rows = fetch_public_section_item_rows(
             &self.datastore,
             run_id,
+            allowed_media_kinds,
             include_unresolved,
             limit_per_section.clamp(1, 100),
         )
@@ -731,6 +733,7 @@ impl DiscoveryRepository for DiscoveryStore {
         &self,
         run_id: &str,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryItemRecord>> {
@@ -738,6 +741,7 @@ impl DiscoveryRepository for DiscoveryStore {
             &self.datastore,
             run_id,
             readable_library_ids,
+            allowed_media_kinds,
             include_unresolved,
             None,
             limit.clamp(1, 5_000),
@@ -749,6 +753,7 @@ impl DiscoveryRepository for DiscoveryStore {
         &self,
         run_id: &str,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryItemRecord>> {
@@ -756,6 +761,7 @@ impl DiscoveryRepository for DiscoveryStore {
             &self.datastore,
             run_id,
             readable_library_ids,
+            allowed_media_kinds,
             include_unresolved,
             Some(PersonalizedItemSubset::CompleteCollection),
             limit.clamp(1, 2_000),
@@ -767,12 +773,14 @@ impl DiscoveryRepository for DiscoveryStore {
         &self,
         run_id: &str,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
     ) -> AppResult<Vec<DiscoveryFacetRecord>> {
         fetch_personalized_facets(
             &self.datastore,
             run_id,
             readable_library_ids,
+            allowed_media_kinds,
             include_unresolved,
         )
         .await
@@ -783,6 +791,7 @@ impl DiscoveryRepository for DiscoveryStore {
         public_run_id: Option<&str>,
         context_run_id: Option<&str>,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         owned_library_ids: &[String],
         excluded_identity_keys: &[String],
         include_unresolved: bool,
@@ -793,6 +802,7 @@ impl DiscoveryRepository for DiscoveryStore {
             public_run_id,
             context_run_id,
             readable_library_ids,
+            allowed_media_kinds,
             owned_library_ids,
             excluded_identity_keys,
             include_unresolved,
@@ -1371,14 +1381,30 @@ struct DiscoveryItemsSql {
 async fn fetch_public_section_item_rows(
     datastore: &StoreDatastore,
     run_id: &str,
+    allowed_media_kinds: &[String],
     include_unresolved: bool,
     limit_per_section: i64,
 ) -> AppResult<Vec<SqlRow>> {
+    if allowed_media_kinds.is_empty() {
+        return Ok(Vec::new());
+    }
     let resolved_clause = if include_unresolved {
         ""
     } else {
         " AND t.resolved = TRUE"
     };
+    let mut args = vec![
+        SqlArg::Text(run_id.to_string()),
+        SqlArg::Text(run_id.to_string()),
+    ];
+    let mut media_kind_clauses = Vec::new();
+    append_authoritative_media_kind_filter(
+        &mut media_kind_clauses,
+        &mut args,
+        "t",
+        allowed_media_kinds,
+    );
+    args.push(SqlArg::I64(limit_per_section));
     SqlRuntime::fetch_all(
         datastore.read_exec(),
         &format!(
@@ -1404,6 +1430,7 @@ async fn fetch_public_section_item_rows(
                   AND s.surface = 'public'
                   AND UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'
                   AND {}
+                  AND {}
                   {resolved_clause}
              ),
              deduped AS (
@@ -1424,13 +1451,10 @@ async fn fetch_public_section_item_rows(
             ORDER BY result_section_id ASC, section_rank ASC",
             discovery_item_projection(datastore, "i", "t"),
             displayable_discovery_title_clause(datastore, "t"),
+            media_kind_clauses.join(" AND "),
             discovery_item_row_columns()
         ),
-        &[
-            SqlArg::Text(run_id.to_string()),
-            SqlArg::Text(run_id.to_string()),
-            SqlArg::I64(limit_per_section),
-        ],
+        &args,
     )
     .await
 }
@@ -1487,11 +1511,12 @@ async fn fetch_personalized_items(
     datastore: &StoreDatastore,
     run_id: &str,
     readable_library_ids: &[String],
+    allowed_media_kinds: &[String],
     include_unresolved: bool,
     subset: Option<PersonalizedItemSubset>,
     limit: i64,
 ) -> AppResult<Vec<DiscoveryItemRecord>> {
-    if readable_library_ids.is_empty() {
+    if readable_library_ids.is_empty() || allowed_media_kinds.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -1505,6 +1530,7 @@ async fn fetch_personalized_items(
     if !include_unresolved {
         clauses.push("t.resolved = TRUE".to_string());
     }
+    append_authoritative_media_kind_filter(&mut clauses, &mut args, "t", allowed_media_kinds);
     clauses.push(library_provenance_exists_clause(
         "i",
         readable_library_ids,
@@ -1538,11 +1564,15 @@ async fn fetch_discovery_home_top_rated_items(
     public_run_id: Option<&str>,
     context_run_id: Option<&str>,
     readable_library_ids: &[String],
+    allowed_media_kinds: &[String],
     owned_library_ids: &[String],
     excluded_identity_keys: &[String],
     include_unresolved: bool,
     limit: i64,
 ) -> AppResult<Vec<DiscoveryItemRecord>> {
+    if allowed_media_kinds.is_empty() {
+        return Ok(Vec::new());
+    }
     let mut args = Vec::new();
     let mut branches = Vec::new();
 
@@ -1558,6 +1588,7 @@ async fn fetch_discovery_home_top_rated_items(
         ];
         args.push(SqlArg::Text(run_id.to_string()));
         args.push(SqlArg::Text(run_id.to_string()));
+        append_authoritative_media_kind_filter(&mut clauses, &mut args, "t", allowed_media_kinds);
         if !include_unresolved {
             clauses.push("t.resolved = TRUE".to_string());
         }
@@ -1619,6 +1650,7 @@ async fn fetch_discovery_home_top_rated_items(
             displayable_discovery_title_clause(datastore, "t"),
         ];
         args.push(SqlArg::Text(run_id.to_string()));
+        append_authoritative_media_kind_filter(&mut clauses, &mut args, "t", allowed_media_kinds);
         if !include_unresolved {
             clauses.push("t.resolved = TRUE".to_string());
         }
@@ -2041,9 +2073,10 @@ async fn fetch_personalized_facets(
     datastore: &StoreDatastore,
     run_id: &str,
     readable_library_ids: &[String],
+    allowed_media_kinds: &[String],
     include_unresolved: bool,
 ) -> AppResult<Vec<DiscoveryFacetRecord>> {
-    if readable_library_ids.is_empty() {
+    if readable_library_ids.is_empty() || allowed_media_kinds.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -2060,6 +2093,7 @@ async fn fetch_personalized_facets(
     if !include_unresolved {
         clauses.push("dt.resolved = TRUE".to_string());
     }
+    append_authoritative_media_kind_filter(&mut clauses, &mut args, "dt", allowed_media_kinds);
     clauses.push(library_provenance_exists_clause(
         "i",
         readable_library_ids,
@@ -2144,6 +2178,10 @@ fn build_discovery_items_sql(
     datastore: &StoreDatastore,
     query: &DiscoveryItemsStorageQuery,
 ) -> Option<DiscoveryItemsSql> {
+    if query.allowed_media_kinds.is_empty() {
+        return None;
+    }
+
     let mut args = Vec::new();
     let mut sources = Vec::new();
     if let Some(context_run_id) = query.context_run_id.as_deref()
@@ -2181,6 +2219,12 @@ fn build_discovery_items_sql(
     }
 
     let mut clauses = Vec::new();
+    append_authoritative_media_kind_filter(
+        &mut clauses,
+        &mut args,
+        "i",
+        &query.allowed_media_kinds,
+    );
     append_discovery_items_filters(&mut clauses, &mut args, &query.filters);
     let where_clause = if clauses.is_empty() {
         "1 = 1".to_string()
@@ -2412,6 +2456,20 @@ fn authoritative_media_kind_clause(item_alias: &str, media_kind: &str) -> String
     format!(
         "LOWER(COALESCE(NULLIF(TRIM({item_alias}.content_type), ''), {item_alias}.target_kind)) = '{media_kind}'"
     )
+}
+
+fn append_authoritative_media_kind_filter(
+    clauses: &mut Vec<String>,
+    args: &mut Vec<SqlArg>,
+    item_alias: &str,
+    media_kinds: &[String],
+) {
+    let media_kinds = normalized_filter_values(media_kinds);
+    let placeholders = placeholders(media_kinds.len());
+    args.extend(media_kinds.into_iter().map(SqlArg::Text));
+    clauses.push(format!(
+        "LOWER(COALESCE(NULLIF(TRIM({item_alias}.content_type), ''), {item_alias}.target_kind)) IN ({placeholders})"
+    ));
 }
 
 fn collection_signal_clause(item_alias: &str, title_alias: &str) -> String {
@@ -4298,11 +4356,32 @@ mod tests {
             item.content_type = Some("movie".to_string());
             item
         };
+        let mut hidden_anime = make_item(
+            "item-hidden-anime",
+            -1,
+            "anilist:anime:1",
+            "Hidden Anime",
+            Some("Hidden Anime"),
+            None,
+        );
+        hidden_anime.target_kind = "series".to_string();
+        hidden_anime.content_type = Some("anime".to_string());
+        let mut unknown_content_type = make_item(
+            "item-unknown-content-type",
+            -2,
+            "tmdb:movie:99",
+            "Unknown Content Type",
+            Some("Unknown Content Type"),
+            None,
+        );
+        unknown_content_type.content_type = Some("documentary".to_string());
 
         store
             .replace_discovery_items(
                 run_id,
                 &[
+                    unknown_content_type,
+                    hidden_anime,
                     make_item(
                         "item-human-title",
                         0,
@@ -4335,16 +4414,17 @@ mod tests {
             .expect("items should replace");
 
         let sections = store
-            .list_public_discovery_section_items(run_id, true, 10)
+            .list_public_discovery_section_items(run_id, &["movie".to_string()], true, 1)
             .await
             .expect("public items should list");
         assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].total_count, 2);
         let target_keys = sections[0]
             .items
             .iter()
             .map(|item| item.target_key.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(target_keys, vec!["tmdb:movie:1", "tvdb:movie:5"]);
+        assert_eq!(target_keys, vec!["tmdb:movie:1"]);
 
         let catalog_sections = store
             .list_catalog_public_discovery_sections(run_id, &[], &[], "movie", true, 10)
@@ -4443,7 +4523,16 @@ mod tests {
             store.replace_discovery_items(run_id, &[item]).await?;
 
             let items = store
-                .list_discovery_home_top_rated_items(Some(run_id), None, &[], &[], &[], true, 10)
+                .list_discovery_home_top_rated_items(
+                    Some(run_id),
+                    None,
+                    &[],
+                    &["movie".to_string()],
+                    &[],
+                    &[],
+                    true,
+                    10,
+                )
                 .await?;
             services.pool().close().await;
 
@@ -5122,7 +5211,12 @@ mod tests {
             .expect("catalog personalized candidates should apply library scope");
         assert!(hidden_catalog_candidates.items.is_empty());
         let personalized_facets = store
-            .list_personalized_discovery_facets("run-1", &["series-library-a".to_string()], false)
+            .list_personalized_discovery_facets(
+                "run-1",
+                &["series-library-a".to_string()],
+                &["movie".to_string(), "series".to_string()],
+                false,
+            )
             .await
             .expect("personalized facets should list from canonical terms");
         assert_eq!(personalized_facets.len(), 2);
@@ -5145,28 +5239,93 @@ mod tests {
         assert!(personalized_facets.iter().all(|facet| {
             facet.facet_value != "mal:theme:psychological" && facet.facet_value != "Drama:"
         }));
+        let series_only_facets = store
+            .list_personalized_discovery_facets(
+                "run-1",
+                &["series-library-a".to_string()],
+                &["series".to_string()],
+                false,
+            )
+            .await
+            .expect("personalized facets should apply media-kind scope before counting");
+        assert_eq!(series_only_facets.len(), 1);
+        assert_eq!(series_only_facets[0].facet_name, "genre");
+        assert_eq!(series_only_facets[0].facet_value, "Drama");
+        assert_eq!(series_only_facets[0].local_count, Some(1));
         let hidden_library_facets = store
-            .list_personalized_discovery_facets("run-1", &["series-library-b".to_string()], false)
+            .list_personalized_discovery_facets(
+                "run-1",
+                &["series-library-b".to_string()],
+                &["movie".to_string(), "series".to_string()],
+                false,
+            )
             .await
             .expect("personalized facets should apply library provenance");
         assert!(hidden_library_facets.is_empty());
+        let mut pagination_items = store
+            .list_discovery_items_for_generation("run-1")
+            .await
+            .expect("discovery items should list before pagination setup");
+        let movie_template = pagination_items
+            .iter()
+            .find(|item| item.target_key == "tmdb:movie:10")
+            .expect("movie template should exist")
+            .clone();
+        let mut second_movie = movie_template.clone();
+        second_movie.id = "item-row-movie-2".to_string();
+        second_movie.target_key = "tmdb:movie:11".to_string();
+        second_movie.display_title = "Second Movie".to_string();
+        second_movie.sort_title = Some("Second Movie".to_string());
+        second_movie.content_type = Some("movie".to_string());
+        second_movie.rank_score = Some(0.2);
+        let mut unknown_content_type = movie_template;
+        unknown_content_type.id = "item-row-unknown-kind".to_string();
+        unknown_content_type.target_key = "tmdb:movie:12".to_string();
+        unknown_content_type.display_title = "Unknown Kind".to_string();
+        unknown_content_type.sort_title = Some("Unknown Kind".to_string());
+        unknown_content_type.content_type = Some("documentary".to_string());
+        unknown_content_type.rank_score = Some(100.0);
+        pagination_items.extend([second_movie, unknown_content_type]);
+        store
+            .replace_discovery_items("run-1", &pagination_items)
+            .await
+            .expect("pagination items should replace");
         let movie_page = store
             .query_discovery_items(&DiscoveryItemsStorageQuery {
                 context_run_id: Some("run-1".to_string()),
                 public_run_id: None,
                 readable_library_ids: vec!["series-library-a".to_string()],
+                allowed_media_kinds: vec!["movie".to_string()],
                 filters: DiscoveryItemsQuery {
                     target_kinds: vec!["movie".to_string()],
                     include_unresolved: false,
                     ..DiscoveryItemsQuery::default()
                 },
-                limit: 10,
+                limit: 1,
                 offset: 0,
             })
             .await
             .expect("movie query should use normalized media kind");
-        assert_eq!(movie_page.total_count, 1);
+        assert_eq!(movie_page.total_count, 2);
         assert_eq!(movie_page.items[0].target_key, "tmdb:movie:10");
+        let second_movie_page = store
+            .query_discovery_items(&DiscoveryItemsStorageQuery {
+                context_run_id: Some("run-1".to_string()),
+                public_run_id: None,
+                readable_library_ids: vec!["series-library-a".to_string()],
+                allowed_media_kinds: vec!["movie".to_string()],
+                filters: DiscoveryItemsQuery {
+                    target_kinds: vec!["movie".to_string()],
+                    include_unresolved: false,
+                    ..DiscoveryItemsQuery::default()
+                },
+                limit: 1,
+                offset: 1,
+            })
+            .await
+            .expect("second movie page should preserve filtered pagination");
+        assert_eq!(second_movie_page.total_count, 2);
+        assert_eq!(second_movie_page.items[0].target_key, "tmdb:movie:11");
 
         store
             .upsert_pending_discovery_context_change(&DiscoveryPendingContextChangeRecord {

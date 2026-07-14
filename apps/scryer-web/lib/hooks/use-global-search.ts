@@ -39,6 +39,7 @@ import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
 import type { AuthUser } from "@/lib/hooks/use-auth";
 import {
+  authorizationCacheSignature,
   hasAnyLibraryPermission,
   LIBRARY_PERMISSIONS,
 } from "@/lib/utils/permissions";
@@ -363,6 +364,12 @@ function librariesByFacetFromList(libraries: LibraryRecord[]): Record<Facet, Lib
   );
 }
 
+const EMPTY_LIBRARIES_BY_FACET: Record<Facet, LibraryRecord[]> = {
+  MOVIE: [],
+  SERIES: [],
+  ANIME: [],
+};
+
 function sameRootFolderOptions(
   previous: RootFolderOption[],
   next: RootFolderOption[],
@@ -417,6 +424,7 @@ export function useGlobalSearch({
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const catalogAuthorizationSignature = authorizationCacheSignature(authenticatedUser);
   const canManageTitle = hasAnyLibraryPermission(
     authenticatedUser,
     LIBRARY_PERMISSIONS.manageTitles,
@@ -486,6 +494,16 @@ export function useGlobalSearch({
   const [requestableLibrariesByFacet, setRequestableLibrariesByFacet] = useState<
     Record<Facet, LibraryRecord[]>
   >(() => ({ MOVIE: [], SERIES: [], ANIME: [] }));
+  const [catalogConfigAuthorizationSignature, setCatalogConfigAuthorizationSignature] =
+    useState<string | null>(null);
+  const catalogConfigMatchesAuthorization =
+    catalogConfigAuthorizationSignature === catalogAuthorizationSignature;
+  const visibleLibrariesByFacet = catalogConfigMatchesAuthorization
+    ? librariesByFacet
+    : EMPTY_LIBRARIES_BY_FACET;
+  const visibleRequestableLibrariesByFacet = catalogConfigMatchesAuthorization
+    ? requestableLibrariesByFacet
+    : EMPTY_LIBRARIES_BY_FACET;
   const forcedOpenRef = useRef(false);
   const autocompleteRequestId = useRef(0);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
@@ -495,10 +513,15 @@ export function useGlobalSearch({
   const pendingRequestKeysRef = useRef<Set<string>>(new Set());
   const catalogConfigRefreshPromiseRef = useRef<{
     mode: CatalogConfigAccessMode;
+    authorizationSignature: string;
     promise: Promise<void>;
   } | null>(null);
   const catalogConfigRefreshTokenRef = useRef(0);
   const catalogConfigLoadedRef = useRef(false);
+  const catalogAuthorizationSignatureRef = useRef(catalogAuthorizationSignature);
+  useEffect(() => {
+    catalogAuthorizationSignatureRef.current = catalogAuthorizationSignature;
+  }, [catalogAuthorizationSignature]);
 
   const cancelAutocomplete = useCallback(() => {
     if (autocompleteDebounceTimerRef.current !== null) {
@@ -553,13 +576,14 @@ export function useGlobalSearch({
 
   const isCatalogConfigReady = useCallback(
     (facet: Facet) =>
-      requestableLibrariesByFacet[facet].length > 0 ||
+      visibleRequestableLibrariesByFacet[facet].length > 0 ||
       (catalogQualityProfileOptions.length > 0 &&
-        (librariesByFacet[facet].length > 0 || rootFoldersByFacet[facet].length > 0)),
+        (visibleLibrariesByFacet[facet].length > 0 ||
+          rootFoldersByFacet[facet].length > 0)),
     [
       catalogQualityProfileOptions,
-      librariesByFacet,
-      requestableLibrariesByFacet,
+      visibleLibrariesByFacet,
+      visibleRequestableLibrariesByFacet,
       rootFoldersByFacet,
     ],
   );
@@ -568,14 +592,19 @@ export function useGlobalSearch({
     const accessMode: CatalogConfigAccessMode = canManageTitle
       ? "manager"
       : "requester";
-    if (catalogConfigRefreshPromiseRef.current?.mode === accessMode) {
+    if (
+      catalogConfigRefreshPromiseRef.current?.mode === accessMode &&
+      catalogConfigRefreshPromiseRef.current.authorizationSignature ===
+        catalogAuthorizationSignature
+    ) {
       return catalogConfigRefreshPromiseRef.current.promise;
     }
 
     const refreshToken = catalogConfigRefreshTokenRef.current + 1;
     catalogConfigRefreshTokenRef.current = refreshToken;
     const isCurrentRefresh = () =>
-      catalogConfigRefreshTokenRef.current === refreshToken;
+      catalogConfigRefreshTokenRef.current === refreshToken &&
+      catalogAuthorizationSignatureRef.current === catalogAuthorizationSignature;
 
     const refreshPromise = (async () => {
       setCatalogConfigLoading(true);
@@ -590,6 +619,7 @@ export function useGlobalSearch({
         if (error) throw error;
         if (!isCurrentRefresh()) return;
         catalogConfigLoadedRef.current = true;
+        setCatalogConfigAuthorizationSignature(catalogAuthorizationSignature);
 
         const parsedProfiles = (data.qualityProfileSettings?.profiles ?? []).map(
           (profile: { id: string; name: string }) => ({
@@ -685,6 +715,7 @@ export function useGlobalSearch({
               : nextRequestableLibrariesByFacet;
           });
           catalogConfigLoadedRef.current = true;
+          setCatalogConfigAuthorizationSignature(catalogAuthorizationSignature);
         } catch {
           // ignore requestable library fallback failures here; search remains functional
         }
@@ -692,7 +723,11 @@ export function useGlobalSearch({
       } finally {
         if (isCurrentRefresh()) {
           setCatalogConfigLoading(false);
-          if (catalogConfigRefreshPromiseRef.current?.mode === accessMode) {
+          if (
+            catalogConfigRefreshPromiseRef.current?.mode === accessMode &&
+            catalogConfigRefreshPromiseRef.current.authorizationSignature ===
+              catalogAuthorizationSignature
+          ) {
             catalogConfigRefreshPromiseRef.current = null;
           }
         }
@@ -701,10 +736,11 @@ export function useGlobalSearch({
 
     catalogConfigRefreshPromiseRef.current = {
       mode: accessMode,
+      authorizationSignature: catalogAuthorizationSignature,
       promise: refreshPromise,
     };
     return refreshPromise;
-  }, [canManageTitle, client]);
+  }, [canManageTitle, catalogAuthorizationSignature, client]);
 
   const ensureCatalogConfigReady = useCallback(
     async (facet: Facet) => {
@@ -717,7 +753,10 @@ export function useGlobalSearch({
   );
 
   const primeCatalogConfigForMetadataActions = useCallback(async () => {
-    if (catalogConfigLoadedRef.current) {
+    if (
+      catalogConfigLoadedRef.current &&
+      catalogConfigMatchesAuthorization
+    ) {
       return;
     }
 
@@ -726,7 +765,18 @@ export function useGlobalSearch({
     } catch {
       // Search should still render results if config priming unexpectedly fails.
     }
-  }, [refreshCatalogQualityProfileState]);
+  }, [catalogConfigMatchesAuthorization, refreshCatalogQualityProfileState]);
+
+  useEffect(() => {
+    catalogConfigRefreshTokenRef.current += 1;
+    catalogConfigRefreshPromiseRef.current = null;
+    catalogConfigLoadedRef.current = false;
+    setCatalogConfigAuthorizationSignature(null);
+    setCatalogConfigLoading(false);
+    setRootFoldersByFacet({ MOVIE: [], SERIES: [], ANIME: [] });
+    setLibrariesByFacet({ MOVIE: [], SERIES: [], ANIME: [] });
+    setRequestableLibrariesByFacet({ MOVIE: [], SERIES: [], ANIME: [] });
+  }, [catalogAuthorizationSignature]);
 
   useEffect(() => {
     void refreshCatalogQualityProfileState();
@@ -1490,8 +1540,8 @@ export function useGlobalSearch({
     requestMetadataSearchResult,
     isMetadataSearchResultInCatalog,
     rootFoldersByFacet,
-    librariesByFacet,
-    requestableLibrariesByFacet,
+    librariesByFacet: visibleLibrariesByFacet,
+    requestableLibrariesByFacet: visibleRequestableLibrariesByFacet,
     queueFacet,
     setQueueFacet,
     catalogChangeSignal,

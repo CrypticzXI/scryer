@@ -18,14 +18,14 @@ use crate::{
     DiscoveryContextSnapshotPageResult, DiscoveryContextSnapshotStatusResult,
     DiscoveryContextSnapshotSubmitInput, DiscoveryContextSnapshotSubmitResult,
     DiscoveryDashboardResult, DiscoveryDashboardSection, DiscoveryFacetRecord, DiscoveryHomeQuery,
-    DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryPendingContextChangeRecord,
-    DiscoveryPublicFeedCommit, DiscoveryPublicFeedInput, DiscoveryRelatedResult,
-    DiscoveryRepository, DiscoverySectionRecord, DiscoverySnapshotFacetGroup,
-    DiscoverySnapshotFacetValue, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
-    DiscoverySyncStateRecord, DiscoveryTitle, DomainEventRepository, JobCategory, JobKey, JobRun,
-    JobRunStatus, JobSection, JobTriggerSource, LibraryRootDraft, MetadataGateway,
-    MetadataSearchItem, MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult,
-    RichMetadataSearchItem, SeriesMetadata, TitleRecommendationsInput,
+    DiscoveryItemDetailQuery, DiscoveryItemRecord, DiscoveryItemsQuery,
+    DiscoveryPendingContextChangeRecord, DiscoveryPublicFeedCommit, DiscoveryPublicFeedInput,
+    DiscoveryRelatedResult, DiscoveryRepository, DiscoverySectionRecord,
+    DiscoverySnapshotFacetGroup, DiscoverySnapshotFacetValue, DiscoverySubmittedSubjectRecord,
+    DiscoverySyncRunRecord, DiscoverySyncStateRecord, DiscoveryTitle, DomainEventRepository,
+    JobCategory, JobKey, JobRun, JobRunStatus, JobSection, JobTriggerSource, LibraryRootDraft,
+    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
+    MultiMetadataSearchResult, RichMetadataSearchItem, SeriesMetadata, TitleRecommendationsInput,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
@@ -179,14 +179,23 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     let (app, admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
     let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
-    let (_public_user, public_actor) =
-        create_authenticated_user(&app, &admin, "discovery-public", "password", vec![]).await;
+    let (_public_user, public_actor) = create_authenticated_user(
+        &app,
+        &admin,
+        "discovery-public",
+        "password",
+        vec![TestPermissionPreset::MediaRequest],
+    )
+    .await;
     let (_viewer, viewer_actor) = create_authenticated_user(
         &app,
         &admin,
         "discovery-viewer",
         "password",
-        vec![TestPermissionPreset::CatalogView],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::MediaRequest,
+        ],
     )
     .await;
     let observed_at = Utc.timestamp_opt(1_000, 0).unwrap();
@@ -852,6 +861,247 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
 }
 
 #[tokio::test]
+async fn discovery_filters_every_read_path_by_request_or_manage_facet() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let observed_at = Utc.timestamp_opt(1_500, 0).unwrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    let anime_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
+
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_public_feed_generation_id: Some("public-run".to_string()),
+        updated_at: observed_at,
+        ..DiscoverySyncStateRecord::default()
+    });
+    discovery
+        .sections
+        .lock()
+        .await
+        .push(discovery_section_record(
+            "public-run",
+            "mixed_public",
+            "TRENDING_NOW",
+            "public",
+        ));
+    let movie_item = discovery_item_record(
+        "public-run",
+        "public-run",
+        Some("mixed_public"),
+        "tmdb:movie:100",
+        "Visible Movie",
+        "movie",
+        100.0,
+        &["Drama"],
+        &[],
+        false,
+        true,
+    );
+    let series_item = discovery_item_record(
+        "public-run",
+        "public-run",
+        Some("mixed_public"),
+        "tvdb:series:200",
+        "Visible Series",
+        "series",
+        90.0,
+        &["Drama"],
+        &[],
+        false,
+        true,
+    );
+    let anime_item = discovery_item_record(
+        "public-run",
+        "public-run",
+        Some("mixed_public"),
+        "mal:anime:300",
+        "Hidden Anime",
+        "anime",
+        80.0,
+        &["Fantasy"],
+        &[],
+        false,
+        true,
+    );
+    let mut unknown_item = discovery_item_record(
+        "public-run",
+        "public-run",
+        Some("mixed_public"),
+        "tmdb:movie:400",
+        "Hidden Unknown",
+        "movie",
+        70.0,
+        &["Documentary"],
+        &[],
+        false,
+        true,
+    );
+    unknown_item.content_type = Some("documentary".to_string());
+    discovery
+        .items
+        .lock()
+        .await
+        .extend([movie_item, series_item, anime_item, unknown_item]);
+
+    let request_permissions = [scryer_domain::LibraryPermission::Request];
+    let requester = library_permission_user_with_grants(
+        "movie-series-requester",
+        &[
+            (movie_library_id.as_str(), request_permissions.as_slice()),
+            (series_library_id.as_str(), request_permissions.as_slice()),
+        ],
+    );
+    let home = app
+        .discovery_home(
+            &requester,
+            DiscoveryHomeQuery {
+                include_public: true,
+                include_personalized: true,
+                include_unresolved: true,
+                limit_per_section: 10,
+            },
+        )
+        .await
+        .expect("request-scoped discovery home should load");
+    let home_titles = home
+        .public_sections
+        .iter()
+        .flat_map(|section| section.items.iter().map(|item| item.display_title.as_str()))
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        home_titles,
+        HashSet::from(["Visible Movie", "Visible Series"])
+    );
+    assert!(!home.can_view_personalized);
+    assert!(home.personalized_sections.is_empty());
+    assert!(home.complete_collection.is_none());
+    assert!(home.facets.is_empty());
+    assert!(home.hero_item.as_ref().is_some_and(|item| {
+        matches!(
+            recording_discovery_item_media_kind(item).as_deref(),
+            Some("movie" | "series")
+        )
+    }));
+
+    let first_page = app
+        .discovery_items(
+            &requester,
+            DiscoveryItemsQuery {
+                include_public: true,
+                include_unresolved: true,
+                limit: 1,
+                offset: 0,
+                ..DiscoveryItemsQuery::default()
+            },
+        )
+        .await
+        .expect("request-scoped discovery items should load");
+    assert_eq!(first_page.total_count, 2);
+    assert_eq!(first_page.items.len(), 1);
+    let second_page = app
+        .discovery_items(
+            &requester,
+            DiscoveryItemsQuery {
+                include_public: true,
+                include_unresolved: true,
+                limit: 1,
+                offset: 1,
+                ..DiscoveryItemsQuery::default()
+            },
+        )
+        .await
+        .expect("second request-scoped discovery page should load");
+    assert_eq!(second_page.total_count, 2);
+    assert_eq!(second_page.items.len(), 1);
+
+    let movie_detail = app
+        .discovery_item_detail(
+            &requester,
+            DiscoveryItemDetailQuery {
+                target_key: "tmdb:movie:100".to_string(),
+                include_unresolved: true,
+            },
+        )
+        .await
+        .expect("visible movie detail should load");
+    assert!(movie_detail.is_some());
+    for target_key in ["mal:anime:300", "tmdb:movie:400"] {
+        let hidden_detail = app
+            .discovery_item_detail(
+                &requester,
+                DiscoveryItemDetailQuery {
+                    target_key: target_key.to_string(),
+                    include_unresolved: true,
+                },
+            )
+            .await
+            .expect("hidden detail query should succeed without returning an item");
+        assert!(hidden_detail.is_none());
+    }
+
+    let movie_catalog = app
+        .catalog_discovery(
+            &requester,
+            CatalogDiscoveryQuery {
+                facet: MediaFacet::Movie,
+                library_ids: Vec::new(),
+                include_unresolved: true,
+                limit_per_group: 10,
+                max_groups: 3,
+            },
+        )
+        .await
+        .expect("requestable movie catalog discovery should load");
+    assert!(!movie_catalog.groups.is_empty());
+    assert!(!movie_catalog.can_view_personalized);
+    let anime_catalog = app
+        .catalog_discovery(
+            &requester,
+            CatalogDiscoveryQuery {
+                facet: MediaFacet::Anime,
+                library_ids: Vec::new(),
+                include_unresolved: true,
+                limit_per_group: 10,
+                max_groups: 3,
+            },
+        )
+        .await
+        .expect("unauthorized anime catalog discovery should return an empty result");
+    assert!(anime_catalog.groups.is_empty());
+    assert!(!anime_catalog.can_view_personalized);
+
+    let view_only = library_permission_user(
+        "anime-viewer",
+        &anime_library_id,
+        &[scryer_domain::LibraryPermission::View],
+    );
+    let view_only_home = app
+        .discovery_home(&view_only, DiscoveryHomeQuery::default())
+        .await
+        .expect("view-only discovery home should load");
+    assert!(view_only_home.public_sections.is_empty());
+    assert!(view_only_home.hero_item.is_none());
+
+    let anime_manager = library_permission_user(
+        "anime-manager",
+        &anime_library_id,
+        &[scryer_domain::LibraryPermission::ManageTitles],
+    );
+    let manager_home = app
+        .discovery_home(&anime_manager, DiscoveryHomeQuery::default())
+        .await
+        .expect("manager discovery home should load");
+    let manager_titles = manager_home
+        .public_sections
+        .iter()
+        .flat_map(|section| section.items.iter().map(|item| item.display_title.as_str()))
+        .collect::<HashSet<_>>();
+    assert_eq!(manager_titles, HashSet::from(["Hidden Anime"]));
+}
+
+#[tokio::test]
 async fn discovery_provenance_keeps_duplicate_subject_keys_across_libraries() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
@@ -930,12 +1180,28 @@ async fn discovery_provenance_keeps_duplicate_subject_keys_across_libraries() {
     let movie_actor = library_permission_user(
         "movie-library-viewer",
         &movie_library_id,
-        &[scryer_domain::LibraryPermission::View],
+        &[
+            scryer_domain::LibraryPermission::View,
+            scryer_domain::LibraryPermission::Request,
+        ],
     );
-    let series_actor = library_permission_user(
+    let series_discovery_permissions = [
+        scryer_domain::LibraryPermission::View,
+        scryer_domain::LibraryPermission::Request,
+    ];
+    let movie_request_permissions = [scryer_domain::LibraryPermission::Request];
+    let series_actor = library_permission_user_with_grants(
         "series-library-viewer",
-        &series_library_id,
-        &[scryer_domain::LibraryPermission::View],
+        &[
+            (
+                series_library_id.as_str(),
+                series_discovery_permissions.as_slice(),
+            ),
+            (
+                movie_library_id.as_str(),
+                movie_request_permissions.as_slice(),
+            ),
+        ],
     );
 
     let movie_items = app
@@ -984,7 +1250,10 @@ async fn catalog_discovery_returns_public_groups_without_personalized_snapshot()
     let viewer = library_permission_user(
         "movie-library-viewer",
         &movie_library_id,
-        &[scryer_domain::LibraryPermission::View],
+        &[
+            scryer_domain::LibraryPermission::View,
+            scryer_domain::LibraryPermission::Request,
+        ],
     );
 
     *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
@@ -1075,7 +1344,10 @@ async fn catalog_discovery_excludes_public_rows_owned_by_normalized_external_id(
     let viewer = library_permission_user(
         "movie-public-owned-viewer",
         &movie_library_id,
-        &[scryer_domain::LibraryPermission::View],
+        &[
+            scryer_domain::LibraryPermission::View,
+            scryer_domain::LibraryPermission::Request,
+        ],
     );
     let mut owned_movie = test_title(
         "owned-matrix",
@@ -1337,12 +1609,15 @@ async fn catalog_discovery_scopes_personalized_rows_to_selected_readable_library
         )
         .await
         .expect("second movie library should be created");
-    let view_permissions = [scryer_domain::LibraryPermission::View];
+    let discovery_permissions = [
+        scryer_domain::LibraryPermission::View,
+        scryer_domain::LibraryPermission::Request,
+    ];
     let viewer = library_permission_user_with_grants(
         "movie-multi-library-viewer",
         &[
-            (library_a_id.as_str(), view_permissions.as_slice()),
-            (library_b.id.as_str(), view_permissions.as_slice()),
+            (library_a_id.as_str(), discovery_permissions.as_slice()),
+            (library_b.id.as_str(), discovery_permissions.as_slice()),
         ],
     );
     let mut title_a = test_title(
@@ -1468,7 +1743,10 @@ async fn discovery_home_uses_live_public_feed_when_snapshot_and_public_generatio
         &admin,
         "discovery-live-public-viewer",
         "password",
-        vec![TestPermissionPreset::CatalogView],
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::MediaRequest,
+        ],
     )
     .await;
 
@@ -4440,6 +4718,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
     async fn list_public_discovery_section_items(
         &self,
         run_id: &str,
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit_per_section: i64,
     ) -> AppResult<Vec<DiscoverySectionItemsRecord>> {
@@ -4461,6 +4740,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
                 .filter(|item| item.section_id.as_deref() == Some(section.section_id.as_str()))
                 .filter(|item| !item.owned_in_input)
                 .filter(|item| include_unresolved || item.resolved)
+                .filter(|item| recording_item_is_allowed(item, allowed_media_kinds))
                 .cloned()
                 .collect::<Vec<_>>();
             recording_dedupe_preserving_order(&mut items);
@@ -4481,6 +4761,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         &self,
         run_id: &str,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryItemRecord>> {
@@ -4492,6 +4773,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         )
         .into_iter()
         .filter(|item| !item.owned_in_input)
+        .filter(|item| recording_item_is_allowed(item, allowed_media_kinds))
         .collect::<Vec<_>>();
         recording_dedupe_and_sort(&mut items);
         items.truncate(limit.max(1) as usize);
@@ -4502,6 +4784,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         &self,
         run_id: &str,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryItemRecord>> {
@@ -4512,6 +4795,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
             include_unresolved,
         )
         .into_iter()
+        .filter(|item| recording_item_is_allowed(item, allowed_media_kinds))
         .filter(|item| recording_item_media_kind(item) == Some("movie"))
         .filter(|item| !item.owned_in_input)
         .filter(recording_item_has_collection_signal)
@@ -4525,6 +4809,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         &self,
         run_id: &str,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
     ) -> AppResult<Vec<DiscoveryFacetRecord>> {
         let items = recording_visible_personalized_items(
@@ -4532,7 +4817,10 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
             run_id,
             readable_library_ids,
             include_unresolved,
-        );
+        )
+        .into_iter()
+        .filter(|item| recording_item_is_allowed(item, allowed_media_kinds))
+        .collect::<Vec<_>>();
         Ok(recording_canonical_facet_records(run_id, &items))
     }
 
@@ -4541,6 +4829,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         public_run_id: Option<&str>,
         context_run_id: Option<&str>,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         _owned_library_ids: &[String],
         excluded_identity_keys: &[String],
         include_unresolved: bool,
@@ -4560,6 +4849,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
                     .filter(|item| item.tombstoned_at.is_none())
                     .filter(|item| !item.owned_in_input)
                     .filter(|item| include_unresolved || item.resolved)
+                    .filter(|item| recording_item_is_allowed(item, allowed_media_kinds))
                     .filter(|item| {
                         !excluded_identity_keys.contains(
                             &recording_item_identity_key(item)
@@ -4580,6 +4870,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
                 )
                 .into_iter()
                 .filter(|item| !item.owned_in_input)
+                .filter(|item| recording_item_is_allowed(item, allowed_media_kinds))
                 .filter(|item| {
                     !excluded_identity_keys.contains(
                         &recording_item_identity_key(item)
@@ -4743,7 +5034,14 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
                     .cloned(),
             );
         }
-        items.retain(|item| recording_item_matches_query(item, &query.filters));
+        items.retain(|item| {
+            recording_discovery_item_media_kind(item).is_some_and(|media_kind| {
+                query
+                    .allowed_media_kinds
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(&media_kind))
+            }) && recording_item_matches_query(item, &query.filters)
+        });
         recording_dedupe_and_sort(&mut items);
         let total_count = items.len() as i64;
         let offset = query.offset.min(items.len());
@@ -5054,6 +5352,14 @@ fn recording_item_matches_query(item: &DiscoveryItemRecord, query: &DiscoveryIte
     if !query.include_unresolved && !item.resolved {
         return false;
     }
+    if !query.target_keys.is_empty()
+        && !query
+            .target_keys
+            .iter()
+            .any(|target_key| target_key.eq_ignore_ascii_case(&item.target_key))
+    {
+        return false;
+    }
     if let Some(query_text) = query
         .query
         .as_deref()
@@ -5137,8 +5443,20 @@ fn recording_text_matches(values: &[String], text: Option<&str>, filters: &[Stri
 }
 
 fn recording_item_media_kind(item: &DiscoveryItemRecord) -> Option<&str> {
-    recording_normalized_media_kind(item.content_type.as_deref())
-        .or_else(|| recording_normalized_media_kind(Some(item.target_kind.as_str())))
+    match item.content_type.as_deref().map(str::trim) {
+        Some(content_type) if !content_type.is_empty() => {
+            recording_normalized_media_kind(Some(content_type))
+        }
+        _ => recording_normalized_media_kind(Some(item.target_kind.as_str())),
+    }
+}
+
+fn recording_item_is_allowed(item: &DiscoveryItemRecord, allowed_media_kinds: &[String]) -> bool {
+    recording_item_media_kind(item).is_some_and(|media_kind| {
+        allowed_media_kinds
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(media_kind))
+    })
 }
 
 fn recording_normalized_media_kind(value: Option<&str>) -> Option<&'static str> {

@@ -147,8 +147,7 @@ function formatTimestamp(
 }
 
 function providerIdentityLabel(account: LinkedAccount): string {
-  const name = account.displayName || account.username;
-  return account.externalUserId ? `${name} (${account.externalUserId})` : name;
+  return account.displayName || account.username;
 }
 
 function ProviderAvatar({

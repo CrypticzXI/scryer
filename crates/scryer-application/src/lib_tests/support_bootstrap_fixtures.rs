@@ -2075,6 +2075,7 @@ pub(super) async fn create_series_with_collection_and_episode(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TestPermissionPreset {
     CatalogView,
+    MediaRequest,
     TitleManagement,
     UserManagement,
     ConfigManagement,
@@ -2149,6 +2150,9 @@ pub(super) fn test_library_grants_from_presets(
     let mut permissions = scryer_domain::LibraryPermissionMask::NONE;
     if presets.contains(&TestPermissionPreset::CatalogView) {
         permissions.insert(scryer_domain::LibraryPermissionMask::VIEW);
+    }
+    if presets.contains(&TestPermissionPreset::MediaRequest) {
+        permissions.insert(scryer_domain::LibraryPermissionMask::REQUEST);
     }
     if presets.contains(&TestPermissionPreset::TitleManagement) {
         permissions.insert(scryer_domain::LibraryPermissionMask::VIEW);

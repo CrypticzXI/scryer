@@ -1,4 +1,12 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useClient } from "urql";
 import {
   AddToCatalogDialog,
@@ -18,7 +26,10 @@ import { useTranslate } from "@/lib/context/translate-context";
 import type { LocaleCode } from "@/lib/i18n";
 import { discoveryItemDisplayTitle } from "@/lib/utils/discovery-display";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
-import { externalIdsFromDiscoverySignals } from "@/lib/utils/discovery-actions";
+import {
+  discoveryItemFacet,
+  externalIdsFromDiscoverySignals,
+} from "@/lib/utils/discovery-actions";
 import type {
   DiscoveryHomeInput,
   DiscoveryHomePayload,
@@ -42,19 +53,7 @@ const DISCOVERY_HOME_INPUT: DiscoveryHomeInput = {
   limitPerSection: 18,
 };
 
-function facetForDiscoveryItem(item: DiscoveryItem): Facet {
-  const primaryKind = item.contentType?.trim() || item.targetKind.trim();
-  switch (primaryKind.toLowerCase()) {
-    case "anime":
-      return "ANIME";
-    case "series":
-      return "SERIES";
-    case "movie":
-      return "MOVIE";
-    default:
-      return "MOVIE";
-  }
-}
+const DISCOVERY_FACETS: Facet[] = ["MOVIE", "SERIES", "ANIME"];
 
 function externalIdsForDiscoveryItem(item: DiscoveryItem): ExternalId[] {
   return externalIdsFromDiscoverySignals(item);
@@ -114,6 +113,20 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     resolveDefaultQualityProfileIdForFacet,
     rootFoldersByFacet,
   } = useSearchContext();
+  const manageableFacets = useMemo(
+    () =>
+      DISCOVERY_FACETS.filter(
+        (facet) => (librariesByFacet[facet] ?? []).length > 0,
+      ),
+    [librariesByFacet],
+  );
+  const requestableFacets = useMemo(
+    () =>
+      DISCOVERY_FACETS.filter(
+        (facet) => (requestableLibrariesByFacet[facet] ?? []).length > 0,
+      ),
+    [requestableLibrariesByFacet],
+  );
   const [home, setHome] = useState<DiscoveryHomePayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +136,14 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
   const refreshRequestIdRef = useRef(0);
   const mountedRef = useRef(true);
   const scopeKeyRef = useRef<string | null>(null);
+  const authorizationSignatureRef = useRef(authorizationSignature);
+
+  useLayoutEffect(() => {
+    authorizationSignatureRef.current = authorizationSignature;
+    setSelectedItem(null);
+    setAddDialogOpen(false);
+    setRequestDialogOpen(false);
+  }, [authorizationSignature]);
 
   useEffect(() => {
     clientRef.current = client;
@@ -205,7 +226,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
   );
 
   const selectedFacet = selectedItem
-    ? facetForDiscoveryItem(selectedItem)
+    ? (discoveryItemFacet(selectedItem) ?? "MOVIE")
     : "MOVIE";
   const selectedResult = selectedItem
     ? metadataResultForDiscoveryItem(selectedItem)
@@ -213,17 +234,30 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
 
   const handleAction = useCallback(
     async (item: DiscoveryItem) => {
+      const actionAuthorizationSignature = authorizationSignature;
       if (item.ownedInInput) {
         return;
       }
-      if (!canManageTitle && !canRequestMedia) {
+      const facet = discoveryItemFacet(item);
+      if (!facet) {
+        setGlobalStatus(t("status.apiError"));
+        return;
+      }
+      const canManageFacet = (librariesByFacet[facet] ?? []).length > 0;
+      const canRequestFacet =
+        (requestableLibrariesByFacet[facet] ?? []).length > 0;
+      if (!canManageFacet && !canRequestFacet) {
         setGlobalStatus(t("status.permissionDenied"));
         return;
       }
 
-      const facet = facetForDiscoveryItem(item);
       try {
         await ensureCatalogConfigReady(facet);
+        if (
+          authorizationSignatureRef.current !== actionAuthorizationSignature
+        ) {
+          return;
+        }
         const { data, error: detailError } = await client
           .query(
             discoveryItemDetailQuery,
@@ -236,11 +270,31 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
             { requestPolicy: "network-only" },
           )
           .toPromise();
+        if (
+          authorizationSignatureRef.current !== actionAuthorizationSignature
+        ) {
+          return;
+        }
         if (detailError) {
           throw detailError;
         }
-        setSelectedItem((data?.discoveryItemDetail ?? item) as DiscoveryItem);
-        if (canManageTitle) {
+        const detail = data?.discoveryItemDetail as DiscoveryItem | null | undefined;
+        if (!detail) {
+          throw new Error(t("status.permissionDenied"));
+        }
+        const detailFacet = discoveryItemFacet(detail);
+        if (!detailFacet || detailFacet !== facet) {
+          throw new Error(t("status.permissionDenied"));
+        }
+        const canManageDetailFacet =
+          (librariesByFacet[detailFacet] ?? []).length > 0;
+        const canRequestDetailFacet =
+          (requestableLibrariesByFacet[detailFacet] ?? []).length > 0;
+        if (!canManageDetailFacet && !canRequestDetailFacet) {
+          throw new Error(t("status.permissionDenied"));
+        }
+        setSelectedItem(detail);
+        if (canManageDetailFacet) {
           setAddDialogOpen(true);
         } else {
           setRequestDialogOpen(true);
@@ -252,10 +306,11 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
       }
     },
     [
-      canManageTitle,
-      canRequestMedia,
+      authorizationSignature,
       client,
       ensureCatalogConfigReady,
+      librariesByFacet,
+      requestableLibrariesByFacet,
       setGlobalStatus,
       t,
     ],
@@ -281,12 +336,12 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
         home={home}
         loading={loading}
         error={error}
-        canManageTitle={canManageTitle}
-        canRequestMedia={canRequestMedia}
+        manageableFacets={manageableFacets}
+        requestableFacets={requestableFacets}
         onRefresh={refresh}
         onAction={handleAction}
       />
-      {canManageTitle ? (
+      {canManageTitle && manageableFacets.length > 0 ? (
         <AddToCatalogDialog
           open={addDialogOpen}
           onOpenChange={handleAddDialogOpenChange}
@@ -312,7 +367,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
           }}
         />
       ) : null}
-      {!canManageTitle && canRequestMedia ? (
+      {canRequestMedia && requestableFacets.length > 0 ? (
         <RequestMediaDialog
           open={requestDialogOpen}
           onOpenChange={handleRequestDialogOpenChange}

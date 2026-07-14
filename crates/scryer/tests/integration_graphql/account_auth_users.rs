@@ -2689,6 +2689,168 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
 }
 
 #[tokio::test]
+async fn graphql_jellyfin_pending_invite_for_existing_user_starts_mfa_enrollment() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .set_initial_own_password(&admin, "admin-pass1".to_string())
+        .await
+        .expect("set initial default admin password");
+
+    let user = schema_exec(
+        &ctx,
+        r#"mutation { createUser(input: { username: "jellyfin-invite-mfa", password: "testpass123", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&user);
+    let user_id = user["data"]["createUser"]["id"]
+        .as_str()
+        .expect("created user id");
+
+    let now = Utc::now();
+    let media_servers =
+        MediaServerConnectionStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    MediaServerConnectionRepository::create(
+        &media_servers,
+        MediaServerConnection {
+            id: "jellyfin-invite-main".to_string(),
+            provider: MediaServerProvider::Jellyfin,
+            display_name: "Jellyfin Invite MFA".to_string(),
+            base_url: ctx.smg_server.uri(),
+            enabled: true,
+            login_enabled: true,
+            linking_enabled: false,
+            auto_add_enabled: false,
+            default_app_permissions: AppPermissionMask::NONE,
+            default_library_grants: Vec::new(),
+            machine_id: None,
+            api_key: Some("jellyfin-api-key".to_string()),
+            path_mappings: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("seed Jellyfin media server connection");
+
+    Mock::given(method("GET"))
+        .and(path("/Users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "Id": "jellyfin-invite-user-id",
+            "Name": "jellyfin-invite-user"
+        }])))
+        .mount(&ctx.smg_server)
+        .await;
+
+    let invite = schema_exec(
+        &ctx,
+        &format!(
+            r#"mutation {{
+              createExternalAccountInvite(input: {{
+                userId: "{user_id}"
+                provider: JELLYFIN
+                connectionId: "jellyfin-invite-main"
+                providerUserIdentifier: "jellyfin-invite-user"
+                providerUserId: "jellyfin-invite-user-id"
+              }}) {{ status }}
+            }}"#,
+        ),
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&invite);
+    assert_eq!(
+        invite["data"]["createExternalAccountInvite"]["status"],
+        "PENDING_CLAIM"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/Users/AuthenticateByName"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "User": {
+                "Id": "jellyfin-invite-user-id",
+                "Name": "jellyfin-invite-user"
+            }
+        })))
+        .mount(&ctx.smg_server)
+        .await;
+
+    let security = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: true
+          }) {
+            totpRequireJellyfinLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&security);
+
+    let login = gql(
+        &ctx,
+        r#"
+        mutation LoginWithJellyfin($connectionId: ID!, $username: String!, $password: String!) {
+          loginWithJellyfin(input: {
+            connectionId: $connectionId
+            username: $username
+            password: $password
+          }) {
+            token
+            mfaEnrollmentRequired
+            user { username }
+          }
+        }
+        "#,
+        json!({
+            "connectionId": "jellyfin-invite-main",
+            "username": "jellyfin-invite-user",
+            "password": "jellyfin-pass1",
+        }),
+    )
+    .await;
+    assert_no_errors(&login);
+    let payload = &login["data"]["loginWithJellyfin"];
+    assert_eq!(payload["mfaEnrollmentRequired"], true);
+    assert_eq!(payload["user"]["username"], "jellyfin-invite-mfa");
+
+    let token = payload["token"].as_str().expect("enrollment token");
+    let (_user, claims) = ctx
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .expect("authenticate enrollment token");
+    assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
+
+    let enrollment_start = gql_with_token(
+        &ctx,
+        r#"mutation { totpEnrollmentStart { challengeId secretBase32 } }"#,
+        json!({}),
+        token,
+    )
+    .await;
+    assert_no_errors(&enrollment_start);
+    assert!(
+        enrollment_start["data"]["totpEnrollmentStart"]["challengeId"]
+            .as_str()
+            .is_some(),
+        "pending Jellyfin invite should start MFA enrollment: {enrollment_start}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_code() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;

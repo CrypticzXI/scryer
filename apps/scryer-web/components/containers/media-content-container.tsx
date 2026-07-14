@@ -216,6 +216,7 @@ type MediaContentContainerProps = {
   canManageLibrarySettings: boolean;
   canManageTitle: boolean;
   canRequestMedia: boolean;
+  authorizationSignature: string;
   onOpenOverview: (
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
@@ -305,6 +306,7 @@ const defaultTitleCatalogSortState: TitleCatalogSortState = {
 
 const CATALOG_DISCOVERY_LIMIT_PER_GROUP = 12;
 const CATALOG_DISCOVERY_MAX_GROUPS = 6;
+const DISCOVERY_FACETS: Facet[] = ["MOVIE", "SERIES", "ANIME"];
 
 type ActiveCatalogListFilters = {
   facet: TitleRecord["facet"];
@@ -777,6 +779,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   canManageLibrarySettings,
   canManageTitle,
   canRequestMedia,
+  authorizationSignature,
   onOpenOverview,
   routeOverviewTitleId,
   routeOverviewPending,
@@ -844,6 +847,24 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     >(),
   );
   const activeFacet = viewToFacet[view as keyof typeof viewToFacet] ?? "MOVIE";
+  const canManageCatalogDiscovery =
+    (librariesByFacet[activeFacet] ?? []).length > 0;
+  const canRequestCatalogDiscovery =
+    (requestableLibrariesByFacet[activeFacet] ?? []).length > 0;
+  const manageableDiscoveryFacets = React.useMemo(
+    () =>
+      DISCOVERY_FACETS.filter(
+        (facet) => (librariesByFacet[facet] ?? []).length > 0,
+      ),
+    [librariesByFacet],
+  );
+  const requestableDiscoveryFacets = React.useMemo(
+    () =>
+      DISCOVERY_FACETS.filter(
+        (facet) => (requestableLibrariesByFacet[facet] ?? []).length > 0,
+      ),
+    [requestableLibrariesByFacet],
+  );
   const [selectedLibraryIdsByFacet, setSelectedLibraryIdsByFacet] =
     React.useState<Record<Facet, string[]>>(createSelectedLibraryIdsByFacet);
   const selectedLibraryIds = selectedLibraryIdsByFacet[activeFacet];
@@ -967,6 +988,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     React.useState<{ result: MetadataTvdbSearchItem; facet: Facet } | null>(
       null,
     );
+  const authorizationSignatureRef = React.useRef(authorizationSignature);
+  React.useLayoutEffect(() => {
+    authorizationSignatureRef.current = authorizationSignature;
+    catalogDiscoveryRequestIdRef.current += 1;
+    setCatalogDiscoveryGroups([]);
+    setAddDiscoveryDialogTarget(null);
+    setRequestDiscoveryDialogTarget(null);
+  }, [authorizationSignature]);
   const {
     sessions: libraryScanSessions,
     getActiveSession,
@@ -990,11 +1019,13 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     catalogDiscoveryRequestIdRef.current = requestId;
     if (
       !shouldLoadCatalogTitles ||
-      !catalogDependentRequestsAllowedRef.current
+      !catalogDependentRequestsAllowedRef.current ||
+      (!canManageCatalogDiscovery && !canRequestCatalogDiscovery)
     ) {
       setCatalogDiscoveryGroups([]);
       return;
     }
+    setCatalogDiscoveryGroups([]);
     const libraryIds = selectedLibraryIds.filter(
       (libraryId) => libraryId !== ALL_LIBRARIES_VALUE,
     );
@@ -1027,7 +1058,14 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setCatalogDiscoveryGroups([]);
       }
     }
-  }, [activeFacet, client, selectedLibraryIds, shouldLoadCatalogTitles]);
+  }, [
+    activeFacet,
+    canManageCatalogDiscovery,
+    canRequestCatalogDiscovery,
+    client,
+    selectedLibraryIds,
+    shouldLoadCatalogTitles,
+  ]);
 
   const refreshTitleCatalogFilterOptions = React.useCallback(async () => {
     const requestId = titleCatalogFilterOptionsRequestIdRef.current + 1;
@@ -2218,11 +2256,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   const handleCatalogDiscoveryAction = React.useCallback(
     async (item: CatalogDiscoveryItem) => {
+      const actionAuthorizationSignature = authorizationSignature;
       if (item.ownedInInput) {
-        return;
-      }
-      if (!canManageTitle && !canRequestMedia) {
-        setGlobalStatus(t("status.permissionDenied"));
         return;
       }
       const facet = discoveryItemFacet(item);
@@ -2230,8 +2265,20 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setGlobalStatus(t("status.apiError"));
         return;
       }
+      const canManageFacet = (librariesByFacet[facet] ?? []).length > 0;
+      const canRequestFacet =
+        (requestableLibrariesByFacet[facet] ?? []).length > 0;
+      if (!canManageFacet && !canRequestFacet) {
+        setGlobalStatus(t("status.permissionDenied"));
+        return;
+      }
       try {
         await ensureCatalogConfigReady(facet);
+        if (
+          authorizationSignatureRef.current !== actionAuthorizationSignature
+        ) {
+          return;
+        }
         const { data, error } = await client
           .query(
             discoveryItemDetailQuery,
@@ -2244,19 +2291,35 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             { requestPolicy: "network-only" },
           )
           .toPromise();
+        if (
+          authorizationSignatureRef.current !== actionAuthorizationSignature
+        ) {
+          return;
+        }
         if (error) {
           throw error;
         }
         const detailItem =
           data?.discoveryItemDetail as CatalogDiscoveryItem | null | undefined;
         if (!detailItem) {
-          throw new Error(t("status.apiError"));
+          throw new Error(t("status.permissionDenied"));
+        }
+        const detailFacet = discoveryItemFacet(detailItem);
+        if (!detailFacet || detailFacet !== facet) {
+          throw new Error(t("status.permissionDenied"));
+        }
+        const canManageDetailFacet =
+          (librariesByFacet[detailFacet] ?? []).length > 0;
+        const canRequestDetailFacet =
+          (requestableLibrariesByFacet[detailFacet] ?? []).length > 0;
+        if (!canManageDetailFacet && !canRequestDetailFacet) {
+          throw new Error(t("status.permissionDenied"));
         }
         const target = {
           result: metadataResultForDiscoveryItem(detailItem),
-          facet,
+          facet: detailFacet,
         };
-        if (canManageTitle) {
+        if (canManageDetailFacet) {
           setAddDiscoveryDialogTarget(target);
         } else {
           setRequestDiscoveryDialogTarget(target);
@@ -2268,10 +2331,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       }
     },
     [
-      canManageTitle,
-      canRequestMedia,
+      authorizationSignature,
       client,
       ensureCatalogConfigReady,
+      librariesByFacet,
+      requestableLibrariesByFacet,
       setGlobalStatus,
       t,
     ],
@@ -3145,7 +3209,32 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ? selectedOverviewTitleRecord.moreLikeThis === undefined
       : false;
 
-  const activeCatalogDiscoveryGroups = catalogDiscoveryGroups;
+  const activeCatalogDiscoveryGroups = React.useMemo(() => {
+    if (!canManageCatalogDiscovery && !canRequestCatalogDiscovery) {
+      return [];
+    }
+    return catalogDiscoveryGroups.flatMap((group) => {
+      const items = group.items.filter(
+        (item) => discoveryItemFacet(item) === activeFacet,
+      );
+      if (items.length === 0) {
+        return [];
+      }
+      return [
+        {
+          ...group,
+          totalCount:
+            items.length === group.items.length ? group.totalCount : items.length,
+          items,
+        },
+      ];
+    });
+  }, [
+    activeFacet,
+    canManageCatalogDiscovery,
+    canRequestCatalogDiscovery,
+    catalogDiscoveryGroups,
+  ]);
 
   const loadSelectedOverviewExternalSubtitles = React.useCallback(
     async (titleId: string) => {
@@ -5105,6 +5194,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           catalogDiscoveryGroups: activeCatalogDiscoveryGroups,
           canManageTitle,
           canRequestMedia,
+          canManageCatalogDiscovery,
+          canRequestCatalogDiscovery,
+          manageableDiscoveryFacets,
+          requestableDiscoveryFacets,
           onCatalogDiscoveryAction: handleCatalogDiscoveryAction,
           titleQuickFilters,
           titleQuickFilterCounts,
@@ -5226,7 +5319,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           }}
         />
       ) : null}
-      {!canManageTitle && canRequestMedia ? (
+      {canRequestMedia ? (
         <RequestMediaDialog
           open={requestDiscoveryDialogTarget !== null}
           onOpenChange={handleRequestDiscoveryDialogOpenChange}

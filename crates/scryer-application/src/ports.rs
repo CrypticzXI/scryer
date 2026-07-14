@@ -279,6 +279,7 @@ pub struct DiscoveryItemsStorageQuery {
     pub context_run_id: Option<String>,
     pub public_run_id: Option<String>,
     pub readable_library_ids: Vec<String>,
+    pub allowed_media_kinds: Vec<String>,
     pub filters: DiscoveryItemsQuery,
     pub limit: usize,
     pub offset: usize,
@@ -595,6 +596,7 @@ pub trait DiscoveryRepository: Send + Sync {
     async fn list_public_discovery_section_items(
         &self,
         run_id: &str,
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit_per_section: i64,
     ) -> AppResult<Vec<DiscoverySectionItemsRecord>>;
@@ -602,6 +604,7 @@ pub trait DiscoveryRepository: Send + Sync {
         &self,
         run_id: &str,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryItemRecord>>;
@@ -609,6 +612,7 @@ pub trait DiscoveryRepository: Send + Sync {
         &self,
         run_id: &str,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryItemRecord>>;
@@ -616,6 +620,7 @@ pub trait DiscoveryRepository: Send + Sync {
         &self,
         run_id: &str,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         include_unresolved: bool,
     ) -> AppResult<Vec<DiscoveryFacetRecord>>;
     #[allow(clippy::too_many_arguments)]
@@ -624,6 +629,7 @@ pub trait DiscoveryRepository: Send + Sync {
         public_run_id: Option<&str>,
         context_run_id: Option<&str>,
         readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
         owned_library_ids: &[String],
         excluded_identity_keys: &[String],
         include_unresolved: bool,
