@@ -1,7 +1,7 @@
 import * as React from "react";
 import {
   AlertTriangle,
-  BookOpen,
+  LibraryBig,
   CalendarDays,
   Film,
   Folder,
@@ -239,9 +239,13 @@ export function CatalogFiltersPanel({
       )}
     >
       <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 text-[15px] font-semibold text-[var(--scry-ink2)]">
-          <SlidersHorizontal className="h-4 w-4 text-[var(--scry-accent-text)]" />
-          {t("discovery.filters")}
+        <div className="flex items-center gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.32),rgba(155,91,255,0.2))] text-[var(--scry-accent-text)]">
+            <SlidersHorizontal className="h-[18px] w-[18px]" />
+          </div>
+          <span className="text-[16px] font-semibold text-[var(--scry-ink2)]">
+            {t("discovery.filters")}
+          </span>
         </div>
         <button
           type="button"
@@ -302,7 +306,7 @@ export function CatalogFiltersPanel({
 
       <div className="grid gap-x-4 md:grid-cols-2">
         <div className="mb-4 min-w-0">
-          <FilterLabel icon={<BookOpen className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
+          <FilterLabel icon={<LibraryBig className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
             {t("settings.librariesLabel")}
           </FilterLabel>
           <LibraryMultiSelect

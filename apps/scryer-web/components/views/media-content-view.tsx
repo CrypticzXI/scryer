@@ -620,7 +620,7 @@ function TitleContextForYouPanel({
         aria-hidden="true"
         className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(var(--scry-accent-rgb),0.34),transparent)]"
       />
-      <div className="flex items-center gap-3 rounded-[14px] border border-[var(--scry-border)] bg-[rgba(8,13,25,0.68)] px-3 py-3 shadow-[0_14px_34px_rgba(0,0,0,0.18)]">
+      <div className="flex items-center gap-3">
         <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.32),rgba(155,91,255,0.2))] text-[var(--scry-accent-text)]">
           <Sparkles className="h-[18px] w-[18px]" />
         </div>
@@ -2986,7 +2986,7 @@ export function MediaContentView({
   const totalManagedBytes = Math.max(0, catalogManagedBytes);
   const mediaSummary = [
     `${totalTitleCount.toLocaleString()} ${titleSummaryNoun}`,
-    `${managedStorageSummary(totalManagedBytes)} managed`,
+    managedStorageSummary(totalManagedBytes),
   ].join(" · ");
 
   const [libraryRoutingWide, setLibraryRoutingWide] = React.useState(false);
@@ -3008,11 +3008,11 @@ export function MediaContentView({
             <Button
               type="button"
               variant="outline"
-              className="h-[3.75rem] w-full rounded-[15px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-[var(--scry-inset)] px-4 text-[15px] text-[var(--scry-muted2)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:w-[3.75rem] sm:px-0"
+              className="h-[2.8125rem] w-full rounded-[11px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-[var(--scry-inset)] px-4 text-[15px] text-[var(--scry-muted2)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:w-[2.8125rem] sm:px-0"
               aria-label={t("title.columns")}
               title={t("title.columns")}
             >
-              <Columns3 className="!size-6" />
+              <Columns3 className="!size-[1.125rem]" />
               <span className="sm:hidden">{t("title.columns")}</span>
             </Button>
           </PopoverTrigger>
@@ -3059,7 +3059,7 @@ export function MediaContentView({
       ) : (
         <div
           aria-hidden="true"
-          className="hidden h-[3.75rem] shrink-0 sm:block sm:w-[3.75rem]"
+          className="hidden h-[2.8125rem] shrink-0 sm:block sm:w-[2.8125rem]"
         />
       )}
       <ToggleGroup
@@ -3073,7 +3073,7 @@ export function MediaContentView({
         }}
         size="sm"
         aria-label={t("title.viewModeToggle")}
-        className="h-[3.75rem] w-full shrink-0 justify-center gap-1 rounded-[15px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-[var(--scry-inset)] p-1.5 shadow-none sm:w-auto"
+        className="h-[2.8125rem] w-full shrink-0 justify-center gap-[0.1875rem] rounded-[11px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-[var(--scry-inset)] p-[0.28125rem] shadow-none sm:w-auto"
       >
         <ToggleGroupItem
           id={titleOverviewViewModeId(view, "compact")}
@@ -3081,9 +3081,9 @@ export function MediaContentView({
           size="sm"
           aria-label={t("title.viewModeCompact")}
           title={t("title.viewModeCompact")}
-          className="h-12 w-12 rounded-xl px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+          className="h-9 w-9 rounded-[9px] px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
         >
-          <TableIcon className="h-6 w-6" />
+          <TableIcon className="h-[1.125rem] w-[1.125rem]" />
         </ToggleGroupItem>
         <ToggleGroupItem
           id={titleOverviewViewModeId(view, "poster-table")}
@@ -3091,9 +3091,9 @@ export function MediaContentView({
           size="sm"
           aria-label={t("title.viewModePosterTable")}
           title={t("title.viewModePosterTable")}
-          className="h-12 w-12 rounded-xl px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+          className="h-9 w-9 rounded-[9px] px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
         >
-          <LayoutList className="h-6 w-6" />
+          <LayoutList className="h-[1.125rem] w-[1.125rem]" />
         </ToggleGroupItem>
         <ToggleGroupItem
           id={titleOverviewViewModeId(view, "poster")}
@@ -3101,9 +3101,9 @@ export function MediaContentView({
           size="sm"
           aria-label={t("title.viewModePoster")}
           title={t("title.viewModePoster")}
-          className="h-12 w-12 rounded-xl px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
+          className="h-9 w-9 rounded-[9px] px-0 text-[var(--scry-muted2)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] data-[state=on]:!border-transparent data-[state=on]:!bg-[var(--scry-accent)] data-[state=on]:!text-primary-foreground data-[state=on]:!shadow-none"
         >
-          <LayoutGrid className="h-6 w-6" />
+          <LayoutGrid className="h-[1.125rem] w-[1.125rem]" />
         </ToggleGroupItem>
       </ToggleGroup>
     </div>
@@ -3112,7 +3112,7 @@ export function MediaContentView({
   const keepCatalogHeaderOutsideWorkspace =
     selectedTitleCompactLayoutActive && !selectedTitleListInlineActive;
   const catalogHeader = (
-    <div className="relative min-h-[5.5rem] shrink-0 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 pb-0 pt-4 sm:px-5 lg:px-6">
+    <div className="relative min-h-[5.5rem] shrink-0 bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 pb-0 pt-2 sm:px-5 lg:px-6">
       <div className="min-w-0">
         <h1 className="text-[22px] font-bold leading-tight tracking-normal text-[var(--scry-ink2)]">
           {mediaTitle}
@@ -3121,7 +3121,14 @@ export function MediaContentView({
           {mediaSummary}
         </p>
       </div>
-      <div className="absolute right-3 top-3 z-10 hidden sm:block sm:right-4 lg:right-5">
+      <div
+        className={cn(
+          "absolute right-3 z-10 hidden sm:block sm:right-4 lg:right-5",
+          showTitleBulkSelectionBar
+            ? "top-3"
+            : "top-1/2 -translate-y-1/2",
+        )}
+      >
         {titleTableViewControls}
       </div>
       {showTitleBulkSelectionBar ? (
