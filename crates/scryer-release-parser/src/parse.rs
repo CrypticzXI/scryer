@@ -88,6 +88,27 @@ pub(crate) fn analyze_inputs(inputs: AnalysisInputs<'_>) -> ReleaseParseAnalysis
                 best_candidate.enrichment = Some(enrichment);
             }
             ParseDisposition::Ambiguous => {
+                // Full enrichment is zone-dependent and unsafe on an ambiguous
+                // winner, but service-based source normalization is static and
+                // keeps AMZN/NF WEBRips reporting as WEB-DL.
+                if let Some(normalized_source) = normalize_source_for_service(
+                    best_candidate
+                        .projected
+                        .source
+                        .as_ref()
+                        .map(ReleaseSource::as_str),
+                    best_candidate
+                        .projected
+                        .streaming_service
+                        .as_ref()
+                        .map(StreamingService::as_str),
+                ) {
+                    best_candidate.projected.source = ReleaseSource::parse(&normalized_source);
+                    best_candidate
+                        .projected
+                        .parse_hints
+                        .push("normalize:service_webrip_to_webdl".to_string());
+                }
                 best_candidate.projected.missing_fields =
                     collect_missing_fields(&best_candidate.projected);
                 best_candidate
@@ -617,14 +638,19 @@ fn classify_token(token: &Token) -> Vec<RoleCandidate> {
             strong_anchor: !is_external_id_label(normalized),
         });
     }
-    if is_checksum(normalized) {
+    // Bracketed 8-char tokens are hashes by scene convention; fused air dates
+    // ("20260105") only appear unbracketed, so an all-decimal valid date in
+    // brackets stays a checksum.
+    let fused_date =
+        token.bracket_depth == 0 && parse_fused_daily_date(normalized).is_some();
+    if is_checksum(normalized) && !fused_date {
         roles.push(RoleCandidate {
             role: TokenRole::ChecksumOrHash,
             confidence: 100,
             strong_anchor: true,
         });
     }
-    if parse_fused_daily_date(normalized).is_some() {
+    if fused_date {
         roles.push(RoleCandidate {
             role: TokenRole::DateMarker,
             confidence: 96,
@@ -1995,7 +2021,7 @@ fn is_compound_metadata_suffix(tokens: &[Token], index: usize) -> bool {
     token.separator_before == SeparatorKind::Hyphen
         && (matches!(
             (previous.normalized.as_str(), token.normalized.as_str()),
-            ("WEB", "DL") | ("WEB", "RIP") | ("E", "AC") | ("DUAL", "AUDIO")
+            ("WEB", "DL") | ("WEB", "RIP") | ("E", "AC") | ("DUAL", "AUDIO") | ("HD", "MA")
         ) || (previous.normalized == "DTS"
             && (token.normalized == "X" || token.normalized.starts_with("HD"))))
 }
@@ -2494,6 +2520,13 @@ fn parse_identity_at(
                     "family:range_pack_labeled",
                 ));
             }
+            // A bare range directly after a season marker ("Season 1 - 001-020")
+            // is the same claim as the season-scoped episode span; emitting a
+            // season-less duplicate here only manufactures ambiguity against
+            // the standard-episode interpretation.
+            if range_directly_follows_season_marker(tokens, index) {
+                return None;
+            }
             parse_range_pack_at(tokens, index).map(|range| {
                 (
                     ReleaseIdentity::RangePackIdentity {
@@ -2750,8 +2783,9 @@ fn consume_unit_metadata(
             }
             TokenRole::Edition if matches!(token.normalized.as_str(), "PROPER" | "REPACK") => {
                 // Revision flags, not editions; enrichment owns the
-                // is_proper_upload/is_repack projection. Consume with the same
-                // score so beam ordering is unchanged.
+                // is_proper_upload/is_repack projection. Scores +4 like the
+                // edition arm so the flag itself ranks identically (a later
+                // real edition may now also be consumed, which is the intent).
                 state.score += 4;
                 state.reasons.push(reason("metadata:release_flag", 4, None));
                 record_metadata_token(state, index);
@@ -4575,6 +4609,13 @@ fn parse_season_keyword_episode_at(
     } else {
         dot_split_episode_after_season(tokens, index + 2)?
     };
+    if let Some(range_end) = split_episode_range_end(tokens, index + 3, episode) {
+        return Some((
+            Some(season),
+            (episode..=range_end).collect(),
+            vec![index, index + 1, index + 2, index + 3],
+        ));
+    }
     Some((
         Some(season),
         vec![episode],
@@ -4642,12 +4683,38 @@ fn parse_split_standard_episode_at(
 ) -> Option<(Option<u32>, Vec<u32>, Vec<usize>)> {
     let season = parse_season_token(tokens.get(index)?.normalized.as_str())?;
     let episode_token = tokens.get(index + 1)?;
-    if episode_token.separator_before == SeparatorKind::Hyphen {
-        let episode = parse_numeric_token(episode_token.normalized.as_str())?;
-        return Some((Some(season), vec![episode], vec![index, index + 1]));
+    let episode = if episode_token.separator_before == SeparatorKind::Hyphen {
+        parse_numeric_token(episode_token.normalized.as_str())?
+    } else {
+        dot_split_episode_after_season(tokens, index + 1)?
+    };
+    if let Some(range_end) = split_episode_range_end(tokens, index + 2, episode) {
+        return Some((
+            Some(season),
+            (episode..=range_end).collect(),
+            vec![index, index + 1, index + 2],
+        ));
     }
-    let episode = dot_split_episode_after_season(tokens, index + 1)?;
     Some((Some(season), vec![episode], vec![index, index + 1]))
+}
+
+/// Hyphen continuation after a split episode (`S3.01-02`, `Season 1 - 001-020`):
+/// a 1-3 digit numeric strictly above the range start extends it to a
+/// multi-episode span.
+fn split_episode_range_end(tokens: &[Token], index: usize, range_start: u32) -> Option<u32> {
+    let token = tokens.get(index)?;
+    if token.separator_before != SeparatorKind::Hyphen {
+        return None;
+    }
+    let digits = token.normalized.as_str();
+    if digits.is_empty() || digits.len() > 3 || !digits.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    digits
+        .parse::<u32>()
+        .ok()
+        .filter(|range_end| *range_end > range_start)
 }
 
 /// Accept `S<N>.<EE>` (including `S<N>.-.<EE>`, whose separator chain merges
@@ -4673,6 +4740,13 @@ fn dot_split_episode_after_season(tokens: &[Token], episode_index: usize) -> Opt
             && !next.normalized.is_empty()
             && next.normalized.bytes().all(|byte| byte.is_ascii_digit())
     }) {
+        return None;
+    }
+    // Split color-depth markers ("S02.10.bit.x265") are metadata, not episodes.
+    if tokens
+        .get(episode_index + 1)
+        .is_some_and(|next| matches!(next.normalized.as_str(), "BIT" | "BITS"))
+    {
         return None;
     }
     digits.parse::<u32>().ok().filter(|episode| *episode > 0)
@@ -5021,6 +5095,18 @@ fn season_scoped_range_after(tokens: &[Token], index: usize) -> Option<RangePack
     None
 }
 
+fn range_directly_follows_season_marker(tokens: &[Token], index: usize) -> bool {
+    index
+        .checked_sub(1)
+        .is_some_and(|previous| parse_season_marker_at(tokens, previous).is_some())
+        || index.checked_sub(2).is_some_and(|previous| {
+            tokens
+                .get(previous)
+                .is_some_and(|token| token.normalized == "SEASON")
+                && parse_season_marker_at(tokens, previous).is_some()
+        })
+}
+
 fn parse_season_marker_at(tokens: &[Token], index: usize) -> Option<u32> {
     let token = tokens.get(index)?.normalized.as_str();
     if token == "SEASON" {
@@ -5030,11 +5116,12 @@ fn parse_season_marker_at(tokens: &[Token], index: usize) -> Option<u32> {
 }
 
 fn parse_daily_at(tokens: &[Token], index: usize) -> Option<(NaiveDate, Vec<usize>, Option<u32>)> {
-    if let Some(date) = parse_fused_daily_date(tokens.get(index)?.normalized.as_str()) {
+    let first = tokens.get(index)?;
+    if first.bracket_depth == 0
+        && let Some(date) = parse_fused_daily_date(first.normalized.as_str())
+    {
         return Some(daily_with_part(tokens, date, vec![index], index + 1));
     }
-
-    let first = tokens.get(index)?;
     let second = tokens.get(index + 1)?;
     let third = tokens.get(index + 2)?;
     if !matches!(
@@ -5483,11 +5570,7 @@ fn parse_versioned_absolute(token: &str) -> Option<(u32, u32)> {
 }
 
 fn is_checksum(token: &str) -> bool {
-    token.len() == 8
-        && token.chars().all(|ch| ch.is_ascii_hexdigit())
-        // All-decimal 8-digit tokens that form a real calendar date are fused
-        // air dates ("20260105"), not CRC32 hashes.
-        && parse_fused_daily_date(token).is_none()
+    token.len() == 8 && token.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn normalize_channels(raw: &str) -> String {
@@ -5546,7 +5629,9 @@ fn detect_compound_metadata(token: &str) -> CompoundMetadata {
 
     if contains_any(token, &["WEBRIP", "WEBRI"]) {
         metadata.source = Some("WEBRip");
-    } else if token.contains("WEB") {
+    } else if token.starts_with("WEB") {
+        // Prefix, not substring: "COBWEB"-style title words must not read as
+        // WEB-DL sources.
         metadata.source = Some("WEB-DL");
     } else if contains_any(token, &["BDMV", "BDISO", "BRDISK"]) {
         metadata.source = Some("BRDISK");
@@ -5556,7 +5641,10 @@ fn detect_compound_metadata(token: &str) -> CompoundMetadata {
         metadata.source = Some("BluRay");
     } else if token.contains("HDTV") {
         metadata.source = Some("HDTV");
-    } else if contains_any(token, &["HQCAM", "CAM"]) {
+    } else if matches!(token, "CAM" | "HQCAM") {
+        // Exact match only: "CAM" is a substring of ordinary title words
+        // ("BECAME", "CAMERA", "CAMP") that flow through metadata consumption
+        // after an episode identity.
         metadata.source = Some("CAM");
     } else if token.contains("TELESYNC") || token == "TS" {
         metadata.source = Some("TELESYNC");

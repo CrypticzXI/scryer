@@ -3112,7 +3112,7 @@ export function MediaContentView({
   const keepCatalogHeaderOutsideWorkspace =
     selectedTitleCompactLayoutActive && !selectedTitleListInlineActive;
   const catalogHeader = (
-    <div className="relative min-h-[5.5rem] shrink-0 bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 pb-0 pt-2 sm:px-5 lg:px-6">
+    <div className="relative min-h-[4.5rem] shrink-0 bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 pb-0 pt-2 sm:px-5 lg:px-6">
       <div className="min-w-0">
         <h1 className="text-[22px] font-bold leading-tight tracking-normal text-[var(--scry-ink2)]">
           {mediaTitle}

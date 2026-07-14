@@ -2050,6 +2050,180 @@ fn eight_digit_tokens_that_are_not_dates_stay_non_daily() {
 }
 
 #[test]
+fn dot_split_episode_with_hyphen_range_projects_multi_episode() {
+    let analysis = analyze_release_for_target(
+        "Show.Name.S3.01-02.1080p.WEB.x264-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(episode.season, Some(3));
+    assert_eq!(episode.episode_numbers, vec![1, 2]);
+    assert_eq!(episode.release_type, ParsedEpisodeReleaseType::MultiEpisode);
+}
+
+#[test]
+fn season_dash_episode_with_range_tail_projects_full_span() {
+    let analysis = analyze_release_for_target(
+        "[Grp] Emberfall - Season 1 - 001-020 (1080p x264 AAC)",
+        &context(ContextFacetHint::Anime, "Emberfall"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(episode.season, Some(1));
+    assert_eq!(episode.episode_numbers, (1..=20).collect::<Vec<_>>());
+    assert_eq!(episode.release_type, ParsedEpisodeReleaseType::MultiEpisode);
+}
+
+#[test]
+fn hyphen_split_episode_with_range_tail_projects_full_span() {
+    let analysis = analyze_release_for_target(
+        "Show.Name.S3-01-02.1080p.WEB.x264-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(episode.season, Some(3));
+    assert_eq!(episode.episode_numbers, vec![1, 2]);
+}
+
+#[test]
+fn bracketed_decimal_hash_that_forms_a_date_stays_a_checksum() {
+    let analysis = analyze_release_for_target(
+        "Show.Name.S01E05.1080p.WEB.x264.[20261204]",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(episode.episode_numbers, vec![5]);
+    assert_eq!(episode.air_date, None);
+}
+
+#[test]
+fn separated_fps_word_requires_a_standard_frame_rate() {
+    let mut target = context(ContextFacetHint::Movie, "Top 10 FPS Games");
+    target.known_years.push(2024);
+    let analysis = analyze_release_for_target(
+        "Top.10.FPS.Games.2024.1080p.WEB.x264-GRP",
+        &target,
+    );
+    let projected = &analysis.best_candidate().expect("best candidate").projected;
+    assert_eq!(projected.fps, None);
+
+    let mut rate_target = context(ContextFacetHint::Movie, "Movie Title");
+    rate_target.known_years.push(2024);
+    let decimal = analyze_release_for_target(
+        "Movie.Title.2024.1080p.23.976.fps.WEB-DL.x264-GRP",
+        &rate_target,
+    );
+    let decimal_projected = &decimal.best_candidate().expect("best candidate").projected;
+    assert_eq!(decimal_projected.fps, Some(23.976));
+
+    let separated = analyze_release_for_target(
+        "Movie.Title.2024.1080p.60.fps.WEB-DL.x264-GRP",
+        &rate_target,
+    );
+    let separated_projected = &separated
+        .best_candidate()
+        .expect("best candidate")
+        .projected;
+    assert_eq!(separated_projected.fps, Some(60.0));
+}
+
+#[test]
+fn title_words_containing_cam_or_web_are_not_sources() {
+    let analysis = analyze_release_for_target(
+        "Show.Name.S01E06.I.Became.Human.and.Got.My.Butt.Kicked.1080p.HIDIVE.WEB-DL.DUAL.AAC2.0.H.264.ESub-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    assert_eq!(
+        source_label(candidate.projected.source.as_ref()),
+        Some("WEB-DL")
+    );
+
+    let cobweb = analyze_release_for_target(
+        "Show.Name.S01E05.Cobweb.Theory.1080p.HDTV.x264-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let cobweb_candidate = cobweb.best_candidate().expect("best candidate");
+    assert_eq!(
+        source_label(cobweb_candidate.projected.source.as_ref()),
+        Some("HDTV")
+    );
+}
+
+#[test]
+fn dolby_vision_alone_is_not_an_hdr_fallback() {
+    let mut target = context(ContextFacetHint::Movie, "Movie Title");
+    target.known_years.push(2021);
+
+    let dv_only = analyze_release_for_target(
+        "Movie.Title.2021.2160p.DSNP.WEB-DL.DDP5.1.DV.H.265-GRP",
+        &target,
+    );
+    let dv_projected = &dv_only.best_candidate().expect("best candidate").projected;
+    assert!(dv_projected.is_dolby_vision);
+    assert!(dv_projected.detected_hdr);
+    assert!(!dv_projected.has_hdr_fallback);
+
+    let hdr10 = analyze_release_for_target(
+        "Movie.Title.2021.2160p.WEB-DL.DTS-HD.MA.7.1.HDR10.x265.10bit-GRP",
+        &target,
+    );
+    let hdr10_projected = &hdr10.best_candidate().expect("best candidate").projected;
+    assert!(hdr10_projected.detected_hdr);
+    assert!(hdr10_projected.has_hdr_fallback);
+    assert!(!hdr10_projected.is_dolby_vision);
+
+    let dv_with_fallback = analyze_release_for_target(
+        "Movie.Title.2021.2160p.WEB-DL.DV.HDR10.H.265-GRP",
+        &target,
+    );
+    let both_projected = &dv_with_fallback
+        .best_candidate()
+        .expect("best candidate")
+        .projected;
+    assert!(both_projected.is_dolby_vision);
+    assert!(both_projected.has_hdr_fallback);
+
+    // "DoVi HDR" (either order) declares an HDR10 base under DV.
+    for raw in [
+        "Movie.Title.2021.2160p.NF.WEB-DL.DD+5.1.Atmos.DoVi.HDR.H.265-GRP",
+        "Movie.Title.2021.4K.HDR.DV.2160p.BDRemux.x265-GRP",
+    ] {
+        let analysis = analyze_release_for_target(raw, &target);
+        let projected = &analysis.best_candidate().expect("best candidate").projected;
+        assert!(projected.is_dolby_vision, "{raw}");
+        assert!(projected.has_hdr_fallback, "{raw}");
+    }
+}
+
+#[test]
+fn fully_hyphenated_dts_hd_ma_extracts_codec_and_channels() {
+    let mut target = context(ContextFacetHint::Movie, "Movie Title");
+    target.known_years.push(2025);
+
+    let analysis = analyze_release_for_target(
+        "Movie.Title.2025.DUAL.1080p.BluRay.REMUX.AVC.DTS-HD-MA.5.1-GRP",
+        &target,
+    );
+    let projected = &analysis.best_candidate().expect("best candidate").projected;
+
+    assert_eq!(audio_label(projected.audio.as_ref()), Some("DTSMA"));
+    assert_eq!(projected.audio_channels.as_deref(), Some("5.1"));
+    assert_eq!(projected.release_group.as_deref(), Some("GRP"));
+}
+
+#[test]
 fn proper_is_a_revision_flag_not_an_edition() {
     let mut target = context(ContextFacetHint::Movie, "Movie Title");
     target.known_years.push(2024);
@@ -2179,6 +2353,61 @@ fn episode_raw_uses_stable_renderings() {
         .clone()
         .expect("episode");
     assert_eq!(pack_episode.raw.as_deref(), Some("S02"));
+
+    let multi_pack = analyze_release_for_target(
+        "The.Great.S01-S03.NORDiC.1080p.MAX.WEB-DL.H.265-NORViNE",
+        &context(ContextFacetHint::Series, "The Great"),
+    );
+    let multi_pack_episode = multi_pack
+        .best_candidate()
+        .expect("best candidate")
+        .projected
+        .episode
+        .clone()
+        .expect("episode");
+    assert_eq!(multi_pack_episode.raw.as_deref(), Some("S01-S03"));
+
+    let special = analyze_release_for_target(
+        "[DeadFish] Another Anime Show - 01 - OVA [BD][720p][AAC]",
+        &context(ContextFacetHint::Anime, "Another Anime Show"),
+    );
+    let special_episode = special
+        .best_candidate()
+        .expect("best candidate")
+        .projected
+        .episode
+        .clone()
+        .expect("episode");
+    assert_eq!(special_episode.raw.as_deref(), Some("OVA"));
+
+    let mut part_target = context(ContextFacetHint::Series, "Series Title");
+    part_target.known_years.push(2026);
+    let daily_part = analyze_release_for_target(
+        "Series.Title.2026.04.22.Part.2.720p.HULU.WEBRip.AAC2.0.H264-Group",
+        &part_target,
+    );
+    let daily_part_episode = daily_part
+        .best_candidate()
+        .expect("best candidate")
+        .projected
+        .episode
+        .clone()
+        .expect("episode");
+    assert_eq!(daily_part_episode.raw.as_deref(), Some("2026-04-22 Part 2"));
+    assert_eq!(daily_part_episode.daily_part, Some(2));
+}
+
+#[test]
+fn split_color_depth_after_season_is_not_an_episode() {
+    let analysis = analyze_release_for_target(
+        "Show.Name.S02.10.bit.x265.1080p.WEB-DL-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::SeasonPack);
+    assert_eq!(episode.episode_numbers, Vec::<u32>::new());
 }
 
 #[test]
