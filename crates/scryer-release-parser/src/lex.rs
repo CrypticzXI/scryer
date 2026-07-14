@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::sanitize::MAX_INPUT_BYTES;
-
 pub(crate) const MAX_TOKENS: usize = 256;
 pub(crate) const MAX_BRACKET_DEPTH: usize = 8;
 
@@ -163,11 +161,7 @@ pub(crate) fn lex_lossless(input: &str) -> LexedRelease {
         }
     }
 
-    if input.len() > MAX_INPUT_BYTES {
-        hints.push("input_truncated".to_string());
-    }
-
-    let cst = build_cst(&tokens, &group_stack);
+    let cst = build_cst(&tokens);
     LexedRelease { tokens, cst, hints }
 }
 
@@ -195,7 +189,7 @@ fn build_token(
     })
 }
 
-fn build_cst(tokens: &[Token], _group_stack: &[(usize, BracketKind)]) -> ReleaseCst {
+fn build_cst(tokens: &[Token]) -> ReleaseCst {
     let mut nodes = tokens
         .iter()
         .enumerate()

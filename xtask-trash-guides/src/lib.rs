@@ -1349,6 +1349,9 @@ fn sanitize_token(raw: &str) -> Option<String> {
 }
 
 fn extract_explicit_tokens(pattern: &str) -> BTreeSet<String> {
+    // Strip word-boundary escapes before the walk; otherwise the `b` in `\b`
+    // fuses onto adjacent literals (`\bhbo\b` would extract as "BHBO").
+    let pattern = pattern.replace(r"\b", " ");
     let mut tokens = BTreeSet::new();
     let mut current = String::new();
     for ch in pattern.chars() {
@@ -1386,15 +1389,36 @@ fn extract_boundary_tokens(pattern: &str) -> Vec<String> {
 }
 
 fn normalize_extracted_token(token: &str) -> Option<String> {
-    if token.is_empty() {
+    // Service alias tokens are matched at runtime against release-name tokens,
+    // so this filter must be allowlist-shaped: regex fragmentation otherwise
+    // leaks quantifier digits ("1", "3"), single letters ("U"), generic source
+    // words ("HD", "TV", "WEBRIP"), alternation shards ("MATION" out of
+    // "funi(mation)?"), and rename-template artifacts ("STANRENAME") into the
+    // generated table, where a lookup like `normalize_streaming_service("1")`
+    // would claim a streaming service for a bare digit token.
+    if token.len() < 2 {
+        return None;
+    }
+    let alphabetic_count = token
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .count();
+    if alphabetic_count < 2 {
+        return None;
+    }
+    if token.len() > "RENAME".len() && token.ends_with("RENAME") {
         return None;
     }
 
     let blocklist = [
-        "B",
         "DL",
         "RIP",
         "WEB",
+        "WEBDL",
+        "WEBRIP",
+        "HD",
+        "TV",
+        "PLUS",
         "JSON",
         "CF",
         "TITLE",
@@ -1406,6 +1430,8 @@ fn normalize_extracted_token(token: &str) -> Option<String> {
         "TRUE",
         "FALSE",
         "HEVC",
+        "MATION",
+        "RENAME",
     ];
     if blocklist.contains(&token) {
         return None;
@@ -1786,6 +1812,33 @@ fn rust_str(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_alias_extraction_keeps_plausible_tokens_only() {
+        let tokens =
+            extract_explicit_tokens(r"(?i)\b(cr|crunchyroll)\b(?=[ ._-]web[ ._-]?(dl|rip)\b)");
+        assert!(tokens.contains("CR"));
+        assert!(tokens.contains("CRUNCHYROLL"));
+        assert!(!tokens.contains("WEB"));
+        assert!(!tokens.contains("DL"));
+        assert!(!tokens.contains("RIP"));
+
+        // Regex quantifiers and character classes must not leak digit tokens.
+        let noisy = extract_explicit_tokens(r"(?i)\bhbo[ ._-]?max\b.{1,3}[0-4]u");
+        assert!(noisy.contains("HBO"));
+        assert!(noisy.contains("MAX"));
+        assert!(!noisy.iter().any(|token| token
+            .chars()
+            .filter(|ch| ch.is_ascii_alphabetic())
+            .count()
+            < 2));
+
+        // Alternation shards and rename-template artifacts stay out.
+        let shards = extract_explicit_tokens(r"(?i)\bfuni(?:mation)?\b|stanrename");
+        assert!(shards.contains("FUNI"));
+        assert!(!shards.contains("MATION"));
+        assert!(!shards.contains("STANRENAME"));
+    }
 
     #[test]
     fn stem_maps_to_release_group_contexts() {

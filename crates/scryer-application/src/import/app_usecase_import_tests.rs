@@ -403,6 +403,28 @@ fn build_augmented_episode_import_metadata_keeps_file_episode_when_other_files_e
 }
 
 #[test]
+fn build_augmented_episode_import_metadata_treats_dotted_hyphen_split_episode_as_single_episode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest_dir = dir.path().join("[SubsPlease] Harbor Pals S3.-.01 (1080p)");
+    std::fs::create_dir_all(&dest_dir).expect("create dest dir");
+    let file_path = dest_dir.join("[SubsPlease] Harbor Pals S3.-.01 (1080p) [F00DBABE].mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let completed =
+        test_completed_download("[SubsPlease] Harbor Pals S3.-.01 (1080p)", &dest_dir);
+
+    let parsed = build_augmented_episode_import_metadata(&file_path, &completed, false);
+    let episode = parsed.episode.expect("episode metadata");
+
+    assert_eq!(episode.season, Some(3));
+    assert_eq!(episode.episode_numbers, vec![1]);
+    assert!(!episode.full_season);
+    assert_eq!(
+        episode.release_type,
+        scryer_release_parser::ParsedEpisodeReleaseType::SingleEpisode
+    );
+}
+
+#[test]
 fn build_augmented_episode_import_metadata_does_not_infer_episode_from_download_title_when_other_files_exist()
  {
     let dir = tempfile::tempdir().expect("tempdir");

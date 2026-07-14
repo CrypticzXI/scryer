@@ -1851,6 +1851,337 @@ fn anime_absolute_release_keeps_release_group_and_metadata_boundaries() {
 }
 
 #[test]
+fn dotted_hyphen_split_season_episode_parses_as_standard_episode() {
+    let analysis = analyze_release_for_target(
+        "[SubsPlease] Emberfall S3.-.01.(1080p).[F00DBABE].mkv",
+        &context(ContextFacetHint::Anime, "Emberfall"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(episode.season, Some(3));
+    assert_eq!(episode.episode_numbers, vec![1]);
+    assert_eq!(episode.release_type, ParsedEpisodeReleaseType::SingleEpisode);
+    assert!(!episode.full_season);
+    assert_eq!(
+        candidate.projected.release_group.as_deref(),
+        Some("SubsPlease")
+    );
+    assert_eq!(candidate.projected.quality.as_deref(), Some("1080p"));
+}
+
+#[test]
+fn dot_split_season_episode_parses_as_standard_episode() {
+    let analysis = analyze_release_for_target(
+        "Show.Name.S3.01.1080p.WEB-DL.x264-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(episode.season, Some(3));
+    assert_eq!(episode.episode_numbers, vec![1]);
+}
+
+#[test]
+fn hyphen_split_season_episode_still_parses() {
+    let analysis = analyze_release_for_target(
+        "Show.Name.S3-01.1080p.WEB-DL.x264-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(episode.season, Some(3));
+    assert_eq!(episode.episode_numbers, vec![1]);
+}
+
+#[test]
+fn dot_split_guard_keeps_true_season_packs_and_years() {
+    let pack = analyze_release_for_target(
+        "Crossing.Swords.S02.1080p.WEB-DL",
+        &context(ContextFacetHint::Series, "Crossing Swords"),
+    );
+    let pack_candidate = pack.best_candidate().expect("best candidate");
+    assert_eq!(pack_candidate.family, ParseFamily::SeasonPack);
+
+    let mut year_target = context(ContextFacetHint::Series, "Show Name");
+    year_target.known_years.push(2024);
+    let year = analyze_release_for_target(
+        "Show.Name.S02.2024.1080p.WEB-DL.x264-GRP",
+        &year_target,
+    );
+    let year_candidate = year.best_candidate().expect("best candidate");
+    let year_episode = year_candidate.projected.episode.as_ref().expect("episode");
+    assert_eq!(year_candidate.family, ParseFamily::SeasonPack);
+    assert_eq!(year_episode.episode_numbers, Vec::<u32>::new());
+    assert_eq!(year_candidate.projected.year, Some(2024));
+
+    let resolution = analyze_release_for_target(
+        "Show.Name.S02.720.WEB.x264-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let resolution_candidate = resolution.best_candidate().expect("best candidate");
+    assert_eq!(resolution_candidate.family, ParseFamily::SeasonPack);
+}
+
+#[test]
+fn season_keyword_with_dotted_episode_parses_as_standard_episode() {
+    let analysis = analyze_release_for_target(
+        "Show.Name.Season.3.-.01.1080p.WEB-DL.x264-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::StandardEpisode);
+    assert_eq!(episode.season, Some(3));
+    assert_eq!(episode.episode_numbers, vec![1]);
+}
+
+#[test]
+fn fused_season_token_parses_as_season_pack() {
+    let analysis = analyze_release_for_target(
+        "Show.Name.Season1.1080p.WEB-DL.x264-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::SeasonPack);
+    assert_eq!(episode.season, Some(1));
+    assert!(episode.full_season);
+}
+
+#[test]
+fn season_like_title_words_do_not_mint_seasons() {
+    let mut target = context(ContextFacetHint::Movie, "Four Seasons");
+    target.known_years.push(2024);
+    let analysis = analyze_release_for_target("Four.Seasons.2024.1080p.WEB-DL.x264-GRP", &target);
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(candidate.family, ParseFamily::Movie);
+    assert_eq!(candidate.projected.normalized_title, "FOUR SEASONS");
+
+    let fused_year = analyze_release_for_target(
+        "Racing.League.Season2024.1080p.WEB-DL.x264-GRP",
+        &context(ContextFacetHint::Series, "Racing League"),
+    );
+    let fused_candidate = fused_year.best_candidate().expect("best candidate");
+    assert_ne!(
+        fused_candidate
+            .projected
+            .episode
+            .as_ref()
+            .and_then(|episode| episode.season),
+        Some(2024)
+    );
+}
+
+#[test]
+fn month_name_daily_dates_parse_in_both_orders() {
+    let mut target = context(ContextFacetHint::Series, "Late Show");
+    target.known_years.push(2026);
+
+    let year_first =
+        analyze_release_for_target("Late.Show.2026.Jan.05.720p.WEB.x264-GRP", &target);
+    let year_first_episode = year_first
+        .best_candidate()
+        .expect("best candidate")
+        .projected
+        .episode
+        .clone()
+        .expect("episode");
+    assert_eq!(
+        year_first_episode.air_date,
+        Some(NaiveDate::from_ymd_opt(2026, 1, 5).unwrap())
+    );
+
+    let day_first =
+        analyze_release_for_target("Late.Show.05.Jan.2026.720p.WEB.x264-GRP", &target);
+    let day_first_episode = day_first
+        .best_candidate()
+        .expect("best candidate")
+        .projected
+        .episode
+        .clone()
+        .expect("episode");
+    assert_eq!(
+        day_first_episode.air_date,
+        Some(NaiveDate::from_ymd_opt(2026, 1, 5).unwrap())
+    );
+}
+
+#[test]
+fn fused_eight_digit_air_date_parses_as_daily() {
+    let mut target = context(ContextFacetHint::Series, "Show Name");
+    target.known_years.push(2026);
+
+    let analysis = analyze_release_for_target("Show.Name.20260105.720p.WEB.x264-GRP", &target);
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.family, ParseFamily::DailyEpisode);
+    assert_eq!(
+        episode.air_date,
+        Some(NaiveDate::from_ymd_opt(2026, 1, 5).unwrap())
+    );
+}
+
+#[test]
+fn eight_digit_tokens_that_are_not_dates_stay_non_daily() {
+    let analysis = analyze_release_for_target(
+        "Show.Name.12345678.720p.WEB.x264-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(
+        candidate
+            .projected
+            .episode
+            .as_ref()
+            .and_then(|episode| episode.air_date),
+        None
+    );
+}
+
+#[test]
+fn proper_is_a_revision_flag_not_an_edition() {
+    let mut target = context(ContextFacetHint::Movie, "Movie Title");
+    target.known_years.push(2024);
+
+    let analysis = analyze_release_for_target(
+        "Movie.Title.2024.1080p.PROPER.WEB-DL.x264-GRP",
+        &target,
+    );
+    let projected = &analysis.best_candidate().expect("best candidate").projected;
+
+    assert_eq!(projected.edition, None);
+    assert!(projected.is_proper_upload);
+    assert!(!projected.is_repack);
+
+    let repack = analyze_release_for_target(
+        "Movie.Title.2024.1080p.REPACK.WEB-DL.x264-GRP",
+        &target,
+    );
+    let repack_projected = &repack.best_candidate().expect("best candidate").projected;
+
+    assert_eq!(repack_projected.edition, None);
+    assert!(repack_projected.is_proper_upload);
+    assert!(repack_projected.is_repack);
+}
+
+#[test]
+fn proper_does_not_shadow_a_real_edition() {
+    let mut target = context(ContextFacetHint::Movie, "Movie Title");
+    target.known_years.push(2024);
+
+    let analysis = analyze_release_for_target(
+        "Movie.Title.2024.PROPER.EXTENDED.1080p.WEB-DL.x264-GRP",
+        &target,
+    );
+    let projected = &analysis.best_candidate().expect("best candidate").projected;
+
+    assert_eq!(projected.edition.as_deref(), Some("Extended"));
+    assert!(projected.is_proper_upload);
+}
+
+#[test]
+fn beam_editions_project_with_canonical_casing() {
+    let mut target = context(ContextFacetHint::Movie, "Movie Title");
+    target.known_years.push(2024);
+
+    let analysis =
+        analyze_release_for_target("Movie.Title.2024.UNCUT.1080p.WEB-DL.x264-GRP", &target);
+    let projected = &analysis.best_candidate().expect("best candidate").projected;
+
+    assert_eq!(projected.edition.as_deref(), Some("Uncut"));
+}
+
+#[test]
+fn fps_is_detected_in_dot_separated_names() {
+    let mut target = context(ContextFacetHint::Movie, "Movie Title");
+    target.known_years.push(2024);
+
+    let analysis = analyze_release_for_target(
+        "Movie.Title.2024.1080p.60fps.WEB-DL.x264-GRP",
+        &target,
+    );
+    let projected = &analysis.best_candidate().expect("best candidate").projected;
+    assert_eq!(projected.fps, Some(60.0));
+
+    let upscaled = analyze_release_for_target(
+        "Movie.Title.2024.2160p.144fps.WEB-DL.x264-GRP",
+        &target,
+    );
+    let upscaled_projected = &upscaled.best_candidate().expect("best candidate").projected;
+    assert_eq!(upscaled_projected.fps, Some(144.0));
+    assert!(upscaled_projected.is_ai_enhanced);
+}
+
+#[test]
+fn bare_fps_word_without_adjacent_rate_is_not_fps_metadata() {
+    let mut target = context(ContextFacetHint::Movie, "First Person Shooter");
+    target.known_years.push(1997);
+
+    let analysis = analyze_release_for_target(
+        "First.Person.Shooter.1997.FPS.1080p.WEB-DL.x264-GRP",
+        &target,
+    );
+    let projected = &analysis.best_candidate().expect("best candidate").projected;
+
+    assert_eq!(projected.fps, None);
+}
+
+#[test]
+fn episode_raw_uses_stable_renderings() {
+    let absolute = analyze_release_for_target(
+        "[Grp] Show Name - 05v2 [1080p]",
+        &context(ContextFacetHint::Anime, "Show Name"),
+    );
+    let absolute_episode = absolute
+        .best_candidate()
+        .expect("best candidate")
+        .projected
+        .episode
+        .clone()
+        .expect("episode");
+    assert_eq!(absolute_episode.raw.as_deref(), Some("05v2"));
+
+    let mut daily_target = context(ContextFacetHint::Series, "Series Title");
+    daily_target.known_years.push(2026);
+    let daily = analyze_release_for_target(
+        "Series.Title.2026.04.22.720p.HULU.WEBRip.AAC2.0.H264-Group",
+        &daily_target,
+    );
+    let daily_episode = daily
+        .best_candidate()
+        .expect("best candidate")
+        .projected
+        .episode
+        .clone()
+        .expect("episode");
+    assert_eq!(daily_episode.raw.as_deref(), Some("2026-04-22"));
+
+    let pack = analyze_release_for_target(
+        "Crossing.Swords.S02.1080p.WEB-DL",
+        &context(ContextFacetHint::Series, "Crossing Swords"),
+    );
+    let pack_episode = pack
+        .best_candidate()
+        .expect("best candidate")
+        .projected
+        .episode
+        .clone()
+        .expect("episode");
+    assert_eq!(pack_episode.raw.as_deref(), Some("S02"));
+}
+
+#[test]
 fn target_bank_prefers_specific_title_when_alias_and_episode_title_align() {
     let mut classic_starfall = context(ContextFacetHint::Anime, "Starfall");
     classic_starfall.aliases = vec![ContextAlias {

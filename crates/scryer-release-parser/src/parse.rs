@@ -624,6 +624,13 @@ fn classify_token(token: &Token) -> Vec<RoleCandidate> {
             strong_anchor: true,
         });
     }
+    if parse_fused_daily_date(normalized).is_some() {
+        roles.push(RoleCandidate {
+            role: TokenRole::DateMarker,
+            confidence: 96,
+            strong_anchor: false,
+        });
+    }
     if parse_standard_episode_token(normalized).is_some() {
         roles.push(RoleCandidate {
             role: TokenRole::EpisodeMarker,
@@ -2741,6 +2748,14 @@ fn consume_unit_metadata(
                 state.reasons.push(reason("metadata:release_flag", 1, None));
                 record_metadata_token(state, index);
             }
+            TokenRole::Edition if matches!(token.normalized.as_str(), "PROPER" | "REPACK") => {
+                // Revision flags, not editions; enrichment owns the
+                // is_proper_upload/is_repack projection. Consume with the same
+                // score so beam ordering is unchanged.
+                state.score += 4;
+                state.reasons.push(reason("metadata:release_flag", 4, None));
+                record_metadata_token(state, index);
+            }
             TokenRole::Edition
                 if state.metadata.edition.is_none()
                     || token.normalized.eq_ignore_ascii_case("REMUX") =>
@@ -3032,7 +3047,7 @@ fn build_candidate(
             .as_deref()
             .and_then(StreamingService::parse),
         edition: (!is_remux)
-            .then(|| state.metadata.edition.clone())
+            .then(|| state.metadata.edition.as_deref().map(canonical_edition))
             .flatten(),
         anime_version: anime_version_from_identity(&state.identity),
         episode,
@@ -3555,6 +3570,16 @@ fn remove_part_connector_variant(tokens: &[Token], indices: &[usize]) -> Option<
         .collect::<Vec<_>>();
     (filtered.len() < indices.len() && !filtered.is_empty())
         .then(|| normalized_title_from_indices(tokens, &filtered))
+}
+
+fn canonical_edition(raw: &str) -> String {
+    match raw.to_ascii_uppercase().as_str() {
+        "UNCUT" => "Uncut".to_string(),
+        "UNCENSORED" => "Uncensored".to_string(),
+        "EXTENDED" => "Extended".to_string(),
+        "DIRECTORS" | "DIRECTOR" => "Directors".to_string(),
+        _ => raw.to_string(),
+    }
 }
 
 fn anime_version_from_identity(identity: &ReleaseIdentity) -> Option<u32> {
@@ -4405,13 +4430,34 @@ fn render_identity_raw(identity: &ReleaseIdentity, tokens: &[Token]) -> String {
                 .collect::<Vec<_>>()
                 .join("E")
         ),
-        ReleaseIdentity::DailyIdentity { air_date, part } => format!("{air_date} {:?}", part),
+        ReleaseIdentity::DailyIdentity { air_date, part } => match part {
+            Some(part) => format!("{air_date} Part {part}"),
+            None => air_date.to_string(),
+        },
         ReleaseIdentity::AbsoluteIdentity {
             absolute_episode_numbers,
             version,
             ..
-        } => format!("{absolute_episode_numbers:?} {:?}", version),
-        ReleaseIdentity::SeasonPackIdentity { seasons, .. } => format!("{seasons:?}"),
+        } => {
+            let numbers = absolute_episode_numbers
+                .iter()
+                .map(|value| format!("{value:02}"))
+                .collect::<Vec<_>>()
+                .join("-");
+            match version {
+                Some(version) => format!("{numbers}v{version}"),
+                None => numbers,
+            }
+        }
+        ReleaseIdentity::SeasonPackIdentity { seasons, .. } => {
+            match (seasons.first(), seasons.last()) {
+                (Some(first), Some(last)) if first != last => {
+                    format!("S{first:02}-S{last:02}")
+                }
+                (Some(first), _) => format!("S{first:02}"),
+                _ => String::new(),
+            }
+        }
         ReleaseIdentity::RangePackIdentity {
             season,
             range_start,
@@ -4420,7 +4466,14 @@ fn render_identity_raw(identity: &ReleaseIdentity, tokens: &[Token]) -> String {
             || format!("{range_start}-{range_end}"),
             |season| format!("S{season:02}E{range_start:02}-E{range_end:02}"),
         ),
-        ReleaseIdentity::SpecialIdentity { special_kind, .. } => format!("{special_kind:?}"),
+        ReleaseIdentity::SpecialIdentity { special_kind, .. } => match special_kind {
+            ParsedSpecialKind::Special => "SPECIAL".to_string(),
+            ParsedSpecialKind::Ova => "OVA".to_string(),
+            ParsedSpecialKind::Oad => "OAD".to_string(),
+            ParsedSpecialKind::Ncop => "NCOP".to_string(),
+            ParsedSpecialKind::Nced => "NCED".to_string(),
+            ParsedSpecialKind::Extra => "EXTRA".to_string(),
+        },
         ReleaseIdentity::MovieIdentity | ReleaseIdentity::Unknown => {
             render_token_indices(tokens, &[])
         }
@@ -4517,10 +4570,11 @@ fn parse_season_keyword_episode_at(
     }
     let season = tokens.get(index + 1)?.normalized.parse::<u32>().ok()?;
     let episode_token = tokens.get(index + 2)?;
-    if episode_token.separator_before != SeparatorKind::Hyphen {
-        return None;
-    }
-    let episode = parse_numeric_token(episode_token.normalized.as_str())?;
+    let episode = if episode_token.separator_before == SeparatorKind::Hyphen {
+        parse_numeric_token(episode_token.normalized.as_str())?
+    } else {
+        dot_split_episode_after_season(tokens, index + 2)?
+    };
     Some((
         Some(season),
         vec![episode],
@@ -4588,12 +4642,40 @@ fn parse_split_standard_episode_at(
 ) -> Option<(Option<u32>, Vec<u32>, Vec<usize>)> {
     let season = parse_season_token(tokens.get(index)?.normalized.as_str())?;
     let episode_token = tokens.get(index + 1)?;
-    let episode = parse_numeric_token(episode_token.normalized.as_str())?;
-    (episode_token.separator_before == SeparatorKind::Hyphen).then_some((
-        Some(season),
-        vec![episode],
-        vec![index, index + 1],
-    ))
+    if episode_token.separator_before == SeparatorKind::Hyphen {
+        let episode = parse_numeric_token(episode_token.normalized.as_str())?;
+        return Some((Some(season), vec![episode], vec![index, index + 1]));
+    }
+    let episode = dot_split_episode_after_season(tokens, index + 1)?;
+    Some((Some(season), vec![episode], vec![index, index + 1]))
+}
+
+/// Accept `S<N>.<EE>` (including `S<N>.-.<EE>`, whose separator chain merges
+/// to `Dot`) only for zero-padded episode tokens: two digits, or three digits
+/// with a leading zero. That shape excludes bare resolutions (`S02.720`),
+/// years (`S02.2024`), and dotted numeric chains, so true season packs like
+/// `S02.1080p` keep parsing as packs.
+fn dot_split_episode_after_season(tokens: &[Token], episode_index: usize) -> Option<u32> {
+    let episode_token = tokens.get(episode_index)?;
+    if episode_token.separator_before != SeparatorKind::Dot {
+        return None;
+    }
+    let digits = episode_token.normalized.as_str();
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let zero_padded = digits.len() == 2 || (digits.len() == 3 && digits.starts_with('0'));
+    if !zero_padded {
+        return None;
+    }
+    if tokens.get(episode_index + 1).is_some_and(|next| {
+        next.separator_before == SeparatorKind::Dot
+            && !next.normalized.is_empty()
+            && next.normalized.bytes().all(|byte| byte.is_ascii_digit())
+    }) {
+        return None;
+    }
+    digits.parse::<u32>().ok().filter(|episode| *episode > 0)
 }
 
 fn parse_parenthetical_standard_after_absolute_at(
@@ -4640,9 +4722,16 @@ fn parse_hyphenated_standard_episode_range_at(
 }
 
 fn parse_season_token(token: &str) -> Option<u32> {
+    // "SEASON" must be tried before 'S': every SEASON-prefixed token also
+    // starts with 'S', so the reverse order leaves fused `Season1` unparsed.
+    if let Some(value) = token.strip_prefix("SEASON") {
+        return value
+            .parse::<u32>()
+            .ok()
+            .filter(|season| (1..=100).contains(season));
+    }
     token
         .strip_prefix('S')
-        .or_else(|| token.strip_prefix("SEASON"))
         .and_then(|value| value.parse::<u32>().ok())
 }
 
@@ -4668,10 +4757,11 @@ fn parse_season_pack_at(tokens: &[Token], index: usize) -> Option<SeasonPackPars
         {
             return None;
         }
-        if tokens.get(index + 2).is_some_and(|candidate| {
+        if (tokens.get(index + 2).is_some_and(|candidate| {
             candidate.separator_before == SeparatorKind::Hyphen
                 && parse_numeric_token(candidate.normalized.as_str()).is_some()
-        }) && !has_batch_marker_around(tokens, index)
+        }) || dot_split_episode_after_season(tokens, index + 2).is_some())
+            && !has_batch_marker_around(tokens, index)
         {
             return None;
         }
@@ -4727,7 +4817,8 @@ fn parse_season_pack_at(tokens: &[Token], index: usize) -> Option<SeasonPackPars
         if tokens.get(index + 1).is_some_and(|token| {
             token.separator_before == SeparatorKind::Hyphen
                 && parse_numeric_token(token.normalized.as_str()).is_some()
-        }) {
+        }) || dot_split_episode_after_season(tokens, index + 1).is_some()
+        {
             return None;
         }
         if let Some(PartMarkerParse { parts, consumed }) =
@@ -4939,88 +5030,109 @@ fn parse_season_marker_at(tokens: &[Token], index: usize) -> Option<u32> {
 }
 
 fn parse_daily_at(tokens: &[Token], index: usize) -> Option<(NaiveDate, Vec<usize>, Option<u32>)> {
-    let token = tokens.get(index)?.raw.as_str();
-    if let Some(date) = parse_daily_token(token) {
-        let part = tokens
-            .get(index + 2)
-            .filter(|_| {
-                tokens
-                    .get(index + 1)
-                    .is_some_and(|token| token.normalized == "PART")
-            })
-            .and_then(|token| token.normalized.parse::<u32>().ok());
-        let mut consumed = vec![index];
-        if part.is_some() {
-            consumed.push(index + 1);
-            consumed.push(index + 2);
-        }
-        return Some((date, consumed, part));
+    if let Some(date) = parse_fused_daily_date(tokens.get(index)?.normalized.as_str()) {
+        return Some(daily_with_part(tokens, date, vec![index], index + 1));
     }
-    if let (Some(year), Some(month), Some(day)) = (
-        tokens.get(index)?.normalized.parse::<i32>().ok(),
-        tokens.get(index + 1)?.normalized.parse::<u32>().ok(),
-        tokens.get(index + 2)?.normalized.parse::<u32>().ok(),
+
+    let first = tokens.get(index)?;
+    let second = tokens.get(index + 1)?;
+    let third = tokens.get(index + 2)?;
+    if !matches!(
+        (second.separator_before, third.separator_before),
+        (SeparatorKind::Dot, SeparatorKind::Dot)
+            | (SeparatorKind::Hyphen, SeparatorKind::Hyphen)
     ) {
-        let separators = (
-            tokens.get(index + 1)?.separator_before,
-            tokens.get(index + 2)?.separator_before,
-        );
-        if matches!(
-            separators,
-            (SeparatorKind::Dot, SeparatorKind::Dot)
-                | (SeparatorKind::Hyphen, SeparatorKind::Hyphen)
-        ) && (1900..=2099).contains(&year)
-        {
-            let date = NaiveDate::from_ymd_opt(year, month, day)?;
-            let part = tokens
-                .get(index + 4)
-                .filter(|_| {
-                    tokens
-                        .get(index + 3)
-                        .is_some_and(|token| token.normalized == "PART")
-                })
-                .and_then(|token| token.normalized.parse::<u32>().ok());
-            let mut consumed = vec![index, index + 1, index + 2];
-            if part.is_some() {
-                consumed.push(index + 3);
-                consumed.push(index + 4);
-            }
-            return Some((date, consumed, part));
-        }
+        return None;
     }
-    if let (Some(day), Some(month), Some(year)) = (
-        tokens.get(index)?.normalized.parse::<u32>().ok(),
-        tokens.get(index + 1)?.normalized.parse::<u32>().ok(),
-        tokens.get(index + 2)?.normalized.parse::<i32>().ok(),
-    ) {
-        let separators = (
-            tokens.get(index + 1)?.separator_before,
-            tokens.get(index + 2)?.separator_before,
-        );
-        if matches!(
-            separators,
-            (SeparatorKind::Dot, SeparatorKind::Dot)
-                | (SeparatorKind::Hyphen, SeparatorKind::Hyphen)
-        ) && (1900..=2099).contains(&year)
-        {
-            let date = NaiveDate::from_ymd_opt(year, month, day)?;
-            let part = tokens
-                .get(index + 4)
-                .filter(|_| {
-                    tokens
-                        .get(index + 3)
-                        .is_some_and(|token| token.normalized == "PART")
-                })
-                .and_then(|token| token.normalized.parse::<u32>().ok());
-            let mut consumed = vec![index, index + 1, index + 2];
-            if part.is_some() {
-                consumed.push(index + 3);
-                consumed.push(index + 4);
-            }
-            return Some((date, consumed, part));
-        }
+
+    let numeric = |token: &Token| token.normalized.parse::<u32>().ok();
+    let year_of = |token: &Token| {
+        token
+            .normalized
+            .parse::<i32>()
+            .ok()
+            .filter(|year| (1900..=2099).contains(year))
+    };
+    let month_name = |token: &Token| month_from_name(token.normalized.as_str());
+
+    let date = if let (Some(year), Some(month), Some(day)) =
+        (year_of(first), numeric(second), numeric(third))
+    {
+        NaiveDate::from_ymd_opt(year, month, day)
+    } else if let (Some(day), Some(month), Some(year)) =
+        (numeric(first), numeric(second), year_of(third))
+    {
+        NaiveDate::from_ymd_opt(year, month, day)
+    } else if let (Some(year), Some(month), Some(day)) =
+        (year_of(first), month_name(second), numeric(third))
+    {
+        NaiveDate::from_ymd_opt(year, month, day)
+    } else if let (Some(day), Some(month), Some(year)) =
+        (numeric(first), month_name(second), year_of(third))
+    {
+        NaiveDate::from_ymd_opt(year, month, day)
+    } else {
+        None
+    }?;
+
+    Some(daily_with_part(
+        tokens,
+        date,
+        vec![index, index + 1, index + 2],
+        index + 3,
+    ))
+}
+
+fn daily_with_part(
+    tokens: &[Token],
+    date: NaiveDate,
+    mut consumed: Vec<usize>,
+    part_index: usize,
+) -> (NaiveDate, Vec<usize>, Option<u32>) {
+    let part = tokens
+        .get(part_index + 1)
+        .filter(|_| {
+            tokens
+                .get(part_index)
+                .is_some_and(|token| token.normalized == "PART")
+        })
+        .and_then(|token| token.normalized.parse::<u32>().ok());
+    if part.is_some() {
+        consumed.push(part_index);
+        consumed.push(part_index + 1);
     }
-    None
+    (date, consumed, part)
+}
+
+fn parse_fused_daily_date(token: &str) -> Option<NaiveDate> {
+    if token.len() != 8 || !token.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let year = token.get(..4)?.parse::<i32>().ok()?;
+    if !(1900..=2099).contains(&year) {
+        return None;
+    }
+    let month = token.get(4..6)?.parse::<u32>().ok()?;
+    let day = token.get(6..8)?.parse::<u32>().ok()?;
+    NaiveDate::from_ymd_opt(year, month, day)
+}
+
+fn month_from_name(token: &str) -> Option<u32> {
+    match token {
+        "JAN" | "JANUARY" => Some(1),
+        "FEB" | "FEBRUARY" => Some(2),
+        "MAR" | "MARCH" => Some(3),
+        "APR" | "APRIL" => Some(4),
+        "MAY" => Some(5),
+        "JUN" | "JUNE" => Some(6),
+        "JUL" | "JULY" => Some(7),
+        "AUG" | "AUGUST" => Some(8),
+        "SEP" | "SEPT" | "SEPTEMBER" => Some(9),
+        "OCT" | "OCTOBER" => Some(10),
+        "NOV" | "NOVEMBER" => Some(11),
+        "DEC" | "DECEMBER" => Some(12),
+        _ => None,
+    }
 }
 
 fn parse_standard_episode_range_pack_at(tokens: &[Token], index: usize) -> Option<RangePackParse> {
@@ -5169,6 +5281,14 @@ fn parse_anime_absolute_at(
         && tokens
             .get(index.saturating_sub(1))
             .is_some_and(|token| parse_season_token(token.normalized.as_str()).is_some())
+    {
+        return None;
+    }
+    if index >= 1
+        && tokens
+            .get(index - 1)
+            .is_some_and(|token| parse_season_token(token.normalized.as_str()).is_some())
+        && dot_split_episode_after_season(tokens, index).is_some()
     {
         return None;
     }
@@ -5362,16 +5482,12 @@ fn parse_versioned_absolute(token: &str) -> Option<(u32, u32)> {
     Some((number.parse::<u32>().ok()?, version.parse::<u32>().ok()?))
 }
 
-fn parse_daily_token(token: &str) -> Option<NaiveDate> {
-    [
-        "%Y.%m.%d", "%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%d.%b.%Y", "%b.%d.%Y",
-    ]
-    .into_iter()
-    .find_map(|format| NaiveDate::parse_from_str(token, format).ok())
-}
-
 fn is_checksum(token: &str) -> bool {
-    token.len() == 8 && token.chars().all(|ch| ch.is_ascii_hexdigit())
+    token.len() == 8
+        && token.chars().all(|ch| ch.is_ascii_hexdigit())
+        // All-decimal 8-digit tokens that form a real calendar date are fused
+        // air dates ("20260105"), not CRC32 hashes.
+        && parse_fused_daily_date(token).is_none()
 }
 
 fn normalize_channels(raw: &str) -> String {
@@ -5504,6 +5620,13 @@ fn detect_compound_metadata(token: &str) -> CompoundMetadata {
         metadata.audio_codec = Some("PCM");
     }
 
+    // These substring probes are deliberately loose ("2019" contains "20") and
+    // are only safe because of two invariants elsewhere: role annotation ranks
+    // Year (95) and Quality (100) above AudioChannels (88), so digit-bearing
+    // year/resolution tokens never take the channels role, and
+    // `consume_unit_metadata` only accepts an AudioChannels role when
+    // `audio_channel_has_audio_context` sees an audio codec within 3 tokens.
+    // Tighten those guards before loosening anything here.
     if token.contains("71") || token.contains("7CH") || token.contains("8CH") {
         metadata.audio_channels = Some("7.1");
     } else if token.contains("51") || token.contains("6CH") {

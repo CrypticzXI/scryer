@@ -1056,9 +1056,12 @@ fn parse_fps(raw_title: &str) -> Option<f32> {
     let upper = raw_title.to_ascii_uppercase();
     let mut previous_numeric = None::<f32>;
     for chunk in upper.split(|character: char| {
-        character.is_ascii_whitespace() || matches!(character, '[' | ']' | '(' | ')' | '{' | '}')
+        character.is_ascii_whitespace()
+            || matches!(
+                character,
+                '[' | ']' | '(' | ')' | '{' | '}' | '.' | '_' | '-'
+            )
     }) {
-        let chunk = chunk.trim_matches(&['.', '-', '_', ' '] as &[_]);
         if chunk.is_empty() {
             continue;
         }
@@ -1148,11 +1151,11 @@ fn extract_trailing_version(fragment: &str) -> Option<u32> {
     let upper = fragment.to_ascii_uppercase();
     let bytes = upper.as_bytes();
     let length = bytes.len();
-    if length >= 2 && bytes[length - 2] == b'V' {
-        let version = bytes[length - 1] - b'0';
-        if (2..=9).contains(&version) {
-            return Some(version as u32);
-        }
+    if length >= 2
+        && bytes[length - 2] == b'V'
+        && let digit @ b'2'..=b'9' = bytes[length - 1]
+    {
+        return Some(u32::from(digit - b'0'));
     }
     None
 }
