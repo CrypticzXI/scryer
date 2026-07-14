@@ -21,6 +21,13 @@ import type {
 import type { TitleCatalogAdvancedFilters } from "@/lib/utils/title-catalog-query";
 import { cn } from "@/lib/utils";
 
+import {
+  hasActiveTitleQuickFilters,
+  TitleQuickFilterBar,
+  type TitleQuickFilterCounts,
+  type TitleQuickFilters,
+} from "./title-quick-filters";
+
 const DEFAULT_MINIMUM_YEAR = 1900;
 const FILTER_RANGE_CLASS_NAME =
   "h-1.5 w-full appearance-none rounded-full bg-transparent accent-[var(--scry-accent)] [&::-moz-range-progress]:h-1.5 [&::-moz-range-progress]:rounded-full [&::-moz-range-progress]:bg-transparent [&::-moz-range-thumb]:h-[15px] [&::-moz-range-thumb]:w-[15px] [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_1px_5px_rgba(0,0,0,0.5)] [&::-moz-range-track]:h-1.5 [&::-moz-range-track]:rounded-full [&::-moz-range-track]:bg-transparent [&::-webkit-slider-runnable-track]:h-1.5 [&::-webkit-slider-runnable-track]:rounded-full [&::-webkit-slider-runnable-track]:bg-transparent [&::-webkit-slider-thumb]:mt-[-4.5px] [&::-webkit-slider-thumb]:h-[15px] [&::-webkit-slider-thumb]:w-[15px] [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_1px_5px_rgba(0,0,0,0.5)]";
@@ -40,6 +47,12 @@ type CatalogFiltersPanelProps = {
   searchValue: string;
   onSearchValueChange: (value: string) => void;
   onClear: () => void;
+  quickFilters: TitleQuickFilters;
+  quickFilterCounts?: TitleQuickFilterCounts;
+  quickFilterView: "movies" | "series" | "anime";
+  onToggleQuickMonitoring: (filter: "monitored" | "unmonitored") => void;
+  onToggleQuickStatus: (filter: "continuing" | "ended") => void;
+  onClearQuickFilters: () => void;
   className?: string;
 };
 
@@ -95,6 +108,12 @@ export function CatalogFiltersPanel({
   searchValue,
   onSearchValueChange,
   onClear,
+  quickFilters,
+  quickFilterCounts,
+  quickFilterView,
+  onToggleQuickMonitoring,
+  onToggleQuickStatus,
+  onClearQuickFilters,
   className,
 }: CatalogFiltersPanelProps) {
   const t = useTranslate();
@@ -188,6 +207,7 @@ export function CatalogFiltersPanel({
     ((maximumYear - minimumYearBound) / yearSpan) * 100;
   const minimumRating = filters.minimumRating ?? 0;
   const hasActiveFilters =
+    hasActiveTitleQuickFilters(quickFilters, quickFilterView) ||
     searchValue.trim().length > 0 ||
     selectedLibraryIds.length > 0 ||
     filters.rootFolderIds.length > 0 ||
@@ -216,6 +236,7 @@ export function CatalogFiltersPanel({
           onClick={() => {
             onClear();
             onSearchValueChange("");
+            onClearQuickFilters();
           }}
           className="text-xs font-medium text-[var(--scry-accent-ring)] transition disabled:cursor-default disabled:opacity-40"
         >
@@ -230,6 +251,18 @@ export function CatalogFiltersPanel({
           value={searchValue}
           onChange={(event) => onSearchValueChange(event.target.value)}
           className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none placeholder:text-[var(--scry-faint2)] focus-visible:ring-[var(--scry-focus)]"
+        />
+      </div>
+
+      <div className="mb-4 border-b border-[var(--scry-border2)] pb-4">
+        <TitleQuickFilterBar
+          view={quickFilterView}
+          filters={quickFilters}
+          counts={quickFilterCounts}
+          onToggleMonitoring={onToggleQuickMonitoring}
+          onToggleStatus={onToggleQuickStatus}
+          onClear={onClearQuickFilters}
+          appearance="panel"
         />
       </div>
 

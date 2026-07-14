@@ -2676,7 +2676,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     },
   });
 
-  const applyRefreshedTitleRecord = React.useCallback(
+  const applySelectedOverviewDetail = React.useCallback(
     (titleId: string, title: TitleRecord | null, requestEpoch: number) => {
       if (requestEpoch <= latestCriticalMutationEpochRef.current) {
         return;
@@ -2723,6 +2723,17 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         );
         return next;
       });
+    },
+    [],
+  );
+
+  const applyRefreshedTitleRecord = React.useCallback(
+    (titleId: string, title: TitleRecord | null, requestEpoch: number) => {
+      if (requestEpoch <= latestCriticalMutationEpochRef.current) {
+        return;
+      }
+
+      applySelectedOverviewDetail(titleId, title, requestEpoch);
 
       setMonitoredTitles((current) => {
         const next = [...current];
@@ -2762,7 +2773,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         return next;
       });
     },
-    [setMonitoredTitles, setTitleStatus, t],
+    [applySelectedOverviewDetail, setMonitoredTitles, setTitleStatus, t],
   );
 
   const applyTitleMoreLikeThis = React.useCallback(
@@ -3257,7 +3268,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             titleDetailsResult.value.error,
           );
         } else if (titleDetailsResult.value?.data?.title) {
-          applyRefreshedTitleRecord(
+          applySelectedOverviewDetail(
             titleId,
             titleDetailsResult.value.data.title,
             requestEpoch,
@@ -3323,7 +3334,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       cancelled = true;
     };
   }, [
-    applyRefreshedTitleRecord,
+    applySelectedOverviewDetail,
     applyTitleMoreLikeThis,
     client,
     loadSelectedOverviewExternalSubtitles,

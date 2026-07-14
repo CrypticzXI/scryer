@@ -2399,7 +2399,7 @@ impl UtilityQueries {
                 Ok(ft) => ft,
                 Err(_) => continue,
             };
-            if !ft.is_dir() && !(include_files && ft.is_file()) {
+            if !(ft.is_dir() || include_files && ft.is_file()) {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().into_owned();

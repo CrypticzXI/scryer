@@ -433,7 +433,7 @@ function navBadgeToneClass(tone: NavBadgeTone) {
     case "danger":
       return "bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]";
     case "request":
-      return "bg-[var(--scry-success-solid)] text-[var(--scry-success-on-solid)]";
+      return "bg-primary text-primary-foreground";
     case "cta":
     default:
       return "bg-primary text-primary-foreground";

@@ -38,7 +38,7 @@ export function TitleWorkspaceHero({
         <button
           type="button"
           aria-label={closeLabel}
-          className="flex size-8 items-center justify-center rounded-[9px] border border-white/15 bg-slate-950/60 text-[#dde4f5] backdrop-blur-md transition hover:bg-slate-950/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]"
+          className="flex size-8 items-center justify-center rounded-[9px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-slate-950/60 text-[#dde4f5] backdrop-blur-md transition hover:bg-slate-950/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]"
           onClick={onClose}
         >
           <X className="h-4 w-4" />

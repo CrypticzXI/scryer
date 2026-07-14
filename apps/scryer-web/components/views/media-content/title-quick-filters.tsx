@@ -144,6 +144,8 @@ export function TitleQuickFilterBar({
   onToggleStatus,
   onClear,
   trailingContent,
+  hideFilters = false,
+  appearance = "underline",
 }: {
   view: "movies" | "series" | "anime";
   filters: TitleQuickFilters;
@@ -152,40 +154,95 @@ export function TitleQuickFilterBar({
   onToggleStatus: (filter: "continuing" | "ended") => void;
   onClear: () => void;
   trailingContent?: ReactNode;
+  hideFilters?: boolean;
+  appearance?: "underline" | "panel";
 }) {
   const t = useTranslate();
   const showStatusFilters = view !== "movies";
   const allSelected = !hasActiveTitleQuickFilters(filters, view);
+  const panelAppearance = appearance === "panel";
+  const panelButtonClassName = (selected: boolean, fullWidth = false) =>
+    panelAppearance
+      ? [
+          "h-11 w-full justify-center rounded-[10px] border px-3",
+          fullWidth ? "col-span-2" : "",
+          selected
+            ? "border-[rgba(var(--scry-accent-rgb),0.62)] bg-[rgba(var(--scry-accent-rgb),0.28)] [&>span:last-child]:hidden"
+            : "border-[var(--scry-border2)] bg-[var(--scry-inset)] hover:border-[var(--scry-border3)] hover:bg-[var(--scry-surface2)]",
+        ].join(" ")
+      : undefined;
+  const panelSplitButtonClassName = (selected: boolean, divider = false) =>
+    [
+      "h-11 min-w-0 flex-1 justify-center rounded-none border-0 px-3",
+      divider ? "border-l !border-l-[rgba(var(--scry-accent-rgb),0.35)]" : "",
+      selected
+        ? "bg-[rgba(var(--scry-accent-rgb),0.38)] text-white [&>span:last-child]:hidden"
+        : "bg-[var(--scry-inset)] hover:bg-[var(--scry-surface2)]",
+    ].join(" ");
 
   return (
-    <div className="flex flex-wrap items-end justify-between gap-3">
-      <div
-        role="group"
-        aria-label={t("label.filters")}
-        className="relative top-px flex min-h-10 min-w-0 max-w-full flex-1 flex-wrap items-center justify-start gap-x-5 gap-y-1 border-0 bg-transparent p-0 shadow-none"
-      >
-        <UnderlineFilterButton
-          selected={allSelected}
-          onClick={onClear}
-          label={t("activity.historyFilter.all")}
-          count={counts?.all}
-        />
-        <UnderlineFilterButton
-          selected={filters.monitored}
-          onClick={() => onToggleMonitoring("monitored")}
-          icon={<Eye className="h-3.5 w-3.5" />}
-          label={t("title.monitored")}
-          count={counts?.monitored}
-          tone="success"
-        />
-        <UnderlineFilterButton
-          selected={filters.unmonitored}
-          onClick={() => onToggleMonitoring("unmonitored")}
-          icon={<EyeOff className="h-3.5 w-3.5" />}
-          label={t("search.monitorType.unmonitored")}
-          count={counts?.unmonitored}
-          tone="danger"
-        />
+    <div
+      className={`flex flex-wrap items-end gap-3 ${
+        hideFilters ? "justify-end" : "justify-between"
+      }`}
+    >
+      {!hideFilters ? (
+        <div
+          role="group"
+          aria-label={t("label.filters")}
+          className={
+            panelAppearance
+              ? "grid min-w-0 grid-cols-2 gap-2"
+              : "relative top-px flex min-h-10 min-w-0 max-w-full flex-1 flex-wrap items-center justify-start gap-x-5 gap-y-1 border-0 bg-transparent p-0 shadow-none"
+          }
+        >
+        {panelAppearance ? (
+          <div className="col-span-2 flex w-full max-w-[32rem] justify-self-center overflow-hidden rounded-[10px] border border-[rgba(var(--scry-accent-rgb),0.55)]">
+            <UnderlineFilterButton
+              selected={filters.monitored}
+              onClick={() => onToggleMonitoring("monitored")}
+              icon={<Eye className="h-3.5 w-3.5" />}
+              label={t("title.monitored")}
+              count={counts?.monitored}
+              tone="success"
+              className={panelSplitButtonClassName(filters.monitored)}
+            />
+            <UnderlineFilterButton
+              selected={filters.unmonitored}
+              onClick={() => onToggleMonitoring("unmonitored")}
+              icon={<EyeOff className="h-3.5 w-3.5" />}
+              label={t("search.monitorType.unmonitored")}
+              count={counts?.unmonitored}
+              tone="danger"
+              className={panelSplitButtonClassName(filters.unmonitored, true)}
+            />
+          </div>
+        ) : (
+          <>
+            <UnderlineFilterButton
+              selected={allSelected}
+              onClick={onClear}
+              label={t("activity.historyFilter.all")}
+              count={counts?.all}
+            />
+            <UnderlineFilterButton
+              selected={filters.monitored}
+              onClick={() => onToggleMonitoring("monitored")}
+              icon={<Eye className="h-3.5 w-3.5" />}
+              label={t("title.monitored")}
+              count={counts?.monitored}
+              tone="success"
+            />
+            <UnderlineFilterButton
+              selected={filters.unmonitored}
+              onClick={() => onToggleMonitoring("unmonitored")}
+              icon={<EyeOff className="h-3.5 w-3.5" />}
+              label={t("search.monitorType.unmonitored")}
+              count={counts?.unmonitored}
+              tone="danger"
+            />
+          </>
+        )}
         {showStatusFilters ? (
           <>
             <UnderlineFilterButton
@@ -195,6 +252,7 @@ export function TitleQuickFilterBar({
               label={t("title.continuing")}
               count={counts?.continuing}
               tone="success"
+              className={panelButtonClassName(filters.continuing)}
             />
             <UnderlineFilterButton
               selected={filters.ended}
@@ -203,10 +261,12 @@ export function TitleQuickFilterBar({
               label={t("title.ended")}
               count={counts?.ended}
               tone="muted"
+              className={panelButtonClassName(filters.ended)}
             />
           </>
         ) : null}
-      </div>
+        </div>
+      ) : null}
       {trailingContent ? (
         <div className="w-full shrink-0 sm:w-auto">{trailingContent}</div>
       ) : null}
