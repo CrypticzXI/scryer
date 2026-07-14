@@ -2159,6 +2159,37 @@ fn title_words_containing_cam_or_web_are_not_sources() {
         source_label(cobweb_candidate.projected.source.as_ref()),
         Some("HDTV")
     );
+
+    let camera = analyze_release_for_target(
+        "Show.Name.S01E05.Camera.Shy.1080p.HDTV.x264-GRP",
+        &context(ContextFacetHint::Series, "Show Name"),
+    );
+    let camera_candidate = camera.best_candidate().expect("best candidate");
+    assert_eq!(
+        source_label(camera_candidate.projected.source.as_ref()),
+        Some("HDTV")
+    );
+}
+
+#[test]
+fn explicit_cam_variants_still_parse_as_cam_sources() {
+    let mut target = context(ContextFacetHint::Movie, "Movie Title");
+    target.known_years.push(2024);
+
+    for raw in [
+        "Movie.Title.2024.CAMRip.x264-GRP",
+        "Movie.Title.2024.HDCAM.x264-GRP",
+        "Movie.Title.2024.HQCAM.x264-GRP",
+        "Movie.Title.2024.1080p.CAM.x264-GRP",
+    ] {
+        let analysis = analyze_release_for_target(raw, &target);
+        let candidate = analysis.best_candidate().expect("best candidate");
+        assert_eq!(
+            source_label(candidate.projected.source.as_ref()),
+            Some("CAM"),
+            "{raw}"
+        );
+    }
 }
 
 #[test]

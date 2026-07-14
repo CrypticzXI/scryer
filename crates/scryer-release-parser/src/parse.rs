@@ -469,6 +469,8 @@ fn classify_token(token: &Token) -> Vec<RoleCandidate> {
             | "HDTV"
             | "CAM"
             | "HQCAM"
+            | "CAMRIP"
+            | "HDCAM"
             | "TELESYNC"
             | "TELECINE"
             | "DVDSCR"
@@ -5641,10 +5643,15 @@ fn detect_compound_metadata(token: &str) -> CompoundMetadata {
         metadata.source = Some("BluRay");
     } else if token.contains("HDTV") {
         metadata.source = Some("HDTV");
-    } else if matches!(token, "CAM" | "HQCAM") {
-        // Exact match only: "CAM" is a substring of ordinary title words
-        // ("BECAME", "CAMERA", "CAMP") that flow through metadata consumption
-        // after an episode identity.
+    } else if token == "CAM"
+        || token.starts_with("CAMRIP")
+        || token.starts_with("HDCAM")
+        || token.starts_with("HQCAM")
+    {
+        // Bare "CAM" must match exactly: it is a substring of ordinary title
+        // words ("BECAME", "CAMERA", "CAMP") that flow through metadata
+        // consumption after an episode identity. The longer forms are
+        // unambiguous and may be fused with other metadata.
         metadata.source = Some("CAM");
     } else if token.contains("TELESYNC") || token == "TS" {
         metadata.source = Some("TELESYNC");

@@ -175,7 +175,7 @@ impl ReleaseSource {
             "BRDISK" | "BDMV" | "BDISO" | "BD25" | "BD50" | "BD66" | "BD100" => Some(Self::BrDisk),
             "DVD" | "DVDRIP" => Some(Self::Dvd),
             "HDTV" | "RAWHD" => Some(Self::Hdtv),
-            "CAM" | "HQCAM" => Some(Self::Cam),
+            "CAM" | "HQCAM" | "CAMRIP" | "HDCAM" => Some(Self::Cam),
             "TELESYNC" | "TS" => Some(Self::Telesync),
             "TELECINE" | "TC" => Some(Self::Telecine),
             "DVDSCR" | "DVDSCREENER" => Some(Self::DvdScr),
