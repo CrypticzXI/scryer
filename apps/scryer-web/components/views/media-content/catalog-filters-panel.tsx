@@ -1,7 +1,14 @@
 import * as React from "react";
-import { AlertTriangle, RefreshCw, SlidersHorizontal, X } from "lucide-react";
+import {
+  AlertTriangle,
+  RefreshCw,
+  Search,
+  SlidersHorizontal,
+  X,
+} from "lucide-react";
 
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
+import { Input } from "@/components/ui/input";
 import {
   MultiSelectDropdown,
   type MultiSelectGroup,
@@ -30,6 +37,8 @@ type CatalogFiltersPanelProps = {
   optionsError: boolean;
   onRetryOptions: () => void;
   onFiltersChange: (updates: Partial<TitleCatalogAdvancedFilters>) => void;
+  searchValue: string;
+  onSearchValueChange: (value: string) => void;
   onClear: () => void;
   className?: string;
 };
@@ -83,6 +92,8 @@ export function CatalogFiltersPanel({
   optionsError,
   onRetryOptions,
   onFiltersChange,
+  searchValue,
+  onSearchValueChange,
   onClear,
   className,
 }: CatalogFiltersPanelProps) {
@@ -177,6 +188,7 @@ export function CatalogFiltersPanel({
     ((maximumYear - minimumYearBound) / yearSpan) * 100;
   const minimumRating = filters.minimumRating ?? 0;
   const hasActiveFilters =
+    searchValue.trim().length > 0 ||
     selectedLibraryIds.length > 0 ||
     filters.rootFolderIds.length > 0 ||
     filters.genreTagKeys.length > 0 ||
@@ -201,11 +213,24 @@ export function CatalogFiltersPanel({
         <button
           type="button"
           disabled={!hasActiveFilters}
-          onClick={onClear}
+          onClick={() => {
+            onClear();
+            onSearchValueChange("");
+          }}
           className="text-xs font-medium text-[var(--scry-accent-ring)] transition disabled:cursor-default disabled:opacity-40"
         >
           {t("discovery.clearAll")}
         </button>
+      </div>
+
+      <div className="relative mb-4">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--scry-muted2)]" />
+        <Input
+          placeholder={t("title.filterPlaceholder")}
+          value={searchValue}
+          onChange={(event) => onSearchValueChange(event.target.value)}
+          className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none placeholder:text-[var(--scry-faint2)] focus-visible:ring-[var(--scry-focus)]"
+        />
       </div>
 
       {optionsError ? (

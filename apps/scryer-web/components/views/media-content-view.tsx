@@ -44,7 +44,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
 import {
   Popover,
   PopoverContent,
@@ -951,6 +950,8 @@ function TitleContextPanel({
   canManageTitle,
   canRequestMedia,
   onDiscoveryAction,
+  titleFilterValue,
+  onTitleFilterValueChange,
   titleListDisclosure,
   className,
 }: {
@@ -1018,6 +1019,8 @@ function TitleContextPanel({
   canManageTitle: boolean;
   canRequestMedia: boolean;
   onDiscoveryAction: (item: CatalogDiscoveryItem) => void;
+  titleFilterValue: string;
+  onTitleFilterValueChange: (value: string) => void;
   titleListDisclosure?: React.ReactNode;
   className?: string;
 }) {
@@ -1157,6 +1160,8 @@ function TitleContextPanel({
           optionsError={filterOptionsError}
           onRetryOptions={onRetryFilterOptions}
           onFiltersChange={onAdvancedFiltersChange}
+          searchValue={titleFilterValue}
+          onSearchValueChange={onTitleFilterValueChange}
           onClear={onClearAdvancedFilters}
           className="shrink-0 border-b border-[var(--scry-border2)]"
         />
@@ -2852,13 +2857,18 @@ export function MediaContentView({
     [moveIndexerInScope],
   );
 
-  const handleTitleFilterChange = React.useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const nextValue = event.target.value;
+  const handleTitleFilterValueChange = React.useCallback(
+    (nextValue: string) => {
       setTitleFilterInputValue(nextValue);
       setTitleFilter(nextValue);
     },
     [setTitleFilter],
+  );
+  const handleTitleFilterChange = React.useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      handleTitleFilterValueChange(event.target.value);
+    },
+    [handleTitleFilterValueChange],
   );
 
   const handleRefreshTitles = React.useCallback(() => {
@@ -3223,16 +3233,7 @@ export function MediaContentView({
                   );
                 })();
                 const titleCatalogControlBar = (
-                  <div className="mb-3 flex shrink-0 flex-wrap items-center gap-2.5">
-                    <div className="relative min-w-[180px] flex-[1_1_16rem] sm:min-w-[220px] md:max-w-[420px]">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--scry-muted2)]" />
-                      <Input
-                        placeholder={t("title.filterPlaceholder")}
-                        value={titleFilterInputValue}
-                        onChange={handleTitleFilterChange}
-                        className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none placeholder:text-[var(--scry-faint2)] focus-visible:ring-[var(--scry-focus)]"
-                      />
-                    </div>
+                  <div className="mb-3 flex shrink-0 justify-end">
                     <div className="flex min-w-0 flex-[999_1_28rem] flex-col gap-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
                       {catalogDiscoveryFlyoutAvailable ? (
                         <Sheet>
@@ -3265,6 +3266,8 @@ export function MediaContentView({
                               optionsError={titleCatalogFilterOptionsError}
                               onRetryOptions={retryTitleCatalogFilterOptions}
                               onFiltersChange={updateAdvancedTitleFilters}
+                              searchValue={titleFilterInputValue}
+                              onSearchValueChange={handleTitleFilterValueChange}
                               onClear={clearAdvancedTitleFilters}
                               className="h-full"
                             />
@@ -3823,6 +3826,8 @@ export function MediaContentView({
                       canManageTitle={canManageTitle}
                       canRequestMedia={canRequestMedia}
                       onDiscoveryAction={onCatalogDiscoveryAction}
+                      titleFilterValue={titleFilterInputValue}
+                      onTitleFilterValueChange={handleTitleFilterValueChange}
                       titleListDisclosure={titleListDisclosure}
                       className={titleOverviewPaneClassName}
                     />

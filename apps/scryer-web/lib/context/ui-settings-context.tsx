@@ -46,8 +46,23 @@ function uiSettingsErrorMessage(error: unknown): string {
 
 export function uiSettingsInputFromSettings(settings: UiSettings): UiSettings {
   return {
-    ...settings,
-    tableColumns: settings.tableColumns.map((column) => ({ ...column })),
+    theme: settings.theme,
+    dateTimeFormat: settings.dateTimeFormat,
+    highlightColor: settings.highlightColor,
+    secondaryColor: settings.secondaryColor,
+    highContrastMode: settings.highContrastMode,
+    reduceMotion: settings.reduceMotion,
+    hideSponsorButton: settings.hideSponsorButton,
+    density: settings.density,
+    sidebarMode: settings.sidebarMode,
+    defaultLandingView: settings.defaultLandingView,
+    tableColumns: settings.tableColumns.map((column) => ({
+      facet: column.facet,
+      tableViewMode: column.tableViewMode,
+      columnId: column.columnId,
+      columnOrder: column.columnOrder,
+      visible: column.visible,
+    })),
   };
 }
 
