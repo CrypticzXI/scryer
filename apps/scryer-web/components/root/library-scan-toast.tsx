@@ -352,7 +352,9 @@ export function LibraryScanToast({
       ? "failed"
       : session.status === "CANCELED"
         ? "canceled"
-        : session.status === "WARNING" || unmatched > 0
+        // The Import review route resolves unmatched files; a non-blocking
+        // scan warning with nothing to resolve must still complete normally.
+        : unmatched > 0
           ? "issues"
           : "success";
 

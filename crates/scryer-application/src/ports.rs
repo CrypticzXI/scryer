@@ -2388,7 +2388,6 @@ pub trait LogicalBackupExporter: Send + Sync {
 pub trait HousekeepingRepository: Send + Sync {
     async fn delete_release_decisions_older_than(&self, days: i64) -> AppResult<u32>;
     async fn delete_release_attempts_older_than(&self, days: i64) -> AppResult<u32>;
-    async fn delete_dispatched_event_outboxes_older_than(&self, days: i64) -> AppResult<u32>;
     async fn delete_history_events_older_than(&self, days: i64) -> AppResult<u32>;
     async fn delete_domain_events_older_than_for_types(
         &self,

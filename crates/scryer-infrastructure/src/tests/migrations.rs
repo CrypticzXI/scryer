@@ -650,6 +650,30 @@ async fn migration_0140_uses_owner_scoped_metadata_storage_only() {
 }
 
 #[tokio::test]
+async fn migration_0146_drops_retired_event_outboxes() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0146_event_outboxes_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM sqlite_master
+          WHERE type = 'table'
+            AND name = 'event_outboxes'",
+    )
+    .fetch_one(&services.pool)
+    .await
+    .expect("event outbox table lookup should succeed");
+    assert_eq!(exists, 0, "event outboxes should be removed by migration");
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn migration_0140_upgrades_v0_16_8_title_metadata_and_media_in_place() {
     crate::spellfix::register_spellfix_auto_extension()
         .expect("spellfix auto-extension should register");

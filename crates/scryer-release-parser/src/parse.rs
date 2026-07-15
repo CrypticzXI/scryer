@@ -643,8 +643,7 @@ fn classify_token(token: &Token) -> Vec<RoleCandidate> {
     // Bracketed 8-char tokens are hashes by scene convention; fused air dates
     // ("20260105") only appear unbracketed, so an all-decimal valid date in
     // brackets stays a checksum.
-    let fused_date =
-        token.bracket_depth == 0 && parse_fused_daily_date(normalized).is_some();
+    let fused_date = token.bracket_depth == 0 && parse_fused_daily_date(normalized).is_some();
     if is_checksum(normalized) && !fused_date {
         roles.push(RoleCandidate {
             role: TokenRole::ChecksumOrHash,
@@ -4709,8 +4708,7 @@ fn split_episode_range_end(tokens: &[Token], index: usize, range_start: u32) -> 
         return None;
     }
     let digits = token.normalized.as_str();
-    if digits.is_empty() || digits.len() > 3 || !digits.bytes().all(|byte| byte.is_ascii_digit())
-    {
+    if digits.is_empty() || digits.len() > 3 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
     digits
@@ -5128,8 +5126,7 @@ fn parse_daily_at(tokens: &[Token], index: usize) -> Option<(NaiveDate, Vec<usiz
     let third = tokens.get(index + 2)?;
     if !matches!(
         (second.separator_before, third.separator_before),
-        (SeparatorKind::Dot, SeparatorKind::Dot)
-            | (SeparatorKind::Hyphen, SeparatorKind::Hyphen)
+        (SeparatorKind::Dot, SeparatorKind::Dot) | (SeparatorKind::Hyphen, SeparatorKind::Hyphen)
     ) {
         return None;
     }

@@ -620,15 +620,7 @@ impl AppUseCase {
             + stale_download_queue_deletes
             + stale_rule_set_history;
 
-        // 3. Expired event outboxes (dispatched > 7 days ago)
-        let expired_event_outboxes = self
-            .services
-            .workflow
-            .housekeeping
-            .delete_dispatched_event_outboxes_older_than(7)
-            .await?;
-
-        // 4. Stale staged NZB artifacts (> 1 hour old)
+        // 3. Stale staged NZB artifacts (> 1 hour old)
         let now = self.runtime.environment.now();
         let staged_nzb_artifacts_pruned = self
             .services
@@ -637,7 +629,7 @@ impl AppUseCase {
             .prune_staged_nzbs_older_than(now - chrono::Duration::hours(1))
             .await?;
 
-        // 5. Purge expired recycle bin entries (per media root)
+        // 4. Purge expired recycle bin entries (per media root)
         let mut recycled_purged = 0u32;
         for (media_root, config) in self.resolve_all_recycle_configs().await {
             match self
@@ -701,7 +693,6 @@ impl AppUseCase {
             orphaned_media_files,
             stale_release_decisions,
             stale_release_attempts,
-            expired_event_outboxes,
             stale_history_events,
             stale_history_records,
             staged_nzb_artifacts_pruned,
@@ -714,7 +705,6 @@ impl AppUseCase {
             orphaned_media_files,
             stale_release_decisions,
             stale_release_attempts,
-            expired_event_outboxes,
             stale_history_events,
             stale_operational_domain_events,
             stale_domain_events,

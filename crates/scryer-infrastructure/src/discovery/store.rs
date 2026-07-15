@@ -2692,7 +2692,7 @@ async fn hydrate_discovery_home_candidate_selection(
         datastore,
         "SELECT discovery_title_id, term_value, sort_index
              FROM discovery_title_terms
-             WHERE discovery_title_id IN ({{}})
+             WHERE discovery_title_id IN ({})
                AND term_kind = 'facet_term'
              ORDER BY discovery_title_id ASC, sort_index ASC, term_value ASC",
         &title_ids,
@@ -6487,6 +6487,64 @@ mod tests {
             selected_candidates
                 .iter()
                 .all(|candidate| candidate.item.context_terms.len() == TERMS_PER_TITLE)
+        );
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn sqlite_personalized_home_candidates_load_selection_signals() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_discovery_personalized_home_candidates_{}.db",
+            Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("sqlite services should initialize");
+        let store = DiscoveryStore::new(services.datastore());
+        let now = Utc::now();
+        let run_id = "run-personalized-home-candidates";
+        store
+            .upsert_discovery_sync_run(&discovery_prune_run(
+                run_id,
+                "context_snapshot",
+                "complete",
+                now,
+            ))
+            .await
+            .expect("run should upsert");
+
+        let mut item = discovery_prune_item(run_id, now);
+        item.id = format!("{run_id}:readable");
+        item.target_key = "tmdb:movie:10".to_string();
+        item.poster_url = Some("https://example.com/poster.jpg".to_string());
+        item.facet_terms = vec!["canonical:genre:drama".to_string()];
+        item.library_provenance = vec![DiscoveryItemLibraryProvenanceRecord {
+            subject_key: "tmdb:movie:10".to_string(),
+            title_id: Some("library-title-10".to_string()),
+            library_id: Some("movie-library".to_string()),
+        }];
+        store
+            .replace_discovery_items(run_id, &[item])
+            .await
+            .expect("item should upsert");
+
+        let candidates = fetch_personalized_home_candidates(
+            &store.datastore,
+            run_id,
+            &["movie-library".to_string()],
+            &["movie".to_string()],
+            true,
+            None,
+            18,
+        )
+        .await
+        .expect("personalized home candidates should load");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].affinity_terms,
+            vec!["canonical:genre:drama".to_string()]
         );
 
         let _ = std::fs::remove_file(db);

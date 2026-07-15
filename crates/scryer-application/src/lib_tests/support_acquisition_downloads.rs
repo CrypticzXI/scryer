@@ -1228,10 +1228,6 @@ impl HousekeepingRepository for TrackingHousekeepingRepo {
         Ok(0)
     }
 
-    async fn delete_dispatched_event_outboxes_older_than(&self, _days: i64) -> AppResult<u32> {
-        Ok(0)
-    }
-
     async fn delete_history_events_older_than(&self, _days: i64) -> AppResult<u32> {
         Ok(0)
     }

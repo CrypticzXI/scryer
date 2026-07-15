@@ -410,12 +410,6 @@ impl HousekeepingRepository for TestLibraryStateStore {
             .await
     }
 
-    async fn delete_dispatched_event_outboxes_older_than(&self, days: i64) -> AppResult<u32> {
-        self.housekeeping
-            .delete_dispatched_event_outboxes_older_than(days)
-            .await
-    }
-
     async fn delete_history_events_older_than(&self, days: i64) -> AppResult<u32> {
         self.housekeeping
             .delete_history_events_older_than(days)

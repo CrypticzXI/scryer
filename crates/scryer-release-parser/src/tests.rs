@@ -1864,7 +1864,10 @@ fn dotted_hyphen_split_season_episode_parses_as_standard_episode() {
     assert_eq!(candidate.family, ParseFamily::StandardEpisode);
     assert_eq!(episode.season, Some(3));
     assert_eq!(episode.episode_numbers, vec![1]);
-    assert_eq!(episode.release_type, ParsedEpisodeReleaseType::SingleEpisode);
+    assert_eq!(
+        episode.release_type,
+        ParsedEpisodeReleaseType::SingleEpisode
+    );
     assert!(!episode.full_season);
     assert_eq!(
         candidate.projected.release_group.as_deref(),
@@ -1912,10 +1915,7 @@ fn dot_split_guard_keeps_true_season_packs_and_years() {
 
     let mut year_target = context(ContextFacetHint::Series, "Show Name");
     year_target.known_years.push(2024);
-    let year = analyze_release_for_target(
-        "Show.Name.S02.2024.1080p.WEB-DL.x264-GRP",
-        &year_target,
-    );
+    let year = analyze_release_for_target("Show.Name.S02.2024.1080p.WEB-DL.x264-GRP", &year_target);
     let year_candidate = year.best_candidate().expect("best candidate");
     let year_episode = year_candidate.projected.episode.as_ref().expect("episode");
     assert_eq!(year_candidate.family, ParseFamily::SeasonPack);
@@ -1988,8 +1988,7 @@ fn month_name_daily_dates_parse_in_both_orders() {
     let mut target = context(ContextFacetHint::Series, "Late Show");
     target.known_years.push(2026);
 
-    let year_first =
-        analyze_release_for_target("Late.Show.2026.Jan.05.720p.WEB.x264-GRP", &target);
+    let year_first = analyze_release_for_target("Late.Show.2026.Jan.05.720p.WEB.x264-GRP", &target);
     let year_first_episode = year_first
         .best_candidate()
         .expect("best candidate")
@@ -2002,8 +2001,7 @@ fn month_name_daily_dates_parse_in_both_orders() {
         Some(NaiveDate::from_ymd_opt(2026, 1, 5).unwrap())
     );
 
-    let day_first =
-        analyze_release_for_target("Late.Show.05.Jan.2026.720p.WEB.x264-GRP", &target);
+    let day_first = analyze_release_for_target("Late.Show.05.Jan.2026.720p.WEB.x264-GRP", &target);
     let day_first_episode = day_first
         .best_candidate()
         .expect("best candidate")
@@ -2113,10 +2111,7 @@ fn bracketed_decimal_hash_that_forms_a_date_stays_a_checksum() {
 fn separated_fps_word_requires_a_standard_frame_rate() {
     let mut target = context(ContextFacetHint::Movie, "Top 10 FPS Games");
     target.known_years.push(2024);
-    let analysis = analyze_release_for_target(
-        "Top.10.FPS.Games.2024.1080p.WEB.x264-GRP",
-        &target,
-    );
+    let analysis = analyze_release_for_target("Top.10.FPS.Games.2024.1080p.WEB.x264-GRP", &target);
     let projected = &analysis.best_candidate().expect("best candidate").projected;
     assert_eq!(projected.fps, None);
 
@@ -2217,10 +2212,8 @@ fn dolby_vision_alone_is_not_an_hdr_fallback() {
     assert!(hdr10_projected.has_hdr_fallback);
     assert!(!hdr10_projected.is_dolby_vision);
 
-    let dv_with_fallback = analyze_release_for_target(
-        "Movie.Title.2021.2160p.WEB-DL.DV.HDR10.H.265-GRP",
-        &target,
-    );
+    let dv_with_fallback =
+        analyze_release_for_target("Movie.Title.2021.2160p.WEB-DL.DV.HDR10.H.265-GRP", &target);
     let both_projected = &dv_with_fallback
         .best_candidate()
         .expect("best candidate")
@@ -2317,20 +2310,16 @@ fn proper_is_a_revision_flag_not_an_edition() {
     let mut target = context(ContextFacetHint::Movie, "Movie Title");
     target.known_years.push(2024);
 
-    let analysis = analyze_release_for_target(
-        "Movie.Title.2024.1080p.PROPER.WEB-DL.x264-GRP",
-        &target,
-    );
+    let analysis =
+        analyze_release_for_target("Movie.Title.2024.1080p.PROPER.WEB-DL.x264-GRP", &target);
     let projected = &analysis.best_candidate().expect("best candidate").projected;
 
     assert_eq!(projected.edition, None);
     assert!(projected.is_proper_upload);
     assert!(!projected.is_repack);
 
-    let repack = analyze_release_for_target(
-        "Movie.Title.2024.1080p.REPACK.WEB-DL.x264-GRP",
-        &target,
-    );
+    let repack =
+        analyze_release_for_target("Movie.Title.2024.1080p.REPACK.WEB-DL.x264-GRP", &target);
     let repack_projected = &repack.best_candidate().expect("best candidate").projected;
 
     assert_eq!(repack_projected.edition, None);
@@ -2370,17 +2359,13 @@ fn fps_is_detected_in_dot_separated_names() {
     let mut target = context(ContextFacetHint::Movie, "Movie Title");
     target.known_years.push(2024);
 
-    let analysis = analyze_release_for_target(
-        "Movie.Title.2024.1080p.60fps.WEB-DL.x264-GRP",
-        &target,
-    );
+    let analysis =
+        analyze_release_for_target("Movie.Title.2024.1080p.60fps.WEB-DL.x264-GRP", &target);
     let projected = &analysis.best_candidate().expect("best candidate").projected;
     assert_eq!(projected.fps, Some(60.0));
 
-    let upscaled = analyze_release_for_target(
-        "Movie.Title.2024.2160p.144fps.WEB-DL.x264-GRP",
-        &target,
-    );
+    let upscaled =
+        analyze_release_for_target("Movie.Title.2024.2160p.144fps.WEB-DL.x264-GRP", &target);
     let upscaled_projected = &upscaled.best_candidate().expect("best candidate").projected;
     assert_eq!(upscaled_projected.fps, Some(144.0));
     assert!(upscaled_projected.is_ai_enhanced);

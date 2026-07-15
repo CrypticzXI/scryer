@@ -1006,7 +1006,7 @@ function DiscoveryHero({
     ? t("discovery.add")
     : t("discovery.request");
   return (
-    <section className="group relative min-h-[340px] overflow-hidden rounded-[18px] border border-[var(--scry-border2)] bg-slate-950">
+    <section className="group relative min-h-[340px] overflow-hidden rounded-[18px] border border-[var(--scry-border2)] bg-slate-950 lg:h-full">
       {backdropUrl ? (
         <img
           src={backdropUrl}
@@ -1039,7 +1039,7 @@ function DiscoveryHero({
           <HeroActionIcon className="h-7 w-7" aria-hidden="true" />
         </button>
       ) : null}
-      <div className="relative flex min-h-[340px] flex-col p-8 pb-28 max-sm:pb-8">
+      <div className="relative flex min-h-[340px] flex-col p-6 sm:p-8 lg:h-full">
         <div className="max-w-[min(72%,760px)] max-lg:max-w-[82%] max-sm:max-w-full">
           <div className="mb-3.5 flex flex-wrap gap-2">
             <span className="rounded-[7px] border border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.22)] px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.04em] text-[#c3c9ff]">
@@ -1059,7 +1059,7 @@ function DiscoveryHero({
               {itemTypeLabel(item)}
             </span>
           </div>
-          <h2 className="m-0 mb-3 font-[var(--font-space-grotesk)] text-[clamp(2rem,3.5vw,46px)] font-bold leading-none text-white drop-shadow">
+          <h2 className="m-0 mb-3 font-[var(--font-space-grotesk)] text-[clamp(2rem,3vw,46px)] font-bold leading-[0.96] text-white drop-shadow">
             {titleLabel}
           </h2>
           <div className="mb-3.5 flex flex-wrap items-center gap-3 text-[13px] text-[var(--scry-text2)]">
@@ -1087,12 +1087,12 @@ function DiscoveryHero({
             variant="hero"
           />
           {item.overview ? (
-            <p className="m-0 line-clamp-4 max-w-[620px] text-[13.5px] leading-6 text-[#b7c0dd]">
+            <p className="m-0 line-clamp-2 max-w-[620px] text-[13.5px] leading-6 text-[#b7c0dd] sm:line-clamp-3 xl:line-clamp-4">
               {item.overview}
             </p>
           ) : null}
           {genres.length > 0 ? (
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               {genres.map((genre) => (
                 <span
                   key={genre}
@@ -1104,9 +1104,8 @@ function DiscoveryHero({
             </div>
           ) : null}
         </div>
-      </div>
-      {hasExternalLinks ? (
-        <div className="absolute inset-x-8 bottom-8 z-10 flex items-center max-sm:static max-sm:mt-6">
+        {hasExternalLinks ? (
+          <div className="mt-auto flex max-w-[min(72%,760px)] items-center pt-4 max-lg:max-w-[82%] max-sm:max-w-full">
           <div className="flex flex-wrap items-center justify-start gap-2">
             <ImdbExternalLink
               imdbId={externalIds.bySource("imdb")}
@@ -1141,8 +1140,9 @@ function DiscoveryHero({
               size="compact"
             />
           </div>
-        </div>
-      ) : null}
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }

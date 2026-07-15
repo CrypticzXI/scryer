@@ -1074,8 +1074,8 @@ fn parse_fps(raw_title: &str) -> Option<f32> {
     // 10fps). Fused forms ("60FPS") are explicit enough to accept any
     // plausible rate.
     const SEPARATED_FRAME_RATES: &[f32] = &[
-        23.976, 24.0, 25.0, 29.97, 30.0, 48.0, 50.0, 59.94, 60.0, 72.0, 90.0, 100.0, 120.0,
-        144.0, 165.0, 240.0, 300.0,
+        23.976, 24.0, 25.0, 29.97, 30.0, 48.0, 50.0, 59.94, 60.0, 72.0, 90.0, 100.0, 120.0, 144.0,
+        165.0, 240.0, 300.0,
     ];
     let upper = raw_title.to_ascii_uppercase();
     let mut previous = None::<String>;
@@ -1099,7 +1099,9 @@ fn parse_fps(raw_title: &str) -> Option<f32> {
                 }
                 _ => None,
             };
-            let single = previous.as_deref().and_then(|value| value.parse::<f32>().ok());
+            let single = previous
+                .as_deref()
+                .and_then(|value| value.parse::<f32>().ok());
             for candidate in [rejoined, single].into_iter().flatten() {
                 if SEPARATED_FRAME_RATES
                     .iter()

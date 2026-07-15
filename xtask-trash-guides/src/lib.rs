@@ -1399,10 +1399,7 @@ fn normalize_extracted_token(token: &str) -> Option<String> {
     if token.len() < 2 {
         return None;
     }
-    let alphabetic_count = token
-        .chars()
-        .filter(|ch| ch.is_ascii_alphabetic())
-        .count();
+    let alphabetic_count = token.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
     if alphabetic_count < 2 {
         return None;
     }
@@ -1827,11 +1824,11 @@ mod tests {
         let noisy = extract_explicit_tokens(r"(?i)\bhbo[ ._-]?max\b.{1,3}[0-4]u");
         assert!(noisy.contains("HBO"));
         assert!(noisy.contains("MAX"));
-        assert!(!noisy.iter().any(|token| token
-            .chars()
-            .filter(|ch| ch.is_ascii_alphabetic())
-            .count()
-            < 2));
+        assert!(
+            !noisy
+                .iter()
+                .any(|token| token.chars().filter(|ch| ch.is_ascii_alphabetic()).count() < 2)
+        );
 
         // Alternation shards and rename-template artifacts stay out.
         let shards = extract_explicit_tokens(r"(?i)\bfuni(?:mation)?\b|stanrename");

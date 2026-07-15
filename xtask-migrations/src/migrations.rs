@@ -1151,5 +1151,4 @@ ALTER TABLE ONLY public.download_jobs
         }
         out
     }
-
 }

@@ -1216,18 +1216,6 @@ impl HousekeepingRepository for HousekeepingStore {
         .await
     }
 
-    async fn delete_dispatched_event_outboxes_older_than(&self, days: i64) -> AppResult<u32> {
-        execute_housekeeping_delete(
-            &self.datastore,
-            "delete_dispatched_event_outboxes_older_than",
-            "DELETE FROM event_outboxes
-              WHERE status = 'dispatched'
-                AND created_at < {}",
-            vec![housekeeping_cutoff_arg(days)],
-        )
-        .await
-    }
-
     async fn delete_history_events_older_than(&self, days: i64) -> AppResult<u32> {
         execute_housekeeping_delete(
             &self.datastore,

@@ -641,10 +641,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "event_outboxes",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "event_subscriber_offsets",
         classification: BackupTableClassification::Export,
     },
