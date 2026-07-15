@@ -8,15 +8,17 @@ use scryer_application::{
     IndexerSearchLearningRepository, IndexerStatsTracker, LibraryRepository, LogicalBackupExporter,
     MediaRequestRepository, MediaServerConnectionRepository, OAuthRepository,
     PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
-    RuleSetRepository, SettingsRepository, ShowRepository, SubtitleProviderConfigRepository,
-    TitleImageProcessor, TitleImageRepository, TitleRepository, TotpRepository, UpstreamScheduler,
-    UserExternalAccountRepository, UserRepository, UserUiSettingsRepository, WebauthnRepository,
+    RuleSetRepository, ScopeIndexerCoverageRepository, SettingsRepository, ShowRepository,
+    SubtitleProviderConfigRepository, TitleImageProcessor, TitleImageRepository, TitleRepository,
+    TotpRepository, UpstreamScheduler, UserExternalAccountRepository, UserRepository,
+    UserUiSettingsRepository, WebauthnRepository,
 };
 
 #[cfg(feature = "image-processing")]
 use crate::HttpTitleImageProcessor;
 use crate::discovery::store::DiscoveryStore;
 use crate::external_identity::HttpExternalIdentityVerifier;
+use crate::indexers::scope_indexer_coverage_store::ScopeIndexerCoverageStore;
 use crate::postgres::{
     PostgresLogicalBackupExporter, PostgresServices, restore_backup_bundle_into_postgres_pool,
     restore_prepared_backup_directory_into_postgres_pool,
@@ -1213,6 +1215,17 @@ impl DatastoreAssembly {
         }
     }
 
+    fn scope_indexer_coverage_repository(&self) -> Arc<dyn ScopeIndexerCoverageRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite { db, .. } => {
+                Arc::new(ScopeIndexerCoverageStore::new(db.datastore()))
+            }
+            DatastoreStores::Postgres { db, .. } => {
+                Arc::new(ScopeIndexerCoverageStore::new(db.datastore()))
+            }
+        }
+    }
+
     pub async fn upstream_scheduler(&self) -> AppResult<Arc<dyn UpstreamScheduler>> {
         let scheduler = match &self.stores {
             DatastoreStores::Sqlite { db, .. } => {
@@ -1328,6 +1341,7 @@ impl DatastoreAssembly {
                 .with_totp_store(totp)
                 .with_media_files(media_file_store.clone())
                 .with_acquisition_scope_states(wanted_store.clone())
+                .with_scope_indexer_coverage_store(self.scope_indexer_coverage_repository())
                 .with_pending_releases(pending_release_store.clone())
                 .with_blocklist_repo(blocklist_store.clone())
                 .with_library_probe_signatures(library_probe_store.clone())
@@ -1428,6 +1442,7 @@ impl DatastoreAssembly {
                 .with_totp_store(totp)
                 .with_media_files(media_file_store.clone())
                 .with_acquisition_scope_states(wanted_store.clone())
+                .with_scope_indexer_coverage_store(self.scope_indexer_coverage_repository())
                 .with_pending_releases(pending_release_store.clone())
                 .with_blocklist_repo(blocklist_store.clone())
                 .with_library_probe_signatures(library_probe_store.clone())
@@ -1635,6 +1650,33 @@ mod tests {
 
     fn data_dir() -> PathBuf {
         std::env::temp_dir().join("scryer-datastore-config-tests")
+    }
+
+    #[tokio::test]
+    async fn sqlite_scope_indexer_coverage_repository_persists_rows() {
+        let data_dir = TempDir::new().expect("data dir");
+        let database_path = data_dir.path().join("scryer.db");
+        let assembly = DatastoreAssembly::connect(DatastoreConfig::sqlite(
+            format!("sqlite://{}", database_path.display()),
+            data_dir.path(),
+            MigrationMode::Apply,
+        ))
+        .await
+        .expect("sqlite datastore assembly");
+
+        let coverage = assembly.scope_indexer_coverage_repository();
+        coverage
+            .record_coverage("title:title-1", "movie", "indexer-1", "fingerprint-1")
+            .await
+            .expect("record coverage");
+
+        assert_eq!(
+            coverage
+                .covered_indexers("title:title-1", "movie", "fingerprint-1", None)
+                .await
+                .expect("read coverage"),
+            vec!["indexer-1".to_string()]
+        );
     }
 
     fn validation_message(result: AppResult<DatastoreConfig>) -> String {

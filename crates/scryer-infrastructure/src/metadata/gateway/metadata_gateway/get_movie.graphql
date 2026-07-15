@@ -1,7 +1,6 @@
 query GetMovie($tvdbId: Int!, $language: String!) {
   movie(tvdbId: $tvdbId, language: $language) {
     movie {
-      target_key
       tvdb_id
       name
       slug

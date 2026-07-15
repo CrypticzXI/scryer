@@ -6,8 +6,9 @@ use super::support_bootstrap_fixtures::{
 };
 use crate::ports::{
     CatalogDiscoveryCandidatesRecord, CatalogDiscoverySectionCandidatesRecord,
+    DiscoveryHomeCandidate, DiscoveryHomeSectionCandidatesRecord,
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery,
-    DiscoverySectionItemsRecord, DiscoverySourceTagRecord,
+    DiscoverySourceTagRecord,
 };
 use crate::settings::keys::{DISCOVERY_REGION_KEY, METADATA_LANGUAGE_KEY, SETTINGS_SCOPE_SYSTEM};
 use crate::{
@@ -1102,6 +1103,121 @@ async fn discovery_filters_every_read_path_by_request_or_manage_facet() {
 }
 
 #[tokio::test]
+async fn discovery_home_hydrates_only_selected_cards_from_large_candidate_set() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let (_viewer, viewer_actor) = create_authenticated_user(
+        &app,
+        &admin,
+        "discovery-selected-hydration",
+        "password",
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::MediaRequest,
+        ],
+    )
+    .await;
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let mut library_title = test_title(
+        "selected-hydration-library-title",
+        "Selected Hydration Library Title",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "9000")],
+    );
+    library_title.library_id = movie_library_id.clone();
+    titles.store.lock().await.push(library_title);
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_success_generation_id: Some("selected-hydration-run".to_string()),
+        updated_at: Utc.timestamp_opt(3_000, 0).unwrap(),
+        ..DiscoverySyncStateRecord::default()
+    });
+    discovery
+        .submitted_subjects
+        .lock()
+        .await
+        .push(DiscoverySubmittedSubjectRecord {
+            run_id: "selected-hydration-run".to_string(),
+            subject_key: "tmdb:movie:9000".to_string(),
+            title_id: Some("selected-hydration-library-title".to_string()),
+            library_id: Some(movie_library_id.clone()),
+            library_facet: Some("movie".to_string()),
+            title_kind: Some("movie".to_string()),
+            display_title: Some("Selected Hydration Library Title".to_string()),
+            external_ids_json: "[]".to_string(),
+            raw_subject_json: "{}".to_string(),
+        });
+    let mut candidates = Vec::new();
+    for index in 0..128 {
+        let mut item = discovery_item_record(
+            "selected-hydration-run",
+            "selected-hydration-run",
+            None,
+            &format!("tmdb:movie:{}", 10_000 + index),
+            &format!("Candidate {index}"),
+            "movie",
+            1_000.0 - index as f64,
+            &["Drama"],
+            &[],
+            false,
+            true,
+        );
+        item.matched_subject_keys = vec!["tmdb:movie:9000".to_string()];
+        item.library_provenance = vec![DiscoveryItemLibraryProvenanceRecord {
+            subject_key: "tmdb:movie:9000".to_string(),
+            title_id: Some("selected-hydration-library-title".to_string()),
+            library_id: Some(movie_library_id.clone()),
+        }];
+        item.context_terms = (0..64)
+            .map(|term_index| format!("term-{index}-{term_index}"))
+            .collect();
+        candidates.push(item);
+    }
+    discovery.items.lock().await.extend(candidates);
+
+    let home = app
+        .discovery_home(
+            &viewer_actor,
+            DiscoveryHomeQuery {
+                include_public: false,
+                include_personalized: true,
+                include_unresolved: true,
+                limit_per_section: 1,
+            },
+        )
+        .await
+        .expect("large discovery home should load");
+    let returned_ids = home
+        .public_sections
+        .iter()
+        .chain(home.personalized_sections.iter())
+        .flat_map(|section| section.items.iter())
+        .chain(
+            home.complete_collection
+                .iter()
+                .flat_map(|section| section.items.iter()),
+        )
+        .chain(home.hero_item.iter())
+        .map(|item| item.id.clone())
+        .collect::<HashSet<_>>();
+    assert!(!returned_ids.is_empty());
+    assert!(returned_ids.len() < 128);
+    let hydration_batches = discovery.hydrated_home_candidate_ids.lock().await;
+    assert_eq!(hydration_batches.len(), 1);
+    assert_eq!(
+        hydration_batches[0].iter().cloned().collect::<HashSet<_>>(),
+        returned_ids
+    );
+    assert!(
+        home.personalized_sections
+            .iter()
+            .flat_map(|section| section.items.iter())
+            .all(|item| item.context_terms.len() == 64)
+    );
+}
+
+#[tokio::test]
 async fn discovery_provenance_keeps_duplicate_subject_keys_across_libraries() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
@@ -1331,6 +1447,185 @@ async fn catalog_discovery_returns_public_groups_without_personalized_snapshot()
         0,
         "catalog discovery should not hydrate full generations"
     );
+}
+
+#[tokio::test]
+async fn catalog_discovery_prioritizes_anime_public_rails_before_personalization() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let observed_at = Utc.timestamp_opt(2_125, 0).unwrap();
+    let anime_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
+    let viewer = library_permission_user(
+        "anime-library-viewer",
+        &anime_library_id,
+        &[
+            scryer_domain::LibraryPermission::View,
+            scryer_domain::LibraryPermission::Request,
+        ],
+    );
+
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_success_generation_id: Some("context-run".to_string()),
+        last_public_feed_generation_id: Some("public-run".to_string()),
+        updated_at: observed_at,
+        ..DiscoverySyncStateRecord::default()
+    });
+    discovery.sections.lock().await.extend([
+        discovery_section_record("public-run", "trending_now", "TRENDING_NOW", "public"),
+        discovery_section_record("public-run", "popular_series", "POPULAR_SERIES", "public"),
+        discovery_section_record("public-run", "anime_this_week", "ANIME_THIS_WEEK", "public"),
+        discovery_section_record(
+            "public-run",
+            "new_on_streaming",
+            "NEW_ON_STREAMING",
+            "public",
+        ),
+        discovery_section_record(
+            "public-run",
+            "most_anticipated_anime",
+            "MOST_ANTICIPATED_ANIME",
+            "public",
+        ),
+        discovery_section_record(
+            "public-run",
+            "popular_right_now",
+            "POPULAR_RIGHT_NOW",
+            "public",
+        ),
+    ]);
+    let mut personalized = discovery_item_record(
+        "context-run",
+        "context-run",
+        None,
+        "tvdb:series:700006",
+        "Personalized Anime",
+        "anime",
+        7.5,
+        &[],
+        &[],
+        false,
+        true,
+    );
+    personalized.library_provenance[0].library_id = Some(anime_library_id);
+    discovery.items.lock().await.extend([
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("trending_now"),
+            "tvdb:series:700001",
+            "Generic Anime Trend",
+            "anime",
+            10.0,
+            &[],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("popular_series"),
+            "tvdb:series:700002",
+            "Anime From Popular Series",
+            "anime",
+            9.0,
+            &[],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("anime_this_week"),
+            "tvdb:series:700003",
+            "Weekly Anime Blend",
+            "anime",
+            8.0,
+            &[],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("new_on_streaming"),
+            "tvdb:series:700004",
+            "New Streaming Anime",
+            "anime",
+            7.0,
+            &[],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("most_anticipated_anime"),
+            "tvdb:series:700005",
+            "Anticipated Anime",
+            "anime",
+            6.0,
+            &[],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("popular_right_now"),
+            "tvdb:series:700007",
+            "Popular Anime",
+            "anime",
+            5.0,
+            &[],
+            &[],
+            false,
+            true,
+        ),
+        personalized,
+    ]);
+
+    let result = app
+        .catalog_discovery(
+            &viewer,
+            CatalogDiscoveryQuery {
+                facet: MediaFacet::Anime,
+                library_ids: Vec::new(),
+                include_unresolved: true,
+                limit_per_group: 6,
+                max_groups: 6,
+            },
+        )
+        .await
+        .expect("catalog discovery should return prioritized anime rails");
+
+    assert_eq!(
+        result
+            .groups
+            .iter()
+            .map(|group| group.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "public_top_anime",
+            "public_section_new_on_streaming",
+            "public_section_most_anticipated_anime",
+            "fallback",
+            "public_section_popular_right_now",
+        ]
+    );
+    assert_eq!(
+        result.groups[0].label_value.as_deref(),
+        Some("Trending Now")
+    );
+    assert!(result.groups.iter().all(|group| {
+        group.id != "public_section_trending_now" && group.id != "public_section_popular_series"
+    }));
 }
 
 #[tokio::test]
@@ -4425,6 +4720,7 @@ struct RecordingDiscoveryRepository {
     title_more_like_this_items: Mutex<HashMap<String, Vec<DiscoveryItemRecord>>>,
     title_more_like_this_limits: Mutex<Vec<i64>>,
     generation_list_calls: Mutex<usize>,
+    hydrated_home_candidate_ids: Mutex<Vec<Vec<String>>>,
 }
 
 #[async_trait]
@@ -4822,7 +5118,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit_per_section: i64,
-    ) -> AppResult<Vec<DiscoverySectionItemsRecord>> {
+    ) -> AppResult<Vec<DiscoveryHomeSectionCandidatesRecord>> {
         let sections = self.list_discovery_sections(run_id, Some("public")).await?;
         let all_items = self.items.lock().await.clone();
         let mut records = Vec::new();
@@ -4848,10 +5144,10 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
             let total_count = items.len() as i64;
             items.truncate(limit_per_section.max(1) as usize);
             if !items.is_empty() {
-                records.push(DiscoverySectionItemsRecord {
+                records.push(DiscoveryHomeSectionCandidatesRecord {
                     section,
                     total_count,
-                    items,
+                    items: items.into_iter().map(recording_home_candidate).collect(),
                 });
             }
         }
@@ -4865,7 +5161,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         let mut items = recording_visible_personalized_items(
             &self.items.lock().await,
             run_id,
@@ -4878,7 +5174,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         .collect::<Vec<_>>();
         recording_dedupe_and_sort(&mut items);
         items.truncate(limit.max(1) as usize);
-        Ok(items)
+        Ok(items.into_iter().map(recording_home_candidate).collect())
     }
 
     async fn list_personalized_complete_collection_items(
@@ -4888,7 +5184,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         let mut items = recording_visible_personalized_items(
             &self.items.lock().await,
             run_id,
@@ -4903,7 +5199,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         .collect::<Vec<_>>();
         recording_dedupe_and_sort(&mut items);
         items.truncate(limit.max(1) as usize);
-        Ok(items)
+        Ok(items.into_iter().map(recording_home_candidate).collect())
     }
 
     async fn list_personalized_discovery_facets(
@@ -4935,7 +5231,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         excluded_identity_keys: &[String],
         include_unresolved: bool,
         limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         let excluded_identity_keys = excluded_identity_keys
             .iter()
             .map(|key| key.trim().to_ascii_lowercase())
@@ -4984,7 +5280,20 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         items.sort_by(recording_compare_top_rated_items);
         recording_dedupe_preserving_order(&mut items);
         items.truncate(limit.max(1) as usize);
-        Ok(items)
+        Ok(items.into_iter().map(recording_home_candidate).collect())
+    }
+
+    async fn hydrate_discovery_home_candidates(
+        &self,
+        candidates: &mut [DiscoveryHomeCandidate],
+    ) -> AppResult<()> {
+        self.hydrated_home_candidate_ids.lock().await.push(
+            candidates
+                .iter()
+                .map(|candidate| candidate.item.id.clone())
+                .collect(),
+        );
+        Ok(())
     }
 
     async fn list_catalog_public_discovery_items(
@@ -5419,6 +5728,16 @@ fn discovery_section_record(
         sort_index: 0,
         created_at: observed_at,
         updated_at: observed_at,
+    }
+}
+
+fn recording_home_candidate(item: DiscoveryItemRecord) -> DiscoveryHomeCandidate {
+    DiscoveryHomeCandidate {
+        discovery_title_id: format!("recording:{}", item.id),
+        matched_subject_keys: item.matched_subject_keys.clone(),
+        affinity_terms: item.facet_terms.clone(),
+        has_acclaim_signal: false,
+        item,
     }
 }
 

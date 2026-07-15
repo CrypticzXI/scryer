@@ -98,7 +98,7 @@ function RatingPill({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span tabIndex={0} aria-label={ariaLabel} className={className}>
+        <span aria-label={ariaLabel} className={className}>
           {children}
         </span>
       </TooltipTrigger>

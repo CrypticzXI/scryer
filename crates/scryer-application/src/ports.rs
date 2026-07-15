@@ -47,6 +47,20 @@ pub struct TitleExternalIdLookupMatch {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogOwnedTitleRecord {
+    pub id: String,
+    pub facet: MediaFacet,
+    pub imdb_id: Option<String>,
+    pub external_ids: Vec<CatalogOwnedExternalIdRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogOwnedExternalIdRecord {
+    pub source: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HousekeepingMediaFileRootRow {
     pub media_file_id: String,
     pub title_id: String,
@@ -476,6 +490,28 @@ pub struct DiscoveryItemRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// The compact representation used while selecting discovery-home cards.
+///
+/// `item` deliberately contains no title-term, subject-link, or other card
+/// children. The separate signals below are the complete set needed to keep
+/// home ranking and section construction stable before selected cards are
+/// hydrated for output.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveryHomeCandidate {
+    pub item: DiscoveryItemRecord,
+    pub discovery_title_id: String,
+    pub matched_subject_keys: Vec<String>,
+    pub affinity_terms: Vec<String>,
+    pub has_acclaim_signal: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveryHomeSectionCandidatesRecord {
+    pub section: DiscoverySectionRecord,
+    pub total_count: i64,
+    pub items: Vec<DiscoveryHomeCandidate>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveryFacetRecord {
     pub run_id: String,
@@ -599,7 +635,7 @@ pub trait DiscoveryRepository: Send + Sync {
         allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit_per_section: i64,
-    ) -> AppResult<Vec<DiscoverySectionItemsRecord>>;
+    ) -> AppResult<Vec<DiscoveryHomeSectionCandidatesRecord>>;
     async fn list_personalized_discovery_home_items(
         &self,
         run_id: &str,
@@ -607,7 +643,7 @@ pub trait DiscoveryRepository: Send + Sync {
         allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>>;
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>>;
     async fn list_personalized_complete_collection_items(
         &self,
         run_id: &str,
@@ -615,7 +651,7 @@ pub trait DiscoveryRepository: Send + Sync {
         allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>>;
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>>;
     async fn list_personalized_discovery_facets(
         &self,
         run_id: &str,
@@ -634,7 +670,11 @@ pub trait DiscoveryRepository: Send + Sync {
         excluded_identity_keys: &[String],
         include_unresolved: bool,
         limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>>;
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>>;
+    async fn hydrate_discovery_home_candidates(
+        &self,
+        candidates: &mut [DiscoveryHomeCandidate],
+    ) -> AppResult<()>;
     async fn list_catalog_public_discovery_items(
         &self,
         run_id: &str,
@@ -728,6 +768,29 @@ pub trait TitleRepository: Send + Sync {
         Ok(titles
             .into_iter()
             .filter(|title| library_ids.iter().any(|id| id == &title.library_id))
+            .collect())
+    }
+    async fn list_catalog_owned_title_records(
+        &self,
+        library_ids: &[String],
+    ) -> AppResult<Vec<CatalogOwnedTitleRecord>> {
+        Ok(self
+            .list_for_libraries(None, library_ids, None)
+            .await?
+            .into_iter()
+            .map(|title| CatalogOwnedTitleRecord {
+                id: title.id,
+                facet: title.facet,
+                imdb_id: title.imdb_id,
+                external_ids: title
+                    .external_ids
+                    .into_iter()
+                    .map(|external_id| CatalogOwnedExternalIdRecord {
+                        source: external_id.source,
+                        value: external_id.value,
+                    })
+                    .collect(),
+            })
             .collect())
     }
     async fn list_for_libraries_without_external_ids(

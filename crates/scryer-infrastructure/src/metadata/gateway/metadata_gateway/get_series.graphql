@@ -1,7 +1,6 @@
 query GetSeries($id: String!, $includeEpisodes: Boolean!, $language: String!) {
   series(id: $id, includeEpisodes: $includeEpisodes, language: $language) {
     series {
-      target_key
       tvdb_id
       name
       sort_name

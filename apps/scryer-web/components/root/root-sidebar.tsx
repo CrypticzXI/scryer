@@ -974,7 +974,7 @@ function RootSidebarContent({
       >
         <SidebarHeader className="px-5 pb-3 pt-5">
           <div className="flex -translate-y-2 items-center gap-3.5">
-            <ScryerLogo className="h-[55px]! w-[55px]! drop-shadow-[0_12px_22px_rgba(var(--scry-accent-rgb),0.32)]" />
+            <ScryerLogo className="h-[55px]! w-[55px]! dark:drop-shadow-[0_12px_22px_rgba(var(--scry-accent-rgb),0.32)]" />
             <span
               data-slot="brand-wordmark"
               className="text-[24px] font-bold leading-none text-[var(--scry-ink2)]"

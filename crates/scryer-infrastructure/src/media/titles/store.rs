@@ -1,12 +1,12 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AppError, AppResult, CreateTitleOutcome, PendingImportStatus, PendingTitleHydration,
-    SortDirection, TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter,
-    TitleCatalogFilterCounts, TitleCatalogFilterOptions, TitleCatalogResult, TitleCatalogSort,
-    TitleCatalogSortKey, TitleCatalogTagFilterOption, TitleDeletePreviewInfo,
-    TitleExternalIdLookup, TitleExternalIdLookupMatch, TitleMetadataUpdate, TitleRatingSummary,
-    TitleRepository,
+    AppError, AppResult, CatalogOwnedExternalIdRecord, CatalogOwnedTitleRecord, CreateTitleOutcome,
+    PendingImportStatus, PendingTitleHydration, SortDirection, TitleArtworkUrlUpdate,
+    TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogFilterCounts,
+    TitleCatalogFilterOptions, TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey,
+    TitleCatalogTagFilterOption, TitleDeletePreviewInfo, TitleExternalIdLookup,
+    TitleExternalIdLookupMatch, TitleMetadataUpdate, TitleRatingSummary, TitleRepository,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -375,6 +375,61 @@ impl TitleRepository for TitleStore {
             true,
         )
         .await
+    }
+
+    async fn list_catalog_owned_title_records(
+        &self,
+        library_ids: &[String],
+    ) -> AppResult<Vec<CatalogOwnedTitleRecord>> {
+        if library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = std::iter::repeat_n("{}", library_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT titles.id AS title_id,
+                    titles.facet AS facet,
+                    titles.imdb_id AS imdb_id,
+                    external_ids.source AS external_source,
+                    external_ids.external_id AS external_id
+               FROM titles
+               LEFT JOIN title_external_ids external_ids
+                 ON external_ids.title_id = titles.id
+              WHERE titles.library_id IN ({placeholders})
+              ORDER BY titles.id ASC, external_ids.source ASC, external_ids.external_id ASC"
+        );
+        let args = library_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args).await?;
+        let mut titles = Vec::<CatalogOwnedTitleRecord>::new();
+        for row in rows {
+            let title_id = row.text("title_id")?;
+            if titles.last().is_none_or(|title| title.id != title_id) {
+                titles.push(CatalogOwnedTitleRecord {
+                    id: title_id.clone(),
+                    facet: parse_facet(&row.text("facet")?),
+                    imdb_id: row.opt_text("imdb_id")?,
+                    external_ids: Vec::new(),
+                });
+            }
+            let (Some(source), Some(value)) = (
+                row.opt_text("external_source")?,
+                row.opt_text("external_id")?,
+            ) else {
+                continue;
+            };
+            if let Some(title) = titles.last_mut() {
+                title
+                    .external_ids
+                    .push(CatalogOwnedExternalIdRecord { source, value });
+            }
+        }
+        Ok(titles)
     }
 
     async fn list_for_libraries_without_external_ids(

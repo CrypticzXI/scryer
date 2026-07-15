@@ -11,6 +11,7 @@ use scryer_domain::{
 
 use scryer_domain::RuleSet;
 
+use crate::ports::{DiscoveryHomeCandidate, DiscoveryHomeSectionCandidatesRecord};
 use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{
     AcquisitionScopeStatesQuery, AcquisitionStateRepository, InsertMediaFileInput,
@@ -28,19 +29,18 @@ use crate::{
     CutoffUnmetQualitySummary, DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit,
     DiscoveryFacetRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
     DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord, DiscoveryPruneReport,
-    DiscoveryPublicFeedCommit, DiscoveryRepository, DiscoverySectionItemsRecord,
-    DiscoverySectionRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
-    DiscoverySyncStateRecord, DomainEventRepository, DownloadQueueCommandRecord,
-    DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionRepository, ExternalIdentityVerifier,
-    ExternalImportMonitorSnapshotRepository, ExternalImportSetupSecretDraft,
-    ExternalImportSetupSecretDraftInput, ExternalImportSetupSecretDraftRepository,
-    ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretDraftStatus, FileImporter,
-    HousekeepingRepository, ImportArtifact, ImportArtifactRepository, ImportRepository,
-    IndexerProxyConfigRepository, IndexerQueryStats, IndexerSearchLearningKey,
-    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerStatsTracker, JobKey,
-    JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
-    LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
+    DiscoveryPublicFeedCommit, DiscoveryRepository, DiscoverySectionRecord,
+    DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord, DiscoverySyncStateRecord,
+    DomainEventRepository, DownloadQueueCommandRecord, DownloadQueueCommandRepository,
+    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository,
+    ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,
+    ExternalImportSetupSecretDraft, ExternalImportSetupSecretDraftInput,
+    ExternalImportSetupSecretDraftRepository, ExternalImportSetupSecretDraftSaveResult,
+    ExternalImportSetupSecretDraftStatus, FileImporter, HousekeepingRepository, ImportArtifact,
+    ImportArtifactRepository, ImportRepository, IndexerProxyConfigRepository, IndexerQueryStats,
+    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
+    IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository, LibraryProbeRepository,
+    LibraryProbeSignature, LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestCounts, MediaRequestQuery,
     MediaRequestRepository, MediaRequestResolution, NewBlocklistEntry, NewMediaRequest,
     NotificationChannelRepository, NotificationSubscriptionRepository,
@@ -338,7 +338,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _allowed_media_kinds: &[String],
         _include_unresolved: bool,
         _limit_per_section: i64,
-    ) -> AppResult<Vec<DiscoverySectionItemsRecord>> {
+    ) -> AppResult<Vec<DiscoveryHomeSectionCandidatesRecord>> {
         Ok(Vec::new())
     }
 
@@ -349,7 +349,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _allowed_media_kinds: &[String],
         _include_unresolved: bool,
         _limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         Ok(Vec::new())
     }
 
@@ -360,7 +360,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _allowed_media_kinds: &[String],
         _include_unresolved: bool,
         _limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         Ok(Vec::new())
     }
 
@@ -384,8 +384,15 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _excluded_identity_keys: &[String],
         _include_unresolved: bool,
         _limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         Ok(Vec::new())
+    }
+
+    async fn hydrate_discovery_home_candidates(
+        &self,
+        _candidates: &mut [DiscoveryHomeCandidate],
+    ) -> AppResult<()> {
+        Ok(())
     }
 
     async fn list_catalog_public_discovery_items(

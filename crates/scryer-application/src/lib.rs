@@ -49,6 +49,7 @@ pub mod persisted_records;
 mod plugins;
 mod polling_worker;
 mod ports;
+pub use ports::{CatalogOwnedExternalIdRecord, CatalogOwnedTitleRecord};
 mod quality;
 mod rate_limit_signal;
 mod rules;
@@ -104,7 +105,8 @@ pub use ports::{
     CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySectionCandidatesRecord,
     CatalogDiscoverySurface, DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryContextIncrementalCommit,
     DiscoveryContextSnapshotCommit, DiscoveryExternalIdRecord, DiscoveryFacetRecord,
-    DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemDetailQuery,
+    DiscoveryHomeCandidate, DiscoveryHomeQuery, DiscoveryHomeResult,
+    DiscoveryHomeSectionCandidatesRecord, DiscoveryItemDetailQuery,
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
     DiscoveryItemsQuery, DiscoveryItemsResult, DiscoveryItemsStorageQuery,
     DiscoveryPendingContextChangeRecord, DiscoveryPruneReport, DiscoveryPublicFeedCommit,

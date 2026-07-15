@@ -22,7 +22,6 @@ query MetadataBulk(
 }
 
 fragment MovieFields on TvdbMovie {
-  target_key
   tvdb_id
   name
   slug
@@ -65,7 +64,6 @@ fragment MovieFields on TvdbMovie {
 }
 
 fragment SeriesFields on TvdbSeries {
-  target_key
   tvdb_id
   name
   sort_name

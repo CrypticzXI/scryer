@@ -1,10 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::future::Future;
-use std::sync::{
-    Arc, RwLock,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
@@ -450,25 +447,6 @@ fn next_version_compatibility_poll_delay_at(
     Duration::from_secs(next_slot.saturating_sub(now_secs))
 }
 
-fn metadata_bulk_unknown_field_error(error: &AppError) -> bool {
-    let AppError::Repository(message) = error else {
-        return false;
-    };
-    message.contains("Cannot query field \"metadataBulk\"")
-        || (message.contains("Cannot query field") && message.contains("metadataBulk"))
-        || message.contains("missing field `metadataBulk`")
-        || message.contains("unsupported GraphQL operation")
-}
-
-fn target_key_unknown_field_error(error: &AppError) -> bool {
-    let AppError::Repository(message) = error else {
-        return false;
-    };
-    message.contains("Cannot query field")
-        && message.contains("target_key")
-        && (message.contains("TvdbMovie") || message.contains("TvdbSeries"))
-}
-
 pub struct MetadataGatewayClient {
     http: Client,
     outbound_http: OutboundHttpClient,
@@ -485,13 +463,8 @@ pub struct MetadataGatewayClient {
     search_rich_hash: String,
     search_multi_hash: String,
     movie_hash: String,
-    movie_legacy_hash: String,
     series_hash: String,
-    series_legacy_hash: String,
     metadata_bulk_hash: String,
-    metadata_bulk_legacy_hash: String,
-    metadata_bulk_unavailable: AtomicBool,
-    target_key_unavailable: AtomicBool,
     title_recommendations_hash: String,
     collection_completions_hash: String,
     submit_discovery_context_snapshot_hash: String,
@@ -527,11 +500,8 @@ impl MetadataGatewayClient {
         let search_rich_hash = apq_hash(graphql_docs::SEARCH_TVDB_RICH_QUERY);
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
-        let movie_legacy_hash = apq_hash(graphql_docs::GET_MOVIE_LEGACY_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
-        let series_legacy_hash = apq_hash(graphql_docs::GET_SERIES_LEGACY_QUERY);
         let metadata_bulk_hash = apq_hash(graphql_docs::METADATA_BULK_QUERY);
-        let metadata_bulk_legacy_hash = apq_hash(graphql_docs::METADATA_BULK_LEGACY_QUERY);
         let title_recommendations_hash = apq_hash(graphql_docs::TITLE_RECOMMENDATIONS_QUERY);
         let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
         let submit_discovery_context_snapshot_hash =
@@ -562,11 +532,8 @@ impl MetadataGatewayClient {
             %search_rich_hash,
             %search_multi_hash,
             %movie_hash,
-            %movie_legacy_hash,
             %series_hash,
-            %series_legacy_hash,
             %metadata_bulk_hash,
-            %metadata_bulk_legacy_hash,
             %title_recommendations_hash,
             %collection_completions_hash,
             %submit_discovery_context_snapshot_hash,
@@ -595,13 +562,8 @@ impl MetadataGatewayClient {
             search_rich_hash,
             search_multi_hash,
             movie_hash,
-            movie_legacy_hash,
             series_hash,
-            series_legacy_hash,
             metadata_bulk_hash,
-            metadata_bulk_legacy_hash,
-            metadata_bulk_unavailable: AtomicBool::new(false),
-            target_key_unavailable: AtomicBool::new(false),
             title_recommendations_hash,
             collection_completions_hash,
             submit_discovery_context_snapshot_hash,
@@ -627,11 +589,8 @@ impl MetadataGatewayClient {
         let search_rich_hash = apq_hash(graphql_docs::SEARCH_TVDB_RICH_QUERY);
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
-        let movie_legacy_hash = apq_hash(graphql_docs::GET_MOVIE_LEGACY_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
-        let series_legacy_hash = apq_hash(graphql_docs::GET_SERIES_LEGACY_QUERY);
         let metadata_bulk_hash = apq_hash(graphql_docs::METADATA_BULK_QUERY);
-        let metadata_bulk_legacy_hash = apq_hash(graphql_docs::METADATA_BULK_LEGACY_QUERY);
         let title_recommendations_hash = apq_hash(graphql_docs::TITLE_RECOMMENDATIONS_QUERY);
         let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
         let submit_discovery_context_snapshot_hash =
@@ -670,13 +629,8 @@ impl MetadataGatewayClient {
             search_rich_hash,
             search_multi_hash,
             movie_hash,
-            movie_legacy_hash,
             series_hash,
-            series_legacy_hash,
             metadata_bulk_hash,
-            metadata_bulk_legacy_hash,
-            metadata_bulk_unavailable: AtomicBool::new(false),
-            target_key_unavailable: AtomicBool::new(false),
             title_recommendations_hash,
             collection_completions_hash,
             submit_discovery_context_snapshot_hash,
@@ -1880,21 +1834,12 @@ impl MetadataGatewayClient {
         unique_movies: &[i64],
         unique_series: &[i64],
         language: &str,
-        include_target_key: bool,
     ) -> AppResult<BulkMetadataResult> {
         let request_started_at = Instant::now();
         let mut movies = HashMap::new();
         let mut series = HashMap::new();
         let bulk_requests = build_bulk_metadata_alias_requests(unique_movies, unique_series);
         let mut request_count = 0usize;
-        let (query, hash) = if include_target_key {
-            (graphql_docs::METADATA_BULK_QUERY, &self.metadata_bulk_hash)
-        } else {
-            (
-                graphql_docs::METADATA_BULK_LEGACY_QUERY,
-                &self.metadata_bulk_legacy_hash,
-            )
-        };
 
         for chunk in bulk_requests.chunks(METADATA_GATEWAY_MAX_METADATA_BULK_BATCH) {
             request_count = request_count.saturating_add(1);
@@ -1913,8 +1858,8 @@ impl MetadataGatewayClient {
             let data: MetadataBulkResponse = self
                 .execute_graphql_apq_post(
                     OP_METADATA_BULK,
-                    query,
-                    hash,
+                    graphql_docs::METADATA_BULK_QUERY,
+                    &self.metadata_bulk_hash,
                     json!({
                         "movieTvdbIds": chunk_movie_ids,
                         "seriesTvdbIds": chunk_series_ids,
@@ -1953,47 +1898,6 @@ impl MetadataGatewayClient {
             series_resolved = series.len(),
             elapsed_ms = request_started_at.elapsed().as_millis() as u64,
             "metadata gateway metadataBulk complete"
-        );
-        Ok(BulkMetadataResult { movies, series })
-    }
-
-    async fn get_metadata_bulk_via_aliases(
-        &self,
-        unique_movies: &[i64],
-        unique_series: &[i64],
-        language: &str,
-        include_target_key: bool,
-    ) -> AppResult<BulkMetadataResult> {
-        let request_started_at = Instant::now();
-        let mut movies = HashMap::new();
-        let mut series = HashMap::new();
-
-        let bulk_requests = build_bulk_metadata_alias_requests(unique_movies, unique_series);
-        for chunk in bulk_requests.chunks(METADATA_GATEWAY_MAX_BULK_METADATA_ALIAS_BATCH) {
-            let mut chunk_movie_ids = Vec::new();
-            let mut chunk_series_ids = Vec::new();
-            for request in chunk {
-                match request {
-                    BulkMetadataAliasRequest::Movie(tvdb_id) => chunk_movie_ids.push(*tvdb_id),
-                    BulkMetadataAliasRequest::Series(tvdb_id) => chunk_series_ids.push(*tvdb_id),
-                }
-            }
-
-            let query = build_bulk_mixed_query(
-                &chunk_movie_ids,
-                &chunk_series_ids,
-                language,
-                include_target_key,
-            );
-            let data = self.post_batched_graphql_partial(&query).await?;
-            merge_bulk_metadata_partial(&data, &mut movies, &mut series);
-        }
-
-        debug!(
-            movies_resolved = movies.len(),
-            series_resolved = series.len(),
-            elapsed_ms = request_started_at.elapsed().as_millis() as u64,
-            "bulk metadata aliased fallback complete"
         );
         Ok(BulkMetadataResult { movies, series })
     }
@@ -2121,36 +2025,9 @@ fn merge_bulk_artwork_url_partial(
     }
 }
 
-fn merge_bulk_metadata_partial(
-    data: &serde_json::Value,
-    movies: &mut HashMap<i64, MovieMetadata>,
-    series: &mut HashMap<i64, SeriesMetadata>,
-) {
-    let Some(obj) = data.as_object() else {
-        return;
-    };
-
-    for (alias, value) in obj {
-        if value.is_null() {
-            continue;
-        }
-        if alias.starts_with('m') {
-            if let Ok(movie_result) = serde_json::from_value::<MovieResult>(value.clone()) {
-                let metadata = movie_metadata_from_item(movie_result.movie);
-                movies.insert(metadata.tvdb_id, metadata);
-            }
-        } else if alias.starts_with('s')
-            && let Ok(series_result) = serde_json::from_value::<SeriesResult>(value.clone())
-        {
-            let metadata = series_metadata_from_item(series_result.series);
-            series.insert(metadata.tvdb_id, metadata);
-        }
-    }
-}
-
 fn movie_metadata_from_item(m: MovieItem) -> MovieMetadata {
     MovieMetadata {
-        target_key: m.target_key,
+        target_key: None,
         tvdb_id: m.tvdb_id,
         name: m.name,
         slug: m.slug,
@@ -2175,7 +2052,7 @@ fn movie_metadata_from_item(m: MovieItem) -> MovieMetadata {
 
 fn series_metadata_from_item(s: SeriesItem) -> SeriesMetadata {
     SeriesMetadata {
-        target_key: s.target_key,
+        target_key: None,
         tvdb_id: s.tvdb_id,
         name: s.name,
         sort_name: s.sort_name,
@@ -2292,48 +2169,6 @@ fn series_metadata_from_item(s: SeriesItem) -> SeriesMetadata {
     }
 }
 
-fn build_bulk_mixed_query(
-    movie_ids: &[i64],
-    series_ids: &[i64],
-    language: &str,
-    include_target_key: bool,
-) -> String {
-    let mut q = String::from("query {\n");
-    for (i, &id) in movie_ids.iter().enumerate() {
-        let _ = writeln!(
-            q,
-            "  m{i}: movie(tvdbId: {id}, language: \"{language}\") {{ movie {{ ...MovieFields }} }}"
-        );
-    }
-    for (i, &id) in series_ids.iter().enumerate() {
-        let _ = writeln!(
-            q,
-            "  s{i}: series(id: \"{id}\", includeEpisodes: true, language: \"{language}\") {{ series {{ ...SeriesFields }} }}"
-        );
-    }
-    q.push_str("}\n");
-
-    if !movie_ids.is_empty() {
-        q.push_str(if include_target_key {
-            graphql_docs::MOVIE_FIELDS_FRAGMENT
-        } else {
-            graphql_docs::MOVIE_FIELDS_LEGACY_FRAGMENT
-        });
-        q.push('\n');
-    }
-
-    if !series_ids.is_empty() {
-        q.push_str(if include_target_key {
-            graphql_docs::SERIES_FIELDS_FRAGMENT
-        } else {
-            graphql_docs::SERIES_FIELDS_LEGACY_FRAGMENT
-        });
-        q.push('\n');
-    }
-
-    q
-}
-
 fn build_bulk_artwork_url_query(movie_ids: &[i64], series_ids: &[i64], language: &str) -> String {
     let mut q = String::from("query {\n");
     for (i, &id) in movie_ids.iter().enumerate() {
@@ -2359,13 +2194,13 @@ mod tests {
         OP_DISCOVER_PUBLIC_FEED, OP_DISCOVERY_CONTEXT_CHANGES, OP_GET_MOVIE, OP_GET_SERIES,
         OP_METADATA_BULK, OP_SEARCH_TVDB, SearchTvdbBatchResult, SearchTvdbResponse,
         SmgEnrollmentConfig, apply_instance_auth_headers_with_nonce, apq_cache_key, apq_hash,
-        build_bulk_artwork_url_query, build_bulk_mixed_query, build_search_tvdb_batch_query,
-        canonical_request_host, canonical_request_path_and_query, compatibility_poll_phase,
-        enrollment_retry_delay, is_version_incompatible_response,
-        map_metadata_gateway_outbound_error, next_version_compatibility_poll_delay_at,
-        normalize_artwork_url, normalize_optional_artwork_url,
-        parse_version_compatibility_incompatible, parse_version_compatibility_success,
-        pick_artwork_url, sha256_hex, validate_search_tvdb_batch_echo,
+        build_bulk_artwork_url_query, build_search_tvdb_batch_query, canonical_request_host,
+        canonical_request_path_and_query, compatibility_poll_phase, enrollment_retry_delay,
+        is_version_incompatible_response, map_metadata_gateway_outbound_error,
+        next_version_compatibility_poll_delay_at, normalize_artwork_url,
+        normalize_optional_artwork_url, parse_version_compatibility_incompatible,
+        parse_version_compatibility_success, pick_artwork_url, sha256_hex,
+        validate_search_tvdb_batch_echo,
     };
     use base64::Engine as _;
     use scryer_application::{
@@ -2433,40 +2268,6 @@ mod tests {
                     "missing_series_tvdb_ids": []
                 }
             }
-        })
-    }
-
-    fn bulk_alias_payload() -> serde_json::Value {
-        json!({
-            "data": {}
-        })
-    }
-
-    fn metadata_bulk_unknown_field_payload() -> serde_json::Value {
-        json!({
-            "errors": [
-                {
-                    "message": "Cannot query field \"metadataBulk\" on type \"Query\".",
-                    "extensions": {
-                        "code": "GRAPHQL_VALIDATION_FAILED"
-                    }
-                }
-            ],
-            "data": null
-        })
-    }
-
-    fn target_key_unknown_field_payload(type_name: &str) -> serde_json::Value {
-        json!({
-            "errors": [
-                {
-                    "message": format!("Cannot query field \"target_key\" on type \"{type_name}\"."),
-                    "extensions": {
-                        "code": "GRAPHQL_VALIDATION_FAILED"
-                    }
-                }
-            ],
-            "data": null
         })
     }
 
@@ -2635,183 +2436,18 @@ mod tests {
         assert!(result.series.is_empty());
     }
 
-    #[tokio::test]
-    async fn get_metadata_bulk_falls_back_and_caches_unknown_field() {
-        let server = MockServer::start().await;
-        let counts = Arc::new(Mutex::new((0usize, 0usize)));
-        let counts_for_mock = Arc::clone(&counts);
-        Mock::given(method("POST"))
-            .and(path("/graphql"))
-            .respond_with(move |request: &Request| {
-                let body = String::from_utf8_lossy(&request.body);
-                let mut counts = counts_for_mock.lock().expect("count lock");
-                if body.contains("metadataBulk") {
-                    counts.0 += 1;
-                    ResponseTemplate::new(200).set_body_json(metadata_bulk_unknown_field_payload())
-                } else {
-                    counts.1 += 1;
-                    ResponseTemplate::new(200).set_body_json(bulk_alias_payload())
-                }
-            })
-            .expect(3)
-            .mount(&server)
-            .await;
-        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
+    #[test]
+    fn current_smg_metadata_queries_omit_target_key() {
+        let queries = [
+            graphql_docs::METADATA_BULK_QUERY,
+            graphql_docs::GET_MOVIE_QUERY,
+            graphql_docs::GET_SERIES_QUERY,
+        ];
 
-        client
-            .get_metadata_bulk(&[101], &[], "eng")
-            .await
-            .expect("unknown metadataBulk field should fall back to aliases");
-        client
-            .get_metadata_bulk(&[102], &[], "eng")
-            .await
-            .expect("cached fallback should use aliases directly");
-
-        assert_eq!(*counts.lock().expect("count lock"), (1, 2));
-    }
-
-    #[tokio::test]
-    async fn get_metadata_bulk_retries_legacy_and_caches_target_key_validation_failure() {
-        let server = MockServer::start().await;
-        let seen_target_key = Arc::new(Mutex::new(Vec::new()));
-        let seen_target_key_for_mock = Arc::clone(&seen_target_key);
-        Mock::given(method("POST"))
-            .and(path("/graphql"))
-            .respond_with(move |request: &Request| {
-                let body = String::from_utf8_lossy(&request.body);
-                let has_target_key = body.contains("target_key");
-                seen_target_key_for_mock
-                    .lock()
-                    .expect("seen lock")
-                    .push(has_target_key);
-                if has_target_key {
-                    ResponseTemplate::new(422)
-                        .set_body_json(target_key_unknown_field_payload("TvdbMovie"))
-                } else {
-                    ResponseTemplate::new(200).set_body_json(empty_metadata_bulk_payload())
-                }
-            })
-            .expect(3)
-            .mount(&server)
-            .await;
-        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
-
-        client
-            .get_metadata_bulk(&[101], &[], "eng")
-            .await
-            .expect("target_key validation failure should retry legacy metadataBulk");
-        client
-            .get_metadata_bulk(&[102], &[], "eng")
-            .await
-            .expect("cached target_key failure should use legacy metadataBulk directly");
-
-        assert_eq!(
-            *seen_target_key.lock().expect("seen lock"),
-            vec![true, false, false]
-        );
-    }
-
-    #[tokio::test]
-    async fn get_metadata_bulk_falls_back_when_response_is_alias_shaped() {
-        let server = MockServer::start().await;
-        let counts = Arc::new(Mutex::new((0usize, 0usize)));
-        let counts_for_mock = Arc::clone(&counts);
-        Mock::given(method("POST"))
-            .and(path("/graphql"))
-            .respond_with(move |request: &Request| {
-                let body = String::from_utf8_lossy(&request.body);
-                let mut counts = counts_for_mock.lock().expect("count lock");
-                if body.contains("metadataBulk") {
-                    counts.0 += 1;
-                    ResponseTemplate::new(200).set_body_json(bulk_alias_payload())
-                } else {
-                    counts.1 += 1;
-                    ResponseTemplate::new(200).set_body_json(bulk_alias_payload())
-                }
-            })
-            .expect(2)
-            .mount(&server)
-            .await;
-        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
-
-        client
-            .get_metadata_bulk(&[101], &[], "eng")
-            .await
-            .expect("alias-shaped metadataBulk response should fall back");
-
-        assert_eq!(*counts.lock().expect("count lock"), (1, 1));
-    }
-
-    #[tokio::test]
-    async fn aliased_bulk_retry_omits_target_key_when_target_key_is_unsupported() {
-        let server = MockServer::start().await;
-        let seen_target_key = Arc::new(Mutex::new(Vec::new()));
-        let seen_target_key_for_mock = Arc::clone(&seen_target_key);
-        Mock::given(method("POST"))
-            .and(path("/graphql"))
-            .respond_with(move |request: &Request| {
-                let body = String::from_utf8_lossy(&request.body);
-                let has_target_key = body.contains("target_key");
-                seen_target_key_for_mock
-                    .lock()
-                    .expect("seen lock")
-                    .push(has_target_key);
-                if has_target_key {
-                    ResponseTemplate::new(200)
-                        .set_body_json(target_key_unknown_field_payload("TvdbSeries"))
-                } else {
-                    ResponseTemplate::new(200).set_body_json(bulk_alias_payload())
-                }
-            })
-            .expect(2)
-            .mount(&server)
-            .await;
-        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
-        client
-            .metadata_bulk_unavailable
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-
-        client
-            .get_metadata_bulk(&[], &[202], "eng")
-            .await
-            .expect("aliased fallback should retry without target_key");
-
-        assert_eq!(
-            *seen_target_key.lock().expect("seen lock"),
-            vec![true, false]
-        );
-    }
-
-    #[tokio::test]
-    async fn get_metadata_bulk_falls_back_on_unsupported_operation_response() {
-        let server = MockServer::start().await;
-        let counts = Arc::new(Mutex::new((0usize, 0usize)));
-        let counts_for_mock = Arc::clone(&counts);
-        Mock::given(method("POST"))
-            .and(path("/graphql"))
-            .respond_with(move |request: &Request| {
-                let body = String::from_utf8_lossy(&request.body);
-                let mut counts = counts_for_mock.lock().expect("count lock");
-                if body.contains("metadataBulk") {
-                    counts.0 += 1;
-                    ResponseTemplate::new(400)
-                        .set_body_json(json!({ "error": "unsupported GraphQL operation" }))
-                } else {
-                    counts.1 += 1;
-                    ResponseTemplate::new(200).set_body_json(bulk_alias_payload())
-                }
-            })
-            .expect(2)
-            .mount(&server)
-            .await;
-        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
-
-        client
-            .get_metadata_bulk(&[101], &[], "eng")
-            .await
-            .expect("unsupported metadataBulk operation should fall back");
-
-        assert_eq!(*counts.lock().expect("count lock"), (1, 1));
+        assert!(graphql_docs::METADATA_BULK_QUERY.contains("metadataBulk"));
+        assert!(graphql_docs::METADATA_BULK_QUERY.contains("external_ratings"));
+        assert!(graphql_docs::GET_SERIES_QUERY.contains("tagged_aliases"));
+        assert!(queries.iter().all(|query| !query.contains("target_key")));
     }
 
     #[tokio::test]
@@ -2891,60 +2527,17 @@ mod tests {
 
         assert_eq!(movie.tvdb_id, 909);
         assert_eq!(movie.name, "Fixture Movie");
-    }
-
-    #[tokio::test]
-    async fn get_movie_retries_legacy_query_when_target_key_is_unsupported() {
-        let server = MockServer::start().await;
-        let request_count = Arc::new(Mutex::new(0usize));
-        let request_count_for_mock = Arc::clone(&request_count);
-        Mock::given(method("GET"))
-            .and(path("/graphql"))
-            .and(query_param("operationName", OP_GET_MOVIE))
-            .respond_with(move |_request: &Request| {
-                let mut count = request_count_for_mock.lock().expect("count lock");
-                *count = count.saturating_add(1);
-                if *count == 1 {
-                    ResponseTemplate::new(422)
-                        .set_body_json(target_key_unknown_field_payload("TvdbMovie"))
-                } else {
-                    ResponseTemplate::new(200).set_body_json(movie_payload(909))
-                }
-            })
-            .expect(2)
-            .mount(&server)
-            .await;
-        let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
-
-        let movie = client
-            .get_movie(909, "eng")
-            .await
-            .expect("target_key validation failure should retry legacy movie query");
-
-        assert_eq!(movie.tvdb_id, 909);
         assert_eq!(movie.target_key, None);
-        assert_eq!(*request_count.lock().expect("count lock"), 2);
     }
 
     #[tokio::test]
-    async fn get_series_retries_legacy_query_when_target_key_is_unsupported() {
+    async fn get_series_still_uses_single_title_query() {
         let server = MockServer::start().await;
-        let request_count = Arc::new(Mutex::new(0usize));
-        let request_count_for_mock = Arc::clone(&request_count);
         Mock::given(method("GET"))
             .and(path("/graphql"))
             .and(query_param("operationName", OP_GET_SERIES))
-            .respond_with(move |_request: &Request| {
-                let mut count = request_count_for_mock.lock().expect("count lock");
-                *count = count.saturating_add(1);
-                if *count == 1 {
-                    ResponseTemplate::new(422)
-                        .set_body_json(target_key_unknown_field_payload("TvdbSeries"))
-                } else {
-                    ResponseTemplate::new(200).set_body_json(series_payload(424536))
-                }
-            })
-            .expect(2)
+            .respond_with(ResponseTemplate::new(200).set_body_json(series_payload(424536)))
+            .expect(1)
             .mount(&server)
             .await;
         let client = unsigned_gateway_client(format!("{}/graphql", server.uri()));
@@ -2952,11 +2545,11 @@ mod tests {
         let series = client
             .get_series(424536, "eng")
             .await
-            .expect("target_key validation failure should retry legacy series query");
+            .expect("single series request should still work");
 
         assert_eq!(series.tvdb_id, 424536);
+        assert_eq!(series.name, "Fixture Series");
         assert_eq!(series.target_key, None);
-        assert_eq!(*request_count.lock().expect("count lock"), 2);
     }
 
     #[tokio::test]
@@ -3385,39 +2978,6 @@ mod tests {
             .expect("mock response");
 
         assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
-    }
-
-    #[test]
-    fn bulk_series_query_requests_tagged_aliases() {
-        let query = build_bulk_mixed_query(&[], &[424536], "eng", true);
-
-        assert!(query.contains("...SeriesFields"));
-        assert!(query.contains("fragment SeriesFields on TvdbSeries"));
-        assert!(query.contains("tagged_aliases"));
-        assert!(query.contains("language"));
-    }
-
-    #[test]
-    fn bulk_metadata_query_requests_mdb_external_ratings() {
-        let query = build_bulk_mixed_query(&[11], &[22], "eng", true);
-
-        assert!(query.contains("fragment MovieFields on TvdbMovie"));
-        assert!(query.contains("fragment SeriesFields on TvdbSeries"));
-        assert!(query.contains("rating_sources"));
-        assert!(query.contains("external_ratings"));
-        assert!(query.contains("normalized"));
-        assert!(query.contains("votes"));
-    }
-
-    #[test]
-    fn legacy_bulk_metadata_query_omits_target_key() {
-        let query = build_bulk_mixed_query(&[11], &[22], "eng", false);
-
-        assert!(query.contains("fragment MovieFields on TvdbMovie"));
-        assert!(query.contains("fragment SeriesFields on TvdbSeries"));
-        assert!(!query.contains("target_key"));
-        assert!(query.contains("canonical_tags"));
-        assert!(query.contains("external_ratings"));
     }
 
     #[test]
@@ -4113,8 +3673,6 @@ struct MovieResult {
 
 #[derive(Deserialize)]
 struct MovieItem {
-    #[serde(default)]
-    target_key: Option<String>,
     tvdb_id: i64,
     name: String,
     slug: String,
@@ -4385,8 +3943,6 @@ struct SeriesResult {
 
 #[derive(Deserialize)]
 struct SeriesItem {
-    #[serde(default)]
-    target_key: Option<String>,
     tvdb_id: i64,
     name: String,
     sort_name: String,
@@ -4748,46 +4304,18 @@ impl MetadataGateway for MetadataGatewayClient {
             "language": language,
         });
 
-        let data: MovieResponse = if self.target_key_unavailable.load(Ordering::Relaxed) {
-            self.execute_graphql_apq(
+        let data: MovieResponse = self
+            .execute_graphql_apq(
                 OP_GET_MOVIE,
-                graphql_docs::GET_MOVIE_LEGACY_QUERY,
-                &self.movie_legacy_hash,
+                graphql_docs::GET_MOVIE_QUERY,
+                &self.movie_hash,
                 variables,
             )
-            .await?
-        } else {
-            match self
-                .execute_graphql_apq(
-                    OP_GET_MOVIE,
-                    graphql_docs::GET_MOVIE_QUERY,
-                    &self.movie_hash,
-                    variables.clone(),
-                )
-                .await
-            {
-                Ok(data) => data,
-                Err(error) if target_key_unknown_field_error(&error) => {
-                    self.target_key_unavailable.store(true, Ordering::Relaxed);
-                    warn!(
-                        error = %error,
-                        "metadata gateway target_key field unavailable; retrying movie metadata without target_key"
-                    );
-                    self.execute_graphql_apq(
-                        OP_GET_MOVIE,
-                        graphql_docs::GET_MOVIE_LEGACY_QUERY,
-                        &self.movie_legacy_hash,
-                        variables,
-                    )
-                    .await?
-                }
-                Err(error) => return Err(error),
-            }
-        };
+            .await?;
         let m = data.movie.movie;
 
         Ok(MovieMetadata {
-            target_key: m.target_key,
+            target_key: None,
             tvdb_id: m.tvdb_id,
             name: m.name,
             slug: m.slug,
@@ -4817,46 +4345,18 @@ impl MetadataGateway for MetadataGatewayClient {
             "language": language,
         });
 
-        let data: SeriesResponse = if self.target_key_unavailable.load(Ordering::Relaxed) {
-            self.execute_graphql_apq(
+        let data: SeriesResponse = self
+            .execute_graphql_apq(
                 OP_GET_SERIES,
-                graphql_docs::GET_SERIES_LEGACY_QUERY,
-                &self.series_legacy_hash,
+                graphql_docs::GET_SERIES_QUERY,
+                &self.series_hash,
                 variables,
             )
-            .await?
-        } else {
-            match self
-                .execute_graphql_apq(
-                    OP_GET_SERIES,
-                    graphql_docs::GET_SERIES_QUERY,
-                    &self.series_hash,
-                    variables.clone(),
-                )
-                .await
-            {
-                Ok(data) => data,
-                Err(error) if target_key_unknown_field_error(&error) => {
-                    self.target_key_unavailable.store(true, Ordering::Relaxed);
-                    warn!(
-                        error = %error,
-                        "metadata gateway target_key field unavailable; retrying series metadata without target_key"
-                    );
-                    self.execute_graphql_apq(
-                        OP_GET_SERIES,
-                        graphql_docs::GET_SERIES_LEGACY_QUERY,
-                        &self.series_legacy_hash,
-                        variables,
-                    )
-                    .await?
-                }
-                Err(error) => return Err(error),
-            }
-        };
+            .await?;
         let s = data.series.series;
 
         Ok(SeriesMetadata {
-            target_key: s.target_key,
+            target_key: None,
             tvdb_id: s.tvdb_id,
             name: s.name,
             sort_name: s.sort_name,
@@ -5004,88 +4504,9 @@ impl MetadataGateway for MetadataGatewayClient {
             "bulk metadata request"
         );
 
-        if !self.metadata_bulk_unavailable.load(Ordering::Relaxed) {
-            let include_target_key = !self.target_key_unavailable.load(Ordering::Relaxed);
-            if include_target_key {
-                match self
-                    .get_metadata_bulk_via_metadata_bulk(
-                        &unique_movies,
-                        &unique_series,
-                        language,
-                        true,
-                    )
-                    .await
-                {
-                    Ok(result) => return Ok(result),
-                    Err(error) if target_key_unknown_field_error(&error) => {
-                        self.target_key_unavailable.store(true, Ordering::Relaxed);
-                        warn!(
-                            error = %error,
-                            "metadata gateway target_key field unavailable; retrying metadataBulk without target_key"
-                        );
-                    }
-                    Err(error) if metadata_bulk_unknown_field_error(&error) => {
-                        self.metadata_bulk_unavailable
-                            .store(true, Ordering::Relaxed);
-                        warn!(
-                            error = %error,
-                            "metadata gateway metadataBulk unavailable; falling back to aliased bulk queries"
-                        );
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            if !self.metadata_bulk_unavailable.load(Ordering::Relaxed) {
-                match self
-                    .get_metadata_bulk_via_metadata_bulk(
-                        &unique_movies,
-                        &unique_series,
-                        language,
-                        false,
-                    )
-                    .await
-                {
-                    Ok(result) => return Ok(result),
-                    Err(error) if metadata_bulk_unknown_field_error(&error) => {
-                        self.metadata_bulk_unavailable
-                            .store(true, Ordering::Relaxed);
-                        warn!(
-                            error = %error,
-                            "metadata gateway metadataBulk unavailable; falling back to aliased bulk queries"
-                        );
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-
-        let include_target_key = !self.target_key_unavailable.load(Ordering::Relaxed);
-        let result = if include_target_key {
-            match self
-                .get_metadata_bulk_via_aliases(&unique_movies, &unique_series, language, true)
-                .await
-            {
-                Ok(result) => result,
-                Err(error) if target_key_unknown_field_error(&error) => {
-                    self.target_key_unavailable.store(true, Ordering::Relaxed);
-                    warn!(
-                        error = %error,
-                        "metadata gateway target_key field unavailable; retrying aliased bulk queries without target_key"
-                    );
-                    self.get_metadata_bulk_via_aliases(
-                        &unique_movies,
-                        &unique_series,
-                        language,
-                        false,
-                    )
-                    .await?
-                }
-                Err(error) => return Err(error),
-            }
-        } else {
-            self.get_metadata_bulk_via_aliases(&unique_movies, &unique_series, language, false)
-                .await?
-        };
+        let result = self
+            .get_metadata_bulk_via_metadata_bulk(&unique_movies, &unique_series, language)
+            .await?;
         debug!(
             movies_resolved = result.movies.len(),
             series_resolved = result.series.len(),

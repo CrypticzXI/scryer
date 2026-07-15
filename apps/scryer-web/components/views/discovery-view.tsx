@@ -4,7 +4,6 @@ import type { LucideIcon } from "lucide-react";
 import {
   Check,
   ChevronRight,
-  Clock,
   Disc3,
   Eye,
   Heart,
@@ -195,12 +194,46 @@ function itemMatchScore(item: DiscoveryItem) {
   return formatScore(item.rankScore);
 }
 
-function allHomeSections(home: DiscoveryHomePayload | null) {
+function normalizedPublicHomeSections(home: DiscoveryHomePayload | null) {
+  const publicSections = home?.publicSections ?? [];
+  return publicSections.flatMap((section) => {
+    const sectionType = discoverySectionType(section);
+    if (sectionType === "ANIME_THIS_WEEK") {
+      const items = section.items.filter(
+        (item) => discoveryItemFacet(item) === "ANIME",
+      );
+      return items.length > 0
+        ? [
+            {
+              ...section,
+              sectionId: "anime_trending_now",
+              sectionType: "TRENDING_ANIME_NOW",
+              title: "Trending Anime Now",
+              totalCount: items.length,
+              items,
+            },
+          ]
+        : [];
+    }
+    if (sectionType === "TRENDING_NOW" || sectionType === "POPULAR_SERIES") {
+      const items = section.items.filter(
+        (item) => discoveryItemFacet(item) !== "ANIME",
+      );
+      return items.length > 0 ? [{ ...section, totalCount: items.length, items }] : [];
+    }
+    return [section];
+  });
+}
+
+function allHomeSections(
+  home: DiscoveryHomePayload | null,
+  publicSections = normalizedPublicHomeSections(home),
+) {
   if (!home) {
     return [];
   }
   return [
-    ...home.publicSections,
+    ...publicSections,
     ...home.personalizedSections,
     ...(home.completeCollection ? [home.completeCollection] : []),
   ].filter((section) => section.items.length > 0);
@@ -457,7 +490,8 @@ function itemMatchesStudioSlugs(
 }
 
 function orderedHomeSections(home: DiscoveryHomePayload | null) {
-  const sections = allHomeSections(home);
+  const publicSections = normalizedPublicHomeSections(home);
+  const sections = allHomeSections(home, publicSections);
   const personalizedSections = (home?.personalizedSections ?? []).filter(
     (section) => section.items.length > 0,
   );
@@ -497,9 +531,6 @@ function orderedHomeSections(home: DiscoveryHomePayload | null) {
   // Public-promotion tier: the two SMG v2 "new release window" rails, lifted from
   // feed-bottom to directly under the hero row, in a fixed streaming-then-physical
   // order regardless of where SMG placed them in the public feed.
-  const publicSections = (home?.publicSections ?? []).filter(
-    (section) => section.items.length > 0,
-  );
   const publicPromotionSections = PUBLIC_PROMOTION_SECTION_TYPES.flatMap(
     (sectionType) =>
       publicSections.filter(
@@ -1657,102 +1688,23 @@ function sectionsForDiscoveryFacets(
 
 // Locale-aware "3 hours ago"-style phrasing without per-locale strings for the
 // relative part. Falls back to null when the timestamp is missing/unparseable.
-function formatRelativeTime(
-  value: string | null | undefined,
-): string | null {
-  if (!value) {
-    return null;
-  }
-  const timestamp = new Date(value).getTime();
-  if (Number.isNaN(timestamp)) {
-    return null;
-  }
-  const deltaSeconds = Math.round((timestamp - Date.now()) / 1000);
-  const absSeconds = Math.abs(deltaSeconds);
-  const locale =
-    typeof document !== "undefined"
-      ? document.documentElement.lang || undefined
-      : undefined;
-  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
-  const divisions: Array<{ amount: number; unit: Intl.RelativeTimeFormatUnit }> =
-    [
-      { amount: 60, unit: "second" },
-      { amount: 60, unit: "minute" },
-      { amount: 24, unit: "hour" },
-      { amount: 7, unit: "day" },
-      { amount: 4.34524, unit: "week" },
-      { amount: 12, unit: "month" },
-      { amount: Number.POSITIVE_INFINITY, unit: "year" },
-    ];
-  let unitValue = absSeconds;
-  let chosenUnit: Intl.RelativeTimeFormatUnit = "second";
-  for (const division of divisions) {
-    if (unitValue < division.amount) {
-      chosenUnit = division.unit;
-      break;
-    }
-    unitValue /= division.amount;
-    chosenUnit = division.unit;
-  }
-  const signedValue = Math.round(unitValue) * (deltaSeconds < 0 ? -1 : 1);
-  return formatter.format(signedValue, chosenUnit);
-}
-
-function mostRecentSyncTimestamp(
-  status: DiscoverySyncStatus | null | undefined,
-): string | null {
-  if (!status) {
-    return null;
-  }
-  const candidates = [
-    status.state.lastPublicFeedCompletedAt,
-    status.state.lastIncrementalReloadCompletedAt,
-    status.state.lastContextSnapshotCompletedAt,
-    status.state.updatedAt,
-  ].filter((value): value is string => Boolean(value));
-  let newest: string | null = null;
-  let newestMs = -Infinity;
-  for (const value of candidates) {
-    const ms = new Date(value).getTime();
-    if (!Number.isNaN(ms) && ms > newestMs) {
-      newestMs = ms;
-      newest = value;
-    }
-  }
-  return newest;
-}
-
-function DiscoveryFreshnessChip({
+function DiscoveryPendingUpdateChip({
   status,
 }: {
   status: DiscoverySyncStatus | null | undefined;
 }) {
   const t = useTranslate();
-  const timestamp = mostRecentSyncTimestamp(status);
-  const relative = formatRelativeTime(timestamp);
-  if (!relative) {
+  const pendingChanges = status?.pendingContextChangeCount ?? 0;
+  if (pendingChanges === 0) {
     return null;
   }
-  const pendingChanges = status?.pendingContextChangeCount ?? 0;
-  const stale = pendingChanges > 0;
   return (
-    <div className="inline-flex items-center gap-2">
-      <span
-        className="inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] px-2.5 py-1 text-[11.5px] font-medium text-[var(--scry-muted)]"
-        title={timestamp ?? undefined}
-      >
-        <Clock className="h-3.5 w-3.5 text-[var(--scry-faint2)]" aria-hidden="true" />
-        {t("discovery.updatedRelative", { relative })}
-      </span>
-      {stale ? (
-        <span
-          className="inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2.5 py-1 text-[11.5px] font-medium text-[var(--scry-warning-text)]"
-          title={t("discovery.updatePendingHint")}
-        >
-          {t("discovery.updatePending")}
-        </span>
-      ) : null}
-    </div>
+    <span
+      className="inline-flex items-center gap-1.5 rounded-[8px] border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2.5 py-1 text-[11.5px] font-medium text-[var(--scry-warning-text)]"
+      title={t("discovery.updatePendingHint")}
+    >
+      {t("discovery.updatePending")}
+    </span>
   );
 }
 
@@ -1951,10 +1903,8 @@ export function DiscoveryView({
     heroItem !== null ||
     primaryRailSections.length > 0 ||
     upcomingRailSections.length > 0;
-  const freshnessTimestamp = React.useMemo(
-    () => mostRecentSyncTimestamp(home?.status),
-    [home?.status],
-  );
+  const hasPendingDiscoveryChanges =
+    (home?.status?.pendingContextChangeCount ?? 0) > 0;
   const toggleContentType = React.useCallback(
     (contentType: DiscoveryContentType) => {
       setSelectedContentTypes((current) =>
@@ -2049,12 +1999,12 @@ export function DiscoveryView({
           className={cn(
             "mb-5 items-center justify-between gap-3",
             // Always present below xl (holds the mobile filters button); on xl
-            // only when there is a freshness chip to show.
+            // only when the discovery data is waiting on an update.
             "flex max-xl:flex",
-            freshnessTimestamp ? "xl:flex" : "xl:hidden",
+            hasPendingDiscoveryChanges ? "xl:flex" : "xl:hidden",
           )}
         >
-          <DiscoveryFreshnessChip status={home?.status} />
+          <DiscoveryPendingUpdateChip status={home?.status} />
           <button
             type="button"
             aria-label={t("discovery.openFilters")}

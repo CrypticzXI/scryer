@@ -7,8 +7,9 @@ use crate::library_scan::{
 use crate::ports::{
     CatalogDiscoveryGroup, CatalogDiscoveryGroupKind, CatalogDiscoveryQuery,
     CatalogDiscoveryResult, CatalogDiscoverySectionCandidatesRecord, CatalogDiscoverySurface,
-    DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryExternalIdRecord, DiscoveryFacetRecord,
-    DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemDetailQuery,
+    CatalogOwnedTitleRecord, DISCOVERY_DEFAULT_SCOPE_KEY, DiscoveryExternalIdRecord,
+    DiscoveryFacetRecord, DiscoveryHomeCandidate, DiscoveryHomeQuery, DiscoveryHomeResult,
+    DiscoveryHomeSectionCandidatesRecord, DiscoveryItemDetailQuery,
     DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsQuery,
     DiscoveryItemsResult, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
     DiscoveryRankComponentRecord, DiscoverySectionItemsRecord, DiscoverySectionRecord,
@@ -25,7 +26,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use tracing::warn;
+use std::time::Instant;
+use tracing::{debug, warn};
 
 pub(crate) const DISCOVERY_CONTEXT_CHANGES_MAX_CHANGED_SUBJECTS: usize = 250;
 const DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS: usize = 2;
@@ -34,6 +36,8 @@ const DISCOVERY_HOME_MAX_CANDIDATES: usize = 2_000;
 const DISCOVERY_COMPLETE_COLLECTION_MIN_CANDIDATES: usize = 100;
 const DISCOVERY_COMPLETE_COLLECTION_MAX_CANDIDATES: usize = 500;
 const CATALOG_ANIME_WEEKLY_SECTION_ID: &str = "anime_this_week";
+const CATALOG_ANIME_SUPPRESSED_PUBLIC_SECTION_IDS: &[&str] = &["trending_now", "popular_series"];
+const CATALOG_ANIME_PRIORITY_SECTION_IDS: &[&str] = &["new_on_streaming", "most_anticipated_anime"];
 /// Minimum number of distinct rating providers required before an item's rating is
 /// treated as corroborated. A lone source (for example a single trakt vote)
 /// can spike to 10.0 without corroboration, so such fossils must lose to
@@ -275,6 +279,7 @@ impl AppUseCase {
         actor: &User,
         query: DiscoveryHomeQuery,
     ) -> AppResult<DiscoveryHomeResult> {
+        let discovery_home_started_at = Instant::now();
         let visibility = self.discovery_visibility(actor).await?;
         let readable_library_ids = &visibility.readable_library_ids;
         let can_view_personalized = !readable_library_ids.is_empty();
@@ -293,6 +298,12 @@ impl AppUseCase {
         let owned_visibility = self
             .discovery_home_owned_visibility(&readable_library_id_list)
             .await?;
+        let candidate_load_started_at = Instant::now();
+        let mut candidates_by_id = HashMap::<String, DiscoveryHomeCandidate>::new();
+        let mut home_submitted_subjects = Vec::new();
+        let mut public_candidate_count = 0usize;
+        let mut personalized_candidate_count = 0usize;
+        let mut complete_collection_candidate_count = 0usize;
 
         let mut public_sections = Vec::<DiscoverySectionResult>::new();
         let mut top_rated_live_public_sections = Vec::<DiscoverySectionResult>::new();
@@ -310,9 +321,15 @@ impl AppUseCase {
                         public_candidate_limit as i64,
                     )
                     .await?;
+                public_candidate_count = public_section_items
+                    .iter()
+                    .map(|record| record.items.len())
+                    .sum();
                 let public_section_results = public_section_items
                     .into_iter()
-                    .filter_map(section_items_record_to_result)
+                    .filter_map(|record| {
+                        home_section_candidates_record_to_result(record, &mut candidates_by_id)
+                    })
                     .collect::<Vec<_>>();
                 public_sections = filter_discovery_sections_for_owned_items(
                     public_section_results,
@@ -351,7 +368,7 @@ impl AppUseCase {
             && query.include_personalized
             && let Some(context_run_id) = status.state.last_success_generation_id.as_deref()
         {
-            let mut personalized_items = self
+            let personalized_candidates = self
                 .services
                 .library
                 .discovery
@@ -363,6 +380,11 @@ impl AppUseCase {
                     personalized_home_candidate_limit(limit) as i64,
                 )
                 .await?;
+            personalized_candidate_count = personalized_candidates.len();
+            let mut personalized_items = home_selection_items_from_candidates(
+                personalized_candidates,
+                &mut candidates_by_id,
+            );
             personalized_items.retain(|item| visibility.allows_item(item));
             let submitted_subjects = self
                 .services
@@ -372,11 +394,12 @@ impl AppUseCase {
                 .await?;
             let submitted_subjects =
                 filter_submitted_subjects_for_libraries(&submitted_subjects, readable_library_ids);
+            home_submitted_subjects = submitted_subjects.clone();
             resolve_discovery_matched_subjects(&mut personalized_items, &submitted_subjects)?;
             let library_profile = self
                 .discovery_library_affinity_profile(readable_library_ids, &submitted_subjects)
                 .await?;
-            let mut complete_collection_items = self
+            let complete_collection_candidates = self
                 .services
                 .library
                 .discovery
@@ -388,6 +411,11 @@ impl AppUseCase {
                     complete_collection_candidate_limit(limit) as i64,
                 )
                 .await?;
+            complete_collection_candidate_count = complete_collection_candidates.len();
+            let mut complete_collection_items = home_selection_items_from_candidates(
+                complete_collection_candidates,
+                &mut candidates_by_id,
+            );
             complete_collection_items.retain(|item| visibility.allows_item(item));
             resolve_discovery_matched_subjects(
                 &mut complete_collection_items,
@@ -423,7 +451,7 @@ impl AppUseCase {
         } else {
             None
         };
-        let mut top_rated_items = self
+        let top_rated_candidates = self
             .services
             .library
             .discovery
@@ -438,8 +466,25 @@ impl AppUseCase {
                 top_rated_home_candidate_limit(limit) as i64,
             )
             .await?;
+        let top_rated_candidate_count = top_rated_candidates.len();
+        let mut top_rated_items =
+            home_selection_items_from_candidates(top_rated_candidates, &mut candidates_by_id);
         top_rated_items
             .retain(|item| visibility.allows_item(item) && !owned_visibility.item_is_owned(item));
+
+        debug!(
+            operation = "discovery_home",
+            stage = "candidate_load",
+            candidate_count = candidates_by_id.len(),
+            public_candidate_count,
+            personalized_candidate_count,
+            complete_collection_candidate_count,
+            top_rated_candidate_count,
+            elapsed_ms = discovery_home_elapsed_ms(candidate_load_started_at),
+            "discovery home candidates loaded"
+        );
+
+        let section_selection_started_at = Instant::now();
 
         if let Some(top_rated_section) = top_rated_discovery_home_section(
             &top_rated_items,
@@ -459,8 +504,7 @@ impl AppUseCase {
         }
 
         let hero_item = select_discovery_home_hero(&public_sections, &personalized_sections);
-
-        Ok(DiscoveryHomeResult {
+        let mut result = DiscoveryHomeResult {
             status,
             hero_item,
             public_sections,
@@ -468,7 +512,75 @@ impl AppUseCase {
             complete_collection,
             facets,
             can_view_personalized,
-        })
+        };
+        debug!(
+            operation = "discovery_home",
+            stage = "section_selection",
+            public_section_count = result.public_sections.len(),
+            personalized_section_count = result.personalized_sections.len(),
+            complete_collection = result.complete_collection.is_some(),
+            elapsed_ms = discovery_home_elapsed_ms(section_selection_started_at),
+            "discovery home sections selected"
+        );
+        self.hydrate_discovery_home_result(
+            &mut result,
+            &candidates_by_id,
+            &home_submitted_subjects,
+        )
+        .await?;
+        debug!(
+            operation = "discovery_home",
+            stage = "total",
+            elapsed_ms = discovery_home_elapsed_ms(discovery_home_started_at),
+            "discovery home loaded"
+        );
+        Ok(result)
+    }
+
+    async fn hydrate_discovery_home_result(
+        &self,
+        result: &mut DiscoveryHomeResult,
+        candidates_by_id: &HashMap<String, DiscoveryHomeCandidate>,
+        submitted_subjects: &[DiscoverySubmittedSubjectRecord],
+    ) -> AppResult<()> {
+        let hydration_started_at = Instant::now();
+        let selected_ids = selected_discovery_home_item_ids(result);
+        let mut selected_candidates = selected_ids
+            .iter()
+            .filter_map(|id| candidates_by_id.get(id).cloned())
+            .collect::<Vec<_>>();
+        if selected_candidates.is_empty() {
+            return Ok(());
+        }
+        self.services
+            .library
+            .discovery
+            .hydrate_discovery_home_candidates(&mut selected_candidates)
+            .await?;
+        let mut hydrated_by_id = selected_candidates
+            .into_iter()
+            .map(|candidate| candidate.item)
+            .map(|item| (item.id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        let subject_resolution_ids = discovery_home_subject_resolution_item_ids(result);
+        let mut subject_resolution_items = subject_resolution_ids
+            .iter()
+            .filter_map(|id| hydrated_by_id.get(id).cloned())
+            .collect::<Vec<_>>();
+        resolve_discovery_matched_subjects(&mut subject_resolution_items, submitted_subjects)?;
+        for item in subject_resolution_items {
+            hydrated_by_id.insert(item.id.clone(), item);
+        }
+        replace_discovery_home_result_items(result, &hydrated_by_id, &subject_resolution_ids);
+        debug!(
+            operation = "discovery_home",
+            stage = "selected_hydration",
+            selected_card_count = hydrated_by_id.len(),
+            selected_item_count = selected_ids.len(),
+            elapsed_ms = discovery_home_elapsed_ms(hydration_started_at),
+            "discovery home selected cards hydrated"
+        );
+        Ok(())
     }
 
     async fn live_public_section_results(
@@ -738,6 +850,9 @@ impl AppUseCase {
         let mut groups = Vec::new();
         let mut emitted_item_keys = HashSet::new();
         let mut public_sections = public_sections;
+        if media_kind == "anime" {
+            catalog_filter_anime_public_sections(&mut public_sections);
+        }
         if let Some(public_top_section) =
             catalog_public_top_section(&mut public_sections, media_kind)
             && let Some(group) = catalog_public_top_group(
@@ -748,6 +863,21 @@ impl AppUseCase {
             )
         {
             groups.push(group);
+        }
+
+        if media_kind == "anime" {
+            for section_id in CATALOG_ANIME_PRIORITY_SECTION_IDS {
+                if groups.len() >= max_groups {
+                    break;
+                }
+                if let Some(public_section) =
+                    catalog_take_public_section(&mut public_sections, section_id)
+                    && let Some(group) =
+                        catalog_public_section_group(public_section, limit, &mut emitted_item_keys)
+                {
+                    groups.push(group);
+                }
+            }
         }
         let remaining_public_sections = public_sections;
 
@@ -909,9 +1039,9 @@ impl AppUseCase {
             .services
             .catalog
             .titles
-            .list_for_libraries(None, readable_library_ids, None)
+            .list_catalog_owned_title_records(readable_library_ids)
             .await?;
-        Ok(CatalogOwnedVisibility::from_titles(&titles))
+        Ok(CatalogOwnedVisibility::from_title_records(&titles))
     }
 }
 
@@ -1002,6 +1132,139 @@ fn section_items_record_to_result(
         total_count: record.total_count,
         items: record.items,
     })
+}
+
+fn home_section_candidates_record_to_result(
+    record: DiscoveryHomeSectionCandidatesRecord,
+    candidates_by_id: &mut HashMap<String, DiscoveryHomeCandidate>,
+) -> Option<DiscoverySectionResult> {
+    let items = home_selection_items_from_candidates(record.items, candidates_by_id);
+    section_items_record_to_result(DiscoverySectionItemsRecord {
+        section: record.section,
+        total_count: record.total_count,
+        items,
+    })
+}
+
+fn home_selection_items_from_candidates(
+    candidates: Vec<DiscoveryHomeCandidate>,
+    candidates_by_id: &mut HashMap<String, DiscoveryHomeCandidate>,
+) -> Vec<DiscoveryItemRecord> {
+    candidates
+        .into_iter()
+        .map(|candidate| {
+            let selection_item = home_candidate_selection_item(&candidate);
+            candidates_by_id
+                .entry(selection_item.id.clone())
+                .or_insert(candidate);
+            selection_item
+        })
+        .collect()
+}
+
+fn home_candidate_selection_item(candidate: &DiscoveryHomeCandidate) -> DiscoveryItemRecord {
+    let mut item = candidate.item.clone();
+    item.matched_subject_keys = candidate.matched_subject_keys.clone();
+    item.facet_terms = candidate.affinity_terms.clone();
+    if candidate.has_acclaim_signal {
+        // The selection path only needs the boolean outcome; use a stable
+        // signal value so the existing acclaimed-section predicate stays
+        // unchanged while full metadata remains deferred.
+        item.chart_signals.push("acclaim".to_string());
+    }
+    item
+}
+
+fn selected_discovery_home_item_ids(result: &DiscoveryHomeResult) -> BTreeSet<String> {
+    let mut item_ids = BTreeSet::new();
+    for item in result
+        .public_sections
+        .iter()
+        .chain(result.personalized_sections.iter())
+        .flat_map(|section| section.items.iter())
+        .chain(
+            result
+                .complete_collection
+                .iter()
+                .flat_map(|section| section.items.iter()),
+        )
+        .chain(result.hero_item.iter())
+    {
+        item_ids.insert(item.id.clone());
+    }
+    item_ids
+}
+
+fn discovery_home_subject_resolution_item_ids(result: &DiscoveryHomeResult) -> HashSet<String> {
+    result
+        .personalized_sections
+        .iter()
+        .flat_map(|section| section.items.iter())
+        .chain(
+            result
+                .complete_collection
+                .iter()
+                .flat_map(|section| section.items.iter()),
+        )
+        .map(|item| item.id.clone())
+        .collect()
+}
+
+fn replace_discovery_home_result_items(
+    result: &mut DiscoveryHomeResult,
+    hydrated_by_id: &HashMap<String, DiscoveryItemRecord>,
+    subject_resolution_ids: &HashSet<String>,
+) {
+    for section in &mut result.public_sections {
+        for item in &mut section.items {
+            replace_discovery_home_item(item, hydrated_by_id, false);
+        }
+    }
+    for section in &mut result.personalized_sections {
+        for item in &mut section.items {
+            replace_discovery_home_item(
+                item,
+                hydrated_by_id,
+                subject_resolution_ids.contains(&item.id),
+            );
+        }
+    }
+    if let Some(section) = &mut result.complete_collection {
+        for item in &mut section.items {
+            replace_discovery_home_item(
+                item,
+                hydrated_by_id,
+                subject_resolution_ids.contains(&item.id),
+            );
+        }
+    }
+    if let Some(hero_item) = &mut result.hero_item {
+        replace_discovery_home_item(
+            hero_item,
+            hydrated_by_id,
+            subject_resolution_ids.contains(&hero_item.id),
+        );
+    }
+}
+
+fn replace_discovery_home_item(
+    item: &mut DiscoveryItemRecord,
+    hydrated_by_id: &HashMap<String, DiscoveryItemRecord>,
+    use_hydrated_subject_resolution: bool,
+) {
+    let Some(hydrated) = hydrated_by_id.get(&item.id) else {
+        return;
+    };
+    let mut replacement = hydrated.clone();
+    if !use_hydrated_subject_resolution {
+        replacement.matched_subject_titles = item.matched_subject_titles.clone();
+        replacement.matched_subject_count = item.matched_subject_count;
+    }
+    *item = replacement;
+}
+
+fn discovery_home_elapsed_ms(started_at: Instant) -> u128 {
+    started_at.elapsed().as_millis()
 }
 
 fn filter_discovery_sections_for_owned_items(
@@ -1535,6 +1798,30 @@ impl CatalogOwnedVisibility {
         visibility
     }
 
+    fn from_title_records(titles: &[CatalogOwnedTitleRecord]) -> Self {
+        let mut visibility = Self::default();
+        for title in titles {
+            visibility.title_ids.insert(title.id.clone());
+            add_catalog_owned_external_keys(
+                &mut visibility.keys,
+                &mut visibility.identity_keys,
+                "imdb",
+                title.imdb_id.as_deref(),
+                title.facet.clone(),
+            );
+            for external_id in &title.external_ids {
+                add_catalog_owned_external_keys(
+                    &mut visibility.keys,
+                    &mut visibility.identity_keys,
+                    &external_id.source,
+                    Some(external_id.value.as_str()),
+                    title.facet.clone(),
+                );
+            }
+        }
+        visibility
+    }
+
     fn excluded_discovery_identity_keys(&self) -> Vec<String> {
         let mut keys = self.identity_keys.iter().cloned().collect::<Vec<_>>();
         keys.sort();
@@ -1658,6 +1945,24 @@ fn catalog_discovery_candidate_limit(limit: usize, max_groups: usize) -> usize {
     (limit.max(6) * max_groups.max(4) * 8).clamp(48, 400)
 }
 
+fn catalog_filter_anime_public_sections(
+    public_sections: &mut Vec<CatalogDiscoverySectionCandidatesRecord>,
+) {
+    public_sections.retain(|section| {
+        !CATALOG_ANIME_SUPPRESSED_PUBLIC_SECTION_IDS.contains(&section.section_id.as_str())
+    });
+}
+
+fn catalog_take_public_section(
+    public_sections: &mut Vec<CatalogDiscoverySectionCandidatesRecord>,
+    section_id: &str,
+) -> Option<CatalogDiscoverySectionCandidatesRecord> {
+    public_sections
+        .iter()
+        .position(|section| section.section_id == section_id)
+        .map(|index| public_sections.remove(index))
+}
+
 fn catalog_public_top_section(
     public_sections: &mut Vec<CatalogDiscoverySectionCandidatesRecord>,
     media_kind: &str,
@@ -1683,7 +1988,12 @@ fn catalog_public_top_group(
     limit: usize,
     emitted_item_keys: &mut HashSet<String>,
 ) -> Option<CatalogDiscoveryGroup> {
-    let label_value = catalog_public_section_label(&section);
+    let label_value =
+        if media_kind == "anime" && section.section_id == CATALOG_ANIME_WEEKLY_SECTION_ID {
+            Some("Trending Now".to_string())
+        } else {
+            catalog_public_section_label(&section)
+        };
     catalog_group_excluding_emitted(
         CatalogDiscoveryGroupDraft {
             id: format!("public_top_{media_kind}"),
@@ -4001,6 +4311,41 @@ mod tests {
                 .map(|section| section.section_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["trending_now", "popular_right_now"]
+        );
+    }
+
+    #[test]
+    fn catalog_anime_public_policy_never_falls_back_to_generic_trending() {
+        let mut sections = vec![
+            CatalogDiscoverySectionCandidatesRecord {
+                section_id: "trending_now".to_string(),
+                ..Default::default()
+            },
+            CatalogDiscoverySectionCandidatesRecord {
+                section_id: "popular_series".to_string(),
+                ..Default::default()
+            },
+            CatalogDiscoverySectionCandidatesRecord {
+                section_id: "popular_right_now".to_string(),
+                ..Default::default()
+            },
+            CatalogDiscoverySectionCandidatesRecord {
+                section_id: "new_on_streaming".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        catalog_filter_anime_public_sections(&mut sections);
+        let top = catalog_public_top_section(&mut sections, "anime")
+            .expect("a remaining Anime public section should become the lead");
+
+        assert_eq!(top.section_id, "popular_right_now");
+        assert_eq!(
+            sections
+                .iter()
+                .map(|section| section.section_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["new_on_streaming"]
         );
     }
 

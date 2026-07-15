@@ -1,17 +1,20 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AppResult, CatalogDiscoveryCandidatesRecord, CatalogDiscoverySectionCandidatesRecord,
+    AppError, AppResult, CatalogDiscoveryCandidatesRecord, CatalogDiscoverySectionCandidatesRecord,
     DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit, DiscoveryExternalIdRecord,
-    DiscoveryFacetRecord, DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord,
-    DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord,
-    DiscoveryPruneReport, DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord,
-    DiscoveryRepository, DiscoverySectionItemsRecord, DiscoverySectionRecord,
-    DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
-    DiscoverySyncStateRecord, TitleExternalRating, TitleRatingSummary,
+    DiscoveryFacetRecord, DiscoveryHomeCandidate, DiscoveryHomeSectionCandidatesRecord,
+    DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
+    DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord, DiscoveryPruneReport,
+    DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord, DiscoveryRepository,
+    DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySourceTagRecord,
+    DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord, DiscoverySyncStateRecord,
+    TitleExternalRating, TitleRatingSummary,
 };
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
+use tracing::debug;
 
 use crate::media::canonical_tags::{
     load_discovery_title_metadata_ratings, load_discovery_title_metadata_tags,
@@ -771,7 +774,7 @@ impl DiscoveryRepository for DiscoveryStore {
         allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit_per_section: i64,
-    ) -> AppResult<Vec<DiscoverySectionItemsRecord>> {
+    ) -> AppResult<Vec<DiscoveryHomeSectionCandidatesRecord>> {
         let sections = self.list_discovery_sections(run_id, Some("public")).await?;
         if sections.is_empty() {
             return Ok(Vec::new());
@@ -784,7 +787,7 @@ impl DiscoveryRepository for DiscoveryStore {
             limit_per_section.clamp(1, 100),
         )
         .await?;
-        section_items_from_rows(&self.datastore, sections, rows).await
+        section_candidates_from_rows(&self.datastore, sections, rows).await
     }
 
     async fn list_personalized_discovery_home_items(
@@ -794,8 +797,8 @@ impl DiscoveryRepository for DiscoveryStore {
         allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>> {
-        fetch_personalized_items(
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
+        fetch_personalized_home_candidates(
             &self.datastore,
             run_id,
             readable_library_ids,
@@ -814,8 +817,8 @@ impl DiscoveryRepository for DiscoveryStore {
         allowed_media_kinds: &[String],
         include_unresolved: bool,
         limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>> {
-        fetch_personalized_items(
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
+        fetch_personalized_home_candidates(
             &self.datastore,
             run_id,
             readable_library_ids,
@@ -854,8 +857,8 @@ impl DiscoveryRepository for DiscoveryStore {
         excluded_identity_keys: &[String],
         include_unresolved: bool,
         limit: i64,
-    ) -> AppResult<Vec<DiscoveryItemRecord>> {
-        fetch_discovery_home_top_rated_items(
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
+        fetch_discovery_home_top_rated_candidates(
             &self.datastore,
             public_run_id,
             context_run_id,
@@ -867,6 +870,13 @@ impl DiscoveryRepository for DiscoveryStore {
             limit.clamp(1, 5_000),
         )
         .await
+    }
+
+    async fn hydrate_discovery_home_candidates(
+        &self,
+        candidates: &mut [DiscoveryHomeCandidate],
+    ) -> AppResult<()> {
+        hydrate_discovery_home_candidates(&self.datastore, candidates).await
     }
 
     async fn list_catalog_public_discovery_items(
@@ -1518,30 +1528,32 @@ async fn fetch_public_section_item_rows(
     .await
 }
 
-async fn section_items_from_rows(
+async fn section_candidates_from_rows(
     datastore: &StoreDatastore,
     sections: Vec<DiscoverySectionRecord>,
     rows: Vec<SqlRow>,
-) -> AppResult<Vec<DiscoverySectionItemsRecord>> {
+) -> AppResult<Vec<DiscoveryHomeSectionCandidatesRecord>> {
     let mut item_metadata = Vec::new();
-    let mut items = Vec::new();
+    let mut candidates = Vec::new();
     for row in &rows {
         item_metadata.push((
             row.text("result_section_id")?,
             row.i64("section_total_count")?,
         ));
-        items.push(item_from_row(row)?);
+        candidates.push(home_candidate_from_row(row)?);
     }
-    let title_ids = discovery_title_ids_from_rows(&rows)?;
-    hydrate_discovery_items(datastore, &mut items, &title_ids).await?;
+    hydrate_discovery_home_candidate_ratings(datastore, &mut candidates).await?;
 
-    let mut items_by_section = HashMap::<String, Vec<DiscoveryItemRecord>>::new();
+    let mut items_by_section = HashMap::<String, Vec<DiscoveryHomeCandidate>>::new();
     let mut totals_by_section = HashMap::<String, i64>::new();
-    for (item, (section_id, total_count)) in items.into_iter().zip(item_metadata) {
+    for (candidate, (section_id, total_count)) in candidates.into_iter().zip(item_metadata) {
         totals_by_section
             .entry(section_id.clone())
             .or_insert(total_count);
-        items_by_section.entry(section_id).or_default().push(item);
+        items_by_section
+            .entry(section_id)
+            .or_default()
+            .push(candidate);
     }
 
     Ok(sections
@@ -1549,7 +1561,7 @@ async fn section_items_from_rows(
         .filter(|section| !discovery_section_type_is_complete(&section.section_type))
         .filter_map(|section| {
             let items = items_by_section.remove(&section.section_id)?;
-            Some(DiscoverySectionItemsRecord {
+            Some(DiscoveryHomeSectionCandidatesRecord {
                 total_count: totals_by_section
                     .remove(&section.section_id)
                     .unwrap_or(items.len() as i64),
@@ -1566,7 +1578,7 @@ fn discovery_section_type_is_complete(section_type: &str) -> bool {
         .eq_ignore_ascii_case("COMPLETE_THE_COLLECTION")
 }
 
-async fn fetch_personalized_items(
+async fn fetch_personalized_home_candidates(
     datastore: &StoreDatastore,
     run_id: &str,
     readable_library_ids: &[String],
@@ -1574,7 +1586,7 @@ async fn fetch_personalized_items(
     include_unresolved: bool,
     subset: Option<PersonalizedItemSubset>,
     limit: i64,
-) -> AppResult<Vec<DiscoveryItemRecord>> {
+) -> AppResult<Vec<DiscoveryHomeCandidate>> {
     if readable_library_ids.is_empty() || allowed_media_kinds.is_empty() {
         return Ok(Vec::new());
     }
@@ -1614,11 +1626,11 @@ async fn fetch_personalized_items(
         discovery_item_projection(datastore, "i", "t"),
         clauses.join(" AND ")
     );
-    fetch_items_with_sql(datastore, &sql, &args).await
+    fetch_discovery_home_candidates_with_sql(datastore, &sql, &args).await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn fetch_discovery_home_top_rated_items(
+async fn fetch_discovery_home_top_rated_candidates(
     datastore: &StoreDatastore,
     public_run_id: Option<&str>,
     context_run_id: Option<&str>,
@@ -1628,7 +1640,7 @@ async fn fetch_discovery_home_top_rated_items(
     excluded_identity_keys: &[String],
     include_unresolved: bool,
     limit: i64,
-) -> AppResult<Vec<DiscoveryItemRecord>> {
+) -> AppResult<Vec<DiscoveryHomeCandidate>> {
     if allowed_media_kinds.is_empty() {
         return Ok(Vec::new());
     }
@@ -1816,7 +1828,7 @@ async fn fetch_discovery_home_top_rated_items(
         branches.join("\nUNION ALL\n"),
         discovery_item_row_columns()
     );
-    fetch_items_with_sql(datastore, &sql, &args).await
+    fetch_discovery_home_rating_candidates_with_sql(datastore, &sql, &args).await
 }
 
 async fn fetch_catalog_public_items(
@@ -2139,45 +2151,81 @@ async fn fetch_personalized_facets(
         return Ok(Vec::new());
     }
 
-    let mut args = vec![SqlArg::Text(run_id.to_string())];
-    let mut clauses = vec![
+    let mut item_args = vec![SqlArg::Text(run_id.to_string())];
+    let mut item_clauses = vec![
         "i.base_generation_id = {}".to_string(),
         "i.tombstoned_at IS NULL".to_string(),
         "i.owned_in_input = FALSE".to_string(),
+    ];
+    item_clauses.push(library_provenance_exists_clause(
+        "i",
+        readable_library_ids,
+        &mut item_args,
+    ));
+
+    let mut title_args = Vec::new();
+    let mut title_clauses = vec![
         "t.term_kind = 'facet_term'".to_string(),
         "(LOWER(t.term_value) LIKE 'canonical:genre:%'
           OR LOWER(t.term_value) LIKE 'canonical:theme:%')"
             .to_string(),
     ];
     if !include_unresolved {
-        clauses.push("dt.resolved = TRUE".to_string());
+        title_clauses.push("dt.resolved = TRUE".to_string());
     }
-    append_authoritative_media_kind_filter(&mut clauses, &mut args, "dt", allowed_media_kinds);
-    clauses.push(library_provenance_exists_clause(
-        "i",
-        readable_library_ids,
-        &mut args,
-    ));
+    append_authoritative_media_kind_filter(
+        &mut title_clauses,
+        &mut title_args,
+        "dt",
+        allowed_media_kinds,
+    );
+    let mut args = item_args;
+    args.extend(title_args);
 
-    let rows = SqlRuntime::fetch_all(
-        datastore.read_exec(),
-        &format!(
-            "SELECT t.term_value AS facet_term,
+    // SQLite otherwise starts with every facet term, then repeatedly probes the
+    // eligible item generation. Materializing the small eligible-item set and
+    // using CROSS JOIN keeps the join item-driven without affecting Postgres.
+    let sql = match datastore {
+        StoreDatastore::Sqlite { .. } => format!(
+            "WITH eligible_items AS MATERIALIZED (
+                 SELECT i.id, i.discovery_title_id
+                 FROM discovery_items i
+                 WHERE {}
+             )
+             SELECT t.term_value AS facet_term,
                     COUNT(DISTINCT i.id) AS local_count
-             FROM discovery_items i
-             JOIN discovery_titles dt
-               ON dt.id = i.discovery_title_id
-             JOIN discovery_title_terms t
-               ON t.discovery_title_id = dt.id
-             WHERE {}
+             FROM eligible_items i
+             CROSS JOIN discovery_titles dt
+             CROSS JOIN discovery_title_terms t
+             WHERE dt.id = i.discovery_title_id
+               AND t.discovery_title_id = dt.id
+               AND {}
              GROUP BY t.term_value
              HAVING COUNT(DISTINCT i.id) > 0
              ORDER BY t.term_value ASC",
-            clauses.join(" AND ")
+            item_clauses.join(" AND "),
+            title_clauses.join(" AND "),
         ),
-        &args,
-    )
-    .await?;
+        StoreDatastore::Postgres { .. } => {
+            let mut clauses = item_clauses;
+            clauses.extend(title_clauses);
+            format!(
+                "SELECT t.term_value AS facet_term,
+                        COUNT(DISTINCT i.id) AS local_count
+                 FROM discovery_items i
+                 JOIN discovery_titles dt
+                   ON dt.id = i.discovery_title_id
+                 JOIN discovery_title_terms t
+                   ON t.discovery_title_id = dt.id
+                 WHERE {}
+                 GROUP BY t.term_value
+                 HAVING COUNT(DISTINCT i.id) > 0
+                 ORDER BY t.term_value ASC",
+                clauses.join(" AND ")
+            )
+        }
+    };
+    let rows = SqlRuntime::fetch_all(datastore.read_exec(), &sql, &args).await?;
     rows.iter()
         .filter_map(|row| canonical_facet_from_row(run_id, row).transpose())
         .collect()
@@ -2562,6 +2610,355 @@ async fn fetch_items_with_sql(
     let title_ids = discovery_title_ids_from_rows(&rows)?;
     hydrate_discovery_items(datastore, &mut items, &title_ids).await?;
     Ok(items)
+}
+
+async fn fetch_discovery_home_candidates_with_sql(
+    datastore: &StoreDatastore,
+    sql: &str,
+    args: &[SqlArg],
+) -> AppResult<Vec<DiscoveryHomeCandidate>> {
+    let rows = SqlRuntime::fetch_all(datastore.read_exec(), sql, args).await?;
+    let mut candidates = rows
+        .iter()
+        .map(home_candidate_from_row)
+        .collect::<AppResult<Vec<_>>>()?;
+    hydrate_discovery_home_candidate_selection(datastore, &mut candidates).await?;
+    Ok(candidates)
+}
+
+async fn fetch_discovery_home_rating_candidates_with_sql(
+    datastore: &StoreDatastore,
+    sql: &str,
+    args: &[SqlArg],
+) -> AppResult<Vec<DiscoveryHomeCandidate>> {
+    let rows = SqlRuntime::fetch_all(datastore.read_exec(), sql, args).await?;
+    let mut candidates = rows
+        .iter()
+        .map(home_candidate_from_row)
+        .collect::<AppResult<Vec<_>>>()?;
+    hydrate_discovery_home_candidate_ratings(datastore, &mut candidates).await?;
+    Ok(candidates)
+}
+
+fn home_candidate_from_row(row: &SqlRow) -> AppResult<DiscoveryHomeCandidate> {
+    Ok(DiscoveryHomeCandidate {
+        item: item_from_row(row)?,
+        discovery_title_id: row.text("discovery_title_id")?,
+        matched_subject_keys: Vec::new(),
+        affinity_terms: Vec::new(),
+        has_acclaim_signal: false,
+    })
+}
+
+async fn hydrate_discovery_home_candidate_selection(
+    datastore: &StoreDatastore,
+    candidates: &mut [DiscoveryHomeCandidate],
+) -> AppResult<()> {
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    hydrate_discovery_home_candidate_ratings(datastore, candidates).await?;
+    let mut title_indexes = HashMap::<String, Vec<usize>>::new();
+    let mut item_indexes = HashMap::<String, Vec<usize>>::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        title_indexes
+            .entry(candidate.discovery_title_id.clone())
+            .or_default()
+            .push(index);
+        item_indexes
+            .entry(candidate.item.id.clone())
+            .or_default()
+            .push(index);
+    }
+    let mut title_ids = title_indexes.keys().cloned().collect::<Vec<_>>();
+    title_ids.sort();
+    let mut item_ids = item_indexes.keys().cloned().collect::<Vec<_>>();
+    item_ids.sort();
+
+    for candidate in candidates.iter_mut() {
+        candidate.has_acclaim_signal = candidate
+            .item
+            .best_source
+            .as_deref()
+            .is_some_and(discovery_home_value_is_acclaim_signal)
+            || candidate
+                .item
+                .tmdb_collection_name
+                .as_deref()
+                .is_some_and(discovery_home_value_is_acclaim_signal);
+    }
+
+    let affinity_rows = fetch_child_rows(
+        datastore,
+        "SELECT discovery_title_id, term_value, sort_index
+             FROM discovery_title_terms
+             WHERE discovery_title_id IN ({{}})
+               AND term_kind = 'facet_term'
+             ORDER BY discovery_title_id ASC, sort_index ASC, term_value ASC",
+        &title_ids,
+    )
+    .await?;
+    for row in affinity_rows {
+        let title_id = row.text("discovery_title_id")?;
+        let Some(indexes) = title_indexes.get(&title_id) else {
+            continue;
+        };
+        let term_value = row.text("term_value")?;
+        for index in indexes {
+            candidates[*index].affinity_terms.push(term_value.clone());
+        }
+    }
+
+    let acclaim_rows = fetch_child_rows(
+        datastore,
+        &format!(
+            "SELECT DISTINCT discovery_title_id
+             FROM discovery_title_terms
+             WHERE discovery_title_id IN ({{}})
+               AND term_kind IN ('status_tag', 'source', 'relation_type',
+                                 'relation_subtype', 'chart_signal', 'provider_signal',
+                                 'context_term')
+               AND {}",
+            discovery_home_acclaim_sql_clause("term_value")
+        ),
+        &title_ids,
+    )
+    .await?;
+    for row in acclaim_rows {
+        let title_id = row.text("discovery_title_id")?;
+        let Some(indexes) = title_indexes.get(&title_id) else {
+            continue;
+        };
+        for index in indexes {
+            candidates[*index].has_acclaim_signal = true;
+        }
+    }
+
+    mark_discovery_home_source_tag_acclaim_signals(
+        datastore,
+        candidates,
+        &title_ids,
+        &title_indexes,
+    )
+    .await?;
+
+    let matched_rows = fetch_child_rows(
+        datastore,
+        "SELECT item_id, subject_key, sort_index
+         FROM discovery_item_subject_links
+         WHERE item_id IN ({})
+           AND link_type = 'matched'
+         ORDER BY item_id ASC, sort_index ASC",
+        &item_ids,
+    )
+    .await?;
+    for row in matched_rows {
+        let item_id = row.text("item_id")?;
+        let Some(indexes) = item_indexes.get(&item_id) else {
+            continue;
+        };
+        let subject_key = row.text("subject_key")?;
+        for index in indexes {
+            candidates[*index]
+                .matched_subject_keys
+                .push(subject_key.clone());
+        }
+    }
+    Ok(())
+}
+
+async fn hydrate_discovery_home_candidate_ratings(
+    datastore: &StoreDatastore,
+    candidates: &mut [DiscoveryHomeCandidate],
+) -> AppResult<()> {
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let mut title_indexes = HashMap::<String, Vec<usize>>::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        title_indexes
+            .entry(candidate.discovery_title_id.clone())
+            .or_default()
+            .push(index);
+    }
+    let mut title_ids = title_indexes.keys().cloned().collect::<Vec<_>>();
+    title_ids.sort();
+    let ratings_by_title =
+        load_discovery_title_metadata_ratings(datastore.read_exec(), &title_ids).await?;
+    for (title_id, ratings) in ratings_by_title {
+        let Some(indexes) = title_indexes.get(&title_id) else {
+            continue;
+        };
+        for index in indexes {
+            candidates[*index].item.rating = ratings.rating;
+            candidates[*index].item.rating_sources = ratings.rating_sources.clone();
+            candidates[*index].item.external_ratings = ratings.external_ratings.clone();
+        }
+    }
+    Ok(())
+}
+
+async fn mark_discovery_home_source_tag_acclaim_signals(
+    datastore: &StoreDatastore,
+    candidates: &mut [DiscoveryHomeCandidate],
+    title_ids: &[String],
+    title_indexes: &HashMap<String, Vec<usize>>,
+) -> AppResult<()> {
+    let source_tag_rows = fetch_child_rows(
+        datastore,
+        &format!(
+            "SELECT discovery_title_id, category, name
+             FROM discovery_title_source_tags
+             WHERE discovery_title_id IN ({{}})
+               AND ({} OR {})",
+            discovery_home_acclaim_sql_clause("category"),
+            discovery_home_acclaim_sql_clause("name")
+        ),
+        title_ids,
+    )
+    .await?;
+    for row in source_tag_rows {
+        let title_id = row.text("discovery_title_id")?;
+        let Some(indexes) = title_indexes.get(&title_id) else {
+            continue;
+        };
+        for index in indexes {
+            candidates[*index].has_acclaim_signal = true;
+        }
+    }
+    let source_tag_value_rows = fetch_child_rows(
+        datastore,
+        &format!(
+            "SELECT discovery_title_id, source_tag_value
+             FROM discovery_title_source_tag_values
+             WHERE discovery_title_id IN ({{}})
+               AND {}",
+            discovery_home_acclaim_sql_clause("source_tag_value")
+        ),
+        title_ids,
+    )
+    .await?;
+    for row in source_tag_value_rows {
+        let title_id = row.text("discovery_title_id")?;
+        let Some(indexes) = title_indexes.get(&title_id) else {
+            continue;
+        };
+        for index in indexes {
+            candidates[*index].has_acclaim_signal = true;
+        }
+    }
+    Ok(())
+}
+
+fn discovery_home_acclaim_sql_clause(column: &str) -> String {
+    format!(
+        "LOWER(COALESCE({column}, '')) LIKE '%acclaim%'
+         OR LOWER(COALESCE({column}, '')) LIKE '%award%'
+         OR LOWER(COALESCE({column}, '')) LIKE '%best picture%'
+         OR LOWER(COALESCE({column}, '')) LIKE '%top rated%'
+         OR LOWER(COALESCE({column}, '')) LIKE '%favorite%'
+         OR LOWER(COALESCE({column}, '')) LIKE '%critically%'"
+    )
+}
+
+fn discovery_home_value_is_acclaim_signal(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    [
+        "acclaim",
+        "award",
+        "best picture",
+        "top rated",
+        "favorite",
+        "critically",
+    ]
+    .iter()
+    .any(|signal| value.contains(signal))
+}
+
+async fn hydrate_discovery_home_candidates(
+    datastore: &StoreDatastore,
+    candidates: &mut [DiscoveryHomeCandidate],
+) -> AppResult<()> {
+    hydrate_discovery_home_candidates_with_counts(datastore, candidates)
+        .await
+        .map(|_| ())
+}
+
+async fn hydrate_discovery_home_candidates_with_counts(
+    datastore: &StoreDatastore,
+    candidates: &mut [DiscoveryHomeCandidate],
+) -> AppResult<DiscoveryItemHydrationCounts> {
+    if candidates.is_empty() {
+        return Ok(DiscoveryItemHydrationCounts::default());
+    }
+    let started_at = Instant::now();
+    let item_ids = candidates
+        .iter()
+        .map(|candidate| candidate.item.id.clone())
+        .collect::<Vec<_>>();
+    let resolved_title_rows = fetch_child_rows(
+        datastore,
+        "SELECT id, discovery_title_id
+         FROM discovery_items
+         WHERE id IN ({})",
+        &item_ids,
+    )
+    .await?;
+    let resolved_title_ids = resolved_title_rows
+        .iter()
+        .map(|row| Ok((row.text("id")?, row.text("discovery_title_id")?)))
+        .collect::<AppResult<HashMap<_, _>>>()?;
+    let item_title_ids = candidates
+        .iter()
+        .map(|candidate| {
+            let resolved_title_id =
+                resolved_title_ids.get(&candidate.item.id).ok_or_else(|| {
+                    AppError::Repository(format!(
+                        "selected discovery-home item {} no longer exists",
+                        candidate.item.id
+                    ))
+                })?;
+            if resolved_title_id != &candidate.discovery_title_id {
+                return Err(AppError::Repository(format!(
+                    "selected discovery-home item {} changed titles during hydration",
+                    candidate.item.id
+                )));
+            }
+            Ok(resolved_title_id.clone())
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    let mut title_ids = item_title_ids.clone();
+    title_ids.sort();
+    title_ids.dedup();
+    let mut items = candidates
+        .iter()
+        .map(|candidate| candidate.item.clone())
+        .collect::<Vec<_>>();
+    let hydration_counts =
+        hydrate_discovery_items_with_counts(datastore, &mut items, &item_title_ids).await?;
+    for (candidate, item) in candidates.iter_mut().zip(items) {
+        candidate.item = item;
+    }
+    debug!(
+        operation = "discovery_home",
+        stage = "selected_hydration_children",
+        selected_card_count = candidates.len(),
+        selected_title_count = title_ids.len(),
+        canonical_tag_rows = hydration_counts.canonical_tag_rows,
+        title_term_rows = hydration_counts.title_term_rows,
+        source_tag_rows = hydration_counts.source_tag_rows,
+        source_tag_value_rows = hydration_counts.source_tag_value_rows,
+        rating_summary_rows = hydration_counts.rating_summary_rows,
+        rating_source_rows = hydration_counts.rating_source_rows,
+        external_rating_rows = hydration_counts.external_rating_rows,
+        external_id_rows = hydration_counts.external_id_rows,
+        rank_component_rows = hydration_counts.rank_component_rows,
+        subject_link_rows = hydration_counts.subject_link_rows,
+        library_provenance_rows = hydration_counts.library_provenance_rows,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "discovery home selected child metadata hydrated"
+    );
+    Ok(hydration_counts)
 }
 
 async fn discovery_run_language(
@@ -3072,19 +3469,48 @@ async fn hydrate_discovery_items(
     items: &mut [DiscoveryItemRecord],
     discovery_title_ids: &[String],
 ) -> AppResult<()> {
+    hydrate_discovery_items_with_counts(datastore, items, discovery_title_ids)
+        .await
+        .map(|_| ())
+}
+
+#[derive(Default)]
+struct DiscoveryItemHydrationCounts {
+    canonical_tag_rows: usize,
+    title_term_rows: usize,
+    source_tag_rows: usize,
+    source_tag_value_rows: usize,
+    rating_summary_rows: usize,
+    rating_source_rows: usize,
+    external_rating_rows: usize,
+    external_id_rows: usize,
+    rank_component_rows: usize,
+    subject_link_rows: usize,
+    library_provenance_rows: usize,
+}
+
+async fn hydrate_discovery_items_with_counts(
+    datastore: &StoreDatastore,
+    items: &mut [DiscoveryItemRecord],
+    discovery_title_ids: &[String],
+) -> AppResult<DiscoveryItemHydrationCounts> {
     if items.is_empty() {
-        return Ok(());
+        return Ok(DiscoveryItemHydrationCounts::default());
     }
     let item_ids = items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
     let mut item_indexes = HashMap::new();
     for (index, item) in items.iter().enumerate() {
         item_indexes.insert(item.id.clone(), index);
     }
-    hydrate_discovery_title_children(datastore, items, discovery_title_ids).await?;
-    hydrate_item_rank_components(datastore, items, &item_ids, &item_indexes).await?;
-    hydrate_item_subject_links(datastore, items, &item_ids, &item_indexes).await?;
-    hydrate_item_library_provenance(datastore, items, &item_ids, &item_indexes).await?;
-    Ok(())
+    let mut counts =
+        hydrate_discovery_title_children(datastore, items, discovery_title_ids).await?;
+    counts.rank_component_rows =
+        hydrate_item_rank_components(datastore, items, &item_ids, &item_indexes).await?;
+    counts.subject_link_rows =
+        hydrate_item_subject_links(datastore, items, &item_ids, &item_indexes).await?;
+    counts.library_provenance_rows =
+        hydrate_item_library_provenance(datastore, items, &item_ids, &item_indexes).await?;
+    Ok(counts)
 }
 
 fn discovery_title_ids_from_rows(rows: &[SqlRow]) -> AppResult<Vec<String>> {
@@ -3097,9 +3523,9 @@ async fn hydrate_discovery_title_children(
     datastore: &StoreDatastore,
     items: &mut [DiscoveryItemRecord],
     discovery_title_ids: &[String],
-) -> AppResult<()> {
+) -> AppResult<DiscoveryItemHydrationCounts> {
     if items.is_empty() {
-        return Ok(());
+        return Ok(DiscoveryItemHydrationCounts::default());
     }
     let mut title_indexes = HashMap::<String, Vec<usize>>::new();
     for (index, title_id) in discovery_title_ids.iter().enumerate() {
@@ -3111,16 +3537,31 @@ async fn hydrate_discovery_title_children(
         }
     }
     if title_indexes.is_empty() {
-        return Ok(());
+        return Ok(DiscoveryItemHydrationCounts::default());
     }
     let mut unique_title_ids = title_indexes.keys().cloned().collect::<Vec<_>>();
     unique_title_ids.sort();
-    hydrate_title_canonical_tags(datastore, items, &unique_title_ids, &title_indexes).await?;
-    hydrate_title_terms(datastore, items, &unique_title_ids, &title_indexes).await?;
-    hydrate_title_source_tags(datastore, items, &unique_title_ids, &title_indexes).await?;
-    hydrate_title_ratings(datastore, items, &unique_title_ids, &title_indexes).await?;
-    hydrate_title_external_ids(datastore, items, &unique_title_ids, &title_indexes).await?;
-    Ok(())
+    let canonical_tag_rows =
+        hydrate_title_canonical_tags(datastore, items, &unique_title_ids, &title_indexes).await?;
+    let title_term_rows =
+        hydrate_title_terms(datastore, items, &unique_title_ids, &title_indexes).await?;
+    let (source_tag_rows, source_tag_value_rows) =
+        hydrate_title_source_tags(datastore, items, &unique_title_ids, &title_indexes).await?;
+    let (rating_summary_rows, rating_source_rows, external_rating_rows) =
+        hydrate_title_ratings(datastore, items, &unique_title_ids, &title_indexes).await?;
+    let external_id_rows =
+        hydrate_title_external_ids(datastore, items, &unique_title_ids, &title_indexes).await?;
+    Ok(DiscoveryItemHydrationCounts {
+        canonical_tag_rows,
+        title_term_rows,
+        source_tag_rows,
+        source_tag_value_rows,
+        rating_summary_rows,
+        rating_source_rows,
+        external_rating_rows,
+        external_id_rows,
+        ..DiscoveryItemHydrationCounts::default()
+    })
 }
 
 async fn hydrate_title_canonical_tags(
@@ -3128,9 +3569,10 @@ async fn hydrate_title_canonical_tags(
     items: &mut [DiscoveryItemRecord],
     discovery_title_ids: &[String],
     title_indexes: &HashMap<String, Vec<usize>>,
-) -> AppResult<()> {
+) -> AppResult<usize> {
     let tags_by_title =
         load_discovery_title_metadata_tags(datastore.read_exec(), discovery_title_ids).await?;
+    let row_count = tags_by_title.values().map(Vec::len).sum();
     for (discovery_title_id, tags) in tags_by_title {
         if tags.is_empty() {
             continue;
@@ -3142,7 +3584,7 @@ async fn hydrate_title_canonical_tags(
             items[*index].canonical_tags = tags.clone();
         }
     }
-    Ok(())
+    Ok(row_count)
 }
 
 async fn hydrate_title_terms(
@@ -3150,7 +3592,7 @@ async fn hydrate_title_terms(
     items: &mut [DiscoveryItemRecord],
     discovery_title_ids: &[String],
     title_indexes: &HashMap<String, Vec<usize>>,
-) -> AppResult<()> {
+) -> AppResult<usize> {
     let rows = fetch_child_rows(
         datastore,
         "SELECT discovery_title_id, term_kind, term_category, term_value, sort_index
@@ -3160,6 +3602,7 @@ async fn hydrate_title_terms(
         discovery_title_ids,
     )
     .await?;
+    let row_count = rows.len();
     for row in rows {
         let discovery_title_id = row.text("discovery_title_id")?;
         let Some(indexes) = title_indexes.get(&discovery_title_id) else {
@@ -3188,7 +3631,7 @@ async fn hydrate_title_terms(
             }
         }
     }
-    Ok(())
+    Ok(row_count)
 }
 
 async fn hydrate_title_source_tags(
@@ -3196,7 +3639,7 @@ async fn hydrate_title_source_tags(
     items: &mut [DiscoveryItemRecord],
     discovery_title_ids: &[String],
     title_indexes: &HashMap<String, Vec<usize>>,
-) -> AppResult<()> {
+) -> AppResult<(usize, usize)> {
     let mut source_tag_indexes = HashMap::<(String, i32), Vec<(usize, usize)>>::new();
     let rows = fetch_child_rows(
         datastore,
@@ -3207,6 +3650,7 @@ async fn hydrate_title_source_tags(
         discovery_title_ids,
     )
     .await?;
+    let source_tag_row_count = rows.len();
     for row in rows {
         let discovery_title_id = row.text("discovery_title_id")?;
         let Some(indexes) = title_indexes.get(&discovery_title_id) else {
@@ -3237,6 +3681,7 @@ async fn hydrate_title_source_tags(
         discovery_title_ids,
     )
     .await?;
+    let source_tag_value_row_count = value_rows.len();
     for row in value_rows {
         let discovery_title_id = row.text("discovery_title_id")?;
         let source_tag_sort_index = row.i32("source_tag_sort_index")?;
@@ -3252,7 +3697,7 @@ async fn hydrate_title_source_tags(
                 .push(source_tag_value.clone());
         }
     }
-    Ok(())
+    Ok((source_tag_row_count, source_tag_value_row_count))
 }
 
 async fn hydrate_title_ratings(
@@ -3260,9 +3705,18 @@ async fn hydrate_title_ratings(
     items: &mut [DiscoveryItemRecord],
     discovery_title_ids: &[String],
     title_indexes: &HashMap<String, Vec<usize>>,
-) -> AppResult<()> {
+) -> AppResult<(usize, usize, usize)> {
     let ratings_by_title =
         load_discovery_title_metadata_ratings(datastore.read_exec(), discovery_title_ids).await?;
+    let rating_summary_rows = ratings_by_title.len();
+    let rating_source_rows = ratings_by_title
+        .values()
+        .map(|ratings| ratings.rating_sources.len())
+        .sum();
+    let external_rating_rows = ratings_by_title
+        .values()
+        .map(|ratings| ratings.external_ratings.len())
+        .sum();
     for (discovery_title_id, ratings) in ratings_by_title {
         let Some(indexes) = title_indexes.get(&discovery_title_id) else {
             continue;
@@ -3273,7 +3727,11 @@ async fn hydrate_title_ratings(
             items[*index].external_ratings = ratings.external_ratings.clone();
         }
     }
-    Ok(())
+    Ok((
+        rating_summary_rows,
+        rating_source_rows,
+        external_rating_rows,
+    ))
 }
 
 async fn hydrate_title_external_ids(
@@ -3281,7 +3739,7 @@ async fn hydrate_title_external_ids(
     items: &mut [DiscoveryItemRecord],
     discovery_title_ids: &[String],
     title_indexes: &HashMap<String, Vec<usize>>,
-) -> AppResult<()> {
+) -> AppResult<usize> {
     let rows = fetch_child_rows(
         datastore,
         "SELECT discovery_title_id, source, external_kind, external_id, external_key, sort_index
@@ -3291,6 +3749,7 @@ async fn hydrate_title_external_ids(
         discovery_title_ids,
     )
     .await?;
+    let row_count = rows.len();
     for row in rows {
         let discovery_title_id = row.text("discovery_title_id")?;
         let Some(indexes) = title_indexes.get(&discovery_title_id) else {
@@ -3306,7 +3765,7 @@ async fn hydrate_title_external_ids(
             items[*index].external_ids.push(external_id.clone());
         }
     }
-    Ok(())
+    Ok(row_count)
 }
 
 async fn hydrate_item_rank_components(
@@ -3314,7 +3773,7 @@ async fn hydrate_item_rank_components(
     items: &mut [DiscoveryItemRecord],
     item_ids: &[String],
     item_indexes: &HashMap<String, usize>,
-) -> AppResult<()> {
+) -> AppResult<usize> {
     let rows = fetch_child_rows(
         datastore,
         "SELECT item_id, component_index, component_name, component_value
@@ -3324,6 +3783,7 @@ async fn hydrate_item_rank_components(
         item_ids,
     )
     .await?;
+    let row_count = rows.len();
     for row in rows {
         let item_id = row.text("item_id")?;
         let Some(index) = item_indexes.get(&item_id).copied() else {
@@ -3337,7 +3797,7 @@ async fn hydrate_item_rank_components(
                 component_value: empty_to_none(row.text("component_value")?),
             });
     }
-    Ok(())
+    Ok(row_count)
 }
 
 async fn hydrate_item_subject_links(
@@ -3345,7 +3805,7 @@ async fn hydrate_item_subject_links(
     items: &mut [DiscoveryItemRecord],
     item_ids: &[String],
     item_indexes: &HashMap<String, usize>,
-) -> AppResult<()> {
+) -> AppResult<usize> {
     let rows = fetch_child_rows(
         datastore,
         "SELECT item_id, link_type, subject_key, sort_index
@@ -3355,6 +3815,7 @@ async fn hydrate_item_subject_links(
         item_ids,
     )
     .await?;
+    let row_count = rows.len();
     for row in rows {
         let item_id = row.text("item_id")?;
         let Some(index) = item_indexes.get(&item_id).copied() else {
@@ -3369,7 +3830,7 @@ async fn hydrate_item_subject_links(
             _ => {}
         }
     }
-    Ok(())
+    Ok(row_count)
 }
 
 async fn hydrate_item_library_provenance(
@@ -3377,7 +3838,7 @@ async fn hydrate_item_library_provenance(
     items: &mut [DiscoveryItemRecord],
     item_ids: &[String],
     item_indexes: &HashMap<String, usize>,
-) -> AppResult<()> {
+) -> AppResult<usize> {
     let rows = fetch_child_rows(
         datastore,
         "SELECT item_id, subject_key, title_id, library_id
@@ -3387,6 +3848,7 @@ async fn hydrate_item_library_provenance(
         item_ids,
     )
     .await?;
+    let row_count = rows.len();
     for row in rows {
         let item_id = row.text("item_id")?;
         let Some(index) = item_indexes.get(&item_id).copied() else {
@@ -3400,7 +3862,7 @@ async fn hydrate_item_library_provenance(
                 library_id: empty_to_none(row.text("library_id")?),
             });
     }
-    Ok(())
+    Ok(row_count)
 }
 
 async fn fetch_child_rows(
@@ -4555,7 +5017,7 @@ mod tests {
         let target_keys = sections[0]
             .items
             .iter()
-            .map(|item| item.target_key.as_str())
+            .map(|candidate| candidate.item.target_key.as_str())
             .collect::<Vec<_>>();
         assert_eq!(target_keys, vec!["tmdb:movie:1"]);
 
@@ -4670,7 +5132,7 @@ mod tests {
             services.pool().close().await;
 
             assert_eq!(items.len(), 1);
-            assert_eq!(items[0].target_key, "tmdb:movie:1000");
+            assert_eq!(items[0].item.target_key, "tmdb:movie:1000");
             Ok(())
         }
         .await;
@@ -5943,6 +6405,154 @@ mod tests {
         .i64("count")
         .expect("item count should parse");
         assert_eq!(item_count, 0);
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn discovery_home_hydration_reads_terms_only_for_selected_candidates() {
+        const CANDIDATE_COUNT: usize = 128;
+        const SELECTED_COUNT: usize = 3;
+        const TERMS_PER_TITLE: usize = 64;
+        const TITLE_TERM_ROWS_PER_TITLE: usize = TERMS_PER_TITLE + 1; // authoritative media_kind
+
+        let db = std::env::temp_dir().join(format!(
+            "scryer_discovery_home_selected_hydration_{}.db",
+            Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("sqlite services should initialize");
+        let store = DiscoveryStore::new(services.datastore());
+        let now = Utc::now();
+        let run_id = "run-selected-home-hydration";
+        store
+            .upsert_discovery_sync_run(&discovery_prune_run(
+                run_id,
+                "context_snapshot",
+                "complete",
+                now,
+            ))
+            .await
+            .expect("run should upsert");
+
+        let mut all_candidates = Vec::with_capacity(CANDIDATE_COUNT);
+        for index in 0..CANDIDATE_COUNT {
+            let mut item = discovery_prune_item(run_id, now);
+            item.id = format!("{run_id}:item:{index}");
+            item.target_key = format!("tmdb:movie:{}", 10_000 + index);
+            item.display_title = format!("Candidate {index}");
+            item.sort_title = Some(item.display_title.clone());
+            item.sort_index = index as i32;
+            item.context_terms = (0..TERMS_PER_TITLE)
+                .map(|term_index| format!("term-{index}-{term_index}"))
+                .collect();
+            all_candidates.push(item);
+        }
+        store
+            .replace_discovery_items(run_id, &all_candidates)
+            .await
+            .expect("candidates should upsert");
+
+        let mut selected_candidates = Vec::with_capacity(SELECTED_COUNT);
+        for mut item in all_candidates.into_iter().take(SELECTED_COUNT) {
+            let discovery_title_id: String =
+                sqlx::query_scalar("SELECT discovery_title_id FROM discovery_items WHERE id = ?")
+                    .bind(&item.id)
+                    .fetch_one(&services.pool)
+                    .await
+                    .expect("selected candidate title should resolve");
+            item.context_terms.clear();
+            selected_candidates.push(DiscoveryHomeCandidate {
+                item,
+                discovery_title_id,
+                matched_subject_keys: Vec::new(),
+                affinity_terms: Vec::new(),
+                has_acclaim_signal: false,
+            });
+        }
+
+        let counts = hydrate_discovery_home_candidates_with_counts(
+            &store.datastore,
+            &mut selected_candidates,
+        )
+        .await
+        .expect("selected candidates should hydrate");
+
+        assert_eq!(
+            counts.title_term_rows,
+            SELECTED_COUNT * TITLE_TERM_ROWS_PER_TITLE
+        );
+        assert!(
+            selected_candidates
+                .iter()
+                .all(|candidate| candidate.item.context_terms.len() == TERMS_PER_TITLE)
+        );
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn sqlite_personalized_facets_use_only_readable_library_items() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_discovery_personalized_facets_{}.db",
+            Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("sqlite services should initialize");
+        let store = DiscoveryStore::new(services.datastore());
+        let now = Utc::now();
+        let run_id = "run-personalized-facets";
+        store
+            .upsert_discovery_sync_run(&discovery_prune_run(
+                run_id,
+                "context_snapshot",
+                "complete",
+                now,
+            ))
+            .await
+            .expect("run should upsert");
+
+        let mut readable_item = discovery_prune_item(run_id, now);
+        readable_item.id = format!("{run_id}:readable");
+        readable_item.target_key = "tmdb:movie:10".to_string();
+        readable_item.facet_terms = vec!["canonical:genre:drama".to_string()];
+        readable_item.library_provenance = vec![DiscoveryItemLibraryProvenanceRecord {
+            subject_key: "tmdb:movie:10".to_string(),
+            title_id: Some("library-title-10".to_string()),
+            library_id: Some("movie-library".to_string()),
+        }];
+
+        let mut unreadable_item = discovery_prune_item(run_id, now);
+        unreadable_item.id = format!("{run_id}:unreadable");
+        unreadable_item.target_key = "tmdb:movie:11".to_string();
+        unreadable_item.facet_terms = vec!["canonical:genre:comedy".to_string()];
+        unreadable_item.library_provenance = vec![DiscoveryItemLibraryProvenanceRecord {
+            subject_key: "tmdb:movie:11".to_string(),
+            title_id: Some("library-title-11".to_string()),
+            library_id: Some("other-library".to_string()),
+        }];
+
+        store
+            .replace_discovery_items(run_id, &[readable_item, unreadable_item])
+            .await
+            .expect("items should upsert");
+
+        let facets = fetch_personalized_facets(
+            &store.datastore,
+            run_id,
+            &["movie-library".to_string()],
+            &["movie".to_string()],
+            true,
+        )
+        .await
+        .expect("facets should load");
+
+        assert_eq!(facets.len(), 1);
+        assert_eq!(facets[0].facet_name, "genre");
+        assert_eq!(facets[0].facet_value, "Drama");
+        assert_eq!(facets[0].local_count, Some(1));
 
         let _ = std::fs::remove_file(db);
     }

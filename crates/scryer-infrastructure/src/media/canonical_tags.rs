@@ -344,35 +344,80 @@ async fn load_metadata_ratings(
     }
     let placeholders = bind_placeholders(owner_ids.len());
     let sql = format!(
-        "WITH metadata_owners(owner_id) AS (
-            SELECT {owner_column} FROM {rating_summaries}
-             WHERE {owner_column} IN ({placeholders})
-            UNION
-            SELECT {owner_column} FROM {rating_sources}
-             WHERE {owner_column} IN ({placeholders})
-            UNION
-            SELECT {owner_column} FROM {external_ratings}
-             WHERE {owner_column} IN ({placeholders})
+        "WITH metadata_ratings(
+            owner_id,
+            row_kind,
+            rating,
+            rating_source,
+            external_source,
+            external_value,
+            external_score,
+            external_normalized,
+            external_votes,
+            external_url,
+            sort_index,
+            source_name
+         ) AS (
+            SELECT
+                summary.{owner_column},
+                0,
+                summary.rating,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL
+              FROM {rating_summaries} summary
+             WHERE summary.{owner_column} IN ({placeholders})
+            UNION ALL
+            SELECT
+                source.{owner_column},
+                1,
+                NULL,
+                source.source,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                source.sort_index,
+                source.source
+              FROM {rating_sources} source
+             WHERE source.{owner_column} IN ({placeholders})
+            UNION ALL
+            SELECT
+                external.{owner_column},
+                2,
+                NULL,
+                NULL,
+                external.source,
+                external.value,
+                external.score,
+                external.normalized,
+                external.votes,
+                external.url,
+                external.sort_index,
+                external.source
+              FROM {external_ratings} external
+             WHERE external.{owner_column} IN ({placeholders})
          )
          SELECT
-            owners.owner_id AS owner_id,
-            summary.rating AS rating,
-            source.source AS rating_source,
-            external.source AS external_source,
-            external.value AS external_value,
-            external.score AS external_score,
-            external.normalized AS external_normalized,
-            external.votes AS external_votes,
-            external.url AS external_url
-         FROM metadata_owners owners
-         LEFT JOIN {rating_summaries} summary
-            ON summary.{owner_column} = owners.owner_id
-         LEFT JOIN {rating_sources} source
-            ON source.{owner_column} = owners.owner_id
-         LEFT JOIN {external_ratings} external
-            ON external.{owner_column} = owners.owner_id
-         ORDER BY owners.owner_id, source.sort_index, source.source,
-                  external.sort_index, external.source",
+            owner_id,
+            rating,
+            rating_source,
+            external_source,
+            external_value,
+            external_score,
+            external_normalized,
+            external_votes,
+            external_url
+           FROM metadata_ratings
+          ORDER BY owner_id, row_kind, sort_index, source_name",
         owner_column = tables.owner_column,
         rating_summaries = tables.rating_summaries,
         rating_sources = tables.rating_sources,
