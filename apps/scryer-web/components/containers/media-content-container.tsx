@@ -2300,10 +2300,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           throw error;
         }
         const detailItem =
-          data?.discoveryItemDetail as CatalogDiscoveryItem | null | undefined;
-        if (!detailItem) {
-          throw new Error(t("status.permissionDenied"));
-        }
+          (data?.discoveryItemDetail as CatalogDiscoveryItem | null | undefined) ??
+          item;
         const detailFacet = discoveryItemFacet(detailItem);
         if (!detailFacet || detailFacet !== facet) {
           throw new Error(t("status.permissionDenied"));

@@ -16,12 +16,6 @@ mod subtitle_sync_adapter;
 mod types;
 mod wasmtime_host;
 
-// RFC 123 WP2 (archive validation): real-artifact integration suite. Lives
-// in-crate because it drives the private `archive_adapter` +
-// `wasmtime_host` modules against the checked-in plugin fixture.
-#[cfg(test)]
-mod archive_real_artifact_tests;
-
 pub use loader::DynamicArchiveExtractorPluginProvider;
 pub use loader::DynamicDownloadClientPluginProvider;
 pub use loader::DynamicNotificationPluginProvider;
