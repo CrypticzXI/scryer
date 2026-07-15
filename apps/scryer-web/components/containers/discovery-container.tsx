@@ -15,7 +15,8 @@ import {
 import { RequestMediaDialog } from "@/components/root/request-media-dialog";
 import { DiscoveryView } from "@/components/views/discovery-view";
 import {
-  discoveryHomeQuery,
+  discoveryHomeCardsQuery,
+  discoveryHomeFilterOptionsQuery,
   discoveryItemDetailQuery,
 } from "@/lib/graphql/queries";
 import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
@@ -31,6 +32,9 @@ import {
   externalIdsFromDiscoverySignals,
 } from "@/lib/utils/discovery-actions";
 import type {
+  DiscoveryHomeCard,
+  DiscoveryHomeFilterOptions,
+  DiscoveryHomeFilters,
   DiscoveryHomeInput,
   DiscoveryHomePayload,
   DiscoveryItem,
@@ -128,18 +132,33 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     [requestableLibrariesByFacet],
   );
   const [home, setHome] = useState<DiscoveryHomePayload | null>(null);
+  const [filters, setFilters] = useState<DiscoveryHomeFilters>({});
+  const [filterOptions, setFilterOptions] = useState<DiscoveryHomeFilterOptions>({
+    genres: [],
+    themes: [],
+    relationTypes: [],
+    studioSlugs: [],
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<DiscoveryItem | null>(null);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [requestDialogOpen, setRequestDialogOpen] = useState(false);
   const refreshRequestIdRef = useRef(0);
+  const filterOptionsRequestIdRef = useRef(0);
   const mountedRef = useRef(true);
   const scopeKeyRef = useRef<string | null>(null);
   const authorizationSignatureRef = useRef(authorizationSignature);
 
   useLayoutEffect(() => {
     authorizationSignatureRef.current = authorizationSignature;
+    filterOptionsRequestIdRef.current += 1;
+    setFilterOptions({
+      genres: [],
+      themes: [],
+      relationTypes: [],
+      studioSlugs: [],
+    });
     setSelectedItem(null);
     setAddDialogOpen(false);
     setRequestDialogOpen(false);
@@ -159,6 +178,11 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     };
   }, []);
 
+  const homeInput = useMemo<DiscoveryHomeInput>(
+    () => ({ ...DISCOVERY_HOME_INPUT, filters }),
+    [filters],
+  );
+
   const refresh = useCallback(async () => {
     const requestId = refreshRequestIdRef.current + 1;
     refreshRequestIdRef.current = requestId;
@@ -176,8 +200,8 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     try {
       const { data, error: queryError } = await clientRef.current
         .query(
-          discoveryHomeQuery,
-          { input: DISCOVERY_HOME_INPUT },
+          discoveryHomeCardsQuery,
+          { input: homeInput },
           { requestPolicy: "network-only" },
         )
         .toPromise();
@@ -187,10 +211,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
       if (!mountedRef.current || refreshRequestIdRef.current !== requestId) {
         return;
       }
-      const nextHome = (data?.discoveryHome ?? null) as
-        | DiscoveryHomePayload
-        | null;
-      setHome(nextHome);
+      setHome((data?.discoveryHomeCards ?? null) as DiscoveryHomePayload | null);
     } catch (caught) {
       if (!mountedRef.current || refreshRequestIdRef.current !== requestId) {
         return;
@@ -206,11 +227,45 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
         setLoading(false);
       }
     }
-  }, [authorizationSignature, uiLanguage, userId]);
+  }, [authorizationSignature, homeInput, uiLanguage, userId]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const requestId = filterOptionsRequestIdRef.current + 1;
+    filterOptionsRequestIdRef.current = requestId;
+    void client
+      .query(
+        discoveryHomeFilterOptionsQuery,
+        {
+          input: {
+            includePublic: DISCOVERY_HOME_INPUT.includePublic,
+            includePersonalized: DISCOVERY_HOME_INPUT.includePersonalized,
+            includeUnresolved: DISCOVERY_HOME_INPUT.includeUnresolved,
+          },
+        },
+        { requestPolicy: "network-only" },
+      )
+      .toPromise()
+      .then(({ data, error: queryError }) => {
+        if (
+          queryError ||
+          !mountedRef.current ||
+          filterOptionsRequestIdRef.current !== requestId
+        ) {
+          return;
+        }
+        const nextOptions = data?.discoveryHomeFilterOptions as
+          | DiscoveryHomeFilterOptions
+          | null
+          | undefined;
+        if (nextOptions) {
+          setFilterOptions(nextOptions);
+        }
+      });
+  }, [authorizationSignature, client, uiLanguage, userId]);
 
   // A completed discovery search updates the dashboard from the network.
   useEffect(
@@ -233,7 +288,7 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     : EMPTY_SEARCH_RESULT;
 
   const handleAction = useCallback(
-    async (item: DiscoveryItem) => {
+    async (item: DiscoveryHomeCard) => {
       const actionAuthorizationSignature = authorizationSignature;
       if (item.ownedInInput) {
         return;
@@ -338,6 +393,8 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
         error={error}
         manageableFacets={manageableFacets}
         requestableFacets={requestableFacets}
+        filterOptions={filterOptions}
+        onFiltersChange={setFilters}
         onRefresh={refresh}
         onAction={handleAction}
       />

@@ -9,10 +9,34 @@ export type DiscoveryExternalId = {
 };
 
 export type DiscoveryHomeInput = {
-  includePublic?: boolean | null;
-  includePersonalized?: boolean | null;
-  includeUnresolved?: boolean | null;
-  limitPerSection?: number | null;
+    includePublic?: boolean | null;
+    includePersonalized?: boolean | null;
+    includeUnresolved?: boolean | null;
+    limitPerSection?: number | null;
+    filters?: DiscoveryHomeFilters | null;
+};
+
+export type DiscoveryHomeFilters = {
+  contentTypes?: string[] | null;
+  genres?: string[] | null;
+  themes?: string[] | null;
+  relationTypes?: string[] | null;
+  studioSlugs?: string[] | null;
+  minimumYear?: number | null;
+  maximumYear?: number | null;
+  minimumRating?: number | null;
+};
+
+export type DiscoveryHomeFilterOptionsInput = Pick<
+  DiscoveryHomeInput,
+  "includePublic" | "includePersonalized" | "includeUnresolved"
+>;
+
+export type DiscoveryHomeFilterOptions = {
+  genres: string[];
+  themes: string[];
+  relationTypes: string[];
+  studioSlugs: string[];
 };
 
 export type DiscoverySyncState = {
@@ -89,14 +113,49 @@ export type DiscoverySection = {
   items: DiscoveryItem[];
 };
 
+export type DiscoveryHomeStatus = Pick<
+  DiscoverySyncStatus,
+  "pendingContextChangeCount"
+>;
+
 export type DiscoveryHomePayload = {
-  status: DiscoverySyncStatus;
-  heroItem: DiscoveryItem | null;
-  publicSections: DiscoverySection[];
-  personalizedSections: DiscoverySection[];
-  completeCollection: DiscoverySection | null;
-  facets: DiscoveryFacet[];
+  status: DiscoveryHomeStatus;
+  heroItem: DiscoveryHomeHero | null;
+  publicSections: DiscoveryHomeSection[];
+  personalizedSections: DiscoveryHomeSection[];
+  completeCollection: DiscoveryHomeSection | null;
   canViewPersonalized: boolean;
+};
+
+export type DiscoveryHomeCard = Pick<
+  DiscoveryItem,
+  | "id"
+  | "targetKey"
+  | "targetKind"
+  | "displayTitle"
+  | "originalTitle"
+  | "sortTitle"
+  | "year"
+  | "posterUrl"
+  | "contentType"
+  | "ownedInInput"
+>;
+
+export type DiscoveryHomeHero = DiscoveryHomeCard &
+  Pick<
+    DiscoveryItem,
+    | "backgroundUrl"
+    | "overview"
+    | "rating"
+    | "ratingSources"
+    | "externalRatings"
+    | "matchedSubjectCount"
+  > & {
+    genreTags: NonNullable<DiscoveryItem["canonicalTags"]>;
+  };
+
+export type DiscoveryHomeSection = Omit<DiscoverySection, "items"> & {
+  items: DiscoveryHomeCard[];
 };
 
 export type DiscoveryItemsInput = {

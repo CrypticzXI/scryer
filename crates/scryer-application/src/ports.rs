@@ -179,12 +179,13 @@ pub struct DiscoveryPruneReport {
     pub runs_deleted: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DiscoveryHomeQuery {
     pub include_public: bool,
     pub include_personalized: bool,
     pub include_unresolved: bool,
     pub limit_per_section: usize,
+    pub filters: DiscoveryHomeFilters,
 }
 
 impl Default for DiscoveryHomeQuery {
@@ -194,8 +195,29 @@ impl Default for DiscoveryHomeQuery {
             include_personalized: true,
             include_unresolved: false,
             limit_per_section: 25,
+            filters: DiscoveryHomeFilters::default(),
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DiscoveryHomeFilters {
+    pub content_types: Vec<String>,
+    pub genres: Vec<String>,
+    pub themes: Vec<String>,
+    pub relation_types: Vec<String>,
+    pub studio_slugs: Vec<String>,
+    pub minimum_year: Option<i32>,
+    pub maximum_year: Option<i32>,
+    pub minimum_rating: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveryHomeFilterOptions {
+    pub genres: Vec<String>,
+    pub themes: Vec<String>,
+    pub relation_types: Vec<String>,
+    pub studio_slugs: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -503,6 +525,10 @@ pub struct DiscoveryHomeCandidate {
     pub matched_subject_keys: Vec<String>,
     pub affinity_terms: Vec<String>,
     pub has_acclaim_signal: bool,
+    pub has_hero_backdrop: bool,
+    pub rating_source_count: i32,
+    pub best_external_rating: Option<f64>,
+    pub best_external_rating_votes: i32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -634,6 +660,7 @@ pub trait DiscoveryRepository: Send + Sync {
         run_id: &str,
         allowed_media_kinds: &[String],
         include_unresolved: bool,
+        filters: &DiscoveryHomeFilters,
         limit_per_section: i64,
     ) -> AppResult<Vec<DiscoveryHomeSectionCandidatesRecord>>;
     async fn list_personalized_discovery_home_items(
@@ -642,6 +669,7 @@ pub trait DiscoveryRepository: Send + Sync {
         readable_library_ids: &[String],
         allowed_media_kinds: &[String],
         include_unresolved: bool,
+        filters: &DiscoveryHomeFilters,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>>;
     async fn list_personalized_complete_collection_items(
@@ -650,6 +678,7 @@ pub trait DiscoveryRepository: Send + Sync {
         readable_library_ids: &[String],
         allowed_media_kinds: &[String],
         include_unresolved: bool,
+        filters: &DiscoveryHomeFilters,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>>;
     async fn list_personalized_discovery_facets(
@@ -669,12 +698,26 @@ pub trait DiscoveryRepository: Send + Sync {
         owned_library_ids: &[String],
         excluded_identity_keys: &[String],
         include_unresolved: bool,
+        filters: &DiscoveryHomeFilters,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>>;
     async fn hydrate_discovery_home_candidates(
         &self,
         candidates: &mut [DiscoveryHomeCandidate],
     ) -> AppResult<()>;
+    async fn hydrate_discovery_home_hero(
+        &self,
+        candidate: &mut DiscoveryHomeCandidate,
+    ) -> AppResult<()>;
+    #[allow(clippy::too_many_arguments)]
+    async fn list_discovery_home_filter_options(
+        &self,
+        public_run_id: Option<&str>,
+        context_run_id: Option<&str>,
+        readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
+        include_unresolved: bool,
+    ) -> AppResult<DiscoveryHomeFilterOptions>;
     async fn list_catalog_public_discovery_items(
         &self,
         run_id: &str,

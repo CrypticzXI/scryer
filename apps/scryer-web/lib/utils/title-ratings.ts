@@ -23,7 +23,10 @@ export type RatingSourceInfo = {
 };
 
 export function normalizedRatingSource(source: string): string {
-  return source.trim().toLowerCase().replace(/[\s_.-]+/g, "");
+  const normalized = source.trim().toLowerCase().replace(/[\s_.-]+/g, "");
+  return normalized === "myanimelist" || normalized === "myanimelistnet"
+    ? "mal"
+    : normalized;
 }
 
 const POPCORNMETER_LOGO_SRC = "/rating-sources/popcornmeter.svg";
@@ -167,6 +170,8 @@ export function compactRatingNumber(value: number): string {
 export function visibleTitleExternalRatings(
   ratings: TitleExternalRating[],
 ): TitleExternalRating[] {
+  const visibleSources = new Set<string>();
+
   return ratings
     .map((rating, index) => {
       const normalized = normalizedRatingSource(rating.source);
@@ -189,6 +194,13 @@ export function visibleTitleExternalRatings(
         sensitivity: "base",
       });
       return labelDelta || a.index - b.index;
+    })
+    .filter(({ normalized }) => {
+      if (visibleSources.has(normalized)) {
+        return false;
+      }
+      visibleSources.add(normalized);
+      return true;
     })
     .map(({ rating }) => rating);
 }

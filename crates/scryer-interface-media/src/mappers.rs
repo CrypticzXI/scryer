@@ -5,19 +5,20 @@ use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
     ActivityEvent, BackupInfo, CatalogDiscoveryGroup, CatalogDiscoveryGroupKind,
     CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface, DeletePreview,
-    DiscoveryFacetRecord, DiscoveryHomeQuery, DiscoveryHomeResult, DiscoveryItemDetailQuery,
-    DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryItemsResult, DiscoverySectionResult,
-    DiscoverySyncStateRecord, DiscoverySyncStatus, DownloadClientRoutingSettingsEntry,
-    FacetScoringPersonaSelection, IgnorePendingImportResult, IndexerProxyTestResult,
-    IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings,
-    LibraryScanSummary, LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings,
-    ParsedEpisodeMetadata, ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts,
-    PendingImportItem, PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus,
-    QualityProfile, QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
-    QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
-    RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
-    ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
-    SystemHealth, TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
+    DiscoveryFacetRecord, DiscoveryHomeFilterOptions, DiscoveryHomeFilters, DiscoveryHomeQuery,
+    DiscoveryHomeResult, DiscoveryItemDetailQuery, DiscoveryItemRecord, DiscoveryItemsQuery,
+    DiscoveryItemsResult, DiscoverySectionResult, DiscoverySyncStateRecord, DiscoverySyncStatus,
+    DownloadClientRoutingSettingsEntry, FacetScoringPersonaSelection, IgnorePendingImportResult,
+    IndexerProxyTestResult, IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition,
+    JobRun, LibraryPathsSettings, LibraryScanSummary, LibrarySettings, ManualPluginPreview,
+    MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata, ParsedReleaseMetadata,
+    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
+    PendingRelease, PluginCatalogStatus, QualityProfile, QualityProfileCriteria,
+    QualityProfileDecision, QualityProfileSelection, QualityProfileSettings, RegistryPlugin,
+    RenameApplyItemResult, RenameApplyResult, RenamePlan, RenamePlanItem,
+    ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource, ServiceSettings,
+    SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope, SystemHealth,
+    TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
@@ -1579,6 +1580,7 @@ pub fn from_discovery_sync_state(state: DiscoverySyncStateRecord) -> DiscoverySy
 
 pub fn discovery_home_query_from_input(input: Option<DiscoveryHomeInput>) -> DiscoveryHomeQuery {
     let input = input.unwrap_or_default();
+    let filters = input.filters.unwrap_or_default();
     DiscoveryHomeQuery {
         include_public: input.include_public.unwrap_or(true),
         include_personalized: input.include_personalized.unwrap_or(true),
@@ -1587,6 +1589,28 @@ pub fn discovery_home_query_from_input(input: Option<DiscoveryHomeInput>) -> Dis
             .limit_per_section
             .map(|value| value.max(1) as usize)
             .unwrap_or(25),
+        filters: DiscoveryHomeFilters {
+            content_types: filters.content_types.unwrap_or_default(),
+            genres: filters.genres.unwrap_or_default(),
+            themes: filters.themes.unwrap_or_default(),
+            relation_types: filters.relation_types.unwrap_or_default(),
+            studio_slugs: filters.studio_slugs.unwrap_or_default(),
+            minimum_year: filters.minimum_year,
+            maximum_year: filters.maximum_year,
+            minimum_rating: filters.minimum_rating.filter(|value| value.is_finite()),
+        },
+    }
+}
+
+pub fn discovery_home_filter_options_query_from_input(
+    input: Option<DiscoveryHomeFilterOptionsInput>,
+) -> DiscoveryHomeQuery {
+    let input = input.unwrap_or_default();
+    DiscoveryHomeQuery {
+        include_public: input.include_public.unwrap_or(true),
+        include_personalized: input.include_personalized.unwrap_or(true),
+        include_unresolved: input.include_unresolved.unwrap_or(false),
+        ..DiscoveryHomeQuery::default()
     }
 }
 
@@ -1664,6 +1688,36 @@ pub fn from_discovery_home(result: DiscoveryHomeResult) -> DiscoveryHomePayload 
     }
 }
 
+pub fn from_discovery_home_cards(result: DiscoveryHomeResult) -> DiscoveryHomeCardsPayload {
+    DiscoveryHomeCardsPayload {
+        status: from_discovery_sync_status(result.status),
+        hero_item: result.hero_item.map(from_discovery_home_hero),
+        public_sections: result
+            .public_sections
+            .into_iter()
+            .map(from_discovery_home_section)
+            .collect(),
+        personalized_sections: result
+            .personalized_sections
+            .into_iter()
+            .map(from_discovery_home_section)
+            .collect(),
+        complete_collection: result.complete_collection.map(from_discovery_home_section),
+        can_view_personalized: result.can_view_personalized,
+    }
+}
+
+pub fn from_discovery_home_filter_options(
+    options: DiscoveryHomeFilterOptions,
+) -> DiscoveryHomeFilterOptionsPayload {
+    DiscoveryHomeFilterOptionsPayload {
+        genres: options.genres,
+        themes: options.themes,
+        relation_types: options.relation_types,
+        studio_slugs: options.studio_slugs,
+    }
+}
+
 pub fn from_discovery_items_result(result: DiscoveryItemsResult) -> DiscoveryItemsPayload {
     DiscoveryItemsPayload {
         items: result.items.into_iter().map(from_discovery_item).collect(),
@@ -1727,6 +1781,83 @@ pub fn from_discovery_section(section: DiscoverySectionResult) -> DiscoverySecti
         surface: section.surface,
         total_count: Long(section.total_count),
         items: section.items.into_iter().map(from_discovery_item).collect(),
+    }
+}
+
+fn from_discovery_home_section(section: DiscoverySectionResult) -> DiscoveryHomeSectionPayload {
+    DiscoveryHomeSectionPayload {
+        section_id: section.section_id,
+        section_type: section.section_type,
+        title: section.title,
+        surface: section.surface,
+        total_count: Long(section.total_count),
+        items: section
+            .items
+            .into_iter()
+            .map(from_discovery_home_card)
+            .collect(),
+    }
+}
+
+fn from_discovery_home_card(item: DiscoveryItemRecord) -> DiscoveryHomeCardPayload {
+    DiscoveryHomeCardPayload {
+        id: item.id.into(),
+        target_key: item.target_key,
+        target_kind: item.target_kind,
+        display_title: item.display_title,
+        original_title: item.original_title,
+        sort_title: item.sort_title,
+        year: item.year,
+        poster_url: item.poster_url,
+        content_type: item.content_type,
+        owned_in_input: item.owned_in_input,
+    }
+}
+
+fn from_discovery_home_hero(item: DiscoveryItemRecord) -> DiscoveryHomeHeroPayload {
+    DiscoveryHomeHeroPayload {
+        id: item.id.into(),
+        target_key: item.target_key,
+        target_kind: item.target_kind,
+        display_title: item.display_title,
+        original_title: item.original_title,
+        sort_title: item.sort_title,
+        year: item.year,
+        poster_url: item.poster_url,
+        background_url: item.background_url,
+        overview: item.overview,
+        content_type: item.content_type,
+        rating: item.rating,
+        rating_sources: item.rating_sources,
+        external_ratings: item
+            .external_ratings
+            .into_iter()
+            .map(|rating| DiscoveryExternalRatingPayload {
+                source: rating.source,
+                value: rating.value,
+                score: rating.score,
+                normalized: rating.normalized,
+                votes: rating.votes,
+                url: rating.url,
+            })
+            .collect(),
+        genre_tags: item
+            .canonical_tags
+            .into_iter()
+            .filter(|tag| tag.category.eq_ignore_ascii_case("genre"))
+            .map(|tag| CanonicalMediaTagPayload {
+                key: tag.key,
+                category: tag.category,
+                name: tag.name,
+                confidence: tag.confidence,
+                sources: tag.sources,
+                source_tag_keys: tag.source_tag_keys,
+                is_adult: tag.is_adult,
+                is_spoiler: tag.is_spoiler,
+            })
+            .collect(),
+        matched_subject_count: item.matched_subject_count,
+        owned_in_input: item.owned_in_input,
     }
 }
 

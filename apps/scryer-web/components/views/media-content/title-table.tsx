@@ -32,7 +32,6 @@ import {
 } from "@/components/ui/table";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import type { Release, TitleRecord } from "@/lib/types";
-import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 import {
@@ -88,9 +87,6 @@ type TitleTableProps = {
   sortDirection: TitleTableSortDirection;
   onSortChange: (key: TitleTableSortKey) => void;
   visibleColumns?: TitleTableVisibleColumns;
-  resolvedProfileName: string | null;
-  qualityProfiles: ParsedQualityProfile[];
-  qualityProfilesLoading: boolean;
   onOpenOverview: (
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
@@ -139,9 +135,6 @@ export const TitleTable = React.memo(function TitleTable({
   sortDirection,
   onSortChange,
   visibleColumns = DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
-  resolvedProfileName,
-  qualityProfiles,
-  qualityProfilesLoading,
   onOpenOverview,
   selectedTitleId,
   selectedPaneMode = false,
@@ -692,14 +685,7 @@ export const TitleTable = React.memo(function TitleTable({
           ) : null}
           {showQualityColumn ? (
             <TableCell className="whitespace-nowrap text-center align-middle text-[12.5px] text-[var(--scry-text4)]">
-              {qualityProfilesLoading
-                ? null
-                : resolveDisplayedQualityLabel(
-                    item,
-                    qualityProfiles,
-                    resolvedProfileName,
-                    t("label.unknown"),
-                  )}
+              {resolveDisplayedQualityLabel(item, t("label.unknown"))}
             </TableCell>
           ) : null}
           {showEpisodesColumn ? (

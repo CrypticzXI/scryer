@@ -60,18 +60,32 @@ const DISCOVERY_ITEM_DETAIL_FIELDS = `${DISCOVERY_ITEM_FIELDS}
       url
     }`;
 
-const DISCOVERY_HOME_ITEM_FIELDS = `
+const DISCOVERY_HOME_CARD_FIELDS = `
+    id
     targetKey
     targetKind
-    resolved
-    resolvedTitleId
     displayTitle
     originalTitle
+    sortTitle
     year
     posterUrl
-    backgroundUrl
     contentType
-    canonicalTags {
+    ownedInInput`;
+
+const DISCOVERY_HOME_HERO_FIELDS = `${DISCOVERY_HOME_CARD_FIELDS}
+    backgroundUrl
+    overview
+    rating
+    ratingSources
+    externalRatings {
+      source
+      value
+      score
+      normalized
+      votes
+      url
+    }
+    genreTags {
       key
       category
       name
@@ -81,37 +95,7 @@ const DISCOVERY_HOME_ITEM_FIELDS = `
       isAdult
       isSpoiler
     }
-    rating
-    externalIds {
-      source
-      kind
-      id
-      key
-    }
-    statusTags
-    sourceTags
-    relationTypes
-    relationSubtypes
-    sourceCount
-    rankScore
-    ownedInInput
-    facetTerms
-    contextTerms
-    studioSlug
-    personIds`;
-
-const DISCOVERY_HOME_HERO_ITEM_FIELDS = `${DISCOVERY_HOME_ITEM_FIELDS}
-    overview
-    sourceTags
-    ratingSources
-    externalRatings {
-      source
-      value
-      score
-      normalized
-      votes
-      url
-    }`;
+    matchedSubjectCount`;
 
 export const DISCOVERY_SECTION_FIELDS = `
     sectionId
@@ -130,34 +114,17 @@ const DISCOVERY_HOME_SECTION_FIELDS = `
     surface
     totalCount
     items {
-${DISCOVERY_HOME_ITEM_FIELDS}
+${DISCOVERY_HOME_CARD_FIELDS}
     }`;
 
-export const discoveryHomeQuery = `query DiscoveryHome($input: DiscoveryHomeInput) {
-  discoveryHome(input: $input) {
+export const discoveryHomeCardsQuery = `query DiscoveryHomeCards($input: DiscoveryHomeInput) {
+  discoveryHomeCards(input: $input) {
     canViewPersonalized
-    heroItem {
-${DISCOVERY_HOME_HERO_ITEM_FIELDS}
-    }
     status {
       pendingContextChangeCount
-      state {
-        lastSuccessGenerationId
-        lastPublicFeedGenerationId
-        lastContextSnapshotCompletedAt
-        lastIncrementalReloadCompletedAt
-        lastPublicFeedCompletedAt
-        nextContextSnapshotEligibleAt
-        nextIncrementalReloadEligibleAt
-        nextPublicFeedEligibleAt
-        updatedAt
-      }
     }
-    facets {
-      name
-      value
-      smgCount
-      localCount
+    heroItem {
+${DISCOVERY_HOME_HERO_FIELDS}
     }
     publicSections {
 ${DISCOVERY_HOME_SECTION_FIELDS}
@@ -168,6 +135,15 @@ ${DISCOVERY_HOME_SECTION_FIELDS}
     completeCollection {
 ${DISCOVERY_HOME_SECTION_FIELDS}
     }
+  }
+}`;
+
+export const discoveryHomeFilterOptionsQuery = `query DiscoveryHomeFilterOptions($input: DiscoveryHomeFilterOptionsInput) {
+  discoveryHomeFilterOptions(input: $input) {
+    genres
+    themes
+    relationTypes
+    studioSlugs
   }
 }`;
 

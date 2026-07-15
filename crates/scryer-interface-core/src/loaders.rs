@@ -222,6 +222,20 @@ loader!(
 );
 
 loader!(
+    EffectiveQualitySummaryLoader,
+    String,
+    TitleQualitySummary,
+    |ctx, keys| {
+        let summaries = ctx
+            .app
+            .list_title_effective_quality_summaries(&ctx.actor, keys)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(by_id(summaries, |s| s.title_id.clone()))
+    }
+);
+
+loader!(
     EpisodeProgressSummaryLoader,
     String,
     TitleEpisodeProgressSummary,
@@ -394,6 +408,7 @@ pub struct RequestLoaders {
     pub primary_collection_summary: DataLoader<PrimaryCollectionSummaryLoader>,
     pub media_size_summary: DataLoader<MediaSizeSummaryLoader>,
     pub quality_summary: DataLoader<QualitySummaryLoader>,
+    pub effective_quality_summary: DataLoader<EffectiveQualitySummaryLoader>,
     pub episode_progress_summary: DataLoader<EpisodeProgressSummaryLoader>,
     pub collection_episode_progress: DataLoader<CollectionEpisodeProgressLoader>,
     pub ratings: DataLoader<RatingsLoader>,
@@ -426,6 +441,7 @@ impl RequestLoaders {
             primary_collection_summary: dl!(PrimaryCollectionSummaryLoader),
             media_size_summary: dl!(MediaSizeSummaryLoader),
             quality_summary: dl!(QualitySummaryLoader),
+            effective_quality_summary: dl!(EffectiveQualitySummaryLoader),
             episode_progress_summary: dl!(EpisodeProgressSummaryLoader),
             collection_episode_progress: dl!(CollectionEpisodeProgressLoader),
             ratings: dl!(RatingsLoader),

@@ -11,7 +11,10 @@ use scryer_domain::{
 
 use scryer_domain::RuleSet;
 
-use crate::ports::{DiscoveryHomeCandidate, DiscoveryHomeSectionCandidatesRecord};
+use crate::ports::{
+    DiscoveryHomeCandidate, DiscoveryHomeFilterOptions, DiscoveryHomeFilters,
+    DiscoveryHomeSectionCandidatesRecord,
+};
 use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{
     AcquisitionScopeStatesQuery, AcquisitionStateRepository, InsertMediaFileInput,
@@ -337,6 +340,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _run_id: &str,
         _allowed_media_kinds: &[String],
         _include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
         _limit_per_section: i64,
     ) -> AppResult<Vec<DiscoveryHomeSectionCandidatesRecord>> {
         Ok(Vec::new())
@@ -348,6 +352,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _readable_library_ids: &[String],
         _allowed_media_kinds: &[String],
         _include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
         _limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         Ok(Vec::new())
@@ -359,6 +364,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _readable_library_ids: &[String],
         _allowed_media_kinds: &[String],
         _include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
         _limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         Ok(Vec::new())
@@ -383,6 +389,7 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _owned_library_ids: &[String],
         _excluded_identity_keys: &[String],
         _include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
         _limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         Ok(Vec::new())
@@ -393,6 +400,24 @@ impl DiscoveryRepository for NullDiscoveryRepository {
         _candidates: &mut [DiscoveryHomeCandidate],
     ) -> AppResult<()> {
         Ok(())
+    }
+
+    async fn hydrate_discovery_home_hero(
+        &self,
+        _candidate: &mut DiscoveryHomeCandidate,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_discovery_home_filter_options(
+        &self,
+        _public_run_id: Option<&str>,
+        _context_run_id: Option<&str>,
+        _readable_library_ids: &[String],
+        _allowed_media_kinds: &[String],
+        _include_unresolved: bool,
+    ) -> AppResult<DiscoveryHomeFilterOptions> {
+        Ok(DiscoveryHomeFilterOptions::default())
     }
 
     async fn list_catalog_public_discovery_items(

@@ -145,6 +145,17 @@ test("visible external ratings drop Roger Ebert sources", () => {
   );
 });
 
+test("visible external ratings collapse duplicate source aliases", () => {
+  assert.deepEqual(
+    visibleTitleExternalRatings([
+      rating("mal"),
+      rating("my-anime-list"),
+      rating("tmdb"),
+    ]).map((entry) => entry.source),
+    ["tmdb", "mal"],
+  );
+});
+
 test("external-only ratings resolve table column aliases", () => {
   const ratings: TitleExternalRating[] = [
     ratingWith("mdblist", 86, 86, 8.6),

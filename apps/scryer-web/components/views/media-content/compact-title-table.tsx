@@ -33,7 +33,6 @@ import {
 } from "@/components/ui/table";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import type { Release, TitleRecord } from "@/lib/types";
-import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { cn } from "@/lib/utils";
 import {
   titleOverviewDeleteButtonId,
@@ -89,9 +88,6 @@ type CompactTitleTableProps = {
   sortDirection: TitleTableSortDirection;
   onSortChange: (key: TitleTableSortKey) => void;
   visibleColumns?: TitleTableVisibleColumns;
-  resolvedProfileName: string | null;
-  qualityProfiles: ParsedQualityProfile[];
-  qualityProfilesLoading: boolean;
   onOpenOverview: (
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
@@ -141,9 +137,6 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
   sortDirection,
   onSortChange,
   visibleColumns = DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
-  resolvedProfileName,
-  qualityProfiles,
-  qualityProfilesLoading,
   onOpenOverview,
   selectedTitleId,
   selectedDrawerMode = false,
@@ -646,14 +639,7 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
     if (selectedDrawerMode) {
       const posterUrl = selectPosterVariantUrl(item.posterUrl, "w70");
       const yearLabel = item.year ? String(item.year) : null;
-      const qualityLabel = qualityProfilesLoading
-        ? null
-        : resolveDisplayedQualityLabel(
-            item,
-            qualityProfiles,
-            resolvedProfileName,
-            t("label.unknown"),
-          );
+      const qualityLabel = resolveDisplayedQualityLabel(item, t("label.unknown"));
       const subline = [yearLabel, qualityLabel].filter(Boolean).join(" · ");
       const libraryLabel = item.libraryName ?? item.libraryId ?? null;
 
@@ -840,14 +826,7 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
           ) : null}
           {showQualityColumn ? (
             <TableCell className="whitespace-nowrap py-1.5 text-center align-middle text-[12.5px] text-[var(--scry-text4)]">
-              {qualityProfilesLoading
-                ? null
-                : resolveDisplayedQualityLabel(
-                    item,
-                    qualityProfiles,
-                    resolvedProfileName,
-                    t("label.unknown"),
-                  )}
+              {resolveDisplayedQualityLabel(item, t("label.unknown"))}
             </TableCell>
           ) : null}
           {showEpisodesColumn ? (

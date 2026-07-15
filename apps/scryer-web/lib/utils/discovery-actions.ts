@@ -17,7 +17,9 @@ export function normalizedDiscoveryItemFacet(
   }
 }
 
-export function discoveryItemFacet(item: CatalogDiscoveryItem): Facet | null {
+export function discoveryItemFacet(
+  item: Pick<CatalogDiscoveryItem, "contentType" | "targetKind">,
+): Facet | null {
   const contentType = item.contentType?.trim();
   return contentType
     ? normalizedDiscoveryItemFacet(contentType)

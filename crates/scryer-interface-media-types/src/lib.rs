@@ -1841,6 +1841,26 @@ pub struct DiscoveryHomeInput {
     pub include_personalized: Option<bool>,
     pub include_unresolved: Option<bool>,
     pub limit_per_section: Option<i32>,
+    pub filters: Option<DiscoveryHomeFiltersInput>,
+}
+
+#[derive(InputObject, Clone, Default)]
+pub struct DiscoveryHomeFiltersInput {
+    pub content_types: Option<Vec<String>>,
+    pub genres: Option<Vec<String>>,
+    pub themes: Option<Vec<String>>,
+    pub relation_types: Option<Vec<String>>,
+    pub studio_slugs: Option<Vec<String>>,
+    pub minimum_year: Option<i32>,
+    pub maximum_year: Option<i32>,
+    pub minimum_rating: Option<f64>,
+}
+
+#[derive(InputObject, Clone, Default)]
+pub struct DiscoveryHomeFilterOptionsInput {
+    pub include_public: Option<bool>,
+    pub include_personalized: Option<bool>,
+    pub include_unresolved: Option<bool>,
 }
 
 #[derive(InputObject, Clone, Default)]
@@ -1875,6 +1895,69 @@ pub struct DiscoveryHomePayload {
     pub complete_collection: Option<DiscoverySectionPayload>,
     pub facets: Vec<DiscoveryFacetPayload>,
     pub can_view_personalized: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoveryHomeCardsPayload {
+    pub status: DiscoverySyncStatusPayload,
+    pub hero_item: Option<DiscoveryHomeHeroPayload>,
+    pub public_sections: Vec<DiscoveryHomeSectionPayload>,
+    pub personalized_sections: Vec<DiscoveryHomeSectionPayload>,
+    pub complete_collection: Option<DiscoveryHomeSectionPayload>,
+    pub can_view_personalized: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoveryHomeSectionPayload {
+    pub section_id: String,
+    pub section_type: String,
+    pub title: String,
+    pub surface: String,
+    pub total_count: Long,
+    pub items: Vec<DiscoveryHomeCardPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoveryHomeCardPayload {
+    pub id: ID,
+    pub target_key: String,
+    pub target_kind: String,
+    pub display_title: String,
+    pub original_title: Option<String>,
+    pub sort_title: Option<String>,
+    pub year: Option<i32>,
+    pub poster_url: Option<String>,
+    pub content_type: Option<String>,
+    pub owned_in_input: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoveryHomeHeroPayload {
+    pub id: ID,
+    pub target_key: String,
+    pub target_kind: String,
+    pub display_title: String,
+    pub original_title: Option<String>,
+    pub sort_title: Option<String>,
+    pub year: Option<i32>,
+    pub poster_url: Option<String>,
+    pub background_url: Option<String>,
+    pub overview: Option<String>,
+    pub content_type: Option<String>,
+    pub rating: Option<f64>,
+    pub rating_sources: Vec<String>,
+    pub external_ratings: Vec<DiscoveryExternalRatingPayload>,
+    pub genre_tags: Vec<CanonicalMediaTagPayload>,
+    pub matched_subject_count: i32,
+    pub owned_in_input: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DiscoveryHomeFilterOptionsPayload {
+    pub genres: Vec<String>,
+    pub themes: Vec<String>,
+    pub relation_types: Vec<String>,
+    pub studio_slugs: Vec<String>,
 }
 
 #[derive(SimpleObject, Clone)]

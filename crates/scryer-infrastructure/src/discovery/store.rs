@@ -3,13 +3,13 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, CatalogDiscoveryCandidatesRecord, CatalogDiscoverySectionCandidatesRecord,
     DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit, DiscoveryExternalIdRecord,
-    DiscoveryFacetRecord, DiscoveryHomeCandidate, DiscoveryHomeSectionCandidatesRecord,
-    DiscoveryItemLibraryProvenanceRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
-    DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord, DiscoveryPruneReport,
-    DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord, DiscoveryRepository,
-    DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySourceTagRecord,
-    DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord, DiscoverySyncStateRecord,
-    TitleExternalRating, TitleRatingSummary,
+    DiscoveryFacetRecord, DiscoveryHomeCandidate, DiscoveryHomeFilterOptions, DiscoveryHomeFilters,
+    DiscoveryHomeSectionCandidatesRecord, DiscoveryItemLibraryProvenanceRecord,
+    DiscoveryItemRecord, DiscoveryItemsPageRecord, DiscoveryItemsStorageQuery,
+    DiscoveryPendingContextChangeRecord, DiscoveryPruneReport, DiscoveryPublicFeedCommit,
+    DiscoveryRankComponentRecord, DiscoveryRepository, DiscoverySectionItemsRecord,
+    DiscoverySectionRecord, DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord,
+    DiscoverySyncRunRecord, DiscoverySyncStateRecord, TitleExternalRating, TitleRatingSummary,
 };
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
@@ -773,6 +773,7 @@ impl DiscoveryRepository for DiscoveryStore {
         run_id: &str,
         allowed_media_kinds: &[String],
         include_unresolved: bool,
+        filters: &DiscoveryHomeFilters,
         limit_per_section: i64,
     ) -> AppResult<Vec<DiscoveryHomeSectionCandidatesRecord>> {
         let sections = self.list_discovery_sections(run_id, Some("public")).await?;
@@ -784,6 +785,7 @@ impl DiscoveryRepository for DiscoveryStore {
             run_id,
             allowed_media_kinds,
             include_unresolved,
+            filters,
             limit_per_section.clamp(1, 100),
         )
         .await?;
@@ -796,6 +798,7 @@ impl DiscoveryRepository for DiscoveryStore {
         readable_library_ids: &[String],
         allowed_media_kinds: &[String],
         include_unresolved: bool,
+        filters: &DiscoveryHomeFilters,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         fetch_personalized_home_candidates(
@@ -804,6 +807,7 @@ impl DiscoveryRepository for DiscoveryStore {
             readable_library_ids,
             allowed_media_kinds,
             include_unresolved,
+            filters,
             None,
             limit.clamp(1, 5_000),
         )
@@ -816,6 +820,7 @@ impl DiscoveryRepository for DiscoveryStore {
         readable_library_ids: &[String],
         allowed_media_kinds: &[String],
         include_unresolved: bool,
+        filters: &DiscoveryHomeFilters,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         fetch_personalized_home_candidates(
@@ -824,6 +829,7 @@ impl DiscoveryRepository for DiscoveryStore {
             readable_library_ids,
             allowed_media_kinds,
             include_unresolved,
+            filters,
             Some(PersonalizedItemSubset::CompleteCollection),
             limit.clamp(1, 2_000),
         )
@@ -856,6 +862,7 @@ impl DiscoveryRepository for DiscoveryStore {
         owned_library_ids: &[String],
         excluded_identity_keys: &[String],
         include_unresolved: bool,
+        filters: &DiscoveryHomeFilters,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         fetch_discovery_home_top_rated_candidates(
@@ -867,6 +874,7 @@ impl DiscoveryRepository for DiscoveryStore {
             owned_library_ids,
             excluded_identity_keys,
             include_unresolved,
+            filters,
             limit.clamp(1, 5_000),
         )
         .await
@@ -877,6 +885,32 @@ impl DiscoveryRepository for DiscoveryStore {
         candidates: &mut [DiscoveryHomeCandidate],
     ) -> AppResult<()> {
         hydrate_discovery_home_candidates(&self.datastore, candidates).await
+    }
+
+    async fn hydrate_discovery_home_hero(
+        &self,
+        candidate: &mut DiscoveryHomeCandidate,
+    ) -> AppResult<()> {
+        hydrate_discovery_home_hero(&self.datastore, candidate).await
+    }
+
+    async fn list_discovery_home_filter_options(
+        &self,
+        public_run_id: Option<&str>,
+        context_run_id: Option<&str>,
+        readable_library_ids: &[String],
+        allowed_media_kinds: &[String],
+        include_unresolved: bool,
+    ) -> AppResult<DiscoveryHomeFilterOptions> {
+        fetch_discovery_home_filter_options(
+            &self.datastore,
+            public_run_id,
+            context_run_id,
+            readable_library_ids,
+            allowed_media_kinds,
+            include_unresolved,
+        )
+        .await
     }
 
     async fn list_catalog_public_discovery_items(
@@ -1298,6 +1332,36 @@ fn discovery_item_projection(
     item_alias: &str,
     title_alias: &str,
 ) -> String {
+    discovery_item_projection_with_presentation(datastore, item_alias, title_alias, true)
+}
+
+fn discovery_home_candidate_projection(
+    datastore: &StoreDatastore,
+    item_alias: &str,
+    title_alias: &str,
+) -> String {
+    format!(
+        "{}, CASE WHEN NULLIF(TRIM({title_alias}.background_url), '') IS NULL THEN FALSE ELSE TRUE END AS has_hero_backdrop",
+        discovery_item_projection_with_presentation(datastore, item_alias, title_alias, false)
+    )
+}
+
+fn discovery_item_projection_with_presentation(
+    datastore: &StoreDatastore,
+    item_alias: &str,
+    title_alias: &str,
+    include_presentation: bool,
+) -> String {
+    let background_url = if include_presentation {
+        format!("{title_alias}.background_url AS background_url")
+    } else {
+        "NULL AS background_url".to_string()
+    };
+    let overview = if include_presentation {
+        format!("{title_alias}.overview AS overview")
+    } else {
+        "NULL AS overview".to_string()
+    };
     [
         format!("{item_alias}.id AS id"),
         format!("{item_alias}.run_id AS run_id"),
@@ -1315,8 +1379,8 @@ fn discovery_item_projection(
         format!("{title_alias}.year AS year"),
         format!("{title_alias}.poster_path AS poster_path"),
         format!("{title_alias}.poster_url AS poster_url"),
-        format!("{title_alias}.background_url AS background_url"),
-        format!("{title_alias}.overview AS overview"),
+        background_url,
+        overview,
         format!("{title_alias}.content_type AS content_type"),
         typed_null_rating_expression(datastore).to_string(),
         format!("{item_alias}.best_source AS best_source"),
@@ -1452,6 +1516,7 @@ async fn fetch_public_section_item_rows(
     run_id: &str,
     allowed_media_kinds: &[String],
     include_unresolved: bool,
+    filters: &DiscoveryHomeFilters,
     limit_per_section: i64,
 ) -> AppResult<Vec<SqlRow>> {
     if allowed_media_kinds.is_empty() {
@@ -1473,6 +1538,8 @@ async fn fetch_public_section_item_rows(
         "t",
         allowed_media_kinds,
     );
+    let mut home_filter_clauses = Vec::new();
+    append_discovery_home_filters(&mut home_filter_clauses, &mut args, filters);
     args.push(SqlArg::I64(limit_per_section));
     SqlRuntime::fetch_all(
         datastore.read_exec(),
@@ -1500,6 +1567,7 @@ async fn fetch_public_section_item_rows(
                   AND UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'
                   AND {}
                   AND {}
+                  AND {}
                   {resolved_clause}
              ),
              deduped AS (
@@ -1518,9 +1586,10 @@ async fn fetch_public_section_item_rows(
              FROM ranked
              WHERE section_rank <= {{}}
             ORDER BY result_section_id ASC, section_rank ASC",
-            discovery_item_projection(datastore, "i", "t"),
+            discovery_home_candidate_projection(datastore, "i", "t"),
             displayable_discovery_title_clause(datastore, "t"),
             media_kind_clauses.join(" AND "),
+            home_filter_clauses.join(" AND "),
             discovery_item_row_columns()
         ),
         &args,
@@ -1584,6 +1653,7 @@ async fn fetch_personalized_home_candidates(
     readable_library_ids: &[String],
     allowed_media_kinds: &[String],
     include_unresolved: bool,
+    filters: &DiscoveryHomeFilters,
     subset: Option<PersonalizedItemSubset>,
     limit: i64,
 ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
@@ -1607,6 +1677,7 @@ async fn fetch_personalized_home_candidates(
         readable_library_ids,
         &mut args,
     ));
+    append_discovery_home_filters(&mut clauses, &mut args, filters);
     if matches!(subset, Some(PersonalizedItemSubset::CompleteCollection)) {
         clauses.push(authoritative_media_kind_clause("t", "movie"));
         clauses.push(collection_signal_clause("i", "t"));
@@ -1623,7 +1694,7 @@ async fn fetch_personalized_home_candidates(
                   COALESCE(t.sort_title, t.display_title) ASC,
                   t.target_key ASC
          LIMIT {{}}",
-        discovery_item_projection(datastore, "i", "t"),
+        discovery_home_candidate_projection(datastore, "i", "t"),
         clauses.join(" AND ")
     );
     fetch_discovery_home_candidates_with_sql(datastore, &sql, &args).await
@@ -1639,6 +1710,7 @@ async fn fetch_discovery_home_top_rated_candidates(
     owned_library_ids: &[String],
     excluded_identity_keys: &[String],
     include_unresolved: bool,
+    filters: &DiscoveryHomeFilters,
     limit: i64,
 ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
     if allowed_media_kinds.is_empty() {
@@ -1682,6 +1754,7 @@ async fn fetch_discovery_home_top_rated_candidates(
                 "CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END NOT IN ({placeholders})"
             ));
         }
+        append_discovery_home_filters(&mut clauses, &mut args, filters);
         branches.push(format!(
             "SELECT {},
                     CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END AS identity_key,
@@ -1708,7 +1781,7 @@ async fn fetch_discovery_home_top_rated_candidates(
              JOIN discovery_titles t
                ON t.id = i.discovery_title_id
              WHERE {}",
-            discovery_item_projection(datastore, "i", "t"),
+            discovery_home_candidate_projection(datastore, "i", "t"),
             clauses.join(" AND ")
         ));
     }
@@ -1749,6 +1822,7 @@ async fn fetch_discovery_home_top_rated_candidates(
                 "CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END NOT IN ({placeholders})"
             ));
         }
+        append_discovery_home_filters(&mut clauses, &mut args, filters);
         branches.push(format!(
             "SELECT {},
                     CASE WHEN TRIM(t.target_key) = '' THEN LOWER(i.id) ELSE LOWER(TRIM(t.target_key)) END AS identity_key,
@@ -1770,7 +1844,7 @@ async fn fetch_discovery_home_top_rated_candidates(
              JOIN discovery_titles t
                ON t.id = i.discovery_title_id
              WHERE {}",
-            discovery_item_projection(datastore, "i", "t"),
+            discovery_home_candidate_projection(datastore, "i", "t"),
             clauses.join(" AND ")
         ));
     }
@@ -1829,6 +1903,140 @@ async fn fetch_discovery_home_top_rated_candidates(
         discovery_item_row_columns()
     );
     fetch_discovery_home_rating_candidates_with_sql(datastore, &sql, &args).await
+}
+
+async fn fetch_discovery_home_filter_options(
+    datastore: &StoreDatastore,
+    public_run_id: Option<&str>,
+    context_run_id: Option<&str>,
+    readable_library_ids: &[String],
+    allowed_media_kinds: &[String],
+    include_unresolved: bool,
+) -> AppResult<DiscoveryHomeFilterOptions> {
+    if allowed_media_kinds.is_empty() {
+        return Ok(DiscoveryHomeFilterOptions::default());
+    }
+    let mut args = Vec::new();
+    let mut branches = Vec::new();
+    if let Some(run_id) = public_run_id {
+        let mut clauses = vec![
+            "i.base_generation_id = {}".to_string(),
+            "i.tombstoned_at IS NULL".to_string(),
+            "i.owned_in_input = FALSE".to_string(),
+            displayable_discovery_title_clause(datastore, "t"),
+            "EXISTS (
+                SELECT 1
+                FROM discovery_section_items si
+                JOIN discovery_sections s
+                  ON s.run_id = si.run_id
+                 AND s.section_id = si.section_id
+                WHERE si.run_id = {}
+                  AND si.item_id = i.id
+                  AND s.surface = 'public'
+                  AND UPPER(TRIM(s.section_type)) <> 'COMPLETE_THE_COLLECTION'
+             )"
+            .to_string(),
+        ];
+        args.push(SqlArg::Text(run_id.to_string()));
+        args.push(SqlArg::Text(run_id.to_string()));
+        if !include_unresolved {
+            clauses.push("t.resolved = TRUE".to_string());
+        }
+        append_authoritative_media_kind_filter(&mut clauses, &mut args, "t", allowed_media_kinds);
+        branches.push(format!(
+            "SELECT DISTINCT i.discovery_title_id
+             FROM discovery_items i
+             JOIN discovery_titles t
+               ON t.id = i.discovery_title_id
+             WHERE {}",
+            clauses.join(" AND ")
+        ));
+    }
+    if let Some(run_id) = context_run_id.filter(|_| !readable_library_ids.is_empty()) {
+        let mut clauses = vec![
+            "i.base_generation_id = {}".to_string(),
+            "i.tombstoned_at IS NULL".to_string(),
+            "i.owned_in_input = FALSE".to_string(),
+            displayable_discovery_title_clause(datastore, "t"),
+        ];
+        args.push(SqlArg::Text(run_id.to_string()));
+        if !include_unresolved {
+            clauses.push("t.resolved = TRUE".to_string());
+        }
+        append_authoritative_media_kind_filter(&mut clauses, &mut args, "t", allowed_media_kinds);
+        clauses.push(library_provenance_exists_clause(
+            "i",
+            readable_library_ids,
+            &mut args,
+        ));
+        branches.push(format!(
+            "SELECT DISTINCT i.discovery_title_id
+             FROM discovery_items i
+             JOIN discovery_titles t
+               ON t.id = i.discovery_title_id
+             WHERE {}",
+            clauses.join(" AND ")
+        ));
+    }
+    if branches.is_empty() {
+        return Ok(DiscoveryHomeFilterOptions::default());
+    }
+    let sql = format!(
+        "WITH entitled_titles AS (
+            {}
+         ),
+         options AS (
+            SELECT 'genre' AS option_kind, tag.name AS option_value
+            FROM discovery_title_metadata_tags tag
+            JOIN entitled_titles entitled
+              ON entitled.discovery_title_id = tag.discovery_title_id
+            WHERE LOWER(tag.category) = 'genre'
+              AND TRIM(tag.name) <> ''
+            UNION ALL
+            SELECT 'theme' AS option_kind, tag.name AS option_value
+            FROM discovery_title_metadata_tags tag
+            JOIN entitled_titles entitled
+              ON entitled.discovery_title_id = tag.discovery_title_id
+            WHERE LOWER(tag.category) = 'theme'
+              AND TRIM(tag.name) <> ''
+            UNION ALL
+            SELECT 'relation_type' AS option_kind, term.term_value AS option_value
+            FROM discovery_title_terms term
+            JOIN entitled_titles entitled
+              ON entitled.discovery_title_id = term.discovery_title_id
+            WHERE term.term_kind = 'relation_type'
+              AND TRIM(term.term_value) <> ''
+            UNION ALL
+            SELECT 'studio' AS option_kind, term.term_value AS option_value
+            FROM discovery_title_terms term
+            JOIN entitled_titles entitled
+              ON entitled.discovery_title_id = term.discovery_title_id
+            WHERE term.term_kind = 'studio'
+              AND TRIM(term.term_value) <> ''
+         ),
+         deduped_options AS (
+            SELECT option_kind, MIN(option_value) AS option_value
+            FROM options
+            GROUP BY option_kind, LOWER(option_value)
+         )
+         SELECT option_kind, option_value
+         FROM deduped_options
+         ORDER BY option_kind ASC, LOWER(option_value) ASC, option_value ASC",
+        branches.join("\nUNION\n")
+    );
+    let rows = SqlRuntime::fetch_all(datastore.read_exec(), &sql, &args).await?;
+    let mut options = DiscoveryHomeFilterOptions::default();
+    for row in rows {
+        let value = row.text("option_value")?;
+        match row.text("option_kind")?.as_str() {
+            "genre" => options.genres.push(value),
+            "theme" => options.themes.push(value),
+            "relation_type" => options.relation_types.push(value),
+            "studio" => options.studio_slugs.push(value),
+            _ => {}
+        }
+    }
+    Ok(options)
 }
 
 async fn fetch_catalog_public_items(
@@ -2366,6 +2574,44 @@ fn build_discovery_items_sql(
     })
 }
 
+fn append_discovery_home_filters(
+    clauses: &mut Vec<String>,
+    args: &mut Vec<SqlArg>,
+    filters: &DiscoveryHomeFilters,
+) {
+    let clause_count = clauses.len();
+    append_authoritative_media_kind_filter(clauses, args, "t", &filters.content_types);
+    append_canonical_facet_filter(clauses, args, "genre", &filters.genres);
+    append_canonical_facet_filter(clauses, args, "theme", &filters.themes);
+    append_term_filter(clauses, args, "relation_type", &filters.relation_types);
+    append_term_filter(clauses, args, "studio", &filters.studio_slugs);
+    if let Some(minimum_year) = filters.minimum_year {
+        clauses.push("(t.year IS NULL OR t.year >= {})".to_string());
+        args.push(SqlArg::I32(minimum_year));
+    }
+    if let Some(maximum_year) = filters.maximum_year {
+        clauses.push("(t.year IS NULL OR t.year <= {})".to_string());
+        args.push(SqlArg::I32(maximum_year));
+    }
+    if let Some(minimum_rating) = filters.minimum_rating.filter(|value| value.is_finite()) {
+        clauses.push(
+            "NOT EXISTS (
+                SELECT 1
+                FROM discovery_title_metadata_rating_summaries rating_summary
+                WHERE rating_summary.discovery_title_id = i.discovery_title_id
+                  AND (CASE WHEN rating_summary.rating <= 1.0
+                            THEN rating_summary.rating * 10.0
+                            ELSE rating_summary.rating END) < {}
+             )"
+            .to_string(),
+        );
+        args.push(SqlArg::F64(minimum_rating));
+    }
+    if clauses.len() == clause_count {
+        clauses.push("TRUE".to_string());
+    }
+}
+
 fn append_discovery_items_filters(
     clauses: &mut Vec<String>,
     args: &mut Vec<SqlArg>,
@@ -2572,6 +2818,9 @@ fn append_authoritative_media_kind_filter(
     media_kinds: &[String],
 ) {
     let media_kinds = normalized_filter_values(media_kinds);
+    if media_kinds.is_empty() {
+        return;
+    }
     let placeholders = placeholders(media_kinds.len());
     args.extend(media_kinds.into_iter().map(SqlArg::Text));
     clauses.push(format!(
@@ -2647,6 +2896,10 @@ fn home_candidate_from_row(row: &SqlRow) -> AppResult<DiscoveryHomeCandidate> {
         matched_subject_keys: Vec::new(),
         affinity_terms: Vec::new(),
         has_acclaim_signal: false,
+        has_hero_backdrop: row.bool("has_hero_backdrop")?,
+        rating_source_count: 0,
+        best_external_rating: None,
+        best_external_rating_votes: 0,
     })
 }
 
@@ -2783,19 +3036,84 @@ async fn hydrate_discovery_home_candidate_ratings(
     }
     let mut title_ids = title_indexes.keys().cloned().collect::<Vec<_>>();
     title_ids.sort();
-    let ratings_by_title =
-        load_discovery_title_metadata_ratings(datastore.read_exec(), &title_ids).await?;
-    for (title_id, ratings) in ratings_by_title {
+    let source_identity = rating_source_identity_sql("sources.source");
+    let rows = fetch_child_rows(
+        datastore,
+        &format!(
+            "SELECT t.id AS discovery_title_id,
+                    summary.rating AS rating,
+                    COALESCE((
+                        SELECT COUNT(DISTINCT {source_identity})
+                        FROM (
+                            SELECT source
+                            FROM discovery_title_metadata_rating_sources
+                            WHERE discovery_title_id = t.id
+                            UNION
+                            SELECT source
+                            FROM discovery_title_metadata_external_ratings
+                            WHERE discovery_title_id = t.id
+                        ) sources
+                        WHERE TRIM(sources.source) <> ''
+                    ), 0) AS rating_source_count,
+                    (
+                        SELECT MAX(CASE WHEN external.normalized <= 1.0
+                                        THEN external.normalized * 10.0
+                                        ELSE external.normalized END)
+                        FROM discovery_title_metadata_external_ratings external
+                        WHERE external.discovery_title_id = t.id
+                          AND external.normalized IS NOT NULL
+                          AND external.normalized > 0
+                    ) AS best_external_rating,
+                    COALESCE((
+                        SELECT MAX(COALESCE(external.votes, 0))
+                        FROM discovery_title_metadata_external_ratings external
+                        WHERE external.discovery_title_id = t.id
+                          AND external.normalized IS NOT NULL
+                          AND external.normalized > 0
+                    ), 0) AS best_external_rating_votes
+             FROM discovery_titles t
+             LEFT JOIN discovery_title_metadata_rating_summaries summary
+               ON summary.discovery_title_id = t.id
+             WHERE t.id IN ({{}})"
+        ),
+        &title_ids,
+    )
+    .await?;
+    for row in rows {
+        let title_id = row.text("discovery_title_id")?;
         let Some(indexes) = title_indexes.get(&title_id) else {
             continue;
         };
         for index in indexes {
-            candidates[*index].item.rating = ratings.rating;
-            candidates[*index].item.rating_sources = ratings.rating_sources.clone();
-            candidates[*index].item.external_ratings = ratings.external_ratings.clone();
+            candidates[*index].item.rating = row.opt_f64("rating")?;
+            candidates[*index].rating_source_count = row.i64("rating_source_count")? as i32;
+            candidates[*index].best_external_rating = row.opt_f64("best_external_rating")?;
+            candidates[*index].best_external_rating_votes =
+                row.i64("best_external_rating_votes")? as i32;
         }
     }
     Ok(())
+}
+
+fn rating_source_identity_sql(column: &str) -> String {
+    let normalized = format!(
+        "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({column}, ' ', ''), '.', ''), '-', ''), '_', ''), '/', ''))"
+    );
+    format!(
+        "CASE {normalized}
+            WHEN 'rottentomatoes' THEN 'tomatoes'
+            WHEN 'audience' THEN 'tomatoes'
+            WHEN 'popcorn' THEN 'tomatoes'
+            WHEN 'popcornmeter' THEN 'tomatoes'
+            WHEN 'mcuser' THEN 'metacritic'
+            WHEN 'metacriticuser' THEN 'metacritic'
+            WHEN 'themoviedb' THEN 'tmdb'
+            WHEN 'thetvdb' THEN 'tvdb'
+            WHEN 'myanimelist' THEN 'mal'
+            WHEN 'myanimelistnet' THEN 'mal'
+            ELSE {normalized}
+         END"
+    )
 }
 
 async fn mark_discovery_home_source_tag_acclaim_signals(
@@ -2882,6 +3200,67 @@ async fn hydrate_discovery_home_candidates(
     hydrate_discovery_home_candidates_with_counts(datastore, candidates)
         .await
         .map(|_| ())
+}
+
+async fn hydrate_discovery_home_hero(
+    datastore: &StoreDatastore,
+    candidate: &mut DiscoveryHomeCandidate,
+) -> AppResult<()> {
+    let started_at = Instant::now();
+    let item_ids = [candidate.item.id.clone()];
+    let rows = fetch_child_rows(
+        datastore,
+        "SELECT i.id, i.discovery_title_id, t.background_url, t.overview
+         FROM discovery_items i
+         JOIN discovery_titles t
+           ON t.id = i.discovery_title_id
+         WHERE i.id IN ({})",
+        &item_ids,
+    )
+    .await?;
+    let row = rows.first().ok_or_else(|| {
+        AppError::Repository(format!(
+            "selected discovery-home hero {} no longer exists",
+            candidate.item.id
+        ))
+    })?;
+    let discovery_title_id = row.text("discovery_title_id")?;
+    if discovery_title_id != candidate.discovery_title_id {
+        return Err(AppError::Repository(format!(
+            "selected discovery-home hero {} changed titles during hydration",
+            candidate.item.id
+        )));
+    }
+    candidate.item.background_url = row.opt_text("background_url")?;
+    candidate.item.overview = row.opt_text("overview")?;
+    let title_ids = [candidate.discovery_title_id.clone()];
+    let ratings = load_discovery_title_metadata_ratings(datastore.read_exec(), &title_ids).await?;
+    if let Some(rating) = ratings.get(&candidate.discovery_title_id) {
+        candidate.item.rating = rating.rating;
+        candidate.item.rating_sources = rating.rating_sources.clone();
+        candidate.item.external_ratings = rating.external_ratings.clone();
+    }
+    let mut tags = load_discovery_title_metadata_tags(datastore.read_exec(), &title_ids).await?;
+    candidate.item.canonical_tags = tags
+        .remove(&candidate.discovery_title_id)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|tag| tag.category.eq_ignore_ascii_case("genre"))
+        .collect();
+    debug!(
+        operation = "discovery_home",
+        stage = "hero_presentation_hydration_children",
+        selected_item_count = 1,
+        selected_title_count = 1,
+        canonical_tag_rows = candidate.item.canonical_tags.len(),
+        title_term_rows = 0,
+        rating_summary_rows = usize::from(candidate.item.rating.is_some()),
+        rating_source_rows = candidate.item.rating_sources.len(),
+        external_rating_rows = candidate.item.external_ratings.len(),
+        elapsed_ms = started_at.elapsed().as_millis(),
+        "discovery home hero presentation metadata hydrated"
+    );
+    Ok(())
 }
 
 async fn hydrate_discovery_home_candidates_with_counts(
@@ -4748,6 +5127,197 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_discovery_home_filter_options_deduplicate_case_insensitively() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_discovery_home_filter_options_{}.db",
+            Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("sqlite services should initialize");
+        let store = DiscoveryStore::new(services.datastore());
+        let now = Utc::now();
+        let run_id = "run-discovery-home-filter-options";
+        let library_id = "movie-library";
+        store
+            .upsert_discovery_sync_run(&discovery_prune_run(
+                run_id,
+                "context_snapshot",
+                "complete",
+                now,
+            ))
+            .await
+            .expect("run should upsert");
+
+        let mut first = discovery_prune_item(run_id, now);
+        first.id = format!("{run_id}:first");
+        first.target_key = "tmdb:movie:201".to_string();
+        first.poster_url = Some("https://example.com/poster-201.jpg".to_string());
+        first.canonical_tags = canonical_genre_tags(&["Drama"]);
+        first.relation_types = vec!["Sequel".to_string()];
+        first.studio_slug = Some("A24".to_string());
+        first.library_provenance = vec![DiscoveryItemLibraryProvenanceRecord {
+            subject_key: first.target_key.clone(),
+            title_id: Some("library-title-201".to_string()),
+            library_id: Some(library_id.to_string()),
+        }];
+
+        let mut second = first.clone();
+        second.id = format!("{run_id}:second");
+        second.target_key = "tmdb:movie:202".to_string();
+        second.poster_url = Some("https://example.com/poster-202.jpg".to_string());
+        second.canonical_tags[0].name = "drama".to_string();
+        second.relation_types = vec!["sequel".to_string()];
+        second.studio_slug = Some("a24".to_string());
+        second.library_provenance[0].subject_key = second.target_key.clone();
+        second.library_provenance[0].title_id = Some("library-title-202".to_string());
+
+        store
+            .replace_discovery_items(run_id, &[first, second])
+            .await
+            .expect("items should upsert");
+
+        let options = fetch_discovery_home_filter_options(
+            &store.datastore,
+            None,
+            Some(run_id),
+            &[library_id.to_string()],
+            &["movie".to_string()],
+            true,
+        )
+        .await
+        .expect("filter options should load");
+
+        assert_eq!(options.genres.len(), 1);
+        assert_eq!(options.relation_types.len(), 1);
+        assert_eq!(options.studio_slugs.len(), 1);
+        assert_eq!(options.genres[0].to_ascii_lowercase(), "drama");
+        assert_eq!(options.relation_types[0].to_ascii_lowercase(), "sequel");
+        assert_eq!(options.studio_slugs[0].to_ascii_lowercase(), "a24");
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn sqlite_personalized_home_filters_apply_before_limit_and_keep_null_year_and_rating() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_discovery_personalized_home_filters_{}.db",
+            Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("sqlite services should initialize");
+        let store = DiscoveryStore::new(services.datastore());
+        let now = Utc::now();
+        let run_id = "run-personalized-home-filters";
+        let library_id = "movie-library";
+        store
+            .upsert_discovery_sync_run(&discovery_prune_run(
+                run_id,
+                "context_snapshot",
+                "complete",
+                now,
+            ))
+            .await
+            .expect("run should upsert");
+
+        let tags = vec![
+            CanonicalMediaTag {
+                key: "canonical:genre:drama".to_string(),
+                category: "genre".to_string(),
+                name: "Drama".to_string(),
+                confidence: Some(1.0),
+                sources: Vec::new(),
+                source_tag_keys: Vec::new(),
+                is_adult: false,
+                is_spoiler: false,
+            },
+            CanonicalMediaTag {
+                key: "canonical:theme:noir".to_string(),
+                category: "theme".to_string(),
+                name: "Noir".to_string(),
+                confidence: Some(1.0),
+                sources: Vec::new(),
+                source_tag_keys: Vec::new(),
+                is_adult: false,
+                is_spoiler: false,
+            },
+        ];
+        let provenance = DiscoveryItemLibraryProvenanceRecord {
+            subject_key: "tmdb:movie:100".to_string(),
+            title_id: Some("library-title-100".to_string()),
+            library_id: Some(library_id.to_string()),
+        };
+        let mut rated = discovery_prune_item(run_id, now);
+        rated.id = format!("{run_id}:rated");
+        rated.target_key = "tmdb:movie:100".to_string();
+        rated.display_title = "Rated match".to_string();
+        rated.sort_title = Some(rated.display_title.clone());
+        rated.year = Some(2022);
+        rated.rating = Some(9.5);
+        rated.rank_score = Some(10.0);
+        rated.canonical_tags = tags.clone();
+        rated.relation_types = vec!["sequel".to_string()];
+        rated.studio_slug = Some("a24".to_string());
+        rated.library_provenance = vec![provenance.clone()];
+
+        let mut null_metadata = rated.clone();
+        null_metadata.id = format!("{run_id}:null-metadata");
+        null_metadata.target_key = "tmdb:movie:101".to_string();
+        null_metadata.display_title = "Null metadata match".to_string();
+        null_metadata.sort_title = Some(null_metadata.display_title.clone());
+        null_metadata.year = None;
+        null_metadata.rating = None;
+        null_metadata.rank_score = Some(100.0);
+        null_metadata.library_provenance[0].subject_key = "tmdb:movie:101".to_string();
+
+        let mut excluded = rated.clone();
+        excluded.id = format!("{run_id}:excluded");
+        excluded.target_key = "tmdb:movie:102".to_string();
+        excluded.display_title = "Wrong genre".to_string();
+        excluded.sort_title = Some(excluded.display_title.clone());
+        excluded.rank_score = Some(1_000.0);
+        excluded.canonical_tags[0].name = "Comedy".to_string();
+        excluded.library_provenance[0].subject_key = "tmdb:movie:102".to_string();
+
+        store
+            .replace_discovery_items(run_id, &[rated, null_metadata, excluded])
+            .await
+            .expect("items should upsert");
+
+        let filters = DiscoveryHomeFilters {
+            content_types: vec!["movie".to_string(), "series".to_string()],
+            genres: vec!["Drama".to_string(), "Science Fiction".to_string()],
+            themes: vec!["Noir".to_string()],
+            relation_types: vec!["sequel".to_string()],
+            studio_slugs: vec!["a24".to_string()],
+            minimum_year: Some(2020),
+            maximum_year: Some(2024),
+            minimum_rating: Some(9.0),
+        };
+        let candidates = fetch_personalized_home_candidates(
+            &store.datastore,
+            run_id,
+            &[library_id.to_string()],
+            &["movie".to_string()],
+            true,
+            &filters,
+            None,
+            1,
+        )
+        .await
+        .expect("filtered candidates should load");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].item.target_key, "tmdb:movie:101",
+            "filters must apply before the rail limit and retain null year/rating"
+        );
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
     async fn discovery_item_upsert_empty_canonical_ratings_clear_existing_ratings() {
         let db = std::env::temp_dir().join(format!(
             "scryer_discovery_canonical_ratings_clear_{}.db",
@@ -5009,7 +5579,13 @@ mod tests {
             .expect("items should replace");
 
         let sections = store
-            .list_public_discovery_section_items(run_id, &["movie".to_string()], true, 1)
+            .list_public_discovery_section_items(
+                run_id,
+                &["movie".to_string()],
+                true,
+                &DiscoveryHomeFilters::default(),
+                1,
+            )
             .await
             .expect("public items should list");
         assert_eq!(sections.len(), 1);
@@ -5126,6 +5702,7 @@ mod tests {
                     &[],
                     &[],
                     true,
+                    &DiscoveryHomeFilters::default(),
                     10,
                 )
                 .await?;
@@ -6469,6 +7046,10 @@ mod tests {
                 matched_subject_keys: Vec::new(),
                 affinity_terms: Vec::new(),
                 has_acclaim_signal: false,
+                has_hero_backdrop: false,
+                rating_source_count: 0,
+                best_external_rating: None,
+                best_external_rating_votes: 0,
             });
         }
 
@@ -6535,6 +7116,7 @@ mod tests {
             &["movie-library".to_string()],
             &["movie".to_string()],
             true,
+            &DiscoveryHomeFilters::default(),
             None,
             18,
         )

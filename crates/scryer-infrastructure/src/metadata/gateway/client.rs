@@ -464,7 +464,6 @@ pub struct MetadataGatewayClient {
     search_multi_hash: String,
     movie_hash: String,
     series_hash: String,
-    metadata_bulk_hash: String,
     title_recommendations_hash: String,
     collection_completions_hash: String,
     submit_discovery_context_snapshot_hash: String,
@@ -501,7 +500,6 @@ impl MetadataGatewayClient {
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
-        let metadata_bulk_hash = apq_hash(graphql_docs::METADATA_BULK_QUERY);
         let title_recommendations_hash = apq_hash(graphql_docs::TITLE_RECOMMENDATIONS_QUERY);
         let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
         let submit_discovery_context_snapshot_hash =
@@ -533,7 +531,6 @@ impl MetadataGatewayClient {
             %search_multi_hash,
             %movie_hash,
             %series_hash,
-            %metadata_bulk_hash,
             %title_recommendations_hash,
             %collection_completions_hash,
             %submit_discovery_context_snapshot_hash,
@@ -563,7 +560,6 @@ impl MetadataGatewayClient {
             search_multi_hash,
             movie_hash,
             series_hash,
-            metadata_bulk_hash,
             title_recommendations_hash,
             collection_completions_hash,
             submit_discovery_context_snapshot_hash,
@@ -590,7 +586,6 @@ impl MetadataGatewayClient {
         let search_multi_hash = apq_hash(graphql_docs::SEARCH_TVDB_MULTI_QUERY);
         let movie_hash = apq_hash(graphql_docs::GET_MOVIE_QUERY);
         let series_hash = apq_hash(graphql_docs::GET_SERIES_QUERY);
-        let metadata_bulk_hash = apq_hash(graphql_docs::METADATA_BULK_QUERY);
         let title_recommendations_hash = apq_hash(graphql_docs::TITLE_RECOMMENDATIONS_QUERY);
         let collection_completions_hash = apq_hash(graphql_docs::COLLECTION_COMPLETIONS_QUERY);
         let submit_discovery_context_snapshot_hash =
@@ -630,7 +625,6 @@ impl MetadataGatewayClient {
             search_multi_hash,
             movie_hash,
             series_hash,
-            metadata_bulk_hash,
             title_recommendations_hash,
             collection_completions_hash,
             submit_discovery_context_snapshot_hash,
@@ -1856,17 +1850,16 @@ impl MetadataGatewayClient {
             let series_requested = chunk_series_ids.len();
 
             let data: MetadataBulkResponse = self
-                .execute_graphql_apq_post(
-                    OP_METADATA_BULK,
-                    graphql_docs::METADATA_BULK_QUERY,
-                    &self.metadata_bulk_hash,
-                    json!({
+                .execute_graphql(json!({
+                    "operationName": OP_METADATA_BULK,
+                    "query": graphql_docs::METADATA_BULK_QUERY,
+                    "variables": {
                         "movieTvdbIds": chunk_movie_ids,
                         "seriesTvdbIds": chunk_series_ids,
                         "language": language,
                         "includeEpisodes": true,
-                    }),
-                )
+                    },
+                }))
                 .await?;
             let movie_count = data.metadata_bulk.movies.len();
             let series_count = data.metadata_bulk.series.len();
@@ -2434,6 +2427,17 @@ mod tests {
 
         assert!(result.movies.is_empty());
         assert!(result.series.is_empty());
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("metadataBulk request should be captured");
+        let payload: serde_json::Value = serde_json::from_slice(&requests[0].body)
+            .expect("metadataBulk request should contain JSON");
+        assert!(
+            payload.get("extensions").is_none(),
+            "metadataBulk must not use APQ"
+        );
     }
 
     #[test]

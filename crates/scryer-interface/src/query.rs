@@ -22,17 +22,19 @@ use crate::context::{
     require_config_app_permission, to_gql_error,
 };
 use crate::mappers::{
-    catalog_discovery_query_from_input, discovery_home_query_from_input,
-    discovery_item_detail_query_from_input, discovery_items_query_from_input, from_activity_event,
-    from_backup_info, from_catalog_discovery, from_collection, from_delete_preview,
-    from_delete_titles_preview, from_discovery_home, from_discovery_item,
-    from_discovery_items_result, from_domain_event, from_download_queue_item, from_episode,
-    from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
-    from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
-    from_media_request, from_media_request_counts, from_pending_import_connection,
-    from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
-    from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
-    from_title, from_title_acquisition_diagnostics, from_title_history_page,
+    catalog_discovery_query_from_input, discovery_home_filter_options_query_from_input,
+    discovery_home_query_from_input, discovery_item_detail_query_from_input,
+    discovery_items_query_from_input, from_activity_event, from_backup_info,
+    from_catalog_discovery, from_collection, from_delete_preview, from_delete_titles_preview,
+    from_discovery_home, from_discovery_home_cards, from_discovery_home_filter_options,
+    from_discovery_item, from_discovery_items_result, from_domain_event, from_download_queue_item,
+    from_episode, from_external_import_monitor_warmup_progress, from_job_definition, from_job_run,
+    from_library, from_library_scan_session, from_library_settings, from_linked_account,
+    from_media_rename_plan, from_media_request, from_media_request_counts,
+    from_pending_import_connection, from_pending_import_counts, from_pending_release,
+    from_provider_type, from_runtime_path_style, from_smg_scryer_update_notice,
+    from_smg_version_compatibility_notice, from_system_health, from_title,
+    from_title_acquisition_diagnostics, from_title_history_page,
     from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
     from_wanted_scope_view,
 };
@@ -1473,6 +1475,37 @@ impl JobAndDownloadQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_discovery_home(result))
+    }
+
+    async fn discovery_home_cards(
+        &self,
+        ctx: &Context<'_>,
+        input: Option<DiscoveryHomeInput>,
+    ) -> GqlResult<DiscoveryHomeCardsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .discovery_home_cards(&actor, discovery_home_query_from_input(input))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_discovery_home_cards(result))
+    }
+
+    async fn discovery_home_filter_options(
+        &self,
+        ctx: &Context<'_>,
+        input: Option<DiscoveryHomeFilterOptionsInput>,
+    ) -> GqlResult<DiscoveryHomeFilterOptionsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let options = app
+            .discovery_home_filter_options(
+                &actor,
+                discovery_home_filter_options_query_from_input(input),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_discovery_home_filter_options(options))
     }
 
     async fn discovery_items(

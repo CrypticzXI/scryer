@@ -618,6 +618,28 @@ async fn graphql_title_sort_uses_visible_name_ignoring_multilingual_articles_and
 }
 
 #[tokio::test]
+async fn graphql_catalog_quality_tier_resolves_target_profile_without_media() {
+    let ctx = TestContext::new().await;
+    let title_id = add_test_title(&ctx, "Target Quality Movie", "MOVIE").await;
+
+    let body = gql(
+        &ctx,
+        "{ titles { items { id qualityTier currentQualityTier } } }",
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+    let title = body["data"]["titles"]["items"]
+        .as_array()
+        .expect("title list")
+        .iter()
+        .find(|item| item["id"].as_str() == Some(title_id.as_str()))
+        .expect("added title");
+    assert_eq!(title["qualityTier"], "1080P");
+    assert!(title["currentQualityTier"].is_null());
+}
+
+#[tokio::test]
 async fn graphql_titles_use_server_pagination_and_sort() {
     let ctx = TestContext::new().await;
     let zeta_id = add_test_title(&ctx, "Zeta Movie", "MOVIE").await;

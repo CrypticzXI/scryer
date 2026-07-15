@@ -74,27 +74,27 @@ impl LibraryPayload {
 
 #[ComplexObject]
 impl TitlePayload {
-    /// Legacy title quality label.
+    /// Effective target quality-profile label for the title.
     async fn quality_tier(&self, ctx: &Context<'_>) -> GqlResult<Option<String>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let summary = loaders
-                .primary_collection_summary
+                .effective_quality_summary
                 .load_one(self.id.to_string())
                 .await?;
-            return Ok(summary.and_then(|summary| summary.label));
+            return Ok(summary.map(|summary| summary.quality_tier));
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
             let actor = actor_from_ctx(ctx)?;
             let id = self.id.to_string();
             let summaries = app
-                .list_primary_collection_summaries(&actor, std::slice::from_ref(&id))
+                .list_title_effective_quality_summaries(&actor, std::slice::from_ref(&id))
                 .await
                 .map_err(to_gql_error)?;
             Ok(summaries
                 .into_iter()
                 .find(|summary| summary.title_id == id)
-                .and_then(|summary| summary.label))
+                .map(|summary| summary.quality_tier))
         })
         .await
     }

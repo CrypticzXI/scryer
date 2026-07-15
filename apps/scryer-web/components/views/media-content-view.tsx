@@ -238,22 +238,6 @@ type TvdbSearchItem = MetadataTvdbSearchItem;
 type ScopeRoutingRecord = Record<string, NzbgetCategoryRoutingSettings>;
 type IndexerRoutingRecord = Record<string, IndexerCategoryRoutingSettings>;
 
-function formatQualityProfileFallback(
-  value: string | null | undefined,
-): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return null;
-  }
-  if (trimmed.toLowerCase() === "4k") {
-    return "4K";
-  }
-  if (/^\d{3,4}p$/i.test(trimmed)) {
-    return trimmed.toUpperCase();
-  }
-  return trimmed;
-}
-
 function mediaTitleLabel(view: ViewId, t: Translate): string {
   if (view === "movies") {
     return t("nav.movies");
@@ -937,11 +921,8 @@ function TitleContextPanel({
   onClearAdvancedFilters,
   view,
   overviewTargetView,
-  resolvedProfileName,
   blocklistEntries,
   externalSubtitles,
-  qualityProfiles,
-  qualityProfilesLoading,
   isTogglingMonitored,
   isDeleting,
   onOpenOverview,
@@ -994,11 +975,8 @@ function TitleContextPanel({
   onClearAdvancedFilters: () => void;
   view: ViewId;
   overviewTargetView: ViewId;
-  resolvedProfileName: string | null;
   blocklistEntries: TitleReleaseBlocklistEntry[];
   externalSubtitles: ExternalSubtitleRecord[];
-  qualityProfiles: ParsedQualityProfile[];
-  qualityProfilesLoading: boolean;
   isTogglingMonitored: boolean;
   isDeleting: boolean;
   onOpenOverview: (
@@ -1236,14 +1214,7 @@ function TitleContextPanel({
   const addedAtLabel =
     formatTitleDate(title.createdAt, dateTimeFormat) ?? t("label.unknown");
   const unknownLabel = t("label.unknown");
-  const qualityLabel = qualityProfilesLoading
-    ? t("label.loading")
-    : resolveDisplayedQualityLabel(
-        title,
-        qualityProfiles,
-        resolvedProfileName,
-        unknownLabel,
-      );
+  const qualityLabel = resolveDisplayedQualityLabel(title, unknownLabel);
   const overviewText =
     title.overview?.trim() || t("title.descriptionUnavailable");
   const runtimeLabel = formatRuntimeLabel(title.runtimeMinutes);
@@ -1713,7 +1684,6 @@ export function MediaContentView({
     qualityProfiles: ParsedQualityProfile[];
     qualityProfileEntries: ParsedQualityProfileEntry[];
     qualityProfileParseError: string;
-    globalQualityProfileId: string;
     globalScoringPersona: ScoringPersonaId;
     categoryQualityProfileOverrides: Record<ViewCategoryId, string>;
     categoryRequiredAudioLanguages: Record<ViewCategoryId, string[]>;
@@ -2034,7 +2004,6 @@ export function MediaContentView({
     librarySettingsSaving,
     qualityProfiles,
     qualityProfileParseError,
-    globalQualityProfileId,
     globalScoringPersona,
     categoryQualityProfileOverrides,
     categoryRequiredAudioLanguages,
@@ -3409,20 +3378,6 @@ export function MediaContentView({
                   : view === "anime"
                     ? ("anime" as const)
                     : ("series" as const);
-                const resolvedProfileName = (() => {
-                  const overrideId =
-                    categoryQualityProfileOverrides[activeQualityScopeId];
-                  const effectiveId =
-                    !overrideId || overrideId === qualityProfileInheritValue
-                      ? globalQualityProfileId
-                      : overrideId;
-                  return (
-                    qualityProfiles.find((p) => p.id === effectiveId)?.name ??
-                    formatQualityProfileFallback(effectiveId) ??
-                    qualityProfiles[0]?.name ??
-                    null
-                  );
-                })();
                 const titleCatalogControlBar = (
                   <>
                     <div className="mb-3 sm:hidden">
@@ -3617,9 +3572,6 @@ export function MediaContentView({
                       sortDirection={titleCatalogSortDirection}
                       onSortChange={updateTitleCatalogSort}
                       visibleColumns={effectiveVisibleTitleTableColumns}
-                      resolvedProfileName={resolvedProfileName}
-                      qualityProfiles={qualityProfiles}
-                      qualityProfilesLoading={mediaSettingsLoading}
                       onOpenOverview={onOpenOverview}
                       selectedTitleId={contextPanelSelectedTitleId}
                       contextPanelId={selectedTitleContextPanelId}
@@ -3667,9 +3619,6 @@ export function MediaContentView({
                       sortDirection={titleCatalogSortDirection}
                       onSortChange={updateTitleCatalogSort}
                       visibleColumns={effectiveVisibleTitleTableColumns}
-                      resolvedProfileName={resolvedProfileName}
-                      qualityProfiles={qualityProfiles}
-                      qualityProfilesLoading={mediaSettingsLoading}
                       onOpenOverview={onOpenOverview}
                       selectedTitleId={contextPanelSelectedTitleId}
                       selectedPaneMode={selectedTitleFullTableInlineActive}
@@ -3869,11 +3818,8 @@ export function MediaContentView({
                       onClearAdvancedFilters={clearAdvancedTitleFilters}
                       view={view}
                       overviewTargetView={overviewTargetView}
-                      resolvedProfileName={resolvedProfileName}
                       blocklistEntries={selectedOverviewBlocklistEntries}
                       externalSubtitles={selectedOverviewExternalSubtitles}
-                      qualityProfiles={qualityProfiles}
-                      qualityProfilesLoading={mediaSettingsLoading}
                       isTogglingMonitored={
                         activeOverviewTitle
                           ? isTogglingTitleMonitoredById[

@@ -16,40 +16,26 @@ import {
   X,
 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
-import {
-  AnidbExternalLink,
-  AnilistExternalLink,
-  ImdbExternalLink,
-  MalExternalLink,
-  TmdbExternalLink,
-  TvdbMovieExternalLink,
-  TvdbSeriesExternalLink,
-} from "@/components/common/external-media-links";
 import { Button } from "@/components/ui/button";
 import { MultiSelectDropdown } from "@/components/ui/multi-select-dropdown";
 import { TitleCard } from "@/components/title-card";
-import type { TitleCardCornerBadge } from "@/components/title-card";
 import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
-import {
-  canonicalDiscoveryFacetLabels,
-  canonicalDiscoveryFilterOptions,
-} from "@/lib/discovery-facets";
 import { facetById } from "@/lib/facets/registry";
 import {
   discoveryItemDisplayTitle,
   usefulDiscoveryTitle,
 } from "@/lib/utils/discovery-display";
-import {
-  discoveryItemFacet,
-  richExternalIdsFromDiscoverySignals,
-} from "@/lib/utils/discovery-actions";
+import { discoveryItemFacet } from "@/lib/utils/discovery-actions";
 import { selectBackdropVariantUrl } from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 import type {
   DiscoveryHomePayload,
-  DiscoveryItem,
-  DiscoverySection,
-  DiscoverySyncStatus,
+  DiscoveryHomeCard,
+  DiscoveryHomeFilterOptions,
+  DiscoveryHomeFilters,
+  DiscoveryHomeHero,
+  DiscoveryHomeSection,
+  DiscoveryHomeStatus,
   Facet,
 } from "@/lib/types";
 
@@ -59,8 +45,10 @@ type DiscoveryViewProps = {
   error: string | null;
   manageableFacets: Facet[];
   requestableFacets: Facet[];
+  filterOptions: DiscoveryHomeFilterOptions;
+  onFiltersChange: (filters: DiscoveryHomeFilters) => void;
   onRefresh: () => void;
-  onAction: (item: DiscoveryItem) => void;
+  onAction: (item: DiscoveryHomeCard) => void;
 };
 
 type DiscoveryContentType = Facet;
@@ -86,6 +74,20 @@ const DISCOVERY_FACET_PILL_CLASS: Record<DiscoveryContentType, string> = {
 const DEFAULT_MINIMUM_YEAR = 1900;
 const DEFAULT_MINIMUM_RATING = 0;
 
+function emptyDiscoveryHomeFilters(): DiscoveryHomeFilters {
+  return {
+    contentTypes: [],
+    genres: [],
+    themes: [],
+    relationTypes: [],
+    studioSlugs: [],
+  };
+}
+
+function discoveryHomeFiltersSignature(filters: DiscoveryHomeFilters) {
+  return JSON.stringify(filters);
+}
+
 function discoveryFacetIcon(
   facet: DiscoveryContentType | null | undefined,
 ): LucideIcon | null {
@@ -101,61 +103,21 @@ function defaultMaximumDiscoveryYear() {
   return new Date().getFullYear() + 3;
 }
 
-const MONTH_ABBREVIATIONS = [
-  "Jan",
-  "Feb",
-  "Mar",
-  "Apr",
-  "May",
-  "Jun",
-  "Jul",
-  "Aug",
-  "Sep",
-  "Oct",
-  "Nov",
-  "Dec",
-] as const;
-const DATE_TOKEN_PATTERN = /(\d{4})[-/](\d{1,2})(?:[-/](\d{1,2}))?/;
-
-function itemStableKey(item: DiscoveryItem) {
+function itemStableKey(item: DiscoveryHomeCard) {
   return `${item.targetKind}:${item.targetKey}`;
 }
 
-function itemIdentityKey(item: DiscoveryItem) {
+function itemIdentityKey(item: DiscoveryHomeCard) {
   return `${item.targetKind}:${item.targetKey}`;
 }
 
-function itemTypeLabel(item: DiscoveryItem) {
+function itemTypeLabel(item: DiscoveryHomeCard) {
   const raw = item.contentType || item.targetKind;
   return raw.replace(/[_-]+/g, " ").trim().toUpperCase();
 }
 
-function formatCalendarDateToken(value: string) {
-  const match = value.match(DATE_TOKEN_PATTERN);
-  if (!match) {
-    return null;
-  }
-  const month = Number(match[2]);
-  if (!Number.isInteger(month) || month < 1 || month > 12) {
-    return match[1];
-  }
-  const monthLabel = MONTH_ABBREVIATIONS[month - 1];
-  const day = match[3] ? Number(match[3]) : null;
-  return day && Number.isInteger(day) && day > 0
-    ? `${monthLabel} ${day}`
-    : `${monthLabel} ${match[1]}`;
-}
-
-function itemCalendarBadgeLabel(item: DiscoveryItem) {
-  const dateLikeTag = [
-    ...(item.statusTags ?? []),
-    ...(item.contextTerms ?? []),
-    ...(item.sourceTags ?? []),
-    ...(item.relationSubtypes ?? []),
-  ]
-    .map(formatCalendarDateToken)
-    .find((label): label is string => Boolean(label));
-  return dateLikeTag ?? (item.year ? String(item.year) : null);
+function itemCalendarBadgeLabel(item: DiscoveryHomeCard) {
+  return item.year ? String(item.year) : null;
 }
 
 function hashHue(value: string) {
@@ -166,32 +128,21 @@ function hashHue(value: string) {
   return hash;
 }
 
-function posterFallbackStyle(item: DiscoveryItem): CSSProperties {
+function posterFallbackStyle(item: DiscoveryHomeCard): CSSProperties {
   const hue = hashHue(item.targetKey || item.displayTitle);
   return {
     background: `radial-gradient(135% 100% at 50% 6%, hsl(${hue} 46% 33%) 0%, hsl(${(hue + 328) % 360} 52% 18%) 44%, #06080f 100%)`,
   };
 }
 
-function heroBackdropUrl(item: DiscoveryItem | null): string | null {
+function heroBackdropUrl(item: DiscoveryHomeHero | null): string | null {
   return selectBackdropVariantUrl(item?.backgroundUrl ?? null, "w1280") ?? null;
 }
 
-function formatScore(value: number | null | undefined) {
-  if (value == null || Number.isNaN(value)) {
-    return null;
-  }
-  if (value <= 1) {
-    return `${Math.round(value * 100)}%`;
-  }
-  if (value <= 10) {
-    return value.toFixed(1);
-  }
-  return `${Math.round(value)}%`;
-}
-
-function itemMatchScore(item: DiscoveryItem) {
-  return formatScore(item.rankScore);
+function itemMatchScore(item: DiscoveryHomeHero) {
+  return item.matchedSubjectCount && item.matchedSubjectCount > 0
+    ? String(item.matchedSubjectCount)
+    : null;
 }
 
 function normalizedPublicHomeSections(home: DiscoveryHomePayload | null) {
@@ -239,7 +190,7 @@ function allHomeSections(
   ].filter((section) => section.items.length > 0);
 }
 
-function normalizedSectionText(section: DiscoverySection) {
+function normalizedSectionText(section: DiscoveryHomeSection) {
   return `${section.sectionId} ${section.sectionType} ${section.title} ${section.surface}`.toLowerCase();
 }
 
@@ -257,7 +208,7 @@ const GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES = new Set([
   "BECAUSE_YOU_HAVE",
 ]);
 
-function discoverySectionType(section: DiscoverySection) {
+function discoverySectionType(section: DiscoveryHomeSection) {
   return section.sectionType.trim().toUpperCase();
 }
 
@@ -287,7 +238,7 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
 };
 
 function sectionDisplayTitle(
-  section: DiscoverySection,
+  section: DiscoveryHomeSection,
   t: ReturnType<typeof useTranslate>,
 ) {
   const key = SECTION_DISPLAY_NAME_KEYS[discoverySectionType(section)];
@@ -300,193 +251,19 @@ function sectionDisplayTitle(
   return section.title;
 }
 
-function sectionIcon(section: DiscoverySection): LucideIcon | null {
+function sectionIcon(section: DiscoveryHomeSection): LucideIcon | null {
   return SECTION_ICONS[discoverySectionType(section)] ?? null;
 }
 
-function sectionIsPublicPromotion(section: DiscoverySection) {
+function sectionIsPublicPromotion(section: DiscoveryHomeSection) {
   return PUBLIC_PROMOTION_SECTION_TYPE_SET.has(discoverySectionType(section));
 }
 
-function sectionIsCompleteCollection(section: DiscoverySection) {
+function sectionIsCompleteCollection(section: DiscoveryHomeSection) {
   return (
     discoverySectionType(section) === "COMPLETE_THE_COLLECTION" ||
     section.sectionId === "complete_the_collection"
   );
-}
-
-// "More like this" recommendation strips — the rails where a franchise relation
-// (sequel/spin-off/…) is the reason an item is being surfaced, so a relation pill
-// adds context. Items without a known relation simply render no pill.
-const MORE_LIKE_THIS_SECTION_TYPES = new Set([
-  "BECAUSE_YOU_HAVE",
-  "BECAUSE_YOU_LIKE_GENRE",
-  "BECAUSE_YOU_LIKE_TAG",
-]);
-
-function sectionIsMoreLikeThis(section: DiscoverySection) {
-  return MORE_LIKE_THIS_SECTION_TYPES.has(discoverySectionType(section));
-}
-
-// The seven SMG v2 relation types. Rendered nowhere before this program even
-// though the values were already fetched/typed. Normalized then mapped to a
-// locale key so wording stays in the locale files.
-const RELATION_TYPE_LABEL_KEYS: Record<string, string> = {
-  sequel: "discovery.relation.sequel",
-  prequel: "discovery.relation.prequel",
-  side_story: "discovery.relation.sideStory",
-  spin_off: "discovery.relation.spinOff",
-  adaptation: "discovery.relation.adaptation",
-  shared_universe: "discovery.relation.sharedUniverse",
-  alternative: "discovery.relation.alternative",
-};
-
-// Preference order when an item carries several relations — show the most
-// "franchise-defining" one first.
-const RELATION_TYPE_PRIORITY = [
-  "sequel",
-  "prequel",
-  "spin_off",
-  "side_story",
-  "shared_universe",
-  "adaptation",
-  "alternative",
-];
-
-function normalizeRelationType(value: string): string | null {
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return normalized in RELATION_TYPE_LABEL_KEYS ? normalized : null;
-}
-
-function normalizedItemRelationTypes(item: DiscoveryItem): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const raw of item.relationTypes ?? []) {
-    const normalized = normalizeRelationType(raw);
-    if (normalized && !seen.has(normalized)) {
-      seen.add(normalized);
-      result.push(normalized);
-    }
-  }
-  return result;
-}
-
-function relationTypeLabel(
-  relationType: string,
-  t: ReturnType<typeof useTranslate>,
-): string | null {
-  const key = RELATION_TYPE_LABEL_KEYS[relationType];
-  return key ? t(key) : null;
-}
-
-function primaryRelationType(item: DiscoveryItem): string | null {
-  const relations = normalizedItemRelationTypes(item);
-  if (relations.length === 0) {
-    return null;
-  }
-  for (const candidate of RELATION_TYPE_PRIORITY) {
-    if (relations.includes(candidate)) {
-      return candidate;
-    }
-  }
-  return relations[0];
-}
-
-function primaryRelationLabel(
-  item: DiscoveryItem,
-  t: ReturnType<typeof useTranslate>,
-): string | null {
-  const relationType = primaryRelationType(item);
-  return relationType ? relationTypeLabel(relationType, t) : null;
-}
-
-// The distinct relation types actually present in the loaded feed, ordered by
-// the display priority — drives the "Relationship" filter chip group so only
-// meaningful chips appear (mirrors how genre/tag options are derived).
-function presentRelationTypes(items: DiscoveryItem[]): string[] {
-  const present = new Set<string>();
-  for (const item of items) {
-    for (const relationType of normalizedItemRelationTypes(item)) {
-      present.add(relationType);
-    }
-  }
-  return RELATION_TYPE_PRIORITY.filter((relationType) =>
-    present.has(relationType),
-  );
-}
-
-// --- Studio surfacing (SW3: studio_slug adoption) ---
-// personIds also arrive on the item payload but are bare ids with no name
-// source, so person filtering/labels are deferred to the P1 detail surface.
-
-// Keep the Studio chip group scannable: the feed can span dozens of studios, so
-// only the most frequent ones become chips (selected slugs always stay visible).
-const STUDIO_FILTER_CHIP_LIMIT = 12;
-
-function itemStudioSlug(item: DiscoveryItem): string | null {
-  const slug = item.studioSlug?.trim().toLowerCase();
-  return slug ? slug : null;
-}
-
-// Humanize a studio slug for display ("warner-bros-pictures" -> "Warner Bros
-// Pictures"). Mirrors canonicalDiscoveryFacetLabel's word casing.
-function studioSlugLabel(slug: string): string {
-  return slug
-    .split(/[-_:\s]+/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(" ");
-}
-
-function itemStudioLabel(item: DiscoveryItem): string | null {
-  const slug = itemStudioSlug(item);
-  return slug ? studioSlugLabel(slug) : null;
-}
-
-// The studio slugs present in the loaded feed, most frequent first (then
-// alphabetical), capped so the chip group stays compact. Selected slugs are
-// always included so an active filter can be toggled off even when its studio
-// falls outside the cap.
-function presentStudioSlugs(
-  items: DiscoveryItem[],
-  selectedSlugs: string[],
-): string[] {
-  const counts = new Map<string, number>();
-  for (const item of items) {
-    const slug = itemStudioSlug(item);
-    if (slug) {
-      counts.set(slug, (counts.get(slug) ?? 0) + 1);
-    }
-  }
-  const ranked = [...counts.entries()]
-    .sort(
-      ([leftSlug, leftCount], [rightSlug, rightCount]) =>
-        rightCount - leftCount || leftSlug.localeCompare(rightSlug),
-    )
-    .map(([slug]) => slug)
-    .slice(0, STUDIO_FILTER_CHIP_LIMIT);
-  const result = [...ranked];
-  for (const slug of selectedSlugs) {
-    if (!result.includes(slug)) {
-      result.push(slug);
-    }
-  }
-  return result;
-}
-
-function itemMatchesStudioSlugs(
-  item: DiscoveryItem,
-  selectedStudioSlugs: string[],
-) {
-  if (selectedStudioSlugs.length === 0) {
-    return true;
-  }
-  const slug = itemStudioSlug(item);
-  return slug !== null && selectedStudioSlugs.includes(slug);
 }
 
 function orderedHomeSections(home: DiscoveryHomePayload | null) {
@@ -499,7 +276,7 @@ function orderedHomeSections(home: DiscoveryHomePayload | null) {
     home?.completeCollection && home.completeCollection.items.length > 0
       ? home.completeCollection
       : null;
-  const usedPersonalizedSections = new Set<DiscoverySection>();
+  const usedPersonalizedSections = new Set<DiscoveryHomeSection>();
   const takePersonalizedSections = (sectionType: string) =>
     personalizedSections.filter((section) => {
       if (discoverySectionType(section) !== sectionType) {
@@ -559,12 +336,12 @@ function orderedHomeSections(home: DiscoveryHomePayload | null) {
   ].filter((section) => section.items.length > 0);
 }
 
-function sectionIsUpcoming(section: DiscoverySection) {
+function sectionIsUpcoming(section: DiscoveryHomeSection) {
   const haystack = normalizedSectionText(section);
   return haystack.includes("upcoming") || haystack.includes("future");
 }
 
-function uniqueDiscoveryItems(items: DiscoveryItem[]) {
+function uniqueDiscoveryItems(items: DiscoveryHomeCard[]) {
   const seen = new Set<string>();
   return items.filter((item) => {
     const key = itemIdentityKey(item);
@@ -577,8 +354,8 @@ function uniqueDiscoveryItems(items: DiscoveryItem[]) {
 }
 
 function sectionWithoutItem(
-  section: DiscoverySection | null,
-  item: DiscoveryItem | null,
+  section: DiscoveryHomeSection | null,
+  item: DiscoveryHomeCard | null,
 ) {
   if (!section || !item) {
     return section;
@@ -590,42 +367,13 @@ function sectionWithoutItem(
   return items.length > 0 ? { ...section, items } : null;
 }
 
-function firstHeroItem(sections: DiscoverySection[]) {
-  return (
-    sections
-      .flatMap((section) => section.items)
-      .find((item) => item.backgroundUrl) ??
-    sections[0]?.items[0] ??
-    null
-  );
-}
-
 function heroItemIsVisibleInSections(
-  item: DiscoveryItem,
-  sections: DiscoverySection[],
+  item: DiscoveryHomeHero,
+  sections: DiscoveryHomeSection[],
 ) {
   const itemKey = itemIdentityKey(item);
   return sections.some((section) =>
     section.items.some((candidate) => itemIdentityKey(candidate) === itemKey),
-  );
-}
-
-function ratingForFilter(value: number | null | undefined) {
-  if (value == null || Number.isNaN(value)) {
-    return null;
-  }
-  return value <= 1 ? value * 10 : value;
-}
-
-function matchesAnySelectedValue(values: string[], selectedValues: string[]) {
-  if (selectedValues.length === 0) {
-    return true;
-  }
-  const normalizedValues = new Set(
-    values.map((value) => value.trim().toLowerCase()),
-  );
-  return selectedValues.some((value) =>
-    normalizedValues.has(value.trim().toLowerCase()),
   );
 }
 
@@ -644,124 +392,18 @@ function normalizedDiscoveryContentType(
   }
 }
 
-function itemContentType(item: DiscoveryItem): DiscoveryContentType | null {
+function itemContentType(item: DiscoveryHomeCard): DiscoveryContentType | null {
   const contentType = item.contentType?.trim();
   return contentType
     ? normalizedDiscoveryContentType(contentType)
     : normalizedDiscoveryContentType(item.targetKind);
 }
 
-function discoveryExternalIdMap(item: DiscoveryItem) {
-  const ids = richExternalIdsFromDiscoverySignals(item)
-    .map((externalId) => ({
-      source: externalId.source.trim().toLowerCase(),
-      value: externalId.value.trim(),
-      kind: externalId.kind?.trim().toLowerCase() || null,
-    }))
-    .filter((externalId) => externalId.source && externalId.value);
-  const bySource = (source: string) =>
-    ids.find((externalId) => externalId.source === source)?.value;
-  const bySourceKind = (source: string, kind: string) =>
-    ids.find(
-      (externalId) =>
-        externalId.source === source &&
-        (externalId.kind === kind ||
-          (kind === "tv" && externalId.kind === "series") ||
-          (kind === "series" && externalId.kind === "tv")),
-    )?.value ?? bySource(source);
-  return {
-    bySource,
-    bySourceKind,
-    has: (source: string) => Boolean(bySource(source)),
-  };
+function discoveryItemDisplayGenreLabels(item: DiscoveryHomeHero): string[] {
+  return [...new Set(item.genreTags.map((tag) => tag.name.trim()).filter(Boolean))];
 }
 
-function discoveryItemDisplayGenreLabels(item: DiscoveryItem): string[] {
-  return canonicalDiscoveryFacetLabels(item, "genre");
-}
-
-type DiscoveryItemFilters = {
-  contentTypes: DiscoveryContentType[];
-  genres: string[];
-  tags: string[];
-  relationTypes: string[];
-  studioSlugs: string[];
-  minimumYear: number;
-  maximumYear: number;
-  minimumRating: number;
-};
-
-function itemMatchesRelationTypes(
-  item: DiscoveryItem,
-  selectedRelationTypes: string[],
-) {
-  if (selectedRelationTypes.length === 0) {
-    return true;
-  }
-  const relations = new Set(normalizedItemRelationTypes(item));
-  return selectedRelationTypes.some((relationType) =>
-    relations.has(relationType),
-  );
-}
-
-function itemMatchesDiscoveryFacetFilters(
-  item: DiscoveryItem,
-  filters: Omit<DiscoveryItemFilters, "contentTypes">,
-) {
-  if (
-    !matchesAnySelectedValue(
-      canonicalDiscoveryFacetLabels(item, "genre"),
-      filters.genres,
-    )
-  ) {
-    return false;
-  }
-  if (
-    !matchesAnySelectedValue(canonicalDiscoveryFacetLabels(item, "theme"), filters.tags)
-  ) {
-    return false;
-  }
-  if (!itemMatchesRelationTypes(item, filters.relationTypes)) {
-    return false;
-  }
-  if (!itemMatchesStudioSlugs(item, filters.studioSlugs)) {
-    return false;
-  }
-  if (
-    item.year != null &&
-    (item.year < filters.minimumYear || item.year > filters.maximumYear)
-  ) {
-    return false;
-  }
-  const rating = ratingForFilter(item.rating);
-  if (rating != null && rating < filters.minimumRating) {
-    return false;
-  }
-  return true;
-}
-
-function filterDiscoverySections(
-  sections: DiscoverySection[],
-  filters: DiscoveryItemFilters,
-) {
-  return sections
-    .map((section) => ({
-      ...section,
-      items: section.items.filter((item) => {
-        if (!discoveryItemHasUsefulTitle(item)) {
-          return false;
-        }
-        const contentType = itemContentType(item);
-        if (contentType && !filters.contentTypes.includes(contentType)) {
-          return false;
-        }
-        return itemMatchesDiscoveryFacetFilters(item, filters);
-      }),
-    }))
-    .filter((section) => section.items.length > 0);
-}
-
-function discoveryItemHasUsefulTitle(item: DiscoveryItem) {
+function discoveryItemHasUsefulTitle(item: DiscoveryHomeCard) {
   return Boolean(
     usefulDiscoveryTitle(item.displayTitle) ||
       usefulDiscoveryTitle(item.sortTitle) ||
@@ -769,7 +411,7 @@ function discoveryItemHasUsefulTitle(item: DiscoveryItem) {
   );
 }
 
-function findHeroRailSection(sections: DiscoverySection[]) {
+function findHeroRailSection(sections: DiscoveryHomeSection[]) {
   // Never fold a public-promotion rail into the hero column — those stay as full
   // rails directly beneath the hero.
   const eligible = sections.filter(
@@ -784,10 +426,6 @@ function findHeroRailSection(sections: DiscoverySection[]) {
   );
 }
 
-function contentTypeCount(items: DiscoveryItem[], kind: string) {
-  return items.filter((item) => itemContentType(item) === kind).length;
-}
-
 function DiscoveryRailCard({
   item,
   size = "md",
@@ -796,19 +434,17 @@ function DiscoveryRailCard({
   canManageTitle,
   canRequestMedia,
   onAction,
-  cornerBadge,
   onDismiss,
   dismissLabel,
 }: {
-  item: DiscoveryItem;
+  item: DiscoveryHomeCard;
   size?: "sm" | "md";
   variant?: "default" | "upcoming";
   fillHeight?: boolean;
   canManageTitle: boolean;
   canRequestMedia: boolean;
-  onAction: (item: DiscoveryItem) => void;
-  cornerBadge?: TitleCardCornerBadge | null;
-  onDismiss?: (item: DiscoveryItem) => void;
+  onAction: (item: DiscoveryHomeCard) => void;
+  onDismiss?: (item: DiscoveryHomeCard) => void;
   dismissLabel?: string;
 }) {
   const compactSize = size === "sm";
@@ -846,7 +482,6 @@ function DiscoveryRailCard({
         addable={addable}
         requestable={requestable}
         compact={!fillHeight}
-        cornerBadge={cornerBadge}
         onDismiss={handleDismiss}
         dismissLabel={dismissLabel}
         onAdd={addable ? handleAction : undefined}
@@ -866,11 +501,11 @@ function DiscoverySectionRail({
   fillHeight = false,
   variant = "default",
 }: {
-  section: DiscoverySection;
+  section: DiscoveryHomeSection;
   manageableFacets: ReadonlySet<Facet>;
   requestableFacets: ReadonlySet<Facet>;
-  onAction: (item: DiscoveryItem) => void;
-  onDismissItem?: (item: DiscoveryItem) => void;
+  onAction: (item: DiscoveryHomeCard) => void;
+  onDismissItem?: (item: DiscoveryHomeCard) => void;
   compact?: boolean;
   fillHeight?: boolean;
   variant?: "default" | "upcoming";
@@ -880,36 +515,9 @@ function DiscoverySectionRail({
     () => uniqueDiscoveryItems(section.items),
     [section.items],
   );
-  // Surface the relation pill where the relationship is the point of the rail.
-  const relationRail =
-    sectionIsCompleteCollection(section) || sectionIsMoreLikeThis(section);
   const HeaderIcon = sectionIcon(section);
   const heading = sectionDisplayTitle(section, t);
   const dismissLabel = t("discovery.notInterested");
-
-  const cornerBadgeFor = React.useCallback(
-    (item: DiscoveryItem): TitleCardCornerBadge | null => {
-      if (relationRail) {
-        const relationLabel = primaryRelationLabel(item, t);
-        if (relationLabel) {
-          return { label: relationLabel, tone: "accent" };
-        }
-        // No franchise relation: fall back to studio provenance — the
-        // next-best "why this recommendation" context. Kept to relation rails
-        // so generic rails stay uncluttered (most items carry a studio).
-        const studioLabel = itemStudioLabel(item);
-        if (studioLabel) {
-          return {
-            label: studioLabel,
-            tone: "neutral",
-            title: `${t("discovery.studio")}: ${studioLabel}`,
-          };
-        }
-      }
-      return null;
-    },
-    [relationRail, t],
-  );
 
   return (
     <section className={cn("mb-7", fillHeight && "flex h-full min-h-0 flex-col")}>
@@ -946,7 +554,6 @@ function DiscoverySectionRail({
               canManageTitle={facet !== null && manageableFacets.has(facet)}
               canRequestMedia={facet !== null && requestableFacets.has(facet)}
               onAction={onAction}
-              cornerBadge={cornerBadgeFor(item)}
               onDismiss={onDismissItem}
               dismissLabel={dismissLabel}
             />
@@ -963,10 +570,10 @@ function DiscoveryHero({
   canRequestMedia,
   onAction,
 }: {
-  item: DiscoveryItem;
+  item: DiscoveryHomeHero;
   canManageTitle: boolean;
   canRequestMedia: boolean;
-  onAction: (item: DiscoveryItem) => void;
+  onAction: (item: DiscoveryHomeCard) => void;
 }) {
   const t = useTranslate();
   const titleLabel = discoveryItemDisplayTitle(item);
@@ -974,30 +581,9 @@ function DiscoveryHero({
   const genres = discoveryItemDisplayGenreLabels(item).slice(0, 3);
   const facet = itemContentType(item);
   const FacetIcon = discoveryFacetIcon(facet);
-  const externalIds = discoveryExternalIdMap(item);
-  const hasExternalLinks = [
-    "imdb",
-    "tmdb",
-    "tvdb",
-    "mal",
-    "anilist",
-    "anidb",
-  ].some((source) => externalIds.has(source));
-  const tmdbMediaType = facet === "MOVIE" ? "movie" : "tv";
-  const tvdbKind = facet === "MOVIE" ? "movie" : "series";
-  const statusLabel =
-    item.statusTags
-      .find((tag) => tag.trim().length > 0)
-      ?.replace(/[_-]+/g, " ") ?? null;
-  const sourceLabel =
-    item.sourceCount && item.sourceCount > 0
-      ? `${item.sourceCount} ${item.sourceCount === 1 ? "source" : "sources"}`
-      : null;
-  const detailItems = [
-    item.year ? String(item.year) : null,
-    statusLabel,
-    sourceLabel,
-  ].filter((detail): detail is string => Boolean(detail));
+  const detailItems = [item.year ? String(item.year) : null].filter(
+    (detail): detail is string => Boolean(detail),
+  );
   const backdropUrl = heroBackdropUrl(item);
   const heroActionAvailable =
     !item.ownedInInput && (canManageTitle || canRequestMedia);
@@ -1104,44 +690,6 @@ function DiscoveryHero({
             </div>
           ) : null}
         </div>
-        {hasExternalLinks ? (
-          <div className="mt-auto flex max-w-[min(72%,760px)] items-center pt-4 max-lg:max-w-[82%] max-sm:max-w-full">
-          <div className="flex flex-wrap items-center justify-start gap-2">
-            <ImdbExternalLink
-              imdbId={externalIds.bySource("imdb")}
-              size="compact"
-            />
-            <TmdbExternalLink
-              tmdbId={externalIds.bySourceKind("tmdb", tmdbMediaType)}
-              mediaType={tmdbMediaType}
-              size="compact"
-            />
-            {facet === "MOVIE" ? (
-              <TvdbMovieExternalLink
-                tvdbId={externalIds.bySourceKind("tvdb", tvdbKind)}
-                size="compact"
-              />
-            ) : (
-              <TvdbSeriesExternalLink
-                tvdbId={externalIds.bySourceKind("tvdb", tvdbKind)}
-                size="compact"
-              />
-            )}
-            <MalExternalLink
-              malId={externalIds.bySource("mal")}
-              size="compact"
-            />
-            <AnilistExternalLink
-              anilistId={externalIds.bySource("anilist")}
-              size="compact"
-            />
-            <AnidbExternalLink
-              anidbId={externalIds.bySource("anidb")}
-              size="compact"
-            />
-          </div>
-          </div>
-        ) : null}
       </div>
     </section>
   );
@@ -1209,9 +757,15 @@ function DiscoveryFilterChips({
   );
 }
 
+function discoveryFilterOptionLabel(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 function DiscoveryFilters({
   variant = "desktop",
-  items,
+  filterOptions,
   availableContentTypes,
   selectedContentTypes,
   selectedGenres,
@@ -1235,7 +789,7 @@ function DiscoveryFilters({
   onRequestClose,
 }: {
   variant?: "desktop" | "mobile";
-  items: DiscoveryItem[];
+  filterOptions: DiscoveryHomeFilterOptions;
   availableContentTypes: DiscoveryContentType[];
   selectedContentTypes: DiscoveryContentType[];
   selectedGenres: string[];
@@ -1259,42 +813,9 @@ function DiscoveryFilters({
   onRequestClose?: () => void;
 }) {
   const t = useTranslate();
-  const contentTypeCountItems = React.useMemo(
-    () =>
-      items.filter((item) =>
-        itemMatchesDiscoveryFacetFilters(item, {
-          genres: selectedGenres,
-          tags: selectedTags,
-          relationTypes: selectedRelationTypes,
-          studioSlugs: selectedStudioSlugs,
-          minimumYear,
-          maximumYear,
-          minimumRating,
-        }),
-      ),
-    [
-      items,
-      maximumYear,
-      minimumRating,
-      minimumYear,
-      selectedGenres,
-      selectedRelationTypes,
-      selectedStudioSlugs,
-      selectedTags,
-    ],
-  );
-  const relationTypeOptions = React.useMemo(
-    () => presentRelationTypes(items),
-    [items],
-  );
-  const studioSlugOptions = React.useMemo(
-    () => presentStudioSlugs(items, selectedStudioSlugs),
-    [items, selectedStudioSlugs],
-  );
   const contentTypes: Array<{
     key: DiscoveryContentType;
     label: string;
-    count: number;
   }> = availableContentTypes.map((key) => ({
     key,
     label:
@@ -1303,10 +824,9 @@ function DiscoveryFilters({
         : key === "SERIES"
           ? t("discovery.type.series")
           : t("discovery.type.anime"),
-    count: contentTypeCount(contentTypeCountItems, key),
   }));
-  const genres = canonicalDiscoveryFilterOptions(items, "genre");
-  const tags = canonicalDiscoveryFilterOptions(items, "theme");
+  const { genres, themes: tags, relationTypes: relationTypeOptions, studioSlugs: studioSlugOptions } =
+    filterOptions;
   const minimumYearBound = DEFAULT_MINIMUM_YEAR;
   const maximumYearBound = defaultMaximumDiscoveryYear();
   const yearSpan = Math.max(1, maximumYearBound - minimumYearBound);
@@ -1377,9 +897,6 @@ function DiscoveryFilters({
               </span>
               {entry.label}
             </span>
-            <span className="text-[11px] text-[var(--scry-faint)]">
-              {entry.count}
-            </span>
           </button>
         ))}
       </div>
@@ -1444,7 +961,7 @@ function DiscoveryFilters({
                       : "border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[var(--scry-text2)] hover:border-[rgba(var(--scry-accent-rgb),0.34)]",
                   )}
                 >
-                  {relationTypeLabel(relationType, t) ?? relationType}
+                  {discoveryFilterOptionLabel(relationType)}
                 </button>
               );
             })}
@@ -1472,7 +989,9 @@ function DiscoveryFilters({
                       : "border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[var(--scry-text2)] hover:border-[rgba(var(--scry-accent-rgb),0.34)]",
                   )}
                 >
-                  <span className="truncate">{studioSlugLabel(studioSlug)}</span>
+                  <span className="truncate">
+                    {discoveryFilterOptionLabel(studioSlug)}
+                  </span>
                 </button>
               );
             })}
@@ -1623,7 +1142,7 @@ function useHiddenDiscoveryItems() {
   React.useEffect(() => {
     setHiddenKeys(new Set(readHiddenItemKeys()));
   }, []);
-  const hideItem = React.useCallback((item: DiscoveryItem) => {
+  const hideItem = React.useCallback((item: DiscoveryHomeCard) => {
     setHiddenKeys((current) => {
       const key = itemStableKey(item);
       if (current.has(key)) {
@@ -1648,7 +1167,7 @@ function useHiddenDiscoveryItems() {
 }
 
 function sectionsWithoutHiddenItems(
-  sections: DiscoverySection[],
+  sections: DiscoveryHomeSection[],
   hiddenKeys: Set<string>,
 ) {
   if (hiddenKeys.size === 0) {
@@ -1665,7 +1184,7 @@ function sectionsWithoutHiddenItems(
 }
 
 function sectionsForDiscoveryFacets(
-  sections: DiscoverySection[],
+  sections: DiscoveryHomeSection[],
   allowedFacets: ReadonlySet<Facet>,
 ) {
   return sections
@@ -1691,7 +1210,7 @@ function sectionsForDiscoveryFacets(
 function DiscoveryPendingUpdateChip({
   status,
 }: {
-  status: DiscoverySyncStatus | null | undefined;
+  status: DiscoveryHomeStatus | null | undefined;
 }) {
   const t = useTranslate();
   const pendingChanges = status?.pendingContextChangeCount ?? 0;
@@ -1714,6 +1233,8 @@ export function DiscoveryView({
   error,
   manageableFacets,
   requestableFacets,
+  filterOptions,
+  onFiltersChange,
   onRefresh,
   onAction,
 }: DiscoveryViewProps) {
@@ -1782,15 +1303,10 @@ export function DiscoveryView({
     () => sectionsForDiscoveryFacets(orderedSections, discoverableFacetSet),
     [discoverableFacetSet, orderedSections],
   );
-  // Local-only "not interested": drop hidden items before any filtering so
-  // filter option lists and counts reflect what the user actually sees.
+  // Local-only "not interested" remains a presentation preference.
   const rawSections = React.useMemo(
     () => sectionsWithoutHiddenItems(capabilitySections, hiddenKeys),
     [capabilitySections, hiddenKeys],
-  );
-  const rawItems = React.useMemo(
-    () => rawSections.flatMap((section) => section.items),
-    [rawSections],
   );
   const hiddenItemCount = React.useMemo(() => {
     if (hiddenKeys.size === 0) {
@@ -1831,29 +1347,100 @@ export function DiscoveryView({
       ),
     [discoverableFacetSet, selectedContentTypes],
   );
+  const serverFilters = React.useMemo<DiscoveryHomeFilters>(() => {
+    const allDiscoverableTypesSelected =
+      effectiveSelectedContentTypes.length === discoverableFacets.length &&
+      discoverableFacets.every((contentType) =>
+        effectiveSelectedContentTypes.includes(contentType),
+      );
+    return {
+      contentTypes: allDiscoverableTypesSelected
+        ? []
+        : effectiveSelectedContentTypes,
+      genres: selectedGenres,
+      themes: selectedTags,
+      relationTypes: selectedRelationTypes,
+      studioSlugs: selectedStudioSlugs,
+      minimumYear:
+        effectiveMinimumYear > yearBounds.minimum
+          ? effectiveMinimumYear
+          : undefined,
+      maximumYear:
+        effectiveMaximumYear < yearBounds.maximum
+          ? effectiveMaximumYear
+          : undefined,
+      minimumRating:
+        minimumRating > DEFAULT_MINIMUM_RATING ? minimumRating : undefined,
+    };
+  }, [
+    discoverableFacets,
+    effectiveMaximumYear,
+    effectiveMinimumYear,
+    effectiveSelectedContentTypes,
+    minimumRating,
+    selectedGenres,
+    selectedRelationTypes,
+    selectedStudioSlugs,
+    selectedTags,
+    yearBounds.maximum,
+    yearBounds.minimum,
+  ]);
+  const serverFiltersRef = React.useRef(serverFilters);
+  const serverFiltersSignature = discoveryHomeFiltersSignature(serverFilters);
+  const serverFiltersSignatureRef = React.useRef(serverFiltersSignature);
+  React.useEffect(() => {
+    serverFiltersRef.current = serverFilters;
+    serverFiltersSignatureRef.current = serverFiltersSignature;
+  }, [serverFilters, serverFiltersSignature]);
+  const lastPublishedFiltersSignatureRef = React.useRef(
+    serverFiltersSignature,
+  );
+  React.useEffect(() => {
+    const currentSignature = serverFiltersSignatureRef.current;
+    if (
+      lastPublishedFiltersSignatureRef.current === currentSignature
+    ) {
+      return;
+    }
+    lastPublishedFiltersSignatureRef.current = currentSignature;
+    onFiltersChange(serverFiltersRef.current);
+  }, [
+    effectiveSelectedContentTypes,
+    onFiltersChange,
+    selectedGenres,
+    selectedRelationTypes,
+    selectedStudioSlugs,
+    selectedTags,
+  ]);
+  React.useEffect(() => {
+    const expectedSignature = serverFiltersSignatureRef.current;
+    if (
+      lastPublishedFiltersSignatureRef.current === expectedSignature
+    ) {
+      return;
+    }
+    const timeout = window.setTimeout(
+      () => {
+        const currentFilters = serverFiltersRef.current;
+        const currentSignature = discoveryHomeFiltersSignature(currentFilters);
+        if (lastPublishedFiltersSignatureRef.current === currentSignature) {
+          return;
+        }
+        lastPublishedFiltersSignatureRef.current = currentSignature;
+        onFiltersChange(currentFilters);
+      },
+      250,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [
+    effectiveMaximumYear,
+    effectiveMinimumYear,
+    minimumRating,
+    onFiltersChange,
+  ]);
   const sections = React.useMemo(
-    () =>
-      filterDiscoverySections(rawSections, {
-        contentTypes: effectiveSelectedContentTypes,
-        genres: selectedGenres,
-        tags: selectedTags,
-        relationTypes: selectedRelationTypes,
-        studioSlugs: selectedStudioSlugs,
-        minimumYear: effectiveMinimumYear,
-        maximumYear: effectiveMaximumYear,
-        minimumRating,
-      }),
-    [
-      effectiveMaximumYear,
-      effectiveMinimumYear,
-      effectiveSelectedContentTypes,
-      minimumRating,
-      rawSections,
-      selectedGenres,
-      selectedRelationTypes,
-      selectedStudioSlugs,
-      selectedTags,
-    ],
+    () => rawSections,
+    [rawSections],
   );
   const heroSections = React.useMemo(
     () => sections.filter((section) => !sectionIsCompleteCollection(section)),
@@ -1870,7 +1457,7 @@ export function DiscoveryView({
         discoveryItemHasUsefulTitle(home.heroItem) &&
         heroItemIsVisibleInSections(home.heroItem, heroSections)
         ? home.heroItem
-        : firstHeroItem(heroSections);
+        : null;
     },
     [discoverableFacetSet, heroSections, home?.heroItem],
   );
@@ -1888,7 +1475,7 @@ export function DiscoveryView({
       sections
         .filter((section) => section.sectionId !== heroRailSection?.sectionId)
         .map((section) => sectionWithoutItem(section, heroItem))
-        .filter((section): section is DiscoverySection => Boolean(section)),
+        .filter((section): section is DiscoveryHomeSection => Boolean(section)),
     [heroItem, heroRailSection, sections],
   );
   const primaryRailSections = React.useMemo(
@@ -1930,6 +1517,14 @@ export function DiscoveryView({
     );
   }, []);
   const clearFilters = React.useCallback(() => {
+    const clearedFilters = emptyDiscoveryHomeFilters();
+    const clearedFiltersSignature = discoveryHomeFiltersSignature(clearedFilters);
+    if (
+      lastPublishedFiltersSignatureRef.current !== clearedFiltersSignature
+    ) {
+      lastPublishedFiltersSignatureRef.current = clearedFiltersSignature;
+      onFiltersChange(clearedFilters);
+    }
     setSelectedContentTypes(discoverableFacets);
     setSelectedGenres([]);
     setSelectedTags([]);
@@ -1938,7 +1533,12 @@ export function DiscoveryView({
     setMinimumYear(Math.max(yearBounds.minimum, DEFAULT_MINIMUM_YEAR));
     setMaximumYear(yearBounds.maximum);
     setMinimumRating(DEFAULT_MINIMUM_RATING);
-  }, [discoverableFacets, yearBounds.maximum, yearBounds.minimum]);
+  }, [
+    discoverableFacets,
+    onFiltersChange,
+    yearBounds.maximum,
+    yearBounds.minimum,
+  ]);
   React.useEffect(() => {
     if (!filtersOpen || typeof document === "undefined") {
       return undefined;
@@ -1957,7 +1557,7 @@ export function DiscoveryView({
     };
   }, [filtersOpen]);
   const filterProps = {
-    items: rawItems,
+    filterOptions,
     availableContentTypes: discoverableFacets,
     selectedContentTypes: effectiveSelectedContentTypes,
     selectedGenres,
@@ -2026,7 +1626,7 @@ export function DiscoveryView({
         ) : null}
 
         {heroItem ? (
-          <div className="mb-7 grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-stretch gap-5 max-lg:grid-cols-1 lg:h-[clamp(440px,46vh,520px)]">
+          <div className="mb-7 grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-stretch gap-5 max-lg:grid-cols-1 lg:min-h-[clamp(440px,46vh,520px)]">
             <DiscoveryHero
               item={heroItem}
               canManageTitle={

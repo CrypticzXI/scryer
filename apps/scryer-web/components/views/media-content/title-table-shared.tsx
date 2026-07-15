@@ -9,7 +9,6 @@ import { TableBody, TableCell, TableRow } from "@/components/ui/table";
 import type { ViewId, Translate } from "@/components/root/types";
 import type { TitleRecord } from "@/lib/types";
 import type { UiDateTimeFormat } from "@/lib/types/settings";
-import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import { formatUiDate } from "@/lib/utils/date-format";
 import {
   compactRatingNumber,
@@ -17,8 +16,6 @@ import {
 } from "@/lib/utils/title-ratings";
 import { cn } from "@/lib/utils";
 import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
-
-const QP_TAG_PREFIX = "scryer:quality-profile:";
 
 export type TitleTableSortKey =
   | "name"
@@ -995,31 +992,11 @@ export function TitleEpisodeProgressBar({
   );
 }
 
-function resolveTitleProfileName(
-  item: TitleRecord,
-  profiles: ParsedQualityProfile[],
-  fallback: string | null,
-): string | null {
-  const tag = item.tags?.find((tagValue) => tagValue.startsWith(QP_TAG_PREFIX));
-  if (tag) {
-    const id = tag.slice(QP_TAG_PREFIX.length);
-    const match = profiles.find((profile) => profile.id === id);
-    if (match) {
-      return match.name;
-    }
-    return formatProfileLabel(id);
-  }
-
-  return formatProfileLabel(fallback) ?? fallback;
-}
-
 export function resolveDisplayedQualityLabel(
   item: TitleRecord,
-  profiles: ParsedQualityProfile[],
-  fallback: string | null,
   unknownLabel: string,
 ) {
-  return resolveTitleProfileName(item, profiles, fallback) || unknownLabel;
+  return item.currentQualityTier ?? item.qualityTier ?? unknownLabel;
 }
 
 export function defaultSortDirectionForTitleKey(

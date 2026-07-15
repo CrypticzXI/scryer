@@ -18,15 +18,16 @@ use crate::{
     DiscoveryContextSnapshotAckResult, DiscoveryContextSnapshotCommit,
     DiscoveryContextSnapshotPageResult, DiscoveryContextSnapshotStatusResult,
     DiscoveryContextSnapshotSubmitInput, DiscoveryContextSnapshotSubmitResult,
-    DiscoveryDashboardResult, DiscoveryDashboardSection, DiscoveryFacetRecord, DiscoveryHomeQuery,
-    DiscoveryItemDetailQuery, DiscoveryItemRecord, DiscoveryItemsQuery,
-    DiscoveryPendingContextChangeRecord, DiscoveryPublicFeedCommit, DiscoveryPublicFeedInput,
-    DiscoveryRelatedResult, DiscoveryRepository, DiscoverySectionRecord,
-    DiscoverySnapshotFacetGroup, DiscoverySnapshotFacetValue, DiscoverySubmittedSubjectRecord,
-    DiscoverySyncRunRecord, DiscoverySyncStateRecord, DiscoveryTitle, DomainEventRepository,
-    JobCategory, JobKey, JobRun, JobRunStatus, JobSection, JobTriggerSource, LibraryRootDraft,
-    MetadataGateway, MetadataSearchItem, MetadataSearchQuery, MovieMetadata,
-    MultiMetadataSearchResult, RichMetadataSearchItem, SeriesMetadata, TitleRecommendationsInput,
+    DiscoveryDashboardResult, DiscoveryDashboardSection, DiscoveryFacetRecord,
+    DiscoveryHomeFilterOptions, DiscoveryHomeFilters, DiscoveryHomeQuery, DiscoveryItemDetailQuery,
+    DiscoveryItemRecord, DiscoveryItemsQuery, DiscoveryPendingContextChangeRecord,
+    DiscoveryPublicFeedCommit, DiscoveryPublicFeedInput, DiscoveryRelatedResult,
+    DiscoveryRepository, DiscoverySectionRecord, DiscoverySnapshotFacetGroup,
+    DiscoverySnapshotFacetValue, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
+    DiscoverySyncStateRecord, DiscoveryTitle, DomainEventRepository, JobCategory, JobKey, JobRun,
+    JobRunStatus, JobSection, JobTriggerSource, LibraryRootDraft, MetadataGateway,
+    MetadataSearchItem, MetadataSearchQuery, MovieMetadata, MultiMetadataSearchResult,
+    RichMetadataSearchItem, SeriesMetadata, TitleRecommendationsInput,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
@@ -616,6 +617,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
                 include_personalized: true,
                 include_unresolved: false,
                 limit_per_section: 10,
+                filters: DiscoveryHomeFilters::default(),
             },
         )
         .await
@@ -652,6 +654,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
                 include_personalized: true,
                 include_unresolved: false,
                 limit_per_section: 10,
+                filters: DiscoveryHomeFilters::default(),
             },
         )
         .await
@@ -962,6 +965,7 @@ async fn discovery_filters_every_read_path_by_request_or_manage_facet() {
                 include_personalized: true,
                 include_unresolved: true,
                 limit_per_section: 10,
+                filters: DiscoveryHomeFilters::default(),
             },
         )
         .await
@@ -1184,6 +1188,7 @@ async fn discovery_home_hydrates_only_selected_cards_from_large_candidate_set() 
                 include_personalized: true,
                 include_unresolved: true,
                 limit_per_section: 1,
+                filters: DiscoveryHomeFilters::default(),
             },
         )
         .await
@@ -1214,6 +1219,61 @@ async fn discovery_home_hydrates_only_selected_cards_from_large_candidate_set() 
             .iter()
             .flat_map(|section| section.items.iter())
             .all(|item| item.context_terms.len() == 64)
+    );
+
+    drop(hydration_batches);
+    discovery.hydrated_home_candidate_ids.lock().await.clear();
+    *discovery.personalized_facet_calls.lock().await = 0;
+    let card_home = app
+        .discovery_home_cards(
+            &viewer_actor,
+            DiscoveryHomeQuery {
+                include_public: false,
+                include_personalized: true,
+                include_unresolved: true,
+                limit_per_section: 1,
+                filters: DiscoveryHomeFilters::default(),
+            },
+        )
+        .await
+        .expect("discovery home cards should load");
+    let card_returned_ids = card_home
+        .public_sections
+        .iter()
+        .chain(card_home.personalized_sections.iter())
+        .flat_map(|section| section.items.iter())
+        .chain(
+            card_home
+                .complete_collection
+                .iter()
+                .flat_map(|section| section.items.iter()),
+        )
+        .chain(card_home.hero_item.iter())
+        .map(|item| item.id.clone())
+        .collect::<HashSet<_>>();
+    assert_eq!(card_returned_ids, returned_ids);
+    let card_hero = card_home
+        .hero_item
+        .as_ref()
+        .expect("card-only home should retain its selected hero");
+    assert_eq!(card_hero.matched_subject_count, 1);
+    assert_eq!(
+        *discovery.hydrated_home_hero_ids.lock().await,
+        vec![card_hero.id.clone()],
+        "card-only discovery home must hydrate presentation metadata for only the hero"
+    );
+    assert!(
+        discovery
+            .hydrated_home_candidate_ids
+            .lock()
+            .await
+            .is_empty(),
+        "card-only discovery home must not hydrate selected item details"
+    );
+    assert_eq!(
+        *discovery.personalized_facet_calls.lock().await,
+        0,
+        "card-only discovery home must not load unused personalized facets"
     );
 }
 
@@ -2129,7 +2189,7 @@ async fn catalog_discovery_scopes_personalized_rows_to_selected_readable_library
 }
 
 #[tokio::test]
-async fn discovery_home_uses_live_public_feed_when_snapshot_and_public_generation_are_missing() {
+async fn discovery_home_never_uses_live_public_feed_when_snapshots_are_missing() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway.clone());
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
@@ -2154,33 +2214,34 @@ async fn discovery_home_uses_live_public_feed_when_snapshot_and_public_generatio
                 include_personalized: true,
                 include_unresolved: true,
                 limit_per_section: 18,
+                filters: DiscoveryHomeFilters::default(),
             },
         )
         .await
-        .expect("discovery home should load live public feed");
+        .expect("discovery home should stay local when snapshots are missing");
 
-    let public_section_types = result
-        .public_sections
-        .iter()
-        .map(|section| section.section_type.as_str())
-        .collect::<Vec<_>>();
-    assert!(public_section_types.contains(&"TRENDING_NOW"));
-    assert!(public_section_types.contains(&"TOP_RATED"));
-    assert_eq!(
-        result
-            .public_sections
-            .iter()
-            .find(|section| section.section_type == "TRENDING_NOW")
-            .expect("trending section")
-            .items
-            .len(),
-        1
-    );
+    assert!(result.public_sections.is_empty());
     assert!(result.personalized_sections.is_empty());
     assert!(result.complete_collection.is_none());
     assert!(result.status.state.last_success_generation_id.is_none());
     assert!(result.status.state.last_public_feed_generation_id.is_none());
-    assert_eq!(gateway.public_feed_inputs.lock().await.len(), 1);
+    let card_result = app
+        .discovery_home_cards(
+            &viewer_actor,
+            DiscoveryHomeQuery {
+                include_public: true,
+                include_personalized: true,
+                include_unresolved: true,
+                limit_per_section: 18,
+                filters: DiscoveryHomeFilters::default(),
+            },
+        )
+        .await
+        .expect("card-only discovery home should stay local when snapshots are missing");
+    assert!(card_result.public_sections.is_empty());
+    assert!(card_result.personalized_sections.is_empty());
+    assert!(card_result.hero_item.is_none());
+    assert!(gateway.public_feed_inputs.lock().await.is_empty());
     assert!(discovery.public_feed_commits.lock().await.is_empty());
 }
 
@@ -4721,6 +4782,8 @@ struct RecordingDiscoveryRepository {
     title_more_like_this_limits: Mutex<Vec<i64>>,
     generation_list_calls: Mutex<usize>,
     hydrated_home_candidate_ids: Mutex<Vec<Vec<String>>>,
+    hydrated_home_hero_ids: Mutex<Vec<String>>,
+    personalized_facet_calls: Mutex<usize>,
 }
 
 #[async_trait]
@@ -5117,6 +5180,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         run_id: &str,
         allowed_media_kinds: &[String],
         include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
         limit_per_section: i64,
     ) -> AppResult<Vec<DiscoveryHomeSectionCandidatesRecord>> {
         let sections = self.list_discovery_sections(run_id, Some("public")).await?;
@@ -5160,6 +5224,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         readable_library_ids: &[String],
         allowed_media_kinds: &[String],
         include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         let mut items = recording_visible_personalized_items(
@@ -5183,6 +5248,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         readable_library_ids: &[String],
         allowed_media_kinds: &[String],
         include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         let mut items = recording_visible_personalized_items(
@@ -5209,6 +5275,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         allowed_media_kinds: &[String],
         include_unresolved: bool,
     ) -> AppResult<Vec<DiscoveryFacetRecord>> {
+        *self.personalized_facet_calls.lock().await += 1;
         let items = recording_visible_personalized_items(
             &self.items.lock().await,
             run_id,
@@ -5230,6 +5297,7 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
         _owned_library_ids: &[String],
         excluded_identity_keys: &[String],
         include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
         limit: i64,
     ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
         let excluded_identity_keys = excluded_identity_keys
@@ -5294,6 +5362,28 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
                 .collect(),
         );
         Ok(())
+    }
+
+    async fn hydrate_discovery_home_hero(
+        &self,
+        candidate: &mut DiscoveryHomeCandidate,
+    ) -> AppResult<()> {
+        self.hydrated_home_hero_ids
+            .lock()
+            .await
+            .push(candidate.item.id.clone());
+        Ok(())
+    }
+
+    async fn list_discovery_home_filter_options(
+        &self,
+        _public_run_id: Option<&str>,
+        _context_run_id: Option<&str>,
+        _readable_library_ids: &[String],
+        _allowed_media_kinds: &[String],
+        _include_unresolved: bool,
+    ) -> AppResult<DiscoveryHomeFilterOptions> {
+        Ok(DiscoveryHomeFilterOptions::default())
     }
 
     async fn list_catalog_public_discovery_items(
@@ -5732,11 +5822,48 @@ fn discovery_section_record(
 }
 
 fn recording_home_candidate(item: DiscoveryItemRecord) -> DiscoveryHomeCandidate {
+    let has_hero_backdrop = item
+        .background_url
+        .as_deref()
+        .is_some_and(|url| !url.trim().is_empty());
+    let rating_source_count = item
+        .rating_sources
+        .iter()
+        .chain(item.external_ratings.iter().map(|rating| &rating.source))
+        .map(|source| source.trim().to_ascii_lowercase())
+        .filter(|source| !source.is_empty())
+        .collect::<HashSet<_>>()
+        .len() as i32;
+    let best_external_rating = item
+        .external_ratings
+        .iter()
+        .filter_map(|rating| {
+            rating
+                .normalized
+                .is_finite()
+                .then_some(if rating.normalized <= 1.0 {
+                    rating.normalized * 10.0
+                } else {
+                    rating.normalized
+                })
+        })
+        .filter(|rating| *rating > 0.0)
+        .max_by(f64::total_cmp);
+    let best_external_rating_votes = item
+        .external_ratings
+        .iter()
+        .filter_map(|rating| rating.votes)
+        .max()
+        .unwrap_or_default();
     DiscoveryHomeCandidate {
         discovery_title_id: format!("recording:{}", item.id),
         matched_subject_keys: item.matched_subject_keys.clone(),
         affinity_terms: item.facet_terms.clone(),
         has_acclaim_signal: false,
+        has_hero_backdrop,
+        rating_source_count,
+        best_external_rating,
+        best_external_rating_votes,
         item,
     }
 }
