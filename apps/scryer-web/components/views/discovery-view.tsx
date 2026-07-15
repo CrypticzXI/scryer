@@ -85,7 +85,7 @@ const DISCOVERY_FACET_PILL_CLASS: Record<DiscoveryContentType, string> = {
     "bg-[linear-gradient(135deg,rgba(var(--scry-facet-anime-rgb),0.96),rgba(var(--scry-facet-anime-rgb),0.72))] text-white",
 };
 const DEFAULT_MINIMUM_YEAR = 1900;
-const DEFAULT_MINIMUM_RATING = 7;
+const DEFAULT_MINIMUM_RATING = 0;
 
 function discoveryFacetIcon(
   facet: DiscoveryContentType | null | undefined,
@@ -985,7 +985,7 @@ function DiscoveryHero({
       <div className="absolute inset-0 bg-gradient-to-t from-slate-950/55 via-slate-950/15 to-transparent" />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(var(--scry-accent-rgb),0.3),transparent_48%)] opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100"
+        className="pointer-events-none absolute inset-0 z-30 bg-[radial-gradient(circle_at_center,rgba(var(--scry-accent-rgb),0.3),transparent_48%)] opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-hover:backdrop-blur-sm group-focus-within:opacity-100 group-focus-within:backdrop-blur-sm"
       />
       {heroActionAvailable ? (
         <button
@@ -993,7 +993,7 @@ function DiscoveryHero({
           onClick={() => onAction(item)}
           aria-label={`${heroActionLabel}: ${titleLabel}`}
           title={heroActionLabel}
-          className="pointer-events-none absolute left-1/2 top-1/2 z-20 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-[16px] bg-[var(--scry-accent)] text-primary-foreground opacity-0 shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.45),0_0_36px_rgba(var(--scry-accent-rgb),0.5),0_18px_36px_rgba(0,0,0,0.42)] transition duration-200 hover:brightness-110 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+          className="pointer-events-none absolute left-1/2 top-1/2 z-40 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-[16px] bg-[var(--scry-accent)] text-primary-foreground opacity-0 shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.45),0_0_36px_rgba(var(--scry-accent-rgb),0.5),0_18px_36px_rgba(0,0,0,0.42)] transition duration-200 hover:brightness-110 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
         >
           <HeroActionIcon className="h-7 w-7" aria-hidden="true" />
         </button>

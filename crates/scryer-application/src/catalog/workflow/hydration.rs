@@ -1239,7 +1239,7 @@ impl AppUseCase {
                 })
                 .collect::<Vec<_>>();
             let _ = self.hydrate_titles_bulk(targets).await?;
-            info!(
+            debug!(
                 refreshed_titles = refreshed,
                 batch_size = HYDRATE_ALL_TITLES_BATCH_SIZE,
                 "metadata rehydration processed title batch"
