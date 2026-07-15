@@ -1881,7 +1881,7 @@ mod tests {
             run_backup_restore_round_trip(source_engine, target_engine, postgres_url).await;
         #[cfg(feature = "runtime-backups")]
         {
-            return result;
+            result
         }
         #[cfg(not(feature = "runtime-backups"))]
         match result {

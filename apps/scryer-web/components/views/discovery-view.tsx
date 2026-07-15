@@ -569,6 +569,16 @@ function firstHeroItem(sections: DiscoverySection[]) {
   );
 }
 
+function heroItemIsVisibleInSections(
+  item: DiscoveryItem,
+  sections: DiscoverySection[],
+) {
+  const itemKey = itemIdentityKey(item);
+  return sections.some((section) =>
+    section.items.some((candidate) => itemIdentityKey(candidate) === itemKey),
+  );
+}
+
 function ratingForFilter(value: number | null | undefined) {
   if (value == null || Number.isNaN(value)) {
     return null;
@@ -1905,7 +1915,8 @@ export function DiscoveryView({
       return home?.heroItem &&
         configuredHeroFacet !== null &&
         discoverableFacetSet.has(configuredHeroFacet) &&
-        discoveryItemHasUsefulTitle(home.heroItem)
+        discoveryItemHasUsefulTitle(home.heroItem) &&
+        heroItemIsVisibleInSections(home.heroItem, heroSections)
         ? home.heroItem
         : firstHeroItem(heroSections);
     },

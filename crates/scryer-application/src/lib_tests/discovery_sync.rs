@@ -1334,6 +1334,107 @@ async fn catalog_discovery_returns_public_groups_without_personalized_snapshot()
 }
 
 #[tokio::test]
+async fn catalog_discovery_backfills_public_groups_after_personalization() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, _admin, _titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let observed_at = Utc.timestamp_opt(2_150, 0).unwrap();
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let viewer = library_permission_user(
+        "movie-personalized-viewer",
+        &movie_library_id,
+        &[
+            scryer_domain::LibraryPermission::View,
+            scryer_domain::LibraryPermission::Request,
+        ],
+    );
+
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_success_generation_id: Some("context-run".to_string()),
+        last_public_feed_generation_id: Some("public-run".to_string()),
+        updated_at: observed_at,
+        ..DiscoverySyncStateRecord::default()
+    });
+    discovery.sections.lock().await.extend([
+        discovery_section_record("public-run", "trending_now", "TRENDING_NOW", "public"),
+        discovery_section_record("public-run", "popular_movies", "POPULAR_MOVIES", "public"),
+    ]);
+    discovery.items.lock().await.extend([
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("trending_now"),
+            "tmdb:movie:999999",
+            "Public Lead",
+            "movie",
+            10.0,
+            &["Drama"],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("popular_movies"),
+            "tmdb:movie:888888",
+            "Public Backfill",
+            "movie",
+            9.0,
+            &["Drama"],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "context-run",
+            "context-run",
+            None,
+            "tmdb:movie:777777",
+            "Personalized Pick",
+            "movie",
+            8.0,
+            &["Drama"],
+            &[],
+            false,
+            true,
+        ),
+    ]);
+
+    let result = app
+        .catalog_discovery(
+            &viewer,
+            CatalogDiscoveryQuery {
+                facet: MediaFacet::Movie,
+                library_ids: Vec::new(),
+                include_unresolved: true,
+                limit_per_group: 6,
+                max_groups: 3,
+            },
+        )
+        .await
+        .expect("catalog discovery should backfill public groups");
+
+    assert_eq!(result.groups.len(), 3);
+    assert_eq!(result.groups[0].kind, CatalogDiscoveryGroupKind::PublicTop);
+    assert_eq!(
+        result.groups[0].label_value.as_deref(),
+        Some("trending_now")
+    );
+    assert_eq!(
+        result.groups[1].surface,
+        CatalogDiscoverySurface::Personalized
+    );
+    assert_eq!(result.groups[1].items[0].display_title, "Personalized Pick");
+    assert_eq!(
+        result.groups[2].kind,
+        CatalogDiscoveryGroupKind::PublicSection
+    );
+    assert_eq!(result.groups[2].items[0].display_title, "Public Backfill");
+}
+
+#[tokio::test]
 async fn catalog_discovery_excludes_public_rows_owned_by_normalized_external_id() {
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let (app, _admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);

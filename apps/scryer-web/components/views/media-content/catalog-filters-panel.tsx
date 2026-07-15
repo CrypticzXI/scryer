@@ -234,7 +234,7 @@ export function CatalogFiltersPanel({
     <aside
       data-testid="catalog-filters-panel"
       className={cn(
-        "relative flex min-h-0 flex-col overflow-y-auto bg-[linear-gradient(180deg,rgba(var(--scry-accent-rgb),0.045),rgba(5,9,18,0.8))] px-[18px] py-4",
+        "relative flex min-h-0 flex-col overflow-y-auto bg-[var(--scry-surf)] px-[18px] py-4",
         className,
       )}
     >
@@ -415,7 +415,7 @@ export function CatalogFiltersPanel({
         </span>
       </div>
       <div className="relative mb-5 h-5">
-        <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[#16203a]" />
+        <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[var(--scry-border2)]" />
         <div
           className="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-gradient-to-r from-[var(--scry-accent)] to-[var(--scry-accent-ring)]"
           style={{
@@ -470,7 +470,7 @@ export function CatalogFiltersPanel({
         </span>
       </div>
       <div className="relative h-5">
-        <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[#16203a]" />
+        <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[var(--scry-border2)]" />
         <div
           className="absolute left-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-gradient-to-r from-[var(--scry-accent)] to-[var(--scry-accent-ring)]"
           style={{ width: `${minimumRating * 10}%` }}

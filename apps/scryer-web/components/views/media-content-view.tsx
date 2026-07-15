@@ -400,7 +400,7 @@ function catalogDiscoveryGroupLabel(
 ) {
   switch (group.kind) {
     case "PUBLIC_TOP":
-      return titleContextWeeklyLabel(view, t);
+      return group.labelValue ?? titleContextWeeklyLabel(view, t);
     case "PUBLIC_SECTION":
       return group.labelValue ?? titleContextWeeklyLabel(view, t);
     case "GENRE_AFFINITY":
@@ -615,7 +615,7 @@ function TitleContextForYouPanel({
   );
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto bg-[linear-gradient(180deg,rgba(var(--scry-accent-rgb),0.055),rgba(7,12,24,0.54)_18%,rgba(5,9,18,0.78))] p-[18px] shadow-[inset_0_1px_0_rgba(255,255,255,0.035),inset_0_0_0_1px_rgba(var(--scry-accent-rgb),0.035)]">
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--scry-surf)] p-[18px] shadow-[inset_0_1px_0_rgba(255,255,255,0.035),inset_0_0_0_1px_rgba(var(--scry-accent-rgb),0.035)]">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[linear-gradient(90deg,transparent,rgba(var(--scry-accent-rgb),0.34),transparent)]"
@@ -650,7 +650,7 @@ function TitleContextForYouPanel({
           {recommendationGroups.map((group) => (
             <section
               key={group.id}
-              className="rounded-[15px] border border-[var(--scry-border)] bg-[rgba(4,8,17,0.52)] px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]"
+              className="rounded-[15px] border border-[var(--scry-border)] bg-[var(--scry-card2)] px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]"
             >
               <h3 className="mx-0.5 mb-3.5 text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--scry-muted3)]">
                 {group.label}

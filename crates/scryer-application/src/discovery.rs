@@ -33,6 +33,7 @@ const DISCOVERY_HOME_MIN_CANDIDATES: usize = 500;
 const DISCOVERY_HOME_MAX_CANDIDATES: usize = 2_000;
 const DISCOVERY_COMPLETE_COLLECTION_MIN_CANDIDATES: usize = 100;
 const DISCOVERY_COMPLETE_COLLECTION_MAX_CANDIDATES: usize = 500;
+const CATALOG_ANIME_WEEKLY_SECTION_ID: &str = "anime_this_week";
 /// Minimum number of distinct rating providers required before an item's rating is
 /// treated as corroborated. A lone source (for example a single trakt vote)
 /// can spike to 10.0 without corroboration, so such fossils must lose to
@@ -736,8 +737,9 @@ impl AppUseCase {
 
         let mut groups = Vec::new();
         let mut emitted_item_keys = HashSet::new();
-        let mut public_sections = public_sections.into_iter();
-        if let Some(public_top_section) = public_sections.next()
+        let mut public_sections = public_sections;
+        if let Some(public_top_section) =
+            catalog_public_top_section(&mut public_sections, media_kind)
             && let Some(group) = catalog_public_top_group(
                 public_top_section,
                 media_kind,
@@ -747,8 +749,7 @@ impl AppUseCase {
         {
             groups.push(group);
         }
-        let remaining_public_sections = public_sections.collect::<Vec<_>>();
-        let personalized_group_start = groups.len();
+        let remaining_public_sections = public_sections;
 
         if !personalized_candidates.is_empty() && groups.len() < max_groups {
             let library_profile = self
@@ -764,16 +765,14 @@ impl AppUseCase {
             );
         }
 
-        if groups.len() == personalized_group_start {
-            for public_section in remaining_public_sections {
-                if groups.len() >= max_groups {
-                    break;
-                }
-                if let Some(group) =
-                    catalog_public_section_group(public_section, limit, &mut emitted_item_keys)
-                {
-                    groups.push(group);
-                }
+        for public_section in remaining_public_sections {
+            if groups.len() >= max_groups {
+                break;
+            }
+            if let Some(group) =
+                catalog_public_section_group(public_section, limit, &mut emitted_item_keys)
+            {
+                groups.push(group);
             }
         }
 
@@ -1659,18 +1658,38 @@ fn catalog_discovery_candidate_limit(limit: usize, max_groups: usize) -> usize {
     (limit.max(6) * max_groups.max(4) * 8).clamp(48, 400)
 }
 
+fn catalog_public_top_section(
+    public_sections: &mut Vec<CatalogDiscoverySectionCandidatesRecord>,
+    media_kind: &str,
+) -> Option<CatalogDiscoverySectionCandidatesRecord> {
+    if media_kind == "anime"
+        && let Some(index) = public_sections
+            .iter()
+            .position(|section| section.section_id == CATALOG_ANIME_WEEKLY_SECTION_ID)
+    {
+        return Some(public_sections.remove(index));
+    }
+
+    if public_sections.is_empty() {
+        None
+    } else {
+        Some(public_sections.remove(0))
+    }
+}
+
 fn catalog_public_top_group(
     section: CatalogDiscoverySectionCandidatesRecord,
     media_kind: &str,
     limit: usize,
     emitted_item_keys: &mut HashSet<String>,
 ) -> Option<CatalogDiscoveryGroup> {
+    let label_value = catalog_public_section_label(&section);
     catalog_group_excluding_emitted(
         CatalogDiscoveryGroupDraft {
             id: format!("public_top_{media_kind}"),
             kind: CatalogDiscoveryGroupKind::PublicTop,
             surface: CatalogDiscoverySurface::Public,
-            label_value: None,
+            label_value,
             total_count: Some(section.total_count),
         },
         section.items,
@@ -1688,11 +1707,7 @@ fn catalog_public_section_group(
         "public_section_{}",
         normalized_catalog_group_id(&section.section_id)
     );
-    let label_value = if section.section_id == "evergreen_popular" {
-        Some("Netflix Most Watched".to_string())
-    } else {
-        section.title.or(Some(section.section_type))
-    };
+    let label_value = catalog_public_section_label(&section);
     catalog_group_excluding_emitted(
         CatalogDiscoveryGroupDraft {
             id,
@@ -1705,6 +1720,23 @@ fn catalog_public_section_group(
         limit,
         emitted_item_keys,
     )
+}
+
+fn catalog_public_section_label(
+    section: &CatalogDiscoverySectionCandidatesRecord,
+) -> Option<String> {
+    if section.section_id == "evergreen_popular" {
+        Some("Netflix Most Watched".to_string())
+    } else {
+        section
+            .title
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                (!section.section_type.trim().is_empty()).then(|| section.section_type.clone())
+            })
+    }
 }
 
 fn normalized_catalog_group_id(value: &str) -> String {
@@ -3941,6 +3973,90 @@ mod tests {
     use crate::types::TitleExternalRating;
     use chrono::{TimeZone, Utc};
     use scryer_domain::{ExternalId, MediaFacet};
+
+    #[test]
+    fn catalog_public_top_section_prefers_anime_this_week() {
+        let mut sections = vec![
+            CatalogDiscoverySectionCandidatesRecord {
+                section_id: "trending_now".to_string(),
+                ..Default::default()
+            },
+            CatalogDiscoverySectionCandidatesRecord {
+                section_id: CATALOG_ANIME_WEEKLY_SECTION_ID.to_string(),
+                ..Default::default()
+            },
+            CatalogDiscoverySectionCandidatesRecord {
+                section_id: "popular_right_now".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let top = catalog_public_top_section(&mut sections, "anime")
+            .expect("anime weekly section should be selected");
+
+        assert_eq!(top.section_id, CATALOG_ANIME_WEEKLY_SECTION_ID);
+        assert_eq!(
+            sections
+                .iter()
+                .map(|section| section.section_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["trending_now", "popular_right_now"]
+        );
+    }
+
+    #[test]
+    fn catalog_public_top_section_keeps_first_section_for_non_anime() {
+        let mut sections = vec![
+            CatalogDiscoverySectionCandidatesRecord {
+                section_id: "trending_now".to_string(),
+                ..Default::default()
+            },
+            CatalogDiscoverySectionCandidatesRecord {
+                section_id: CATALOG_ANIME_WEEKLY_SECTION_ID.to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let top = catalog_public_top_section(&mut sections, "movie")
+            .expect("first public section should be selected");
+
+        assert_eq!(top.section_id, "trending_now");
+    }
+
+    #[test]
+    fn catalog_public_top_group_keeps_source_label_and_refills_after_deduplication() {
+        let duplicate = test_discovery_item("already-shown", "movie", Some("movie"));
+        let first_unique = test_discovery_item("first-unique", "movie", Some("movie"));
+        let second_unique = test_discovery_item("second-unique", "movie", Some("movie"));
+        let mut emitted_item_keys =
+            HashSet::from([discovery_item_identity_key(&duplicate).to_string()]);
+
+        let group = catalog_public_top_group(
+            CatalogDiscoverySectionCandidatesRecord {
+                section_id: "trending_now".to_string(),
+                section_type: "TRENDING_NOW".to_string(),
+                title: Some("Trending Now".to_string()),
+                total_count: 3,
+                items: vec![duplicate, first_unique, second_unique],
+            },
+            "movie",
+            2,
+            &mut emitted_item_keys,
+        )
+        .expect("remaining candidates should produce a group");
+
+        assert_eq!(group.label_value.as_deref(), Some("Trending Now"));
+        assert_eq!(group.total_count, 3);
+        assert_eq!(group.items.len(), 2);
+        assert_eq!(
+            group
+                .items
+                .iter()
+                .map(|item| item.target_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["movie:first-unique", "movie:second-unique"]
+        );
+    }
 
     #[test]
     fn pending_context_change_coalescing_drops_add_then_delete() {

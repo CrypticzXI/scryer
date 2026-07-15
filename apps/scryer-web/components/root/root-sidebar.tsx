@@ -1387,7 +1387,8 @@ function RootSidebarContent({
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}
-                                {canAccessFacetImport ? (
+                                {canAccessFacetImport &&
+                                mediaFacetImportBadgeCount > 0 ? (
                                   <SidebarMenuSubItem>
                                     <SidebarMenuSubButton
                                       id={selectorId(
@@ -1409,14 +1410,9 @@ function RootSidebarContent({
                                       }}
                                     >
                                       {t("nav.import")}
-                                      {pendingImportCountForNavView(item.id) >
-                                      0 ? (
-                                        <LeafNavBadge
-                                          count={pendingImportCountForNavView(
-                                            item.id,
-                                          )}
-                                        />
-                                      ) : null}
+                                      <LeafNavBadge
+                                        count={mediaFacetImportBadgeCount}
+                                      />
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}

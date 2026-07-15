@@ -507,21 +507,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4342d8937fc7e5dd9b1c60292261c0670c882a2cd1719cfc11b1af41731e32ad"
 dependencies = [
  "aws-lc-fips-sys",
- "aws-lc-sys 0.42.0",
+ "aws-lc-sys",
  "untrusted 0.7.1",
  "zeroize",
-]
-
-[[package]]
-name = "aws-lc-sys"
-version = "0.41.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a2f9779ce85b93ab6170dd940ad0169b5766ff848247aff13bb788b832fe3f4"
-dependencies = [
- "cc",
- "cmake",
- "dunce",
- "fs_extra",
 ]
 
 [[package]]
@@ -6055,7 +6043,7 @@ name = "scryer-plugins"
 version = "0.16.8"
 dependencies = [
  "async-trait",
- "aws-lc-sys 0.42.0",
+ "aws-lc-sys",
  "base64 0.22.1",
  "chrono",
  "crc32fast",
@@ -8162,11 +8150,11 @@ dependencies = [
 
 [[package]]
 name = "weaver-par2"
-version = "0.2.2"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4e398751728e161e786760a4e30314bb5935e8acfa8efe0285f366cbbc5aa43"
+checksum = "b74ee837445f35b25156657c52f8f5574bd5a98b2c87f6b87db2194737211288"
 dependencies = [
- "aws-lc-sys 0.41.0",
+ "aws-lc-sys",
  "bytes",
  "crc32fast",
  "libc",
@@ -8180,9 +8168,9 @@ dependencies = [
 
 [[package]]
 name = "weaver-reed-solomon"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf67be3bb5ba2f3ac9094ca65df2b6abf300367df7f572d248ed4e56d1988926"
+checksum = "1db5753b42d209581b0fe20177827469bce33a883914a93dffb00a302769d5e9"
 dependencies = [
  "memmap2",
  "objc2",

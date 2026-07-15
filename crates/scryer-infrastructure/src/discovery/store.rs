@@ -434,14 +434,72 @@ impl DiscoveryRepository for DiscoveryStore {
             let datastore = datastore.clone();
             let commit = std::sync::Arc::clone(&commit);
             Box::pin(async move {
-                upsert_sync_run_tx(tx, &datastore, &commit.run).await?;
-                upsert_sync_state_tx(tx, &commit.state).await?;
-                delete_for_run_tx(tx, "discovery_section_items", &commit.run.id).await?;
-                delete_for_run_tx(tx, "discovery_sections", &commit.run.id).await?;
-                delete_item_children_for_run_tx(tx, &commit.run.id).await?;
-                delete_for_run_tx(tx, "discovery_items", &commit.run.id).await?;
+                upsert_sync_run_tx(tx, &datastore, &commit.run)
+                    .await
+                    .inspect_err(|error| {
+                        log_discovery_public_feed_persistence_failure(
+                            "upsert_sync_run",
+                            commit.as_ref(),
+                            error,
+                        );
+                    })?;
+                upsert_sync_state_tx(tx, &commit.state)
+                    .await
+                    .inspect_err(|error| {
+                        log_discovery_public_feed_persistence_failure(
+                            "upsert_sync_state",
+                            commit.as_ref(),
+                            error,
+                        );
+                    })?;
+                delete_for_run_tx(tx, "discovery_section_items", &commit.run.id)
+                    .await
+                    .inspect_err(|error| {
+                        log_discovery_public_feed_persistence_failure(
+                            "delete_section_items",
+                            commit.as_ref(),
+                            error,
+                        );
+                    })?;
+                delete_for_run_tx(tx, "discovery_sections", &commit.run.id)
+                    .await
+                    .inspect_err(|error| {
+                        log_discovery_public_feed_persistence_failure(
+                            "delete_sections",
+                            commit.as_ref(),
+                            error,
+                        );
+                    })?;
+                delete_item_children_for_run_tx(tx, &commit.run.id)
+                    .await
+                    .inspect_err(|error| {
+                        log_discovery_public_feed_persistence_failure(
+                            "delete_item_children",
+                            commit.as_ref(),
+                            error,
+                        );
+                    })?;
+                delete_for_run_tx(tx, "discovery_items", &commit.run.id)
+                    .await
+                    .inspect_err(|error| {
+                        log_discovery_public_feed_persistence_failure(
+                            "delete_items",
+                            commit.as_ref(),
+                            error,
+                        );
+                    })?;
                 for section in &commit.sections {
-                    insert_section_tx(tx, &datastore, section).await?;
+                    insert_section_tx(tx, &datastore, section)
+                        .await
+                        .inspect_err(|error| {
+                            tracing::warn!(
+                                run_id = %commit.run.id,
+                                section_id = %section.section_id,
+                                section_type = %section.section_type,
+                                error = %error,
+                                "failed to persist discovery public-feed section"
+                            );
+                        })?;
                 }
                 for item in &commit.items {
                     insert_item_tx(tx, &datastore, item, &commit.run.language).await?;
@@ -1210,7 +1268,8 @@ fn useful_discovery_title_clause(datastore: &StoreDatastore, value_expression: &
 
 fn displayable_discovery_title_clause(datastore: &StoreDatastore, title_alias: &str) -> String {
     format!(
-        "(({}) OR ({}) OR ({}))",
+        "NULLIF(TRIM({title_alias}.poster_url), '') IS NOT NULL
+         AND (({}) OR ({}) OR ({}))",
         useful_discovery_title_clause(datastore, &format!("{title_alias}.display_title")),
         useful_discovery_title_clause(datastore, &format!("{title_alias}.sort_title")),
         useful_discovery_title_clause(datastore, &format!("{title_alias}.original_title"))
@@ -3430,6 +3489,40 @@ async fn insert_section_tx(
     Ok(())
 }
 
+fn log_discovery_public_feed_persistence_failure(
+    operation: &'static str,
+    commit: &DiscoveryPublicFeedCommit,
+    error: &impl std::fmt::Display,
+) {
+    tracing::warn!(
+        operation,
+        run_id = %commit.run.id,
+        scope_key = %commit.state.scope_key,
+        section_count = commit.sections.len(),
+        item_count = commit.items.len(),
+        error = %error,
+        "failed to persist discovery public feed"
+    );
+}
+
+fn log_discovery_item_persistence_failure(
+    operation: &'static str,
+    item: &DiscoveryItemRecord,
+    error: &impl std::fmt::Display,
+) {
+    tracing::warn!(
+        operation,
+        run_id = %item.run_id,
+        item_id = %item.id,
+        target_key = %item.target_key,
+        target_kind = %item.target_kind,
+        section_id = ?item.section_id,
+        source_run_kind = %item.source_run_kind,
+        error = %error,
+        "failed to persist discovery item"
+    );
+}
+
 async fn insert_item_tx(
     tx: &mut SqlTx<'_>,
     _datastore: &StoreDatastore,
@@ -3442,8 +3535,15 @@ async fn insert_item_tx(
         &insert_sql("discovery_items", OCCURRENCE_COLUMNS),
         &occurrence_args(item, &discovery_title_id),
     )
-    .await?;
-    insert_item_children_tx(tx, item).await?;
+    .await
+    .inspect_err(|error| {
+        log_discovery_item_persistence_failure("insert_discovery_item", item, error);
+    })?;
+    insert_item_children_tx(tx, item)
+        .await
+        .inspect_err(|error| {
+            log_discovery_item_persistence_failure("insert_discovery_item_children", item, error);
+        })?;
     Ok(())
 }
 
@@ -3561,10 +3661,20 @@ async fn upsert_discovery_title_tx(
         &upsert_discovery_title_sql(),
         &title_args(item, &discovery_title_id, &target_key_norm, &language),
     )
-    .await?;
+    .await
+    .inspect_err(|error| {
+        log_discovery_item_persistence_failure("upsert_discovery_title", item, error);
+    })?;
     if replace_canonical_tags {
         replace_discovery_title_metadata_tags_tx(tx, &discovery_title_id, &item.canonical_tags)
-            .await?;
+            .await
+            .inspect_err(|error| {
+                log_discovery_item_persistence_failure(
+                    "replace_discovery_title_canonical_tags",
+                    item,
+                    error,
+                );
+            })?;
     }
     let ratings = TitleRatingSummary {
         rating: item.rating,
@@ -3576,9 +3686,21 @@ async fn upsert_discovery_title_tx(
         || !ratings.rating_sources.is_empty()
         || !ratings.external_ratings.is_empty()
     {
-        replace_discovery_title_metadata_ratings_tx(tx, &discovery_title_id, &ratings).await?;
+        replace_discovery_title_metadata_ratings_tx(tx, &discovery_title_id, &ratings)
+            .await
+            .inspect_err(|error| {
+                log_discovery_item_persistence_failure(
+                    "replace_discovery_title_ratings",
+                    item,
+                    error,
+                );
+            })?;
     }
-    insert_title_children_tx(tx, item, &discovery_title_id).await?;
+    insert_title_children_tx(tx, item, &discovery_title_id)
+        .await
+        .inspect_err(|error| {
+            log_discovery_item_persistence_failure("insert_discovery_title_children", item, error);
+        })?;
     Ok(discovery_title_id)
 }
 
@@ -4353,6 +4475,7 @@ mod tests {
             item.display_title = display_title.to_string();
             item.original_title = original_title.map(str::to_string);
             item.sort_title = sort_title.map(str::to_string);
+            item.poster_url = Some(format!("https://images.example.test/{id}.jpg"));
             item.content_type = Some("movie".to_string());
             item
         };
@@ -4375,11 +4498,21 @@ mod tests {
             None,
         );
         unknown_content_type.content_type = Some("documentary".to_string());
+        let mut missing_poster = make_item(
+            "item-missing-poster",
+            -3,
+            "tmdb:movie:98",
+            "Missing Poster",
+            Some("Missing Poster"),
+            None,
+        );
+        missing_poster.poster_url = None;
 
         store
             .replace_discovery_items(
                 run_id,
                 &[
+                    missing_poster,
                     unknown_content_type,
                     hidden_anime,
                     make_item(
@@ -5087,6 +5220,8 @@ mod tests {
         .await
         .expect("source title should insert");
         let mut sparse_title_rec_item = (*read_item).clone();
+        sparse_title_rec_item.poster_url =
+            Some("https://images.example.test/movie-poster.jpg".to_string());
         sparse_title_rec_item.background_url = None;
         sparse_title_rec_item.overview = None;
         sparse_title_rec_item.rating = None;
@@ -5107,11 +5242,21 @@ mod tests {
         invalid_identifier_rec_item.overview = None;
         invalid_identifier_rec_item.content_type = None;
         invalid_identifier_rec_item.external_ids.clear();
+        let mut missing_poster_rec_item = sparse_title_rec_item.clone();
+        missing_poster_rec_item.id = "title-rec-missing-poster".to_string();
+        missing_poster_rec_item.target_key = "tmdb:movie:11".to_string();
+        missing_poster_rec_item.display_title = "Missing Poster Recommendation".to_string();
+        missing_poster_rec_item.sort_title = Some("Missing Poster Recommendation".to_string());
+        missing_poster_rec_item.poster_url = None;
         store
             .replace_title_more_like_this_items(
                 "source-title-1",
                 "eng",
-                &[invalid_identifier_rec_item, sparse_title_rec_item],
+                &[
+                    invalid_identifier_rec_item,
+                    missing_poster_rec_item,
+                    sparse_title_rec_item,
+                ],
             )
             .await
             .expect("title recommendations should replace");
