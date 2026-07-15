@@ -1939,7 +1939,7 @@ async fn fetch_title_catalog_managed_bytes(
     let media_size_sql =
         title_catalog_media_size_subquery(title_catalog_dialect_for_datastore(datastore));
     let sql = format!(
-        "SELECT COALESCE(SUM(COALESCE(catalog_media_size.total_size_bytes, 0)), 0) AS managed_bytes \
+        "SELECT CAST(COALESCE(SUM(COALESCE(catalog_media_size.total_size_bytes, 0)), 0) AS BIGINT) AS managed_bytes \
            FROM titles \
       LEFT JOIN ({media_size_sql}) catalog_media_size ON catalog_media_size.title_id = titles.id \
           WHERE {scope_sql}"

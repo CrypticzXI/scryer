@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 pub(crate) const MAX_TOKENS: usize = 256;
 pub(crate) const MAX_BRACKET_DEPTH: usize = 8;
@@ -271,12 +272,22 @@ fn build_cst(tokens: &[Token]) -> ReleaseCst {
 }
 
 pub(crate) fn normalize_token(raw: &str) -> String {
+    // Accent-fold so "Pokémon" in a target context matches "Pokemon" in a
+    // release name (and vice versa) without needing an ASCII alias: NFKD
+    // splits accents into combining marks, which the alphanumeric filter
+    // drops. A handful of letters have no decomposition and fold manually.
+    // `raw` is untouched, so display-facing fields keep their accents.
     let mut normalized = String::new();
-    for ch in raw.chars() {
-        if ch.is_alphanumeric() {
-            normalized.extend(ch.to_uppercase());
-        } else if ch == '+' {
-            normalized.push(ch);
+    for ch in raw.nfkd() {
+        match ch {
+            'æ' | 'Æ' => normalized.push_str("AE"),
+            'œ' | 'Œ' => normalized.push_str("OE"),
+            'ø' | 'Ø' => normalized.push('O'),
+            'ł' | 'Ł' => normalized.push('L'),
+            'đ' | 'Đ' => normalized.push('D'),
+            '+' => normalized.push('+'),
+            _ if ch.is_alphanumeric() => normalized.extend(ch.to_uppercase()),
+            _ => {}
         }
     }
     normalized

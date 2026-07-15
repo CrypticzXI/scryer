@@ -1278,7 +1278,9 @@ fn unicode_case_and_out_of_corpus_metadata_parse_without_fixture_bias() {
         analyze_release_for_target("éclair.monstra.2024.576p.WEB-DL.VVC.OPUS.2.0-GRP", &target);
     let candidate = analysis.best_candidate().expect("best candidate");
 
-    assert_eq!(candidate.projected.normalized_title, "ÉCLAIR MONSTRA");
+    // Normalized titles are accent-folded matching keys; raw display fields
+    // keep their accents.
+    assert_eq!(candidate.projected.normalized_title, "ECLAIR MONSTRA");
     assert_eq!(candidate.projected.quality.as_deref(), Some("576p"));
     assert_eq!(
         candidate.projected.video_codec.as_ref(),
@@ -2252,6 +2254,62 @@ fn fully_hyphenated_dts_hd_ma_extracts_codec_and_channels() {
     assert_eq!(audio_label(projected.audio.as_ref()), Some("DTSMA"));
     assert_eq!(projected.audio_channels.as_deref(), Some("5.1"));
     assert_eq!(projected.release_group.as_deref(), Some("GRP"));
+}
+
+#[test]
+fn accented_context_title_matches_ascii_release_without_aliases() {
+    let analysis = analyze_release_for_target(
+        "Pokemon.S20E15.1080p.WEB-DL.AAC2.0.H.264-GRP",
+        &context(ContextFacetHint::Anime, "Pokémon"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let episode = candidate.projected.episode.as_ref().expect("episode");
+
+    assert_eq!(candidate.projected.normalized_title, "POKEMON");
+    assert_eq!(episode.season, Some(20));
+    assert_eq!(episode.episode_numbers, vec![15]);
+    assert!(
+        candidate
+            .context_evidence
+            .iter()
+            .any(|code| code == "context:title_canonical_hit"),
+        "accent-folded canonical title should match without aliases: {:?}",
+        candidate.context_evidence
+    );
+}
+
+#[test]
+fn accented_release_matches_ascii_context_title() {
+    let analysis = analyze_release_for_target(
+        "Pokémon.S20E15.1080p.WEB-DL.AAC2.0.H.264-GRP",
+        &context(ContextFacetHint::Anime, "Pokemon"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(candidate.projected.normalized_title, "POKEMON");
+    assert!(
+        candidate
+            .context_evidence
+            .iter()
+            .any(|code| code == "context:title_canonical_hit")
+    );
+}
+
+#[test]
+fn non_decomposable_letters_fold_for_matching() {
+    let analysis = analyze_release_for_target(
+        "Brondby.Stories.2024.1080p.WEB-DL.x264-GRP",
+        &context(ContextFacetHint::Movie, "Brøndby Stories"),
+    );
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(candidate.projected.normalized_title, "BRONDBY STORIES");
+    assert!(
+        candidate
+            .context_evidence
+            .iter()
+            .any(|code| code == "context:title_canonical_hit")
+    );
 }
 
 #[test]

@@ -747,60 +747,6 @@ function contentTypeCount(items: DiscoveryItem[], kind: string) {
   return items.filter((item) => itemContentType(item) === kind).length;
 }
 
-function DiscoveryActionButton({
-  item,
-  canManageTitle,
-  canRequestMedia,
-  onAction,
-  compact = false,
-}: {
-  item: DiscoveryItem;
-  canManageTitle: boolean;
-  canRequestMedia: boolean;
-  onAction: (item: DiscoveryItem) => void;
-  compact?: boolean;
-}) {
-  const t = useTranslate();
-  const owned = item.ownedInInput;
-  const Icon = owned ? Check : canManageTitle ? Plus : Send;
-  const label = owned
-    ? t("discovery.inLibrary")
-    : canManageTitle
-      ? t("discovery.add")
-      : t("discovery.request");
-  const disabled = owned || (!canManageTitle && !canRequestMedia);
-  const titleLabel = discoveryItemDisplayTitle(item);
-
-  if (compact) {
-    return (
-      <button
-        type="button"
-        aria-label={`${label}: ${titleLabel}`}
-        disabled={disabled}
-        onClick={() => onAction(item)}
-        className="inline-flex h-7 w-7 items-center justify-center gap-2 rounded-[10px] border border-white/20 bg-slate-950/75 text-white backdrop-blur transition hover:border-[var(--scry-accent)] hover:bg-[var(--scry-accent)] disabled:cursor-default disabled:border-white/10 disabled:bg-slate-950/45 disabled:text-white/60"
-      >
-        <Icon className="h-3.5 w-3.5" />
-      </button>
-    );
-  }
-
-  return (
-    <Button
-      type="button"
-      variant="primary"
-      size="lg"
-      aria-label={`${label}: ${titleLabel}`}
-      disabled={disabled}
-      onClick={() => onAction(item)}
-      className="h-12 w-96 max-w-full rounded-[12px] px-7 text-[15px] font-semibold shadow-[0_16px_30px_rgba(var(--scry-accent-rgb),0.22)]"
-    >
-      <Icon className="h-5 w-5" />
-      <span>{label}</span>
-    </Button>
-  );
-}
-
 function DiscoveryRailCard({
   item,
   size = "md",
@@ -1012,15 +958,21 @@ function DiscoveryHero({
     sourceLabel,
   ].filter((detail): detail is string => Boolean(detail));
   const backdropUrl = heroBackdropUrl(item);
+  const heroActionAvailable =
+    !item.ownedInInput && (canManageTitle || canRequestMedia);
+  const HeroActionIcon = canManageTitle ? Plus : Send;
+  const heroActionLabel = canManageTitle
+    ? t("discovery.add")
+    : t("discovery.request");
   return (
-    <section className="relative min-h-[340px] overflow-hidden rounded-[18px] border border-[var(--scry-border2)] bg-slate-950">
+    <section className="group relative min-h-[340px] overflow-hidden rounded-[18px] border border-[var(--scry-border2)] bg-slate-950">
       {backdropUrl ? (
         <img
           src={backdropUrl}
           alt=""
           aria-hidden="true"
           data-discovery-hero-backdrop="true"
-          className="absolute inset-0 h-full w-full object-cover"
+          className="absolute inset-0 h-full w-full object-cover transition-transform duration-200 group-hover:scale-105 group-hover:blur-md group-hover:brightness-[0.6] group-focus-within:scale-105 group-focus-within:blur-md group-focus-within:brightness-[0.6]"
         />
       ) : (
         <div
@@ -1031,6 +983,21 @@ function DiscoveryHero({
       )}
       <div className="absolute inset-0 bg-gradient-to-r from-slate-950/80 via-slate-950/45 to-slate-950/0" />
       <div className="absolute inset-0 bg-gradient-to-t from-slate-950/55 via-slate-950/15 to-transparent" />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(var(--scry-accent-rgb),0.3),transparent_48%)] opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100"
+      />
+      {heroActionAvailable ? (
+        <button
+          type="button"
+          onClick={() => onAction(item)}
+          aria-label={`${heroActionLabel}: ${titleLabel}`}
+          title={heroActionLabel}
+          className="pointer-events-none absolute left-1/2 top-1/2 z-20 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-[16px] bg-[var(--scry-accent)] text-primary-foreground opacity-0 shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.45),0_0_36px_rgba(var(--scry-accent-rgb),0.5),0_18px_36px_rgba(0,0,0,0.42)] transition duration-200 hover:brightness-110 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+        >
+          <HeroActionIcon className="h-7 w-7" aria-hidden="true" />
+        </button>
+      ) : null}
       <div className="relative flex min-h-[340px] flex-col p-8 pb-28 max-sm:pb-8">
         <div className="max-w-[min(72%,760px)] max-lg:max-w-[82%] max-sm:max-w-full">
           <div className="mb-3.5 flex flex-wrap gap-2">
@@ -1097,16 +1064,8 @@ function DiscoveryHero({
           ) : null}
         </div>
       </div>
-      <div className="absolute inset-x-8 bottom-8 z-10 flex flex-col items-start gap-3 max-sm:static max-sm:mt-6 max-sm:items-stretch">
-        <div className="flex justify-start">
-          <DiscoveryActionButton
-            item={item}
-            canManageTitle={canManageTitle}
-            canRequestMedia={canRequestMedia}
-            onAction={onAction}
-          />
-        </div>
-        {hasExternalLinks ? (
+      {hasExternalLinks ? (
+        <div className="absolute inset-x-8 bottom-8 z-10 flex items-center max-sm:static max-sm:mt-6">
           <div className="flex flex-wrap items-center justify-start gap-2">
             <ImdbExternalLink
               imdbId={externalIds.bySource("imdb")}
@@ -1141,8 +1100,8 @@ function DiscoveryHero({
               size="compact"
             />
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </section>
   );
 }

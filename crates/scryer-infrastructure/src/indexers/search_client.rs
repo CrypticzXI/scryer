@@ -2974,7 +2974,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     primary_had_error,
                     &fallback_strategies,
                 ) {
-                    info!(
+                    debug!(
                         indexer = indexer_name.as_str(),
                         facet = facet.as_str(),
                         query = search_query.as_str(),

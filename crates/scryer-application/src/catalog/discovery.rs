@@ -439,7 +439,7 @@ pub(crate) fn dedupe_cross_indexer_release_results(
         idx += 1;
         keep
     });
-    info!(before, after = deduped.len(), "cross-indexer release dedup");
+    debug!(before, after = deduped.len(), "cross-indexer release dedup");
     deduped
 }
 
@@ -1938,7 +1938,7 @@ impl AppUseCase {
             );
         }
 
-        info!(
+        debug!(
             scope_id = scope_id,
             indexer_count = entries.len(),
             "resolved per-indexer routing plan"

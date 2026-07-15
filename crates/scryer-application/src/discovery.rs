@@ -33,6 +33,18 @@ const DISCOVERY_HOME_MIN_CANDIDATES: usize = 500;
 const DISCOVERY_HOME_MAX_CANDIDATES: usize = 2_000;
 const DISCOVERY_COMPLETE_COLLECTION_MIN_CANDIDATES: usize = 100;
 const DISCOVERY_COMPLETE_COLLECTION_MAX_CANDIDATES: usize = 500;
+/// Minimum number of distinct rating providers required before an item's rating is
+/// treated as corroborated. A lone source (for example a single trakt vote)
+/// can spike to 10.0 without corroboration, so such fossils must lose to
+/// corroborated evidence whenever ratings decide ordering.
+const DISCOVERY_MIN_CREDIBLE_RATING_SOURCE_COUNT: usize = 2;
+/// A single-provider rating still counts as credible when it is backed by at
+/// least this many votes: an aggregator score built from thousands of votes
+/// (a MAL-only anime, for instance) is stronger evidence than two thinly
+/// sourced provider entries, and must not be demoted below them. Kept in
+/// lockstep with SMG's display-evidence bar (CanonicalRatingDisplayMinVotes)
+/// so a rating SMG displays is never ranked non-credible here for votes alone.
+const DISCOVERY_CREDIBLE_RATING_MIN_VOTES: i32 = 25;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1116,8 +1128,8 @@ fn compare_public_discovery_home_hero_items(
 ) -> Ordering {
     discovery_item_has_hero_backdrop(right)
         .cmp(&discovery_item_has_hero_backdrop(left))
-        .then_with(|| compare_discovery_item_rating_desc(left, right))
         .then_with(|| compare_optional_f64_desc(left.rank_score, right.rank_score))
+        .then_with(|| compare_discovery_item_credible_rating_desc(left, right))
         .then_with(|| {
             right
                 .source_count
@@ -1137,9 +1149,76 @@ fn compare_discovery_item_rating_desc(
     left: &DiscoveryItemRecord,
     right: &DiscoveryItemRecord,
 ) -> Ordering {
-    discovery_item_comparable_rating(right)
-        .partial_cmp(&discovery_item_comparable_rating(left))
-        .unwrap_or(Ordering::Equal)
+    discovery_item_comparable_rating(right).total_cmp(&discovery_item_comparable_rating(left))
+}
+
+/// Collapse a raw rating-source string to a provider identity so aliases and
+/// per-provider sub-metrics ("mal" vs "MyAnimeList.net", RT critic vs audience)
+/// cannot inflate the distinct-provider count. Mirrors the web app's
+/// `normalizedRatingSource` alias handling in `lib/utils/title-ratings.ts`.
+fn canonical_rating_source_identity(source: &str) -> String {
+    let normalized: String = source
+        .trim()
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        "rottentomatoes" | "audience" | "popcorn" | "popcornmeter" => "tomatoes".to_string(),
+        "mcuser" | "metacriticuser" => "metacritic".to_string(),
+        "themoviedb" => "tmdb".to_string(),
+        "thetvdb" => "tvdb".to_string(),
+        "myanimelist" | "myanimelistnet" => "mal".to_string(),
+        _ => normalized,
+    }
+}
+
+/// Number of distinct rating providers backing an item's rating, drawn from the
+/// persisted rating-source list and the per-source external ratings. Both are
+/// hydrated onto the item from `discovery_title_metadata_rating_summaries` /
+/// `_rating_sources` / `_external_ratings`, so no schema change is needed to
+/// reach this signal.
+fn discovery_item_distinct_rating_source_count(item: &DiscoveryItemRecord) -> usize {
+    let mut seen = HashSet::new();
+    for source in item
+        .rating_sources
+        .iter()
+        .chain(item.external_ratings.iter().map(|rating| &rating.source))
+    {
+        let identity = canonical_rating_source_identity(source);
+        if !identity.is_empty() {
+            seen.insert(identity);
+        }
+    }
+    seen.len()
+}
+
+/// Credible rating evidence means the item actually carries a rating signal AND
+/// that signal is corroborated: either multiple distinct providers agree it is
+/// rated, or a single provider's score is backed by a meaningful vote count.
+/// A bare list of source names with no score, or a lone low-vote score, is not
+/// credible.
+fn discovery_item_has_credible_rating_evidence(item: &DiscoveryItemRecord) -> bool {
+    let has_rating_signal = discovery_item_comparable_rating(item) > 0.0
+        || discovery_item_best_external_rating_score(item).is_some();
+    if !has_rating_signal {
+        return false;
+    }
+    discovery_item_distinct_rating_source_count(item) >= DISCOVERY_MIN_CREDIBLE_RATING_SOURCE_COUNT
+        || discovery_item_external_rating_vote_count(item) >= DISCOVERY_CREDIBLE_RATING_MIN_VOTES
+}
+
+/// Compare two items by rating, but gate on credibility first: an item whose
+/// rating rests on multiple distinct sources sorts ahead of a single-source
+/// fossil regardless of the raw score, and only ties on credibility fall through
+/// to the numeric rating.
+fn compare_discovery_item_credible_rating_desc(
+    left: &DiscoveryItemRecord,
+    right: &DiscoveryItemRecord,
+) -> Ordering {
+    discovery_item_has_credible_rating_evidence(right)
+        .cmp(&discovery_item_has_credible_rating_evidence(left))
+        .then_with(|| compare_discovery_item_rating_desc(left, right))
 }
 
 fn compare_top_rated_discovery_home_items(
@@ -1148,9 +1227,13 @@ fn compare_top_rated_discovery_home_items(
 ) -> Ordering {
     let left_external_rating = discovery_item_best_external_rating_score(left);
     let right_external_rating = discovery_item_best_external_rating_score(right);
-    right_external_rating
-        .is_some()
-        .cmp(&left_external_rating.is_some())
+    discovery_item_has_credible_rating_evidence(right)
+        .cmp(&discovery_item_has_credible_rating_evidence(left))
+        .then_with(|| {
+            right_external_rating
+                .is_some()
+                .cmp(&left_external_rating.is_some())
+        })
         .then_with(|| compare_optional_f64_desc(left_external_rating, right_external_rating))
         .then_with(|| {
             discovery_item_external_rating_vote_count(right)
@@ -1179,7 +1262,7 @@ fn discovery_item_best_external_rating_score(item: &DiscoveryItemRecord) -> Opti
             })
         })
         .filter(|rating| *rating > 0.0)
-        .max_by(|left, right| left.partial_cmp(right).unwrap_or(Ordering::Equal))
+        .max_by(f64::total_cmp)
 }
 
 fn discovery_item_external_rating_vote_count(item: &DiscoveryItemRecord) -> i32 {
@@ -1190,11 +1273,16 @@ fn discovery_item_external_rating_vote_count(item: &DiscoveryItemRecord) -> i32 
         .unwrap_or_default()
 }
 
-fn compare_optional_f64_desc(left: Option<f64>, right: Option<f64>) -> Ordering {
-    right
+// Missing and non-finite values both collapse to 0.0 so the comparator stays a
+// total order (a NaN score must never make sort_by panic or misorder).
+fn comparable_finite_f64(value: Option<f64>) -> f64 {
+    value
+        .filter(|candidate| candidate.is_finite())
         .unwrap_or_default()
-        .partial_cmp(&left.unwrap_or_default())
-        .unwrap_or(Ordering::Equal)
+}
+
+fn compare_optional_f64_desc(left: Option<f64>, right: Option<f64>) -> Ordering {
+    comparable_finite_f64(right).total_cmp(&comparable_finite_f64(left))
 }
 
 fn public_section_results(
@@ -2019,6 +2107,7 @@ fn discovery_item_is_acclaimed(item: &DiscoveryItemRecord) -> bool {
 
 fn discovery_item_comparable_rating(item: &DiscoveryItemRecord) -> f64 {
     item.rating
+        .filter(|rating| rating.is_finite())
         .map(|rating| if rating <= 1.0 { rating * 10.0 } else { rating })
         .unwrap_or_default()
 }
@@ -4253,26 +4342,57 @@ mod tests {
     }
 
     #[test]
-    fn discovery_home_hero_falls_back_to_highest_rated_public_item() {
-        let mut lower_rated = test_discovery_item("lower", "movie", Some("movie"));
-        lower_rated.target_key = "tmdb:movie:lower".to_string();
-        lower_rated.rating = Some(6.0);
-        lower_rated.rank_score = Some(100.0);
-        lower_rated.background_url = Some("https://images.example/lower.jpg".to_string());
+    fn discovery_home_hero_falls_back_to_highest_ranked_public_item() {
+        // The public hero now mirrors the personalized philosophy: rank_score
+        // leads and a bare rating only breaks ties. A strongly ranked item wins
+        // even against a rival carrying a higher but un-corroborated rating, so a
+        // lone inflated rating can no longer commandeer the hero slot.
+        let mut higher_ranked = test_discovery_item("higher-rank", "movie", Some("movie"));
+        higher_ranked.target_key = "tmdb:movie:higher-rank".to_string();
+        higher_ranked.rating = Some(6.0);
+        higher_ranked.rank_score = Some(100.0);
+        higher_ranked.background_url = Some("https://images.example/higher-rank.jpg".to_string());
 
-        let mut higher_rated = test_discovery_item("higher", "movie", Some("movie"));
-        higher_rated.target_key = "tmdb:movie:higher".to_string();
-        higher_rated.rating = Some(8.5);
-        higher_rated.rank_score = Some(1.0);
-        higher_rated.background_url = Some("https://images.example/higher.jpg".to_string());
+        let mut higher_rating = test_discovery_item("higher-rating", "movie", Some("movie"));
+        higher_rating.target_key = "tmdb:movie:higher-rating".to_string();
+        higher_rating.rating = Some(8.5);
+        higher_rating.rank_score = Some(1.0);
+        higher_rating.background_url = Some("https://images.example/higher-rating.jpg".to_string());
 
         let hero = select_discovery_home_hero(
             &[test_discovery_section(
                 "public",
-                vec![lower_rated, higher_rated],
+                vec![higher_rating, higher_ranked],
             )],
             &[],
         )
+        .expect("hero item");
+
+        assert_eq!(hero.target_key, "tmdb:movie:higher-rank");
+    }
+
+    #[test]
+    fn discovery_home_hero_breaks_public_rank_ties_by_rating() {
+        // With equal rank_score the credible-rating tiebreak decides, so a
+        // healthy rating still wins when the ranking signal is level.
+        let mut lower_rated = test_discovery_item("lower", "movie", Some("movie"));
+        lower_rated.source_run_kind = "public_feed".to_string();
+        lower_rated.target_key = "tmdb:movie:lower".to_string();
+        lower_rated.rating = Some(6.0);
+        lower_rated.rank_score = Some(10.0);
+        lower_rated.background_url = Some("https://images.example/lower.jpg".to_string());
+
+        let mut higher_rated = test_discovery_item("higher", "movie", Some("movie"));
+        higher_rated.source_run_kind = "public_feed".to_string();
+        higher_rated.target_key = "tmdb:movie:higher".to_string();
+        higher_rated.rating = Some(8.5);
+        higher_rated.rank_score = Some(10.0);
+        higher_rated.background_url = Some("https://images.example/higher.jpg".to_string());
+
+        let hero = select_public_discovery_home_hero(&[test_discovery_section(
+            "public",
+            vec![lower_rated, higher_rated],
+        )])
         .expect("hero item");
 
         assert_eq!(hero.target_key, "tmdb:movie:higher");
@@ -4767,6 +4887,216 @@ mod tests {
             digital_release_date: None,
             folder_path: None,
         }
+    }
+
+    #[test]
+    fn discovery_home_public_hero_prefers_multi_source_rating_over_single_source_fossil() {
+        // Both carry a hero backdrop and an equal, healthy rank_score, so ordering
+        // falls through to the credible-rating tiebreak. The single-source 10.0
+        // must lose to the multi-source 9.4.
+        let mut fossil = test_discovery_item("fossil", "movie", Some("movie"));
+        fossil.source_run_kind = "public_feed".to_string();
+        fossil.target_key = "tmdb:movie:fossil".to_string();
+        fossil.rating = Some(10.0);
+        fossil.rating_sources = vec!["trakt".to_string()];
+        fossil.rank_score = Some(50.0);
+        fossil.background_url = Some("https://images.example/fossil.jpg".to_string());
+
+        let mut credible = test_discovery_item("credible", "movie", Some("movie"));
+        credible.source_run_kind = "public_feed".to_string();
+        credible.target_key = "tmdb:movie:credible".to_string();
+        credible.rating = Some(9.4);
+        credible.rating_sources = vec!["imdb".to_string(), "tmdb".to_string(), "trakt".to_string()];
+        credible.rank_score = Some(50.0);
+        credible.background_url = Some("https://images.example/credible.jpg".to_string());
+
+        let hero = select_public_discovery_home_hero(&[test_discovery_section(
+            "public",
+            vec![fossil, credible],
+        )])
+        .expect("public hero item");
+
+        assert_eq!(hero.target_key, "tmdb:movie:credible");
+    }
+
+    #[test]
+    fn discovery_home_top_rated_demotes_single_source_fossil_below_multi_source() {
+        let mut fossil = test_discovery_item("fossil", "movie", Some("movie"));
+        fossil.source_run_kind = "public_feed".to_string();
+        fossil.target_key = "tmdb:movie:fossil".to_string();
+        fossil.rating = Some(10.0);
+        fossil.rating_sources = vec!["trakt".to_string()];
+        fossil.external_ratings = vec![TitleExternalRating {
+            source: "trakt".to_string(),
+            value: Some(10.0),
+            score: Some(10.0),
+            normalized: 1.0,
+            votes: Some(1),
+            url: String::new(),
+        }];
+
+        let mut credible = test_discovery_item("credible", "movie", Some("movie"));
+        credible.source_run_kind = "public_feed".to_string();
+        credible.target_key = "tmdb:movie:credible".to_string();
+        credible.rating = Some(9.4);
+        credible.rating_sources = vec!["imdb".to_string(), "tmdb".to_string()];
+        credible.external_ratings = vec![
+            TitleExternalRating {
+                source: "imdb".to_string(),
+                value: Some(9.4),
+                score: Some(9.4),
+                normalized: 0.94,
+                votes: Some(500_000),
+                url: String::new(),
+            },
+            TitleExternalRating {
+                source: "tmdb".to_string(),
+                value: Some(9.2),
+                score: Some(9.2),
+                normalized: 0.92,
+                votes: Some(120_000),
+                url: String::new(),
+            },
+        ];
+
+        let section = top_rated_discovery_home_section(&[fossil, credible], &[], true, 10)
+            .expect("top rated section");
+
+        assert_eq!(
+            section
+                .items
+                .iter()
+                .map(|item| item.target_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tmdb:movie:credible", "tmdb:movie:fossil"]
+        );
+    }
+
+    #[test]
+    fn discovery_home_top_rated_keeps_vote_backed_single_source_above_multi_source() {
+        // A MAL-only anime score built from hundreds of thousands of votes is
+        // credible evidence: it must not be demoted below a lower multi-source
+        // score just because only one provider carries it.
+        let mut mal_only = test_discovery_item("mal-only", "series", Some("anime"));
+        mal_only.source_run_kind = "public_feed".to_string();
+        mal_only.target_key = "tvdb:series:mal-only".to_string();
+        mal_only.rating = Some(9.3);
+        mal_only.rating_sources = vec!["mal".to_string()];
+        mal_only.external_ratings = vec![TitleExternalRating {
+            source: "mal".to_string(),
+            value: Some(9.3),
+            score: Some(9.3),
+            normalized: 0.93,
+            votes: Some(500_000),
+            url: String::new(),
+        }];
+
+        let mut multi_source = test_discovery_item("multi", "movie", Some("movie"));
+        multi_source.source_run_kind = "public_feed".to_string();
+        multi_source.target_key = "tmdb:movie:multi".to_string();
+        multi_source.rating = Some(7.8);
+        multi_source.rating_sources = vec!["imdb".to_string(), "tmdb".to_string()];
+        multi_source.external_ratings = vec![
+            TitleExternalRating {
+                source: "imdb".to_string(),
+                value: Some(7.8),
+                score: Some(7.8),
+                normalized: 0.78,
+                votes: Some(90_000),
+                url: String::new(),
+            },
+            TitleExternalRating {
+                source: "tmdb".to_string(),
+                value: Some(7.6),
+                score: Some(7.6),
+                normalized: 0.76,
+                votes: Some(4_000),
+                url: String::new(),
+            },
+        ];
+
+        let section = top_rated_discovery_home_section(&[multi_source, mal_only], &[], true, 10)
+            .expect("top rated section");
+
+        assert_eq!(
+            section
+                .items
+                .iter()
+                .map(|item| item.target_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tvdb:series:mal-only", "tmdb:movie:multi"]
+        );
+    }
+
+    #[test]
+    fn discovery_home_top_rated_prefers_vote_backed_score_over_scoreless_source_names() {
+        // During the per-source rating rollout an item can carry source names and
+        // a summary rating but no external rating rows. Its bare source-name
+        // count must not hoist it above a vote-backed real external score.
+        let mut names_only = test_discovery_item("names-only", "movie", Some("movie"));
+        names_only.source_run_kind = "public_feed".to_string();
+        names_only.target_key = "tmdb:movie:names-only".to_string();
+        names_only.rating = Some(7.0);
+        names_only.rating_sources = vec!["imdb".to_string(), "tmdb".to_string()];
+
+        let mut vote_backed = test_discovery_item("vote-backed", "movie", Some("movie"));
+        vote_backed.source_run_kind = "public_feed".to_string();
+        vote_backed.target_key = "tmdb:movie:vote-backed".to_string();
+        vote_backed.rating = Some(9.2);
+        vote_backed.rating_sources = vec!["imdb".to_string()];
+        vote_backed.external_ratings = vec![TitleExternalRating {
+            source: "imdb".to_string(),
+            value: Some(9.2),
+            score: Some(9.2),
+            normalized: 0.92,
+            votes: Some(80_000),
+            url: String::new(),
+        }];
+
+        let section = top_rated_discovery_home_section(&[names_only, vote_backed], &[], true, 10)
+            .expect("top rated section");
+
+        assert_eq!(
+            section
+                .items
+                .iter()
+                .map(|item| item.target_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tmdb:movie:vote-backed", "tmdb:movie:names-only"]
+        );
+    }
+
+    #[test]
+    fn discovery_rating_source_aliases_collapse_to_one_provider() {
+        // Alias spellings of a single provider must not fake corroboration.
+        let mut aliased = test_discovery_item("aliased", "series", Some("anime"));
+        aliased.rating = Some(10.0);
+        aliased.rating_sources = vec![
+            "mal".to_string(),
+            "MyAnimeList".to_string(),
+            "MyAnimeList.net".to_string(),
+        ];
+
+        assert_eq!(discovery_item_distinct_rating_source_count(&aliased), 1);
+        assert!(!discovery_item_has_credible_rating_evidence(&aliased));
+    }
+
+    #[test]
+    fn discovery_comparators_tolerate_nan_scores() {
+        // A NaN score must collapse to the missing-value ordering instead of
+        // producing a non-total comparator (which can panic sort_by).
+        assert_eq!(
+            compare_optional_f64_desc(Some(f64::NAN), Some(5.0)),
+            compare_optional_f64_desc(Some(0.0), Some(5.0))
+        );
+        assert_eq!(
+            compare_optional_f64_desc(Some(f64::NAN), Some(f64::NAN)),
+            Ordering::Equal
+        );
+
+        let mut nan_rated = test_discovery_item("nan-rated", "movie", Some("movie"));
+        nan_rated.rating = Some(f64::NAN);
+        assert_eq!(discovery_item_comparable_rating(&nan_rated), 0.0);
     }
 
     fn test_discovery_item(

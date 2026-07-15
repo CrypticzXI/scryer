@@ -56,6 +56,32 @@ const RATING_SOURCE_ORDER = new Map<string, number>([
   ["mdblist", 90],
 ]);
 
+/**
+ * Pick the highest-priority attributed rating source from a list, respecting
+ * RATING_SOURCE_ORDER (lower rank wins, earliest entry breaks ties). Returns null
+ * when the list carries no usable attribution, so callers can render a neutral
+ * score badge instead of inventing a provider such as MDBList.
+ */
+export function topOrderedRatingSource(
+  sources: readonly string[],
+): string | null {
+  let bestSource: string | null = null;
+  let bestOrder = Number.POSITIVE_INFINITY;
+  for (const source of sources) {
+    const trimmed = source.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    const order =
+      RATING_SOURCE_ORDER.get(normalizedRatingSource(trimmed)) ?? 1_000;
+    if (order < bestOrder) {
+      bestSource = trimmed;
+      bestOrder = order;
+    }
+  }
+  return bestSource;
+}
+
 function fallbackSourceLabel(source: string): string {
   return source
     .trim()

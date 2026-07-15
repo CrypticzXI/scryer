@@ -968,7 +968,7 @@ async fn process_single_target(
         return Ok(());
     }
 
-    info!(
+    debug!(
         title_id = title.id.as_str(),
         title_name = title.name.as_str(),
         result_count = results.len(),

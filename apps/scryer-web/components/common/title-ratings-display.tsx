@@ -11,6 +11,7 @@ import {
   normalizedRatingSource,
   ratingSourceInfo,
   ratingValueLabel,
+  topOrderedRatingSource,
   visibleTitleExternalRatings,
   type RatingSourceInfo,
   type TitleExternalRating,
@@ -22,7 +23,7 @@ export type TitleRatingsDisplayVariant = "default" | "hero";
 type TitleRatingsDisplayProps = {
   externalRatings?: TitleExternalRating[];
   fallbackRating?: number | null;
-  fallbackSource?: string | null;
+  fallbackSources?: readonly string[];
   variant?: TitleRatingsDisplayVariant;
   className?: string;
 };
@@ -248,6 +249,25 @@ function renderStaticRatingPill({
   );
 }
 
+function renderNeutralRatingPill({
+  value,
+  variant,
+}: {
+  value: string;
+  variant: TitleRatingsDisplayVariant;
+}) {
+  return (
+    <RatingPill
+      key="rating-score"
+      ariaLabel={`Rating: ${value}`}
+      tooltipLabel={`Rating: ${value}`}
+      variant={variant}
+    >
+      <RatingValue value={value} variant={variant} />
+    </RatingPill>
+  );
+}
+
 function renderRottenTomatoesPill(
   ratings: TitleExternalRating[],
   variant: TitleRatingsDisplayVariant,
@@ -334,7 +354,7 @@ function renderRatingPillEntry(
 export function TitleRatingsDisplay({
   externalRatings = [],
   fallbackRating = null,
-  fallbackSource = "mdblist",
+  fallbackSources = [],
   variant = "default",
   className,
 }: TitleRatingsDisplayProps) {
@@ -344,17 +364,24 @@ export function TitleRatingsDisplay({
     return null;
   }
 
+  const fallbackTopSource = topOrderedRatingSource(fallbackSources);
+
   return (
     <TooltipProvider delayDuration={200}>
       <div className={cn("flex flex-wrap gap-2", className)}>
         {ratingPillEntries.map((entry) => renderRatingPillEntry(entry, variant))}
-        {visibleExternalRatings.length === 0 && fallbackRating != null ? (
-          renderStaticRatingPill({
-            sourceName: fallbackSource ?? "mdblist",
-            value: compactRatingNumber(fallbackRating),
-            variant,
-          })
-        ) : null}
+        {visibleExternalRatings.length === 0 && fallbackRating != null
+          ? fallbackTopSource != null
+            ? renderStaticRatingPill({
+                sourceName: fallbackTopSource,
+                value: compactRatingNumber(fallbackRating),
+                variant,
+              })
+            : renderNeutralRatingPill({
+                value: compactRatingNumber(fallbackRating),
+                variant,
+              })
+          : null}
       </div>
     </TooltipProvider>
   );

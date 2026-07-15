@@ -29,15 +29,13 @@ export function TitleRatingsStrip({
   if (externalRatings.length === 0 && fallbackRating == null) {
     return null;
   }
-  const fallbackSource = ratings?.ratingSources?.find(
-    (source) => source.trim().length > 0,
-  );
+  const fallbackSources = ratings?.ratingSources ?? [];
 
   return (
     <TitleRatingsDisplay
       externalRatings={externalRatings}
       fallbackRating={fallbackRating}
-      fallbackSource={fallbackSource}
+      fallbackSources={fallbackSources}
       variant={variant}
       className={variant === "default" ? "mt-3" : "mb-3"}
     />

@@ -5,6 +5,7 @@ import {
   externalRatingLabelForAliases,
   ratingSourceInfo,
   ratingValueLabel,
+  topOrderedRatingSource,
   visibleTitleExternalRatings,
   type TitleExternalRating,
 } from "./title-ratings.ts";
@@ -181,4 +182,31 @@ test("TVDB rating pill reuses the existing media-site logo", () => {
     assert.equal(info.label, "TVDB");
     assert.equal(info.logoSrc, "/media-sites/tvdb.svg");
   }
+});
+
+test("top ordered rating source respects RATING_SOURCE_ORDER priority", () => {
+  assert.equal(topOrderedRatingSource(["trakt", "tmdb", "imdb"]), "imdb");
+  assert.equal(topOrderedRatingSource(["tmdb", "trakt"]), "tmdb");
+});
+
+test("top ordered rating source ranks anime sources by known priority", () => {
+  assert.equal(topOrderedRatingSource(["anidb", "anilist", "mal"]), "mal");
+  assert.equal(topOrderedRatingSource(["anidb", "anilist"]), "anilist");
+});
+
+test("top ordered rating source ignores blank entries", () => {
+  assert.equal(topOrderedRatingSource(["", "   ", "tmdb"]), "tmdb");
+});
+
+test("top ordered rating source returns the sole attributed source", () => {
+  assert.equal(topOrderedRatingSource(["trakt"]), "trakt");
+});
+
+test("top ordered rating source returns null without attribution", () => {
+  assert.equal(topOrderedRatingSource([]), null);
+  assert.equal(topOrderedRatingSource(["", "  "]), null);
+});
+
+test("top ordered rating source keeps first unknown source when none are ranked", () => {
+  assert.equal(topOrderedRatingSource(["custom-a", "custom-b"]), "custom-a");
 });

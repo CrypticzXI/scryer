@@ -1293,7 +1293,7 @@ export const RootHeader = React.memo(function RootHeader({
               {mobileNavigation}
             </div>
           ) : null}
-          <div className="relative flex min-w-0 flex-1 items-center gap-3 min-[981px]:col-start-2 min-[981px]:w-full">
+          <div className="relative flex min-w-0 flex-1 items-center gap-3 min-[981px]:col-start-2 min-[981px]:w-full min-[981px]:-translate-x-[calc(var(--sidebar-width,0px)/2)]">
             <div ref={searchShellRef} className="relative w-full max-w-[660px]">
               {isMobile ? (
                 <button
