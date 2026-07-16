@@ -552,10 +552,12 @@ export function SetupWizardContainer({
       className={`mx-auto flex min-h-screen w-full flex-col items-center justify-center px-4 py-10 ${shellMaxWidth}`}
     >
       <div className="mb-8 flex items-center gap-2.5">
-        <ScryerLogo className="h-9 w-9" />
-        <span className="font-[var(--font-space-grotesk)] text-lg font-bold tracking-tight text-[var(--scry-ink2)]">
-          Scryer
-        </span>
+        <ScryerLogo className={currentStep === 0 ? "h-[54px] w-[54px]" : "h-9 w-9"} />
+        {currentStep > 0 ? (
+          <span className="font-[var(--font-space-grotesk)] text-lg font-bold tracking-tight text-[var(--scry-ink2)]">
+            Scryer
+          </span>
+        ) : null}
       </div>
 
       {currentStep > 0 && (

@@ -53,7 +53,6 @@ import {
   viewToFacet,
 } from "@/lib/constants/settings";
 import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
-import { forEventTypes } from "@/lib/reactive/domain-event-feed";
 import { useClient } from "urql";
 import type {
   ContentSettingsSection,
@@ -808,8 +807,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const { registerInteractiveJobRun } = useJobRunToasts();
   const { confirmReplaceConflict, replaceConflictDialog } =
     useDownloadConflictConfirmation();
-  const { queueCatalogTitleRefresh, registerReactiveRefresh } =
-    useReactiveRefresh();
+  const { queueCatalogTitleRefresh } = useReactiveRefresh();
   const [titleDeleteTypedConfirmation, setTitleDeleteTypedConfirmation] =
     React.useState("");
   const [pendingDeletedTitleIds, setPendingDeletedTitleIds] = React.useState<
@@ -1161,19 +1159,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setAdvancedTitleFilters,
     shouldLoadCatalogTitles,
   ]);
-
-  // A completed discovery search updates catalog discovery from the network.
-  React.useEffect(
-    () =>
-      registerReactiveRefresh({
-        aliasKey: "catalog-discovery",
-        predicate: forEventTypes("DISCOVERY_SEARCH_COMPLETED"),
-        run: () => {
-          void refreshCatalogDiscovery();
-        },
-      }),
-    [registerReactiveRefresh, refreshCatalogDiscovery],
-  );
 
   const [desktopViewModes, setDesktopViewModes] = React.useState<
     Partial<Record<ViewId, ContentViewMode>>

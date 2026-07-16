@@ -19,8 +19,6 @@ import {
   discoveryHomeFilterOptionsQuery,
   discoveryItemDetailQuery,
 } from "@/lib/graphql/queries";
-import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
-import { forEventTypes } from "@/lib/reactive/domain-event-feed";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useSearchContext } from "@/lib/context/search-context";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -102,7 +100,6 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
   const t = useTranslate();
   const client = useClient();
   const setGlobalStatus = useGlobalStatus();
-  const { registerReactiveRefresh } = useReactiveRefresh();
   const clientRef = useRef(client);
   const setGlobalStatusRef = useRef(setGlobalStatus);
   const tRef = useRef(t);
@@ -264,19 +261,6 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
         }
       });
   }, [authorizationSignature, client, uiLanguage, userId]);
-
-  // A completed discovery search updates the dashboard from the network.
-  useEffect(
-    () =>
-      registerReactiveRefresh({
-        aliasKey: "discovery-home",
-        predicate: forEventTypes("DISCOVERY_SEARCH_COMPLETED"),
-        run: () => {
-          void refresh();
-        },
-      }),
-    [registerReactiveRefresh, refresh],
-  );
 
   const selectedFacet = selectedItem
     ? (discoveryItemFacet(selectedItem) ?? "MOVIE")

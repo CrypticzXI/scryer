@@ -22,7 +22,6 @@ import type {
   IndexerRecord,
   ProviderTypeInfo,
 } from "@/lib/types";
-import { useIndexersSubscription } from "@/lib/hooks/use-indexers-subscription";
 import { runConnectionFeedback } from "@/lib/utils/connection-feedback";
 import {
   indexerProviderTypesQuery,
@@ -419,12 +418,6 @@ export function SettingsIndexersContainer({
     }
     void refreshIndexers();
   }, [refreshIndexers]);
-
-  useIndexersSubscription(
-    useCallback(() => {
-      void refreshIndexers();
-    }, [refreshIndexers]),
-  );
 
   const openCreateEditor = useCallback(() => {
     resetIndexerDraft();
