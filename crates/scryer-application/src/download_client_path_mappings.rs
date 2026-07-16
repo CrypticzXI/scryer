@@ -22,6 +22,10 @@ pub struct DownloadClientRemotePathMapping {
 }
 
 impl DownloadClientRemotePathMapping {
+    pub fn local_root(&self) -> &str {
+        &self.local_root
+    }
+
     fn duplicate_key(&self) -> String {
         format!("{:?}:{}", self.remote_style, self.normalized_remote_root)
     }

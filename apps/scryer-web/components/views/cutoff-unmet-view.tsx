@@ -1,6 +1,8 @@
 import { Fragment } from "react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ActivityProgressBar } from "@/components/views/activity-progress-bar";
+import { ConvergenceBadge } from "@/components/views/convergence-badge";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { SearchResultBuckets } from "@/components/common/release-search-results";
 import {
@@ -12,6 +14,8 @@ import {
 } from "@/components/ui/select";
 import {
   Table,
+  TableActionsCell,
+  TableActionsHead,
   TableBody,
   TableCell,
   TableHead,
@@ -23,7 +27,13 @@ import { Link } from "react-router-dom";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { buildOverviewDetailPath } from "@/lib/utils/routing";
-import type { Facet, LibraryRecord, Release } from "@/lib/types";
+import type {
+  AcquisitionSearchJob,
+  ConvergenceState,
+  Facet,
+  LibraryRecord,
+  Release,
+} from "@/lib/types";
 import type { ViewId } from "@/components/root/types";
 
 export type CutoffUnmetItem = {
@@ -39,10 +49,17 @@ export type CutoffUnmetItem = {
   episodeNumber?: string | null;
   currentTier: string;
   targetTier: string;
+  convergenceState: ConvergenceState;
+  indexersCovered: number;
+  indexersRouted: number;
 };
 
 type CutoffUnmetViewState = {
   items: CutoffUnmetItem[];
+  total: number;
+  offset: number;
+  setOffset: (v: number) => void;
+  limit: number;
   loading: boolean;
   facetFilter: string | undefined;
   setFacetFilter: (v: string | undefined) => void;
@@ -54,13 +71,13 @@ type CutoffUnmetViewState = {
   interactiveSearchingId: string | null;
   activeInteractiveItemId: string | null;
   searchResultsByItemId: Record<string, Release[]>;
-  bulkSearching: boolean;
-  bulkProgress: { current: number; total: number } | null;
+  searchJob: AcquisitionSearchJob | null;
+  searchJobStarting: boolean;
   triggerAutoSearch: (item: CutoffUnmetItem) => Promise<void>;
   triggerInteractiveSearch: (item: CutoffUnmetItem) => Promise<void>;
   queueRelease: (item: CutoffUnmetItem, release: Release) => Promise<void>;
   triggerBulkSearch: () => void;
-  cancelBulkSearch: () => void;
+  cancelBulkSearch: () => Promise<void>;
 };
 
 function cutoffItemKey(item: CutoffUnmetItem) {
@@ -78,11 +95,11 @@ function cutoffEpisodeCode(item: CutoffUnmetItem): string | null {
 
 function cutoffOverviewView(facet: Facet): ViewId | null {
   switch (facet) {
-    case "movie":
+    case "MOVIE":
       return "movies";
-    case "series":
+    case "SERIES":
       return "series";
-    case "anime":
+    case "ANIME":
       return "anime";
     default:
       return null;
@@ -116,8 +133,8 @@ function cutoffOverviewHref(item: CutoffUnmetItem, includeEpisode: boolean): str
 function qualityBadge(tier: string, variant: "current" | "target") {
   const cls =
     variant === "current"
-      ? "bg-amber-500/20 text-amber-400"
-      : "bg-green-500/20 text-green-400";
+      ? "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]"
+      : "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]";
   return (
     <span
       className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${cls}`}
@@ -216,6 +233,10 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
   const isMobile = useIsMobile();
   const {
     items,
+    total,
+    offset,
+    setOffset,
+    limit,
     loading,
     facetFilter,
     setFacetFilter,
@@ -227,8 +248,8 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
     interactiveSearchingId,
     activeInteractiveItemId,
     searchResultsByItemId,
-    bulkSearching,
-    bulkProgress,
+    searchJob,
+    searchJobStarting,
     triggerAutoSearch,
     triggerInteractiveSearch,
     queueRelease,
@@ -236,29 +257,41 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
     cancelBulkSearch,
   } = state;
 
-  const filtered = facetFilter
-    ? items.filter((item) => item.titleFacet === facetFilter)
-    : items;
+  const jobRunning = searchJob?.state === "RUNNING";
+  const bulkSearching = jobRunning || searchJobStarting;
+  const hasPrev = offset > 0;
+  const hasNext = offset + limit < total;
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>{t("cutoff.title")}</CardTitle>
+    <Card className="overflow-hidden rounded-none border-0 bg-transparent shadow-none">
+      <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            {bulkSearching && bulkProgress ? (
+            {jobRunning && searchJob ? (
               <>
-                <span className="text-sm text-muted-foreground">
-                  {t("cutoff.searchProgress", {
-                    current: bulkProgress.current,
-                    total: bulkProgress.total,
-                  })}
-                </span>
+                <div className="w-full min-w-[220px] sm:w-64">
+                  <ActivityProgressBar
+                    percent={
+                      searchJob.total > 0
+                        ? Math.round((searchJob.processed / searchJob.total) * 100)
+                        : 0
+                    }
+                    remainingLabel={
+                      searchJob.currentTitle ??
+                      t("cutoff.searchProgress", {
+                        current: searchJob.processed,
+                        total: searchJob.total,
+                      })
+                    }
+                    colorClass="bg-[var(--scry-accent)]"
+                    indeterminate={searchJob.total === 0}
+                  />
+                </div>
                 <Button
                   size="sm"
                   variant="destructive"
                   className="w-full sm:w-auto"
-                  onClick={cancelBulkSearch}
+                  onClick={() => void cancelBulkSearch()}
                 >
                   {t("label.cancel")}
                 </Button>
@@ -268,7 +301,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                 size="sm"
                 className="w-full sm:w-auto"
                 onClick={triggerBulkSearch}
-                disabled={filtered.length === 0 || loading}
+                disabled={items.length === 0 || loading || searchJobStarting}
               >
                 <Search className="mr-1 h-3 w-3" />
                 {t("cutoff.searchAll")}
@@ -277,14 +310,14 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
           </div>
         </div>
       </CardHeader>
-      <CardContent>
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+      <CardContent className="bg-[color-mix(in_srgb,var(--scry-bg)_52%,transparent)] p-4 sm:p-5">
+        <div className="mb-4 flex flex-col gap-3 rounded-[14px] border border-[var(--scry-border3)] bg-[var(--scry-surfC)] p-3 sm:flex-row sm:flex-wrap sm:items-center">
           <LibraryMultiSelect
             libraries={libraries}
             selectedLibraryIds={selectedLibraryIds}
             onSelectedLibraryIdsChange={setSelectedLibraryIds}
             disabled={librariesLoading}
-            triggerClassName="w-full sm:w-[210px]"
+            triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[210px]"
           />
 
           <Select
@@ -293,28 +326,28 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
               setFacetFilter(value === "__all__" ? undefined : value)
             }
           >
-            <SelectTrigger className="w-full sm:w-[150px]">
+            <SelectTrigger className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[150px]">
               <SelectValue placeholder={t("cutoff.filterFacet")} />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="__all__">{t("cutoff.allFacets")}</SelectItem>
-              <SelectItem value="movie">movie</SelectItem>
-              <SelectItem value="series">series</SelectItem>
-              <SelectItem value="anime">anime</SelectItem>
+              <SelectItem value="MOVIE">movie</SelectItem>
+              <SelectItem value="SERIES">series</SelectItem>
+              <SelectItem value="ANIME">anime</SelectItem>
             </SelectContent>
           </Select>
 
-          <span className="self-center text-sm text-muted-foreground sm:ml-auto">
-            {t("cutoff.totalCount", { count: filtered.length })}
+          <span className="self-center text-sm font-medium text-[var(--scry-muted3)] sm:ml-auto">
+            {t("cutoff.totalCount", { count: total })}
           </span>
         </div>
 
         {isMobile ? (
-          filtered.length === 0 && !loading ? (
-            <p className="text-center text-muted-foreground">{t("cutoff.noItems")}</p>
+          items.length === 0 && !loading ? (
+            <p className="text-center text-[var(--scry-muted3)]">{t("cutoff.noItems")}</p>
           ) : (
             <div className="space-y-3">
-              {filtered.map((item) => {
+              {items.map((item) => {
                 const itemKey = cutoffItemKey(item);
                 const searchResults = searchResultsByItemId[itemKey] ?? [];
                 const showResults = activeInteractiveItemId === itemKey;
@@ -322,7 +355,7 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                 return (
                   <div
                     key={itemKey}
-                    className="space-y-3 rounded-xl border border-border bg-card/30 p-3"
+                    className="space-y-3 rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] p-3 shadow-[0_12px_28px_rgba(2,6,23,0.10)]"
                   >
                     <div className="space-y-3">
                       <TitleCell item={item} />
@@ -332,6 +365,11 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                       <div className="flex flex-wrap gap-2">
                         {qualityBadge(item.currentTier, "current")}
                         {qualityBadge(item.targetTier, "target")}
+                        <ConvergenceBadge
+                          state={item.convergenceState}
+                          indexersCovered={item.indexersCovered}
+                          indexersRouted={item.indexersRouted}
+                        />
                       </div>
                       <ActionButtons
                         item={item}
@@ -355,19 +393,20 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
             </div>
           )
         ) : (
-          <div className="overflow-auto rounded-xl border border-border/60">
-            <Table className="min-w-[900px]">
+          <div className="overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]">
+            <Table overflow="clip" layout="fixed" density="dense">
               <TableHeader>
                 <TableRow>
                   <TableHead>{t("cutoff.colTitleEpisode")}</TableHead>
-                  <TableHead>Library</TableHead>
-                  <TableHead>{t("cutoff.colCurrentQuality")}</TableHead>
-                  <TableHead>{t("cutoff.colTargetQuality")}</TableHead>
-                  <TableHead>{t("label.actions")}</TableHead>
+                  <TableHead className="w-36 text-center">Library</TableHead>
+                  <TableHead className="w-36 text-center">{t("cutoff.colCurrentQuality")}</TableHead>
+                  <TableHead className="w-36 text-center">{t("cutoff.colTargetQuality")}</TableHead>
+                  <TableHead className="w-40 text-center">{t("wanted.colConvergence")}</TableHead>
+                  <TableActionsHead className="w-64">{t("label.actions")}</TableActionsHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((item) => {
+                {items.map((item) => {
                   const itemKey = cutoffItemKey(item);
                   const searchResults = searchResultsByItemId[itemKey] ?? [];
                   const showResults = activeInteractiveItemId === itemKey;
@@ -375,19 +414,26 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                   return (
                     <Fragment key={itemKey}>
                       <TableRow>
-                        <TableCell className="min-w-[320px] align-top">
+                        <TableCell className="align-top">
                           <TitleCell item={item} />
                         </TableCell>
-                        <TableCell className="align-top text-sm text-muted-foreground">
+                        <TableCell className="align-top text-center text-sm text-muted-foreground">
                           {item.libraryName ?? item.libraryId}
                         </TableCell>
-                        <TableCell className="align-top">
+                        <TableCell className="align-top text-center">
                           {qualityBadge(item.currentTier, "current")}
                         </TableCell>
-                        <TableCell className="align-top">
+                        <TableCell className="align-top text-center">
                           {qualityBadge(item.targetTier, "target")}
                         </TableCell>
-                        <TableCell className="align-top">
+                        <TableCell className="align-top text-center">
+                          <ConvergenceBadge
+                            state={item.convergenceState}
+                            indexersCovered={item.indexersCovered}
+                            indexersRouted={item.indexersRouted}
+                          />
+                        </TableCell>
+                        <TableActionsCell className="w-64 align-top">
                           <ActionButtons
                             item={item}
                             autoSearchingId={autoSearchingId}
@@ -396,11 +442,11 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                             triggerAutoSearch={triggerAutoSearch}
                             triggerInteractiveSearch={triggerInteractiveSearch}
                           />
-                        </TableCell>
+                        </TableActionsCell>
                       </TableRow>
                       {showResults ? (
                         <TableRow>
-                          <TableCell colSpan={5} className="bg-background/20">
+                          <TableCell colSpan={6} className="bg-background/20">
                             <SearchResultBuckets
                               results={searchResults}
                               onQueue={(release) => queueRelease(item, release)}
@@ -412,15 +458,41 @@ export function CutoffUnmetView({ state }: { state: CutoffUnmetViewState }) {
                     </Fragment>
                   );
                 })}
-                {filtered.length === 0 && !loading ? (
+                {items.length === 0 && !loading ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground">
+                    <TableCell colSpan={6} className="text-center text-muted-foreground">
                       {t("cutoff.noItems")}
                     </TableCell>
                   </TableRow>
                 ) : null}
               </TableBody>
             </Table>
+          </div>
+        )}
+
+        {total > limit && (
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <Button
+              className="w-full sm:w-auto"
+              size="sm"
+              variant="outline"
+              disabled={!hasPrev}
+              onClick={() => setOffset(Math.max(0, offset - limit))}
+            >
+              {t("wanted.prev")}
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              {offset + 1}–{Math.min(offset + limit, total)} / {total}
+            </span>
+            <Button
+              className="w-full sm:w-auto"
+              size="sm"
+              variant="outline"
+              disabled={!hasNext}
+              onClick={() => setOffset(offset + limit)}
+            >
+              {t("wanted.next")}
+            </Button>
           </div>
         )}
       </CardContent>

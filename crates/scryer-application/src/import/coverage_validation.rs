@@ -280,6 +280,7 @@ mod tests {
             facet,
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![],
             created_by: None,
             created_at: Utc::now(),
@@ -290,10 +291,11 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: None,
             runtime_minutes: Some(24),
-            genres: vec![],
+            popularity: None,
             content_status: None,
             language: None,
             first_aired: None,
@@ -396,6 +398,7 @@ mod tests {
             }),
             scan_error: scan_error.map(str::to_string),
             rule_file_doc: None,
+            audio_language_warning: None,
         }
     }
 

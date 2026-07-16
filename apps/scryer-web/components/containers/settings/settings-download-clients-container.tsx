@@ -1,6 +1,9 @@
 
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { FilteredPluginList } from "@/components/views/settings/filtered-plugin-list";
+import { SETTINGS_REFERENCE_SLOT_ID } from "@/components/containers/settings/settings-container";
 import { SettingsDownloadClientsSection } from "@/components/views/settings/settings-download-clients-section";
 import {
   createDownloadClientMutation,
@@ -43,6 +46,7 @@ import type {
 } from "@/lib/types";
 
 type SettingsDownloadClientsSectionProps = ComponentProps<typeof SettingsDownloadClientsSection>;
+const DOWNLOAD_CLIENT_ADJACENT_PLUGIN_TYPES = ["archive_extractor"] as const;
 
 type SettingsDownloadClientsContainerProps = {
   providerCatalogVersion?: number;
@@ -57,7 +61,7 @@ type PendingDownloadClientEditorAction =
 function cloneDownloadClientDraft(
   draft: DownloadClientDraft,
 ): DownloadClientDraft {
-  return { ...draft };
+  return { ...draft, configValues: { ...draft.configValues } };
 }
 
 export function SettingsDownloadClientsContainer({
@@ -69,6 +73,10 @@ export function SettingsDownloadClientsContainer({
   const [settingsDownloadClients, setSettingsDownloadClients] = useState<SettingsDownloadClientsSectionProps["settingsDownloadClients"]>(
     [],
   );
+  const [pluginsTarget, setPluginsTarget] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setPluginsTarget(document.getElementById(SETTINGS_REFERENCE_SLOT_ID));
+  }, []);
   const [downloadClientTypeOptions, setDownloadClientTypeOptions] = useState<DownloadClientTypeOption[]>(
     () => buildDownloadClientTypeOptions([]),
   );
@@ -236,6 +244,13 @@ export function SettingsDownloadClientsContainer({
       (configuredClientLabel || "Download client")
     );
   }, [availableDownloadClientTypeOptions, downloadClientDraft.clientType]);
+  const selectedDownloadClientConfigFields = useMemo(() => {
+    const normalizedClientType = normalizeDownloadClientType(downloadClientDraft.clientType, "");
+    return (
+      availableDownloadClientTypeOptions.find((option) => option.value === normalizedClientType)
+        ?.configFields ?? []
+    );
+  }, [availableDownloadClientTypeOptions, downloadClientDraft.clientType]);
 
   const openCreateEditor = useCallback(() => {
     resetDownloadClientDraft();
@@ -251,7 +266,7 @@ export function SettingsDownloadClientsContainer({
       clientType: normalizeDownloadClientType(downloadClientDraft.clientType),
       host: downloadClientDraft.host.trim(),
       port: downloadClientDraft.port.trim(),
-      config: buildDownloadClientConfigValues(downloadClientDraft),
+      config: buildDownloadClientConfigValues(downloadClientDraft, selectedDownloadClientConfigFields),
       isEnabled: downloadClientDraft.isEnabled,
     };
 
@@ -349,7 +364,7 @@ export function SettingsDownloadClientsContainer({
       clientType: normalizeDownloadClientType(downloadClientDraft.clientType),
       host: downloadClientDraft.host.trim(),
       baseUrl: buildDownloadClientBaseUrl(downloadClientDraft),
-      config: buildDownloadClientConfigValues(downloadClientDraft),
+      config: buildDownloadClientConfigValues(downloadClientDraft, selectedDownloadClientConfigFields),
     };
 
     if (!payload.name || !payload.host) {
@@ -563,6 +578,17 @@ export function SettingsDownloadClientsContainer({
 
   return (
     <>
+      {pluginsTarget
+        ? createPortal(
+            <FilteredPluginList
+              family="DOWNLOAD_CLIENT"
+              catalogVersion={providerCatalogVersion}
+              extraPluginTypes={DOWNLOAD_CLIENT_ADJACENT_PLUGIN_TYPES}
+              refreshProviderOptions={refreshProviderTypes}
+            />,
+            pluginsTarget,
+          )
+        : null}
       <SettingsDownloadClientsSection
         editingDownloadClientId={editingDownloadClientId}
         downloadClientTypeOptions={availableDownloadClientTypeOptions}
@@ -597,6 +623,8 @@ export function SettingsDownloadClientsContainer({
               : t("label.discard")
         }
         cancelLabel={t("label.cancel")}
+        confirmButtonId="settings-download-client-editor-action-confirm"
+        cancelButtonId="settings-download-client-editor-action-cancel"
         isBusy={mutatingDownloadClientId !== null}
         onConfirm={confirmPendingEditorAction}
         onCancel={() => setPendingEditorAction(null)}

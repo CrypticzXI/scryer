@@ -7,10 +7,10 @@ use scryer_interface_core::{
 };
 use scryer_interface_media::mappers::{
     from_download_client_config_with_fields, from_download_client_routing_entry,
-    from_indexer_config_with_fields, from_indexer_routing_entry, from_jellyfin_server_user,
-    from_library_paths_settings, from_media_server_connection, from_media_server_user_group,
-    from_media_settings, from_quality_profile_settings, from_service_settings,
-    from_subtitle_provider_config, from_user_with_auth_factor_status,
+    from_indexer_config_with_fields, from_indexer_proxy_config, from_indexer_routing_entry,
+    from_jellyfin_server_user, from_library_paths_settings, from_media_server_connection,
+    from_media_server_user_group, from_media_settings, from_quality_profile_settings,
+    from_service_settings, from_subtitle_provider_config, from_user_with_auth_factor_status,
 };
 use scryer_interface_media::types::*;
 
@@ -163,8 +163,8 @@ fn from_acquisition_settings(
         cross_tier_min_delta: settings.cross_tier_min_delta,
         forced_upgrade_delta_bypass: settings.forced_upgrade_delta_bypass,
         poll_interval_seconds: settings.poll_interval_seconds,
-        sync_interval_seconds: settings.sync_interval_seconds,
-        batch_size: settings.batch_size,
+        long_tail_backfill_max_scopes_per_cycle: settings.long_tail_backfill_max_scopes_per_cycle,
+        long_tail_reconverge_days: settings.long_tail_reconverge_days,
     }
 }
 
@@ -218,6 +218,188 @@ fn from_security_settings(
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
         env_override_description: auth_runtime.env_override_description.clone(),
+    }
+}
+
+fn from_ui_theme(theme: scryer_application::UiTheme) -> UiThemeValue {
+    match theme {
+        scryer_application::UiTheme::Light => UiThemeValue::Light,
+        scryer_application::UiTheme::Dark => UiThemeValue::Dark,
+        scryer_application::UiTheme::Pride => UiThemeValue::Pride,
+        scryer_application::UiTheme::System => UiThemeValue::System,
+    }
+}
+
+fn to_app_ui_theme(theme: UiThemeValue) -> scryer_application::UiTheme {
+    match theme {
+        UiThemeValue::Light => scryer_application::UiTheme::Light,
+        UiThemeValue::Dark => scryer_application::UiTheme::Dark,
+        UiThemeValue::Pride => scryer_application::UiTheme::Pride,
+        UiThemeValue::System => scryer_application::UiTheme::System,
+    }
+}
+
+fn from_ui_date_time_format(format: scryer_application::UiDateTimeFormat) -> UiDateTimeFormatValue {
+    match format {
+        scryer_application::UiDateTimeFormat::Locale => UiDateTimeFormatValue::Locale,
+        scryer_application::UiDateTimeFormat::Iso24h => UiDateTimeFormatValue::Iso24h,
+    }
+}
+
+fn to_app_ui_date_time_format(
+    format: UiDateTimeFormatValue,
+) -> scryer_application::UiDateTimeFormat {
+    match format {
+        UiDateTimeFormatValue::Locale => scryer_application::UiDateTimeFormat::Locale,
+        UiDateTimeFormatValue::Iso24h => scryer_application::UiDateTimeFormat::Iso24h,
+    }
+}
+
+fn from_ui_density(density: scryer_application::UiDensity) -> UiDensityValue {
+    match density {
+        scryer_application::UiDensity::Compact => UiDensityValue::Compact,
+        scryer_application::UiDensity::Comfortable => UiDensityValue::Comfortable,
+    }
+}
+
+fn to_app_ui_density(density: UiDensityValue) -> scryer_application::UiDensity {
+    match density {
+        UiDensityValue::Compact => scryer_application::UiDensity::Compact,
+        UiDensityValue::Comfortable => scryer_application::UiDensity::Comfortable,
+    }
+}
+
+fn from_ui_sidebar_mode(mode: scryer_application::UiSidebarMode) -> UiSidebarModeValue {
+    match mode {
+        scryer_application::UiSidebarMode::Collapsed => UiSidebarModeValue::Collapsed,
+        scryer_application::UiSidebarMode::Expanded => UiSidebarModeValue::Expanded,
+    }
+}
+
+fn to_app_ui_sidebar_mode(mode: UiSidebarModeValue) -> scryer_application::UiSidebarMode {
+    match mode {
+        UiSidebarModeValue::Collapsed => scryer_application::UiSidebarMode::Collapsed,
+        UiSidebarModeValue::Expanded => scryer_application::UiSidebarMode::Expanded,
+    }
+}
+
+fn from_ui_default_landing_view(
+    view: scryer_application::UiDefaultLandingView,
+) -> UiDefaultLandingViewValue {
+    match view {
+        scryer_application::UiDefaultLandingView::Movies => UiDefaultLandingViewValue::Movies,
+        scryer_application::UiDefaultLandingView::Series => UiDefaultLandingViewValue::Series,
+        scryer_application::UiDefaultLandingView::Anime => UiDefaultLandingViewValue::Anime,
+        scryer_application::UiDefaultLandingView::Activity => UiDefaultLandingViewValue::Activity,
+        scryer_application::UiDefaultLandingView::Calendar => UiDefaultLandingViewValue::Calendar,
+        scryer_application::UiDefaultLandingView::Wanted => UiDefaultLandingViewValue::Wanted,
+        scryer_application::UiDefaultLandingView::History => UiDefaultLandingViewValue::History,
+        scryer_application::UiDefaultLandingView::Settings => UiDefaultLandingViewValue::Settings,
+        scryer_application::UiDefaultLandingView::System => UiDefaultLandingViewValue::System,
+    }
+}
+
+fn to_app_ui_default_landing_view(
+    view: UiDefaultLandingViewValue,
+) -> scryer_application::UiDefaultLandingView {
+    match view {
+        UiDefaultLandingViewValue::Movies => scryer_application::UiDefaultLandingView::Movies,
+        UiDefaultLandingViewValue::Series => scryer_application::UiDefaultLandingView::Series,
+        UiDefaultLandingViewValue::Anime => scryer_application::UiDefaultLandingView::Anime,
+        UiDefaultLandingViewValue::Activity => scryer_application::UiDefaultLandingView::Activity,
+        UiDefaultLandingViewValue::Calendar => scryer_application::UiDefaultLandingView::Calendar,
+        UiDefaultLandingViewValue::Wanted => scryer_application::UiDefaultLandingView::Wanted,
+        UiDefaultLandingViewValue::History => scryer_application::UiDefaultLandingView::History,
+        UiDefaultLandingViewValue::Settings => scryer_application::UiDefaultLandingView::Settings,
+        UiDefaultLandingViewValue::System => scryer_application::UiDefaultLandingView::System,
+    }
+}
+
+fn from_ui_settings_facet(facet: scryer_application::UiSettingsFacet) -> UiSettingsFacetValue {
+    match facet {
+        scryer_application::UiSettingsFacet::Movies => UiSettingsFacetValue::Movies,
+        scryer_application::UiSettingsFacet::Series => UiSettingsFacetValue::Series,
+        scryer_application::UiSettingsFacet::Anime => UiSettingsFacetValue::Anime,
+    }
+}
+
+fn to_app_ui_settings_facet(facet: UiSettingsFacetValue) -> scryer_application::UiSettingsFacet {
+    match facet {
+        UiSettingsFacetValue::Movies => scryer_application::UiSettingsFacet::Movies,
+        UiSettingsFacetValue::Series => scryer_application::UiSettingsFacet::Series,
+        UiSettingsFacetValue::Anime => scryer_application::UiSettingsFacet::Anime,
+    }
+}
+
+fn from_ui_table_view_mode(mode: scryer_application::UiTableViewMode) -> UiTableViewModeValue {
+    match mode {
+        scryer_application::UiTableViewMode::Compact => UiTableViewModeValue::Compact,
+        scryer_application::UiTableViewMode::PosterTable => UiTableViewModeValue::PosterTable,
+    }
+}
+
+fn to_app_ui_table_view_mode(mode: UiTableViewModeValue) -> scryer_application::UiTableViewMode {
+    match mode {
+        UiTableViewModeValue::Compact => scryer_application::UiTableViewMode::Compact,
+        UiTableViewModeValue::PosterTable => scryer_application::UiTableViewMode::PosterTable,
+    }
+}
+
+pub(crate) fn from_ui_settings(settings: scryer_application::UiSettings) -> UiSettingsPayload {
+    UiSettingsPayload {
+        theme: from_ui_theme(settings.theme),
+        date_time_format: from_ui_date_time_format(settings.date_time_format),
+        highlight_color: settings.highlight_color,
+        secondary_color: settings.secondary_color,
+        high_contrast_mode: settings.high_contrast_mode,
+        reduce_motion: settings.reduce_motion,
+        hide_sponsor_button: settings.hide_sponsor_button,
+        density: from_ui_density(settings.density),
+        sidebar_mode: from_ui_sidebar_mode(settings.sidebar_mode),
+        default_landing_view: from_ui_default_landing_view(settings.default_landing_view),
+        table_columns: settings
+            .table_columns
+            .into_iter()
+            .map(|column| UiTableColumnSettingPayload {
+                facet: from_ui_settings_facet(column.facet),
+                table_view_mode: from_ui_table_view_mode(column.table_view_mode),
+                column_id: column.column_id,
+                column_order: column.column_order,
+                visible: column.visible,
+            })
+            .collect(),
+    }
+}
+
+pub(crate) fn ui_settings_update_from_input(
+    input: SetMyUiSettingsInput,
+    current_date_time_format: scryer_application::UiDateTimeFormat,
+) -> scryer_application::UiSettingsUpdate {
+    scryer_application::UiSettingsUpdate {
+        theme: to_app_ui_theme(input.theme),
+        date_time_format: input
+            .date_time_format
+            .map(to_app_ui_date_time_format)
+            .unwrap_or(current_date_time_format),
+        highlight_color: input.highlight_color,
+        secondary_color: input.secondary_color,
+        high_contrast_mode: input.high_contrast_mode,
+        reduce_motion: input.reduce_motion,
+        hide_sponsor_button: input.hide_sponsor_button,
+        density: to_app_ui_density(input.density),
+        sidebar_mode: to_app_ui_sidebar_mode(input.sidebar_mode),
+        default_landing_view: to_app_ui_default_landing_view(input.default_landing_view),
+        table_columns: input
+            .table_columns
+            .into_iter()
+            .map(|column| scryer_application::UiTableColumnSetting {
+                facet: to_app_ui_settings_facet(column.facet),
+                table_view_mode: to_app_ui_table_view_mode(column.table_view_mode),
+                column_id: column.column_id,
+                column_order: column.column_order,
+                visible: column.visible,
+            })
+            .collect(),
     }
 }
 
@@ -384,6 +566,13 @@ impl SettingsQueries {
         Ok(from_backup_settings(settings))
     }
 
+    async fn my_ui_settings(&self, ctx: &Context<'_>) -> GqlResult<UiSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let settings = app.get_my_ui_settings(&actor).await.map_err(to_gql_error)?;
+        Ok(from_ui_settings(settings))
+    }
+
     async fn security_settings(&self, ctx: &Context<'_>) -> GqlResult<SecuritySettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -431,19 +620,6 @@ impl SettingsQueries {
                 .collect()
         })
         .map_err(to_gql_error)
-    }
-
-    async fn media_server_connection(
-        &self,
-        ctx: &Context<'_>,
-        id: ID,
-    ) -> GqlResult<Option<MediaServerConnectionPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        app.get_media_server_connection(&actor, id.as_ref())
-            .await
-            .map(|connection| connection.map(from_media_server_connection))
-            .map_err(to_gql_error)
     }
 
     async fn jellyfin_server_users(
@@ -633,6 +809,18 @@ impl SettingsQueries {
         Ok(payloads)
     }
 
+    async fn indexer_proxy_configs(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Vec<IndexerProxyConfigPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.list_indexer_proxy_configs(&actor)
+            .await
+            .map(|configs| configs.into_iter().map(from_indexer_proxy_config).collect())
+            .map_err(to_gql_error)
+    }
+
     async fn root_folders(
         &self,
         ctx: &Context<'_>,
@@ -656,12 +844,11 @@ impl SettingsQueries {
     async fn download_client_configs(
         &self,
         ctx: &Context<'_>,
-        client_type: Option<String>,
     ) -> GqlResult<Vec<DownloadClientConfigPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let configs = app
-            .list_download_client_configs(&actor, client_type)
+            .list_download_client_configs(&actor, None)
             .await
             .map_err(to_gql_error)?;
         let field_map = app

@@ -19,6 +19,8 @@ struct StoredPluginCatalogStatusPayload {
     message: Option<String>,
     #[serde(default)]
     restore_warnings: Vec<String>,
+    #[serde(default)]
+    last_error: Option<String>,
 }
 #[derive(Clone, Debug)]
 struct RestoredPluginRecoveryTarget {

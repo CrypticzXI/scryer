@@ -1066,34 +1066,6 @@ struct MovieRenamePlanOptions<'a> {
     planned_targets: &'a mut HashSet<String>,
 }
 
-fn render_template_tokens(template: &str, tokens: &BTreeMap<String, String>) -> String {
-    let mut out = String::new();
-    let chars: Vec<char> = template.chars().collect();
-    let mut cursor = 0usize;
-
-    while cursor < chars.len() {
-        let ch = chars[cursor];
-        if ch != '{' {
-            out.push(ch);
-            cursor += 1;
-            continue;
-        }
-
-        if let Some(end) = chars[cursor + 1..].iter().position(|c| *c == '}') {
-            let end_index = cursor + 1 + end;
-            let token_spec: String = chars[cursor + 1..end_index].iter().collect();
-            out.push_str(&resolve_template_token(tokens, token_spec.trim()));
-            cursor = end_index + 1;
-            continue;
-        }
-
-        out.push(ch);
-        cursor += 1;
-    }
-
-    out
-}
-
 const RENAME_LITERAL_PIPE_SENTINEL: char = '\u{E000}';
 const RENAME_LITERAL_COLON_SENTINEL: char = '\u{E001}';
 
@@ -1177,7 +1149,7 @@ fn finalize_generated_filename_component(value: &str) -> String {
 }
 
 pub fn render_title_folder_template(template: &str, tokens: &BTreeMap<String, String>) -> String {
-    let raw = render_template_tokens(template, tokens);
+    let raw = restore_rename_literal_sentinels(&render_rename_template_tokens(template, tokens));
     let cleaned = strip_empty_folder_template_groups(&raw);
     truncate_generated_folder_component(&sanitize_filesystem_component(cleaned.trim()))
 }
@@ -1218,11 +1190,13 @@ pub(crate) fn validate_title_folder_template(template: &str) -> AppResult<()> {
                 "folder template contains an unmatched '{'".to_string(),
             ));
         }
-        let token_name = token_spec
-            .split_once(':')
-            .map_or(token_spec.trim(), |(name, _)| name.trim())
-            .to_ascii_lowercase();
-        if !is_supported_title_folder_token(&token_name) {
+        let Some(parsed_token) = parse_rename_template_token_spec(token_spec.trim()) else {
+            return Err(AppError::Validation(format!(
+                "unsupported folder template token: {{{}}}",
+                token_spec.trim()
+            )));
+        };
+        if !is_supported_title_folder_token(&parsed_token.name) {
             return Err(AppError::Validation(format!(
                 "unsupported folder template token: {{{}}}",
                 token_spec.trim()
@@ -1236,6 +1210,89 @@ pub(crate) fn validate_title_folder_template(template: &str) -> AppResult<()> {
         return Err(AppError::Validation(
             "folder template must include at least one supported token".to_string(),
         ));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn validate_rename_template(template: &str) -> AppResult<()> {
+    validate_rename_template_with_token_checker(template, is_supported_rename_template_token)
+}
+
+pub(crate) fn validate_rename_template_for_facet(
+    template: &str,
+    facet: &MediaFacet,
+) -> AppResult<()> {
+    validate_rename_template_with_token_checker(template, |token| {
+        is_supported_rename_template_token_for_facet(token, facet)
+    })
+}
+
+fn validate_rename_template_with_token_checker(
+    template: &str,
+    is_supported_token: impl Fn(&str) -> bool,
+) -> AppResult<()> {
+    let trimmed = template.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation(
+            "rename template is required".to_string(),
+        ));
+    }
+
+    let chars: Vec<char> = trimmed.chars().collect();
+    let mut cursor = 0usize;
+    let mut escaped_literal_open_count = 0usize;
+
+    while cursor < chars.len() {
+        let ch = chars[cursor];
+        if ch == '{' {
+            if chars.get(cursor + 1).is_some_and(|next| *next == '{') {
+                escaped_literal_open_count += 1;
+                cursor += 2;
+                continue;
+            }
+
+            let Some(end) = chars[cursor + 1..].iter().position(|value| *value == '}') else {
+                return Err(AppError::Validation(
+                    "rename template contains an unmatched '{'".to_string(),
+                ));
+            };
+            let end_index = cursor + 1 + end;
+            let token_spec: String = chars[cursor + 1..end_index].iter().collect();
+            if token_spec.contains('{') {
+                return Err(AppError::Validation(
+                    "rename template contains an unmatched '{'".to_string(),
+                ));
+            }
+            let Some(parsed_token) = parse_rename_template_token_spec(token_spec.trim()) else {
+                return Err(AppError::Validation(format!(
+                    "unsupported rename template token: {{{}}}",
+                    token_spec.trim()
+                )));
+            };
+            if !is_supported_token(&parsed_token.name) {
+                return Err(AppError::Validation(format!(
+                    "unsupported rename template token: {{{}}}",
+                    token_spec.trim()
+                )));
+            }
+            cursor = end_index + 1;
+        } else if ch == '}' {
+            if chars.get(cursor + 1).is_some_and(|next| *next == '}') {
+                escaped_literal_open_count = escaped_literal_open_count.saturating_sub(1);
+                cursor += 2;
+            } else if escaped_literal_open_count > 0 {
+                escaped_literal_open_count -= 1;
+                cursor += 1;
+            } else {
+                return Err(AppError::Validation(
+                    "rename template contains an unmatched '}'".to_string(),
+                ));
+            }
+        } else {
+            cursor += 1;
+        }
     }
 
     Ok(())
@@ -1597,6 +1654,56 @@ const TITLE_EXTERNAL_ID_TOKENS: [(&str, &str); 6] = [
     ("mal_id", "mal"),
     ("anilist_id", "anilist"),
 ];
+
+#[cfg(test)]
+fn is_supported_rename_template_token(token: &str) -> bool {
+    matches!(
+        token,
+        "title"
+            | "year"
+            | "quality"
+            | "edition"
+            | "source"
+            | "video_codec"
+            | "audio_codec"
+            | "audio_channels"
+            | "group"
+            | "ext"
+            | "season"
+            | "season_order"
+            | "episode"
+            | "episode_title"
+            | "absolute_episode"
+    ) || TITLE_EXTERNAL_ID_TOKENS
+        .iter()
+        .any(|(token_name, _)| *token_name == token)
+}
+
+fn is_supported_rename_template_token_for_facet(token: &str, facet: &MediaFacet) -> bool {
+    let common = matches!(
+        token,
+        "title"
+            | "year"
+            | "quality"
+            | "source"
+            | "video_codec"
+            | "audio_codec"
+            | "audio_channels"
+            | "group"
+            | "ext"
+    ) || TITLE_EXTERNAL_ID_TOKENS
+        .iter()
+        .any(|(token_name, _)| *token_name == token);
+
+    common
+        || match facet {
+            MediaFacet::Movie => token == "edition",
+            MediaFacet::Series | MediaFacet::Anime => matches!(
+                token,
+                "season" | "season_order" | "episode" | "episode_title" | "absolute_episode"
+            ),
+        }
+}
 
 fn is_supported_title_folder_token(token: &str) -> bool {
     matches!(token, "title" | "year")
@@ -2418,6 +2525,7 @@ pub(crate) fn split_title_and_year_hint(raw_title: &str) -> (String, Option<Stri
 
 enum RenameTemplateTokenFilter {
     Space(String),
+    Truncate(usize),
 }
 
 struct RenameTemplateTokenSpec {
@@ -2446,6 +2554,9 @@ fn resolve_template_token(tokens: &BTreeMap<String, String>, token_spec: &str) -
         match filter {
             RenameTemplateTokenFilter::Space(replacement) => {
                 rendered = replace_token_whitespace(&rendered, &replacement);
+            }
+            RenameTemplateTokenFilter::Truncate(limit) => {
+                rendered = truncate_token_chars(&rendered, limit);
             }
         }
     }
@@ -2480,11 +2591,19 @@ fn parse_rename_template_token_spec(token_spec: &str) -> Option<RenameTemplateTo
 
 fn parse_rename_template_token_filter(filter_spec: &str) -> Option<RenameTemplateTokenFilter> {
     let filter_spec = filter_spec.trim();
-    let replacement = filter_spec.strip_prefix("space:")?;
-    match replacement {
-        "_" | "." | "-" | "" => Some(RenameTemplateTokenFilter::Space(replacement.to_string())),
-        _ => None,
+    if let Some(replacement) = filter_spec.strip_prefix("space:") {
+        return match replacement {
+            "_" | "." | "-" | "" => Some(RenameTemplateTokenFilter::Space(replacement.to_string())),
+            _ => None,
+        };
     }
+
+    let raw_limit = filter_spec.strip_prefix("truncate:")?;
+    if !raw_limit.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let limit = raw_limit.parse::<usize>().ok()?;
+    (limit > 0).then_some(RenameTemplateTokenFilter::Truncate(limit))
 }
 
 fn replace_token_whitespace(value: &str, replacement: &str) -> String {
@@ -2497,6 +2616,13 @@ fn replace_token_whitespace(value: &str, replacement: &str) -> String {
         }
     }
     rendered
+}
+
+fn truncate_token_chars(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    value.chars().take(limit).collect()
 }
 
 pub fn sanitize_filesystem_component(raw: &str) -> String {

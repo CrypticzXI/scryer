@@ -22,7 +22,8 @@ use crate::{
     DownloadSubmissionRepository, EpisodeUpdate, FacetRegistry, ImportArtifact,
     ImportArtifactRepository, IndexerConfigRepository, JwtAuthConfig, PendingTitleHydration,
     QualityProfile, QualityProfileRepository, SETTINGS_SCOPE_SYSTEM, ScopedExternalId,
-    SettingsRepository, ShowRepository, SubmissionScope, TitleMetadataUpdate, TitleRepository,
+    SeriesMovieExternalIdLookupMatch, SettingsRepository, ShowRepository, SubmissionScope,
+    TitleExternalIdLookup, TitleMetadataUpdate, TitleRepository,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -191,13 +192,6 @@ impl TitleRepository for TestTitleRepo {
         Ok(vec![])
     }
 
-    async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
-        &self,
-        _: usize,
-    ) -> AppResult<Vec<String>> {
-        Ok(vec![])
-    }
-
     async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
         Ok(())
     }
@@ -276,6 +270,14 @@ impl ShowRepository for TestShowRepo {
         &self,
         _: &str,
     ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>> {
+        Ok(vec![])
+    }
+
+    async fn list_series_movie_external_id_lookup_matches(
+        &self,
+        _: &[String],
+        _: &[TitleExternalIdLookup],
+    ) -> AppResult<Vec<SeriesMovieExternalIdLookupMatch>> {
         Ok(vec![])
     }
 
@@ -1341,6 +1343,7 @@ fn build_title(id: &str, name: &str, facet: MediaFacet) -> Title {
         facet,
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         created_by: None,
         created_at: Utc::now(),
@@ -1351,10 +1354,11 @@ fn build_title(id: &str, name: &str, facet: MediaFacet) -> Title {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,

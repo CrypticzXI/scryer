@@ -152,6 +152,44 @@ pub fn normalize_detected_audio_language_code(code: &str) -> Option<String> {
     normalize_generic_app_language_code(code)
 }
 
+/// Strict language resolution for free-text contexts such as audio track titles.
+///
+/// Resolves only inputs that map to a *known* language via the ISO tables, the
+/// Scryer variants, or the release-token aliases. Unlike
+/// [`normalize_detected_audio_language_code`], this deliberately omits the
+/// 3-letter passthrough fallback, so codec/technical tokens (e.g. "DTS", "AAC",
+/// "AC3") are NOT misread as languages when scanning a track title token by token.
+pub fn normalize_known_audio_language_code(code: &str) -> Option<String> {
+    let normalized = code.trim().replace('_', "-");
+    if normalized.is_empty() || normalized.eq_ignore_ascii_case("und") {
+        return None;
+    }
+
+    match normalized.to_ascii_lowercase().as_str() {
+        "ea" => return Some("spa".to_string()),
+        "pob" => return Some("por".to_string()),
+        "zht" => return Some("zho".to_string()),
+        // "LAT" is the release/scene abbreviation for Latino (Latin-American
+        // Spanish), not the dead language Latin. Resolve it before the ISO-exact
+        // lookup, which would otherwise map it to "lat" (Latin).
+        "lat" => return Some("spa".to_string()),
+        _ => {}
+    }
+
+    normalize_iso_language_code_exact(&normalized)
+        .or_else(|| normalize_release_language_code(&normalized))
+        .or_else(|| {
+            normalized
+                .split_once('-')
+                .and_then(|(primary, _)| normalize_iso_language_code_exact(primary))
+        })
+        .or_else(|| {
+            normalized
+                .split_once('-')
+                .and_then(|(primary, _)| normalize_release_language_code(primary))
+        })
+}
+
 pub fn normalize_detected_audio_languages<'a>(
     languages: impl IntoIterator<Item = &'a str>,
 ) -> Vec<String> {

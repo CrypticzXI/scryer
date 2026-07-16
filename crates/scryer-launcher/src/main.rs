@@ -315,22 +315,137 @@ fn repair_ownership<O: LauncherOps>(ops: &O, config: &LaunchConfig, uid: u32, gi
     }
 }
 
-fn chown_recursive(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
-    chown_one(path, uid, gid)?;
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_dir() {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChownNodeKind {
+    Directory,
+    Other,
+}
+
+trait ChownTraversal {
+    fn chown(&self, path: &Path, uid: u32, gid: u32) -> io::Result<()>;
+    fn node_kind(&self, path: &Path) -> io::Result<ChownNodeKind>;
+    fn child_paths(&self, path: &Path) -> io::Result<Vec<io::Result<PathBuf>>>;
+}
+
+struct FsChownTraversal;
+
+impl ChownTraversal for FsChownTraversal {
+    fn chown(&self, path: &Path, uid: u32, gid: u32) -> io::Result<()> {
+        chown_one(path, uid, gid)
+    }
+
+    fn node_kind(&self, path: &Path) -> io::Result<ChownNodeKind> {
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.file_type().is_dir() {
+            Ok(ChownNodeKind::Directory)
+        } else {
+            Ok(ChownNodeKind::Other)
+        }
+    }
+
+    fn child_paths(&self, path: &Path) -> io::Result<Vec<io::Result<PathBuf>>> {
+        let mut paths = Vec::new();
         for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let entry_path = entry.path();
-            let entry_metadata = entry.metadata()?;
-            if entry_metadata.is_dir() {
-                chown_recursive(&entry_path, uid, gid)?;
-            } else {
-                chown_one(&entry_path, uid, gid)?;
+            paths.push(entry.map(|entry| entry.path()));
+        }
+        Ok(paths)
+    }
+}
+
+#[derive(Default)]
+struct ChownRepairFailures {
+    count: usize,
+    first: Option<String>,
+}
+
+impl ChownRepairFailures {
+    fn record(&mut self, path: &Path, error: io::Error) {
+        self.count += 1;
+        if self.first.is_none() {
+            self.first = Some(format!("{}: {}", path.display(), error));
+        }
+    }
+
+    fn into_result(self) -> io::Result<()> {
+        if self.count == 0 {
+            return Ok(());
+        }
+
+        Err(io::Error::other(format!(
+            "{} ownership repair operation(s) failed; first failure: {}",
+            self.count,
+            self.first.unwrap_or_else(|| "unknown".to_string())
+        )))
+    }
+}
+
+fn chown_recursive(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
+    chown_recursive_with(&FsChownTraversal, path, uid, gid)
+}
+
+fn chown_recursive_with<T: ChownTraversal>(
+    traversal: &T,
+    path: &Path,
+    uid: u32,
+    gid: u32,
+) -> io::Result<()> {
+    let mut failures = ChownRepairFailures::default();
+    chown_recursive_inner(traversal, path, uid, gid, &mut failures);
+    failures.into_result()
+}
+
+fn chown_recursive_inner<T: ChownTraversal>(
+    traversal: &T,
+    path: &Path,
+    uid: u32,
+    gid: u32,
+    failures: &mut ChownRepairFailures,
+) {
+    if let Err(error) = traversal.chown(path, uid, gid) {
+        failures.record(path, error);
+    }
+
+    let kind = match traversal.node_kind(path) {
+        Ok(kind) => kind,
+        Err(error) => {
+            failures.record(path, error);
+            return;
+        }
+    };
+    if kind != ChownNodeKind::Directory {
+        return;
+    }
+
+    let children = match traversal.child_paths(path) {
+        Ok(children) => children,
+        Err(error) => {
+            failures.record(path, error);
+            return;
+        }
+    };
+
+    for child in children {
+        let child_path = match child {
+            Ok(child_path) => child_path,
+            Err(error) => {
+                failures.record(path, error);
+                continue;
+            }
+        };
+        match traversal.node_kind(&child_path) {
+            Ok(ChownNodeKind::Directory) => {
+                chown_recursive_inner(traversal, &child_path, uid, gid, failures);
+            }
+            Ok(ChownNodeKind::Other) => {
+                if let Err(error) = traversal.chown(&child_path, uid, gid) {
+                    failures.record(&child_path, error);
+                }
+            }
+            Err(error) => {
+                failures.record(&child_path, error);
             }
         }
     }
-    Ok(())
 }
 
 fn chown_one(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
@@ -377,6 +492,75 @@ mod tests {
     enum MockExecResult {
         Success,
         Failure,
+    }
+
+    #[derive(Clone, Copy)]
+    enum FakeChownEntry {
+        Directory,
+        Other,
+        MetadataError,
+    }
+
+    #[derive(Default)]
+    struct FakeChownTraversal {
+        entries: HashMap<PathBuf, FakeChownEntry>,
+        children: HashMap<PathBuf, Vec<Result<PathBuf, &'static str>>>,
+        chown_failures: HashMap<PathBuf, &'static str>,
+        chown_calls: RefCell<Vec<PathBuf>>,
+    }
+
+    impl FakeChownTraversal {
+        fn insert_entry<P: AsRef<Path>>(&mut self, path: P, entry: FakeChownEntry) {
+            self.entries.insert(path.as_ref().to_path_buf(), entry);
+        }
+
+        fn insert_children<P: AsRef<Path>>(
+            &mut self,
+            path: P,
+            children: Vec<Result<PathBuf, &'static str>>,
+        ) {
+            self.children.insert(path.as_ref().to_path_buf(), children);
+        }
+
+        fn fail_chown<P: AsRef<Path>>(&mut self, path: P, error: &'static str) {
+            self.chown_failures
+                .insert(path.as_ref().to_path_buf(), error);
+        }
+
+        fn chown_calls(&self) -> Vec<PathBuf> {
+            self.chown_calls.borrow().clone()
+        }
+    }
+
+    impl ChownTraversal for FakeChownTraversal {
+        fn chown(&self, path: &Path, _uid: u32, _gid: u32) -> io::Result<()> {
+            self.chown_calls.borrow_mut().push(path.to_path_buf());
+            if let Some(error) = self.chown_failures.get(path) {
+                Err(io::Error::other(*error))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn node_kind(&self, path: &Path) -> io::Result<ChownNodeKind> {
+            match self.entries.get(path) {
+                Some(FakeChownEntry::Directory) => Ok(ChownNodeKind::Directory),
+                Some(FakeChownEntry::Other) => Ok(ChownNodeKind::Other),
+                Some(FakeChownEntry::MetadataError) => Err(io::Error::other("metadata failed")),
+                None => Err(io::Error::new(io::ErrorKind::NotFound, "missing entry")),
+            }
+        }
+
+        fn child_paths(&self, path: &Path) -> io::Result<Vec<io::Result<PathBuf>>> {
+            Ok(self
+                .children
+                .get(path)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|child| child.map_err(io::Error::other))
+                .collect())
+        }
     }
 
     struct MockLauncherOps {
@@ -600,6 +784,47 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("failed to re-own"))
         );
+    }
+
+    #[test]
+    fn recursive_chown_should_continue_after_child_failures() {
+        let mut traversal = FakeChownTraversal::default();
+        traversal.insert_entry("/config", FakeChownEntry::Directory);
+        traversal.insert_entry("/config/gone", FakeChownEntry::MetadataError);
+        traversal.insert_entry("/config/readonly", FakeChownEntry::Directory);
+        traversal.insert_entry("/config/later-file", FakeChownEntry::Other);
+        traversal.insert_entry("/config/later-dir", FakeChownEntry::Directory);
+        traversal.insert_entry("/config/later-dir/nested", FakeChownEntry::Other);
+        traversal.insert_children(
+            "/config",
+            vec![
+                Ok(PathBuf::from("/config/gone")),
+                Ok(PathBuf::from("/config/readonly")),
+                Err("entry vanished"),
+                Ok(PathBuf::from("/config/later-file")),
+                Ok(PathBuf::from("/config/later-dir")),
+            ],
+        );
+        traversal.insert_children("/config/readonly", vec![Err("read-only submount")]);
+        traversal.insert_children(
+            "/config/later-dir",
+            vec![Ok(PathBuf::from("/config/later-dir/nested"))],
+        );
+        traversal.fail_chown("/config/later-file", "chown failed");
+
+        let error = chown_recursive_with(&traversal, Path::new("/config"), 1000, 1000)
+            .expect_err("partial recursive chown should report aggregate failure");
+
+        let calls = traversal.chown_calls();
+        assert!(calls.contains(&PathBuf::from("/config")));
+        assert!(calls.contains(&PathBuf::from("/config/readonly")));
+        assert!(calls.contains(&PathBuf::from("/config/later-file")));
+        assert!(calls.contains(&PathBuf::from("/config/later-dir")));
+        assert!(calls.contains(&PathBuf::from("/config/later-dir/nested")));
+
+        let message = error.to_string();
+        assert!(message.contains("4 ownership repair operation(s) failed"));
+        assert!(message.contains("/config/gone"));
     }
 
     #[test]

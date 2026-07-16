@@ -1,5 +1,13 @@
-import { Check, Loader2, X } from "lucide-react";
+import { Check, Loader2, Search, X } from "lucide-react";
+import { PluginVisualLabel } from "@/components/common/plugin-visual";
 import { Button } from "@/components/ui/button";
+import {
+  SetupBackButton,
+  SetupPanel,
+  SetupPrimaryButton,
+  SetupStepHeader,
+} from "./setup-chrome";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -38,15 +46,15 @@ function isMissingRequiredField(
   field: ConfigFieldDef,
   configValues: Record<string, string>,
 ) {
-  if (!field.required || field.valueSource === "host_binding") {
+  if (!field.required || field.valueSource === "HOST_BINDING") {
     return false;
   }
 
   const value =
     configValues[field.key] ??
     field.defaultValue ??
-    (field.fieldType === "bool" ? "false" : "");
-  return field.fieldType !== "bool" && value.trim() === "";
+    (field.fieldType === "BOOL" ? "false" : "");
+  return field.fieldType !== "BOOL" && value.trim() === "";
 }
 
 function DynamicConfigField({
@@ -67,17 +75,15 @@ function DynamicConfigField({
     </span>
   ) : null;
 
-  if (field.fieldType === "bool") {
+  if (field.fieldType === "BOOL") {
     return (
       <label className="flex items-center gap-2">
-        <input
+        <Checkbox
           id={fieldId}
-          type="checkbox"
           checked={value === "true"}
-          onChange={(event) =>
-            onChange(field.key, event.target.checked ? "true" : "false")
+          onCheckedChange={(checkedValue) =>
+            onChange(field.key, checkedValue === true ? "true" : "false")
           }
-          className="accent-primary"
         />
         <span className="inline-flex items-center gap-2 text-sm">
           {field.label}
@@ -92,7 +98,7 @@ function DynamicConfigField({
     );
   }
 
-  if (field.fieldType === "select" && field.options.length > 0) {
+  if (field.fieldType === "SELECT" && field.options.length > 0) {
     return (
       <label className="space-y-2">
         <Label className="inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -121,7 +127,7 @@ function DynamicConfigField({
     );
   }
 
-  if (field.fieldType === "multiline") {
+  if (field.fieldType === "MULTILINE") {
     return (
       <label className="space-y-2">
         <Label className="inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -153,17 +159,17 @@ function DynamicConfigField({
         id={fieldId}
         value={value}
         onChange={(event) => onChange(field.key, event.target.value)}
-        {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
+        {...(field.fieldType === "NUMBER" ? signedIntegerInputProps : {})}
         type={
-          field.fieldType === "password"
+          field.fieldType === "PASSWORD"
             ? "password"
-            : field.fieldType === "number"
+            : field.fieldType === "NUMBER"
               ? "number"
               : "text"
         }
         required={field.required}
         placeholder={
-          field.fieldType === "password"
+          field.fieldType === "PASSWORD"
             ? t("form.apiKeyInputPlaceholder")
             : field.defaultValue ?? ""
         }
@@ -198,7 +204,7 @@ export function SetupIndexerView({
   const selectedProviderFields = visibleIndexerConfigFields(
     providerType,
     (selectedProvider?.configFields ?? []).filter(
-      (field) => field.valueSource !== "host_binding",
+      (field) => field.valueSource !== "HOST_BINDING",
     ),
   );
   const hasMissingRequiredField = selectedProviderFields.some((field) =>
@@ -209,11 +215,12 @@ export function SetupIndexerView({
   const canProceed = saved;
 
   return (
-    <div id="setup-indexer-view" className="flex flex-col gap-6">
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">{t("setup.indexerTitle")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">{t("setup.indexerDescription")}</p>
-      </div>
+    <SetupPanel id="setup-indexer-view" className="flex flex-col gap-6">
+      <SetupStepHeader
+        icon={Search}
+        title={t("setup.indexerTitle")}
+        subtitle={t("setup.indexerDescription")}
+      />
       <div className="mx-auto flex w-full max-w-md flex-col gap-4">
         <div className="space-y-2">
           <Label htmlFor="setup-indexer-name">{t("label.name")}</Label>
@@ -227,18 +234,32 @@ export function SetupIndexerView({
         <div className="space-y-2">
           <Label htmlFor="setup-indexer-provider">{t("settings.indexerProvider")}</Label>
           <Select value={providerType} onValueChange={onProviderTypeChange}>
-            <SelectTrigger id="setup-indexer-provider"><SelectValue placeholder="Select provider" /></SelectTrigger>
+            <SelectTrigger id="setup-indexer-provider">
+              <SelectValue placeholder="Select provider">
+                {selectedProvider ? (
+                  <PluginVisualLabel
+                    providerType={selectedProvider.value}
+                    pluginType="indexer"
+                    label={selectedProvider.label}
+                  />
+                ) : null}
+              </SelectValue>
+            </SelectTrigger>
             <SelectContent>
               {providerOptions.map((opt) => (
                 <SelectItem key={opt.value} value={opt.value}>
-                  {opt.label}
+                  <PluginVisualLabel
+                    providerType={opt.value}
+                    pluginType="indexer"
+                    label={opt.label}
+                  />
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
         {selectedProviderFields
-          .filter((field) => field.fieldType !== "bool")
+          .filter((field) => field.fieldType !== "BOOL")
           .map((field) => (
             <DynamicConfigField
               key={field.key}
@@ -252,10 +273,10 @@ export function SetupIndexerView({
               onChange={onConfigValueChange}
             />
           ))}
-        {selectedProviderFields.some((field) => field.fieldType === "bool") ? (
+        {selectedProviderFields.some((field) => field.fieldType === "BOOL") ? (
           <div className="flex flex-wrap items-center gap-4">
             {selectedProviderFields
-              .filter((field) => field.fieldType === "bool")
+              .filter((field) => field.fieldType === "BOOL")
               .map((field) => (
                 <DynamicConfigField
                   key={field.key}
@@ -284,34 +305,42 @@ export function SetupIndexerView({
             {t("label.testConnection")}
           </Button>
           {testResult === "success" && (
-            <span className="flex items-center gap-1 text-sm text-emerald-500">
+            <span
+              id="setup-indexer-test-result-success"
+              className="flex items-center gap-1 text-sm text-[var(--scry-success-text-soft)]"
+            >
               <Check className="h-4 w-4" /> {t("setup.connectionSuccess")}
             </span>
           )}
           {testResult === "failed" && (
-            <span className="flex items-center gap-1 text-sm text-destructive">
+            <span
+              id="setup-indexer-test-result-failed"
+              className="flex items-center gap-1 text-sm text-destructive"
+            >
               <X className="h-4 w-4" /> {t("setup.connectionFailed")}
             </span>
           )}
         </div>
         {error && <p id="setup-indexer-error" className="text-sm text-destructive">{error}</p>}
         {saved && (
-          <p id="setup-indexer-saved" className="text-sm text-emerald-500">{t("setup.saved")}</p>
+          <p id="setup-indexer-saved" className="text-sm text-[var(--scry-success-text-soft)]">{t("setup.saved")}</p>
         )}
       </div>
       <div className="flex items-center justify-between pt-2">
-        <Button id="setup-indexer-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
+        <SetupBackButton id="setup-indexer-back" onClick={onBack}>
+          {t("setup.back")}
+        </SetupBackButton>
         <div className="flex items-center gap-3">
           {onSkip && (
-            <button id="setup-indexer-skip" type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
+            <Button id="setup-indexer-skip" type="button" variant="link" onClick={onSkip}>
               {t("setup.skip")}
-            </button>
+            </Button>
           )}
-          <Button id="setup-indexer-next" onClick={onNext} disabled={!canProceed || saving}>
+          <SetupPrimaryButton id="setup-indexer-next" onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}
-          </Button>
+          </SetupPrimaryButton>
         </div>
       </div>
-    </div>
+    </SetupPanel>
   );
 }

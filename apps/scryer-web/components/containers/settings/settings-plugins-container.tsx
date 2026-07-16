@@ -6,6 +6,7 @@ import {
   type PluginInstallProgressRecord,
   type RegistryPluginRecord,
 } from "@/components/views/settings/settings-plugins-section";
+import { SETTINGS_HEADER_ACTIONS_SLOT_ID } from "@/components/containers/settings/settings-container";
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
@@ -25,7 +26,7 @@ import { useProviderCatalogSubscription } from "@/lib/hooks/use-provider-catalog
 import { wsClient } from "@/lib/graphql/ws-client";
 
 type PluginCatalogStatusRecord = {
-  refreshState: string;
+  refreshState: 'READY' | 'DEGRADED';
   githubAvailable: boolean;
   lastCheckedAt?: string | null;
   outageMessage?: string | null;
@@ -150,6 +151,7 @@ export function SettingsPluginsContainer() {
   const [pendingManualUpload, setPendingManualUpload] = useState(false);
   const [manualUploadRiskAccepted, setManualUploadRiskAccepted] = useState(false);
   const [showManualInstall, setShowManualInstall] = useState(false);
+  const [headerActionsTarget, setHeaderActionsTarget] = useState<HTMLElement | null>(null);
 
   const setPlugins = useCallback((
     next:
@@ -165,6 +167,12 @@ export function SettingsPluginsContainer() {
   const [pendingUninstall, setPendingUninstall] = useState<RegistryPluginRecord | null>(null);
   const installProgressSubscriptionsRef = useRef(new Map<string, () => void>());
   const pluginProgressRef = useRef<Record<string, PluginInstallProgressRecord>>({});
+  const pluginsRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const lastPluginsRefreshCompletedAtRef = useRef(0);
+
+  useEffect(() => {
+    setHeaderActionsTarget(document.getElementById(SETTINGS_HEADER_ACTIONS_SLOT_ID));
+  }, []);
 
   useEffect(() => {
     pluginProgressRef.current = pluginProgress;
@@ -259,18 +267,27 @@ export function SettingsPluginsContainer() {
   }, []);
 
   const refreshPlugins = useCallback(async () => {
-    try {
-      const { data, error } = await client.query(pluginsQuery, {}).toPromise();
-      if (error) throw error;
-      const nextPlugins = data.plugins || [];
-      setPlugins(nextPlugins);
-      setCatalogStatus(data.pluginCatalogStatus || null);
-      reconcilePluginOperationState(nextPlugins);
-    } catch (error) {
-      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
-    } finally {
-      setInitialLoading(false);
+    if (pluginsRefreshPromiseRef.current) {
+      return pluginsRefreshPromiseRef.current;
     }
+    const refreshPromise = (async () => {
+      try {
+        const { data, error } = await client.query(pluginsQuery, {}).toPromise();
+        if (error) throw error;
+        const nextPlugins = data.plugins || [];
+        setPlugins(nextPlugins);
+        setCatalogStatus(data.pluginCatalogStatus || null);
+        reconcilePluginOperationState(nextPlugins);
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+      } finally {
+        setInitialLoading(false);
+        lastPluginsRefreshCompletedAtRef.current = Date.now();
+        pluginsRefreshPromiseRef.current = null;
+      }
+    })();
+    pluginsRefreshPromiseRef.current = refreshPromise;
+    return refreshPromise;
   }, [client, reconcilePluginOperationState, setGlobalStatus, t, setPlugins]);
 
   useEffect(() => {
@@ -278,6 +295,12 @@ export function SettingsPluginsContainer() {
   }, [refreshPlugins]);
 
   useProviderCatalogSubscription(() => {
+    if (
+      pluginsRefreshPromiseRef.current
+      || Date.now() - lastPluginsRefreshCompletedAtRef.current < 2_000
+    ) {
+      return;
+    }
     void refreshPlugins();
     dispatchNavigationBadgesRefresh();
   });
@@ -308,13 +331,13 @@ export function SettingsPluginsContainer() {
               [plugin.id]: snapshot,
             }));
 
-            if (snapshot.state === "succeeded" || snapshot.state === "failed") {
+            if (snapshot.state === "SUCCEEDED" || snapshot.state === "FAILED") {
               stopPluginInstallProgressSubscription(plugin.id);
               void (async () => {
                 try {
                   clearPluginBusyState(plugin.id, snapshot.operationKind);
 
-                  if (snapshot.state === "succeeded") {
+                  if (snapshot.state === "SUCCEEDED") {
                     setPluginErrors((current) => {
                       const next = { ...current };
                       delete next[plugin.id];
@@ -699,6 +722,7 @@ export function SettingsPluginsContainer() {
         manualPreview={manualPreview}
         manualBusy={manualBusy}
         showManualInstall={showManualInstall}
+        headerActionsTarget={headerActionsTarget}
         remoteActionsBlocked={{
           refresh: blockedRemoteActions.has("catalog_refresh"),
           install: blockedRemoteActions.has("install"),

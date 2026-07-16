@@ -32,6 +32,16 @@ impl NfoMetadata {
     }
 }
 
+fn canonical_title_genres(title: &Title) -> Vec<String> {
+    title
+        .canonical_tags
+        .iter()
+        .filter(|tag| tag.category.eq_ignore_ascii_case("genre"))
+        .map(|tag| tag.name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NfoRootKind {
     Movie,
@@ -117,9 +127,6 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
     let mut depth = 0usize;
     let mut uniqueid_type: Option<String> = None;
 
-    // Legacy <id> is lowest priority — only used if uniqueid/jellyfin tags don't
-    // provide the same ID. Defer until after the full parse.
-    let mut legacy_id: Option<String> = None;
     let mut url_fallback_text = String::new();
 
     loop {
@@ -224,9 +231,6 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
                         {
                             meta.tmdb_id = Some(text);
                         }
-                        "id" if legacy_id.is_none() => {
-                            legacy_id = Some(text);
-                        }
                         "title" if meta.title.is_none() => {
                             meta.title = Some(text);
                         }
@@ -248,24 +252,6 @@ fn parse_xml_nfo(content: &str, meta: &mut NfoMetadata) {
             Ok(Event::Eof) => break,
             Err(_) => break, // graceful on malformed XML
             _ => {}
-        }
-    }
-
-    // Apply legacy <id> only if higher-priority tags didn't provide the value.
-    // Numeric movie <id> values are intentionally ignored: too many tools have
-    // used that field for different providers, so it is not safe identity.
-    if root_kind != NfoRootKind::Episode
-        && let Some(id_val) = legacy_id
-    {
-        if id_val.starts_with("tt") && meta.imdb_id.is_none() {
-            meta.imdb_id = normalize_imdb(&id_val);
-        } else if looks_like_numeric_id(&id_val) {
-            match root_kind {
-                NfoRootKind::TvShow if meta.tvdb_id.is_none() => {
-                    meta.tvdb_id = Some(id_val);
-                }
-                _ => {}
-            }
         }
     }
 
@@ -376,9 +362,9 @@ pub(crate) fn render_movie_nfo(title: &Title) -> String {
     if let Some(runtime) = title.runtime_minutes.filter(|runtime| *runtime > 0) {
         write_element(&mut w, "runtime", &runtime.to_string());
     }
-    for genre in &title.genres {
+    for genre in canonical_title_genres(title) {
         if !genre.is_empty() {
-            write_element(&mut w, "genre", genre);
+            write_element(&mut w, "genre", &genre);
         }
     }
     write_optional_non_empty_element(&mut w, "studio", title.studio.as_deref());
@@ -404,9 +390,9 @@ pub(crate) fn render_tvshow_nfo(title: &Title) -> String {
         write_element(&mut w, "year", &year.to_string());
     }
     write_optional_non_empty_element(&mut w, "plot", title.overview.as_deref());
-    for genre in &title.genres {
+    for genre in canonical_title_genres(title) {
         if !genre.is_empty() {
-            write_element(&mut w, "genre", genre);
+            write_element(&mut w, "genre", &genre);
         }
     }
     write_optional_non_empty_element(&mut w, "studio", title.network.as_deref());
@@ -738,6 +724,9 @@ fn finish_xml(buf: Cursor<Vec<u8>>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+    use std::time::Instant;
+    use std::{cmp, fs as stdfs};
 
     fn nightfall_tvshow_nfo() -> &'static str {
         r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
@@ -794,7 +783,20 @@ mod tests {
 </tvshow>"#
     }
     use chrono::Utc;
-    use scryer_domain::{ExternalId, MediaFacet};
+    use scryer_domain::{CanonicalMediaTag, ExternalId, MediaFacet};
+
+    fn canonical_genre_tag(key: &str, name: &str) -> CanonicalMediaTag {
+        CanonicalMediaTag {
+            key: format!("canonical:genre:{key}"),
+            category: "genre".to_string(),
+            name: name.to_string(),
+            confidence: Some(1.0),
+            sources: Vec::new(),
+            source_tag_keys: Vec::new(),
+            is_adult: false,
+            is_spoiler: false,
+        }
+    }
 
     fn make_title() -> Title {
         Title {
@@ -805,6 +807,10 @@ mod tests {
             root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![
+                canonical_genre_tag("action", "Action"),
+                canonical_genre_tag("sci-fi", "Sci-Fi"),
+            ],
             external_ids: vec![
                 ExternalId {
                     source: "tvdb".into(),
@@ -826,10 +832,11 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: Some("tt0133093".into()),
             runtime_minutes: Some(136),
-            genres: vec!["Action".into(), "Sci-Fi".into()],
+            popularity: None,
             content_status: None,
             language: None,
             first_aired: None,
@@ -912,10 +919,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_legacy_id_imdb() {
+    fn ignore_bare_imdb_id_for_movie_root() {
         let nfo = "<movie><id>tt1234567</id></movie>";
         let meta = parse_nfo(nfo);
-        assert_eq!(meta.imdb_id, Some("tt1234567".into()));
+        assert_eq!(meta.imdb_id, None);
         assert_eq!(meta.tvdb_id, None);
     }
 
@@ -929,10 +936,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_legacy_id_tvdb_for_tvshow_root() {
+    fn ignore_bare_numeric_id_for_tvshow_root() {
         let nfo = "<tvshow><id>12345</id></tvshow>";
         let meta = parse_nfo(nfo);
-        assert_eq!(meta.tvdb_id, Some("12345".into()));
+        assert_eq!(meta.tvdb_id, None);
+        assert_eq!(meta.imdb_id, None);
+    }
+
+    #[test]
+    fn ignore_bare_imdb_id_for_tvshow_root() {
+        let nfo = "<tvshow><id>tt0372183</id></tvshow>";
+        let meta = parse_nfo(nfo);
+        assert_eq!(meta.tvdb_id, None);
         assert_eq!(meta.imdb_id, None);
     }
 
@@ -1383,5 +1398,129 @@ Pattern: Bonus/Bonus {sp,1-3,+4}.mp4
         assert!(plex.contains("ImdbId: tt0133093"));
         assert!(plex.contains("TmdbId: 603"));
         assert!(!plex.contains("Movie:"));
+    }
+
+    #[test]
+    #[ignore = "diagnostic harness for local mounted media roots"]
+    fn profile_real_media_root_nfo_parsing() {
+        let roots = std::env::var("SCRYER_NFO_PROFILE_ROOTS").unwrap_or_else(|_| {
+            "/Volumes/Media/Movies:/Volumes/Media/Anime:/Volumes/Media/TV".to_string()
+        });
+        let limit = std::env::var("SCRYER_NFO_PROFILE_LIMIT")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok());
+
+        for root in roots.split(':').filter(|root| !root.trim().is_empty()) {
+            let root_path = PathBuf::from(root);
+            if !root_path.is_dir() {
+                eprintln!("NFO_ROOT\t{}\tmissing", root_path.display());
+                continue;
+            }
+
+            let mut entries = stdfs::read_dir(&root_path)
+                .expect("read root")
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .collect::<Vec<_>>();
+            entries.sort();
+            if let Some(limit) = limit {
+                entries.truncate(limit);
+            }
+
+            let nfo_name = if root_path.ends_with("Movies") {
+                "movie.nfo"
+            } else {
+                "tvshow.nfo"
+            };
+            profile_nfo_entries(&root_path, &entries, nfo_name);
+        }
+    }
+
+    #[derive(Clone)]
+    struct NfoProfileRow {
+        path: PathBuf,
+        bytes: usize,
+        read_ms: u128,
+        parse_ms: u128,
+        has_tvdb: bool,
+        has_imdb: bool,
+        has_tmdb: bool,
+    }
+
+    fn profile_nfo_entries(root: &Path, entries: &[PathBuf], nfo_name: &str) {
+        let mut rows = Vec::new();
+        let mut missing = 0usize;
+        let mut total_read_ms = 0u128;
+        let mut total_parse_ms = 0u128;
+        let mut id_count = 0usize;
+
+        for entry in entries {
+            let nfo_path = entry.join(nfo_name);
+            let read_started = Instant::now();
+            let content = match stdfs::read_to_string(&nfo_path) {
+                Ok(content) => content,
+                Err(_) => {
+                    missing = missing.saturating_add(1);
+                    continue;
+                }
+            };
+            let read_ms = read_started.elapsed().as_millis();
+            total_read_ms = total_read_ms.saturating_add(read_ms);
+
+            let parse_started = Instant::now();
+            let parsed = parse_nfo(&content);
+            let parse_ms = parse_started.elapsed().as_millis();
+            total_parse_ms = total_parse_ms.saturating_add(parse_ms);
+            if parsed.has_external_ids() {
+                id_count = id_count.saturating_add(1);
+            }
+
+            rows.push(NfoProfileRow {
+                path: nfo_path,
+                bytes: content.len(),
+                read_ms,
+                parse_ms,
+                has_tvdb: parsed.tvdb_id.is_some(),
+                has_imdb: parsed.imdb_id.is_some(),
+                has_tmdb: parsed.tmdb_id.is_some(),
+            });
+        }
+
+        eprintln!(
+            "NFO_SUMMARY\troot={}\tentries={}\tparsed={}\tmissing={}\tids={}\tread_total_ms={}\tparse_total_ms={}",
+            root.display(),
+            entries.len(),
+            rows.len(),
+            missing,
+            id_count,
+            total_read_ms,
+            total_parse_ms
+        );
+        print_slowest_nfo_rows("NFO_READ_SLOW", &rows, |row| row.read_ms);
+        print_slowest_nfo_rows("NFO_PARSE_SLOW", &rows, |row| row.parse_ms);
+    }
+
+    fn print_slowest_nfo_rows(
+        label: &str,
+        rows: &[NfoProfileRow],
+        elapsed: impl Fn(&NfoProfileRow) -> u128,
+    ) {
+        let mut rows = rows.to_vec();
+        rows.sort_by_key(|row| cmp::Reverse(elapsed(row)));
+        for row in rows.into_iter().take(12) {
+            eprintln!(
+                "{}\tms={}\tread_ms={}\tparse_ms={}\tbytes={}\ttvdb={}\timdb={}\ttmdb={}\tpath={}",
+                label,
+                elapsed(&row),
+                row.read_ms,
+                row.parse_ms,
+                row.bytes,
+                row.has_tvdb,
+                row.has_imdb,
+                row.has_tmdb,
+                row.path.display()
+            );
+        }
     }
 }

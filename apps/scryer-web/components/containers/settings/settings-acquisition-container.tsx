@@ -1,73 +1,89 @@
-import * as React from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useClient } from "urql";
-import { SettingsAcquisitionSection } from "@/components/views/settings/settings-acquisition-section";
-import { acquisitionSettingsQuery } from "@/lib/graphql/queries";
-import { updateAcquisitionSettingsMutation } from "@/lib/graphql/mutations";
+import {
+  SettingsAcquisitionSection,
+  type AcquisitionSettings,
+} from "@/components/views/settings/settings-acquisition-section";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
-import type { AcquisitionSettings } from "@/lib/types/settings";
+import { acquisitionSettingsQuery } from "@/lib/graphql/queries";
+import { updateAcquisitionSettingsMutation } from "@/lib/graphql/mutations";
+import { useAuth } from "@/lib/hooks/use-auth";
+import { APP_PERMISSIONS, hasAnyAppPermission } from "@/lib/utils/permissions";
 
-const DEFAULTS: AcquisitionSettings = {
-  enabled: true,
-  upgradeCooldownHours: 24,
-  sameTierMinDelta: 120,
-  crossTierMinDelta: 30,
-  forcedUpgradeDeltaBypass: 400,
-  pollIntervalSeconds: 60,
-  syncIntervalSeconds: 3600,
-  batchSize: 50,
+type AcquisitionSettingsQueryResult = {
+  acquisitionSettings?: AcquisitionSettings | null;
 };
 
+type UpdateAcquisitionSettingsResult = {
+  updateAcquisitionSettings?: AcquisitionSettings | null;
+};
+
+// RFC 119 §7.5: the acquisition settings expose the convergence knobs — RSS is
+// the steady-state path; active search converges each scope once per indexer.
 export function SettingsAcquisitionContainer() {
-  const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
-  const [settings, setSettings] = React.useState<AcquisitionSettings>(DEFAULTS);
-  const [saving, setSaving] = React.useState(false);
-  const [loading, setLoading] = React.useState(true);
+  const setGlobalStatus = useGlobalStatus();
+  const { user } = useAuth();
+  const canManage = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
 
-  React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data, error } = await client.query(acquisitionSettingsQuery, {}).toPromise();
-        if (error) throw error;
-        if (cancelled) return;
-        setSettings({
-          ...DEFAULTS,
-          ...data?.acquisitionSettings,
-        });
-      } catch {
-        // Use defaults on failure
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [client]);
+  const [settings, setSettings] = useState<AcquisitionSettings | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  const handleSave = React.useCallback(async () => {
-    setSaving(true);
+  const fetchSettings = useCallback(async () => {
+    setLoading(true);
     try {
-      const { error } = await client.mutation(updateAcquisitionSettingsMutation, {
-        input: settings,
-      }).toPromise();
+      const { data, error } = await client
+        .query<AcquisitionSettingsQueryResult>(
+          acquisitionSettingsQuery,
+          {},
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
       if (error) throw error;
-      setGlobalStatus(t("settings.acquisitionSaved"));
+      setSettings(data?.acquisitionSettings ?? null);
     } catch (error) {
-      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
     } finally {
-      setSaving(false);
+      setLoading(false);
     }
-  }, [client, setGlobalStatus, settings, t]);
+  }, [client, setGlobalStatus, t]);
+
+  useEffect(() => {
+    void fetchSettings();
+  }, [fetchSettings]);
+
+  const saveSettings = useCallback(
+    async (next: AcquisitionSettings) => {
+      if (!canManage) return;
+      setSaving(true);
+      try {
+        const { data, error } = await client
+          .mutation<UpdateAcquisitionSettingsResult>(updateAcquisitionSettingsMutation, {
+            input: next,
+          })
+          .toPromise();
+        if (error) throw error;
+        setSettings(data?.updateAcquisitionSettings ?? next);
+        setGlobalStatus(t("settings.acquisitionSaved"));
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [canManage, client, setGlobalStatus, t],
+  );
 
   return (
     <SettingsAcquisitionSection
       settings={settings}
-      setSettings={setSettings}
-      saving={saving}
       loading={loading}
-      onSave={handleSave}
+      saving={saving}
+      canManage={canManage}
+      onSave={saveSettings}
     />
   );
 }

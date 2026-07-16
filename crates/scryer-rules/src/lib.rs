@@ -97,6 +97,7 @@ pub struct AudioStreamDoc {
     pub profile: Option<String>,
     pub channels: Option<i32>,
     pub language: Option<String>,
+    pub name: Option<String>,
     pub bitrate_kbps: Option<i32>,
 }
 
@@ -1103,6 +1104,7 @@ score_entry["library_bonus"] := 75 if {
                 profile: Some("Dolby Digital Plus + Dolby Atmos".to_string()),
                 channels: Some(6),
                 language: Some("eng".to_string()),
+                name: None,
                 bitrate_kbps: Some(640),
             }],
             subtitle_languages: vec!["eng".to_string()],

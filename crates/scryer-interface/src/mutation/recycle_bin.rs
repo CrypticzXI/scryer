@@ -20,7 +20,8 @@ impl RecycleBinMutations {
             .restore_recycled_item(&actor, id.as_str())
             .await
             .map_err(to_gql_error)?;
-        Ok(RestoreRecycledItemPayload { id, restored })
+        let _ = restored;
+        Ok(RestoreRecycledItemPayload { id })
     }
 
     /// Permanently delete a single recycled item.

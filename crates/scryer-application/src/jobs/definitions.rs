@@ -147,16 +147,16 @@ pub enum JobKey {
     ProwlarrSync,
     RssSync,
     SubtitleSearch,
-    MetadataRefresh,
     PluginRegistryRefresh,
     Housekeeping,
     HealthChecks,
     AutoBackup,
-    WantedSync,
     PendingReleaseProcessing,
     StagedNzbPrune,
+    DiscoverySync,
     TitleImageCacheRefresh,
     TitleDeletion,
+    AcquisitionSearch,
 }
 
 impl JobKey {
@@ -171,16 +171,16 @@ impl JobKey {
             Self::ProwlarrSync => "prowlarr_sync",
             Self::RssSync => "rss_sync",
             Self::SubtitleSearch => "subtitle_search",
-            Self::MetadataRefresh => "metadata_refresh",
             Self::PluginRegistryRefresh => "plugin_registry_refresh",
             Self::Housekeeping => "housekeeping",
             Self::HealthChecks => "health_checks",
             Self::AutoBackup => "auto_backup",
-            Self::WantedSync => "wanted_sync",
             Self::PendingReleaseProcessing => "pending_release_processing",
             Self::StagedNzbPrune => "staged_nzb_prune",
+            Self::DiscoverySync => "discovery_sync",
             Self::TitleImageCacheRefresh => "title_image_cache_refresh",
             Self::TitleDeletion => "title_deletion",
+            Self::AcquisitionSearch => "acquisition_search",
         }
     }
 
@@ -195,16 +195,16 @@ impl JobKey {
             "prowlarr_sync" => Some(Self::ProwlarrSync),
             "rss_sync" => Some(Self::RssSync),
             "subtitle_search" => Some(Self::SubtitleSearch),
-            "metadata_refresh" => Some(Self::MetadataRefresh),
             "plugin_registry_refresh" => Some(Self::PluginRegistryRefresh),
             "housekeeping" => Some(Self::Housekeeping),
             "health_checks" => Some(Self::HealthChecks),
             "auto_backup" => Some(Self::AutoBackup),
-            "wanted_sync" => Some(Self::WantedSync),
             "pending_release_processing" => Some(Self::PendingReleaseProcessing),
             "staged_nzb_prune" => Some(Self::StagedNzbPrune),
+            "discovery_sync" => Some(Self::DiscoverySync),
             "title_image_cache_refresh" => Some(Self::TitleImageCacheRefresh),
             "title_deletion" => Some(Self::TitleDeletion),
+            "acquisition_search" => Some(Self::AcquisitionSearch),
             _ => None,
         }
     }
@@ -220,16 +220,16 @@ impl JobKey {
             Self::ProwlarrSync => "Prowlarr Sync",
             Self::RssSync => "RSS Sync",
             Self::SubtitleSearch => "Subtitle Search",
-            Self::MetadataRefresh => "Metadata Refresh",
             Self::PluginRegistryRefresh => "Plugin Catalog Refresh",
             Self::Housekeeping => "Housekeeping",
             Self::HealthChecks => "Health Checks",
             Self::AutoBackup => "Automatic Backup",
-            Self::WantedSync => "Wanted Sync",
             Self::PendingReleaseProcessing => "Pending Release Processing",
             Self::StagedNzbPrune => "Staged NZB Prune",
+            Self::DiscoverySync => "Discovery Sync",
             Self::TitleImageCacheRefresh => "Title Image Cache Refresh",
             Self::TitleDeletion => "Title Deletion",
+            Self::AcquisitionSearch => "Acquisition Search",
         }
     }
 
@@ -252,22 +252,26 @@ impl JobKey {
             }
             Self::RssSync => "Fetch RSS feeds from enabled indexers and evaluate new releases.",
             Self::SubtitleSearch => "Search for missing subtitles for monitored media.",
-            Self::MetadataRefresh => "Refresh metadata for monitored episodic titles.",
             Self::PluginRegistryRefresh => "Refresh the installed plugin catalog metadata.",
             Self::Housekeeping => "Clean stale records and purge expired artifacts.",
             Self::HealthChecks => "Run configured system health checks.",
             Self::AutoBackup => {
                 "Create a daily backup snapshot and keep the newest successful automatic backups."
             }
-            Self::WantedSync => "Resync wanted items from the current monitored state.",
             Self::PendingReleaseProcessing => {
                 "Process delayed pending releases whose hold period has expired."
             }
             Self::StagedNzbPrune => "Prune expired staged NZB artifacts.",
+            Self::DiscoverySync => {
+                "Evaluate local discovery freshness and refresh SMG discovery snapshots."
+            }
             Self::TitleImageCacheRefresh => {
                 "Refresh remote artwork URLs from SMG and rebuild locally processed title images."
             }
             Self::TitleDeletion => "Delete selected titles from the catalog.",
+            Self::AcquisitionSearch => {
+                "Interactive acquisition search over the selected wanted/upgrade scopes."
+            }
         }
     }
 
@@ -279,25 +283,25 @@ impl JobKey {
             | Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
             | Self::BackgroundLibraryRefreshAnime => JobCategory::Library,
-            Self::ProwlarrSync | Self::RssSync | Self::MetadataRefresh => JobCategory::Acquisition,
+            Self::ProwlarrSync | Self::RssSync | Self::AcquisitionSearch => {
+                JobCategory::Acquisition
+            }
             Self::SubtitleSearch => JobCategory::Subtitles,
             Self::PluginRegistryRefresh
             | Self::HealthChecks
             | Self::AutoBackup
+            | Self::DiscoverySync
             | Self::TitleImageCacheRefresh
             | Self::TitleDeletion => JobCategory::System,
-            Self::Housekeeping
-            | Self::WantedSync
-            | Self::PendingReleaseProcessing
-            | Self::StagedNzbPrune => JobCategory::Maintenance,
+            Self::Housekeeping | Self::PendingReleaseProcessing | Self::StagedNzbPrune => {
+                JobCategory::Maintenance
+            }
         }
     }
 
     pub fn section(self) -> JobSection {
         match self {
-            Self::WantedSync | Self::PendingReleaseProcessing | Self::StagedNzbPrune => {
-                JobSection::Maintenance
-            }
+            Self::PendingReleaseProcessing | Self::StagedNzbPrune => JobSection::Maintenance,
             _ => JobSection::Primary,
         }
     }
@@ -310,19 +314,19 @@ impl JobKey {
             Self::ProwlarrSync
             | Self::RssSync
             | Self::SubtitleSearch
-            | Self::MetadataRefresh
             | Self::PluginRegistryRefresh
             | Self::Housekeeping
             | Self::HealthChecks
-            | Self::WantedSync
             | Self::PendingReleaseProcessing
             | Self::StagedNzbPrune => JobScheduleKind::Interval,
+            Self::DiscoverySync => JobScheduleKind::StartupAndInterval,
             Self::AutoBackup => JobScheduleKind::DailyAtTime,
             Self::LibraryScanMovies
             | Self::LibraryScanSeries
             | Self::LibraryScanAnime
             | Self::TitleImageCacheRefresh
-            | Self::TitleDeletion => JobScheduleKind::Manual,
+            | Self::TitleDeletion
+            | Self::AcquisitionSearch => JobScheduleKind::Manual,
         }
     }
 
@@ -330,23 +334,23 @@ impl JobKey {
         match self {
             Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
-            | Self::BackgroundLibraryRefreshAnime => "Hourly",
+            | Self::BackgroundLibraryRefreshAnime => "Every 2 hours",
             Self::ProwlarrSync => "Every 5 minutes",
-            Self::RssSync => "Every 15 minutes",
+            Self::RssSync => "Scheduler-paced per indexer (15-minute target)",
             Self::SubtitleSearch => "Based on subtitle settings interval",
-            Self::MetadataRefresh => "Every 12 hours",
             Self::PluginRegistryRefresh => "Every 24 hours",
             Self::Housekeeping => "Every 24 hours",
             Self::HealthChecks => "Every 6 hours",
             Self::AutoBackup => "Daily at configured local time",
-            Self::WantedSync => "Based on acquisition sync interval",
             Self::PendingReleaseProcessing => "Every minute",
             Self::StagedNzbPrune => "Every hour",
+            Self::DiscoverySync => "Dynamic discovery evaluator with daily backstop",
             Self::LibraryScanMovies
             | Self::LibraryScanSeries
             | Self::LibraryScanAnime
             | Self::TitleImageCacheRefresh
-            | Self::TitleDeletion => "Manual only",
+            | Self::TitleDeletion
+            | Self::AcquisitionSearch => "Manual only",
         }
     }
 
@@ -354,15 +358,15 @@ impl JobKey {
         match self {
             Self::BackgroundLibraryRefreshMovies
             | Self::BackgroundLibraryRefreshSeries
-            | Self::BackgroundLibraryRefreshAnime => Some(3600),
+            | Self::BackgroundLibraryRefreshAnime => Some(2 * 3600),
             Self::ProwlarrSync => Some(5 * 60),
             Self::RssSync => Some(15 * 60),
-            Self::MetadataRefresh => Some(12 * 3600),
             Self::PluginRegistryRefresh => Some(24 * 3600),
             Self::Housekeeping => Some(24 * 3600),
             Self::HealthChecks => Some(6 * 3600),
             Self::PendingReleaseProcessing => Some(60),
             Self::StagedNzbPrune => Some(3600),
+            Self::DiscoverySync => Some(24 * 3600),
             _ => None,
         }
     }
@@ -374,12 +378,16 @@ impl JobKey {
             | Self::BackgroundLibraryRefreshAnime => None,
             Self::SubtitleSearch => Some(120),
             Self::HealthChecks => Some(30),
+            Self::DiscoverySync => Some(30 * 60),
             _ => None,
         }
     }
 
     pub fn manual_trigger_allowed(self) -> bool {
-        !matches!(self, Self::AutoBackup | Self::TitleDeletion)
+        !matches!(
+            self,
+            Self::AutoBackup | Self::TitleDeletion | Self::AcquisitionSearch
+        )
     }
 
     pub fn uses_library_scan_progress(self) -> bool {
@@ -395,7 +403,7 @@ impl JobKey {
     }
 }
 
-pub const ALL_JOB_KEYS: [JobKey; 17] = [
+pub const ALL_JOB_KEYS: [JobKey; 16] = [
     JobKey::LibraryScanMovies,
     JobKey::LibraryScanSeries,
     JobKey::LibraryScanAnime,
@@ -404,14 +412,13 @@ pub const ALL_JOB_KEYS: [JobKey; 17] = [
     JobKey::BackgroundLibraryRefreshAnime,
     JobKey::RssSync,
     JobKey::SubtitleSearch,
-    JobKey::MetadataRefresh,
     JobKey::PluginRegistryRefresh,
     JobKey::Housekeeping,
     JobKey::HealthChecks,
     JobKey::AutoBackup,
-    JobKey::WantedSync,
     JobKey::PendingReleaseProcessing,
     JobKey::StagedNzbPrune,
+    JobKey::DiscoverySync,
     JobKey::TitleImageCacheRefresh,
 ];
 
@@ -758,10 +765,10 @@ mod tests {
     use crate::{LibraryScanMode, LibraryScanPhaseProgress, MediaFacet};
 
     #[test]
-    fn background_library_refresh_definitions_advertise_hourly_schedule() {
+    fn background_library_refresh_definitions_advertise_two_hour_schedule() {
         let definition = JobDefinition::from_key(JobKey::BackgroundLibraryRefreshMovies, None);
 
-        assert_eq!(definition.schedule.description, "Hourly");
+        assert_eq!(definition.schedule.description, "Every 2 hours");
         assert_eq!(definition.schedule.initial_delay_seconds, None);
     }
 

@@ -75,6 +75,7 @@ fn plugin_request_policy(
     RequestPolicy::safe_read(scope.into(), request_label.into())
         .with_max_retries(2)
         .with_backoff(Duration::from_secs(1), Duration::from_secs(30))
+        .without_redirects()
 }
 fn primary_and_mirrors(primary_url: &str, mirror_urls: &[String]) -> Vec<String> {
     std::iter::once(primary_url.to_string())
@@ -193,6 +194,11 @@ impl AppUseCase {
             .filter(|plugin| plugin.descriptor.plugin_type() == "subtitle_provider")
             .cloned()
             .collect::<Vec<_>>();
+        let archive_extractor_plugins = runtime_plugins
+            .iter()
+            .filter(|plugin| plugin.descriptor.plugin_type() == "archive_extractor")
+            .cloned()
+            .collect::<Vec<_>>();
         let notification_plugins = runtime_plugins
             .iter()
             .filter(|plugin| plugin.descriptor.plugin_type() == "notification")
@@ -250,6 +256,21 @@ impl AppUseCase {
                 .reload_runtime_plugins(&subtitle_plugins, &disabled_builtins)
                 .map_err(|e| {
                     AppError::Repository(format!("failed to reload subtitle plugin provider: {e}"))
+                })?;
+        }
+
+        if let Some(provider) = self
+            .services
+            .integrations
+            .archive_extractor_plugin_provider
+            .available()
+        {
+            provider
+                .reload_runtime_plugins(&archive_extractor_plugins, &disabled_builtins)
+                .map_err(|e| {
+                    AppError::Repository(format!(
+                        "failed to reload archive extractor plugin provider: {e}"
+                    ))
                 })?;
         }
 
@@ -324,6 +345,7 @@ impl AppUseCase {
                     rate_limit_seconds: provider.rate_limit_seconds_for_provider(&pt),
                     rate_limit_burst: None,
                     disabled_until: None,
+                    indexer_proxy_config_id: None,
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,

@@ -73,6 +73,14 @@ fn compile_spellfix_extension(manifest_dir: &Path) {
 
 fn compile_migration_bundle(manifest_dir: &Path) {
     let db_root = manifest_dir.join("../scryer/src/db");
+    println!(
+        "cargo:rerun-if-changed={}",
+        db_root.join("migrations").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        db_root.join("postgres/migrations").display()
+    );
     watch_tree(&db_root);
 
     let bundle = migration_assets::compile_source_bundle(&db_root)

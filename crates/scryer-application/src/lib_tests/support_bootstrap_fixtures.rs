@@ -142,7 +142,7 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     let media_requests = Arc::new(MockMediaRequestRepo::with_domain_events(
         domain_events.clone(),
     ));
-    let wanted_items = Arc::new(TrackingWantedItemRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let metadata_gateway = Arc::new(MockMetadataGateway {
@@ -168,14 +168,14 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     .with_libraries(libraries.clone())
     .with_media_requests(media_requests.clone())
     .with_metadata_gateway(metadata_gateway)
-    .with_wanted_items(wanted_items.clone())
+    .with_acquisition_scope_states(wanted_items.clone())
     .with_pending_releases(pending_releases.clone())
     .with_download_submissions(download_submissions.clone())
     .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
     .with_acquisition_state(Arc::new(TrackingAcquisitionStateRepo {
         download_submissions,
         pending_releases,
-        wanted_items,
+        acquisition_scope_states: wanted_items,
     }))
     .build_partial_for_tests();
     let mut registry = FacetRegistry::new();
@@ -326,13 +326,22 @@ pub(super) async fn wait_for_title_image_cache_clear_idle(app: &AppUseCase) {
 pub(super) fn bootstrap_with_metadata_gateway_and_titles(
     metadata_gateway: Arc<dyn MetadataGateway>,
 ) -> (AppUseCase, User, Arc<MockTitleRepo>) {
+    bootstrap_with_metadata_gateway_settings_and_titles(
+        metadata_gateway,
+        Arc::new(StoredSettingsRepo::default()),
+    )
+}
+
+pub(super) fn bootstrap_with_metadata_gateway_settings_and_titles(
+    metadata_gateway: Arc<dyn MetadataGateway>,
+    settings: Arc<dyn SettingsRepository>,
+) -> (AppUseCase, User, Arc<MockTitleRepo>) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
-    let settings = Arc::new(StoredSettingsRepo::default());
     let quality_profiles = Arc::new(MockQualityProfileRepo);
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
@@ -385,6 +394,7 @@ pub(super) fn make_due_hydration_title(id: &str, facet: MediaFacet, tvdb_id: i64
         facet,
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![ExternalId {
             source: "tvdb".to_string(),
             value: tvdb_id.to_string(),
@@ -398,10 +408,11 @@ pub(super) fn make_due_hydration_title(id: &str, facet: MediaFacet, tvdb_id: i64
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -420,6 +431,7 @@ pub(super) fn make_due_hydration_title(id: &str, facet: MediaFacet, tvdb_id: i64
 
 pub(super) fn make_movie_metadata(tvdb_id: i64, name: &str) -> MovieMetadata {
     MovieMetadata {
+        target_key: None,
         tvdb_id,
         name: name.to_string(),
         slug: name.to_ascii_lowercase().replace(' ', "-"),
@@ -432,10 +444,13 @@ pub(super) fn make_movie_metadata(tvdb_id: i64, name: &str) -> MovieMetadata {
         runtime_minutes: 100,
         sort_title: name.to_string(),
         imdb_id: format!("tt{tvdb_id:07}"),
+        tmdb_id: None,
+        popularity: None,
         anidb_id: None,
-        genres: vec!["Drama".to_string()],
+        canonical_tags: vec![],
         studio: "Test Studio".to_string(),
         tmdb_release_date: Some("2026-01-01".to_string()),
+        ratings: Default::default(),
     }
 }
 
@@ -772,6 +787,7 @@ pub(super) fn synthetic_direct_nab_indexer_config(id: &str, provider_type: &str)
         is_enabled: true,
         enable_interactive_search: true,
         enable_auto_search: true,
+        indexer_proxy_config_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
@@ -894,13 +910,13 @@ pub(super) fn bootstrap_with_acquisition_tracking(
     download_client: Arc<StubDownloadClient>,
     download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pending_releases: Arc<TrackingPendingReleaseRepo>,
-    wanted_items: Arc<TrackingWantedItemRepo>,
+    acquisition_scope_states: Arc<TrackingAcquisitionScopeStateRepo>,
 ) -> (AppUseCase, User) {
     bootstrap_with_acquisition_tracking_and_indexer(
         download_client,
         download_submissions,
         pending_releases,
-        wanted_items,
+        acquisition_scope_states,
         Arc::new(MockIndexerClient),
     )
 }
@@ -909,14 +925,14 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer(
     download_client: Arc<StubDownloadClient>,
     download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pending_releases: Arc<TrackingPendingReleaseRepo>,
-    wanted_items: Arc<TrackingWantedItemRepo>,
+    acquisition_scope_states: Arc<TrackingAcquisitionScopeStateRepo>,
     indexer_client: Arc<dyn IndexerClient>,
 ) -> (AppUseCase, User) {
     let (app, user, _) = bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
         download_client,
         download_submissions,
         pending_releases,
-        wanted_items,
+        acquisition_scope_states,
         indexer_client,
     );
     (app, user)
@@ -926,13 +942,22 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     download_client: Arc<StubDownloadClient>,
     download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pending_releases: Arc<TrackingPendingReleaseRepo>,
-    wanted_items: Arc<TrackingWantedItemRepo>,
+    acquisition_scope_states: Arc<TrackingAcquisitionScopeStateRepo>,
     indexer_client: Arc<dyn IndexerClient>,
 ) -> (AppUseCase, User, Arc<MockReleaseAttemptRepo>) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
-    let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
+    // RFC 119 §D2: the convergence cursor only searches a scope's routed
+    // indexers, so a background cycle needs at least one enabled indexer routed
+    // to it. Seed a synthetic direct-Newznab indexer the core `indexer_client`
+    // fake answers for.
+    let indexer_configs = Arc::new(MockIndexerConfigRepo {
+        store: Arc::new(Mutex::new(vec![synthetic_direct_nab_indexer_config(
+            "acquisition-indexer",
+            "newznab",
+        )])),
+    });
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     download_client_configs
         .store
@@ -956,7 +981,7 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     let quality_profiles = Arc::new(MockQualityProfileRepo);
 
     let services = AppServices::builder(
-        titles,
+        titles.clone(),
         shows,
         users,
         indexer_configs,
@@ -973,6 +998,13 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     .with_pending_releases(pending_releases.clone())
     .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
     .with_libraries(Arc::new(MockLibraryRepo::default()))
+    // RFC 119 §D1: the convergence cursor derives targets from library state.
+    // With mock catalog stores, bridge the derivation to the seeded wanted
+    // rows so `run_convergence_cycle_once` reaches each seeded monitored scope.
+    .with_media_files(Arc::new(MockMediaFileRepo::with_missing_scope_source(
+        acquisition_scope_states.clone(),
+        titles,
+    )))
     .build_partial_for_tests();
 
     let mut registry = FacetRegistry::new();
@@ -997,9 +1029,9 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
             .with_acquisition_state(Arc::new(TrackingAcquisitionStateRepo {
                 download_submissions,
                 pending_releases,
-                wanted_items: wanted_items.clone(),
+                acquisition_scope_states: acquisition_scope_states.clone(),
             }))
-            .with_wanted_items(wanted_items)
+            .with_acquisition_scope_states(acquisition_scope_states)
     });
     (app, test_admin_user(), release_attempts)
 }
@@ -1119,7 +1151,10 @@ pub(super) fn bootstrap_with_scan_unmatched_and_metadata_tracking_and_titles(
     unmatched_items: Arc<TrackingLibraryScanUnmatchedItemRepo>,
     metadata_gateway: Arc<dyn MetadataGateway>,
 ) -> (AppUseCase, User, Arc<MockTitleRepo>) {
-    let titles = Arc::new(MockTitleRepo::default());
+    let titles = Arc::new(MockTitleRepo {
+        pending_import_items: Some(unmatched_items.items.clone()),
+        ..Default::default()
+    });
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
     let indexer_configs = Arc::new(MockIndexerConfigRepo::default());
@@ -1426,6 +1461,10 @@ pub(super) fn empty_update_media_settings_with_roots(
         nfo_write_on_import: None,
         plexmatch_write_on_import: None,
         import_mode: None,
+        set_permissions_linux: None,
+        file_chmod: None,
+        folder_chmod: None,
+        chown_group: None,
     }
 }
 
@@ -1447,6 +1486,10 @@ pub(super) fn empty_update_media_settings() -> UpdateMediaSettings {
         nfo_write_on_import: None,
         plexmatch_write_on_import: None,
         import_mode: None,
+        set_permissions_linux: None,
+        file_chmod: None,
+        folder_chmod: None,
+        chown_group: None,
     }
 }
 
@@ -1464,6 +1507,10 @@ pub(super) fn empty_library_settings_override() -> LibrarySettingsOverrideDraft 
         nfo_write_on_import: None,
         plexmatch_write_on_import: None,
         import_mode: None,
+        set_permissions_linux: None,
+        file_chmod: None,
+        folder_chmod: None,
+        chown_group: None,
         indexer_routing: None,
         download_client_routing: None,
     }
@@ -1492,7 +1539,6 @@ pub(super) fn test_series_movie_link(
             language: Some("ja".to_string()),
             runtime_minutes: Some(110),
             content_status: Some("released".to_string()),
-            genres: vec!["action".to_string()],
             studio: Some("Studio".to_string()),
             digital_release_date: Some("2024-02-01".to_string()),
             imdb_id: imdb_id.map(str::to_string),
@@ -1803,7 +1849,7 @@ pub(super) fn pending_movie_release(
 pub(super) async fn seed_movie_wanted_for_acquisition(
     app: &AppUseCase,
     user: &User,
-    wanted_items: &Arc<TrackingWantedItemRepo>,
+    acquisition_scope_states: &Arc<TrackingAcquisitionScopeStateRepo>,
     name: &str,
     year: i32,
 ) -> (scryer_domain::Title, String) {
@@ -1824,12 +1870,12 @@ pub(super) async fn seed_movie_wanted_for_acquisition(
         )
         .await
         .expect("create movie title");
-    wanted_items
+    acquisition_scope_states
         .remember_title_facet(&title.id, MediaFacet::Movie)
         .await;
     let wanted_id = Id::new().0;
-    wanted_items
-        .upsert_wanted_item(&WantedItem {
+    acquisition_scope_states
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
             id: wanted_id.clone(),
             title_id: title.id.clone(),
             title_name: Some(title.name.clone()),
@@ -1844,12 +1890,8 @@ pub(super) async fn seed_movie_wanted_for_acquisition(
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
-            search_phase: "initial".to_string(),
-            next_search_at: Some(Utc::now().to_rfc3339()),
             last_search_at: None,
-            search_count: 0,
-            baseline_date: Some(format!("{year}-01-01")),
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -1866,7 +1908,7 @@ pub(super) async fn seed_movie_wanted_for_acquisition(
 pub(super) async fn seed_anime_season_wanted_for_acquisition(
     app: &AppUseCase,
     user: &User,
-    wanted_items: &Arc<TrackingWantedItemRepo>,
+    acquisition_scope_states: &Arc<TrackingAcquisitionScopeStateRepo>,
     name: &str,
     season_number: u32,
 ) -> (scryer_domain::Title, Vec<String>) {
@@ -1886,7 +1928,7 @@ pub(super) async fn seed_anime_season_wanted_for_acquisition(
         )
         .await
         .expect("create anime title");
-    wanted_items
+    acquisition_scope_states
         .remember_title_facet(&title.id, MediaFacet::Anime)
         .await;
     let season = app
@@ -1942,8 +1984,8 @@ pub(super) async fn seed_anime_season_wanted_for_acquisition(
             .expect("create episode");
         let wanted_id = Id::new().0;
         wanted_ids.push(wanted_id.clone());
-        wanted_items
-            .upsert_wanted_item(&WantedItem {
+        acquisition_scope_states
+            .upsert_acquisition_scope_state(&AcquisitionScopeState {
                 id: wanted_id,
                 title_id: title.id.clone(),
                 title_name: Some(title.name.clone()),
@@ -1958,12 +2000,8 @@ pub(super) async fn seed_anime_season_wanted_for_acquisition(
                 season_number: Some(season_number.to_string()),
                 episode_number: Some(episode_number.to_string()),
                 media_type: "episode".to_string(),
-                search_phase: "initial".to_string(),
-                next_search_at: Some(Utc::now().to_rfc3339()),
                 last_search_at: None,
-                search_count: 0,
-                baseline_date: Some("2024-01-01".to_string()),
-                status: WantedStatus::Wanted,
+                status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
                 latest_release_decision: None,
@@ -2037,6 +2075,7 @@ pub(super) async fn create_series_with_collection_and_episode(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TestPermissionPreset {
     CatalogView,
+    MediaRequest,
     TitleManagement,
     UserManagement,
     ConfigManagement,
@@ -2111,6 +2150,9 @@ pub(super) fn test_library_grants_from_presets(
     let mut permissions = scryer_domain::LibraryPermissionMask::NONE;
     if presets.contains(&TestPermissionPreset::CatalogView) {
         permissions.insert(scryer_domain::LibraryPermissionMask::VIEW);
+    }
+    if presets.contains(&TestPermissionPreset::MediaRequest) {
+        permissions.insert(scryer_domain::LibraryPermissionMask::REQUEST);
     }
     if presets.contains(&TestPermissionPreset::TitleManagement) {
         permissions.insert(scryer_domain::LibraryPermissionMask::VIEW);

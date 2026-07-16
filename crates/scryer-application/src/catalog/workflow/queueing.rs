@@ -3,11 +3,11 @@ fn wanted_item_candidates_for_submission_scope(
     title_id: &str,
     scope: &SubmissionScope,
     episodes: &[Episode],
-) -> Vec<(WantedItem, Option<String>)> {
+) -> Vec<(AcquisitionScopeState, Option<String>)> {
     match scope {
         SubmissionScope::Orphan => Vec::new(),
         SubmissionScope::Title => vec![(
-            WantedItem {
+            AcquisitionScopeState {
                 id: String::new(),
                 title_id: title_id.to_string(),
                 title_name: None,
@@ -22,12 +22,8 @@ fn wanted_item_candidates_for_submission_scope(
                 season_number: None,
                 episode_number: None,
                 media_type: "movie".to_string(),
-                search_phase: String::new(),
-                next_search_at: None,
                 last_search_at: None,
-                search_count: 0,
-                baseline_date: None,
-                status: WantedStatus::Wanted,
+                status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
                 latest_release_decision: None,
@@ -75,22 +71,20 @@ fn wanted_item_candidates_for_submission_scope(
                     })
             })
             .collect(),
-        SubmissionScope::Collection { collection_id } => {
-            episodes
-                .iter()
-                .filter(|episode| episode.collection_id.as_deref() == Some(collection_id.as_str()))
-                .map(|episode| {
-                    (
-                        wanted_item_candidate_for_episode(title_id, episode),
-                        episode.collection_id.clone(),
-                    )
-                })
-                .collect()
-        }
+        SubmissionScope::Collection { collection_id } => episodes
+            .iter()
+            .filter(|episode| episode.collection_id.as_deref() == Some(collection_id.as_str()))
+            .map(|episode| {
+                (
+                    wanted_item_candidate_for_episode(title_id, episode),
+                    episode.collection_id.clone(),
+                )
+            })
+            .collect(),
         SubmissionScope::SeriesMovie {
             series_movie_link_id,
         } => vec![(
-            WantedItem {
+            AcquisitionScopeState {
                 id: String::new(),
                 title_id: title_id.to_string(),
                 title_name: None,
@@ -105,12 +99,8 @@ fn wanted_item_candidates_for_submission_scope(
                 season_number: None,
                 episode_number: None,
                 media_type: "series_movie".to_string(),
-                search_phase: String::new(),
-                next_search_at: None,
                 last_search_at: None,
-                search_count: 0,
-                baseline_date: None,
-                status: WantedStatus::Wanted,
+                status: AcquisitionScopeStatus::Wanted,
                 grabbed_release: None,
                 current_score: None,
                 latest_release_decision: None,
@@ -122,7 +112,7 @@ fn wanted_item_candidates_for_submission_scope(
         )],
     }
 }
-fn wanted_item_candidate_for_episode(title_id: &str, episode: &Episode) -> WantedItem {
+fn wanted_item_candidate_for_episode(title_id: &str, episode: &Episode) -> AcquisitionScopeState {
     wanted_item_candidate_for_episode_id(
         title_id,
         &episode.id,
@@ -135,8 +125,8 @@ fn wanted_item_candidate_for_episode_id(
     episode_id: &str,
     collection_id: Option<String>,
     season_number: Option<String>,
-) -> WantedItem {
-    WantedItem {
+) -> AcquisitionScopeState {
+    AcquisitionScopeState {
         id: String::new(),
         title_id: title_id.to_string(),
         title_name: None,
@@ -151,12 +141,8 @@ fn wanted_item_candidate_for_episode_id(
         season_number,
         episode_number: None,
         media_type: "episode".to_string(),
-        search_phase: String::new(),
-        next_search_at: None,
         last_search_at: None,
-        search_count: 0,
-        baseline_date: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -374,6 +360,7 @@ impl AppUseCase {
     ) -> AppResult<QueueDownloadOutcome> {
         validate_manual_queue_purpose(purpose, title, &scope)?;
         let QueuedReleaseSelection {
+            indexer_id,
             source_hint,
             source_kind,
             source_title,
@@ -412,6 +399,7 @@ impl AppUseCase {
                 return Ok(QueueDownloadOutcome::Queued(QueuedDownloadResult {
                     job_id: existing.download_client_item_id,
                     queued_release: QueuedReleaseSelection {
+                        indexer_id,
                         source_hint,
                         source_kind,
                         source_title,
@@ -425,7 +413,8 @@ impl AppUseCase {
         let conflicts = if purpose.is_additional_file() {
             Vec::new()
         } else {
-            self.find_blocking_download_submissions(title, &scope).await?
+            self.find_blocking_download_submissions(title, &scope)
+                .await?
         };
         if !conflicts.is_empty() {
             match conflict_policy {
@@ -487,6 +476,7 @@ impl AppUseCase {
                 download_id: Some(download_id),
                 source_hint,
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind,
                 source_title,
                 source_password: source_password.clone(),
@@ -495,6 +485,7 @@ impl AppUseCase {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: indexer_id.clone(),
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -709,6 +700,7 @@ impl AppUseCase {
         Ok(QueueDownloadOutcome::Queued(QueuedDownloadResult {
             job_id: grab.job_id,
             queued_release: QueuedReleaseSelection {
+                indexer_id,
                 source_hint: source_hint_for_attempt,
                 source_kind,
                 source_title: source_title_for_attempt,
@@ -836,6 +828,148 @@ impl AppUseCase {
             purpose,
         )
         .await
+    }
+}
+impl AppUseCase {
+    /// Queue an operator-chosen replacement for a title/episode's existing primary
+    /// file. On import the replacement always lands (it bypasses the required-audio
+    /// gate and forces the upgrade, recycling the old primary, with a score boost),
+    /// and the release that produced the current primary is blocklisted so it is not
+    /// auto-re-downloaded over the manual pick.
+    pub async fn queue_replacement_release(
+        &self,
+        actor: &User,
+        title_id: &str,
+        queued_release: QueuedReleaseSelection,
+        scope: SubmissionScope,
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<QueueDownloadOutcome> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {}", title_id)))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await?;
+        self.blocklist_replaced_primary_release(&title, &scope).await;
+        self.queue_manual_release_for_title(
+            actor,
+            &title,
+            queued_release,
+            scope,
+            conflict_policy,
+            DownloadSubmissionPurpose::ManualReplacement,
+        )
+        .await
+    }
+
+    /// Queue a replacement from a signed interactive-search candidate token (the
+    /// release the operator chose from search results). Scope comes from the token.
+    pub async fn queue_replacement_release_from_candidate_token(
+        &self,
+        actor: &User,
+        title_id: &str,
+        candidate_token: &str,
+        conflict_policy: SubmissionConflictPolicy,
+    ) -> AppResult<QueueDownloadOutcome> {
+        let (queued_release, signed_scope) = self
+            .verify_release_candidate_token_for_signed_scope(actor, title_id, candidate_token)
+            .await?;
+        let outcome = self
+            .queue_replacement_release(
+                actor,
+                title_id,
+                queued_release.clone(),
+                signed_scope,
+                conflict_policy,
+            )
+            .await?;
+        Ok(match outcome {
+            QueueDownloadOutcome::Queued(mut queued) => {
+                queued.queued_release = queued_release;
+                QueueDownloadOutcome::Queued(queued)
+            }
+            QueueDownloadOutcome::Conflict(conflict) => QueueDownloadOutcome::Conflict(conflict),
+        })
+    }
+
+    /// Blocklist the release(s) that produced the primary file(s) being replaced,
+    /// so the auto-poller does not re-download them over a manual replacement.
+    async fn blocklist_replaced_primary_release(&self, title: &Title, scope: &SubmissionScope) {
+        let episode_ids = episode_ids_for_queue_scope(self, scope).await;
+        let primary_files: Vec<crate::TitleMediaFile> = if episode_ids.is_empty() {
+            self.services
+                .library
+                .media_files
+                .list_media_files_for_title(&title.id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|file| file.role.is_primary())
+                .collect()
+        } else {
+            self.services
+                .library
+                .media_files
+                .list_live_media_files_for_episode_ids(&title.id, &episode_ids)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|scoped| scoped.media_file)
+                .filter(|file| file.role.is_primary())
+                .collect()
+        };
+
+        let mut seen = std::collections::HashSet::new();
+        for file in primary_files {
+            let Some(release_title) = file
+                .grabbed_release_title
+                .as_deref()
+                .and_then(|value| normalize_release_attempt_value(Some(value)))
+            else {
+                continue;
+            };
+            if !seen.insert(release_title.to_ascii_lowercase()) {
+                continue;
+            }
+            // A Failed release attempt is what search-time exclusion
+            // (`is_release_blocklisted`) actually consults, so the old release is
+            // not auto-re-grabbed over the manual replacement.
+            let _ = self
+                .services
+                .workflow
+                .release_attempts
+                .record_release_attempt(
+                    Some(title.id.clone()),
+                    None,
+                    Some(release_title.clone()),
+                    ReleaseDownloadAttemptOutcome::Failed,
+                    Some("manual_replacement".to_string()),
+                    None,
+                )
+                .await;
+            // Also record a user-visible blocklist entry for the title's blocklist view.
+            let _ = self
+                .services
+                .workflow
+                .blocklist_repo
+                .add(&crate::NewBlocklistEntry {
+                    title_id: title.id.clone(),
+                    source_title: Some(release_title),
+                    source_hint: None,
+                    quality: None,
+                    download_id: None,
+                    reason: Some("manual_replacement".to_string()),
+                    data: std::collections::HashMap::new(),
+                })
+                .await;
+        }
     }
 }
 impl AppUseCase {
@@ -970,7 +1104,13 @@ impl AppUseCase {
         };
 
         let results = self
-            .search_and_evaluate_subject(&search_title, &subject, &actor.id, SearchMode::Auto)
+            .search_and_evaluate_subject(
+                &search_title,
+                &subject,
+                &actor.id,
+                SearchMode::Auto,
+                tokio_util::sync::CancellationToken::new(),
+            )
             .await?;
         let best = results
             .into_iter()
@@ -1017,6 +1157,7 @@ impl AppUseCase {
             actor,
             title_id,
             QueuedReleaseSelection {
+                indexer_id: best.indexer_id.clone(),
                 source_hint: best.download_url.clone().or(best.link.clone()),
                 source_kind: best.source_kind,
                 source_title: Some(best.title.clone()),

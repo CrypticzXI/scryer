@@ -6,7 +6,6 @@ import { useJobRunToasts } from "@/components/root/job-run-provider";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import {
-  activeJobRunsQuery,
   jobRunEventsSubscription,
   jobRunsQuery,
   jobsQuery,
@@ -32,35 +31,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeJobKey(value: unknown): JobKey {
-  return typeof value === "string" ? (value as JobKey) : "rss_sync";
+  return typeof value === "string" ? (value as JobKey) : "RSS_SYNC";
 }
 
 function normalizeCategory(value: unknown): JobCategory {
   switch (value) {
-    case "library":
-    case "acquisition":
-    case "maintenance":
-    case "subtitles":
-    case "system":
+    case "LIBRARY":
+    case "ACQUISITION":
+    case "MAINTENANCE":
+    case "SUBTITLES":
+    case "SYSTEM":
       return value;
     default:
-      return "system";
+      return "SYSTEM";
   }
 }
 
 function normalizeSection(value: unknown): JobSection {
-  return value === "maintenance" ? "maintenance" : "primary";
+  return value === "MAINTENANCE" ? "MAINTENANCE" : "PRIMARY";
 }
 
 function normalizeScheduleKind(value: unknown): JobScheduleKind {
   switch (value) {
-    case "manual":
-    case "interval":
-    case "startup_interval":
-    case "daily_at_time":
+    case "MANUAL":
+    case "INTERVAL":
+    case "STARTUP_AND_INTERVAL":
+    case "DAILY_AT_TIME":
       return value;
     default:
-      return "manual";
+      return "MANUAL";
   }
 }
 
@@ -106,17 +105,15 @@ export const SystemJobsContainer = memo(function SystemJobsContainer() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [{ data: jobsData, error: jobsError }, { data: activeData, error: activeError }, { data: recentData, error: recentError }] =
-        await Promise.all([
-          client.query(jobsQuery, {}).toPromise(),
-          client.query(activeJobRunsQuery, {}).toPromise(),
-          client.query(recentJobRunsQuery, { limit: 50 }).toPromise(),
-        ]);
+      const [{ data: jobsData, error: jobsError }, { data: recentData, error: recentError }] = await Promise.all([
+        client.query(jobsQuery, {}).toPromise(),
+        client.query(recentJobRunsQuery, { limit: 50 }).toPromise(),
+      ]);
 
       if (cancelled) {
         return;
       }
-      const firstError = jobsError ?? activeError ?? recentError;
+      const firstError = jobsError ?? recentError;
       if (firstError) {
         setGlobalStatus(firstError.message);
         return;
@@ -126,14 +123,6 @@ export const SystemJobsContainer = memo(function SystemJobsContainer() {
         ((Array.isArray(jobsData?.jobs) ? jobsData.jobs : []) as unknown[])
           .map(normalizeJobDefinition)
           .filter((job): job is JobDefinition => job !== null),
-      );
-      setActiveRunsById(
-        Object.fromEntries(
-          ((Array.isArray(activeData?.activeJobRuns) ? activeData.activeJobRuns : []) as unknown[])
-            .map(normalizeJobRun)
-            .filter((run): run is JobRun => run !== null)
-            .map((run) => [run.id, run]),
-        ),
       );
       setRecentRuns(
         ((Array.isArray(recentData?.recentJobRuns) ? recentData.recentJobRuns : []) as unknown[])
@@ -158,7 +147,7 @@ export const SystemJobsContainer = memo(function SystemJobsContainer() {
 
       setActiveRunsById((current) => {
         const next = { ...current };
-        if (normalized.completedAt || normalized.status === "completed" || normalized.status === "warning" || normalized.status === "failed") {
+        if (normalized.completedAt || normalized.status === "COMPLETED" || normalized.status === "WARNING" || normalized.status === "FAILED") {
           delete next[normalized.id];
         } else {
           next[normalized.id] = preferJobRunSnapshot(current[normalized.id], normalized);

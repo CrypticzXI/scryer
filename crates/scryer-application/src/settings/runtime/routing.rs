@@ -29,8 +29,36 @@ pub struct LibrarySettingsOverrideDraft {
     pub nfo_write_on_import: Option<bool>,
     pub plexmatch_write_on_import: Option<bool>,
     pub import_mode: Option<ImportMode>,
+    pub set_permissions_linux: Option<bool>,
+    pub file_chmod: Option<String>,
+    pub folder_chmod: Option<String>,
+    pub chown_group: Option<String>,
     pub indexer_routing: Option<Vec<IndexerRoutingSettingsEntry>>,
     pub download_client_routing: Option<Vec<DownloadClientRoutingSettingsEntry>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExternalImportLibrarySettingsAutoApplyDraft {
+    pub quality_profile_id: Option<String>,
+    pub request_quality_profile_ids: Option<Vec<String>>,
+    pub monitor_specials: Option<bool>,
+    pub nfo_write_on_import: Option<bool>,
+    pub plexmatch_write_on_import: Option<bool>,
+    pub set_permissions_linux: Option<bool>,
+    pub folder_chmod: Option<String>,
+    pub chown_group: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExternalImportLibrarySettingsAutoApplyResult {
+    pub changed_keys: Vec<String>,
+    pub skipped_keys: Vec<ExternalImportSettingsAutoApplySkip>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalImportSettingsAutoApplySkip {
+    pub key_name: String,
+    pub reason: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibrarySettings {
@@ -59,6 +87,14 @@ pub struct LibrarySettings {
     pub plexmatch_write_on_import: Option<bool>,
     pub import_mode_override: Option<ImportMode>,
     pub import_mode: ImportMode,
+    pub set_permissions_linux_override: Option<bool>,
+    pub set_permissions_linux: bool,
+    pub file_chmod_override: Option<String>,
+    pub file_chmod: Option<String>,
+    pub folder_chmod_override: Option<String>,
+    pub folder_chmod: Option<String>,
+    pub chown_group_override: Option<String>,
+    pub chown_group: Option<String>,
     pub indexer_routing_override: Option<Vec<IndexerRoutingSettingsEntry>>,
     pub download_client_routing_override: Option<Vec<DownloadClientRoutingSettingsEntry>>,
 }

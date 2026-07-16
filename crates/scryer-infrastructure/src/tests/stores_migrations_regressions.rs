@@ -100,6 +100,7 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
 
     let mut title = make_test_title("title-anime", None);
     title.facet = MediaFacet::Anime;
+    title.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
     title.external_ids = vec![ExternalId {
         source: "tvdb_id".to_string(),
         value: "431162".to_string(),
@@ -190,18 +191,6 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
     assert_eq!(episode_ids[0].external_id, "18562");
     assert_eq!(episode_ids[0].source_scope.as_deref(), Some("R"));
 
-    let missing =
-        TitleRepository::list_anime_title_ids_missing_anibridge_scoped_external_ids(&catalog, 10)
-            .await
-            .expect("missing scoped-id backfill query should run");
-    assert!(!missing.contains(&title.id));
-
-    let missing_title_anidb =
-        TitleRepository::list_anime_title_ids_missing_title_anidb_external_ids(&catalog, 10)
-            .await
-            .expect("missing title AniDB backfill query should run");
-    assert!(missing_title_anidb.contains(&title.id));
-
     TitleRepository::update_title_hydrated_metadata(
         &catalog,
         &title.id,
@@ -218,11 +207,16 @@ async fn scoped_anibridge_external_ids_round_trip_for_collections_and_episodes()
     .await
     .expect("hydrated title metadata should persist title-level AniDB");
 
-    let missing_title_anidb =
-        TitleRepository::list_anime_title_ids_missing_title_anidb_external_ids(&catalog, 10)
-            .await
-            .expect("missing title AniDB backfill query should rerun");
-    assert!(!missing_title_anidb.contains(&title.id));
+    let hydrated_title = TitleRepository::get_by_id(&catalog, &title.id)
+        .await
+        .expect("hydrated title should load")
+        .expect("hydrated title should exist");
+    assert!(
+        hydrated_title
+            .external_ids
+            .iter()
+            .any(|external_id| { external_id.source == "anidb" && external_id.value == "18562" })
+    );
 
     let _ = std::fs::remove_file(db);
 }
@@ -428,6 +422,10 @@ fn embedded_migration_bundle_includes_external_import_monitor_snapshot_chunk_tab
         keys.iter()
             .any(|key| key == "0117_external_import_monitor_snapshot_chunks"),
         "embedded migration bundle is missing 0117_external_import_monitor_snapshot_chunks: {keys:?}"
+    );
+    assert!(
+        keys.iter().any(|key| key == "0140_0.17_release_rollup"),
+        "embedded migration bundle is missing 0140_0.17_release_rollup: {keys:?}"
     );
 }
 

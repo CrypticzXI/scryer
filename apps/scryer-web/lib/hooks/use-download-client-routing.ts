@@ -73,9 +73,9 @@ export function useDownloadClientRouting({
   >([]);
   const [downloadClientRoutingByScope, setDownloadClientRoutingByScope] =
     React.useState<DownloadClientRoutingSettingsByScope>({
-      movie: {},
-      series: {},
-      anime: {},
+      MOVIE: {},
+      SERIES: {},
+      ANIME: {},
     });
   const [
     downloadClientRoutingOrderByScope,
@@ -83,9 +83,9 @@ export function useDownloadClientRouting({
   ] = React.useState<NzbgetRoutingOrder>({ ...DEFAULT_SCOPE_ROUTING_ORDER });
   const [downloadClientRoutingSaving, setDownloadClientRoutingSaving] =
     React.useState<Record<ViewCategoryId, boolean>>({
-      movie: false,
-      series: false,
-      anime: false,
+      MOVIE: false,
+      SERIES: false,
+      ANIME: false,
     });
   const [downloadClientRoutingLoading, setDownloadClientRoutingLoading] =
     React.useState(false);

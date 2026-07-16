@@ -1,8 +1,9 @@
 
 import * as React from "react";
 import { ArrowLeft, ArrowRight, Edit, Plus, Trash2 } from "lucide-react";
+import { AddNewButton } from "@/components/common/add-new-button";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { IconButton } from "@/components/ui/icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
@@ -18,30 +19,40 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { useTranslate } from "@/lib/context/translate-context";
 import { PERSONA_OVERRIDE_DEFAULTS } from "@/lib/constants/quality-profiles";
 import { selectorId } from "@/lib/utils/dom-ids";
-import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 
-type ViewCategoryId = "movie" | "series" | "anime";
+const QUALITY_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const QUALITY_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const QUALITY_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const QUALITY_PANEL_BODY_CLASS = "p-4 sm:p-5";
+const QUALITY_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
+const QUALITY_EDITOR_FIELD_CLASS =
+  "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-4";
+const QUALITY_EDITOR_SECTION_CLASS =
+  "overflow-hidden rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
+const QUALITY_EDITOR_SECTION_SUMMARY_CLASS =
+  "cursor-pointer select-none px-4 py-3 text-sm font-semibold text-[var(--scry-ink2)]";
+const QUALITY_EDITOR_SECTION_BODY_CLASS =
+  "border-t border-[var(--scry-border3)] p-4";
+const QUALITY_EDITOR_LIST_CLASS =
+  "max-h-60 overflow-auto rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-2";
+const QUALITY_EDITOR_LIST_ITEM_CLASS =
+  "mb-1 flex items-center justify-between rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-card2)] px-2 py-1.5 text-[var(--scry-ink2)] hover:bg-[var(--scry-hover)]";
+
+type ViewCategoryId = "MOVIE" | "SERIES" | "ANIME";
 
 type ParsedQualityProfile = {
   id: string;
   name: string;
 };
 
-type ScoringPersonaId = "balanced" | "audiophile" | "efficient" | "compatible";
+type ScoringPersonaId = "BALANCED" | "AUDIOPHILE" | "EFFICIENT" | "COMPATIBLE";
 
 type ScoringOverridesPayload = {
   allow_x265_non4k?: boolean | null;
@@ -205,26 +216,14 @@ function QualityProfileActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<BoxedActionButtonTone, "edit" | "delete">;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={label}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
-      {...props}
-    >
+    <IconButton label={label} tone={tone} className={className} {...props}>
       {children}
-    </Button>
+    </IconButton>
   );
 }
 
@@ -299,8 +298,8 @@ function ProfileListEditor({
   );
 
   return (
-    <details className="rounded-xl border border-border bg-card p-3">
-      <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">
+    <details className={QUALITY_EDITOR_SECTION_CLASS}>
+      <summary className={QUALITY_EDITOR_SECTION_SUMMARY_CLASS}>
         <span className="inline-flex items-center gap-2">
           <span>{title}</span>
           {info ? (
@@ -308,17 +307,19 @@ function ProfileListEditor({
           ) : null}
         </span>
       </summary>
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
+      <div className={`${QUALITY_EDITOR_SECTION_BODY_CLASS} grid gap-3 md:grid-cols-2`}>
         <div>
-          <Label className="mb-2 block">Allowed</Label>
-          <div className="max-h-56 overflow-auto rounded border border-border p-2">
+          <Label className="mb-2 block text-[var(--scry-ink2)]">Allowed</Label>
+          <div className={QUALITY_EDITOR_LIST_CLASS}>
             {sortedAllowed.length === 0 ? (
-              <p className="text-xs text-muted-foreground">{t("qualityProfile.noSelectedItems")}</p>
+              <p className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>
+                {t("qualityProfile.noSelectedItems")}
+              </p>
             ) : (
               sortedAllowed.map((option) => (
                 <div
                   key={option.value}
-                  className="mb-1 flex items-center justify-between rounded border border-emerald-400 bg-card px-2 py-1.5 border-opacity-35 hover:border-opacity-60 ring-1 ring-inset ring-emerald-500/30"
+                  className="mb-1 flex items-center justify-between rounded-[9px] border border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] px-2 py-1.5 text-[var(--scry-ink2)] ring-1 ring-inset ring-[var(--scry-success-border)] hover:border-[var(--scry-success-border-strong)]"
                 >
                   <span className="text-xs">{option.label}</span>
                   <Button
@@ -336,17 +337,17 @@ function ProfileListEditor({
           </div>
         </div>
         <div>
-          <Label className="mb-2 block">Denied</Label>
-          <div className="max-h-56 overflow-auto rounded border border-border p-2">
+          <Label className="mb-2 block text-[var(--scry-ink2)]">Denied</Label>
+          <div className={QUALITY_EDITOR_LIST_CLASS}>
             {sortedDenied.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
+              <p className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>
                 {emptyStateMessage ?? t("qualityProfile.noSelectedItems")}
               </p>
             ) : (
               sortedDenied.map((option) => (
                 <div
                   key={option.value}
-                  className="mb-1 flex items-center justify-between rounded border border-rose-500 bg-card px-2 py-1.5 border-opacity-35 hover:border-opacity-60 ring-1 ring-inset ring-rose-500/30"
+                  className="mb-1 flex items-center justify-between rounded-[9px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] px-2 py-1.5 text-[var(--scry-ink2)] ring-1 ring-inset ring-[color:var(--scry-danger-border)] hover:border-[var(--scry-danger-border-strong)]"
                 >
                   <span className="text-xs">{option.label}</span>
                   <Button
@@ -488,9 +489,9 @@ export function SettingsQualityProfilesSection({
   const [categoryPersonaDrafts, setCategoryPersonaDrafts] = React.useState<
     Record<ViewCategoryId, string>
   >({
-    movie: categoryPersonaSelections.movie.overridePersona ?? "__default__",
-    series: categoryPersonaSelections.series.overridePersona ?? "__default__",
-    anime: categoryPersonaSelections.anime.overridePersona ?? "__default__",
+    MOVIE: categoryPersonaSelections.MOVIE.overridePersona ?? "__default__",
+    SERIES: categoryPersonaSelections.SERIES.overridePersona ?? "__default__",
+    ANIME: categoryPersonaSelections.ANIME.overridePersona ?? "__default__",
   });
   const [pendingDeleteProfile, setPendingDeleteProfile] = React.useState<{ id: string; name: string } | null>(null);
   const [pendingEditorAction, setPendingEditorAction] =
@@ -516,9 +517,9 @@ export function SettingsQualityProfilesSection({
 
   React.useEffect(() => {
     setCategoryPersonaDrafts({
-      movie: categoryPersonaSelections.movie.overridePersona ?? "__default__",
-      series: categoryPersonaSelections.series.overridePersona ?? "__default__",
-      anime: categoryPersonaSelections.anime.overridePersona ?? "__default__",
+      MOVIE: categoryPersonaSelections.MOVIE.overridePersona ?? "__default__",
+      SERIES: categoryPersonaSelections.SERIES.overridePersona ?? "__default__",
+      ANIME: categoryPersonaSelections.ANIME.overridePersona ?? "__default__",
     });
   }, [categoryPersonaSelections]);
 
@@ -680,24 +681,29 @@ export function SettingsQualityProfilesSection({
         event.preventDefault();
       }}
     >
-      <div className="space-y-2">
-        <div id="settings-quality-profiles-table-card" className="rounded border border-border">
+      <section id="settings-quality-profiles-table-card" className={QUALITY_PANEL_CLASS}>
+        <div className={QUALITY_PANEL_HEADER_CLASS}>
+          <h2 className={QUALITY_PANEL_TITLE_CLASS}>
+            {t("settings.qualityProfiles")}
+          </h2>
+        </div>
+        <div className="overflow-x-auto">
           <Table id="settings-quality-profiles-table">
             <TableHeader>
-              <TableRow>
-                <TableHead>{t("label.name")}</TableHead>
-                <TableHead className="max-w-72">{t("qualityProfile.qualityTiers")}</TableHead>
-                <TableHead className="w-28">{t("qualityProfile.archivalQuality")}</TableHead>
-                <TableHead className="w-24 text-center">{t("qualityProfile.allowBdDisk")}</TableHead>
-                <TableHead className="w-24 text-center">{t("qualityProfile.allowHdr")}</TableHead>
-                <TableHead className="w-16 text-center">{t("qualityProfile.allowDv")}</TableHead>
-                <TableHead className="w-28">{t("label.actions")}</TableHead>
+              <TableRow className="border-[var(--scry-border3)] bg-[var(--scry-inset)] hover:bg-[var(--scry-inset)]">
+                <TableHead className={`font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("label.name")}</TableHead>
+                <TableHead className={`max-w-72 font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.qualityTiers")}</TableHead>
+                <TableHead className={`w-28 font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.archivalQuality")}</TableHead>
+                <TableHead className={`w-24 text-center font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.allowBdDisk")}</TableHead>
+                <TableHead className={`w-24 text-center font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.allowHdr")}</TableHead>
+                <TableHead className={`w-16 text-center font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.allowDv")}</TableHead>
+                <TableHead className={`w-28 font-semibold ${QUALITY_MUTED_TEXT_CLASS}`}>{t("label.actions")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {qualityProfiles.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-sm text-muted-foreground">
+                  <TableCell colSpan={7} className={`text-sm ${QUALITY_MUTED_TEXT_CLASS}`}>
                     {t("qualityProfile.noProfilesFound")}
                   </TableCell>
                 </TableRow>
@@ -706,8 +712,9 @@ export function SettingsQualityProfilesSection({
                   <TableRow
                     key={profile.id}
                     id={selectorId("settings-quality-profile-row", profile.name)}
+                    className="border-[var(--scry-border3)] hover:bg-[var(--scry-rowHover)]"
                   >
-                    <TableCell>{profile.name}</TableCell>
+                    <TableCell className="font-medium text-[var(--scry-ink2)]">{profile.name}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
                         {(() => {
@@ -718,12 +725,12 @@ export function SettingsQualityProfilesSection({
                             sortStringByNumericDesc,
                           );
                           if (tiers.length === 0) {
-                            return <span className="text-xs text-muted-foreground">—</span>;
+                            return <span className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>—</span>;
                           }
                           return tiers.map((tier) => (
                             <span
                               key={`${profile.id}-${tier}`}
-                              className="rounded border border-border bg-muted px-2 py-0.5 text-[10px] text-card-foreground"
+                              className="rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-0.5 text-[10px] text-[var(--scry-ink2)]"
                             >
                               {getQualityTierLabel(tier)}
                             </span>
@@ -737,7 +744,7 @@ export function SettingsQualityProfilesSection({
                           | QualityProfileCriteriaPayload
                           | undefined;
                         return (
-                          <span className="inline-flex rounded border border-border bg-muted px-2 py-0.5 text-[10px] text-card-foreground">
+                          <span className="inline-flex rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-0.5 text-[10px] text-[var(--scry-ink2)]">
                             {getQualityTierLabel(
                               typeof criteria?.archival_quality === "string" &&
                                 criteria?.archival_quality?.trim().length
@@ -793,24 +800,15 @@ export function SettingsQualityProfilesSection({
                               disabled={qualityProfilesSaving || isInUse}
                               onClick={() => setPendingDeleteProfile({ id: profile.id, name: profile.name })}
                               label={t("label.delete")}
+                              tooltip={
+                                isInUse
+                                  ? t("qualityProfile.deleteDisabledInUse")
+                                  : undefined
+                              }
                             >
                               <Trash2 className="h-4 w-4" />
                             </QualityProfileActionButton>
                           );
-                          if (isInUse) {
-                            return (
-                              <TooltipProvider>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <span tabIndex={0}>{deleteButton}</span>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    {t("qualityProfile.deleteDisabledInUse")}
-                                  </TooltipContent>
-                                </Tooltip>
-                              </TooltipProvider>
-                            );
-                          }
                           return deleteButton;
                         })()}
                       </div>
@@ -821,48 +819,58 @@ export function SettingsQualityProfilesSection({
             </TableBody>
           </Table>
         </div>
-      </div>
+      </section>
 
       {isEditorOpen ? (
         <>
-      <Card id="settings-quality-profile-editor">
-        <CardHeader>
-          <CardTitle className="text-lg">
-            {editorMode === "create"
-              ? t("qualityProfile.createNewProfile")
-              : t("qualityProfile.editProfile")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3">
-            <label>
-              <Label className="mb-2 block" htmlFor="settings-quality-profile-name">{t("qualityProfile.profileNameLabel")}</Label>
+          <section id="settings-quality-profile-editor" className={QUALITY_PANEL_CLASS}>
+            <div className={QUALITY_PANEL_HEADER_CLASS}>
+              <h2 className={QUALITY_PANEL_TITLE_CLASS}>
+                {editorMode === "create"
+                  ? t("qualityProfile.createNewProfile")
+                  : t("qualityProfile.editProfile")}
+              </h2>
+            </div>
+            <div className={`${QUALITY_PANEL_BODY_CLASS} space-y-4`}>
+              <div className={QUALITY_EDITOR_FIELD_CLASS}>
+                <label className="block max-w-2xl">
+                  <Label
+                    className="mb-2 block text-[var(--scry-ink2)]"
+                    htmlFor="settings-quality-profile-name"
+                  >
+                    {t("qualityProfile.profileNameLabel")}
+                  </Label>
               <Input
                 id="settings-quality-profile-name"
                 value={qualityProfileDraft.name}
                 onChange={(event) => updateQualityProfileDraft({ name: event.target.value })}
               />
-            </label>
-          </div>
+                </label>
+              </div>
 
-          <details className="rounded-xl border border-border bg-card p-3" open>
-            <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">
+              <details className={QUALITY_EDITOR_SECTION_CLASS} open>
+                <summary className={QUALITY_EDITOR_SECTION_SUMMARY_CLASS}>
               {t("qualityProfile.qualityTiersAndArchival")}
             </summary>
-            <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto_1fr]">
+                <div className={`${QUALITY_EDITOR_SECTION_BODY_CLASS} space-y-4`}>
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
               <div>
-                <Label className="mb-2 block">{t("qualityProfile.allowedQualityTiers")}</Label>
-                <div className="max-h-56 overflow-auto rounded border border-border p-2">
+                <Label className="mb-2 block text-[var(--scry-ink2)]">{t("qualityProfile.allowedQualityTiers")}</Label>
+                <div className={QUALITY_EDITOR_LIST_CLASS}>
                   {activeQualityProfileTierOptions.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">{t("qualityProfile.noQualityTiersSelected")}</p>
+                    <p className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.noQualityTiersSelected")}</p>
                   ) : (
                     activeQualityProfileTierOptions.map((qualityTier) => (
                       <div
                         key={qualityTier}
-                        className="mb-1 flex items-center justify-between rounded border border-transparent bg-card px-2 py-1.5 hover:border-border"
+                        className={QUALITY_EDITOR_LIST_ITEM_CLASS}
                       >
                         <span className="text-xs">{getQualityTierLabel(qualityTier)}</span>
                         <Button
+                          id={selectorId(
+                            "settings-quality-profile-tier-remove",
+                            qualityTier,
+                          )}
                           type="button"
                           variant="destructive"
                           size="sm"
@@ -879,28 +887,32 @@ export function SettingsQualityProfilesSection({
                 </div>
               </div>
               <div className="hidden items-center justify-center md:flex">
-                <div className="rounded-full border border-border bg-muted/80 p-3 text-card-foreground shadow-md">
+                <div className="rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-3 text-[var(--scry-ink2)] shadow-md">
                   <ArrowLeft className="h-6 w-6" />
                 </div>
               </div>
               <div>
-                <Label className="mb-2 block">{t("qualityProfile.availableQualityTiers")}</Label>
-                <div className="max-h-56 overflow-auto rounded border border-border p-2">
+                <Label className="mb-2 block text-[var(--scry-ink2)]">{t("qualityProfile.availableQualityTiers")}</Label>
+                <div className={QUALITY_EDITOR_LIST_CLASS}>
                   {availableQualityTiers.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">{t("qualityProfile.allQualityTiersSelected")}</p>
+                    <p className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.allQualityTiersSelected")}</p>
                   ) : (
                     availableQualityTiers.map((option) => (
                       <div
                         key={option.value}
-                        className="mb-1 flex items-center justify-between rounded border border-transparent bg-card px-2 py-1.5 hover:border-border"
+                        className={QUALITY_EDITOR_LIST_ITEM_CLASS}
                       >
                         <span className="text-xs">{option.label}</span>
                         <Button
+                          id={selectorId(
+                            "settings-quality-profile-tier-add",
+                            option.value,
+                          )}
                           type="button"
                           variant="secondary"
                           size="sm"
                           onClick={() => addQualityTier(option.value)}
-                          className="bg-emerald-600 dark:bg-emerald-700 text-emerald-800 dark:text-emerald-100 hover:bg-emerald-600 hover:text-foreground"
+                          className="border border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] hover:text-[var(--scry-success-text)]"
                           aria-label={t("qualityProfile.addQualityTier", { value: option.label })}
                         >
                           <Plus className="h-4 w-4" />
@@ -911,7 +923,7 @@ export function SettingsQualityProfilesSection({
                 </div>
               </div>
             </div>
-            <div className="mt-3">
+            <div className="max-w-md">
               <label>
                 <Label className="mb-2 block">
                   <span className="inline-flex items-center gap-2">
@@ -923,7 +935,10 @@ export function SettingsQualityProfilesSection({
                   </span>
                 </Label>
                 <Select value={qualityProfileDraft.archival_quality || "__default__"} onValueChange={(v) => updateQualityProfileDraft({ archival_quality: v === "__default__" ? "" : v })}>
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger
+                    id="settings-quality-profile-archival-quality"
+                    className="w-full"
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -934,10 +949,11 @@ export function SettingsQualityProfilesSection({
                 </Select>
               </label>
             </div>
-          </details>
+                </div>
+              </details>
 
-          <details className="rounded-xl border border-border bg-card p-3" open>
-            <summary className="cursor-pointer select-none text-sm font-medium text-card-foreground">
+              <details className={QUALITY_EDITOR_SECTION_CLASS} open>
+                <summary className={QUALITY_EDITOR_SECTION_SUMMARY_CLASS}>
               <span className="inline-flex items-center gap-2">
                 {t("qualityProfile.scoringAndPreferences")}
                 <InfoHelp
@@ -946,7 +962,7 @@ export function SettingsQualityProfilesSection({
                 />
               </span>
             </summary>
-            <div className="mt-3 space-y-4">
+                <div className={`${QUALITY_EDITOR_SECTION_BODY_CLASS} space-y-4`}>
               {/* Preferences */}
               <div className="space-y-3">
                 <label className="mb-2 flex items-center gap-3">
@@ -1032,6 +1048,7 @@ export function SettingsQualityProfilesSection({
                 </label>
                 <label className="mb-2 flex items-center gap-3">
                   <Checkbox
+                    id={selectorId("settings-quality-profile-allow-bd-disk")}
                     checked={qualityProfileDraft.allow_bd_disk}
                     onCheckedChange={(checked) =>
                       updateQualityProfileDraft({
@@ -1050,8 +1067,14 @@ export function SettingsQualityProfilesSection({
               </div>
 
               {/* Scoring overrides */}
-              <details className="rounded-lg border border-border/50 p-2">
-                <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground">
+              <details
+                id={selectorId("settings-quality-profile-scoring-overrides")}
+                className="overflow-hidden rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)]"
+              >
+                <summary
+                  id="settings-quality-profile-scoring-overrides-summary"
+                  className={`cursor-pointer select-none px-3 py-2 text-xs font-medium ${QUALITY_MUTED_TEXT_CLASS}`}
+                >
                   <span className="inline-flex items-center gap-2">
                     {t("qualityProfile.scoringOverrides")}
                     <InfoHelp
@@ -1060,7 +1083,7 @@ export function SettingsQualityProfilesSection({
                     />
                   </span>
                 </summary>
-                <div className="mt-3 space-y-3">
+                <div className="space-y-3 border-t border-[var(--scry-border3)] p-3">
                   {([
                     ["allow_x265_non4k", "qualityProfile.overrideAllowX265Non4k", "qualityProfile.overrideAllowX265Non4kInfo"],
                     ["block_dv_without_fallback", "qualityProfile.overrideBlockDvNoFallback", "qualityProfile.overrideBlockDvNoFallbackInfo"],
@@ -1072,7 +1095,7 @@ export function SettingsQualityProfilesSection({
                     const personaDefault = PERSONA_OVERRIDE_DEFAULTS[globalScoringPersonaDraft]?.[key] ?? false;
                     const effectiveValue = explicitValue ?? personaDefault;
                     return (
-                      <div key={key} className="flex items-center gap-3">
+                      <div key={key} className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
                         <Select
                           value={effectiveValue ? "true" : "false"}
                           onValueChange={(v) => {
@@ -1086,12 +1109,36 @@ export function SettingsQualityProfilesSection({
                             updateQualityProfileDraft({ scoring_overrides: nextOverrides });
                           }}
                         >
-                          <SelectTrigger className="w-28 shrink-0">
+                          <SelectTrigger
+                            id={selectorId(
+                              "settings-quality-profile-scoring-override",
+                              key,
+                            )}
+                            className="w-28 shrink-0"
+                          >
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="true">{t("label.yes")}</SelectItem>
-                            <SelectItem value="false">{t("label.no")}</SelectItem>
+                            <SelectItem
+                              id={selectorId(
+                                "settings-quality-profile-scoring-override-option",
+                                key,
+                                "true",
+                              )}
+                              value="true"
+                            >
+                              {t("label.yes")}
+                            </SelectItem>
+                            <SelectItem
+                              id={selectorId(
+                                "settings-quality-profile-scoring-override-option",
+                                key,
+                                "false",
+                              )}
+                              value="false"
+                            >
+                              {t("label.no")}
+                            </SelectItem>
                           </SelectContent>
                         </Select>
                         <span className="inline-flex items-center gap-2 text-sm">
@@ -1177,7 +1224,7 @@ export function SettingsQualityProfilesSection({
             </div>
           </details>
 
-          <div className="space-y-3">
+          <div className="grid gap-3">
             <ProfileListEditor
               title={t("qualityProfile.sourceAllowlist")}
               allowed={activeSourceAllowlist}
@@ -1222,8 +1269,14 @@ export function SettingsQualityProfilesSection({
             />
           </div>
 
-          <div className="flex justify-end">
-            <div className="flex gap-2">
+          {qualityProfileParseError ? (
+            <p className="rounded-[10px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] p-3 text-xs text-[var(--scry-danger-text)]">
+              {qualityProfileParseError}
+            </p>
+          ) : null}
+
+          <div className="-mx-4 -mb-4 border-t border-[var(--scry-border3)] bg-[var(--scry-inset)] px-4 py-3 sm:-mx-5 sm:-mb-5 sm:px-5">
+            <div className="flex justify-end gap-2">
               <Button
                 id="settings-quality-profile-cancel"
                 type="button"
@@ -1243,51 +1296,39 @@ export function SettingsQualityProfilesSection({
               </Button>
             </div>
           </div>
-
-          {qualityProfileParseError ? (
-            <p className="rounded border border-rose-500/60 bg-rose-500/10 p-2 text-xs text-rose-300">
-              {qualityProfileParseError}
-            </p>
-          ) : null}
-        </CardContent>
-      </Card>
+        </div>
+      </section>
       {editorMode === "edit" ? (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-quality-profile-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("qualityProfile.createNewProfile")}
             onClick={handleStartCreateProfile}
             disabled={mediaSettingsLoading || qualityProfilesSaving}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("qualityProfile.createNewProfile")}
-          </Button>
+          />
         </div>
       ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-quality-profile-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("qualityProfile.createNewProfile")}
             onClick={handleStartCreateProfile}
             disabled={mediaSettingsLoading || qualityProfilesSaving}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("qualityProfile.createNewProfile")}
-          </Button>
+          />
         </div>
       )}
 
-      <Card id="settings-quality-profiles-defaults-card">
-        <CardHeader>
-          <CardTitle className="text-lg">{t("qualityProfile.defaultCategoryProfiles")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-6">
+      <section id="settings-quality-profiles-defaults-card" className={QUALITY_PANEL_CLASS}>
+        <div className={QUALITY_PANEL_HEADER_CLASS}>
+          <h2 className={QUALITY_PANEL_TITLE_CLASS}>
+            {t("qualityProfile.defaultCategoryProfiles")}
+          </h2>
+        </div>
+        <div className={`${QUALITY_PANEL_BODY_CLASS} space-y-6`}>
           <label className="space-y-2">
             <Label className="inline-flex items-center gap-2">
               {t("settings.qualityProfileGlobalLabel")}
@@ -1344,25 +1385,25 @@ export function SettingsQualityProfilesSection({
               <SelectContent>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Balanced")}
-                  value="balanced"
+                  value="BALANCED"
                 >
                   {t("qualityProfile.personaBalanced")}
                 </SelectItem>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Audiophile")}
-                  value="audiophile"
+                  value="AUDIOPHILE"
                 >
                   {t("qualityProfile.personaAudiophile")}
                 </SelectItem>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Efficient")}
-                  value="efficient"
+                  value="EFFICIENT"
                 >
                   {t("qualityProfile.personaEfficient")}
                 </SelectItem>
                 <SelectItem
                   id={selectorId("settings-quality-profile-global-persona-option", "Compatible")}
-                  value="compatible"
+                  value="COMPATIBLE"
                 >
                   {t("qualityProfile.personaCompatible")}
                 </SelectItem>
@@ -1371,23 +1412,23 @@ export function SettingsQualityProfilesSection({
           </label>
 
           <div className="space-y-5">
-            <CardTitle className="inline-flex items-center gap-2 text-base">
+            <h3 className="inline-flex items-center gap-2 text-base font-semibold text-[var(--scry-ink2)]">
               {t("settings.qualityProfileOverridesLabel")}
               <InfoHelp
                 text={t("settings.qualityProfileOverrideHelp")}
                 ariaLabel={t("settings.qualityProfileOverrideHelp")}
               />
-            </CardTitle>
+            </h3>
             <div className="hidden gap-2 sm:grid sm:grid-cols-2">
-              <span className="text-xs text-muted-foreground">{t("qualityProfile.editProfile")}</span>
-              <span className="text-xs text-muted-foreground">{t("qualityProfile.scoringPersona")}</span>
+              <span className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.editProfile")}</span>
+              <span className={`text-xs ${QUALITY_MUTED_TEXT_CLASS}`}>{t("qualityProfile.scoringPersona")}</span>
             </div>
             {Object.keys(qualityCategoryLabels).map((scopeKey) => {
               const scopeId = scopeKey as ViewCategoryId;
               const overridePersona = categoryPersonaDrafts[scopeId];
               return (
                 <div key={scopeId} className="space-y-2">
-                  <Label>{qualityCategoryLabels[scopeId]}</Label>
+                  <Label className="text-[var(--scry-ink2)]">{qualityCategoryLabels[scopeId]}</Label>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <Select
                       value={categoryQualityProfileDrafts[scopeId]}
@@ -1462,7 +1503,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Balanced",
                           )}
-                          value="balanced"
+                          value="BALANCED"
                         >
                           {t("qualityProfile.personaBalanced")}
                         </SelectItem>
@@ -1473,7 +1514,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Audiophile",
                           )}
-                          value="audiophile"
+                          value="AUDIOPHILE"
                         >
                           {t("qualityProfile.personaAudiophile")}
                         </SelectItem>
@@ -1484,7 +1525,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Efficient",
                           )}
-                          value="efficient"
+                          value="EFFICIENT"
                         >
                           {t("qualityProfile.personaEfficient")}
                         </SelectItem>
@@ -1495,7 +1536,7 @@ export function SettingsQualityProfilesSection({
                             "option",
                             "Compatible",
                           )}
-                          value="compatible"
+                          value="COMPATIBLE"
                         >
                           {t("qualityProfile.personaCompatible")}
                         </SelectItem>
@@ -1506,8 +1547,8 @@ export function SettingsQualityProfilesSection({
               );
             })}
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </form>
     <ConfirmDialog
       open={pendingEditorAction !== null}
@@ -1521,6 +1562,8 @@ export function SettingsQualityProfilesSection({
             : t("label.discard")
       }
       cancelLabel={t("label.cancel")}
+      confirmButtonId="settings-quality-profile-editor-action-confirm"
+      cancelButtonId="settings-quality-profile-editor-action-cancel"
       isBusy={qualityProfilesSaving}
       onConfirm={confirmPendingEditorAction}
       onCancel={() => setPendingEditorAction(null)}

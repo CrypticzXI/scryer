@@ -1,11 +1,14 @@
 import * as React from "react";
 import { AlertTriangle, ChevronDown, Loader2, Rocket, ShieldPlus, Trash2, Upload } from "lucide-react";
 import { Link } from "react-router-dom";
+import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input, integerInputProps, sanitizeDigits } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SingleSelectField } from "@/components/ui/select";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import {
@@ -14,13 +17,21 @@ import {
   mergeTrustedCertificateEntries,
   readTrustedCertificateEntriesFromFiles,
 } from "@/lib/utils/certificates";
-import type { GeneralSettings, TrustedCertificateEntry } from "@/lib/types/settings";
+import type {
+  GeneralSettings,
+  TrustedCertificateEntry,
+  UiDateTimeFormat,
+} from "@/lib/types/settings";
 
 type SettingsOverviewSectionProps = {
   availableLanguages: LanguageOption[];
   selectedLanguage: LanguageOption | null;
   uiLanguage: LocaleCode;
   onSelectLanguage: (code: string) => void;
+  dateTimeFormat: UiDateTimeFormat;
+  dateTimeFormatLoading: boolean;
+  dateTimeFormatSaving: boolean;
+  onDateTimeFormatChange: (format: UiDateTimeFormat) => void;
   generalSettings: GeneralSettings;
   onGeneralSettingsChange: (settings: GeneralSettings) => void;
   generalLoading: boolean;
@@ -32,6 +43,10 @@ export function SettingsOverviewSection({
   availableLanguages,
   uiLanguage,
   onSelectLanguage,
+  dateTimeFormat,
+  dateTimeFormatLoading,
+  dateTimeFormatSaving,
+  onDateTimeFormatChange,
   generalSettings,
   onGeneralSettingsChange,
   generalLoading,
@@ -125,23 +140,37 @@ export function SettingsOverviewSection({
         <p>{t("settings.generalPlaceholder")}</p>
       </div>
 
-      <div>
-        <label className="mb-2 block text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {t("label.language")}
-        </label>
-        <Select value={uiLanguage} onValueChange={onSelectLanguage}>
-          <SelectTrigger className="w-56">
-            <SelectValue placeholder={t("label.language")} />
-          </SelectTrigger>
-          <SelectContent>
-            {availableLanguages.map((language) => (
-              <SelectItem key={language.code} value={language.code}>
-                {language.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <SingleSelectField
+        label={t("label.language")}
+        value={uiLanguage}
+        onValueChange={onSelectLanguage}
+        placeholder={t("label.language")}
+        triggerClassName="w-56"
+        options={availableLanguages.map((language) => ({
+          value: language.code,
+          label: language.label,
+        }))}
+      />
+
+      <SingleSelectField
+        label={t("settings.dateTimeFormatLabel")}
+        value={dateTimeFormat}
+        disabled={dateTimeFormatLoading || dateTimeFormatSaving}
+        onValueChange={(value) => onDateTimeFormatChange(value as UiDateTimeFormat)}
+        placeholder={t("settings.dateTimeFormatLabel")}
+        description={t("settings.dateTimeFormatHelp")}
+        triggerClassName="w-64"
+        options={[
+          {
+            value: "locale",
+            label: t("settings.dateTimeFormatLocale"),
+          },
+          {
+            value: "iso24h",
+            label: t("settings.dateTimeFormatIso24h"),
+          },
+        ]}
+      />
 
       <div className="space-y-4 border-t border-border pt-6">
         <div className="space-y-1">
@@ -163,20 +192,12 @@ export function SettingsOverviewSection({
           <>
             <div className="flex items-center gap-3">
               <Label>{t("settings.keepHistoryForever")}</Label>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={generalSettings.keepHistoryForever}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${generalSettings.keepHistoryForever ? "bg-primary" : "bg-muted"}`}
-                onClick={() =>
-                  updateGeneralSettings({
-                    keepHistoryForever: !generalSettings.keepHistoryForever,
-                  })}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-background shadow-lg transition-transform ${generalSettings.keepHistoryForever ? "translate-x-5" : "translate-x-0"}`}
-                />
-              </button>
+              <SettingsToggleSwitch
+                checked={generalSettings.keepHistoryForever}
+                ariaLabel={t("settings.keepHistoryForever")}
+                onChange={(nextValue) =>
+                  updateGeneralSettings({ keepHistoryForever: nextValue })}
+              />
             </div>
 
             <div className="space-y-1">
@@ -200,7 +221,11 @@ export function SettingsOverviewSection({
               </div>
             </div>
 
-            <Button onClick={onSaveGeneralSettings} disabled={generalSaving}>
+            <Button
+              id="settings-general-save"
+              onClick={onSaveGeneralSettings}
+              disabled={generalSaving}
+            >
               {generalSaving ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -231,9 +256,9 @@ export function SettingsOverviewSection({
                 <span className="text-left">
                   {t("settings.pluginHttpTrustTitle")}
                 </span>
-                <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                <Badge tone="warning" className="rounded-full text-[10px] font-semibold uppercase tracking-wide">
                   {t("settings.pluginHttpTrustAdvancedLabel")}
-                </span>
+                </Badge>
               </span>
               <span className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>
@@ -250,9 +275,9 @@ export function SettingsOverviewSection({
             </Button>
           </CollapsibleTrigger>
           <CollapsibleContent className="space-y-4 pt-4">
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+            <div className="rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] p-3 text-sm">
               <div className="flex items-start gap-2">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" />
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--scry-warning-text)]" />
                 <div className="space-y-1">
                   <p className="font-medium">{t("settings.pluginHttpTrustWarningTitle")}</p>
                   <p className="text-muted-foreground">
@@ -330,16 +355,14 @@ export function SettingsOverviewSection({
                         {entry.fingerprintSha256}
                       </code>
                     </div>
-                    <Button
+                    <IconButton
                       id={`settings-general-plugin-http-trust-remove-${entry.fingerprintSha256}`}
-                      type="button"
-                      variant="ghost"
-                      size="icon"
+                      label={t("label.remove")}
+                      appearance="ghost"
                       onClick={() => handleRemoveTrustedCertificate(entry.fingerprintSha256)}
                     >
                       <Trash2 className="h-4 w-4" />
-                      <span className="sr-only">{t("label.remove")}</span>
-                    </Button>
+                    </IconButton>
                   </div>
                 ))
               )}

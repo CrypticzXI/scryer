@@ -10,6 +10,7 @@ pub mod query;
 pub mod subscription;
 pub mod utils;
 
+pub use scryer_interface_core::loaders::RequestLoaders;
 pub use scryer_interface_media::{mappers, types};
 
 pub use context::{

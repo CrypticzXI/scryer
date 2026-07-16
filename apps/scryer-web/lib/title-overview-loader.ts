@@ -6,11 +6,13 @@ import type { DownloadQueueItem } from "@/lib/types/download-queue";
 
 import {
   titleBySlugQuery,
+  titleMoreLikeThisQuery,
   titleOverviewDownloadFeedbackQuery,
-  titleOverviewNativeQuery,
+  titleRouteTargetQuery,
 } from "@/lib/graphql/queries";
+import type { CatalogDiscoveryItem } from "@/lib/types/discovery";
 
-export type TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> = {
+export type TitleSidePanelOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> = {
   title: TTitle | null;
   acquisitionDiagnostics: TDiagnostics | null;
   titleHistory: TEvent[];
@@ -26,7 +28,7 @@ export type TitleOverviewDownloadFeedbackSnapshot = {
 };
 
 export type TitleOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle> =
-  TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>
+  TitleSidePanelOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>
   & TitleOverviewDownloadFeedbackSnapshot;
 
 export type ResolvedTitleOverviewTarget = {
@@ -34,6 +36,16 @@ export type ResolvedTitleOverviewTarget = {
   slug: string | null;
   libraryId: string | null;
   librarySlug: string | null;
+};
+
+export type ResolvedTitleRouteTarget = ResolvedTitleOverviewTarget & {
+  facet: string;
+};
+
+type TitleMoreLikeThisResponse<TItem> = {
+  title?: {
+    moreLikeThis?: TItem[] | null;
+  } | null;
 };
 
 function graphQlErrorAlias(
@@ -62,10 +74,7 @@ function isTitleOverviewPartialOverviewError(
   );
 }
 
-// Canonical base loader for title overview pages. Overview containers may
-// derive view-specific state locally, but should not duplicate the underlying
-// network-only title detail fetch and normalization.
-export async function fetchTitleOverviewNativeSnapshot<
+export async function fetchTitleSidePanelOverviewSnapshot<
   TTitle,
   TDiagnostics = unknown,
   TEvent = unknown,
@@ -75,10 +84,11 @@ export async function fetchTitleOverviewNativeSnapshot<
   client: Client,
   titleId: string,
   blocklistLimit: number,
-) : Promise<TitleOverviewNativeSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>> {
+  queryDocument: string,
+) : Promise<TitleSidePanelOverviewSnapshot<TTitle, TDiagnostics, TEvent, TBlocklist, TSubtitle>> {
   const { data, error } = await client
     .query(
-      titleOverviewNativeQuery,
+      queryDocument,
       { id: titleId, blocklistLimit },
       { requestPolicy: "network-only" },
     )
@@ -91,11 +101,31 @@ export async function fetchTitleOverviewNativeSnapshot<
   return {
     title: (data?.title ?? null) as TTitle | null,
     acquisitionDiagnostics: (data?.titleAcquisitionDiagnostics ?? null) as TDiagnostics | null,
-    titleHistory: (data?.titleHistory?.records ?? []) as TEvent[],
+    titleHistory: (data?.titleHistory?.items ?? []) as TEvent[],
     titleReleaseBlocklist: (data?.titleReleaseBlocklist ?? []) as TBlocklist[],
     externalSubtitles: (data?.externalSubtitles ?? []) as TSubtitle[],
     hasDownloadClients: data?.setupStatus?.hasDownloadClients !== false,
   };
+}
+
+export async function fetchTitleMoreLikeThis<TItem = CatalogDiscoveryItem>(
+  client: Client,
+  titleId: string,
+  limit = 12,
+): Promise<TItem[]> {
+  const { data, error } = await client
+    .query<TitleMoreLikeThisResponse<TItem>>(
+      titleMoreLikeThisQuery,
+      { id: titleId, limit },
+      { requestPolicy: "network-only" },
+    )
+    .toPromise();
+
+  if (error) {
+    throw error;
+  }
+
+  return data?.title?.moreLikeThis ?? [];
 }
 
 export function createEmptyTitleOverviewDownloadFeedbackSnapshot(): TitleOverviewDownloadFeedbackSnapshot {
@@ -143,12 +173,12 @@ export async function fetchTitleOverviewDownloadFeedbackSnapshot(
 export async function resolveTitleOverviewTargetBySlug(
   client: Client,
   facet: Facet,
-  librarySlug: string,
+  librarySlug: string | null | undefined,
   slug: string,
 ): Promise<ResolvedTitleOverviewTarget | null> {
-  const normalizedLibrarySlug = librarySlug.trim();
+  const normalizedLibrarySlug = librarySlug?.trim() || null;
   const normalizedSlug = slug.trim();
-  if (!normalizedLibrarySlug || !normalizedSlug) {
+  if (!normalizedSlug) {
     return null;
   }
 
@@ -171,6 +201,47 @@ export async function resolveTitleOverviewTargetBySlug(
 
   return {
     id: String(title.id),
+    slug: typeof title.slug === "string" && title.slug.trim().length > 0
+      ? title.slug.trim()
+      : null,
+    libraryId: typeof title.libraryId === "string" && title.libraryId.trim().length > 0
+      ? title.libraryId.trim()
+      : null,
+    librarySlug: typeof title.librarySlug === "string" && title.librarySlug.trim().length > 0
+      ? title.librarySlug.trim()
+      : null,
+  };
+}
+
+export async function resolveTitleOverviewTargetById(
+  client: Client,
+  id: string,
+): Promise<ResolvedTitleRouteTarget | null> {
+  const normalizedId = id.trim();
+  if (!normalizedId) {
+    return null;
+  }
+
+  const { data, error } = await client
+    .query(
+      titleRouteTargetQuery,
+      { id: normalizedId },
+      { requestPolicy: "network-only" },
+    )
+    .toPromise();
+
+  if (error) {
+    throw error;
+  }
+
+  const title = data?.title;
+  if (!title?.id || typeof title.facet !== "string") {
+    return null;
+  }
+
+  return {
+    id: String(title.id),
+    facet: title.facet,
     slug: typeof title.slug === "string" && title.slug.trim().length > 0
       ? title.slug.trim()
       : null,

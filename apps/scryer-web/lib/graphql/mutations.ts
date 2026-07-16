@@ -5,7 +5,7 @@ import {
   PROVIDER_CONFIG_VALUE_FIELDS,
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
-  TITLE_CORE_FIELDS,
+  TITLE_MUTATION_RESULT_FIELDS,
 } from "./queries";
 
 const AUTH_USER_FIELDS = `
@@ -67,7 +67,6 @@ ${LOGIN_PAYLOAD_FIELDS}
 export const deleteMyPasskeyMutation = `mutation DeleteMyPasskey($id: ID!) {
   deleteMyPasskey(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -208,7 +207,6 @@ export const setUserLibraryPermissionsMutation = `mutation SetUserLibraryPermiss
 export const deleteUserMutation = `mutation DeleteUser($id: ID!) {
   deleteUser(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -231,7 +229,6 @@ export const resetUserMfaMutation = `mutation ResetUserMfa($id: ID!) {
 export const deleteTitleMutation = `mutation DeleteTitle($input: DeleteTitleInput!) {
   deleteTitle(input: $input) {
     id
-    deleted
   }
 }`;
 
@@ -262,6 +259,7 @@ export const createIndexerMutation = `mutation CreateIndexer($input: CreateIndex
     name
     providerType
     baseUrl
+    indexerProxyConfigId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -288,6 +286,7 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
     name
     providerType
     baseUrl
+    indexerProxyConfigId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -308,10 +307,48 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
   }
 }`;
 
+const INDEXER_PROXY_CONFIG_FIELDS = `
+    id
+    name
+    providerType
+    protocol
+    baseUrl
+    requestTimeoutSeconds
+    isEnabled
+    lastHealthStatus
+    lastErrorMessage
+    lastErrorAt
+    createdAt
+    updatedAt`;
+
+export const createIndexerProxyConfigMutation = `mutation CreateIndexerProxyConfig($input: CreateIndexerProxyConfigInput!) {
+  createIndexerProxyConfig(input: $input) {${INDEXER_PROXY_CONFIG_FIELDS}
+  }
+}`;
+
+export const updateIndexerProxyConfigMutation = `mutation UpdateIndexerProxyConfig($input: UpdateIndexerProxyConfigInput!) {
+  updateIndexerProxyConfig(input: $input) {${INDEXER_PROXY_CONFIG_FIELDS}
+  }
+}`;
+
+export const deleteIndexerProxyConfigMutation = `mutation DeleteIndexerProxyConfig($id: ID!) {
+  deleteIndexerProxyConfig(id: $id) {
+      id
+}
+}`;
+
+export const testIndexerProxyConfigMutation = `mutation TestIndexerProxyConfig($id: ID!) {
+  testIndexerProxyConfig(id: $id) {
+    ok
+    status
+    message
+    durationMs
+  }
+}`;
+
 export const deleteIndexerMutation = `mutation DeleteIndexer($id: ID!) {
   deleteIndexerConfig(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -379,20 +416,18 @@ export const testDownloadClientConnectionMutation = `mutation TestDownloadClient
 export const deleteDownloadClientMutation = `mutation DeleteDownloadClient($id: ID!) {
   deleteDownloadClientConfig(id: $id) {
     id
-    deleted
   }
 }`;
 
 export const reorderDownloadClientsMutation = `mutation ReorderDownloadClients($input: ReorderDownloadClientConfigsInput!) {
   reorderDownloadClientConfigs(input: $input) {
     ids
-    reordered
   }
 }`;
 
 export const addTitleMutation = `mutation AddTitle($input: AddTitleInput!) {
   addTitle(input: $input) {
-    title {${TITLE_CORE_FIELDS}
+      title {${TITLE_MUTATION_RESULT_FIELDS}
     }
     metadataHydrationState
     reusedExistingTitle
@@ -410,7 +445,7 @@ export const addTitleMutation = `mutation AddTitle($input: AddTitleInput!) {
 
 export const addTitleAndQueueMutation = `mutation AddTitleAndQueue($input: AddTitleInput!) {
   addTitleAndQueueDownload(input: $input) {
-    title {${TITLE_CORE_FIELDS}
+    title {${TITLE_MUTATION_RESULT_FIELDS}
     }
     metadataHydrationState
     reusedExistingTitle
@@ -428,13 +463,12 @@ export const addTitleAndQueueMutation = `mutation AddTitleAndQueue($input: AddTi
 
 export const submitMediaRequestMutation = `mutation SubmitMediaRequest($input: SubmitMediaRequestInput!) {
   submitMediaRequest(input: $input) {
-    accepted
-  }
+      requestId
+}
 }`;
 
 export const approveMediaRequestMutation = `mutation ApproveMediaRequest($input: ApproveMediaRequestInput!) {
   approveMediaRequest(input: $input) {
-    accepted
     titleId
     wantedSearch {
       queuedCount
@@ -446,8 +480,8 @@ export const approveMediaRequestMutation = `mutation ApproveMediaRequest($input:
 
 export const dismissMediaRequestMutation = `mutation DismissMediaRequest($requestId: ID!) {
   dismissMediaRequest(requestId: $requestId) {
-    accepted
-  }
+      requestId
+}
 }`;
 
 export const updateMyMediaRequestMutation = `mutation UpdateMyMediaRequest($input: UpdateMediaRequestInput!) {
@@ -467,14 +501,13 @@ export const updateMyMediaRequestMutation = `mutation UpdateMyMediaRequest($inpu
 
 export const cancelMyMediaRequestMutation = `mutation CancelMyMediaRequest($requestId: ID!) {
   cancelMyMediaRequest(requestId: $requestId) {
-    accepted
-  }
+      requestId
+}
 }`;
 
 export const deleteMediaFileMutation = `mutation DeleteMediaFile($input: DeleteMediaFileInput!) {
   deleteMediaFile(input: $input) {
     id
-    deleted
   }
 }`;
 
@@ -514,7 +547,6 @@ export const updateLibraryMutation = `mutation UpdateLibrary($input: UpdateLibra
 export const deleteLibraryMutation = `mutation DeleteLibrary($id: ID!) {
   deleteLibrary(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -538,18 +570,14 @@ export const scanTitleLibraryMutation = `mutation ScanTitleLibrary($titleId: ID!
 export const resolvePendingImportMutation = `mutation ResolvePendingImport($input: ResolvePendingImportInput!) {
   resolvePendingImport(input: $input) {
     created
-    libraryScan {
-      scanned
-      matched
-      imported
-      skipped
-      unmatched
-    }
+    metadataHydrationState
     title {
       id
+      libraryId
       name
       facet
       monitored
+      slug
     }
   }
 }`;
@@ -646,7 +674,6 @@ export const updateSubtitleProviderConfigMutation = `mutation UpdateSubtitleProv
 export const deleteSubtitleProviderConfigMutation = `mutation DeleteSubtitleProviderConfig($id: ID!) {
   deleteSubtitleProviderConfig(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -666,8 +693,8 @@ export const updateAcquisitionSettingsMutation = `mutation UpdateAcquisitionSett
     crossTierMinDelta
     forcedUpgradeDeltaBypass
     pollIntervalSeconds
-    syncIntervalSeconds
-    batchSize
+    longTailBackfillMaxScopesPerCycle
+    longTailReconvergeDays
   }
 }`;
 
@@ -683,10 +710,32 @@ export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($in
   }
 }`;
 
+export const setMyUiSettingsMutation = `mutation SetMyUiSettings($input: SetMyUiSettingsInput!) {
+  setMyUiSettings(input: $input) {
+    theme
+    dateTimeFormat
+    highlightColor
+    secondaryColor
+    highContrastMode
+    reduceMotion
+    hideSponsorButton
+    density
+    sidebarMode
+    defaultLandingView
+    tableColumns {
+      facet
+      tableViewMode
+      columnId
+      columnOrder
+      visible
+    }
+  }
+}`;
+
 export const clearTitleImageCacheMutation = `mutation ClearTitleImageCache {
   clearTitleImageCache {
-    accepted
-  }
+      requestedAt
+}
 }`;
 
 export const createBackupMutation = `mutation CreateBackup($input: CreateBackupInput!) {
@@ -778,7 +827,6 @@ export const updateMediaServerConnectionMutation = `mutation UpdateMediaServerCo
 export const deleteMediaServerConnectionMutation = `mutation DeleteMediaServerConnection($id: ID!) {
   deleteMediaServerConnection(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -815,7 +863,6 @@ export const linkJellyfinAccountMutation = `mutation LinkJellyfinAccount($input:
 export const unlinkExternalAccountMutation = `mutation UnlinkExternalAccount($linkedAccountId: ID!) {
   unlinkExternalAccount(linkedAccountId: $linkedAccountId) {
     linkedAccountId
-    unlinked
   }
 }`;
 
@@ -934,7 +981,11 @@ const mediaSettingsFieldSelection = `
     monitorFillerMovies
     nfoWriteOnImport
     plexmatchWriteOnImport
-    importMode`;
+    importMode
+    setPermissionsLinux
+    fileChmod
+    folderChmod
+    chownGroup`;
 
 const libraryPathsFieldSelection = `
     moviePath
@@ -1000,10 +1051,25 @@ export const queueExistingMutation = `mutation QueueExisting($input: QueueDownlo
       state
       replaceable
       scope {
-        kind
-        episodeId
-        episodeIds
-        collectionId
+        __typename
+        ... on EpisodeScopePayload {
+          episodeId
+        }
+        ... on EpisodeSetScopePayload {
+          episodeIds
+        }
+        ... on SeriesMovieScopePayload {
+          seriesMovieLinkId
+        }
+        ... on CollectionScopePayload {
+          collectionId
+        }
+        ... on TitleScopePayload {
+          wholeTitle
+        }
+        ... on OrphanScopePayload {
+          orphaned
+        }
       }
     }
   }
@@ -1035,10 +1101,25 @@ export const queueBestReleaseMutation = `mutation QueueBestRelease($input: Queue
       state
       replaceable
       scope {
-        kind
-        episodeId
-        episodeIds
-        collectionId
+        __typename
+        ... on EpisodeScopePayload {
+          episodeId
+        }
+        ... on EpisodeSetScopePayload {
+          episodeIds
+        }
+        ... on SeriesMovieScopePayload {
+          seriesMovieLinkId
+        }
+        ... on CollectionScopePayload {
+          collectionId
+        }
+        ... on TitleScopePayload {
+          wholeTitle
+        }
+        ... on OrphanScopePayload {
+          orphaned
+        }
       }
     }
   }
@@ -1261,8 +1342,7 @@ export function buildDeleteTitleBatchMutation(count: number): string {
   const fields = Array.from(
     { length: count },
     (_, index) => `item${index}: deleteTitle(input: $input${index}) {
-    id
-    deleted
+      id
   }`,
   ).join("\n");
 
@@ -1303,60 +1383,38 @@ export const setPrimaryMovieFileMutation = `mutation SetPrimaryMovieFile($input:
   }
 }`;
 
-const wantedSearchPayloadSelection = `
-    queuedCount
-    skippedInProgressCount
-    conflict {
-      titleId
-      titleName
-      downloadClientId
-      downloadClientType
-      downloadClientItemId
-      sourceTitle
-      sourceKind
-      state
-      replaceable
-      scope {
-        kind
-        episodeId
-        episodeIds
-        collectionId
-      }
-    }`;
-
-export const triggerWantedSearchMutation = `mutation TriggerWantedSearch($input: TriggerWantedSearchInput!) {
-  triggerWantedSearch(input: $input) {${wantedSearchPayloadSelection}
+// RFC 119 §7.3: one server-side interactive search job replaces the retired
+// per-item trigger mutations; progress is polled via acquisitionSearchJobQuery.
+export const triggerAcquisitionSearchMutation = `mutation TriggerAcquisitionSearch($input: TriggerAcquisitionSearchInput!) {
+  triggerAcquisitionSearch(input: $input) {
+    id
+    state
+    total
+    processed
+    grabbedCount
+    failedCount
+    currentTitle
+    startedAt
+    finishedAt
   }
 }`;
 
-export const triggerTitleWantedSearchMutation = `mutation TriggerTitleWantedSearch($input: TriggerTitleWantedSearchInput!) {
-  triggerTitleWantedSearch(input: $input) {${wantedSearchPayloadSelection}
-  }
-}`;
-
-export const triggerSeasonWantedSearchMutation = `mutation TriggerSeasonWantedSearch($input: TriggerSeasonWantedSearchInput!) {
-  triggerSeasonWantedSearch(input: $input) {${wantedSearchPayloadSelection}
+export const cancelAcquisitionSearchMutation = `mutation CancelAcquisitionSearch($id: ID!) {
+  cancelAcquisitionSearch(id: $id) {
+    id
+    accepted
   }
 }`;
 
 export const pauseWantedItemMutation = `mutation PauseWantedItem($id: ID!) {
   pauseWantedItem(id: $id) {
     id
-    paused
   }
 }`;
 
 export const resumeWantedItemMutation = `mutation ResumeWantedItem($id: ID!) {
   resumeWantedItem(id: $id) {
     id
-    resumed
-  }
-}`;
-
-export const resetWantedItemMutation = `mutation ResetWantedItem($id: ID!) {
-  resetWantedItem(id: $id) {
-    id
-    reset
   }
 }`;
 
@@ -1383,7 +1441,6 @@ export const forceGrabPendingReleaseMutation = `mutation ForceGrabPendingRelease
 export const dismissPendingReleaseMutation = `mutation DismissPendingRelease($id: ID!) {
   dismissPendingRelease(id: $id) {
     id
-    dismissed
   }
 }`;
 
@@ -1435,7 +1492,6 @@ export const beginInstallPluginMutation = `mutation BeginInstallPlugin($pluginId
 export const uninstallPluginMutation = `mutation UninstallPlugin($pluginId: ID!) {
   uninstallPlugin(pluginId: $pluginId) {
     pluginId
-    uninstalled
   }
 }`;
 
@@ -1571,7 +1627,6 @@ export const installUploadedPluginMutation = `mutation InstallUploadedPlugin($in
 export const restoreRecycledItemMutation = `mutation RestoreRecycledItem($id: ID!) {
   restoreRecycledItem(id: $id) {
     id
-    restored
   }
 }`;
 
@@ -1629,7 +1684,6 @@ export const updateNotificationChannelMutation = `mutation UpdateNotificationCha
 export const deleteNotificationChannelMutation = `mutation DeleteNotificationChannel($id: ID!) {
   deleteNotificationChannel(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -1675,7 +1729,6 @@ export const updateNotificationSubscriptionMutation = `mutation UpdateNotificati
 export const deleteNotificationSubscriptionMutation = `mutation DeleteNotificationSubscription($id: ID!) {
   deleteNotificationSubscription(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -1716,7 +1769,6 @@ export const updateRuleSetMutation = `mutation UpdateRuleSet($input: UpdateRuleS
 export const deleteRuleSetMutation = `mutation DeleteRuleSet($id: ID!) {
   deleteRuleSet(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -1789,40 +1841,63 @@ const EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS = `
     errorMessage
 `;
 
+// Lightweight per-instance connection probe for the Connect step (fired on
+// blur). Does NOT start a warmup — the wizard starts that separately on success.
+export const validateExternalImportConnectionMutation = `mutation ValidateExternalImportConnection($input: ValidateExternalImportConnectionInput!) {
+  validateExternalImportConnection(input: $input) {
+    kind
+    baseUrl
+    connected
+    version
+    error
+  }
+}`;
+
+// Per-instance warmup. Runs concurrently across distinct instances; returns a
+// progress snapshot whose sessionId the wizard tracks per instance.
+export const startExternalImportArrSourceWarmupMutation = `mutation StartExternalImportArrSourceWarmup($input: StartExternalImportArrSourceWarmupInput!) {
+  startExternalImportArrSourceWarmup(input: $input) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
+export const cancelExternalImportArrSourceWarmupMutation = `mutation CancelExternalImportArrSourceWarmup($sessionId: ID!) {
+  cancelExternalImportArrSourceWarmup(sessionId: $sessionId) {
+    sessionId
+    canceled
+  }
+}`;
+
 export const previewExternalImportMutation = `mutation PreviewExternalImport($input: PreviewExternalImportInput!) {
   previewExternalImport(input: $input) {
-    sonarrConnected
-    radarrConnected
     prowlarrConnected
-    sonarrVersion
-    radarrVersion
     prowlarrVersion
-    sonarrError
-    radarrError
     prowlarrError
-    rootFolders { source path }
+    arrSources {
+      sessionId
+      sourceKey
+      kind
+      baseUrl
+      connected
+      version
+      status
+      error
+    }
+    rootFolders {
+      sourceWarmupSessionId
+      sourceKey
+      kind
+      arrRootPath
+    }
     downloadClients {
-      sources name implementation scryerClientType
+      sourceKeys name implementation scryerClientType
       host port useSsl urlBase username apiKeyPresent
       dedupKey supported requiresPasswordOverride
     }
     indexers {
-      sources name implementation scryerProviderType
+      sourceKeys name implementation scryerProviderType
       baseUrl apiKeyPresent dedupKey supported
       childCount childNames requiresApiKeyOverride apiKeyHelpUrl
     }
-  }
-}`;
-
-export const startExternalImportMonitorWarmupMutation = `mutation StartExternalImportMonitorWarmup($input: StartExternalImportMonitorWarmupInput!) {
-  startExternalImportMonitorWarmup(input: $input) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
-  }
-}`;
-
-export const cancelExternalImportMonitorWarmupMutation = `mutation CancelExternalImportMonitorWarmup($sessionId: ID!) {
-  cancelExternalImportMonitorWarmup(sessionId: $sessionId) {
-    sessionId
-    canceled
   }
 }`;
 
@@ -1838,16 +1913,29 @@ export const executeExternalImportMutation = `mutation ExecuteExternalImport($in
 
 export const finalizeExternalImportMutation = `mutation FinalizeExternalImport($input: FinalizeExternalImportInput!) {
   finalizeExternalImport(input: $input) {
-    finalized
     monitorWarmupSessionId
   }
+}`;
+
+// Sensitive draft (API keys / passwords) — stored server-side, encrypted,
+// owner-scoped singleton. Requires ManageSystemSettings + config step-up.
+export const saveExternalImportSetupSecretDraftMutation = `mutation SaveExternalImportSetupSecretDraft($input: SaveExternalImportSetupSecretDraftInput!) {
+  saveExternalImportSetupSecretDraft(input: $input) {
+    overwroteAnotherUserDraft
+    updatedAt
+  }
+}`;
+
+export const clearExternalImportSetupSecretDraftMutation = `mutation ClearExternalImportSetupSecretDraft {
+  clearExternalImportSetupSecretDraft {
+      cleared
+}
 }`;
 
 export const rehydrateAllMetadataMutation = `mutation RehydrateAllMetadata($input: RehydrateAllMetadataInput!) {
   rehydrateAllMetadata(input: $input) {
     language
     titlesCleared
-    accepted
   }
 }`;
 
@@ -1867,7 +1955,6 @@ export const updatePostProcessingScriptMutation = `mutation UpdatePostProcessing
 export const deletePostProcessingScriptMutation = `mutation DeletePostProcessingScript($id: ID!) {
   deletePostProcessingScript(id: $id) {
     id
-    deleted
   }
 }`;
 
@@ -1875,7 +1962,8 @@ export const togglePostProcessingScriptMutation = `mutation TogglePostProcessing
   togglePostProcessingScript(id: $id, inlineShellAcknowledged: $inlineShellAcknowledged) {${ppScriptFields}}
 }`;
 
-// Input type companion — keep in sync with ExecuteExternalImportInput on the backend.
+// Input type companions — keep in sync with the multi-instance external-import
+// inputs in crates/scryer-interface-media-types/src/lib.rs.
 export type DownloadClientApiKeyOverride = {
   dedupKey: string;
   apiKey: string;
@@ -1891,6 +1979,74 @@ export type IndexerApiKeyOverride = {
   apiKey: string;
 };
 
+export type ExternalArrSourceKind = "SONARR" | "RADARR";
+export type ExternalImportConnectionKind = "SONARR" | "RADARR" | "PROWLARR";
+
+export type ExternalImportConnectionInput = {
+  baseUrl: string;
+  apiKey: string;
+};
+
+export type ValidateExternalImportConnectionInput = {
+  kind: ExternalImportConnectionKind;
+  connection: ExternalImportConnectionInput;
+};
+
+export type StartExternalImportArrSourceWarmupInput = {
+  kind: ExternalArrSourceKind;
+  connection: ExternalImportConnectionInput;
+};
+
+export type PreviewExternalImportInput = {
+  sourceWarmupSessionIds: string[];
+  prowlarr?: ExternalImportConnectionInput | null;
+};
+
+export type ExecuteExternalImportInput = {
+  sourceWarmupSessionIds: string[];
+  prowlarr?: ExternalImportConnectionInput | null;
+  selectedDownloadClientDedupKeys: string[];
+  selectedIndexerDedupKeys: string[];
+  downloadClientApiKeyOverrides: DownloadClientApiKeyOverride[];
+  downloadClientPasswordOverrides: DownloadClientPasswordOverride[];
+  indexerApiKeyOverrides: IndexerApiKeyOverride[];
+};
+
+// `sourceWarmupSessionId`/`sourceKey`/`kind` are null for a manually-added root
+// (one no Sonarr/Radarr instance reported); such a root only registers its
+// Scryer-host path on the target library and carries no monitored status.
+export type ExternalImportSourceLibraryMappingInput = {
+  sourceWarmupSessionId?: string | null;
+  sourceKey?: string | null;
+  kind?: ExternalArrSourceKind | null;
+  arrRootPath: string;
+  scryerRootPath: string;
+  libraryId: string;
+  facet: "MOVIE" | "SERIES" | "ANIME";
+};
+
+export type FinalizeExternalImportInput = {
+  sourceWarmupSessionIds: string[];
+  mappings: ExternalImportSourceLibraryMappingInput[];
+};
+
+export type ExternalImportAggregateWarmupProgressInput = {
+  sourceWarmupSessionIds: string[];
+};
+
+export type ExternalImportSetupInstanceApiKeyInput = {
+  instanceId: string;
+  kind: ExternalImportConnectionKind;
+  apiKey: string;
+};
+
+export type SaveExternalImportSetupSecretDraftInput = {
+  instanceApiKeys: ExternalImportSetupInstanceApiKeyInput[];
+  downloadClientApiKeyOverrides: DownloadClientApiKeyOverride[];
+  downloadClientPasswordOverrides: DownloadClientPasswordOverride[];
+  indexerApiKeyOverrides: IndexerApiKeyOverride[];
+};
+
 // ── Subtitle mutations ──────────────────────────────────────────────────────
 
 export const searchSubtitlesMutation = `mutation SearchSubtitles($input: SearchSubtitlesInput!) {
@@ -1900,6 +2056,7 @@ export const searchSubtitlesMutation = `mutation SearchSubtitles($input: SearchS
     language
     releaseInfo
     score
+    scorePercent
     hearingImpaired
     forced
     aiTranslated
@@ -1935,7 +2092,6 @@ export const blocklistExternalSubtitleMutation = `mutation BlocklistExternalSubt
 export const clearTitleReleaseBlocklistEntryMutation = `mutation ClearTitleReleaseBlocklistEntry($id: ID!) {
   clearTitleReleaseBlocklistEntry(id: $id) {
     id
-    cleared
   }
 }`;
 
@@ -2023,6 +2179,7 @@ export type SubtitleSearchResult = {
   language: string;
   releaseInfo: string | null;
   score: number;
+  scorePercent: number;
   hearingImpaired: boolean;
   forced: boolean;
   aiTranslated: boolean;

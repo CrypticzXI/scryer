@@ -4,17 +4,19 @@ import { providerCatalogChangedSubscription } from "@/lib/graphql/queries";
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
 
 const PROVIDER_CATALOG_FAMILIES = new Set([
-  "subtitle",
-  "notification",
-  "indexer",
-  "download_client",
+  "SUBTITLE",
+  "NOTIFICATION",
+  "INDEXER",
+  "DOWNLOAD_CLIENT",
+  "ARCHIVE_EXTRACTOR",
 ] as const);
 
 export type ProviderCatalogFamily =
-  | "subtitle"
-  | "notification"
-  | "indexer"
-  | "download_client";
+  | "SUBTITLE"
+  | "NOTIFICATION"
+  | "INDEXER"
+  | "DOWNLOAD_CLIENT"
+  | "ARCHIVE_EXTRACTOR";
 
 function isProviderCatalogFamily(value: string): value is ProviderCatalogFamily {
   return PROVIDER_CATALOG_FAMILIES.has(value as ProviderCatalogFamily);

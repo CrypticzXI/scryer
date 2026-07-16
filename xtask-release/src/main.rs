@@ -4,6 +4,8 @@ use chrono::{NaiveDate, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use const_oid::db::rfc5280::ID_KP_CODE_SIGNING;
 use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
+use scryer_application::PluginDescriptorLoader;
+use scryer_plugins::WasmPluginDescriptorLoader;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,7 +19,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 use toml::Value as TomlValue;
@@ -68,6 +70,10 @@ const SCRYER_CI_CLIPPY_PACKAGES: &[&str] = &[
 ];
 const RELEASE_DRY_RUN_CACHE_FILE: &str = "tmp/xtask-release-dry-run.json";
 const RELEASE_DRY_RUN_BUILTINS_DIR: &str = "tmp/xtask-release-dry-run-builtins";
+const RELEASE_NOTES_DIR: &str = "release-notes";
+const RELEASE_NOTES_AI_MARKER: &str = "AI generated release notes";
+const RELEASE_NOTES_DEFAULT_CODEX_MODEL: &str = "gpt-5.4";
+const RELEASE_NOTES_DEFAULT_CODEX_REASONING: &str = "xhigh";
 const OFFICIAL_PLUGIN_CATALOG_V3_REDIRECT_URL: &str =
     "https://cdn.scryer.media/scryer/catalog/v3/catalog-v3.redirect.json";
 const OFFICIAL_PLUGIN_CATALOG_V3_REDIRECT_BUNDLE_URL: &str =
@@ -312,6 +318,10 @@ struct ReleaseDryRunCache {
     validated_steps: Vec<String>,
     cached_builtins_dir: Option<String>,
     #[serde(default)]
+    release_notes_path: Option<String>,
+    #[serde(default)]
+    release_notes_sha256: Option<String>,
+    #[serde(default)]
     catalog_builtin_wasm_blake3: BTreeMap<String, String>,
     failure_message: Option<String>,
 }
@@ -323,6 +333,8 @@ struct ReleaseDryRunExpectations<'a> {
     latest_tag_seen: Option<&'a str>,
     next_version: &'a str,
     tag_name: &'a str,
+    release_notes_path: &'a str,
+    release_notes_sha256: &'a str,
 }
 
 fn main() -> Result<()> {
@@ -665,6 +677,295 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect::<Vec<_>>()
         .join("")
+}
+
+fn release_notes_path(ctx: &TaskContext, tag_name: &str) -> PathBuf {
+    ctx.path(RELEASE_NOTES_DIR).join(format!("{tag_name}.md"))
+}
+
+fn release_notes_path_relative(tag_name: &str) -> String {
+    format!("{RELEASE_NOTES_DIR}/{tag_name}.md")
+}
+
+fn release_notes_context_path(ctx: &TaskContext, tag_name: &str) -> PathBuf {
+    ctx.path("tmp")
+        .join("xtask-release-notes")
+        .join(format!("{tag_name}-context.md"))
+}
+
+fn release_notes_output_path(ctx: &TaskContext, tag_name: &str) -> PathBuf {
+    ctx.path("tmp")
+        .join("xtask-release-notes")
+        .join(format!("{tag_name}-output.md"))
+}
+
+fn release_notes_sha256(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| {
+        format!(
+            "failed to read release notes for checksum at {}",
+            path.display()
+        )
+    })?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn release_notes_context(
+    ctx: &TaskContext,
+    latest_tag: Option<&str>,
+    tag_name: &str,
+    next_version: &Version,
+) -> Result<String> {
+    let range = latest_tag
+        .map(|tag| format!("{tag}..HEAD"))
+        .unwrap_or_else(|| "HEAD".to_string());
+    let commit_log = git_capture(
+        ctx,
+        &[
+            "log",
+            "--no-merges",
+            "--no-show-signature",
+            "--date=short",
+            "--pretty=format:%h %ad %s",
+            &range,
+        ],
+    )
+    .unwrap_or_else(|_| String::new());
+    let changed_files = if let Some(tag) = latest_tag {
+        git_capture(ctx, &["diff", "--name-status", &format!("{tag}..HEAD")])
+            .unwrap_or_else(|_| String::new())
+    } else {
+        git_capture(ctx, &["ls-files"]).unwrap_or_else(|_| String::new())
+    };
+    let diffstat = if latest_tag.is_some() {
+        git_capture(ctx, &["diff", "--stat", &range]).unwrap_or_else(|_| String::new())
+    } else {
+        String::new()
+    };
+
+    Ok(format!(
+        r#"# Release Notes Generation Context
+
+Proposed tag: {tag_name}
+Proposed version: {next_version}
+Previous tag: {previous_tag}
+Commit range: {range}
+
+## Required output contract
+
+- Write Markdown only.
+- The first line must be exactly `# {tag_name}`.
+- Include this line near the top: `{RELEASE_NOTES_AI_MARKER}`.
+- Summarize user-facing changes first.
+- Keep wording suitable for a GitHub Release.
+- Do not mention local filesystem paths.
+- Do not include placeholder text.
+
+## Commit log
+
+```text
+{commit_log}
+```
+
+## Changed files
+
+```text
+{changed_files}
+```
+
+## Diffstat
+
+```text
+{diffstat}
+```
+"#,
+        previous_tag = latest_tag.unwrap_or("none"),
+    ))
+}
+
+fn validate_release_notes_output(path: &Path, tag_name: &str) -> Result<()> {
+    let content = fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read generated release notes at {}",
+            path.display()
+        )
+    })?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        bail!("generated release notes are empty");
+    }
+    let expected_heading = format!("# {tag_name}");
+    if trimmed.lines().next() != Some(expected_heading.as_str()) {
+        bail!("generated release notes must start with `{expected_heading}`");
+    }
+    if !trimmed.contains(RELEASE_NOTES_AI_MARKER) {
+        bail!("generated release notes must include `{RELEASE_NOTES_AI_MARKER}`");
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    for placeholder in ["todo:", "tbd", "placeholder", "<insert", "lorem ipsum"] {
+        if lower.contains(placeholder) {
+            bail!("generated release notes contain placeholder text: {placeholder}");
+        }
+    }
+    let violations = scan_release_hygiene_content(path, &content);
+    if !violations.is_empty() {
+        bail!(
+            "generated release notes contain release hygiene violations:\n{}",
+            violations.join("\n")
+        );
+    }
+    Ok(())
+}
+
+fn codex_release_notes_command_for(output_path: &Path, model: &str, reasoning: &str) -> Command {
+    let reasoning_config = format!("model_reasoning_effort=\"{reasoning}\"");
+    let mut command = Command::new("codex");
+    command
+        .args(["exec", "--ephemeral", "--sandbox", "read-only", "--model"])
+        .arg(model)
+        .arg("-c")
+        .arg(reasoning_config)
+        .arg("--output-last-message")
+        .arg(output_path)
+        .arg("-");
+    command
+}
+
+fn codex_release_notes_command(output_path: &Path) -> Command {
+    let model = std::env::var("SCRYER_RELEASE_NOTES_CODEX_MODEL")
+        .unwrap_or_else(|_| RELEASE_NOTES_DEFAULT_CODEX_MODEL.to_string());
+    let reasoning = std::env::var("SCRYER_RELEASE_NOTES_CODEX_REASONING")
+        .unwrap_or_else(|_| RELEASE_NOTES_DEFAULT_CODEX_REASONING.to_string());
+    codex_release_notes_command_for(output_path, &model, &reasoning)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "release notes command invocation passes explicit release context into the generator"
+)]
+fn run_release_notes_command_with_template(
+    ctx: &TaskContext,
+    context_path: &Path,
+    output_path: &Path,
+    tag_name: &str,
+    latest_tag: Option<&str>,
+    next_version: &Version,
+    prompt: &str,
+    command_template: Option<&str>,
+) -> Result<()> {
+    if let Some(command_template) = command_template.filter(|value| !value.trim().is_empty()) {
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(command_template)
+            .current_dir(&ctx.repo_root)
+            .env("SCRYER_RELEASE_NOTES_CONTEXT", prompt)
+            .env(
+                "SCRYER_RELEASE_NOTES_CONTEXT_PATH",
+                context_path.as_os_str(),
+            )
+            .env("SCRYER_RELEASE_NOTES_OUTPUT", output_path.as_os_str())
+            .env("SCRYER_RELEASE_TAG", tag_name)
+            .env("SCRYER_PREVIOUS_RELEASE_TAG", latest_tag.unwrap_or(""))
+            .env("SCRYER_RELEASE_VERSION", next_version.to_string())
+            .status()
+            .context("failed to run SCRYER_RELEASE_NOTES_COMMAND")?;
+        if !status.success() {
+            bail!("SCRYER_RELEASE_NOTES_COMMAND failed with status {status}");
+        }
+        return Ok(());
+    }
+
+    require_command("codex")?;
+    let mut command = codex_release_notes_command(output_path);
+    command.current_dir(&ctx.repo_root).stdin(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .context("failed to start Codex release notes generator")?;
+    {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("failed to open Codex stdin"))?;
+        stdin
+            .write_all(prompt.as_bytes())
+            .context("failed to write release notes prompt to Codex")?;
+    }
+    let status = child
+        .wait()
+        .context("failed waiting for Codex release notes generator")?;
+    if !status.success() {
+        bail!("Codex release notes generator failed with status {status}");
+    }
+    Ok(())
+}
+
+fn run_release_notes_command(
+    ctx: &TaskContext,
+    context_path: &Path,
+    output_path: &Path,
+    tag_name: &str,
+    latest_tag: Option<&str>,
+    next_version: &Version,
+    prompt: &str,
+) -> Result<()> {
+    let command_template = std::env::var("SCRYER_RELEASE_NOTES_COMMAND").ok();
+    run_release_notes_command_with_template(
+        ctx,
+        context_path,
+        output_path,
+        tag_name,
+        latest_tag,
+        next_version,
+        prompt,
+        command_template.as_deref(),
+    )
+}
+
+fn generate_release_notes(
+    ctx: &TaskContext,
+    latest_tag: Option<&str>,
+    tag_name: &str,
+    next_version: &Version,
+) -> Result<(PathBuf, String)> {
+    let final_path = release_notes_path(ctx, tag_name);
+    let context_path = release_notes_context_path(ctx, tag_name);
+    let output_path = release_notes_output_path(ctx, tag_name);
+    if let Some(parent) = context_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let prompt = release_notes_context(ctx, latest_tag, tag_name, next_version)?;
+    fs::write(&context_path, &prompt)
+        .with_context(|| format!("failed to write {}", context_path.display()))?;
+    if output_path.exists() {
+        fs::remove_file(&output_path)
+            .with_context(|| format!("failed to remove {}", output_path.display()))?;
+    }
+
+    run_release_notes_command(
+        ctx,
+        &context_path,
+        &output_path,
+        tag_name,
+        latest_tag,
+        next_version,
+        &prompt,
+    )?;
+    validate_release_notes_output(&output_path, tag_name)?;
+    fs::copy(&output_path, &final_path).with_context(|| {
+        format!(
+            "failed to copy generated release notes from {} to {}",
+            output_path.display(),
+            final_path.display()
+        )
+    })?;
+    validate_release_notes_output(&final_path, tag_name)?;
+    let digest = release_notes_sha256(&final_path)?;
+    Ok((final_path, digest))
 }
 
 fn run_ci_winget(ctx: &TaskContext, args: WingetArgs) -> Result<()> {
@@ -1089,6 +1390,12 @@ fn release_dry_run_cache_rejection_reason(
     }
     if cache.tag_name != expected.tag_name {
         return Some("computed release tag changed since dry run".to_string());
+    }
+    if cache.release_notes_path.as_deref() != Some(expected.release_notes_path) {
+        return Some("release notes path changed since dry run".to_string());
+    }
+    if cache.release_notes_sha256.as_deref() != Some(expected.release_notes_sha256) {
+        return Some("release notes changed since dry run".to_string());
     }
     let validated_steps = cache
         .validated_steps
@@ -1950,7 +2257,8 @@ fn existing_builtin_wasm_digest(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> 
             paths.wasm.display()
         )
     })?;
-    let descriptor = scryer_plugin_sdk::load_plugin_descriptor_from_wasm_bytes(&wasm_bytes)
+    let descriptor = WasmPluginDescriptorLoader
+        .load_descriptor_from_wasm_bytes(&wasm_bytes)
         .map_err(|error| {
             anyhow!(
                 "failed to describe existing builtin {}: {error}",
@@ -2031,7 +2339,8 @@ fn sync_builtin_plugin(
     })?;
     let wasm_digest = required_blake3_digest("builtin wasm", &artifact.wasm_digests)?;
     require_blake3_bytes("builtin wasm", wasm_digest, &wasm_bytes)?;
-    let mut descriptor = scryer_plugin_sdk::load_plugin_descriptor_from_wasm_bytes(&wasm_bytes)
+    let mut descriptor = WasmPluginDescriptorLoader
+        .load_descriptor_from_wasm_bytes(&wasm_bytes)
         .map_err(|error| anyhow!("failed to describe builtin {}: {error}", spec.plugin_id))?;
     if descriptor.id != spec.plugin_id {
         bail!(
@@ -2279,6 +2588,15 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         &tag_name,
     );
     let initial_cache_dir_relative = relative_to_repo_root(ctx, &initial_cache_dir)?;
+    let expected_release_notes_path = release_notes_path_relative(&tag_name);
+    let expected_release_notes_file = ctx.path(&expected_release_notes_path);
+    let expected_release_notes_sha256 = if args.dry_run {
+        None
+    } else if expected_release_notes_file.is_file() {
+        Some(release_notes_sha256(&expected_release_notes_file)?)
+    } else {
+        None
+    };
 
     let mut reused_dry_run_cache = false;
     if args.dry_run {
@@ -2298,14 +2616,22 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                 catalog_url: catalog_url.clone(),
                 validated_steps: Vec::new(),
                 cached_builtins_dir: Some(initial_cache_dir_relative.clone()),
+                release_notes_path: None,
+                release_notes_sha256: None,
                 catalog_builtin_wasm_blake3: BTreeMap::new(),
                 failure_message: Some("dry run did not complete".to_string()),
             },
         )?;
+    } else if expected_release_notes_sha256.is_none() {
+        bail!(
+            "release notes are missing for {tag_name}; run `cargo xtask release --dry-run` first"
+        );
     } else if worktree_clean_at_start && release_dry_run_cache_path(ctx).is_file() {
         match load_release_dry_run_cache(ctx) {
             Ok(cache) => {
                 let next_version_text = next_version.to_string();
+                let expected_release_notes_sha256 =
+                    expected_release_notes_sha256.as_deref().unwrap_or_default();
                 let cached_builtins_dir = cache
                     .cached_builtins_dir
                     .as_deref()
@@ -2323,6 +2649,8 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                     latest_tag_seen: latest_tag.as_deref(),
                     next_version: &next_version_text,
                     tag_name: &tag_name,
+                    release_notes_path: &expected_release_notes_path,
+                    release_notes_sha256: expected_release_notes_sha256,
                 };
                 if let Some(reason) =
                     release_dry_run_cache_rejection_reason(&cache, &expected, builtins_present)
@@ -2346,6 +2674,12 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                 println!("   {YELLOW}Skipping dry-run cache reuse: {error:#}{RESET}");
             }
         }
+    }
+
+    if !args.dry_run && !reused_dry_run_cache {
+        bail!(
+            "release requires a successful dry run cache with matching release notes; run `cargo xtask release --dry-run` first"
+        );
     }
 
     if !reused_dry_run_cache {
@@ -2398,8 +2732,26 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         if args.dry_run {
             match validation_result {
                 Ok((refreshed_builtins, validated_steps)) => {
+                    step("Generating AI release notes");
+                    let (release_notes_path, release_notes_sha256) = generate_release_notes(
+                        ctx,
+                        latest_tag.as_deref(),
+                        &tag_name,
+                        &next_version,
+                    )?;
+                    let release_notes_path_relative =
+                        relative_to_repo_root(ctx, &release_notes_path)?;
+                    ok(format!("Generated {release_notes_path_relative}"));
+
                     let mut prep_changed_paths = git_tracked_dirty_paths(ctx)?;
                     maybe_add_changed_graphql_schema_artifact(ctx, &mut prep_changed_paths)?;
+                    if changed_file(ctx, &release_notes_path)?
+                        && !prep_changed_paths
+                            .iter()
+                            .any(|path| path == &release_notes_path)
+                    {
+                        prep_changed_paths.push(release_notes_path);
+                    }
                     let final_git_commit = if !prep_changed_paths.is_empty() {
                         step("Committing release-prep changes");
                         let committed = commit_tracked_changes(
@@ -2439,6 +2791,8 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                             catalog_url: catalog_url.clone(),
                             validated_steps,
                             cached_builtins_dir: Some(final_cache_dir_relative),
+                            release_notes_path: Some(release_notes_path_relative),
+                            release_notes_sha256: Some(release_notes_sha256),
                             catalog_builtin_wasm_blake3: refreshed_builtins.catalog_wasm_blake3,
                             failure_message: None,
                         },
@@ -2852,8 +3206,25 @@ fn run_scryer_graphql_api_compat_validation(
             check.arg("scripts/check-graphql-schema-compat.mjs");
             check.arg(&previous_schema_path);
             check.arg(&current_schema_path);
-            run_streaming(&mut check, prefix)?;
-            prefixed_ok(prefix, "GraphQL API compatibility passed");
+            match run_streaming(&mut check, prefix) {
+                Ok(()) => prefixed_ok(prefix, "GraphQL API compatibility passed"),
+                Err(error) if schema_breaks_allowed_for_bump(latest_tag, next_version) => {
+                    warn(format!(
+                        "GraphQL API breaking/dangerous changes detected and PERMITTED: this \
+                         release raises the minor or major version (next: {next_version}). The \
+                         full change list is streamed above — every break must be enumerated \
+                         in the release notes. Checker result: {error:#}"
+                    ));
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        "GraphQL API compatibility failed for a patch release — breaking \
+                         schema changes are only permitted when the minor or major version \
+                         increases"
+                            .to_string()
+                    });
+                }
+            }
         }
         Err(error) if allow_missing_previous_graphql_schema(next_version) => {
             warn(format!(
@@ -2883,6 +3254,21 @@ fn read_previous_release_graphql_schema(
     show.args(["show", &spec]);
     run_capture(&mut show)
         .with_context(|| format!("failed to read {GRAPHQL_SCHEMA_ARTIFACT} from {latest_tag}"))
+}
+
+/// Breaking/dangerous GraphQL schema changes are permitted only when the
+/// release raises the minor or major version (e.g. 0.16.x → 0.17.0 — a major
+/// Scryer release under 0.x versioning); patch releases keep the hard
+/// compatibility failure.
+fn schema_breaks_allowed_for_bump(latest_tag: Option<&str>, next_version: &Version) -> bool {
+    let Some(tag) = latest_tag else {
+        return false;
+    };
+    let Ok(previous) = Version::parse(tag.trim_start_matches("scryer-v")) else {
+        return false;
+    };
+    next_version.major > previous.major
+        || (next_version.major == previous.major && next_version.minor > previous.minor)
 }
 
 fn update_graphql_schema_artifact(ctx: &TaskContext, current_schema_path: &Path) -> Result<()> {
@@ -2956,6 +3342,30 @@ fn run_scryer_nextest_validation(ctx: &TaskContext, prefix: &'static str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_breaks_allowed_only_for_minor_or_major_bump() {
+        assert!(schema_breaks_allowed_for_bump(
+            Some("scryer-v0.16.8"),
+            &Version::new(0, 17, 0)
+        ));
+        assert!(schema_breaks_allowed_for_bump(
+            Some("scryer-v0.17.3"),
+            &Version::new(1, 0, 0)
+        ));
+        assert!(!schema_breaks_allowed_for_bump(
+            Some("scryer-v0.17.0"),
+            &Version::new(0, 17, 1)
+        ));
+        assert!(!schema_breaks_allowed_for_bump(
+            None,
+            &Version::new(0, 17, 0)
+        ));
+        assert!(!schema_breaks_allowed_for_bump(
+            Some("not-a-version"),
+            &Version::new(0, 17, 0)
+        ));
+    }
 
     fn catalog_v3_plugin_artifact(
         url: &str,
@@ -3031,13 +3441,27 @@ mod tests {
                 .is_ok()
         );
 
-        let error = require_builtin_descriptor_sdk_version("newznab", "3.1.0")
+        let current_sdk = Version::parse(scryer_plugin_sdk::SDK_VERSION).unwrap();
+        let mismatched_sdk = Version::new(current_sdk.major, current_sdk.minor + 1, 0).to_string();
+        let error = require_builtin_descriptor_sdk_version("newznab", &mismatched_sdk)
             .expect_err("newer catalog SDK must be rejected");
-        assert!(error.to_string().contains("expected 3.0.0"), "{error:#}");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("expected {}", scryer_plugin_sdk::SDK_VERSION)),
+            "{error:#}"
+        );
     }
 
     #[test]
     fn catalog_builtin_release_must_support_target_scryer_and_sdk() {
+        let current_sdk = Version::parse(scryer_plugin_sdk::SDK_VERSION).unwrap();
+        let next_sdk_minor_constraint = format!(
+            ">={}.{}.0, <{}.0.0",
+            current_sdk.major,
+            current_sdk.minor + 1,
+            current_sdk.major + 1
+        );
         let compatible = CatalogV3Release {
             version: "0.2.16".to_string(),
             min_scryer_version: Some("0.16.0".to_string()),
@@ -3053,7 +3477,7 @@ mod tests {
         let too_new_sdk = CatalogV3Release {
             version: "0.2.19".to_string(),
             min_scryer_version: Some("0.16.0".to_string()),
-            sdk_constraint: Some(">=3.2.0, <4.0.0".to_string()),
+            sdk_constraint: Some(next_sdk_minor_constraint),
             artifacts: vec![],
         };
         let target = Version::parse("0.16.6").unwrap();
@@ -3086,6 +3510,8 @@ mod tests {
                 ("newznab".to_string(), "blake3:newznab".to_string()),
                 ("torznab".to_string(), "blake3:torznab".to_string()),
             ]),
+            release_notes_path: Some("release-notes/scryer-v0.13.2.md".to_string()),
+            release_notes_sha256: Some("sha256:release-notes".to_string()),
             failure_message: None,
         }
     }
@@ -3097,7 +3523,103 @@ mod tests {
             latest_tag_seen: Some("scryer-v0.13.1"),
             next_version: "0.13.2",
             tag_name: "scryer-v0.13.2",
+            release_notes_path: "release-notes/scryer-v0.13.2.md",
+            release_notes_sha256: "sha256:release-notes",
         }
+    }
+
+    #[test]
+    fn release_notes_path_uses_tag_name() {
+        let ctx = TaskContext::new();
+        let path = release_notes_path(&ctx, "scryer-v1.2.3");
+        assert_eq!(path, ctx.path("release-notes/scryer-v1.2.3.md"));
+        assert_eq!(
+            release_notes_path_relative("scryer-v1.2.3"),
+            "release-notes/scryer-v1.2.3.md"
+        );
+    }
+
+    #[test]
+    fn release_notes_validation_requires_ai_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("notes.md");
+        fs::write(
+            &path,
+            "# scryer-v1.2.3\n\n- User-facing release note without marker.\n",
+        )
+        .unwrap();
+
+        let error = validate_release_notes_output(&path, "scryer-v1.2.3").unwrap_err();
+        assert!(
+            format!("{error:#}")
+                .contains("generated release notes must include `AI generated release notes`")
+        );
+    }
+
+    #[test]
+    fn release_notes_validation_accepts_ai_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("notes.md");
+        fs::write(
+            &path,
+            "# scryer-v1.2.3\n\nAI generated release notes\n\n- Improved release notes.\n",
+        )
+        .unwrap();
+
+        validate_release_notes_output(&path, "scryer-v1.2.3").unwrap();
+    }
+
+    #[test]
+    fn release_notes_codex_command_uses_gpt_54_xhigh_by_default() {
+        let command = codex_release_notes_command_for(
+            Path::new("release-notes/scryer-v1.2.3.md"),
+            RELEASE_NOTES_DEFAULT_CODEX_MODEL,
+            RELEASE_NOTES_DEFAULT_CODEX_REASONING,
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(command.get_program().to_string_lossy(), "codex");
+        assert!(args.windows(2).any(|window| {
+            window[0] == "--model" && window[1] == RELEASE_NOTES_DEFAULT_CODEX_MODEL
+        }));
+        assert!(args.windows(2).any(|window| {
+            window[0] == "-c"
+                && window[1]
+                    == format!(
+                        "model_reasoning_effort=\"{}\"",
+                        RELEASE_NOTES_DEFAULT_CODEX_REASONING
+                    )
+        }));
+        assert!(!args.contains(&"--ask-for-approval".to_string()));
+        assert!(args.contains(&"--output-last-message".to_string()));
+        assert_eq!(args.last().map(String::as_str), Some("-"));
+    }
+
+    #[test]
+    fn release_notes_command_override_receives_environment() {
+        let ctx = TaskContext::new();
+        let temp = tempfile::tempdir().unwrap();
+        let context_path = temp.path().join("context.md");
+        let output_path = temp.path().join("output.md");
+        fs::write(&context_path, "release context").unwrap();
+        let command = r#"test "$SCRYER_RELEASE_NOTES_CONTEXT" = "release context" && test -s "$SCRYER_RELEASE_NOTES_CONTEXT_PATH" && printf '# %s\n\nAI generated release notes\n\n- Generated by override.\n' "$SCRYER_RELEASE_TAG" > "$SCRYER_RELEASE_NOTES_OUTPUT""#;
+
+        run_release_notes_command_with_template(
+            &ctx,
+            &context_path,
+            &output_path,
+            "scryer-v1.2.3",
+            Some("scryer-v1.2.2"),
+            &Version::parse("1.2.3").unwrap(),
+            "release context",
+            Some(command),
+        )
+        .unwrap();
+
+        validate_release_notes_output(&output_path, "scryer-v1.2.3").unwrap();
     }
 
     #[test]
@@ -3445,6 +3967,36 @@ mod tests {
         assert_eq!(
             reason.as_deref(),
             Some("computed release tag changed since dry run")
+        );
+    }
+
+    #[test]
+    fn release_dry_run_cache_rejects_release_notes_path_mismatch() {
+        let mut cache = sample_release_dry_run_cache();
+        cache.release_notes_path = Some("release-notes/scryer-v0.13.3.md".to_string());
+        let reason = release_dry_run_cache_rejection_reason(
+            &cache,
+            &sample_release_dry_run_expectations(),
+            true,
+        );
+        assert_eq!(
+            reason.as_deref(),
+            Some("release notes path changed since dry run")
+        );
+    }
+
+    #[test]
+    fn release_dry_run_cache_rejects_release_notes_hash_mismatch() {
+        let mut cache = sample_release_dry_run_cache();
+        cache.release_notes_sha256 = Some("sha256:changed".to_string());
+        let reason = release_dry_run_cache_rejection_reason(
+            &cache,
+            &sample_release_dry_run_expectations(),
+            true,
+        );
+        assert_eq!(
+            reason.as_deref(),
+            Some("release notes changed since dry run")
         );
     }
 

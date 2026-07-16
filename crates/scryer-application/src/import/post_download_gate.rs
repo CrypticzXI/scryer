@@ -1,14 +1,12 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use chrono::Utc;
-
 use crate::domain_events::{DomainEventActor, new_title_domain_event, title_context_snapshot};
 use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::release_parser::AudioCodec;
 use crate::{
-    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, WantedSearchTransition,
-    normalize_release_attempt_hint, normalize_release_attempt_title,
+    AppUseCase, NewBlocklistEntry, ReleaseDownloadAttemptOutcome, normalize_release_attempt_hint,
+    normalize_release_attempt_title,
 };
 use scryer_domain::{
     DomainEventPayload, ImportRejectedEventData, ImportSkipReason, ImportStatus, MediaFacet, Title,
@@ -16,6 +14,11 @@ use scryer_domain::{
 use tracing::warn;
 
 const SOURCE_CHANGED_AFTER_PROBE_CODE: &str = "source_changed_after_probe";
+
+/// Score boost added to a manually-grabbed/replaced file's acquisition score so a
+/// deliberate operator pick is not immediately re-replaced by a marginally-higher
+/// automatic upgrade. A far-better (cross-tier) release can still win.
+pub(crate) const MANUAL_GRAB_BOOST: i32 = 500;
 
 pub(crate) enum ImportedFileGateDecision {
     Accepted(Box<ImportedFileAcceptance>),
@@ -27,6 +30,11 @@ pub(crate) struct ImportedFileAcceptance {
     pub analysis: Option<crate::MediaFileAnalysis>,
     pub scan_error: Option<String>,
     pub rule_file_doc: Option<scryer_rules::FileDoc>,
+    /// Set when the file was accepted but a required audio language could not be
+    /// verified (untagged tracks, or the requirement could not be resolved).
+    /// Currently emitted as an operator `warn!` log line at import time; the
+    /// durable/UI review surface is deferred.
+    pub audio_language_warning: Option<String>,
 }
 
 pub(crate) struct PreparedImportCandidate {
@@ -260,6 +268,7 @@ pub(crate) fn build_media_file_analysis(
                     .language
                     .as_deref()
                     .and_then(crate::normalize_detected_audio_language_code),
+                name: stream.name.clone(),
                 bitrate_kbps: stream.bitrate_kbps,
             })
             .collect(),
@@ -408,6 +417,7 @@ pub(crate) async fn probe_and_validate(
             analysis: Some(build_stream_pointer_media_file_analysis_from_parsed(parsed)),
             scan_error: None,
             rule_file_doc: None,
+            audio_language_warning: None,
         }));
     }
 
@@ -428,6 +438,7 @@ pub(crate) async fn probe_and_validate(
                 analysis: synthetic_analysis,
                 scan_error: Some(error.to_string()),
                 rule_file_doc: None,
+                audio_language_warning: None,
             }));
         }
     };
@@ -448,38 +459,82 @@ pub(crate) async fn probe_and_validate(
     }
 
     let category_hint = facet_to_category_hint(&title.facet);
-    let required_audio_languages = app
+    let required_audio_resolution = app
         .resolve_required_audio_languages(
             Some(&title.id),
             Some(title.library_id.as_str()),
             Some(category_hint),
         )
-        .await
-        .unwrap_or_else(|error| {
-            warn!(
-                error = %error,
-                title_id = %title.id,
-                "failed to resolve required audio languages, using canonical default"
-            );
-            Vec::new()
-        });
-    if !required_audio_languages.is_empty() {
-        let missing = crate::missing_required_audio_languages(
-            &required_audio_languages,
-            &analysis.audio_languages,
+        .await;
+    let required_audio_resolution_failed = required_audio_resolution.is_err();
+    let required_audio_languages = required_audio_resolution.unwrap_or_else(|error| {
+        warn!(
+            error = %error,
+            title_id = %title.id,
+            "failed to resolve required audio languages; importing without language verification"
         );
-        if !missing.is_empty() {
-            return ImportedFileGateDecision::Rejected(ImportedFileRejection {
-                message: format!(
-                    "imported file is missing required audio language(s): {}",
-                    missing.join(", ")
-                ),
-                recycle_reason: "language_mismatch",
-                skip_reason: None,
-                blocking_rule_codes: Vec::new(),
-            });
+        Vec::new()
+    });
+
+    let accepted_analysis = build_media_file_analysis(&analysis);
+
+    // Required audio language gate (post-download, file truth). Distinguishes a
+    // provable absence (reject) from an untagged/indeterminate result (accept +
+    // flag), so a correctly-dubbed file with "und"/untagged tracks is not falsely
+    // rejected. Uses the same title context + release hints as the search gate.
+    //
+    // Manual imports (operator-chosen files) always land: they bypass this gate
+    // entirely, exactly as they bypass the runtime-sample check.
+    let mut audio_language_warning: Option<String> = None;
+    let enforce_required_audio =
+        runtime_sample_validation.mode == RuntimeSampleValidationMode::EnforceAutomatic;
+    if enforce_required_audio && required_audio_resolution_failed {
+        audio_language_warning = Some(
+            "required audio languages could not be resolved; imported without language verification"
+                .to_string(),
+        );
+    }
+    if enforce_required_audio && !required_audio_languages.is_empty() {
+        let title_audio_context = crate::title_audio_language_context(
+            title.language.as_deref(),
+            title.country.as_deref(),
+            Some(category_hint),
+            &title.tags,
+        );
+        let release_audio_hints = crate::release_audio_language_hints_for_title(
+            parsed,
+            None,
+            Some(&title_audio_context),
+            true,
+        );
+        match crate::classify_required_audio(
+            &required_audio_languages,
+            &accepted_analysis.audio_streams,
+            &release_audio_hints,
+        ) {
+            crate::RequiredAudioVerdict::Satisfied => {}
+            crate::RequiredAudioVerdict::Missing(missing) => {
+                return ImportedFileGateDecision::Rejected(ImportedFileRejection {
+                    message: format!(
+                        "imported file is missing required audio language(s): {}",
+                        missing.join(", ")
+                    ),
+                    recycle_reason: "language_mismatch",
+                    skip_reason: None,
+                    blocking_rule_codes: Vec::new(),
+                });
+            }
+            crate::RequiredAudioVerdict::Indeterminate(unverified) => {
+                // Neither provably present nor provably absent (untagged tracks):
+                // accept rather than bury a possibly-good release, but flag it.
+                audio_language_warning = Some(format!(
+                    "audio language(s) {} could not be verified from file metadata (untagged track(s)); imported for review",
+                    unverified.join(", ")
+                ));
+            }
         }
     }
+
     let persona = app
         .resolve_scoring_persona(Some(title.library_id.as_str()), Some(category_hint))
         .await
@@ -492,12 +547,12 @@ pub(crate) async fn probe_and_validate(
             crate::ScoringPersona::default()
         });
 
-    let accepted_analysis = build_media_file_analysis(&analysis);
     let rule_file_doc = crate::user_rule_input::build_file_doc(&analysis);
     let accepted_for_rules = ImportedFileAcceptance {
         analysis: Some(accepted_analysis.clone()),
         scan_error: None,
         rule_file_doc: Some(rule_file_doc.clone()),
+        audio_language_warning: None,
     };
     let (rescored_for_rules, _) = rescore_from_mediainfo(parsed, &accepted_for_rules);
 
@@ -609,6 +664,7 @@ pub(crate) async fn probe_and_validate(
         analysis: Some(accepted_analysis),
         scan_error: None,
         rule_file_doc: Some(rule_file_doc),
+        audio_language_warning,
     }))
 }
 
@@ -636,6 +692,7 @@ pub(crate) async fn probe_and_validate(
         )),
         scan_error: Some("native media analysis is not compiled into this target".to_string()),
         rule_file_doc: None,
+        audio_language_warning: None,
     }))
 }
 
@@ -703,6 +760,17 @@ pub(crate) async fn prepare_import_candidate(
                     path = %path.display(),
                     changes = ?rescore_changes,
                     "mediainfo rescore prepared import candidate"
+                );
+            }
+            // Surface a required-audio "could not verify" flag (untagged tracks):
+            // the file was accepted for review rather than falsely rejected.
+            if let Some(warning) = accepted.audio_language_warning.as_deref() {
+                warn!(
+                    title_id = %title.id,
+                    title = %title.name,
+                    path = %path.display(),
+                    warning,
+                    "imported file accepted with unverified required audio language(s) for review"
                 );
             }
 
@@ -1197,8 +1265,13 @@ async fn finalize_import_rejection(
         .await;
 }
 
+// Re-opens a scope's convergence after a rejected import. For a
+// `language_mismatch` rejection this is intentional: the rejected release is
+// blocklisted by title (a provable absence — it genuinely lacks the required
+// audio), so the re-opened search seeks a *different*, correct candidate
+// rather than re-grabbing the same one. Trustworthy verdicts (see
+// `classify_required_audio`) keep this from churning on falsely-rejected files.
 async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_ids: &[String]) {
-    let now_str = Utc::now().to_rfc3339();
     let targets: Vec<Option<&str>> = if episode_ids.is_empty() {
         vec![None]
     } else {
@@ -1214,25 +1287,12 @@ async fn reset_wanted_items_for_retry(app: &AppUseCase, title_id: &str, episode_
         match app
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_for_title(title_id, episode_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_for_title(title_id, episode_id)
             .await
         {
             Ok(Some(item)) => {
-                let next_search_at = now_str.clone();
-                let _ = app
-                    .services
-                    .workflow
-                    .wanted_items
-                    .schedule_wanted_item_search(&WantedSearchTransition {
-                        id: item.id.clone(),
-                        next_search_at: Some(next_search_at),
-                        last_search_at: None,
-                        search_count: item.search_count,
-                        current_score: item.current_score,
-                        grabbed_release: None,
-                    })
-                    .await;
+                app.reopen_wanted_scope_for_acquisition(&item).await;
             }
             Ok(None) => {}
             Err(error) => {

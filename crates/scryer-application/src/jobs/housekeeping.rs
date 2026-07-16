@@ -13,6 +13,10 @@ use tracing::{info, warn};
 const RELEASE_DECISION_RETENTION_DAYS: i64 = 30;
 const RELEASE_ATTEMPT_RETENTION_DAYS: i64 = 90;
 const DOWNLOAD_DELETE_RETENTION_DAYS: i64 = 7;
+const DISCOVERY_SUCCESSFUL_GENERATIONS_TO_RETAIN: usize = 2;
+const DISCOVERY_DIAGNOSTIC_RETENTION_DAYS: i64 = 30;
+const TITLE_IMAGE_BLOB_GC_BATCH_SIZE: u32 = 100;
+const TITLE_IMAGE_BLOB_GC_MAX_BATCHES: usize = 10;
 
 #[derive(Clone, Debug)]
 struct RecycleEntryLibrary {
@@ -423,6 +427,18 @@ impl AppUseCase {
 
     pub(crate) async fn run_scheduled_housekeeping(&self) -> AppResult<HousekeepingReport> {
         info!("starting housekeeping");
+        // RFC 119: best-effort GC of convergence-coverage rows orphaned by deleted
+        // scopes/indexers. Non-blocking — coverage loss only triggers a safe
+        // re-converge, so a failure here must never fail housekeeping.
+        if let Err(error) = self
+            .services
+            .integrations
+            .scope_indexer_coverage
+            .prune_orphaned_coverage()
+            .await
+        {
+            warn!(error = %error, "failed to prune orphaned convergence coverage");
+        }
         let orphaned_media_files = {
             let _same_path_upgrade_guard = self
                 .runtime
@@ -604,23 +620,16 @@ impl AppUseCase {
             + stale_download_queue_deletes
             + stale_rule_set_history;
 
-        // 3. Expired event outboxes (dispatched > 7 days ago)
-        let expired_event_outboxes = self
-            .services
-            .workflow
-            .housekeeping
-            .delete_dispatched_event_outboxes_older_than(7)
-            .await?;
-
-        // 4. Stale staged NZB artifacts (> 1 hour old)
+        // 3. Stale staged NZB artifacts (> 1 hour old)
+        let now = self.runtime.environment.now();
         let staged_nzb_artifacts_pruned = self
             .services
             .workflow
             .staged_nzb_store
-            .prune_staged_nzbs_older_than(chrono::Utc::now() - chrono::Duration::hours(1))
+            .prune_staged_nzbs_older_than(now - chrono::Duration::hours(1))
             .await?;
 
-        // 5. Purge expired recycle bin entries (per media root)
+        // 4. Purge expired recycle bin entries (per media root)
         let mut recycled_purged = 0u32;
         for (media_root, config) in self.resolve_all_recycle_configs().await {
             match self
@@ -629,6 +638,48 @@ impl AppUseCase {
             {
                 Ok(n) => recycled_purged += n,
                 Err(e) => info!(error = %e, media_root = %media_root, "recycle bin purge failed"),
+            }
+        }
+
+        // 6. Discovery history retention.
+        let discovery_pruned_runs = match self
+            .services
+            .library
+            .discovery
+            .prune_discovery_history(
+                DISCOVERY_DEFAULT_SCOPE_KEY,
+                DISCOVERY_SUCCESSFUL_GENERATIONS_TO_RETAIN,
+                now - chrono::Duration::days(DISCOVERY_DIAGNOSTIC_RETENTION_DAYS),
+            )
+            .await
+        {
+            Ok(report) => report.runs_deleted as u32,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "failed to prune discovery history during housekeeping"
+                );
+                0
+            }
+        };
+
+        {
+            let _title_image_maintenance_guard = self
+                .runtime
+                .catalog
+                .title_image_maintenance_lock
+                .write()
+                .await;
+            for _ in 0..TITLE_IMAGE_BLOB_GC_MAX_BATCHES {
+                let pruned = self
+                    .services
+                    .workflow
+                    .housekeeping
+                    .prune_unreferenced_title_image_blobs(TITLE_IMAGE_BLOB_GC_BATCH_SIZE)
+                    .await?;
+                if pruned < TITLE_IMAGE_BLOB_GC_BATCH_SIZE {
+                    break;
+                }
             }
         }
 
@@ -642,19 +693,18 @@ impl AppUseCase {
             orphaned_media_files,
             stale_release_decisions,
             stale_release_attempts,
-            expired_event_outboxes,
             stale_history_events,
             stale_history_records,
             staged_nzb_artifacts_pruned,
             recycled_purged,
-            ran_at: chrono::Utc::now().to_rfc3339(),
+            discovery_pruned_runs,
+            ran_at: self.runtime.environment.now().to_rfc3339(),
         };
 
         info!(
             orphaned_media_files,
             stale_release_decisions,
             stale_release_attempts,
-            expired_event_outboxes,
             stale_history_events,
             stale_operational_domain_events,
             stale_domain_events,
@@ -665,6 +715,7 @@ impl AppUseCase {
             stale_history_records,
             staged_nzb_artifacts_pruned,
             recycled_purged,
+            discovery_pruned_runs,
             "housekeeping completed"
         );
 

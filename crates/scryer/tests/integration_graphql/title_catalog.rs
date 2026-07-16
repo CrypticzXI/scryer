@@ -48,6 +48,96 @@ fn library_root_id(library: &Value, path: &str) -> String {
         .to_string()
 }
 
+fn catalog_view_actor(library_id: &str) -> User {
+    User {
+        id: Id::new().0,
+        username: "catalog-filter-viewer".to_string(),
+        password_hash: None,
+        account_kind: Default::default(),
+        authorization: UserAuthorization {
+            app: AppPermissionMask::NONE,
+            libraries: HashMap::from([(
+                library_id.to_string(),
+                LibraryPermissionMask::from_permissions([LibraryPermission::View]),
+            )]),
+            default_library: LibraryPermissionMask::NONE,
+            actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+            loaded: true,
+        },
+    }
+}
+
+async fn add_catalog_filter_title(
+    ctx: &TestContext,
+    name: &str,
+    tvdb_id: &str,
+    library_id: &str,
+    root_folder_id: &str,
+    year: i32,
+) -> String {
+    let body = gql(
+        ctx,
+        r#"mutation($input: AddTitleInput!) {
+            addTitle(input: $input) { title { id } }
+        }"#,
+        json!({
+            "input": {
+                "name": name,
+                "facet": "MOVIE",
+                "libraryId": library_id,
+                "monitored": true,
+                "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": tvdb_id }],
+                "options": { "rootFolderId": root_folder_id }
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let title_id = body["data"]["addTitle"]["title"]["id"]
+        .as_str()
+        .expect("catalog filter title id")
+        .to_string();
+    sqlx::query("UPDATE titles SET year = ? WHERE id = ?")
+        .bind(year)
+        .bind(&title_id)
+        .execute(ctx.db.pool())
+        .await
+        .expect("catalog filter title year should update");
+    title_id
+}
+
+async fn seed_catalog_filter_metadata(
+    ctx: &TestContext,
+    title_id: &str,
+    tags: &[(&str, &str, &str)],
+    rating: Option<f64>,
+) {
+    for (tag_key, category, name) in tags {
+        sqlx::query(
+            "INSERT INTO title_metadata_tags (
+                title_id, tag_key, category, name, confidence, is_adult, is_spoiler, sort_index
+             ) VALUES (?, ?, ?, ?, 1.0, 0, 0, 0)",
+        )
+        .bind(title_id)
+        .bind(tag_key)
+        .bind(category)
+        .bind(name)
+        .execute(ctx.db.pool())
+        .await
+        .expect("title catalog filter tag should insert");
+    }
+
+    if let Some(rating) = rating {
+        sqlx::query("INSERT INTO title_metadata_rating_summaries (title_id, rating) VALUES (?, ?)")
+            .bind(title_id)
+            .bind(rating)
+            .execute(ctx.db.pool())
+            .await
+            .expect("title catalog filter rating should insert");
+    }
+}
+
 async fn stored_title_root_folder_id(ctx: &TestContext, title_id: &str) -> String {
     ctx.titles
         .get_by_id(title_id)
@@ -55,6 +145,91 @@ async fn stored_title_root_folder_id(ctx: &TestContext, title_id: &str) -> Strin
         .expect("title should load")
         .expect("title should exist")
         .root_folder_id
+}
+
+#[tokio::test]
+async fn graphql_catalog_has_valid_root_reports_any_valid_catalog_root() {
+    let ctx = TestContext::new().await;
+    let invalid_root_parent = tempfile::tempdir().expect("invalid root parent");
+    let valid_root = tempfile::tempdir().expect("valid root");
+    let created_library = create_title_catalog_library(
+        &ctx,
+        "ANIME",
+        "Root Health Anime",
+        &[("/root-health-initial-missing", true)],
+    )
+    .await;
+    let created_library_id = library_id(&created_library);
+
+    let anime_libraries = ctx
+        .libraries
+        .list(Some(MediaFacet::Anime))
+        .await
+        .expect("anime libraries should load");
+    for (index, library) in anime_libraries.iter().enumerate() {
+        let missing_root = invalid_root_parent
+            .path()
+            .join(format!("missing-root-{index}"));
+        ctx.libraries
+            .update(
+                &library.id,
+                library.name.clone(),
+                library.slug.clone(),
+                vec![LibraryRootDraft {
+                    path: missing_root.to_string_lossy().to_string(),
+                    is_default: true,
+                }],
+            )
+            .await
+            .expect("library roots should update");
+    }
+
+    let invalid_body = gql(
+        &ctx,
+        r#"query($facet: MediaFacetValue!) {
+            catalogHasValidRoot(facet: $facet)
+        }"#,
+        json!({ "facet": "ANIME" }),
+    )
+    .await;
+    assert_no_errors(&invalid_body);
+    assert_eq!(
+        invalid_body["data"]["catalogHasValidRoot"].as_bool(),
+        Some(false)
+    );
+
+    let created_library = ctx
+        .libraries
+        .get_by_id(&created_library_id)
+        .await
+        .expect("created library should load")
+        .expect("created library should exist");
+    ctx.libraries
+        .update(
+            &created_library_id,
+            created_library.name,
+            created_library.slug,
+            vec![LibraryRootDraft {
+                path: valid_root.path().to_string_lossy().to_string(),
+                is_default: true,
+            }],
+        )
+        .await
+        .expect("valid library root should update");
+
+    let valid_body = gql(
+        &ctx,
+        r#"query($facet: MediaFacetValue!) {
+            catalogHasValidRoot(facet: $facet)
+        }"#,
+        json!({ "facet": "ANIME" }),
+    )
+    .await;
+    assert_no_errors(&valid_body);
+    assert_eq!(
+        valid_body["data"]["catalogHasValidRoot"].as_bool(),
+        Some(true)
+    );
 }
 
 #[tokio::test]
@@ -66,23 +241,444 @@ async fn graphql_list_titles_starts_empty() {
 }
 
 #[tokio::test]
+async fn graphql_title_catalog_rejects_invalid_filter_values() {
+    let ctx = TestContext::new().await;
+    for (filter, expected_message) in [
+        (
+            json!({ "minimumYear": 2025, "maximumYear": 2024 }),
+            "minimumYear",
+        ),
+        (json!({ "minimumRating": 10.1 }), "minimumRating"),
+        (json!({ "genreTagKeys": [" "] }), "genreTagKeys"),
+    ] {
+        let body = gql(
+            &ctx,
+            "query($filter: TitleCatalogFilterInput) { titles(filter: $filter) { items { id } } }",
+            json!({ "filter": filter }),
+        )
+        .await;
+        let message = body["errors"][0]["message"]
+            .as_str()
+            .expect("validation error message");
+        assert!(message.contains(expected_message), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn graphql_title_catalog_advanced_filters_apply_to_seeded_catalog_data() {
+    let ctx = TestContext::new().await;
+    let library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "Catalog Filter Library",
+        &[
+            ("/catalog-filter/default", true),
+            ("/catalog-filter/archive", false),
+        ],
+    )
+    .await;
+    let library_id = library_id(&library);
+    let default_root_id = library_root_id(&library, "/catalog-filter/default");
+    let archive_root_id = library_root_id(&library, "/catalog-filter/archive");
+    let first_title_id = add_catalog_filter_title(
+        &ctx,
+        "Catalog Record A",
+        "990001",
+        &library_id,
+        &default_root_id,
+        2001,
+    )
+    .await;
+    let second_title_id = add_catalog_filter_title(
+        &ctx,
+        "Catalog Record B",
+        "990002",
+        &library_id,
+        &archive_root_id,
+        2015,
+    )
+    .await;
+    let unrated_title_id = add_catalog_filter_title(
+        &ctx,
+        "Catalog Record C",
+        "990003",
+        &library_id,
+        &default_root_id,
+        2004,
+    )
+    .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &first_title_id,
+        &[
+            ("genre-alpha", "genre", "Genre Alpha"),
+            ("theme-signal", "theme", "Theme Signal"),
+        ],
+        Some(8.0),
+    )
+    .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &second_title_id,
+        &[
+            ("genre-beta", "genre", "Genre Beta"),
+            ("theme-other", "theme", "Theme Other"),
+        ],
+        Some(9.0),
+    )
+    .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &unrated_title_id,
+        &[
+            ("genre-alpha", "genre", "Genre Alpha"),
+            ("theme-signal", "theme", "Theme Signal"),
+        ],
+        None,
+    )
+    .await;
+    let body = gql(
+        &ctx,
+        r#"query(
+            $libraryIds: [ID!]
+            $rootFolderIds: [ID!]
+            $genreTagKeys: [String!]
+            $themeTagKeys: [String!]
+        ) {
+            titles(
+                facet: MOVIE,
+                libraryIds: $libraryIds,
+                filter: {
+                    rootFolderIds: $rootFolderIds
+                    genreTagKeys: $genreTagKeys
+                    themeTagKeys: $themeTagKeys
+                    minimumYear: 2001
+                    maximumYear: 2004
+                    minimumRating: 7.5
+                }
+            ) { items { id } totalCount }
+            titleCatalogFilterOptions(
+                facet: MOVIE
+                libraryIds: $libraryIds
+                rootFolderIds: $rootFolderIds
+            ) {
+                genres { key name }
+                themes { key name }
+                minimumYear
+                maximumYear
+            }
+        }"#,
+        json!({
+            "libraryIds": [library_id],
+            "rootFolderIds": [default_root_id],
+            "genreTagKeys": ["genre-missing", "genre-alpha"],
+            "themeTagKeys": ["theme-signal"],
+        }),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["titles"]["totalCount"], 1);
+    assert_eq!(body["data"]["titles"]["items"][0]["id"], first_title_id);
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["genres"],
+        json!([{ "key": "genre-alpha", "name": "Genre Alpha" }])
+    );
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["themes"],
+        json!([{ "key": "theme-signal", "name": "Theme Signal" }])
+    );
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["minimumYear"],
+        2001
+    );
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["maximumYear"],
+        2004
+    );
+
+    let unrated_body = gql(
+        &ctx,
+        r#"query($libraryIds: [ID!], $rootFolderIds: [ID!]) {
+            titles(
+                facet: MOVIE
+                libraryIds: $libraryIds
+                filter: {
+                    rootFolderIds: $rootFolderIds
+                    genreTagKeys: ["genre-alpha"]
+                    themeTagKeys: ["theme-signal"]
+                    minimumYear: 2001
+                    maximumYear: 2004
+                }
+            ) { items { id } totalCount }
+        }"#,
+        json!({
+            "libraryIds": [library_id],
+            "rootFolderIds": [default_root_id],
+        }),
+    )
+    .await;
+    assert_no_errors(&unrated_body);
+    let mut ids = unrated_body["data"]["titles"]["items"]
+        .as_array()
+        .expect("filtered title items")
+        .iter()
+        .map(|title| title["id"].as_str().expect("filtered title id"))
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    let mut expected_ids = vec![first_title_id.as_str(), unrated_title_id.as_str()];
+    expected_ids.sort_unstable();
+    assert_eq!(ids, expected_ids);
+}
+
+#[tokio::test]
+async fn graphql_title_catalog_filters_honor_library_view_permissions() {
+    let ctx = TestContext::new().await;
+    let allowed_library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "Allowed Catalog Library",
+        &[("/catalog-rbac/allowed", true)],
+    )
+    .await;
+    let denied_library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "Denied Catalog Library",
+        &[("/catalog-rbac/denied", true)],
+    )
+    .await;
+    let allowed_library_id = library_id(&allowed_library);
+    let denied_library_id = library_id(&denied_library);
+    let allowed_root_id = library_root_id(&allowed_library, "/catalog-rbac/allowed");
+    let denied_root_id = library_root_id(&denied_library, "/catalog-rbac/denied");
+    let allowed_title_id = add_catalog_filter_title(
+        &ctx,
+        "Authorized Catalog Record",
+        "991001",
+        &allowed_library_id,
+        &allowed_root_id,
+        2002,
+    )
+    .await;
+    let denied_title_id = add_catalog_filter_title(
+        &ctx,
+        "Restricted Catalog Record",
+        "991002",
+        &denied_library_id,
+        &denied_root_id,
+        2022,
+    )
+    .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &allowed_title_id,
+        &[("genre-allowed", "genre", "Genre Allowed")],
+        Some(8.0),
+    )
+    .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &denied_title_id,
+        &[("genre-restricted", "genre", "Genre Restricted")],
+        Some(9.0),
+    )
+    .await;
+
+    let actor = catalog_view_actor(&allowed_library_id);
+    let body = schema_exec(
+        &ctx,
+        &format!(
+            r#"query {{
+                titles(
+                    facet: MOVIE
+                    libraryIds: ["{allowed_library_id}", "{denied_library_id}"]
+                ) {{ items {{ id }} totalCount }}
+                titleCatalogFilterOptions(
+                    facet: MOVIE
+                    libraryIds: ["{allowed_library_id}", "{denied_library_id}"]
+                    rootFolderIds: ["{allowed_root_id}", "{denied_root_id}"]
+                ) {{ genres {{ key name }} minimumYear maximumYear }}
+                deniedOptions: titleCatalogFilterOptions(
+                    facet: MOVIE
+                    libraryIds: ["{denied_library_id}"]
+                ) {{ genres {{ key name }} minimumYear maximumYear }}
+            }}"#,
+        ),
+        Some(actor),
+    )
+    .await;
+
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["titles"]["totalCount"], 1);
+    assert_eq!(body["data"]["titles"]["items"][0]["id"], allowed_title_id);
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["genres"],
+        json!([{ "key": "genre-allowed", "name": "Genre Allowed" }])
+    );
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["minimumYear"],
+        2002
+    );
+    assert_eq!(
+        body["data"]["titleCatalogFilterOptions"]["maximumYear"],
+        2002
+    );
+    assert_eq!(body["data"]["deniedOptions"]["genres"], json!([]));
+    assert!(body["data"]["deniedOptions"]["minimumYear"].is_null());
+    assert!(body["data"]["deniedOptions"]["maximumYear"].is_null());
+}
+
+async fn add_test_title_with_tvdb_id(
+    ctx: &TestContext,
+    name: &str,
+    facet: &str,
+    tvdb_id: &str,
+) -> String {
+    let body = gql(
+        ctx,
+        r#"mutation($input: AddTitleInput!) { addTitle(input: $input) { title { id name } } }"#,
+        json!({
+            "input": {
+                "name": name,
+                "facet": facet,
+                "monitored": true,
+                "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": tvdb_id }]
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    body["data"]["addTitle"]["title"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn set_title_sort_title(ctx: &TestContext, title_id: &str, sort_title: &str) {
+    sqlx::query("UPDATE titles SET sort_title = ? WHERE id = ?")
+        .bind(sort_title)
+        .bind(title_id)
+        .execute(ctx.db.pool())
+        .await
+        .expect("title sort title fixture should update title row");
+}
+
+#[tokio::test]
+async fn graphql_title_sort_uses_visible_name_ignoring_multilingual_articles_and_cjk_width() {
+    let ctx = TestContext::new().await;
+    let akira_id = add_test_title_with_tvdb_id(&ctx, "ＡＫＩＲＡ", "ANIME", "900000").await;
+    let apothecary_id =
+        add_test_title_with_tvdb_id(&ctx, "The Apothecary Diaries", "ANIME", "900001").await;
+    let arc_id = add_test_title_with_tvdb_id(&ctx, "L’Arc-en-Ciel", "MOVIE", "900002").await;
+    let auto_id =
+        add_test_title_with_tvdb_id(&ctx, "O Auto da Compadecida", "MOVIE", "900003").await;
+    let avventura_id = add_test_title_with_tvdb_id(&ctx, "L'Avventura", "MOVIE", "900004").await;
+    let better_id = add_test_title_with_tvdb_id(&ctx, "A Better Tomorrow", "MOVIE", "900005").await;
+    let cercle_id = add_test_title_with_tvdb_id(&ctx, "Le Cercle Rouge", "MOVIE", "900006").await;
+    let dorado_id = add_test_title_with_tvdb_id(&ctx, "El Dorado", "MOVIE", "900007").await;
+    let education_id = add_test_title_with_tvdb_id(&ctx, "An Education", "MOVIE", "900008").await;
+    let fullmetal_id =
+        add_test_title_with_tvdb_id(&ctx, "Fullmetal Alchemist: Brotherhood", "ANIME", "900009")
+            .await;
+    let himmel_id = add_test_title_with_tvdb_id(&ctx, "Der Himmel", "MOVIE", "900010").await;
+    let jetee_id = add_test_title_with_tvdb_id(&ctx, "La Jetée", "MOVIE", "900011").await;
+    let matrix_id = add_test_title_with_tvdb_id(&ctx, "Ｔｈｅ　Matrix", "MOVIE", "900012").await;
+    set_title_sort_title(&ctx, &akira_id, "zzzzzz").await;
+    set_title_sort_title(&ctx, &apothecary_id, "zzzz").await;
+    set_title_sort_title(&ctx, &arc_id, "yyyy").await;
+    set_title_sort_title(&ctx, &auto_id, "xxxx").await;
+    set_title_sort_title(&ctx, &avventura_id, "wwww").await;
+    set_title_sort_title(&ctx, &better_id, "mmmm").await;
+    set_title_sort_title(&ctx, &cercle_id, "llll").await;
+    set_title_sort_title(&ctx, &dorado_id, "kkkk").await;
+    set_title_sort_title(&ctx, &education_id, "aaaa").await;
+    set_title_sort_title(&ctx, &fullmetal_id, "鋼の錬金術師 fullmetal alchemist").await;
+    set_title_sort_title(&ctx, &himmel_id, "iiii").await;
+    set_title_sort_title(&ctx, &jetee_id, "hhhh").await;
+    set_title_sort_title(&ctx, &matrix_id, "gggg").await;
+
+    let body = gql(
+        &ctx,
+        r#"query($limit: Int, $offset: Int, $sort: TitleCatalogSortInput) {
+            titles(limit: $limit, offset: $offset, sort: $sort) {
+                hasMore
+                items { name sortTitle }
+            }
+        }"#,
+        json!({
+            "limit": 13,
+            "offset": 0,
+            "sort": { "key": "TITLE", "direction": "ASC" }
+        }),
+    )
+    .await;
+    assert_no_errors(&body);
+    let names: Vec<&str> = body["data"]["titles"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "ＡＫＩＲＡ",
+            "The Apothecary Diaries",
+            "L’Arc-en-Ciel",
+            "O Auto da Compadecida",
+            "L'Avventura",
+            "A Better Tomorrow",
+            "Le Cercle Rouge",
+            "El Dorado",
+            "An Education",
+            "Fullmetal Alchemist: Brotherhood",
+            "Der Himmel",
+            "La Jetée",
+            "Ｔｈｅ　Matrix",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn graphql_catalog_quality_tier_resolves_target_profile_without_media() {
+    let ctx = TestContext::new().await;
+    let title_id = add_test_title(&ctx, "Target Quality Movie", "MOVIE").await;
+
+    let body = gql(
+        &ctx,
+        "{ titles { items { id qualityTier currentQualityTier } } }",
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+    let title = body["data"]["titles"]["items"]
+        .as_array()
+        .expect("title list")
+        .iter()
+        .find(|item| item["id"].as_str() == Some(title_id.as_str()))
+        .expect("added title");
+    assert_eq!(title["qualityTier"], "1080P");
+    assert!(title["currentQualityTier"].is_null());
+}
+
+#[tokio::test]
 async fn graphql_titles_use_server_pagination_and_sort() {
     let ctx = TestContext::new().await;
-    let zeta_id = add_test_title(&ctx, "Zeta Movie", "movie").await;
-    let alpha_id = add_test_title(&ctx, "Alpha Series", "series").await;
-    let middle_id = add_test_title(&ctx, "Middle Anime", "anime").await;
+    let zeta_id = add_test_title(&ctx, "Zeta Movie", "MOVIE").await;
+    let alpha_id = add_test_title(&ctx, "Alpha Series", "SERIES").await;
+    let middle_id = add_test_title(&ctx, "Middle Anime", "ANIME").await;
     insert_catalog_sort_collection(&ctx, "alpha-page-season", &alpha_id, 1, None).await;
     insert_catalog_sort_collection(&ctx, "middle-page-season", &middle_id, 1, None).await;
 
     let default_body = gql(
         &ctx,
-        "{ titles { limit offset hasMore totalCount items { name } } }",
+        "{ titles { hasMore totalCount items { name } } }",
         json!({}),
     )
     .await;
     assert_no_errors(&default_body);
-    assert_eq!(default_body["data"]["titles"]["limit"], 300);
-    assert_eq!(default_body["data"]["titles"]["offset"], 0);
     assert_eq!(default_body["data"]["titles"]["totalCount"], 3);
     assert!(!default_body["data"]["titles"]["hasMore"].as_bool().unwrap());
 
@@ -90,8 +686,6 @@ async fn graphql_titles_use_server_pagination_and_sort() {
         &ctx,
         r#"query($limit: Int, $offset: Int, $sort: TitleCatalogSortInput) {
             titles(limit: $limit, offset: $offset, sort: $sort) {
-                limit
-                offset
                 hasMore
                 totalCount
                 items {
@@ -103,13 +697,11 @@ async fn graphql_titles_use_server_pagination_and_sort() {
         json!({
             "limit": 2,
             "offset": 0,
-            "sort": { "key": "title", "direction": "asc" }
+            "sort": { "key": "TITLE", "direction": "ASC" }
         }),
     )
     .await;
     assert_no_errors(&first_page);
-    assert_eq!(first_page["data"]["titles"]["limit"], 2);
-    assert_eq!(first_page["data"]["titles"]["offset"], 0);
     assert_eq!(first_page["data"]["titles"]["totalCount"], 3);
     assert!(first_page["data"]["titles"]["hasMore"].as_bool().unwrap());
     let first_names: Vec<&str> = first_page["data"]["titles"]["items"]
@@ -148,7 +740,7 @@ async fn graphql_titles_use_server_pagination_and_sort() {
         json!({
             "limit": 2,
             "offset": 2,
-            "sort": { "key": "title", "direction": "asc" }
+            "sort": { "key": "TITLE", "direction": "ASC" }
         }),
     )
     .await;
@@ -214,23 +806,23 @@ async fn graphql_titles_use_server_pagination_and_sort() {
     seed_title_episode_sort_fixture(&ctx, &zeta_id, "zeta-episodes", 1, 2).await;
 
     assert_eq!(
-        title_catalog_sort_names(&ctx, "monitored", "desc").await,
+        title_catalog_sort_names(&ctx, "MONITORED", "DESC").await,
         vec!["Alpha Series", "Middle Anime", "Zeta Movie"]
     );
     assert_eq!(
-        title_catalog_sort_names(&ctx, "quality", "asc").await,
+        title_catalog_sort_names(&ctx, "QUALITY", "ASC").await,
         vec!["Alpha Series", "Zeta Movie", "Middle Anime"]
     );
     assert_eq!(
-        title_catalog_sort_names(&ctx, "status", "asc").await,
+        title_catalog_sort_names(&ctx, "STATUS", "ASC").await,
         vec!["Alpha Series", "Zeta Movie", "Middle Anime"]
     );
     assert_eq!(
-        title_catalog_sort_names(&ctx, "size", "desc").await,
+        title_catalog_sort_names(&ctx, "SIZE", "DESC").await,
         vec!["Alpha Series", "Middle Anime", "Zeta Movie"]
     );
     assert_eq!(
-        title_catalog_sort_names(&ctx, "episodes", "desc").await,
+        title_catalog_sort_names(&ctx, "EPISODES", "DESC").await,
         vec!["Alpha Series", "Zeta Movie", "Middle Anime"]
     );
 }
@@ -238,21 +830,21 @@ async fn graphql_titles_use_server_pagination_and_sort() {
 #[tokio::test]
 async fn graphql_add_title_movie() {
     let ctx = TestContext::new().await;
-    let id = add_test_title(&ctx, "Test Movie", "movie").await;
+    let id = add_test_title(&ctx, "Test Movie", "MOVIE").await;
     assert!(!id.is_empty());
 }
 
 #[tokio::test]
 async fn graphql_add_title_tv() {
     let ctx = TestContext::new().await;
-    let id = add_test_title(&ctx, "Test Series", "series").await;
+    let id = add_test_title(&ctx, "Test Series", "SERIES").await;
     assert!(!id.is_empty());
 }
 
 #[tokio::test]
 async fn graphql_add_title_anime() {
     let ctx = TestContext::new().await;
-    let id = add_test_title(&ctx, "Test Anime", "anime").await;
+    let id = add_test_title(&ctx, "Test Anime", "ANIME").await;
     assert!(!id.is_empty());
 }
 
@@ -324,7 +916,7 @@ async fn graphql_title_options_input_uses_root_folder_id() {
         json!({
             "input": {
                 "name": "Path Input Should Fail",
-                "facet": "anime",
+                "facet": "ANIME",
                 "monitored": true,
                 "tags": [],
                 "options": {
@@ -345,7 +937,7 @@ async fn graphql_add_title_with_structured_options() {
     let ctx = TestContext::new().await;
     let library = create_title_catalog_library(
         &ctx,
-        "anime",
+        "ANIME",
         "Configured Anime Library",
         &[
             ("/library/anime-default", true),
@@ -377,19 +969,19 @@ async fn graphql_add_title_with_structured_options() {
         json!({
             "input": {
                 "name": "Configured Anime",
-                "facet": "anime",
+                "facet": "ANIME",
                 "libraryId": library_id,
                 "monitored": true,
                 "tags": ["favorite"],
                 "options": {
                     "qualityProfileId": "anime-hd",
                     "rootFolderId": root_folder_id,
-                    "monitorType": "futureEpisodes",
+                    "monitorType": "FUTURE_EPISODES",
                     "useSeasonFolders": false,
                     "monitorSpecials": true,
                     "interSeasonMovies": false,
-                    "fillerPolicy": "skip_filler",
-                    "recapPolicy": "skip_recap"
+                    "fillerPolicy": "SKIP_FILLER",
+                    "recapPolicy": "SKIP_RECAP"
                 }
             }
         }),
@@ -400,12 +992,12 @@ async fn graphql_add_title_with_structured_options() {
     assert_eq!(title["qualityProfileId"], "anime-hd");
     assert_eq!(title["rootFolderId"], root_folder_id);
     assert_eq!(title["rootFolderPath"], "/library/anime-custom");
-    assert_eq!(title["monitorType"], "futureEpisodes");
+    assert_eq!(title["monitorType"], "FUTURE_EPISODES");
     assert_eq!(title["useSeasonFolders"], false);
     assert_eq!(title["monitorSpecials"], true);
     assert_eq!(title["interSeasonMovies"], false);
-    assert_eq!(title["fillerPolicy"], "skip_filler");
-    assert_eq!(title["recapPolicy"], "skip_recap");
+    assert_eq!(title["fillerPolicy"], "SKIP_FILLER");
+    assert_eq!(title["recapPolicy"], "SKIP_RECAP");
     let title_id = title["id"].as_str().expect("title id");
     let stored_title = ctx
         .titles
@@ -427,7 +1019,7 @@ async fn graphql_add_title_root_folder_id_validates_library_and_infers_library()
     let ctx = TestContext::new().await;
     let movie_library_a = create_title_catalog_library(
         &ctx,
-        "movie",
+        "MOVIE",
         "Movie Library A",
         &[
             ("/library/movies-a-default", true),
@@ -437,7 +1029,7 @@ async fn graphql_add_title_root_folder_id_validates_library_and_infers_library()
     .await;
     let movie_library_b = create_title_catalog_library(
         &ctx,
-        "movie",
+        "MOVIE",
         "Movie Library B",
         &[
             ("/library/movies-b-default", true),
@@ -464,7 +1056,7 @@ async fn graphql_add_title_root_folder_id_validates_library_and_infers_library()
         json!({
             "input": {
                 "name": "Inferred Library Movie",
-                "facet": "movie",
+                "facet": "MOVIE",
                 "monitored": true,
                 "tags": [],
                 "options": {
@@ -488,7 +1080,7 @@ async fn graphql_add_title_root_folder_id_validates_library_and_infers_library()
         json!({
             "input": {
                 "name": "Mismatched Root Movie",
-                "facet": "movie",
+                "facet": "MOVIE",
                 "libraryId": library_a_id,
                 "monitored": true,
                 "tags": [],
@@ -522,7 +1114,7 @@ async fn graphql_add_title_returns_async_hydration_payload_fields() {
     let variables = json!({
         "input": {
             "name": "Async Payload Movie",
-            "facet": "movie",
+            "facet": "MOVIE",
             "monitored": true,
             "tags": [],
             "externalIds": [{ "source": "tvdb", "value": "123456" }]
@@ -533,7 +1125,7 @@ async fn graphql_add_title_returns_async_hydration_payload_fields() {
     assert_no_errors(&first);
     assert_eq!(
         first["data"]["addTitle"]["metadataHydrationState"],
-        "pending"
+        "PENDING"
     );
     assert_eq!(first["data"]["addTitle"]["reusedExistingTitle"], false);
     assert_eq!(first["data"]["addTitle"]["reusedQueuedDownload"], false);
@@ -542,7 +1134,7 @@ async fn graphql_add_title_returns_async_hydration_payload_fields() {
     assert_no_errors(&second);
     assert_eq!(
         second["data"]["addTitle"]["metadataHydrationState"],
-        "pending"
+        "PENDING"
     );
     assert_eq!(second["data"]["addTitle"]["reusedExistingTitle"], true);
     assert_eq!(second["data"]["addTitle"]["reusedQueuedDownload"], false);
@@ -555,7 +1147,7 @@ async fn graphql_add_title_returns_async_hydration_payload_fields() {
 #[tokio::test]
 async fn graphql_add_title_then_list() {
     let ctx = TestContext::new().await;
-    let title_id = add_test_title(&ctx, "Listed Movie", "movie").await;
+    let title_id = add_test_title(&ctx, "Listed Movie", "MOVIE").await;
 
     let body = gql(&ctx, "{ titles { items { id name facet } } }", json!({})).await;
     assert_no_errors(&body);
@@ -567,15 +1159,15 @@ async fn graphql_add_title_then_list() {
             .as_str()
             .is_some_and(|name| !name.is_empty())
     );
-    assert_eq!(titles[0]["facet"], "movie");
+    assert_eq!(titles[0]["facet"], "MOVIE");
 }
 
 #[tokio::test]
 async fn graphql_add_multiple_titles() {
     let ctx = TestContext::new().await;
-    add_test_title(&ctx, "Movie One", "movie").await;
-    add_test_title(&ctx, "Series One", "series").await;
-    add_test_title(&ctx, "Anime One", "anime").await;
+    add_test_title(&ctx, "Movie One", "MOVIE").await;
+    add_test_title(&ctx, "Series One", "SERIES").await;
+    add_test_title(&ctx, "Anime One", "ANIME").await;
 
     let body = gql(&ctx, "{ titles { items { id facet } } }", json!({})).await;
     assert_no_errors(&body);
@@ -621,6 +1213,13 @@ async fn graphql_titles_by_external_ids_returns_catalog_titles() {
         true,
     )
     .await;
+    seed_catalog_filter_metadata(
+        &ctx,
+        &second.id,
+        &[("canonical:genre:family", "genre", "Family")],
+        None,
+    )
+    .await;
 
     let body = gql(
         &ctx,
@@ -630,6 +1229,7 @@ async fn graphql_titles_by_external_ids_returns_catalog_titles() {
             name
             facet
             externalIds { source value }
+            canonicalTags { key name }
           }
         }"#,
         json!({
@@ -643,14 +1243,77 @@ async fn graphql_titles_by_external_ids_returns_catalog_titles() {
     let titles = body["data"]["titlesByExternalIds"]
         .as_array()
         .expect("titles array");
-    let expected_first_match = if first.id <= duplicate.id {
-        first.id.as_str()
-    } else {
-        duplicate.id.as_str()
-    };
-    assert_eq!(titles.len(), 2);
-    assert_eq!(titles[0]["id"].as_str(), Some(expected_first_match));
-    assert_eq!(titles[1]["id"].as_str(), Some(second.id.as_str()));
+    let mut expected_duplicate_ids = [first.id.as_str(), duplicate.id.as_str()];
+    expected_duplicate_ids.sort_unstable();
+    assert_eq!(titles.len(), 3);
+    assert_eq!(titles[0]["id"].as_str(), Some(expected_duplicate_ids[0]));
+    assert_eq!(titles[1]["id"].as_str(), Some(expected_duplicate_ids[1]));
+    assert_eq!(titles[2]["id"].as_str(), Some(second.id.as_str()));
+    assert_eq!(
+        titles[2]["canonicalTags"],
+        json!([{ "key": "canonical:genre:family", "name": "Family" }])
+    );
+}
+
+#[tokio::test]
+async fn graphql_titles_by_external_ids_filters_all_owner_copies_before_returning_matches() {
+    let ctx = TestContext::new().await;
+    let first_library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "External ID Copy A",
+        &[("/catalog-rbac/external-copy-a", true)],
+    )
+    .await;
+    let second_library = create_title_catalog_library(
+        &ctx,
+        "MOVIE",
+        "External ID Copy B",
+        &[("/catalog-rbac/external-copy-b", true)],
+    )
+    .await;
+    let first_library_id = library_id(&first_library);
+    let second_library_id = library_id(&second_library);
+    let first_title_id = add_catalog_filter_title(
+        &ctx,
+        "External Identity Copy A",
+        "99118861",
+        &first_library_id,
+        &library_root_id(&first_library, "/catalog-rbac/external-copy-a"),
+        2024,
+    )
+    .await;
+    let second_title_id = add_catalog_filter_title(
+        &ctx,
+        "External Identity Copy B",
+        "99118861",
+        &second_library_id,
+        &library_root_id(&second_library, "/catalog-rbac/external-copy-b"),
+        2024,
+    )
+    .await;
+
+    let (unauthorized_title_id, authorized_title_id, authorized_library_id) =
+        if first_title_id < second_title_id {
+            (&first_title_id, &second_title_id, &second_library_id)
+        } else {
+            (&second_title_id, &first_title_id, &first_library_id)
+        };
+    assert!(unauthorized_title_id < authorized_title_id);
+
+    let body = schema_exec(
+        &ctx,
+        r#"query {
+            titlesByExternalIds(source: "tvdb", values: ["99118861"]) { id }
+        }"#,
+        Some(catalog_view_actor(authorized_library_id)),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(
+        body["data"]["titlesByExternalIds"],
+        json!([{ "id": authorized_title_id }])
+    );
 }
 
 #[tokio::test]
@@ -663,7 +1326,7 @@ async fn graphql_titles_are_sorted_by_display_name() {
     let body = gql(
         &ctx,
         r#"query($facet: MediaFacetValue) { titles(facet: $facet) { items { name } } }"#,
-        json!({ "facet": "movie" }),
+        json!({ "facet": "MOVIE" }),
     )
     .await;
     assert_no_errors(&body);
@@ -828,7 +1491,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
     let body = gql(
         &ctx,
         r#"query($facet: MediaFacetValue) { titles(facet: $facet) { items { id name episodesOwned episodesMonitored episodesTotal } } }"#,
-        json!({ "facet": "series" }),
+        json!({ "facet": "SERIES" }),
     )
     .await;
     assert_no_errors(&body);
@@ -1020,7 +1683,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
     let body = gql(
         &ctx,
         r#"query($facet: MediaFacetValue) { titles(facet: $facet) { items { id name episodesOwned episodesMonitored episodesTotal } } }"#,
-        json!({ "facet": "series" }),
+        json!({ "facet": "SERIES" }),
     )
     .await;
     assert_no_errors(&body);
@@ -1211,7 +1874,7 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_anime_titles() {
     let body = gql(
         &ctx,
         r#"query($facet: MediaFacetValue) { titles(facet: $facet) { items { id name sizeBytes } } }"#,
-        json!({ "facet": "anime" }),
+        json!({ "facet": "ANIME" }),
     )
     .await;
     assert_no_errors(&body);
@@ -1318,8 +1981,8 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_movies() {
 
     let body = gql(
         &ctx,
-        r#"query($facet: MediaFacetValue) { titles(facet: $facet) { items { id name sizeBytes } } }"#,
-        json!({ "facet": "movie" }),
+        r#"query($facet: MediaFacetValue) { titles(facet: $facet) { managedBytes items { id name sizeBytes } } }"#,
+        json!({ "facet": "MOVIE" }),
     )
     .await;
     assert_no_errors(&body);
@@ -1334,13 +1997,14 @@ async fn graphql_titles_expose_matched_size_bytes_only_for_movies() {
 
     assert_eq!(listed_title["name"], "Matched Size Movie");
     assert_eq!(listed_title["sizeBytes"], json!(1_200));
+    assert_eq!(body["data"]["titles"]["managedBytes"], json!(1_200));
 }
 
 #[tokio::test]
 async fn graphql_get_title_by_id() {
     let ctx = TestContext::new().await;
     let expected_name = "Specific Movie";
-    let id = add_test_title(&ctx, expected_name, "movie").await;
+    let id = add_test_title(&ctx, expected_name, "MOVIE").await;
 
     let body = gql(
         &ctx,
@@ -1371,7 +2035,7 @@ async fn graphql_get_title_not_found() {
 #[tokio::test]
 async fn graphql_set_title_monitored() {
     let ctx = TestContext::new().await;
-    let id = add_test_title(&ctx, "Monitor Test", "movie").await;
+    let id = add_test_title(&ctx, "Monitor Test", "MOVIE").await;
 
     // Disable monitoring
     let body = gql(
@@ -1400,7 +2064,7 @@ async fn graphql_update_title_structured_options_merge_with_existing_tags() {
     let ctx = TestContext::new().await;
     let library = create_title_catalog_library(
         &ctx,
-        "anime",
+        "ANIME",
         "Option Update Anime Library",
         &[
             ("/library/option-anime-default", true),
@@ -1420,7 +2084,7 @@ async fn graphql_update_title_structured_options_merge_with_existing_tags() {
         json!({
             "input": {
                 "name": "Option Update Anime",
-                "facet": "anime",
+                "facet": "ANIME",
                 "libraryId": library_id,
                 "monitored": true,
                 "tags": ["favorite"]
@@ -1455,8 +2119,8 @@ async fn graphql_update_title_structured_options_merge_with_existing_tags() {
                     "qualityProfileId": "anime-4k",
                     "rootFolderId": root_folder_id,
                     "useSeasonFolders": false,
-                    "fillerPolicy": "skip_filler",
-                    "recapPolicy": ""
+                    "fillerPolicy": "SKIP_FILLER",
+                    "recapPolicy": null
                 }
             }
         }),
@@ -1469,7 +2133,7 @@ async fn graphql_update_title_structured_options_merge_with_existing_tags() {
     assert_eq!(updated["rootFolderId"], root_folder_id);
     assert_eq!(updated["rootFolderPath"], "/library/option-anime-custom");
     assert_eq!(updated["useSeasonFolders"], false);
-    assert_eq!(updated["fillerPolicy"], "skip_filler");
+    assert_eq!(updated["fillerPolicy"], "SKIP_FILLER");
     assert!(updated["recapPolicy"].is_null());
 
     let tags = updated["tags"].as_array().expect("tags array");
@@ -1497,7 +2161,7 @@ async fn graphql_update_title_root_folder_id_validates_and_defaults() {
     let ctx = TestContext::new().await;
     let anime_library_a = create_title_catalog_library(
         &ctx,
-        "anime",
+        "ANIME",
         "Root Update Anime Library A",
         &[
             ("/library/root-update-a-default", true),
@@ -1507,7 +2171,7 @@ async fn graphql_update_title_root_folder_id_validates_and_defaults() {
     .await;
     let anime_library_b = create_title_catalog_library(
         &ctx,
-        "anime",
+        "ANIME",
         "Root Update Anime Library B",
         &[
             ("/library/root-update-b-default", true),
@@ -1534,7 +2198,7 @@ async fn graphql_update_title_root_folder_id_validates_and_defaults() {
         json!({
             "input": {
                 "name": "Root Update Anime",
-                "facet": "anime",
+                "facet": "ANIME",
                 "libraryId": library_a_id,
                 "monitored": true,
                 "tags": [],
@@ -1693,7 +2357,7 @@ async fn graphql_update_title_root_folder_id_omitted_preserves_override() {
     let ctx = TestContext::new().await;
     let library = create_title_catalog_library(
         &ctx,
-        "anime",
+        "ANIME",
         "Root Preserve Anime Library",
         &[
             ("/library/root-preserve-default", true),
@@ -1714,7 +2378,7 @@ async fn graphql_update_title_root_folder_id_omitted_preserves_override() {
         json!({
             "input": {
                 "name": "Root Preserve Anime",
-                "facet": "anime",
+                "facet": "ANIME",
                 "libraryId": library_id,
                 "monitored": true,
                 "tags": [],
@@ -1774,7 +2438,7 @@ async fn graphql_title_root_folder_id_rejects_wrong_facet_roots() {
     let ctx = TestContext::new().await;
     let anime_library = create_title_catalog_library(
         &ctx,
-        "anime",
+        "ANIME",
         "Wrong Facet Anime Library",
         &[
             ("/library/wrong-facet-anime-default", true),
@@ -1784,7 +2448,7 @@ async fn graphql_title_root_folder_id_rejects_wrong_facet_roots() {
     .await;
     let movie_library = create_title_catalog_library(
         &ctx,
-        "movie",
+        "MOVIE",
         "Wrong Facet Movie Library",
         &[
             ("/library/wrong-facet-movie-default", true),
@@ -1804,7 +2468,7 @@ async fn graphql_title_root_folder_id_rejects_wrong_facet_roots() {
         json!({
             "input": {
                 "name": "Wrong Facet Add Anime",
-                "facet": "anime",
+                "facet": "ANIME",
                 "monitored": true,
                 "tags": [],
                 "options": {
@@ -1829,7 +2493,7 @@ async fn graphql_title_root_folder_id_rejects_wrong_facet_roots() {
         json!({
             "input": {
                 "name": "Wrong Facet Update Anime",
-                "facet": "anime",
+                "facet": "ANIME",
                 "libraryId": anime_library_id,
                 "monitored": true,
                 "tags": [],
@@ -1872,7 +2536,7 @@ async fn graphql_update_title_rejects_facet_change_without_library_move() {
     let ctx = TestContext::new().await;
     let anime_library = create_title_catalog_library(
         &ctx,
-        "anime",
+        "ANIME",
         "Facet Change Anime Library",
         &[
             ("/library/facet-change-anime-default", true),
@@ -1893,7 +2557,7 @@ async fn graphql_update_title_rejects_facet_change_without_library_move() {
         json!({
             "input": {
                 "name": "Facet Change Anime",
-                "facet": "anime",
+                "facet": "ANIME",
                 "libraryId": anime_library_id,
                 "monitored": true,
                 "tags": [],
@@ -1907,7 +2571,7 @@ async fn graphql_update_title_rejects_facet_change_without_library_move() {
     assert_no_errors(&add_body);
     let title = &add_body["data"]["addTitle"]["title"];
     let title_id = title["id"].as_str().expect("title id");
-    assert_eq!(title["facet"], "anime");
+    assert_eq!(title["facet"], "ANIME");
     assert_eq!(title["rootFolderId"], anime_root_id);
     assert_eq!(
         title["rootFolderPath"],
@@ -1927,7 +2591,7 @@ async fn graphql_update_title_rejects_facet_change_without_library_move() {
         json!({
             "input": {
                 "titleId": title_id,
-                "facet": "movie"
+                "facet": "MOVIE"
             }
         }),
     )
@@ -1952,7 +2616,7 @@ async fn graphql_update_title_rejects_facet_change_without_library_move() {
     .await;
     assert_no_errors(&after);
     let title = &after["data"]["title"];
-    assert_eq!(title["facet"], "anime");
+    assert_eq!(title["facet"], "ANIME");
     assert_eq!(title["rootFolderId"], anime_root_id);
     assert_eq!(
         title["rootFolderPath"],
@@ -1965,7 +2629,7 @@ async fn graphql_title_root_folder_id_tracks_library_root_id_lifecycle() {
     let ctx = TestContext::new().await;
     let library = create_title_catalog_library(
         &ctx,
-        "anime",
+        "ANIME",
         "Root Lifecycle Anime Library",
         &[
             ("/library/root-lifecycle-default", true),
@@ -1986,7 +2650,7 @@ async fn graphql_title_root_folder_id_tracks_library_root_id_lifecycle() {
         json!({
             "input": {
                 "name": "Root Lifecycle Anime",
-                "facet": "anime",
+                "facet": "ANIME",
                 "libraryId": library_id,
                 "monitored": true,
                 "tags": [],
@@ -2185,7 +2849,7 @@ async fn graphql_add_title_default_root_id_stores_library_default() {
     let ctx = TestContext::new().await;
     let library = create_title_catalog_library(
         &ctx,
-        "anime",
+        "ANIME",
         "Default Root Anime Library",
         &[
             ("/library/default-root-default", true),
@@ -2206,7 +2870,7 @@ async fn graphql_add_title_default_root_id_stores_library_default() {
         json!({
             "input": {
                 "name": "Default Root Anime",
-                "facet": "anime",
+                "facet": "ANIME",
                 "libraryId": library_id,
                 "monitored": true,
                 "tags": [],
@@ -2228,113 +2892,76 @@ async fn graphql_add_title_default_root_id_stores_library_default() {
     );
 }
 
+/// RFC 119: the per-item `triggerTitleWantedSearch`/`triggerSeasonWantedSearch`
+/// mutations were removed. A fileless monitored movie is a *derived* Missing
+/// target (no seeding, no state row required): it appears directly in
+/// `wantedItems(wantedKind: MISSING)` with convergence progress, and the
+/// interactive `triggerAcquisitionSearch` job is what searches it now.
 #[tokio::test]
-async fn graphql_trigger_title_wanted_search() {
+async fn graphql_wanted_items_missing_view_exposes_fileless_monitored_movie() {
     let ctx = TestContext::new().await;
-    let id = add_test_title(&ctx, "Search Monitored Test", "movie").await;
+    let id = add_test_title(&ctx, "Search Monitored Test", "MOVIE").await;
 
     let body = gql(
         &ctx,
-        r#"mutation($input: TriggerTitleWantedSearchInput!) {
-            triggerTitleWantedSearch(input: $input) {
-                queuedCount
-                skippedInProgressCount
+        r#"query($wantedKind: WantedKindValue!, $titleSearch: String) {
+            wantedItems(wantedKind: $wantedKind, titleSearch: $titleSearch) {
+                totalCount
+                items { id titleId mediaType status convergenceState recencyLane }
             }
         }"#,
-        json!({ "input": { "titleId": id } }),
+        json!({ "wantedKind": "MISSING", "titleSearch": "Search Monitored Test" }),
     )
     .await;
     assert_no_errors(&body);
-    assert_eq!(body["data"]["triggerTitleWantedSearch"]["queuedCount"], 1);
-    assert_eq!(
-        body["data"]["triggerTitleWantedSearch"]["skippedInProgressCount"],
-        0
-    );
+    assert_eq!(body["data"]["wantedItems"]["totalCount"], 1);
+    let item = &body["data"]["wantedItems"]["items"][0];
+    assert_eq!(item["titleId"], id);
+    assert_eq!(item["mediaType"], "MOVIE");
+    assert_eq!(item["status"], "WANTED");
+    // With no state row and no indexers routed the scope reads as converged (0/0).
+    assert!(item["convergenceState"].is_string());
+    assert!(item["recencyLane"].is_string());
+    // The derived-target id is the scope key when no state row exists.
+    assert_eq!(item["id"], format!("title:{id}"));
 
+    // The interactive search job accepts that scope id and starts (no indexers →
+    // nothing grabbed, but the job is created and its payload is well-formed).
     let body = gql(
         &ctx,
-        r#"query($titleId: ID) {
-            wantedItems(titleId: $titleId) {
+        r#"mutation($input: TriggerAcquisitionSearchInput!) {
+            triggerAcquisitionSearch(input: $input) {
+                id
+                state
                 total
-                items { titleId mediaType status }
+                grabbedCount
+                failedCount
             }
         }"#,
-        json!({ "titleId": id }),
+        json!({ "input": { "wantedItemId": format!("title:{id}") } }),
     )
     .await;
     assert_no_errors(&body);
-    assert_eq!(body["data"]["wantedItems"]["total"], 1);
-    assert_eq!(body["data"]["wantedItems"]["items"][0]["titleId"], id);
-    assert_eq!(
-        body["data"]["wantedItems"]["items"][0]["mediaType"],
-        "movie"
+    assert!(
+        body["data"]["triggerAcquisitionSearch"]["id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
     );
-    assert_eq!(body["data"]["wantedItems"]["items"][0]["status"], "wanted");
-}
-
-#[tokio::test]
-async fn graphql_trigger_title_wanted_search_series_queues_all_monitored_episodes() {
-    let ctx = TestContext::new().await;
-    let media_root = tempfile::tempdir().expect("media root tempdir");
-    let (title, collection) =
-        create_series_scan_title(&ctx, media_root.path(), "Search Monitored Series", vec![]).await;
-    create_series_scan_episode(&ctx, &title, &collection, "1", "1", "S01E01").await;
-    create_series_scan_episode(&ctx, &title, &collection, "1", "2", "S01E02").await;
-
-    let body = gql(
-        &ctx,
-        r#"mutation($input: TriggerTitleWantedSearchInput!) {
-            triggerTitleWantedSearch(input: $input) {
-                queuedCount
-                skippedInProgressCount
-            }
-        }"#,
-        json!({ "input": { "titleId": title.id.clone() } }),
-    )
-    .await;
-    assert_no_errors(&body);
-    assert_eq!(body["data"]["triggerTitleWantedSearch"]["queuedCount"], 2);
-    assert_eq!(
-        body["data"]["triggerTitleWantedSearch"]["skippedInProgressCount"],
-        0
-    );
-
-    let body = gql(
-        &ctx,
-        r#"query($titleId: ID) {
-            wantedItems(titleId: $titleId) {
-                total
-                items { titleId mediaType status }
-            }
-        }"#,
-        json!({ "titleId": title.id.clone() }),
-    )
-    .await;
-    assert_no_errors(&body);
-    assert_eq!(body["data"]["wantedItems"]["total"], 2);
-    let items = body["data"]["wantedItems"]["items"]
-        .as_array()
-        .expect("wanted items array");
-    assert_eq!(items.len(), 2);
-    assert!(items.iter().all(|item| item["titleId"] == title.id));
-    assert!(items.iter().all(|item| item["mediaType"] == "episode"));
-    assert!(items.iter().all(|item| item["status"] == "wanted"));
 }
 
 #[tokio::test]
 async fn graphql_delete_title() {
     let ctx = TestContext::new().await;
-    let id = add_test_title(&ctx, "To Delete", "movie").await;
+    let id = add_test_title(&ctx, "To Delete", "MOVIE").await;
 
     let body = gql(
         &ctx,
-        r#"mutation($input: DeleteTitleInput!) { deleteTitle(input: $input) { id deleted } }"#,
+        r#"mutation($input: DeleteTitleInput!) { deleteTitle(input: $input) { id } }"#,
         json!({ "input": { "titleId": id } }),
     )
     .await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["deleteTitle"]["id"], id);
-    assert_eq!(body["data"]["deleteTitle"]["deleted"], true);
 
     // Verify deleted
     let body = gql(
@@ -2349,10 +2976,10 @@ async fn graphql_delete_title() {
 #[tokio::test]
 async fn graphql_delete_title_cleans_title_workflow_state() {
     let ctx = TestContext::new().await;
-    let id = add_test_title(&ctx, "Delete With Cleanup", "movie").await;
+    let id = add_test_title(&ctx, "Delete With Cleanup", "MOVIE").await;
 
     ctx.library_state
-        .upsert_wanted_item(&WantedItem {
+        .upsert_acquisition_scope_state(&AcquisitionScopeState {
             id: Id::new().0,
             title_id: id.clone(),
             title_name: Some("Delete With Cleanup".to_string()),
@@ -2367,12 +2994,8 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
-            search_phase: "auto".to_string(),
-            next_search_at: None,
             last_search_at: None,
-            search_count: 0,
-            baseline_date: None,
-            status: scryer_application::WantedStatus::Wanted,
+            status: scryer_application::AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -2428,20 +3051,19 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
 
     let body = gql(
         &ctx,
-        r#"mutation($input: DeleteTitleInput!) { deleteTitle(input: $input) { id deleted } }"#,
+        r#"mutation($input: DeleteTitleInput!) { deleteTitle(input: $input) { id } }"#,
         json!({ "input": { "titleId": id } }),
     )
     .await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["deleteTitle"]["id"], id);
-    assert_eq!(body["data"]["deleteTitle"]["deleted"], true);
 
     assert!(
         scryer_infrastructure::WantedStore::new(ctx.db.datastore())
-            .list_wanted_items(scryer_application::WantedItemsQuery {
+            .list_acquisition_scope_states(scryer_application::AcquisitionScopeStatesQuery {
                 title_id: Some(id.clone()),
                 limit: 10,
-                ..scryer_application::WantedItemsQuery::default()
+                ..scryer_application::AcquisitionScopeStatesQuery::default()
             })
             .await
             .expect("wanted items")
@@ -2470,26 +3092,26 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
 #[tokio::test]
 async fn graphql_filter_titles_by_facet() {
     let ctx = TestContext::new().await;
-    add_test_title(&ctx, "Movie A", "movie").await;
-    add_test_title(&ctx, "Series A", "series").await;
+    add_test_title(&ctx, "Movie A", "MOVIE").await;
+    add_test_title(&ctx, "Series A", "SERIES").await;
 
     let body = gql(
         &ctx,
         r#"query($facet: MediaFacetValue) { titles(facet: $facet) { items { name facet } } }"#,
-        json!({ "facet": "movie" }),
+        json!({ "facet": "MOVIE" }),
     )
     .await;
     assert_no_errors(&body);
     let titles = body["data"]["titles"]["items"].as_array().unwrap();
     assert_eq!(titles.len(), 1);
-    assert_eq!(titles[0]["facet"], "movie");
+    assert_eq!(titles[0]["facet"], "MOVIE");
 }
 
 #[tokio::test]
 async fn graphql_series_titles_expose_series_facet() {
     let ctx = TestContext::new().await;
     let expected_name = "Series A";
-    add_test_title(&ctx, expected_name, "series").await;
+    add_test_title(&ctx, expected_name, "SERIES").await;
 
     let body = gql(&ctx, "{ titles { items { name facet } } }", json!({})).await;
     assert_no_errors(&body);
@@ -2498,5 +3120,5 @@ async fn graphql_series_titles_expose_series_facet() {
     assert_eq!(titles.len(), 1);
     let title = &titles[0];
     assert_eq!(title["name"], expected_name);
-    assert_eq!(title["facet"], "series");
+    assert_eq!(title["facet"], "SERIES");
 }

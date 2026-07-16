@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, FileImporter, ImportFileTransferProgress,
+    AppError, AppResult, FileImporter, ImportFilePermissions, ImportFileTransferProgress,
     ImportFileTransferProgressSender, fs_integrity::import_content_proof,
 };
 use scryer_domain::{
@@ -14,7 +14,12 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, symlink};
+use std::ffi::CString;
+#[cfg(unix)]
+use std::os::unix::{
+    ffi::OsStrExt,
+    fs::{MetadataExt, PermissionsExt, symlink},
+};
 #[cfg(windows)]
 use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
 #[cfg(windows)]
@@ -54,6 +59,8 @@ struct FileFingerprint {
     dev: u64,
     #[cfg(unix)]
     ino: u64,
+    #[cfg(unix)]
+    uid: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -273,6 +280,8 @@ fn fingerprint_from_metadata(metadata: &std::fs::Metadata) -> AppResult<FileFing
         dev: metadata.dev(),
         #[cfg(unix)]
         ino: metadata.ino(),
+        #[cfg(unix)]
+        uid: metadata.uid(),
     })
 }
 
@@ -437,6 +446,10 @@ struct ImportFileOptions {
     force_transient_copy_failures: u8,
     #[cfg(test)]
     force_non_transient_copy_failure: bool,
+    #[cfg(test)]
+    force_foreign_source_uid: bool,
+    #[cfg(test)]
+    force_destination_uid_mismatch: bool,
 }
 
 #[cfg(test)]
@@ -499,6 +512,274 @@ fn force_copy_attempt_error(
     Ok(())
 }
 
+#[cfg(test)]
+fn force_foreign_source_uid(options: &ImportFileOptions) -> bool {
+    options.force_foreign_source_uid
+}
+
+#[cfg(not(test))]
+fn force_foreign_source_uid(_: &ImportFileOptions) -> bool {
+    false
+}
+
+#[cfg(test)]
+fn force_destination_uid_mismatch(options: &ImportFileOptions) -> bool {
+    options.force_destination_uid_mismatch
+}
+
+#[cfg(not(test))]
+fn force_destination_uid_mismatch(_: &ImportFileOptions) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn effective_uid() -> u32 {
+    unsafe { libc::geteuid() as u32 }
+}
+
+#[cfg(unix)]
+fn source_uid_matches_scryer(
+    source_fingerprint: &ImportSourceFingerprint,
+    options: &ImportFileOptions,
+) -> bool {
+    !force_foreign_source_uid(options) && source_fingerprint.file.uid == effective_uid()
+}
+
+#[cfg(not(unix))]
+fn source_uid_matches_scryer(
+    _source_fingerprint: &ImportSourceFingerprint,
+    _options: &ImportFileOptions,
+) -> bool {
+    true
+}
+
+#[cfg(unix)]
+fn verify_imported_regular_file_uid(path: &Path, options: &ImportFileOptions) -> AppResult<()> {
+    if force_destination_uid_mismatch(options) {
+        return Err(AppError::Repository(format!(
+            "import destination is not owned by the Scryer process uid: {}",
+            path.display()
+        )));
+    }
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        AppError::Repository(format!(
+            "failed to inspect import destination ownership {}: {}",
+            path.display(),
+            error
+        ))
+    })?;
+    if metadata.is_file() && metadata.uid() != effective_uid() {
+        return Err(AppError::Repository(format!(
+            "import destination is owned by uid {}, expected Scryer uid {}: {}",
+            metadata.uid(),
+            effective_uid(),
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn verify_imported_regular_file_uid(_path: &Path, _options: &ImportFileOptions) -> AppResult<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn parse_chmod_mask(mask: &str) -> io::Result<u32> {
+    if !(mask.len() == 3 || mask.len() == 4)
+        || !mask.bytes().all(|byte| (b'0'..=b'7').contains(&byte))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid chmod mask '{mask}'"),
+        ));
+    }
+    u32::from_str_radix(mask, 8).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+}
+
+#[cfg(unix)]
+fn chmod_target_mode(current_mode: u32, mask: &str, parsed_mask: u32) -> u32 {
+    if mask.len() < 4 {
+        (current_mode & !0o777) | parsed_mask
+    } else {
+        parsed_mask
+    }
+}
+
+#[cfg(unix)]
+fn apply_chmod(path: &Path, mask: &str) -> io::Result<()> {
+    let metadata = std::fs::metadata(path)?;
+    let parsed_mask = parse_chmod_mask(mask)?;
+    let target_mode = chmod_target_mode(metadata.permissions().mode(), mask, parsed_mask);
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(target_mode);
+    std::fs::set_permissions(path, permissions)
+}
+
+#[cfg(unix)]
+fn file_chmod_mask(permissions: &ImportFilePermissions) -> Option<String> {
+    if !permissions.set_permissions_linux {
+        return None;
+    }
+    if let Some(mask) = permissions.file_chmod.as_ref() {
+        return Some(mask.clone());
+    }
+    let folder_mask = permissions.folder_chmod.as_ref()?;
+    let parsed = parse_chmod_mask(folder_mask).ok()?;
+    Some(format!("{:o}", parsed & !0o111))
+}
+
+#[cfg(unix)]
+fn file_permission_metadata_changes(permissions: &ImportFilePermissions) -> bool {
+    permissions.set_permissions_linux
+        && (permissions.chown_group.is_some() || file_chmod_mask(permissions).is_some())
+}
+
+#[cfg(not(unix))]
+fn file_permission_metadata_changes(_permissions: &ImportFilePermissions) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn resolve_group_id(group: &str) -> io::Result<libc::gid_t> {
+    if group.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "group cannot be empty",
+        ));
+    }
+
+    if group.bytes().all(|byte| byte.is_ascii_digit()) {
+        let parsed = group
+            .parse::<u32>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        return Ok(parsed as libc::gid_t);
+    }
+
+    let group_name = CString::new(group)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "group contains NUL byte"))?;
+    let mut group_record = unsafe { std::mem::zeroed::<libc::group>() };
+    let mut result = std::ptr::null_mut();
+    let mut buffer_len = unsafe { libc::sysconf(libc::_SC_GETGR_R_SIZE_MAX) };
+    if buffer_len < 1024 {
+        buffer_len = 16 * 1024;
+    }
+    let mut buffer = vec![0u8; buffer_len as usize];
+
+    loop {
+        let status = unsafe {
+            libc::getgrnam_r(
+                group_name.as_ptr(),
+                &mut group_record,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if status == 0 {
+            if result.is_null() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("unknown group '{group}'"),
+                ));
+            }
+            return Ok(group_record.gr_gid);
+        }
+        if status == libc::ERANGE {
+            buffer.resize(buffer.len().saturating_mul(2), 0);
+            continue;
+        }
+        return Err(io::Error::from_raw_os_error(status));
+    }
+}
+
+#[cfg(unix)]
+fn apply_group(path: &Path, group: &str) -> io::Result<()> {
+    let gid = resolve_group_id(group)?;
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL byte"))?;
+    let result = unsafe { libc::chown(c_path.as_ptr(), libc::uid_t::MAX, gid) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(unix)]
+fn apply_file_permissions_best_effort(path: &Path, permissions: &ImportFilePermissions) {
+    if !permissions.set_permissions_linux {
+        return;
+    }
+    if let Some(group) = permissions.chown_group.as_deref()
+        && let Err(error) = apply_group(path, group)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            group,
+            error = %error,
+            "unable to apply imported file group"
+        );
+    }
+    if let Some(mask) = file_chmod_mask(permissions)
+        && let Err(error) = apply_chmod(path, &mask)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            mask,
+            error = %error,
+            "unable to apply imported file permissions"
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn apply_file_permissions_best_effort(_path: &Path, _permissions: &ImportFilePermissions) {}
+
+#[cfg(unix)]
+fn apply_directory_permissions_best_effort(path: &Path, permissions: &ImportFilePermissions) {
+    if !permissions.set_permissions_linux {
+        return;
+    }
+    if let Some(group) = permissions.chown_group.as_deref()
+        && let Err(error) = apply_group(path, group)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            group,
+            error = %error,
+            "unable to apply imported folder group"
+        );
+    }
+    if let Some(mask) = permissions.folder_chmod.as_deref()
+        && let Err(error) = apply_chmod(path, mask)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            mask,
+            error = %error,
+            "unable to apply imported folder permissions"
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn apply_directory_permissions_best_effort(_path: &Path, _permissions: &ImportFilePermissions) {}
+
+fn missing_destination_dirs(parent: &Path) -> Vec<PathBuf> {
+    let mut missing = Vec::new();
+    let mut current = Some(parent);
+    while let Some(path) = current {
+        if path.as_os_str().is_empty() || path.exists() {
+            break;
+        }
+        missing.push(path.to_path_buf());
+        current = path.parent();
+    }
+    missing.reverse();
+    missing
+}
+
 struct ImportDestinationGuard {
     requested_path: PathBuf,
     parent_path: PathBuf,
@@ -515,6 +796,7 @@ fn destination_parent_for_guard(dest: &Path) -> &Path {
 fn prepare_import_destination(
     source: &Path,
     dest: &Path,
+    permissions: &ImportFilePermissions,
 ) -> AppResult<(ImportSourceFingerprint, u64, ImportDestinationGuard)> {
     let source_fingerprint = fingerprint_import_source(source)?;
     let size = source_fingerprint.file.len;
@@ -526,6 +808,7 @@ fn prepare_import_destination(
     }
 
     let parent = destination_parent_for_guard(dest);
+    let missing_dirs = missing_destination_dirs(parent);
     std::fs::create_dir_all(parent).map_err(|e| {
         AppError::Repository(format!(
             "failed to create destination directory {}: {}",
@@ -541,17 +824,19 @@ fn prepare_import_destination(
         ))
     })?;
     let approved_parent_fingerprint = directory_fingerprint_from_path(parent)?;
+    let destination_guard = ImportDestinationGuard {
+        requested_path: dest.to_path_buf(),
+        parent_path: parent.to_path_buf(),
+        approved_parent_canonical,
+        approved_parent_fingerprint,
+    };
 
-    Ok((
-        source_fingerprint,
-        size,
-        ImportDestinationGuard {
-            requested_path: dest.to_path_buf(),
-            parent_path: parent.to_path_buf(),
-            approved_parent_canonical,
-            approved_parent_fingerprint,
-        },
-    ))
+    for dir in &missing_dirs {
+        apply_directory_permissions_best_effort(dir, permissions);
+    }
+    validate_import_destination_parent(&destination_guard, dest)?;
+
+    Ok((source_fingerprint, size, destination_guard))
 }
 
 fn validate_import_destination_parent(
@@ -1008,6 +1293,19 @@ fn remove_import_source_after_verified_import_blocking(
     Ok(())
 }
 
+fn finalize_imported_regular_destination(
+    dest: &Path,
+    options: &ImportFileOptions,
+    permissions: &ImportFilePermissions,
+) -> AppResult<()> {
+    if let Err(error) = verify_imported_regular_file_uid(dest, options) {
+        let _ = std::fs::remove_file(dest);
+        return Err(error);
+    }
+    apply_file_permissions_best_effort(dest, permissions);
+    Ok(())
+}
+
 fn import_hardlink_or_copy_blocking(
     source: PathBuf,
     dest: PathBuf,
@@ -1015,8 +1313,10 @@ fn import_hardlink_or_copy_blocking(
     source_cleanup_required: bool,
     expected_source: Option<ImportSourceSnapshot>,
     progress: Option<ImportFileTransferProgressSender>,
+    permissions: ImportFilePermissions,
 ) -> AppResult<ImportFileResult> {
-    let (source_fingerprint, size, destination_guard) = prepare_import_destination(&source, &dest)?;
+    let (source_fingerprint, size, destination_guard) =
+        prepare_import_destination(&source, &dest, &permissions)?;
     ensure_expected_source_snapshot(&source, &source_fingerprint, expected_source.as_ref())?;
 
     if let ImportSourceKind::Symlink { .. } = &source_fingerprint.kind {
@@ -1038,7 +1338,16 @@ fn import_hardlink_or_copy_blocking(
         });
     }
 
-    if !force_cross_device_move(&options) {
+    let hardlink_uid_safe = source_uid_matches_scryer(&source_fingerprint, &options);
+    if !hardlink_uid_safe {
+        tracing::info!(
+            source = %source.display(),
+            dest = %dest.display(),
+            "skipping hardlink import because source uid differs from Scryer process uid"
+        );
+    }
+
+    if !force_cross_device_move(&options) && hardlink_uid_safe {
         match std::fs::hard_link(&source, &dest) {
             Ok(()) => {
                 if let Err(error) = ensure_same_source(&source, &source_fingerprint)
@@ -1053,6 +1362,14 @@ fn import_hardlink_or_copy_blocking(
                             &destination_guard,
                             &dest,
                         )?;
+                        if file_permission_metadata_changes(&permissions) {
+                            tracing::info!(
+                                source = %source.display(),
+                                dest = %dest.display(),
+                                "applying import permissions to hardlink; metadata changes affect the shared download-side inode"
+                            );
+                        }
+                        finalize_imported_regular_destination(&dest, &options, &permissions)?;
                         let source_cleanup = cleanup_guard_after_placement(
                             source_cleanup_required,
                             &source,
@@ -1111,6 +1428,7 @@ fn import_hardlink_or_copy_blocking(
         progress.as_ref(),
     )?;
     validate_import_destination_guard_after_placement(&destination_guard, &dest)?;
+    finalize_imported_regular_destination(&dest, &options, &permissions)?;
 
     let source_cleanup = cleanup_guard_after_placement(
         source_cleanup_required,
@@ -1135,19 +1453,27 @@ fn import_file_blocking(
     options: ImportFileOptions,
     expected_source: Option<ImportSourceSnapshot>,
     progress: Option<ImportFileTransferProgressSender>,
+    permissions: ImportFilePermissions,
 ) -> AppResult<ImportFileResult> {
     match mode {
         ImportMode::HardlinkOrCopy => import_hardlink_or_copy_blocking(
             source,
             dest,
-            ImportFileOptions::default(),
+            options,
             false,
             expected_source,
             progress,
+            permissions,
         ),
-        ImportMode::Move => {
-            import_hardlink_or_copy_blocking(source, dest, options, true, expected_source, progress)
-        }
+        ImportMode::Move => import_hardlink_or_copy_blocking(
+            source,
+            dest,
+            options,
+            true,
+            expected_source,
+            progress,
+            permissions,
+        ),
     }
 }
 
@@ -1180,9 +1506,30 @@ impl FileImporter for FsFileImporter {
         expected_source: Option<&ImportSourceSnapshot>,
         progress: Option<ImportFileTransferProgressSender>,
     ) -> AppResult<ImportFileResult> {
+        self.import_file_with_progress_and_permissions(
+            source,
+            dest,
+            mode,
+            expected_source,
+            progress,
+            &ImportFilePermissions::default(),
+        )
+        .await
+    }
+
+    async fn import_file_with_progress_and_permissions(
+        &self,
+        source: &Path,
+        dest: &Path,
+        mode: ImportMode,
+        expected_source: Option<&ImportSourceSnapshot>,
+        progress: Option<ImportFileTransferProgressSender>,
+        permissions: &ImportFilePermissions,
+    ) -> AppResult<ImportFileResult> {
         let source = source.to_path_buf();
         let dest = dest.to_path_buf();
         let expected_source = expected_source.cloned();
+        let permissions = permissions.clone();
 
         tokio::task::spawn_blocking(move || {
             import_file_blocking(
@@ -1192,6 +1539,7 @@ impl FileImporter for FsFileImporter {
                 ImportFileOptions::default(),
                 expected_source,
                 progress,
+                permissions,
             )
         })
         .await
@@ -1220,6 +1568,52 @@ impl FileImporter for FsFileImporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    #[derive(Clone)]
+    struct SharedLogWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for SharedLogWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.buffer.lock().expect("lock log buffer").extend(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for SharedLogWriter {
+        type Writer = SharedLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture_logs<R>(f: impl FnOnce() -> R) -> (R, String) {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(SharedLogWriter {
+                buffer: buffer.clone(),
+            })
+            .with_ansi(false)
+            .without_time()
+            .finish();
+
+        let result = tracing::subscriber::with_default(subscriber, f);
+        let logs = String::from_utf8(buffer.lock().expect("lock log buffer").clone())
+            .expect("logs should be UTF-8");
+        (result, logs)
+    }
 
     #[tokio::test]
     async fn hardlink_or_copy_preserves_regular_source() {
@@ -1243,6 +1637,44 @@ mod tests {
         assert_eq!(
             std::fs::read(&dest).expect("read dest"),
             b"fake video bytes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlink_permission_metadata_change_is_logged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let probe = dir.path().join("probe.mkv");
+        if std::fs::hard_link(&source, &probe).is_err() {
+            return;
+        }
+        std::fs::remove_file(&probe).expect("remove probe");
+        let dest = dir.path().join("library").join("Imported.Movie.mkv");
+
+        let (result, logs) = capture_logs(|| {
+            import_file_blocking(
+                source.clone(),
+                dest,
+                ImportMode::HardlinkOrCopy,
+                ImportFileOptions::default(),
+                None,
+                None,
+                ImportFilePermissions {
+                    set_permissions_linux: true,
+                    file_chmod: Some("640".to_string()),
+                    folder_chmod: None,
+                    chown_group: None,
+                },
+            )
+        });
+        let result = result.expect("import file");
+
+        assert_eq!(result.strategy, ImportStrategy::HardLink);
+        assert!(
+            logs.contains("metadata changes affect the shared download-side inode"),
+            "expected hardlink metadata log, got: {logs}"
         );
     }
 
@@ -1305,7 +1737,8 @@ mod tests {
         let parent = dir.path().join("library");
         let dest = parent.join("Imported.Movie.mkv");
         let (_source_fingerprint, _size, guard) =
-            prepare_import_destination(&source, &dest).expect("prepare destination");
+            prepare_import_destination(&source, &dest, &ImportFilePermissions::default())
+                .expect("prepare destination");
 
         let old_parent = dir.path().join("library-old");
         std::fs::rename(&parent, &old_parent).expect("replace approved parent");
@@ -1329,7 +1762,8 @@ mod tests {
         let parent = dir.path().join("library");
         let dest = parent.join("Imported.Movie.mkv");
         let (_source_fingerprint, _size, guard) =
-            prepare_import_destination(&source, &dest).expect("prepare destination");
+            prepare_import_destination(&source, &dest, &ImportFilePermissions::default())
+                .expect("prepare destination");
 
         std::fs::write(&dest, b"fake video bytes").expect("write destination");
 
@@ -1345,7 +1779,8 @@ mod tests {
         let parent = dir.path().join("library");
         let dest = parent.join("Imported.Movie.mkv");
         let (_source_fingerprint, _size, guard) =
-            prepare_import_destination(&source, &dest).expect("prepare destination");
+            prepare_import_destination(&source, &dest, &ImportFilePermissions::default())
+                .expect("prepare destination");
 
         std::fs::write(&dest, b"placed video bytes").expect("write placed destination");
         let old_parent = dir.path().join("library-old");
@@ -1378,7 +1813,8 @@ mod tests {
         let parent = dir.path().join("library");
         let dest = parent.join("Imported.Movie.mkv");
         let (_source_fingerprint, _size, guard) =
-            prepare_import_destination(&source, &dest).expect("prepare destination");
+            prepare_import_destination(&source, &dest, &ImportFilePermissions::default())
+                .expect("prepare destination");
 
         std::fs::create_dir(&dest).expect("create non-file destination");
 
@@ -1433,6 +1869,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect("move placement fallback");
 
@@ -1457,6 +1894,229 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn hardlink_or_copy_copies_foreign_uid_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let dest = dir.path().join("library").join("Imported.Movie.mkv");
+
+        let result = import_file_blocking(
+            source.clone(),
+            dest.clone(),
+            ImportMode::HardlinkOrCopy,
+            ImportFileOptions {
+                force_foreign_source_uid: true,
+                ..Default::default()
+            },
+            None,
+            None,
+            ImportFilePermissions::default(),
+        )
+        .expect("import file");
+
+        assert_eq!(result.strategy, ImportStrategy::Copy);
+        assert!(result.source_cleanup.is_none());
+        assert!(source.exists());
+        assert_eq!(
+            std::fs::read(&dest).expect("read dest"),
+            b"fake video bytes"
+        );
+        assert_eq!(
+            std::fs::metadata(&dest).expect("dest metadata").uid(),
+            effective_uid()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn move_mode_copies_foreign_uid_source_then_cleanup_deletes_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let dest = dir.path().join("library").join("Imported.Movie.mkv");
+
+        let result = import_file_blocking(
+            source.clone(),
+            dest.clone(),
+            ImportMode::Move,
+            ImportFileOptions {
+                force_foreign_source_uid: true,
+                ..Default::default()
+            },
+            None,
+            None,
+            ImportFilePermissions::default(),
+        )
+        .expect("move import");
+
+        assert_eq!(result.strategy, ImportStrategy::Copy);
+        assert!(source.exists());
+
+        remove_import_source_after_verified_import_blocking(
+            result.source_cleanup.expect("cleanup guard"),
+            dest.clone(),
+            ImportFileOptions::default(),
+        )
+        .expect("source cleanup");
+
+        assert!(!source.exists());
+        assert_eq!(
+            std::fs::metadata(&dest).expect("dest metadata").uid(),
+            effective_uid()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_uid_mismatch_fails_import_and_removes_destination() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let dest = dir.path().join("library").join("Imported.Movie.mkv");
+
+        let error = import_file_blocking(
+            source.clone(),
+            dest.clone(),
+            ImportMode::HardlinkOrCopy,
+            ImportFileOptions {
+                force_destination_uid_mismatch: true,
+                ..Default::default()
+            },
+            None,
+            None,
+            ImportFilePermissions::default(),
+        )
+        .expect_err("uid mismatch should fail import");
+
+        assert!(matches!(error, AppError::Repository(_)));
+        assert!(!dest.exists());
+        assert!(source.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enabled_permissions_apply_file_mask_and_created_folder_mask() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let library_dir = dir.path().join("library");
+        let dest = library_dir.join("Imported.Movie.mkv");
+        let egid = unsafe { libc::getegid() };
+
+        import_file_blocking(
+            source,
+            dest.clone(),
+            ImportMode::HardlinkOrCopy,
+            ImportFileOptions {
+                force_foreign_source_uid: true,
+                ..Default::default()
+            },
+            None,
+            None,
+            ImportFilePermissions {
+                set_permissions_linux: true,
+                file_chmod: Some("2640".to_string()),
+                folder_chmod: Some("2750".to_string()),
+                chown_group: Some(egid.to_string()),
+            },
+        )
+        .expect("import file");
+
+        assert_eq!(std::fs::metadata(&dest).expect("dest metadata").gid(), egid);
+        assert_eq!(
+            std::fs::metadata(&dest).expect("dest metadata").mode() & 0o7777,
+            0o2640
+        );
+        assert_eq!(
+            std::fs::metadata(&library_dir)
+                .expect("library dir metadata")
+                .gid(),
+            egid
+        );
+        assert_eq!(
+            std::fs::metadata(&library_dir)
+                .expect("library dir metadata")
+                .mode()
+                & 0o7777,
+            0o2750
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_file_mask_derives_from_folder_mask_without_execute_bits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let dest = dir.path().join("library").join("Imported.Movie.mkv");
+
+        import_file_blocking(
+            source,
+            dest.clone(),
+            ImportMode::HardlinkOrCopy,
+            ImportFileOptions {
+                force_foreign_source_uid: true,
+                ..Default::default()
+            },
+            None,
+            None,
+            ImportFilePermissions {
+                set_permissions_linux: true,
+                file_chmod: None,
+                folder_chmod: Some("755".to_string()),
+                chown_group: None,
+            },
+        )
+        .expect("import file");
+
+        assert_eq!(
+            std::fs::metadata(&dest).expect("dest metadata").mode() & 0o7777,
+            0o644
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn numeric_group_chown_keeps_destination_uid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("source.mkv");
+        std::fs::write(&source, b"fake video bytes").expect("write source");
+        let dest = dir.path().join("library").join("Imported.Movie.mkv");
+        let egid = unsafe { libc::getegid() };
+
+        import_file_blocking(
+            source,
+            dest.clone(),
+            ImportMode::HardlinkOrCopy,
+            ImportFileOptions {
+                force_foreign_source_uid: true,
+                ..Default::default()
+            },
+            None,
+            None,
+            ImportFilePermissions {
+                set_permissions_linux: true,
+                file_chmod: None,
+                folder_chmod: None,
+                chown_group: Some(egid.to_string()),
+            },
+        )
+        .expect("import file");
+
+        let metadata = std::fs::metadata(&dest).expect("dest metadata");
+        assert_eq!(metadata.uid(), effective_uid());
+        assert_eq!(metadata.gid(), egid);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn empty_group_is_invalid_input() {
+        let error = resolve_group_id("").expect_err("empty group should be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
     #[test]
     fn cross_device_copy_reports_transfer_progress() {
         let source_dir = tempfile::tempdir().expect("source tempdir");
@@ -1477,6 +2137,7 @@ mod tests {
             },
             None,
             Some(progress_tx),
+            ImportFilePermissions::default(),
         )
         .expect("move placement fallback");
 
@@ -1523,6 +2184,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect_err("copy should fail");
 
@@ -1551,6 +2213,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect("copy should retry and succeed");
 
@@ -1583,6 +2246,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect_err("copy should fail after retry budget");
 
@@ -1614,6 +2278,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect_err("copy should fail without retry");
 
@@ -1644,6 +2309,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect_err("verification should fail");
 
@@ -1670,6 +2336,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect("place file");
 
@@ -1706,6 +2373,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect("place file");
 
@@ -1740,6 +2408,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect("place file");
 
@@ -1773,6 +2442,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect("place file");
 
@@ -1806,6 +2476,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect("place file");
 
@@ -1843,6 +2514,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect("place file");
 
@@ -1880,6 +2552,7 @@ mod tests {
             },
             None,
             None,
+            ImportFilePermissions::default(),
         )
         .expect("place file");
 

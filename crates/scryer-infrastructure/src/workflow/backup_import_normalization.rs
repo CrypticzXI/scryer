@@ -254,7 +254,6 @@ fn normalize_title_import_object(object: &mut JsonMap<String, JsonValue>) {
     for (record_field, source_field) in [
         ("tags", "tags"),
         ("external_ids", "external_ids"),
-        ("genres", "genres"),
         ("aliases", "aliases"),
         ("tagged_aliases", "tagged_aliases_json"),
     ] {
@@ -422,6 +421,7 @@ mod tests {
         let row_counts = BTreeMap::from_iter([
             ("settings_definitions".to_string(), 1),
             ("settings_values".to_string(), 1),
+            ("title_image_blobs".to_string(), 21),
             ("title_image_variants".to_string(), 42),
         ]);
         let export_tables = vec![

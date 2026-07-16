@@ -1,16 +1,15 @@
 import * as React from "react";
-import { ChevronDown } from "lucide-react";
 
+import {
+  MultiSelectDropdown,
+  type MultiSelectGroup,
+} from "@/components/ui/multi-select-dropdown";
 import { localizedFacetLabel } from "@/components/views/overview-localization";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { LibraryRecord } from "@/lib/types";
-import { cn } from "@/lib/utils";
 import { normalizeLibraryFilterSelection } from "@/lib/utils/library-filter";
 
-const FACET_ORDER: LibraryRecord["facet"][] = ["movie", "series", "anime"];
+const FACET_ORDER: LibraryRecord["facet"][] = ["MOVIE", "SERIES", "ANIME"];
 const MAX_INLINE_LIBRARY_LABELS = 2;
 
 type LibraryMultiSelectProps = {
@@ -84,126 +83,58 @@ export function LibraryMultiSelect({
       count: selectedLibraries.length,
     });
   }, [selectedLibraries, showFacetGroups, t]);
-  const implicitAllSelected = libraries.length > 0 && normalizedSelectedLibraryIds.length === 0;
 
-  const toggleAllLibraries = React.useCallback(() => {
+  const implicitAllSelected = libraries.length > 0 && normalizedSelectedLibraryIds.length === 0;
+  const allLibraryIds = React.useMemo(
+    () => libraries.map((library) => library.id),
+    [libraries],
+  );
+  const effectiveSelectedLibraryIds = implicitAllSelected
+    ? allLibraryIds
+    : normalizedSelectedLibraryIds;
+  const optionGroups = React.useMemo<MultiSelectGroup[]>(
+    () =>
+      groupedLibraries.map((group) => ({
+        label: showFacetGroups ? localizedFacetLabel(t, group.facet) : undefined,
+        options: group.libraries.map((library) => ({
+          value: library.id,
+          label: library.name,
+        })),
+      })),
+    [groupedLibraries, showFacetGroups, t],
+  );
+
+  const selectAllLibraries = React.useCallback(() => {
     onSelectedLibraryIdsChange([]);
   }, [onSelectedLibraryIdsChange]);
 
-  const toggleLibrary = React.useCallback(
-    (libraryId: string) => {
-      if (normalizedSelectedLibraryIds.length === 0) {
-        onSelectedLibraryIdsChange([libraryId]);
-        return;
-      }
-
-      const allLibraryIds = libraries.map((library) => library.id);
-      const selectedSet = new Set(
-        normalizedSelectedLibraryIds.length > 0
-          ? normalizedSelectedLibraryIds
-          : allLibraryIds,
-      );
-
-      if (selectedSet.has(libraryId)) {
-        selectedSet.delete(libraryId);
-      } else {
-        selectedSet.add(libraryId);
-      }
-
-      const nextSelection = allLibraryIds.filter((id) => selectedSet.has(id));
+  const handleSelectedLibraryIdsChange = React.useCallback(
+    (nextSelection: string[]) => {
       onSelectedLibraryIdsChange(
         nextSelection.length === 0 || nextSelection.length === allLibraryIds.length
           ? []
           : nextSelection,
       );
     },
-    [libraries, normalizedSelectedLibraryIds, onSelectedLibraryIdsChange],
+    [allLibraryIds.length, onSelectedLibraryIdsChange],
   );
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          id={triggerId}
-          type="button"
-          variant="outline"
-          className={cn(
-            "justify-between bg-field px-3 text-left font-normal hover:bg-field/90",
-            triggerClassName,
-          )}
-          disabled={disabled || libraries.length === 0}
-        >
-          <span
-            className={cn(
-              "truncate",
-              normalizedSelectedLibraryIds.length === 0 && "text-muted-foreground",
-            )}
-          >
-            {triggerLabel}
-          </span>
-          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className={cn("w-[var(--radix-popover-trigger-width)] p-2", contentClassName)}
-      >
-        <div className="flex max-h-80 flex-col gap-1 overflow-y-auto">
-          <button
-            id={allLibrariesButtonId}
-            type="button"
-            onClick={toggleAllLibraries}
-            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
-          >
-            <Checkbox
-              checked={implicitAllSelected}
-              className="pointer-events-none"
-            />
-            <span className="truncate">{t("libraryFilter.all")}</span>
-          </button>
-
-          {groupedLibraries.map((group) => (
-            <div key={group.facet} className="space-y-1">
-              {showFacetGroups ? (
-                <div className="px-2 pt-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {localizedFacetLabel(t, group.facet)}
-                </div>
-              ) : null}
-              {group.libraries.map((library) => {
-                const checked =
-                  implicitAllSelected || normalizedSelectedLibraryIds.includes(library.id);
-                const implicitChecked =
-                  implicitAllSelected && !normalizedSelectedLibraryIds.includes(library.id);
-                return (
-                  <button
-                    key={library.id}
-                    type="button"
-                    onClick={() => toggleLibrary(library.id)}
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
-                  >
-                    <Checkbox
-                      checked={checked}
-                      className={cn(
-                        "pointer-events-none",
-                        implicitChecked &&
-                          "data-[state=checked]:border-muted-foreground/30 data-[state=checked]:bg-muted data-[state=checked]:text-muted-foreground",
-                      )}
-                    />
-                    <span
-                      className={cn(
-                        "truncate",
-                        implicitChecked && "text-muted-foreground",
-                      )}
-                    >
-                      {library.name}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
+    <MultiSelectDropdown
+      id={triggerId}
+      groups={optionGroups}
+      selectedValues={effectiveSelectedLibraryIds}
+      onSelectedValuesChange={handleSelectedLibraryIdsChange}
+      triggerLabel={triggerLabel}
+      disabled={disabled || libraries.length === 0}
+      triggerClassName={triggerClassName}
+      contentClassName={contentClassName}
+      allOption={{
+        id: allLibrariesButtonId,
+        label: t("libraryFilter.all"),
+        selected: implicitAllSelected,
+        onSelect: selectAllLibraries,
+      }}
+    />
   );
 }

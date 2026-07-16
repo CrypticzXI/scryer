@@ -2,13 +2,14 @@ use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, EpisodeImageUrlUpdate, EpisodeUpdate,
-    PrimaryCollectionSummary, ScopedExternalId, ShowRepository,
+    PrimaryCollectionSummary, ScopedExternalId, SeriesMovieExternalIdLookupMatch, ShowRepository,
+    TitleExternalIdLookup,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, CollectionType, Episode, EpisodeType, Id, MovieEntity,
     SeriesMovieLink,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::queries::sql_runtime::{
     SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTarget, SqlTx, StoreDatastore, repo_err,
@@ -27,8 +28,8 @@ const SERIES_MOVIE_LINK_COLUMNS: &str = "sml.id AS link_id, sml.series_title_id,
     me.slug AS movie_slug, me.year AS movie_year, me.overview AS movie_overview, \
     me.poster_url AS movie_poster_url, me.background_url AS movie_background_url, \
     me.language AS movie_language, me.runtime_minutes AS movie_runtime_minutes, \
-    me.content_status AS movie_content_status, me.genres_json AS movie_genres_json, \
-    me.studio AS movie_studio, me.digital_release_date AS movie_digital_release_date, \
+    me.content_status AS movie_content_status, me.studio AS movie_studio, \
+    me.digital_release_date AS movie_digital_release_date, \
     me.imdb_id AS movie_imdb_id, me.tvdb_id AS movie_tvdb_id, me.tmdb_id AS movie_tmdb_id, \
     me.mal_id AS movie_mal_id, me.anidb_id AS movie_anidb_id, me.created_at AS movie_created_at, \
     me.updated_at AS movie_updated_at";
@@ -113,6 +114,22 @@ impl ShowRepository for ShowStore {
         list_series_movie_links_for_title_query(self.read_target(), title_id).await
     }
 
+    async fn list_series_movie_links_for_titles(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<SeriesMovieLink>> {
+        list_series_movie_links_for_titles_query(self.read_target(), title_ids).await
+    }
+
+    async fn list_series_movie_external_id_lookup_matches(
+        &self,
+        library_ids: &[String],
+        lookups: &[TitleExternalIdLookup],
+    ) -> AppResult<Vec<SeriesMovieExternalIdLookupMatch>> {
+        list_series_movie_external_id_lookup_matches_query(self.read_target(), library_ids, lookups)
+            .await
+    }
+
     async fn get_series_movie_link_by_id(
         &self,
         link_id: &str,
@@ -177,6 +194,10 @@ impl ShowRepository for ShowStore {
 
     async fn get_collection_by_id(&self, collection_id: &str) -> AppResult<Option<Collection>> {
         get_collection_by_id_query(self.read_target(), collection_id).await
+    }
+
+    async fn get_collections_by_ids(&self, ids: &[String]) -> AppResult<Vec<Collection>> {
+        get_collections_by_ids_query(self.read_target(), ids).await
     }
 
     async fn get_collection_by_ordered_path(
@@ -281,6 +302,13 @@ impl ShowRepository for ShowStore {
         list_episodes_for_collection_query(self.read_target(), collection_id).await
     }
 
+    async fn list_episodes_for_collections(
+        &self,
+        collection_ids: &[String],
+    ) -> AppResult<Vec<Episode>> {
+        list_episodes_for_collections_query(self.read_target(), collection_ids).await
+    }
+
     async fn list_episodes_for_title(&self, title_id: &str) -> AppResult<Vec<Episode>> {
         list_episodes_for_title_query(self.read_target(), title_id).await
     }
@@ -294,6 +322,10 @@ impl ShowRepository for ShowStore {
 
     async fn get_episode_by_id(&self, episode_id: &str) -> AppResult<Option<Episode>> {
         get_episode_by_id_query(self.read_target(), episode_id).await
+    }
+
+    async fn get_episodes_by_ids(&self, ids: &[String]) -> AppResult<Vec<Episode>> {
+        get_episodes_by_ids_query(self.read_target(), ids).await
     }
 
     async fn create_episode(&self, episode: Episode) -> AppResult<Episode> {
@@ -485,6 +517,108 @@ async fn list_series_movie_links_for_title_query(
     rows.iter().map(row_to_series_movie_link).collect()
 }
 
+async fn list_series_movie_links_for_titles_query(
+    target: SqlTarget<'_>,
+    title_ids: &[String],
+) -> AppResult<Vec<SeriesMovieLink>> {
+    if title_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = bind_placeholders(title_ids.len());
+    let sql = format!(
+        "SELECT {SERIES_MOVIE_LINK_COLUMNS}
+         FROM series_movie_links sml
+         INNER JOIN movie_entities me ON me.id = sml.movie_entity_id
+         WHERE sml.series_title_id IN ({placeholders})
+         ORDER BY sml.series_title_id ASC, COALESCE(sml.narrative_order, ''), sml.created_at ASC, sml.id ASC"
+    );
+    let args = title_ids
+        .iter()
+        .cloned()
+        .map(SqlArg::Text)
+        .collect::<Vec<_>>();
+    let rows = SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &args).await?;
+    rows.iter().map(row_to_series_movie_link).collect()
+}
+
+fn movie_entity_external_id_column(source: &str) -> Option<&'static str> {
+    match source.trim().to_ascii_lowercase().as_str() {
+        "imdb" => Some("imdb_id"),
+        "tvdb" | "tvdb_movie" => Some("tvdb_id"),
+        "tmdb" | "tmdb_movie" => Some("tmdb_id"),
+        "mal" | "myanimelist" => Some("mal_id"),
+        "anidb" => Some("anidb_id"),
+        _ => None,
+    }
+}
+
+async fn list_series_movie_external_id_lookup_matches_query(
+    target: SqlTarget<'_>,
+    library_ids: &[String],
+    lookups: &[TitleExternalIdLookup],
+) -> AppResult<Vec<SeriesMovieExternalIdLookupMatch>> {
+    if library_ids.is_empty() || lookups.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Keep each provider in its own query so the matching movie_entities ID index remains usable.
+    let mut lookup_indexes_by_column_and_id =
+        HashMap::<&'static str, HashMap<String, Vec<usize>>>::new();
+    for lookup in lookups {
+        let Some(column) = movie_entity_external_id_column(&lookup.source) else {
+            continue;
+        };
+        let external_id = lookup.external_id.trim();
+        if external_id.is_empty() {
+            continue;
+        }
+        lookup_indexes_by_column_and_id
+            .entry(column)
+            .or_default()
+            .entry(external_id.to_string())
+            .or_default()
+            .push(lookup.lookup_index);
+    }
+
+    let library_placeholders = bind_placeholders(library_ids.len());
+    let mut matched_lookup_indexes = BTreeSet::new();
+    for (column, lookup_indexes_by_id) in lookup_indexes_by_column_and_id {
+        let external_ids = lookup_indexes_by_id.keys().cloned().collect::<Vec<_>>();
+        let external_id_placeholders = bind_placeholders(external_ids.len());
+        let sql = format!(
+            "SELECT DISTINCT me.{column} AS external_id
+             FROM movie_entities me
+             INNER JOIN series_movie_links sml ON sml.movie_entity_id = me.id
+             INNER JOIN titles parent ON parent.id = sml.series_title_id
+             WHERE parent.library_id IN ({library_placeholders})
+               AND me.{column} IS NOT NULL
+               AND me.{column} <> ''
+               AND me.{column} IN ({external_id_placeholders})"
+        );
+        let args = library_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .chain(external_ids.into_iter().map(SqlArg::Text))
+            .collect::<Vec<_>>();
+        let execution_target = match &target {
+            SqlTarget::Sqlite(pool) => SqlTarget::Sqlite(pool),
+            SqlTarget::Postgres(pool) => SqlTarget::Postgres(pool),
+        };
+        for row in SqlRuntime::fetch_all(SqlExec::Target(execution_target), &sql, &args).await? {
+            let external_id = row.text("external_id")?;
+            if let Some(lookup_indexes) = lookup_indexes_by_id.get(&external_id) {
+                matched_lookup_indexes.extend(lookup_indexes.iter().copied());
+            }
+        }
+    }
+
+    Ok(matched_lookup_indexes
+        .into_iter()
+        .map(|lookup_index| SeriesMovieExternalIdLookupMatch { lookup_index })
+        .collect())
+}
+
 async fn get_series_movie_link_by_id_query(
     target: SqlTarget<'_>,
     link_id: &str,
@@ -599,10 +733,10 @@ async fn upsert_movie_entity_tx(tx: &mut SqlTx<'_>, movie: &MovieEntity) -> AppR
     tx.execute(
         "INSERT INTO movie_entities (
              id, title, sort_title, slug, year, overview, poster_url, background_url, language,
-             runtime_minutes, content_status, genres_json, studio, digital_release_date,
+             runtime_minutes, content_status, studio, digital_release_date,
              imdb_id, tvdb_id, tmdb_id, mal_id, anidb_id, created_at, updated_at
          ) VALUES (
-             {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+             {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
          )
          ON CONFLICT(id) DO UPDATE SET
              title = excluded.title,
@@ -615,7 +749,6 @@ async fn upsert_movie_entity_tx(tx: &mut SqlTx<'_>, movie: &MovieEntity) -> AppR
              language = excluded.language,
              runtime_minutes = excluded.runtime_minutes,
              content_status = excluded.content_status,
-             genres_json = excluded.genres_json,
              studio = excluded.studio,
              digital_release_date = excluded.digital_release_date,
              imdb_id = COALESCE(excluded.imdb_id, movie_entities.imdb_id),
@@ -636,7 +769,6 @@ async fn upsert_movie_entity_tx(tx: &mut SqlTx<'_>, movie: &MovieEntity) -> AppR
             SqlArg::OptText(movie.language.clone()),
             SqlArg::OptI32(movie.runtime_minutes),
             SqlArg::OptText(movie.content_status.clone()),
-            SqlArg::Text(canonical_json_text(&movie.genres)?),
             SqlArg::OptText(movie.studio.clone()),
             SqlArg::OptText(movie.digital_release_date.clone()),
             SqlArg::OptText(movie.imdb_id.clone()),
@@ -878,6 +1010,20 @@ async fn get_collection_by_id_query(
     row.as_ref().map(row_to_collection).transpose()
 }
 
+async fn get_collections_by_ids_query(
+    target: SqlTarget<'_>,
+    ids: &[String],
+) -> AppResult<Vec<Collection>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = bind_placeholders(ids.len());
+    let sql = format!("SELECT {COLLECTION_COLUMNS} FROM collections WHERE id IN ({placeholders})");
+    let args = ids.iter().cloned().map(SqlArg::Text).collect::<Vec<_>>();
+    let rows = SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &args).await?;
+    rows.iter().map(row_to_collection).collect()
+}
+
 async fn get_collection_by_ordered_path_query(
     target: SqlTarget<'_>,
     ordered_path: &str,
@@ -907,6 +1053,26 @@ async fn list_episodes_for_collection_query(
         &[SqlArg::Text(collection_id.to_string())],
     )
     .await?;
+    rows.iter().map(row_to_episode).collect()
+}
+
+async fn list_episodes_for_collections_query(
+    target: SqlTarget<'_>,
+    collection_ids: &[String],
+) -> AppResult<Vec<Episode>> {
+    if collection_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = bind_placeholders(collection_ids.len());
+    let sql = format!(
+        "SELECT {EPISODE_COLUMNS} FROM episodes WHERE collection_id IN ({placeholders}) ORDER BY collection_id ASC, episode_number ASC, id ASC"
+    );
+    let args = collection_ids
+        .iter()
+        .cloned()
+        .map(SqlArg::Text)
+        .collect::<Vec<_>>();
+    let rows = SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &args).await?;
     rows.iter().map(row_to_episode).collect()
 }
 
@@ -953,6 +1119,20 @@ async fn get_episode_by_id_query(
     )
     .await?;
     row.as_ref().map(row_to_episode).transpose()
+}
+
+async fn get_episodes_by_ids_query(
+    target: SqlTarget<'_>,
+    ids: &[String],
+) -> AppResult<Vec<Episode>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = bind_placeholders(ids.len());
+    let sql = format!("SELECT {EPISODE_COLUMNS} FROM episodes WHERE id IN ({placeholders})");
+    let args = ids.iter().cloned().map(SqlArg::Text).collect::<Vec<_>>();
+    let rows = SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &args).await?;
+    rows.iter().map(row_to_episode).collect()
 }
 
 async fn find_episode_by_title_and_numbers_query(
@@ -1487,13 +1667,6 @@ fn row_to_collection(row: &SqlRow) -> AppResult<Collection> {
 }
 
 fn row_to_series_movie_link(row: &SqlRow) -> AppResult<SeriesMovieLink> {
-    let genres = row
-        .opt_json("movie_genres_json")?
-        .map(serde_json::from_value::<Vec<String>>)
-        .transpose()
-        .map_err(repo_err)?
-        .unwrap_or_default();
-
     Ok(SeriesMovieLink {
         id: row.text("link_id")?,
         series_title_id: row.text("series_title_id")?,
@@ -1509,7 +1682,6 @@ fn row_to_series_movie_link(row: &SqlRow) -> AppResult<SeriesMovieLink> {
             language: row.opt_text("movie_language")?,
             runtime_minutes: row.opt_i32("movie_runtime_minutes")?,
             content_status: row.opt_text("movie_content_status")?,
-            genres,
             studio: row.opt_text("movie_studio")?,
             digital_release_date: row.opt_text("movie_digital_release_date")?,
             imdb_id: row.opt_text("movie_imdb_id")?,
@@ -1712,8 +1884,91 @@ async fn insert_scoped_episode_ids_postgres(
 
 #[cfg(test)]
 mod tests {
-    use super::{SummaryCandidate, summary_candidate_sort_key};
+    use super::{
+        SqlTarget, SummaryCandidate, list_series_movie_external_id_lookup_matches_query,
+        summary_candidate_sort_key,
+    };
+    use scryer_application::TitleExternalIdLookup;
     use scryer_domain::CollectionType;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn series_movie_external_id_lookup_respects_parent_library_access() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open SQLite pool");
+        for sql in [
+            "CREATE TABLE titles (id TEXT PRIMARY KEY, library_id TEXT NOT NULL)",
+            "CREATE TABLE movie_entities (id TEXT PRIMARY KEY, tvdb_id TEXT)",
+            "CREATE TABLE series_movie_links (series_title_id TEXT NOT NULL, movie_entity_id TEXT NOT NULL)",
+        ] {
+            sqlx::query(sql)
+                .execute(&pool)
+                .await
+                .expect("create lookup table");
+        }
+        for (id, library_id) in [
+            ("visible-series", "library-visible"),
+            ("hidden-series", "library-hidden"),
+        ] {
+            sqlx::query("INSERT INTO titles (id, library_id) VALUES (?, ?)")
+                .bind(id)
+                .bind(library_id)
+                .execute(&pool)
+                .await
+                .expect("insert series parent");
+        }
+        for (id, tvdb_id) in [("visible-movie", "604"), ("hidden-movie", "605")] {
+            sqlx::query("INSERT INTO movie_entities (id, tvdb_id) VALUES (?, ?)")
+                .bind(id)
+                .bind(tvdb_id)
+                .execute(&pool)
+                .await
+                .expect("insert movie entity");
+        }
+        for (series_title_id, movie_entity_id) in [
+            ("visible-series", "visible-movie"),
+            ("hidden-series", "hidden-movie"),
+        ] {
+            sqlx::query(
+                "INSERT INTO series_movie_links (series_title_id, movie_entity_id) VALUES (?, ?)",
+            )
+            .bind(series_title_id)
+            .bind(movie_entity_id)
+            .execute(&pool)
+            .await
+            .expect("link series movie");
+        }
+
+        let matches = list_series_movie_external_id_lookup_matches_query(
+            SqlTarget::Sqlite(&pool),
+            &["library-visible".to_string()],
+            &[
+                TitleExternalIdLookup {
+                    lookup_index: 3,
+                    source: "tvdb".to_string(),
+                    external_id: "604".to_string(),
+                },
+                TitleExternalIdLookup {
+                    lookup_index: 4,
+                    source: "tvdb_movie".to_string(),
+                    external_id: "605".to_string(),
+                },
+            ],
+        )
+        .await
+        .expect("lookup linked movie ownership");
+
+        assert_eq!(
+            matches
+                .into_iter()
+                .map(|matched| matched.lookup_index)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+    }
 
     #[test]
     fn movie_collection_wins_over_index_zero_fallback() {

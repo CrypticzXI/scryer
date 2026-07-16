@@ -1,4 +1,8 @@
 use super::*;
+use crate::library_scan_unmatched::{
+    IgnoredLibraryScanItemArgs, LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+    persist_ignored_library_scan_item,
+};
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 
 async fn ensure_title_folder_path_if_missing(
@@ -39,7 +43,39 @@ fn normalize_title_folder_path(path: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn scanned_movie_entry_folder_path(scan_root: &Path, representative_path: &str) -> Option<String> {
+fn movie_scan_folder_conflicts(
+    canonical_folder_path: Option<&str>,
+    scan_folder_path: Option<&str>,
+) -> bool {
+    let canonical_folder_path =
+        normalize_title_folder_path(canonical_folder_path.map(ToString::to_string));
+    let scan_folder_path = normalize_title_folder_path(scan_folder_path.map(ToString::to_string));
+    matches!(
+        (canonical_folder_path, scan_folder_path),
+        (Some(canonical), Some(scan)) if canonical != scan
+    )
+}
+
+fn movie_scan_folder_conflict_counts_as_skipped(
+    canonical_folder_path: Option<&str>,
+    scan_root: &Path,
+) -> bool {
+    let Some(canonical_folder_path) =
+        normalize_title_folder_path(canonical_folder_path.map(ToString::to_string))
+    else {
+        return false;
+    };
+
+    stored_path_to_path_buf(&canonical_folder_path)
+        .strip_prefix(scan_root)
+        .is_err()
+}
+
+fn scanned_movie_entry_folder_path(
+    scan_root: &Path,
+    representative_path: &str,
+    representative_is_directory: bool,
+) -> Option<String> {
     let representative_path = representative_path.trim();
     if representative_path.is_empty() {
         return None;
@@ -51,8 +87,11 @@ fn scanned_movie_entry_folder_path(scan_root: &Path, representative_path: &str) 
     {
         let entry_path = scan_root.join(first_component.as_os_str());
         let entry_path = path_to_stored_string(&entry_path).trim().to_string();
-        if entry_path.is_empty() || entry_path == representative_path {
+        if entry_path.is_empty() {
             return None;
+        }
+        if entry_path == representative_path {
+            return representative_is_directory.then_some(entry_path);
         }
         return Some(entry_path);
     }
@@ -72,8 +111,13 @@ async fn sync_movie_title_folder_path_for_scan(
     title: &mut Title,
     scan_root: &Path,
     representative_path: &str,
+    representative_is_directory: bool,
 ) -> (Option<String>, Option<String>) {
-    let scan_folder_path = scanned_movie_entry_folder_path(scan_root, representative_path);
+    let scan_folder_path = scanned_movie_entry_folder_path(
+        scan_root,
+        representative_path,
+        representative_is_directory,
+    );
     let current_folder_path = normalize_title_folder_path(title.folder_path.clone());
 
     if current_folder_path.is_some() {
@@ -214,6 +258,8 @@ fn find_existing_series_title_index(
     existing_titles: &[Title],
     existing_titles_by_name: &HashMap<String, usize>,
     existing_titles_by_tvdb_id: &HashMap<String, usize>,
+    existing_titles_by_imdb_id: &HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &HashMap<String, usize>,
 ) -> Option<usize> {
     if let Some(identity_hint) = candidate
         .identity_hint
@@ -225,6 +271,16 @@ fn find_existing_series_title_index(
         {
             return Some(index);
         }
+        if let Some(imdb_id) = identity_hint.imdb_id.as_deref()
+            && let Some(&index) = existing_titles_by_imdb_id.get(imdb_id)
+        {
+            return Some(index);
+        }
+        if let Some(tmdb_id) = identity_hint.tmdb_id.as_deref()
+            && let Some(&index) = existing_titles_by_tmdb_id.get(tmdb_id)
+        {
+            return Some(index);
+        }
         return None;
     }
 
@@ -233,6 +289,26 @@ fn find_existing_series_title_index(
         .as_ref()
         .and_then(|meta| meta.tvdb_id.as_deref())
         && let Some(&index) = existing_titles_by_tvdb_id.get(tvdb_id)
+    {
+        return Some(index);
+    }
+
+    if let Some(nfo_imdb_id) = candidate
+        .nfo_meta
+        .as_ref()
+        .and_then(|meta| meta.imdb_id.as_deref())
+        .and_then(crate::normalize::normalize_imdb_id)
+        && let Some(&index) = existing_titles_by_imdb_id.get(&nfo_imdb_id)
+    {
+        return Some(index);
+    }
+
+    if let Some(nfo_tmdb_id) = candidate
+        .nfo_meta
+        .as_ref()
+        .and_then(|meta| meta.tmdb_id.as_deref())
+        .map(str::to_string)
+        && let Some(&index) = existing_titles_by_tmdb_id.get(&nfo_tmdb_id)
     {
         return Some(index);
     }
@@ -311,7 +387,7 @@ pub(super) fn movie_title_work(
     LibraryScanTitleWork {
         title,
         facet_plan: LibraryScanTitleFacetPlan::Movie(cleanup),
-        discovered_files: Some(pre_scanned_files),
+        scope: LibraryScanTitleWorkScope::ScopedFiles(pre_scanned_files),
         mode,
         created_in_scan,
     }
@@ -329,17 +405,48 @@ fn movie_cleanup_context(
 }
 
 fn merge_default_movie_title_work(
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     title: Title,
     discovered_files: Vec<LibraryFile>,
     mode: LibraryScanTitleWalkMode,
     cleanup: LibraryScanMovieCleanupContext,
     created_in_scan: bool,
 ) -> bool {
-    merge_library_scan_title_work(
-        workset,
-        movie_title_work(title, discovered_files, mode, cleanup, created_in_scan),
-    )
+    executor.enqueue(movie_title_work(
+        title,
+        discovered_files,
+        mode,
+        cleanup,
+        created_in_scan,
+    ))
+}
+
+fn merge_movie_refresh_title_work(
+    executor: &mut dyn LibraryScanTitleWorkQueue,
+    title: Title,
+    scope: LibraryScanTitleWorkScope,
+    mode: LibraryScanTitleWalkMode,
+    cleanup: LibraryScanMovieCleanupContext,
+    created_in_scan: bool,
+) -> bool {
+    executor.enqueue(LibraryScanTitleWork {
+        title,
+        facet_plan: LibraryScanTitleFacetPlan::Movie(cleanup),
+        scope,
+        mode,
+        created_in_scan,
+    })
+}
+
+fn movie_refresh_title_work_scope(
+    scan_folder_path: Option<&str>,
+    discovered_files: Vec<LibraryFile>,
+) -> LibraryScanTitleWorkScope {
+    if scan_folder_path.is_some() && discovered_files.is_empty() {
+        LibraryScanTitleWorkScope::FullFolder
+    } else {
+        LibraryScanTitleWorkScope::ScopedFiles(discovered_files)
+    }
 }
 
 pub(super) fn episodic_title_work(
@@ -351,52 +458,24 @@ pub(super) fn episodic_title_work(
     LibraryScanTitleWork {
         title,
         facet_plan: LibraryScanTitleFacetPlan::Episodic,
-        discovered_files: Some(pre_scanned_files),
+        scope: LibraryScanTitleWorkScope::ScopedFiles(pre_scanned_files),
         mode,
         created_in_scan,
     }
 }
 
-async fn scan_title_files_for_library_scan_session(
-    library_scanner: Arc<dyn LibraryScanner>,
-    title_id: &str,
-    folder_path: &Path,
-) -> Vec<LibraryFile> {
-    let started_at = Instant::now();
-    let folder_path_display = folder_path.display().to_string();
-    let pre_scan = match scan_episodic_title_directory_for_progress_metrics(
-        library_scanner,
-        folder_path,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => {
-            warn!(
-                error = %error,
-                title_id = %title_id,
-                folder_path = %folder_path_display,
-                "failed to scan episodic title folder for library scan progress"
-            );
-            return Vec::new();
-        }
-    };
-
-    let files_count = pre_scan.files.len();
-
-    debug!(
-        title_id = %title_id,
-        path = %folder_path_display,
-        files = files_count,
-        walk_ms = pre_scan.walk_ms,
-        stat_ms = pre_scan.stat_ms,
-        analyze_ms = 0u64,
-        db_ms = 0u64,
-        elapsed_ms = elapsed_ms_u64(started_at),
-        "episodic title directory scan completed"
-    );
-
-    pre_scan.files
+fn deferred_episodic_title_work(
+    title: Title,
+    mode: LibraryScanTitleWalkMode,
+    created_in_scan: bool,
+) -> LibraryScanTitleWork {
+    LibraryScanTitleWork {
+        title,
+        facet_plan: LibraryScanTitleFacetPlan::Episodic,
+        scope: LibraryScanTitleWorkScope::FullFolder,
+        mode,
+        created_in_scan,
+    }
 }
 
 pub(super) async fn scan_episodic_title_directory_for_progress_metrics(
@@ -410,42 +489,33 @@ pub(super) async fn scan_episodic_title_directory_for_progress_metrics(
 
 async fn merge_series_title_work_for_index(
     app: &AppUseCase,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut [Title],
     index: usize,
     folder_path: &Path,
     mode: LibraryScanTitleWalkMode,
     created_in_scan: bool,
 ) {
-    let title_id = existing_titles[index].id.clone();
-    let pre_scanned_files = scan_title_files_for_library_scan_session(
-        app.services.library.library_scanner.clone(),
-        &title_id,
-        folder_path,
-    )
-    .await;
     ensure_title_folder_path_if_missing(app, &mut existing_titles[index], folder_path).await;
-    merge_library_scan_title_work(
-        workset,
-        episodic_title_work(
-            existing_titles[index].clone(),
-            pre_scanned_files,
-            mode,
-            created_in_scan,
-        ),
-    );
+    executor.enqueue(deferred_episodic_title_work(
+        existing_titles[index].clone(),
+        mode,
+        created_in_scan,
+    ));
 }
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "series title insertion updates shared indexes and workset state together"
+    reason = "series title insertion updates shared indexes and executor state together"
 )]
 async fn append_series_title_and_merge_work(
     app: &AppUseCase,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     title: Title,
     folder_path: &Path,
     mode: LibraryScanTitleWalkMode,
@@ -455,11 +525,13 @@ async fn append_series_title_and_merge_work(
         existing_titles,
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
+        existing_titles_by_imdb_id,
+        existing_titles_by_tmdb_id,
         title,
     );
     merge_series_title_work_for_index(
         app,
-        workset,
+        executor,
         existing_titles,
         index,
         folder_path,
@@ -573,10 +645,10 @@ pub(super) async fn process_movie_full_scan_candidate(
     facet: &MediaFacet,
     library_id: &str,
     library_path: &str,
-    _session_id: &str,
+    session_id: &str,
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedMovieLibraryScanCandidate,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -588,17 +660,37 @@ pub(super) async fn process_movie_full_scan_candidate(
     let discovered_files = candidate.discovered_files.clone();
     let item_path = normalize_library_scan_item_path(&candidate.file.path);
     let representative_path = candidate.file.path.clone();
+    let representative_is_directory = candidate.representative_is_directory;
     let scan_root = Path::new(library_path);
 
     if let Some(mut title) =
         load_existing_title_for_media_file_path(app, &candidate.file.path).await?
     {
-        let (canonical_folder_path, scan_folder_path) =
-            sync_movie_title_folder_path_for_scan(app, &mut title, scan_root, &representative_path)
-                .await;
+        let (canonical_folder_path, scan_folder_path) = sync_movie_title_folder_path_for_scan(
+            app,
+            &mut title,
+            scan_root,
+            &representative_path,
+            representative_is_directory,
+        )
+        .await;
         sync_existing_title_folder_path_in_memory(existing_titles, &title);
+        if movie_scan_folder_conflicts(
+            canonical_folder_path.as_deref(),
+            scan_folder_path.as_deref(),
+        ) {
+            clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
+            if movie_scan_folder_conflict_counts_as_skipped(
+                canonical_folder_path.as_deref(),
+                scan_root,
+            ) {
+                summary.skipped += 1;
+            }
+            coordinator.mark_title_match_completed(1).await;
+            return Ok(None);
+        }
         let queued = merge_default_movie_title_work(
-            workset,
+            executor,
             title,
             discovered_files,
             LibraryScanTitleWalkMode::Full,
@@ -607,10 +699,50 @@ pub(super) async fn process_movie_full_scan_candidate(
         );
         if queued {
             summary.matched += 1;
-        } else {
-            summary.skipped += 1;
         }
         clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
+        coordinator.mark_title_match_completed(1).await;
+        return Ok(None);
+    }
+
+    if !candidate.metadata_lookup_attempted {
+        let display_name = candidate.file.display_name.trim();
+        let display_name = if display_name.is_empty() {
+            representative_path.as_str()
+        } else {
+            display_name
+        };
+        let query = candidate.query.trim();
+        let query = if query.is_empty() {
+            display_name
+        } else {
+            query
+        };
+        if let Err(error) = persist_ignored_library_scan_item(
+            app,
+            facet,
+            library_id,
+            IgnoredLibraryScanItemArgs {
+                title_id: None,
+                session_id: Some(session_id),
+                library_path,
+                item_path: &item_path,
+                display_name,
+                query,
+                year_hint: candidate.year_hint,
+                reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+                error_message: None,
+            },
+        )
+        .await
+        {
+            warn!(
+                item_path = %item_path,
+                error = %error,
+                "failed to persist unusable movie scan evidence"
+            );
+        }
+        summary.skipped += 1;
         coordinator.mark_title_match_completed(1).await;
         return Ok(None);
     }
@@ -632,11 +764,26 @@ pub(super) async fn process_movie_full_scan_candidate(
                 &mut title,
                 scan_root,
                 &representative_path,
+                representative_is_directory,
             )
             .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
+            if movie_scan_folder_conflicts(
+                canonical_folder_path.as_deref(),
+                scan_folder_path.as_deref(),
+            ) {
+                clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
+                if movie_scan_folder_conflict_counts_as_skipped(
+                    canonical_folder_path.as_deref(),
+                    scan_root,
+                ) {
+                    summary.skipped += 1;
+                }
+                coordinator.mark_title_match_completed(1).await;
+                return Ok(None);
+            }
             let queued = merge_default_movie_title_work(
-                workset,
+                executor,
                 title,
                 discovered_files,
                 LibraryScanTitleWalkMode::Full,
@@ -645,15 +792,12 @@ pub(super) async fn process_movie_full_scan_candidate(
             );
             if queued {
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
         }
         MovieCandidateResolution::Skipped => {
-            summary.skipped += 1;
             clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
             coordinator.mark_title_match_completed(1).await;
             Ok(None)
@@ -671,21 +815,46 @@ pub(super) async fn process_series_full_scan_candidate(
     _actor: &User,
     facet: &MediaFacet,
     library_id: &str,
-    _library_path: &str,
-    _session_id: &str,
+    library_path: &str,
+    session_id: &str,
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedSeriesLibraryScanCandidate,
     existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     summary: &mut LibraryScanSummary,
     _unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
 ) -> AppResult<Option<PreparedSeriesLibraryScanCandidate>> {
     let item_path = candidate.item_path().trim().to_string();
     if candidate.folder_name.as_deref().is_none() {
+        if let Err(error) = persist_ignored_library_scan_item(
+            app,
+            facet,
+            library_id,
+            IgnoredLibraryScanItemArgs {
+                title_id: None,
+                session_id: Some(session_id),
+                library_path,
+                item_path: &item_path,
+                display_name: &item_path,
+                query: &item_path,
+                year_hint: candidate.year_hint,
+                reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+                error_message: None,
+            },
+        )
+        .await
+        {
+            warn!(
+                item_path = %item_path,
+                error = %error,
+                "failed to persist unusable series scan evidence"
+            );
+        }
         summary.skipped += 1;
-        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(None);
     }
@@ -693,15 +862,12 @@ pub(super) async fn process_series_full_scan_candidate(
     if let Some(file) = candidate.source_file.as_ref()
         && let Some(title) = load_existing_title_for_media_file_path(app, &file.path).await?
     {
-        merge_library_scan_title_work(
-            workset,
-            episodic_title_work(
-                title,
-                vec![file.clone()],
-                LibraryScanTitleWalkMode::Full,
-                false,
-            ),
-        );
+        executor.enqueue(episodic_title_work(
+            title,
+            vec![file.clone()],
+            LibraryScanTitleWalkMode::Full,
+            false,
+        ));
         summary.matched += 1;
         clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
@@ -713,21 +879,20 @@ pub(super) async fn process_series_full_scan_candidate(
         existing_titles,
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
+        existing_titles_by_imdb_id,
+        existing_titles_by_tmdb_id,
     ) {
         if let Some(file) = candidate.source_file.as_ref() {
-            merge_library_scan_title_work(
-                workset,
-                episodic_title_work(
-                    existing_titles[index].clone(),
-                    vec![file.clone()],
-                    LibraryScanTitleWalkMode::Full,
-                    false,
-                ),
-            );
+            executor.enqueue(episodic_title_work(
+                existing_titles[index].clone(),
+                vec![file.clone()],
+                LibraryScanTitleWalkMode::Full,
+                false,
+            ));
         } else {
             merge_series_title_work_for_index(
                 app,
-                workset,
+                executor,
                 existing_titles,
                 index,
                 &candidate.folder_path,
@@ -743,8 +908,43 @@ pub(super) async fn process_series_full_scan_candidate(
     }
 
     if !candidate.metadata_lookup_attempted {
+        let display_name = candidate
+            .folder_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(item_path.as_str());
+        let query = candidate.query.trim();
+        let query = if query.is_empty() {
+            display_name
+        } else {
+            query
+        };
+        if let Err(error) = persist_ignored_library_scan_item(
+            app,
+            facet,
+            library_id,
+            IgnoredLibraryScanItemArgs {
+                title_id: None,
+                session_id: Some(session_id),
+                library_path,
+                item_path: &item_path,
+                display_name,
+                query,
+                year_hint: candidate.year_hint,
+                reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+                error_message: None,
+            },
+        )
+        .await
+        {
+            warn!(
+                item_path = %item_path,
+                error = %error,
+                "failed to persist unusable series scan evidence"
+            );
+        }
         summary.skipped += 1;
-        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(None);
     }
@@ -766,7 +966,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedMovieLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -798,11 +998,27 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
                 &mut title,
                 scan_root,
                 &candidate.file.path,
+                candidate.representative_is_directory,
             )
             .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
+            if movie_scan_folder_conflicts(
+                canonical_folder_path.as_deref(),
+                scan_folder_path.as_deref(),
+            ) {
+                clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path)
+                    .await?;
+                if movie_scan_folder_conflict_counts_as_skipped(
+                    canonical_folder_path.as_deref(),
+                    scan_root,
+                ) {
+                    summary.skipped += 1;
+                }
+                coordinator.mark_title_match_completed(1).await;
+                return Ok(());
+            }
             let queued = merge_default_movie_title_work(
-                workset,
+                executor,
                 title,
                 discovered_files,
                 LibraryScanTitleWalkMode::Full,
@@ -811,8 +1027,6 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
             );
             if queued {
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path).await?;
             coordinator.mark_title_match_completed(1).await;
@@ -824,11 +1038,12 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
                 &mut title,
                 scan_root,
                 &candidate.file.path,
+                candidate.representative_is_directory,
             )
             .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
             let queued = merge_default_movie_title_work(
-                workset,
+                executor,
                 title,
                 discovered_files,
                 LibraryScanTitleWalkMode::Full,
@@ -838,8 +1053,6 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
             if queued {
                 summary.imported += 1;
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             clear_library_scan_unmatched_item(app, facet, library_id, &candidate.file.path).await?;
             coordinator.mark_title_match_completed(1).await;
@@ -902,17 +1115,42 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedSeriesLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     summary: &mut LibraryScanSummary,
     unmatched_items: &mut Vec<LibraryScanUnmatchedItem>,
 ) -> AppResult<()> {
     let item_path = candidate.item_path().trim().to_string();
     let Some(folder_name) = candidate.folder_name.as_deref() else {
+        if let Err(error) = persist_ignored_library_scan_item(
+            app,
+            facet,
+            library_id,
+            IgnoredLibraryScanItemArgs {
+                title_id: None,
+                session_id: Some(session_id),
+                library_path,
+                item_path: &item_path,
+                display_name: &item_path,
+                query: &item_path,
+                year_hint: candidate.year_hint,
+                reason_code: LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
+                error_message: None,
+            },
+        )
+        .await
+        {
+            warn!(
+                item_path = %item_path,
+                error = %error,
+                "failed to persist unusable resolved series scan evidence"
+            );
+        }
         summary.skipped += 1;
-        clear_library_scan_unmatched_item(app, facet, library_id, &item_path).await?;
         coordinator.mark_title_match_completed(1).await;
         return Ok(());
     };
@@ -920,7 +1158,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
     let selected_metadata =
         select_series_metadata_from_batch_results(&candidate, batch_search_results)?;
     let Some(selected) = selected_metadata else {
-        info!(
+        debug!(
             folder = %folder_name,
             query = %candidate.query,
             "series scan: no metadata match"
@@ -948,19 +1186,16 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
         existing_titles_by_tvdb_id,
     ) {
         if let Some(file) = candidate.source_file.as_ref() {
-            merge_library_scan_title_work(
-                workset,
-                episodic_title_work(
-                    existing_titles[index].clone(),
-                    vec![file.clone()],
-                    LibraryScanTitleWalkMode::Full,
-                    false,
-                ),
-            );
+            executor.enqueue(episodic_title_work(
+                existing_titles[index].clone(),
+                vec![file.clone()],
+                LibraryScanTitleWalkMode::Full,
+                false,
+            ));
         } else {
             merge_series_title_work_for_index(
                 app,
-                workset,
+                executor,
                 existing_titles,
                 index,
                 &candidate.folder_path,
@@ -1005,10 +1240,12 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
             let was_created = !created.reused_existing;
             append_series_title_and_merge_work(
                 app,
-                workset,
+                executor,
                 existing_titles,
                 existing_titles_by_name,
                 existing_titles_by_tvdb_id,
+                existing_titles_by_imdb_id,
+                existing_titles_by_tmdb_id,
                 created.title,
                 &candidate.folder_path,
                 LibraryScanTitleWalkMode::Full,
@@ -1055,7 +1292,7 @@ async fn refresh_existing_series_title_match(
     index: usize,
     folder_path: &Path,
     existing_titles_by_folder_path: &mut HashMap<String, usize>,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
     ensure_title_folder_path_if_missing(app, title, folder_path).await;
@@ -1064,7 +1301,7 @@ async fn refresh_existing_series_title_match(
         app,
         title,
         folder_path,
-        workset,
+        executor,
         summary,
     )
     .await
@@ -1072,15 +1309,17 @@ async fn refresh_existing_series_title_match(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "series refresh candidates need shared title indexes and workset state in one step"
+    reason = "series refresh candidates need shared title indexes and executor state in one step"
 )]
 pub(super) async fn process_series_refresh_candidate(
     app: &AppUseCase,
     candidate: PreparedSeriesLibraryScanCandidate,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     existing_titles_by_folder_path: &mut HashMap<String, usize>,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<Option<PreparedSeriesLibraryScanCandidate>> {
@@ -1094,6 +1333,8 @@ pub(super) async fn process_series_refresh_candidate(
         existing_titles,
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
+        existing_titles_by_imdb_id,
+        existing_titles_by_tmdb_id,
     ) {
         refresh_existing_series_title_match(
             app,
@@ -1101,7 +1342,7 @@ pub(super) async fn process_series_refresh_candidate(
             index,
             &candidate.folder_path,
             existing_titles_by_folder_path,
-            workset,
+            executor,
             summary,
         )
         .await?;
@@ -1127,10 +1368,12 @@ pub(super) async fn process_resolved_series_refresh_candidate(
     library_id: &str,
     candidate: PreparedSeriesLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_imdb_id: &mut HashMap<String, usize>,
+    existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
     existing_titles_by_folder_path: &mut HashMap<String, usize>,
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
@@ -1157,7 +1400,7 @@ pub(super) async fn process_resolved_series_refresh_candidate(
             index,
             &candidate.folder_path,
             existing_titles_by_folder_path,
-            workset,
+            executor,
             summary,
         )
         .await?;
@@ -1176,10 +1419,12 @@ pub(super) async fn process_resolved_series_refresh_candidate(
             let was_created = !created.reused_existing;
             let index = append_series_title_and_merge_work(
                 app,
-                workset,
+                executor,
                 existing_titles,
                 existing_titles_by_name,
                 existing_titles_by_tvdb_id,
+                existing_titles_by_imdb_id,
+                existing_titles_by_tmdb_id,
                 created.title,
                 &candidate.folder_path,
                 LibraryScanTitleWalkMode::Additive,
@@ -1209,14 +1454,14 @@ pub(super) async fn process_resolved_series_refresh_candidate(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "movie refresh candidates need shared indexes, probe paths, and workset state together"
+    reason = "movie refresh candidates need shared indexes, probe paths, and executor state together"
 )]
 pub(super) async fn process_movie_refresh_candidate(
     app: &AppUseCase,
     _actor: &User,
     _library_id: &str,
     candidate: PreparedMovieLibraryScanCandidate,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut [Title],
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -1227,6 +1472,7 @@ pub(super) async fn process_movie_refresh_candidate(
     summary: &mut LibraryScanSummary,
 ) -> AppResult<Option<PreparedMovieLibraryScanCandidate>> {
     let representative_path = candidate.file.path.clone();
+    let representative_is_directory = candidate.representative_is_directory;
     let discovered_files = candidate.discovered_files.clone();
 
     match resolve_movie_scan_candidate(
@@ -1241,9 +1487,14 @@ pub(super) async fn process_movie_refresh_candidate(
     {
         MovieCandidateResolution::Ready(title) => {
             let mut title = *title;
-            let (canonical_folder_path, scan_folder_path) =
-                sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
-                    .await;
+            let (canonical_folder_path, scan_folder_path) = sync_movie_title_folder_path_for_scan(
+                app,
+                &mut title,
+                root,
+                &representative_path,
+                representative_is_directory,
+            )
+            .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
             if let Some(index) = existing_titles
                 .iter()
@@ -1256,25 +1507,22 @@ pub(super) async fn process_movie_refresh_candidate(
                     index,
                 );
             }
-            let queued = merge_default_movie_title_work(
-                workset,
+            let scope =
+                movie_refresh_title_work_scope(scan_folder_path.as_deref(), discovered_files);
+            let queued = merge_movie_refresh_title_work(
+                executor,
                 title,
-                discovered_files,
+                scope,
                 LibraryScanTitleWalkMode::Additive,
                 movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 false,
             );
             if queued {
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             Ok(None)
         }
-        MovieCandidateResolution::Skipped => {
-            summary.skipped += 1;
-            Ok(None)
-        }
+        MovieCandidateResolution::Skipped => Ok(None),
         MovieCandidateResolution::Unresolved(candidate) => Ok(Some(*candidate)),
     }
 }
@@ -1289,7 +1537,7 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
     library_id: &str,
     candidate: PreparedMovieLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
+    executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
     existing_titles_by_name: &mut HashMap<String, usize>,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
@@ -1300,6 +1548,7 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
     summary: &mut LibraryScanSummary,
 ) -> AppResult<()> {
     let representative_path = candidate.file.path.clone();
+    let representative_is_directory = candidate.representative_is_directory;
     let discovered_files = candidate.discovered_files.clone();
     match resolve_movie_metadata_match(
         app,
@@ -1317,9 +1566,14 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
     .await?
     {
         MovieMetadataResolution::Ready(mut title) => {
-            let (canonical_folder_path, scan_folder_path) =
-                sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
-                    .await;
+            let (canonical_folder_path, scan_folder_path) = sync_movie_title_folder_path_for_scan(
+                app,
+                &mut title,
+                root,
+                &representative_path,
+                representative_is_directory,
+            )
+            .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
             if let Some(index) = existing_titles
                 .iter()
@@ -1332,25 +1586,30 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
                     index,
                 );
             }
-            let queued = merge_default_movie_title_work(
-                workset,
+            let scope =
+                movie_refresh_title_work_scope(scan_folder_path.as_deref(), discovered_files);
+            let queued = merge_movie_refresh_title_work(
+                executor,
                 title,
-                discovered_files,
+                scope,
                 LibraryScanTitleWalkMode::Additive,
                 movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 false,
             );
             if queued {
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             Ok(())
         }
         MovieMetadataResolution::ReadyCreated { index, mut title } => {
-            let (canonical_folder_path, scan_folder_path) =
-                sync_movie_title_folder_path_for_scan(app, &mut title, root, &representative_path)
-                    .await;
+            let (canonical_folder_path, scan_folder_path) = sync_movie_title_folder_path_for_scan(
+                app,
+                &mut title,
+                root,
+                &representative_path,
+                representative_is_directory,
+            )
+            .await;
             sync_existing_title_folder_path_in_memory(existing_titles, &title);
             update_movie_probe_path_index(
                 existing_titles_by_probe_path,
@@ -1358,10 +1617,12 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
                 &representative_path,
                 index,
             );
-            let queued = merge_default_movie_title_work(
-                workset,
+            let scope =
+                movie_refresh_title_work_scope(scan_folder_path.as_deref(), discovered_files);
+            let queued = merge_movie_refresh_title_work(
+                executor,
                 title,
-                discovered_files,
+                scope,
                 LibraryScanTitleWalkMode::Additive,
                 movie_cleanup_context(canonical_folder_path, scan_folder_path),
                 true,
@@ -1369,8 +1630,6 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
             if queued {
                 summary.imported += 1;
                 summary.matched += 1;
-            } else {
-                summary.skipped += 1;
             }
             Ok(())
         }
@@ -1394,6 +1653,8 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use chrono::Utc;
+    use scryer_domain::MediaFacet;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]
@@ -1461,6 +1722,18 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CapturingTitleWorkQueue {
+        queued: Vec<LibraryScanTitleWork>,
+    }
+
+    impl LibraryScanTitleWorkQueue for CapturingTitleWorkQueue {
+        fn enqueue(&mut self, work: LibraryScanTitleWork) -> bool {
+            self.queued.push(work);
+            true
+        }
+    }
+
     fn build_library_file(path: &str) -> LibraryFile {
         LibraryFile {
             path: path.to_string(),
@@ -1474,6 +1747,203 @@ mod tests {
             source_signature_scheme: None,
             source_signature_value: None,
         }
+    }
+
+    fn build_movie_title(id: &str) -> Title {
+        let mut title = build_series_title(id);
+        title.name = "Test Movie".to_string();
+        title.facet = MediaFacet::Movie;
+        title.catalog_sort_key = "test movie".to_string();
+        title
+    }
+
+    fn build_series_title(id: &str) -> Title {
+        Title {
+            id: id.to_string(),
+            library_id: "library".to_string(),
+            name: "Test Series".to_string(),
+            facet: MediaFacet::Series,
+            monitored: true,
+            tags: Vec::new(),
+            canonical_tags: vec![],
+            external_ids: Vec::new(),
+            root_folder_id: "root".to_string(),
+            created_by: None,
+            created_at: Utc::now(),
+            year: None,
+            overview: None,
+            poster_url: None,
+            poster_source_url: None,
+            background_url: None,
+            background_source_url: None,
+            sort_title: None,
+            catalog_sort_key: "test series".to_string(),
+            slug: None,
+            imdb_id: None,
+            runtime_minutes: None,
+            popularity: None,
+            content_status: None,
+            language: None,
+            first_aired: None,
+            network: None,
+            studio: None,
+            country: None,
+            aliases: Vec::new(),
+            tagged_aliases: Vec::new(),
+            metadata_language: None,
+            metadata_fetched_at: None,
+            min_availability: None,
+            digital_release_date: None,
+            folder_path: None,
+        }
+    }
+
+    fn series_candidate_with_nfo_ids(
+        nfo_meta: crate::nfo::NfoMetadata,
+    ) -> PreparedSeriesLibraryScanCandidate {
+        PreparedSeriesLibraryScanCandidate {
+            folder_path: std::path::PathBuf::from("/library/Show"),
+            folder_name: Some("Show".to_string()),
+            source_file: None,
+            nfo_meta: Some(nfo_meta),
+            identity_hint: None,
+            query: String::new(),
+            year_hint: None,
+            search_candidates: Vec::new(),
+            title_match_candidates: Vec::new(),
+            metadata_lookup_attempted: true,
+        }
+    }
+
+    #[test]
+    fn find_existing_series_title_index_resolves_via_imdb_and_tmdb() {
+        let mut imdb_title = build_series_title("series-imdb");
+        imdb_title.external_ids = vec![scryer_domain::ExternalId {
+            source: "imdb".to_string(),
+            value: "tt2222222".to_string(),
+        }];
+        let mut tmdb_title = build_series_title("series-tmdb");
+        tmdb_title.external_ids = vec![scryer_domain::ExternalId {
+            source: "tmdb".to_string(),
+            value: "55555".to_string(),
+        }];
+        let existing_titles = vec![imdb_title, tmdb_title];
+        let (by_name, by_tvdb, by_imdb, by_tmdb) = build_series_title_indexes(&existing_titles);
+
+        // A re-scanned series whose tvdb isn't locally indexed still resolves via
+        // its NFO imdb/tmdb id, mirroring the movie scan (no SMG round-trip).
+        let imdb_candidate = series_candidate_with_nfo_ids(crate::nfo::NfoMetadata {
+            imdb_id: Some("tt2222222".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            find_existing_series_title_index(
+                &imdb_candidate,
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+                &by_imdb,
+                &by_tmdb,
+            ),
+            Some(0)
+        );
+
+        let tmdb_candidate = series_candidate_with_nfo_ids(crate::nfo::NfoMetadata {
+            tmdb_id: Some("55555".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            find_existing_series_title_index(
+                &tmdb_candidate,
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+                &by_imdb,
+                &by_tmdb,
+            ),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn deferred_episodic_title_work_requests_full_file_walk() {
+        let work = deferred_episodic_title_work(
+            build_series_title("title-1"),
+            LibraryScanTitleWalkMode::Full,
+            false,
+        );
+
+        assert!(work.requires_folder_enumeration());
+    }
+
+    #[test]
+    fn movie_refresh_directory_without_pre_scanned_files_queues_full_folder_work() {
+        let mut queue = CapturingTitleWorkQueue::default();
+
+        assert!(merge_movie_refresh_title_work(
+            &mut queue,
+            build_movie_title("title-1"),
+            movie_refresh_title_work_scope(Some("/library/Movie"), Vec::new()),
+            LibraryScanTitleWalkMode::Additive,
+            movie_cleanup_context(None, Some("/library/Movie".to_string())),
+            false,
+        ));
+
+        assert_eq!(queue.queued.len(), 1);
+        assert!(matches!(
+            queue.queued[0].scope,
+            LibraryScanTitleWorkScope::FullFolder
+        ));
+    }
+
+    #[test]
+    fn merge_library_scan_title_work_preserves_full_walk_requirement() {
+        let title = build_series_title("title-1");
+        let mut merged_work = HashMap::new();
+
+        assert!(merge_library_scan_title_work(
+            &mut merged_work,
+            episodic_title_work(
+                title.clone(),
+                vec![build_library_file("/library/Show/loose.mkv")],
+                LibraryScanTitleWalkMode::Full,
+                false,
+            ),
+        ));
+        assert_eq!(
+            merged_work
+                .get("title-1")
+                .and_then(LibraryScanTitleWork::discovered_files)
+                .map(Vec::len),
+            Some(1),
+        );
+
+        assert!(merge_library_scan_title_work(
+            &mut merged_work,
+            deferred_episodic_title_work(title.clone(), LibraryScanTitleWalkMode::Full, false),
+        ));
+        assert!(
+            merged_work
+                .get("title-1")
+                .expect("merged title work")
+                .requires_folder_enumeration()
+        );
+
+        assert!(merge_library_scan_title_work(
+            &mut merged_work,
+            episodic_title_work(
+                title,
+                vec![build_library_file("/library/Show/another.mkv")],
+                LibraryScanTitleWalkMode::Full,
+                false,
+            ),
+        ));
+        assert!(
+            merged_work
+                .get("title-1")
+                .expect("merged title work")
+                .requires_folder_enumeration()
+        );
     }
 
     #[tokio::test]

@@ -1,22 +1,32 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { useClient } from "urql";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  CheckCircle2,
+  Database,
+  ExternalLink,
+  Film,
+  Pause,
+  Play,
+  RefreshCw,
+  Search,
+  Server,
+  Terminal,
+  Trash2,
+  Users,
+  XCircle,
+} from "lucide-react";
+import { SingleSelectField } from "@/components/ui/select";
 import "@fontsource-variable/jetbrains-mono";
 import { serviceLogsQuery, serviceLogLinesSubscription } from "@/lib/graphql/queries";
 import { CODE_FONT } from "@/lib/fonts";
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 
 type SystemViewState = {
   systemHealth: SystemHealth | null;
@@ -67,6 +77,17 @@ const DATA_SOURCES: DataSource[] = [
   { nameKey: "system.sourceAniBridgeName", href: "https://github.com/anibridge/anibridge" },
 ];
 
+const SYSTEM_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const SYSTEM_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const SYSTEM_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const SYSTEM_PANEL_BODY_CLASS = "p-4 sm:p-5";
+const SYSTEM_INSET_CLASS =
+  "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
+const SYSTEM_MUTED_TEXT_CLASS = "text-[var(--scry-muted3)]";
+
 function detectLogLevel(line: string): string {
   const match = String(line ?? "").match(/\b(ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\b/i);
   if (!match) return "info";
@@ -77,18 +98,18 @@ function detectLogLevel(line: string): string {
 function quotaBadgeClass(current: number | null, max: number | null): string {
   if (current === null || max === null || max === 0) return "";
   const pct = current / max;
-  if (pct >= 1) return "text-red-500 font-semibold";
-  if (pct >= 0.9) return "text-red-400";
-  if (pct >= 0.75) return "text-yellow-400";
-  return "text-green-400";
+  if (pct >= 1) return "text-[var(--scry-danger-text-soft)] font-semibold";
+  if (pct >= 0.9) return "text-[var(--scry-danger-text-soft)]";
+  if (pct >= 0.75) return "text-[var(--scry-warning-text)]";
+  return "text-[var(--scry-success-text-soft)]";
 }
 
 const LOG_LEVEL_COLORS: Record<string, string> = {
   error: "text-red-600 dark:text-red-400",
-  warn: "text-yellow-600 dark:text-yellow-400",
-  info: "text-blue-600 dark:text-blue-400",
-  debug: "text-emerald-600 dark:text-emerald-400",
-  trace: "text-zinc-400 dark:text-zinc-500",
+  warn: "text-amber-600 dark:text-amber-300",
+  info: "text-sky-600 dark:text-sky-300",
+  debug: "text-emerald-600 dark:text-emerald-300",
+  trace: "text-zinc-500 dark:text-zinc-500",
 };
 
 // Tracing default format: {timestamp} {LEVEL} {target}: {message} {key=value ...}
@@ -174,37 +195,37 @@ function HighlightedLine({ entry }: { entry: LogLineEntry }) {
   const parsed = entry.parsed;
   if (!parsed) {
     return (
-      <span className="text-foreground/80" style={{ fontFamily: CODE_FONT }}>
+      <span className="text-zinc-700 dark:text-zinc-300" style={{ fontFamily: CODE_FONT }}>
         {entry.raw}
       </span>
     );
   }
 
   const lvl = parsed.level.toLowerCase();
-  const levelColor = LOG_LEVEL_COLORS[lvl] ?? "text-foreground/80";
+  const levelColor = LOG_LEVEL_COLORS[lvl] ?? "text-zinc-700 dark:text-zinc-300";
 
   const fragments: React.ReactNode[] = [];
   let cursor = 0;
   for (const kv of parsed.kvPairs) {
     if (kv.start > cursor) {
       fragments.push(
-        <span key={`t${cursor}`} className="text-foreground/70">
+        <span key={`t${cursor}`} className="text-zinc-700 dark:text-zinc-300">
           {parsed.message.slice(cursor, kv.start)}
         </span>,
       );
     }
     fragments.push(
       <span key={`k${kv.start}`}>
-        <span className="text-cyan-600 dark:text-cyan-400">{kv.key}</span>
-        <span className="text-muted-foreground">=</span>
-        <span className="text-foreground/90">{kv.value}</span>
+        <span className="text-cyan-600 dark:text-cyan-300">{kv.key}</span>
+        <span className="text-zinc-500 dark:text-zinc-500">=</span>
+        <span className="text-zinc-800 dark:text-zinc-100">{kv.value}</span>
       </span>,
     );
     cursor = kv.end;
   }
   if (cursor < parsed.message.length) {
     fragments.push(
-      <span key={`t${cursor}`} className="text-foreground/70">
+      <span key={`t${cursor}`} className="text-zinc-700 dark:text-zinc-300">
         {parsed.message.slice(cursor)}
       </span>,
     );
@@ -212,12 +233,12 @@ function HighlightedLine({ entry }: { entry: LogLineEntry }) {
 
   return (
     <span style={{ fontFamily: CODE_FONT }}>
-      <span className="text-muted-foreground/60">{parsed.timestamp}</span>
+      <span className="text-zinc-500 dark:text-zinc-500">{parsed.timestamp}</span>
       {" "}
       <span className={levelColor}>{parsed.level.padStart(5)}</span>
       {" "}
-      <span className="text-muted-foreground">{parsed.target}</span>
-      <span className="text-muted-foreground/60">:</span>
+      <span className="text-zinc-600 dark:text-zinc-400">{parsed.target}</span>
+      <span className="text-zinc-500 dark:text-zinc-500">:</span>
       {" "}
       {fragments}
     </span>
@@ -436,208 +457,413 @@ function LogViewer() {
   }, [snapshot.bufferedCount, snapshot.liveTailing, snapshot.lines.length]);
 
   return (
-    <div className="space-y-3">
-      <div className="grid gap-3 sm:flex sm:flex-wrap sm:items-end">
-        <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">Level</Label>
-          <Select value={level} onValueChange={setLevel}>
-            <SelectTrigger size="sm" className="w-full sm:w-[100px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All</SelectItem>
-              <SelectItem value="error">Error</SelectItem>
-              <SelectItem value="warn">Warn</SelectItem>
-              <SelectItem value="info">Info</SelectItem>
-              <SelectItem value="debug">Debug</SelectItem>
-              <SelectItem value="trace">Trace</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">Search</Label>
-          <Input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="filter..."
-            className="h-8 w-full text-sm sm:w-48"
-          />
-        </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-          <Button
-            size="sm"
-            variant="secondary"
-            className="w-full sm:w-auto"
-            onClick={() => setPaused((p) => !p)}
-          >
-            {paused ? "Resume" : "Pause"}
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            className="w-full sm:w-auto"
-            onClick={() => {
-              if (ingestTimerRef.current) {
-                clearTimeout(ingestTimerRef.current);
-                ingestTimerRef.current = null;
-              }
-              if (snapshotTimerRef.current) {
-                clearTimeout(snapshotTimerRef.current);
-                snapshotTimerRef.current = null;
-              }
-              pendingLinesRef.current = [];
-              rawBufferRef.current = [];
-              startTransition(() => {
-                setSnapshot(EMPTY_LOG_SNAPSHOT);
-              });
-              autoScrollRef.current = true;
-            }}
-          >
-            Clear
-          </Button>
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground sm:ml-auto">
-          <span
-            className={`inline-block size-2 rounded-full ${connected ? "bg-green-400" : "bg-red-400"}`}
-          />
-          {connected ? "Live" : "Disconnected"}
-          {paused && <span className="text-yellow-400">(paused)</span>}
-        </div>
-      </div>
-      {liveTailNotice ? (
-        <p className="text-xs text-muted-foreground">{liveTailNotice}</p>
-      ) : null}
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        data-code-font
-        className={`overflow-y-auto rounded-lg border border-border bg-card text-xs leading-5 ${isMobile ? "h-[55vh] min-h-[280px]" : "h-[calc(100vh-320px)] min-h-[400px]"}`}
-        style={{ fontFamily: CODE_FONT }}
-      >
-        {snapshot.lines.length === 0 ? (
-          <p className="p-4 text-muted-foreground">No logs available yet.</p>
-        ) : (
-          <div className="space-y-0.5 p-2">
-            {snapshot.lines.map((line, index) => (
-              <div
-                key={line.id}
-                className="flex items-start gap-3 rounded-sm px-1 hover:bg-accent/50"
-              >
-                <span
-                  className="shrink-0 select-none text-right tabular-nums text-muted-foreground/50"
-                  style={{ minWidth: "4ch" }}
-                >
-                  {index + 1}
-                </span>
-                <div
-                  className="min-w-0 flex-1 whitespace-pre-wrap break-all"
-                  style={{ fontFamily: CODE_FONT }}
-                >
-                  <HighlightedLine entry={line} />
-                </div>
-              </div>
-            ))}
+    <section className={`${SYSTEM_PANEL_CLASS} flex min-h-0 flex-col`}>
+      <div className={SYSTEM_PANEL_HEADER_CLASS}>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0 space-y-1">
+            <h2 className={`flex items-center gap-2 ${SYSTEM_PANEL_TITLE_CLASS}`}>
+              <Terminal className="h-4 w-4 text-[var(--scry-accent-text)]" />
+              Live service output
+            </h2>
           </div>
-        )}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2.5 py-1 text-[var(--scry-ink2)]">
+              <span
+                className={`size-2 rounded-full ${connected ? "bg-[var(--scry-success-solid)]" : "bg-[var(--scry-danger-solid)]"}`}
+              />
+              {connected ? "Live" : "Disconnected"}
+            </span>
+            {paused ? (
+              <span className="rounded-full border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2.5 py-1 text-[var(--scry-warning-text)]">
+                Paused
+              </span>
+            ) : null}
+            <span className="rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2.5 py-1 text-[var(--scry-muted3)]">
+              {snapshot.bufferedCount} buffered
+            </span>
+          </div>
+        </div>
       </div>
-      <p className="text-xs text-muted-foreground">
-        {snapshot.lines.length} shown
-        {` · ${snapshot.matchedCount} matching`}
-        {` · ${snapshot.bufferedCount} buffered`}
-        {snapshot.liveTailing ? " · live tail" : ""}
-      </p>
-    </div>
+      <div className={`${SYSTEM_PANEL_BODY_CLASS} flex min-h-0 flex-col gap-4`}>
+        <div className={`${SYSTEM_INSET_CLASS} grid gap-3 p-3 lg:grid-cols-[150px_minmax(220px,1fr)_auto] lg:items-end`}>
+          <div className="space-y-1">
+            <SingleSelectField
+              label="Level"
+              labelClassName={`text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}
+              value={level}
+              onValueChange={setLevel}
+              size="compact"
+              chrome="toolbar"
+              options={[
+                { value: "all", label: "All levels" },
+                { value: "error", label: "Error" },
+                { value: "warn", label: "Warn" },
+                { value: "info", label: "Info" },
+                { value: "debug", label: "Debug" },
+                { value: "trace", label: "Trace" },
+              ]}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className={`text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>Search</Label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--scry-muted3)]" />
+              <Input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Filter log text..."
+                className="h-9 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] pl-9 text-[13px] text-[var(--scry-body)] shadow-none"
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2 lg:justify-end">
+            <Button
+              size="sm"
+              variant={paused ? "primary" : "secondary"}
+              className="h-9 rounded-[10px] px-3 text-[13px]"
+              onClick={() => setPaused((p) => !p)}
+            >
+              {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+              {paused ? "Resume" : "Pause"}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-9 rounded-[10px] px-3 text-[13px] text-[var(--scry-danger-text)] hover:text-[var(--scry-danger-text-soft)]"
+              onClick={() => {
+                if (ingestTimerRef.current) {
+                  clearTimeout(ingestTimerRef.current);
+                  ingestTimerRef.current = null;
+                }
+                if (snapshotTimerRef.current) {
+                  clearTimeout(snapshotTimerRef.current);
+                  snapshotTimerRef.current = null;
+                }
+                pendingLinesRef.current = [];
+                rawBufferRef.current = [];
+                startTransition(() => {
+                  setSnapshot(EMPTY_LOG_SNAPSHOT);
+                });
+                autoScrollRef.current = true;
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Clear
+            </Button>
+          </div>
+        </div>
+        {liveTailNotice ? (
+          <div className="rounded-[10px] border border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] px-3 py-2 text-xs text-[var(--scry-info-text)]">
+            {liveTailNotice}
+          </div>
+        ) : null}
+        <div className="flex flex-col overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-bg)]">
+          <div className="flex items-center justify-between gap-3 border-b border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2 text-xs text-[var(--scry-muted3)]">
+            <span>Line</span>
+            <span>
+              {snapshot.lines.length} shown · {snapshot.matchedCount} matching
+            </span>
+          </div>
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            data-code-font
+            className={`overflow-y-auto text-xs leading-5 ${isMobile ? "h-[55vh] min-h-[280px]" : "h-[calc(100vh-320px)] min-h-[400px]"}`}
+            style={{ fontFamily: CODE_FONT }}
+          >
+            {snapshot.lines.length === 0 ? (
+              <div className="flex h-full min-h-[220px] items-center justify-center p-6 text-center">
+                <p className={SYSTEM_MUTED_TEXT_CLASS}>No logs available yet.</p>
+              </div>
+            ) : (
+              <div className="p-2">
+                {snapshot.lines.map((line, index) => (
+                  <div
+                    key={line.id}
+                    className="group grid grid-cols-[4.75ch_minmax(0,1fr)] gap-3 rounded-[7px] px-2 py-1 hover:bg-[var(--scry-hover)]"
+                  >
+                    <span className="select-none text-right tabular-nums text-[var(--scry-faint)]">
+                      {index + 1}
+                    </span>
+                    <div
+                      className="min-w-0 whitespace-pre-wrap break-words"
+                      style={{ fontFamily: CODE_FONT }}
+                    >
+                      <HighlightedLine entry={line} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
 export function SystemView({
+  scryerVersion,
   state,
 }: {
+  scryerVersion: string | null;
   state: SystemViewState;
 }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const { systemHealth, systemLoading, refreshSystem } = state;
+  const healthPlaceholder = "\u2014";
+  const statusReady = systemHealth?.serviceReady === true;
+  const facetStats: Array<[string, number | string]> = [
+    ["Movies", systemHealth?.titlesMovie ?? healthPlaceholder],
+    ["Series", systemHealth?.titlesSeries ?? healthPlaceholder],
+    ["Anime", systemHealth?.titlesAnime ?? healthPlaceholder],
+    ["Other", systemHealth?.titlesOther ?? healthPlaceholder],
+  ];
+  const recentEventPreview = systemHealth?.recentEventPreview ?? [];
+  const indexerStats = systemHealth?.indexerStats ?? null;
 
   return (
-    <div className="space-y-4">
-      {/* Service Health */}
-      <Card>
-        <CardHeader>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle>{t("system.title")}</CardTitle>
+    <div className="space-y-4 text-sm">
+      <section className={SYSTEM_PANEL_CLASS}>
+        <div className={SYSTEM_PANEL_HEADER_CLASS}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <h2 className={SYSTEM_PANEL_TITLE_CLASS}>Service health</h2>
+              <p className={`text-sm ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                {systemHealth
+                  ? statusReady
+                    ? t("system.loaded")
+                    : t("system.notReady")
+                  : t("system.notLoaded")}
+              </p>
+              <p className="min-h-4 text-xs font-medium text-[var(--scry-faint)]">
+                {scryerVersion ? `Scryer v${scryerVersion}` : "\u00a0"}
+              </p>
+            </div>
             <Button
               size="sm"
-              variant="secondary"
-              className="w-full sm:w-auto"
+              variant="primary"
+              className="w-full justify-start sm:w-32"
               onClick={() => void refreshSystem()}
               disabled={systemLoading}
             >
+              <RefreshCw className={systemLoading ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
               {systemLoading ? t("system.refreshing") : t("label.refresh")}
             </Button>
           </div>
-        </CardHeader>
-        <CardContent>
-          {!systemHealth ? (
-            <p className="text-sm text-muted-foreground">{t("system.notLoaded")}</p>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-sm">
-                <span className="text-muted-foreground">{t("system.serviceReady")}:</span> {systemHealth.serviceReady ? t("label.yes") : t("label.no")}
-              </p>
-              <p className="text-sm">
-                <span className="text-muted-foreground">{t("system.dbPathLabel")}:</span> <span className="break-all">{systemHealth.dbPath}</span>
-              </p>
-              <p className="text-sm">
-                <span className="text-muted-foreground">Migration:</span>{" "}
-                <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                  {systemHealth.dbMigrationVersion ?? "unknown"}
-                </code>
-              </p>
-              <p className="text-sm">
-                <span className="text-muted-foreground">{t("system.totalTitlesLabel")}:</span> {systemHealth.totalTitles}
-              </p>
-              <p className="text-sm">
-                <span className="text-muted-foreground">{t("system.monitoredTitlesLabel")}:</span> {systemHealth.monitoredTitles}
-              </p>
-              <p className="text-sm">
-                <span className="text-muted-foreground">{t("system.usersLabel")}:</span> {systemHealth.totalUsers}
-              </p>
-              <p className="text-sm">
-                <span className="text-muted-foreground">{t("system.facetLabel")}:</span> movie={systemHealth.titlesMovie}, series={systemHealth.titlesSeries}, anime=
-                {systemHealth.titlesAnime}, other={systemHealth.titlesOther}
-              </p>
+        </div>
+        <div className={SYSTEM_PANEL_BODY_CLASS}>
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <div className={`${SYSTEM_INSET_CLASS} min-h-[138px] p-4`}>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
+                    {statusReady ? (
+                      <CheckCircle2 className="h-4 w-4" />
+                    ) : (
+                      <XCircle className="h-4 w-4" />
+                    )}
+                  </span>
+                  <div>
+                    <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                      {t("system.serviceReady")}
+                    </p>
+                    <p className="text-base font-semibold text-[var(--scry-ink2)]">
+                      {systemHealth
+                        ? statusReady
+                          ? t("label.yes")
+                          : t("label.no")
+                        : healthPlaceholder}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`${SYSTEM_INSET_CLASS} min-h-[138px] p-4`}>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
+                    <Film className="h-4 w-4" />
+                  </span>
+                  <div>
+                    <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                      {t("system.totalTitlesLabel")}
+                    </p>
+                    <p className="text-base font-semibold text-[var(--scry-ink2)]">
+                      {systemHealth?.totalTitles ?? healthPlaceholder}
+                    </p>
+                  </div>
+                </div>
+                <p className={`text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                  {t("system.monitoredTitlesLabel")}:{" "}
+                  {systemHealth?.monitoredTitles ?? healthPlaceholder}
+                </p>
+              </div>
+
+              <div className={`${SYSTEM_INSET_CLASS} min-h-[138px] p-4`}>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
+                    <Users className="h-4 w-4" />
+                  </span>
+                  <div>
+                    <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                      {t("system.usersLabel")}
+                    </p>
+                    <p className="text-base font-semibold text-[var(--scry-ink2)]">
+                      {systemHealth?.totalUsers ?? healthPlaceholder}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`${SYSTEM_INSET_CLASS} min-h-[231px] p-4 sm:col-span-2 xl:col-span-3`}>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="flex h-8 w-8 items-center justify-center rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)]">
+                    <Database className="h-4 w-4" />
+                  </span>
+                  <p className="font-semibold text-[var(--scry-ink2)]">Datastore</p>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                      {t("system.dbPathLabel")}
+                    </p>
+                    <p className="mt-1 break-all font-[var(--font-code)] text-xs text-[var(--scry-ink2)]">
+                      {systemHealth?.dbPath ?? healthPlaceholder}
+                    </p>
+                  </div>
+                  <div>
+                    <p className={`text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                      Migration
+                    </p>
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      {systemHealth ? (
+                        <code className="rounded-[7px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-1 text-xs text-[var(--scry-ink2)]">
+                          {systemHealth.dbMigrationVersion ?? "unknown"}
+                        </code>
+                      ) : (
+                        <code className="rounded-[7px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-1 text-xs text-[var(--scry-ink2)]">
+                          {healthPlaceholder}
+                        </code>
+                      )}
+                      <code
+                        className={`min-w-[13rem] rounded-[7px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-1 text-xs text-[var(--scry-ink2)] ${
+                          systemHealth?.datastoreMigrationKey ? "" : "invisible"
+                        }`}
+                      >
+                        {systemHealth?.datastoreMigrationKey ?? healthPlaceholder}
+                      </code>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
-          )}
-        </CardContent>
-      </Card>
 
+            <div className={`${SYSTEM_INSET_CLASS} min-h-[380px] p-4`}>
+              <p className="mb-3 font-semibold text-[var(--scry-ink2)]">
+                {t("system.facetLabel")}
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {facetStats.map(([label, value]) => (
+                  <div
+                    key={label}
+                    className="rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-3"
+                  >
+                    <p className={`text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>{label}</p>
+                    <p className="mt-1 text-lg font-semibold text-[var(--scry-ink2)]">
+                      {value}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 min-h-[116px]">
+                {recentEventPreview.length > 0 ? (
+                  <>
+                    <p className={`mb-2 text-xs uppercase tracking-[0.12em] ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                      {t("system.recentEventSample")}
+                    </p>
+                    <div className="space-y-2">
+                      {recentEventPreview.slice(0, 3).map((event, index) => (
+                        <p
+                          key={`${event}-${index}`}
+                          className="rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2 text-xs text-[var(--scry-ink2)]"
+                        >
+                          {event}
+                        </p>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
-      {/* Indexer Stats */}
-      {systemHealth && systemHealth.indexerStats.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Indexer Stats (Last 24h)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className={`grid gap-3 ${systemHealth.indexerStats.length === 1 ? "grid-cols-1" : systemHealth.indexerStats.length === 2 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"}`}>
-              {systemHealth.indexerStats.map((stat) => (
+      <section className={SYSTEM_PANEL_CLASS}>
+        <div className={SYSTEM_PANEL_HEADER_CLASS}>
+          <h3 className={SYSTEM_PANEL_TITLE_CLASS}>Indexer Stats (Last 24h)</h3>
+        </div>
+        <div className={SYSTEM_PANEL_BODY_CLASS}>
+          {indexerStats === null ? (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-hidden="true">
+              {[0, 1, 2].map((item) => (
                 <div
-                  key={stat.indexerId}
-                  className="rounded-xl border border-border bg-card p-3 text-sm"
+                  key={item}
+                  className={`${SYSTEM_INSET_CLASS} min-h-[142px] p-4 opacity-70`}
                 >
-                  <p className="font-medium">{stat.indexerName}</p>
-                  <div className="mt-1 space-y-1 text-xs">
+                  <div className="h-4 w-2/3 rounded bg-[var(--scry-border3)]" />
+                  <div className="mt-3 h-3 w-1/2 rounded bg-[var(--scry-border3)]" />
+                  <div className="mt-5 space-y-2">
+                    <div className="h-3 w-1/3 rounded bg-[var(--scry-border3)]" />
+                    <div className="h-3 w-1/2 rounded bg-[var(--scry-border3)]" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : indexerStats.length > 0 ? (
+            <div
+              className={`grid gap-3 ${
+                indexerStats.length === 1
+                  ? "grid-cols-1"
+                  : indexerStats.length === 2
+                    ? "grid-cols-1 sm:grid-cols-2"
+                    : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
+              }`}
+            >
+              {indexerStats.map((stat) => (
+                <div key={stat.indexerId} className={`${SYSTEM_INSET_CLASS} p-4`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-[var(--scry-ink2)]">
+                        {stat.indexerName}
+                      </p>
+                      {stat.lastQueryAt ? (
+                        <p className={`mt-1 text-xs ${SYSTEM_MUTED_TEXT_CLASS}`}>
+                          Last query:{" "}
+                          {formatUiDateTime(stat.lastQueryAt, dateTimeFormat)}
+                        </p>
+                      ) : null}
+                    </div>
+                    <span className="rounded-full border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-0.5 text-xs text-[var(--scry-muted3)]">
+                      {stat.successfulLast24H}/{stat.queriesLast24H}
+                    </span>
+                  </div>
+                  <div className="mt-3 space-y-2 text-xs">
                     <p>
-                      <span className="text-muted-foreground">Queries:</span>{" "}
+                      <span className={SYSTEM_MUTED_TEXT_CLASS}>Queries:</span>{" "}
                       {stat.queriesLast24H}
                       {stat.failedLast24H > 0 && (
-                        <span className="text-red-400"> ({stat.failedLast24H} failed)</span>
+                        <span className="text-[var(--scry-danger-text-soft)]">
+                          {" "}
+                          ({stat.failedLast24H} failed)
+                        </span>
                       )}
                     </p>
                     {stat.apiMax !== null && (
                       <p>
-                        <span className="text-muted-foreground">API usage:</span>{" "}
+                        <span className={SYSTEM_MUTED_TEXT_CLASS}>API usage:</span>{" "}
                         <span className={quotaBadgeClass(stat.apiCurrent, stat.apiMax)}>
                           {stat.apiCurrent ?? 0}/{stat.apiMax}
                         </span>
@@ -645,59 +871,56 @@ export function SystemView({
                     )}
                     {stat.grabMax !== null && (
                       <p>
-                        <span className="text-muted-foreground">Grabs:</span>{" "}
+                        <span className={SYSTEM_MUTED_TEXT_CLASS}>Grabs:</span>{" "}
                         <span className={quotaBadgeClass(stat.grabCurrent, stat.grabMax)}>
                           {stat.grabCurrent ?? 0}/{stat.grabMax}
                         </span>
-                      </p>
-                    )}
-                    {stat.lastQueryAt && (
-                      <p>
-                        <span className="text-muted-foreground">Last query:</span>{" "}
-                        {new Date(stat.lastQueryAt).toLocaleString()}
                       </p>
                     )}
                   </div>
                 </div>
               ))}
             </div>
-          </CardContent>
-        </Card>
-      )}
+          ) : (
+            <div className={`${SYSTEM_INSET_CLASS} min-h-[142px] p-4 ${SYSTEM_MUTED_TEXT_CLASS}`}>
+              No indexer activity in the last 24 hours.
+            </div>
+          )}
+        </div>
+      </section>
 
-      {/* Data Sources */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">{t("system.sourcesTitle")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="mb-2 text-sm text-muted-foreground">{t("system.sourcesSupport")}</p>
-          <div className="grid grid-cols-2 gap-2 text-sm">
+      <section className={SYSTEM_PANEL_CLASS}>
+        <div className={SYSTEM_PANEL_HEADER_CLASS}>
+          <div className="flex items-center gap-2">
+            <Server className="h-4 w-4 text-[var(--scry-accent-text)]" />
+            <h3 className={SYSTEM_PANEL_TITLE_CLASS}>{t("system.sourcesTitle")}</h3>
+          </div>
+        </div>
+        <div className={SYSTEM_PANEL_BODY_CLASS}>
+          <p className={`mb-3 text-sm ${SYSTEM_MUTED_TEXT_CLASS}`}>
+            {t("system.sourcesSupport")}
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {DATA_SOURCES.map((source) => (
-              <div key={source.href} className="rounded-xl border border-border bg-card p-3">
+              <div key={source.href} className={`${SYSTEM_INSET_CLASS} p-4`}>
                 <a
                   href={source.href}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="font-medium text-primary hover:underline"
+                  className="inline-flex items-center gap-2 font-semibold text-[var(--scry-accent-text)] hover:underline"
                 >
                   {t(source.nameKey)}
+                  <ExternalLink className="h-3.5 w-3.5" />
                 </a>
               </div>
             ))}
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Log Viewer */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Service Logs</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <LogViewer />
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </div>
   );
+}
+
+export function SystemLogsView() {
+  return <LogViewer />;
 }

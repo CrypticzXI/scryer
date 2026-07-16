@@ -12,7 +12,7 @@ use scryer_application::{
     AppError, AppResult, ExternalPluginWasm, IndexerClient, IndexerManagementClient,
     IndexerPluginProvider, IndexerRoutingPlan, IndexerSearchResponse, IndexerSyncPlan,
     IndexerValidationResult, ManagedIndexerChildPlan, ManagedIndexerRoutingScope,
-    RuntimePluginLoad, SearchMode,
+    RateLimitCooldownAction, RuntimePluginLoad, SearchMode,
 };
 use scryer_domain::{
     ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource,
@@ -156,7 +156,7 @@ impl ProwlarrConfig {
 enum ProwlarrRequestError {
     InvalidConfig(String),
     AuthFailed(String),
-    RateLimited(String, Option<i64>),
+    RateLimited(String, Option<i64>, RateLimitCooldownAction),
     Unreachable(String),
     Unsupported(String),
 }
@@ -168,7 +168,7 @@ impl ProwlarrRequestError {
                 validation_result("invalid_config", Some(message), None)
             }
             Self::AuthFailed(message) => validation_result("auth_failed", Some(message), None),
-            Self::RateLimited(message, retry_after_seconds) => {
+            Self::RateLimited(message, retry_after_seconds, _) => {
                 validation_result("rate_limited", Some(message), *retry_after_seconds)
             }
             Self::Unreachable(message) => validation_result("unreachable", Some(message), None),
@@ -184,10 +184,18 @@ impl ProwlarrRequestError {
             Self::Unreachable(message) | Self::Unsupported(message) => {
                 AppError::Repository(message)
             }
-            Self::RateLimited(message, Some(retry_after_seconds)) => {
-                AppError::Repository(format!("{message} (retry after {retry_after_seconds}s)"))
+            Self::RateLimited(message, Some(retry_after_seconds), cooldown_action) => {
+                AppError::rate_limited_temporary_unavailable(
+                    message,
+                    Some(std::time::Duration::from_secs(
+                        retry_after_seconds.max(1) as u64
+                    )),
+                    cooldown_action,
+                )
             }
-            Self::RateLimited(message, None) => AppError::Repository(message),
+            Self::RateLimited(message, None, cooldown_action) => {
+                AppError::rate_limited_temporary_unavailable(message, None, cooldown_action)
+            }
         }
     }
 }
@@ -411,6 +419,7 @@ impl ProwlarrManagementClient {
                         None => "Prowlarr rate limited the request".to_string(),
                     },
                     rate_limited.retry_after.map(|delay| delay.as_secs() as i64),
+                    RateLimitCooldownAction::AlreadyRecorded,
                 ),
                 OutboundHttpError::Transport { source, .. } => {
                     ProwlarrRequestError::Unreachable(format!("request failed: {source}"))
@@ -469,6 +478,7 @@ impl ProwlarrManagementClient {
                         None => "Prowlarr rate limited the child caps request".to_string(),
                     },
                     rate_limited.retry_after.map(|delay| delay.as_secs() as i64),
+                    RateLimitCooldownAction::AlreadyRecorded,
                 ),
                 OutboundHttpError::Transport { source, .. } => {
                     ProwlarrRequestError::Unreachable(format!("request failed: {source}"))
@@ -608,6 +618,8 @@ impl IndexerClient for ProwlarrSearchStub {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<scryer_application::IndexerSearchLearningContext>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Err(AppError::Validation(
             "Prowlarr parent configs are management-only; search through synced child indexers"
@@ -1062,6 +1074,7 @@ fn map_http_error(
         429 => ProwlarrRequestError::RateLimited(
             non_empty_or(body_text, "Prowlarr rate limited the request"),
             retry_after_seconds,
+            RateLimitCooldownAction::RecordFallback,
         ),
         500..=599 => ProwlarrRequestError::Unreachable(non_empty_or(
             body_text,
@@ -1241,6 +1254,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: false,
             enable_auto_search: false,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -1256,6 +1270,28 @@ mod tests {
             ),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn rate_limited_request_error_preserves_retry_after_as_temporary_unavailable() {
+        let error = ProwlarrRequestError::RateLimited(
+            "Prowlarr rate limited the request".to_string(),
+            Some(120),
+            RateLimitCooldownAction::RecordFallback,
+        )
+        .into_app_error();
+
+        match error {
+            AppError::TemporaryUnavailable {
+                message,
+                retry_after,
+                ..
+            } => {
+                assert_eq!(message, "Prowlarr rate limited the request");
+                assert_eq!(retry_after, Some(Duration::from_secs(120)));
+            }
+            other => panic!("expected temporary unavailable error, got {other:?}"),
         }
     }
 

@@ -14,6 +14,11 @@ use crate::{
     PendingImportStatus, sha256_hex,
 };
 
+pub(crate) const LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE: &str =
+    "skipped_unusable_title_evidence";
+pub(crate) const LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE: &str =
+    "skipped_file_metadata_unreadable";
+
 #[derive(Clone, Debug)]
 struct MovieUnmatchedScanRecord {
     path: String,
@@ -33,6 +38,7 @@ struct LibraryScanUnmatchedScope<'a> {
 }
 
 struct LibraryScanUnmatchedItemArgs {
+    status: PendingImportStatus,
     item_path: String,
     display_name: String,
     query: String,
@@ -70,7 +76,7 @@ fn build_library_scan_unmatched_item(
         id: build_library_scan_unmatched_item_id(scope.facet, scope.library_id, &item_path),
         library_id: scope.library_id.to_string(),
         facet: scope.facet.clone(),
-        status: PendingImportStatus::Pending,
+        status: args.status,
         title_id: scope.title_id.map(str::to_string),
         scan_session_id: scope.session_id.to_string(),
         scan_root: normalize_library_scan_root(scope.library_path),
@@ -154,6 +160,7 @@ pub(crate) fn build_movie_unmatched_scan_item(
             library_path,
         },
         LibraryScanUnmatchedItemArgs {
+            status: PendingImportStatus::Pending,
             item_path: record.path,
             display_name: record.display_name,
             query: record.query,
@@ -198,6 +205,7 @@ pub(crate) fn build_series_unmatched_scan_item(
             library_path,
         },
         LibraryScanUnmatchedItemArgs {
+            status: PendingImportStatus::Pending,
             item_path: candidate.item_path().to_string(),
             display_name: series_unmatched_display_name(candidate),
             query: candidate.query.clone(),
@@ -234,12 +242,51 @@ pub(crate) fn build_title_bound_unmatched_scan_item(
             library_path: title_scan_root,
         },
         LibraryScanUnmatchedItemArgs {
+            status: PendingImportStatus::Pending,
             item_path: item_path.to_string(),
             display_name: display_name.to_string(),
             query: query.to_string(),
             year_hint,
             reason_code: reason_code.to_string(),
             error_message: None,
+            search_attempts: Vec::new(),
+        },
+    )
+}
+
+pub(crate) struct IgnoredLibraryScanItemArgs<'a> {
+    pub title_id: Option<&'a str>,
+    pub session_id: Option<&'a str>,
+    pub library_path: &'a str,
+    pub item_path: &'a str,
+    pub display_name: &'a str,
+    pub query: &'a str,
+    pub year_hint: Option<u32>,
+    pub reason_code: &'a str,
+    pub error_message: Option<String>,
+}
+
+pub(crate) fn build_ignored_library_scan_item(
+    facet: &MediaFacet,
+    library_id: &str,
+    args: IgnoredLibraryScanItemArgs<'_>,
+) -> LibraryScanUnmatchedItem {
+    build_library_scan_unmatched_item(
+        LibraryScanUnmatchedScope {
+            facet,
+            library_id,
+            title_id: args.title_id,
+            session_id: args.session_id.unwrap_or_default(),
+            library_path: args.library_path,
+        },
+        LibraryScanUnmatchedItemArgs {
+            status: PendingImportStatus::Ignored,
+            item_path: args.item_path.to_string(),
+            display_name: args.display_name.to_string(),
+            query: args.query.to_string(),
+            year_hint: args.year_hint,
+            reason_code: args.reason_code.to_string(),
+            error_message: args.error_message,
             search_attempts: Vec::new(),
         },
     )
@@ -272,6 +319,16 @@ pub(crate) async fn persist_library_scan_unmatched_item(
         .upsert_library_scan_unmatched_item(item)
         .await?;
     Ok(())
+}
+
+pub(crate) async fn persist_ignored_library_scan_item(
+    app: &AppUseCase,
+    facet: &MediaFacet,
+    library_id: &str,
+    args: IgnoredLibraryScanItemArgs<'_>,
+) -> AppResult<()> {
+    let item = build_ignored_library_scan_item(facet, library_id, args);
+    persist_library_scan_unmatched_item(app, &item).await
 }
 
 pub(crate) async fn clear_library_scan_unmatched_item(

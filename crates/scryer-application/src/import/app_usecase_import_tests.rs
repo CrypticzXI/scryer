@@ -28,6 +28,7 @@ fn test_title(facet: MediaFacet) -> Title {
         facet,
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         created_by: None,
         created_at: chrono::Utc::now(),
@@ -38,10 +39,11 @@ fn test_title(facet: MediaFacet) -> Title {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -401,6 +403,28 @@ fn build_augmented_episode_import_metadata_keeps_file_episode_when_other_files_e
 }
 
 #[test]
+fn build_augmented_episode_import_metadata_treats_dotted_hyphen_split_episode_as_single_episode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dest_dir = dir.path().join("[SubsPlease] Harbor Pals S3.-.01 (1080p)");
+    std::fs::create_dir_all(&dest_dir).expect("create dest dir");
+    let file_path = dest_dir.join("[SubsPlease] Harbor Pals S3.-.01 (1080p) [F00DBABE].mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let completed =
+        test_completed_download("[SubsPlease] Harbor Pals S3.-.01 (1080p)", &dest_dir);
+
+    let parsed = build_augmented_episode_import_metadata(&file_path, &completed, false);
+    let episode = parsed.episode.expect("episode metadata");
+
+    assert_eq!(episode.season, Some(3));
+    assert_eq!(episode.episode_numbers, vec![1]);
+    assert!(!episode.full_season);
+    assert_eq!(
+        episode.release_type,
+        scryer_release_parser::ParsedEpisodeReleaseType::SingleEpisode
+    );
+}
+
+#[test]
 fn build_augmented_episode_import_metadata_does_not_infer_episode_from_download_title_when_other_files_exist()
  {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -649,6 +673,7 @@ fn rescore_from_mediainfo_updates_quality_when_parsed_quality_is_missing() {
         analysis: Some(test_media_analysis(Some(1080))),
         scan_error: None,
         rule_file_doc: None,
+        audio_language_warning: None,
     };
 
     let (rescored, changes) =
@@ -684,6 +709,7 @@ async fn post_download_score_uses_rescored_quality_and_records_negative_audit() 
         analysis: Some(analysis),
         scan_error: None,
         rule_file_doc: None,
+        audio_language_warning: None,
     };
 
     let result = crate::post_download_gate::compute_post_download_acquisition_decision(
@@ -733,6 +759,7 @@ async fn post_download_score_preserves_prepared_rescore_changes_when_parsed_alre
         analysis: Some(test_media_analysis(Some(1080))),
         scan_error: None,
         rule_file_doc: None,
+        audio_language_warning: None,
     };
     let (prepared_parsed, first_pass_changes) =
         crate::post_download_gate::rescore_from_mediainfo(&parsed, &acceptance);
@@ -805,6 +832,7 @@ score_entry["dv_profile_bonus"] := 123 if {
         analysis: Some(test_media_analysis(Some(2160))),
         scan_error: None,
         rule_file_doc: Some(test_rule_file_doc(Some(8), Some(1))),
+        audio_language_warning: None,
     };
 
     let result = crate::post_download_gate::compute_post_download_acquisition_decision(
@@ -848,6 +876,7 @@ fn episode_import_dest_path_uses_rescored_parsed_quality_without_override() {
         analysis: Some(test_media_analysis(Some(1080))),
         scan_error: None,
         rule_file_doc: None,
+        audio_language_warning: None,
     };
     let (rescored, _) = crate::post_download_gate::rescore_from_mediainfo(&parsed, &acceptance);
 
@@ -1151,7 +1180,7 @@ fn build_episode_upgrade_plan_replaces_different_filename_when_new_score_is_high
         &["ep-1"],
     )];
 
-    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900)
+    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900, false)
         .expect("upgrade plan should accept higher-scored replacement");
 
     assert_eq!(plan.primary_incumbent.media_file.id, "file-1");
@@ -1169,13 +1198,33 @@ fn build_episode_upgrade_plan_rejects_when_existing_episode_file_scores_higher()
     )];
 
     let rejection =
-        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 700).unwrap_err();
+        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 700, false).unwrap_err();
 
     assert_eq!(
         rejection.skip_reason,
         Some(ImportSkipReason::AlreadyImported)
     );
     assert!(rejection.message.contains("equal or better"));
+}
+
+#[test]
+fn build_episode_upgrade_plan_force_replace_allows_lower_score() {
+    let incumbents = vec![scoped_media_file(
+        "file-1",
+        "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 1080p.mkv",
+        820,
+        &["ep-1"],
+    )];
+
+    // Without force, a lower-scored release is rejected as a non-upgrade.
+    assert!(build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 600, false).is_err());
+
+    // A manual replacement (force) lands even at a lower score: it replaces the
+    // higher-scored incumbent rather than rejecting.
+    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 600, true)
+        .expect("manual replacement should replace a higher-scored incumbent");
+    assert_eq!(plan.primary_incumbent.media_file.id, "file-1");
+    assert!(plan.additional_superseded.is_empty());
 }
 
 #[test]
@@ -1188,7 +1237,7 @@ fn build_episode_upgrade_plan_rejects_when_existing_file_covers_broader_episode_
     )];
 
     let rejection =
-        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900).unwrap_err();
+        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900, false).unwrap_err();
 
     assert_eq!(
         rejection.skip_reason,
@@ -1286,7 +1335,7 @@ fn build_episode_upgrade_plan_supersedes_all_duplicate_incumbents_for_same_targe
         ),
     ];
 
-    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900)
+    let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 900, false)
         .expect("higher score should supersede all incumbents");
 
     assert_eq!(plan.primary_incumbent.media_file.id, "file-2");
@@ -1312,7 +1361,7 @@ fn build_episode_upgrade_plan_allows_pack_to_replace_singles_when_it_beats_all_o
     ];
 
     let plan =
-        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string(), "ep-2".to_string()], 900)
+        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string(), "ep-2".to_string()], 900, false)
             .expect("season pack should replace lower-scored singles");
 
     assert_eq!(plan.previous_best_score, 450);
@@ -1402,13 +1451,6 @@ impl TitleRepository for ManualImportCleanupTitleRepo {
         _: usize,
         _: &[MediaFacet],
     ) -> AppResult<Vec<crate::PendingTitleHydration>> {
-        Ok(vec![])
-    }
-
-    async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
-        &self,
-        _: usize,
-    ) -> AppResult<Vec<String>> {
         Ok(vec![])
     }
 

@@ -32,7 +32,7 @@ fn effective_auto_decision_code(
 }
 async fn record_release_decision(
     app: &AppUseCase,
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     title: &Title,
     candidate: &IndexerSearchResult,
     decision_code: ReleaseAutoDecisionCode,
@@ -68,22 +68,23 @@ async fn record_release_decision(
     let _ = app
         .services
         .workflow
-        .wanted_items
+        .acquisition_scope_states
         .insert_release_decision(&decision_record)
         .await;
 }
 impl AppUseCase {
-    pub async fn list_release_decisions(
+    /// One page of release decisions plus the total row count for the scope.
+    pub async fn list_release_decisions_page(
         &self,
         actor: &User,
         query: ReleaseDecisionsQuery,
-    ) -> AppResult<Vec<ReleaseDecision>> {
+    ) -> AppResult<(Vec<ReleaseDecision>, i64)> {
         if let Some(wid) = query.wanted_item_id.as_deref() {
             let wanted = self
                 .services
                 .workflow
-                .wanted_items
-                .get_wanted_item_by_id(wid)
+                .acquisition_scope_states
+                .get_acquisition_scope_state_by_id(wid)
                 .await?
                 .ok_or_else(|| AppError::NotFound(format!("wanted item {wid}")))?;
             let library_id = if let Some(library_id) = wanted.library_id.as_deref() {
@@ -103,12 +104,19 @@ impl AppUseCase {
                 scryer_domain::LibraryPermission::View,
             )
             .await?;
-            return self
+            let items = self
                 .services
                 .workflow
-                .wanted_items
-                .list_release_decisions_for_wanted_item(wid, query.limit)
-                .await;
+                .acquisition_scope_states
+                .list_release_decisions_for_acquisition_scope_state(wid, query.limit, query.offset)
+                .await?;
+            let total = self
+                .services
+                .workflow
+                .acquisition_scope_states
+                .count_release_decisions_for_acquisition_scope_state(wid)
+                .await?;
+            return Ok((items, total));
         }
         if let Some(tid) = query.title_id.as_deref() {
             let title = self
@@ -124,13 +132,20 @@ impl AppUseCase {
                 scryer_domain::LibraryPermission::View,
             )
             .await?;
-            return self
+            let items = self
                 .services
                 .workflow
-                .wanted_items
-                .list_release_decisions_for_title(tid, query.limit)
-                .await;
+                .acquisition_scope_states
+                .list_release_decisions_for_title(tid, query.limit, query.offset)
+                .await?;
+            let total = self
+                .services
+                .workflow
+                .acquisition_scope_states
+                .count_release_decisions_for_title(tid)
+                .await?;
+            return Ok((items, total));
         }
-        Ok(vec![])
+        Ok((vec![], 0))
     }
 }

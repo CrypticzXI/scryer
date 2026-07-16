@@ -16,6 +16,15 @@ pub(crate) struct DownloadClientSnapshot {
     /// SABnzbd nzo_id, Weaver job UUID). Matched against `download_submissions`
     /// table to find which scryer title a failed download belongs to.
     failed_by_download_id: std::collections::HashMap<String, FailedDownloadSnapshot>,
+    /// True when `list_queue()` errored while building this snapshot. An
+    /// unobservable queue must be treated as "possibly active" for automatic
+    /// grabs so a transient client outage cannot cause a blind double-submit
+    /// (the Scryer-shaped analogue of Sonarr's download-client backoff).
+    queue_listing_failed: bool,
+    /// True when `list_history()` errored while building this snapshot. Failure
+    /// detection reads only history, so an unobservable history simply yields
+    /// no failures rather than acting on an empty map.
+    history_listing_failed: bool,
 }
 fn download_client_item_identity(client_id: Option<&str>, item_id: &str) -> String {
     let client_id = client_id
@@ -37,7 +46,7 @@ pub(crate) struct FailedDownloadSnapshot {
 }
 #[derive(Clone, Debug)]
 pub(crate) struct DownloadFailureContext {
-    pub wanted_item: Option<WantedItem>,
+    pub wanted_item: Option<AcquisitionScopeState>,
     pub title_id: Option<String>,
     pub client_id: String,
     pub client_type: String,
@@ -196,44 +205,56 @@ impl DownloadClientSnapshot {
         let mut completed_client_ids = std::collections::HashSet::new();
         let mut completed_raw_item_id_counts = std::collections::HashMap::new();
         let mut failed_by_download_id = std::collections::HashMap::new();
+        let mut queue_listing_failed = false;
+        let mut history_listing_failed = false;
 
         // Fetch current queue
-        if let Ok(queue) = app.services.integrations.download_client.list_queue().await {
-            for item in &queue {
-                match item.state {
-                    DownloadQueueState::Queued
-                    | DownloadQueueState::Downloading
-                    | DownloadQueueState::Paused => {
-                        active_titles.insert(item.title_name.to_ascii_lowercase());
-                        active_client_ids.insert(download_client_item_identity(
-                            Some(item.client_id.as_str()),
-                            &item.download_client_item_id,
-                        ));
-                        *active_raw_item_id_counts
-                            .entry(item.download_client_item_id.clone())
-                            .or_insert(0) += 1;
+        match app.services.integrations.download_client.list_queue().await {
+            Ok(queue) => {
+                for item in &queue {
+                    match item.state {
+                        DownloadQueueState::Queued
+                        | DownloadQueueState::Downloading
+                        | DownloadQueueState::Paused => {
+                            active_titles.insert(item.title_name.to_ascii_lowercase());
+                            active_client_ids.insert(download_client_item_identity(
+                                Some(item.client_id.as_str()),
+                                &item.download_client_item_id,
+                            ));
+                            *active_raw_item_id_counts
+                                .entry(item.download_client_item_id.clone())
+                                .or_insert(0) += 1;
+                        }
+                        _ => {}
                     }
-                    _ => {}
+                }
+                if !active_titles.is_empty() {
+                    info!(
+                        active_count = active_titles.len(),
+                        "download client snapshot: active queue items"
+                    );
                 }
             }
-            if !active_titles.is_empty() {
-                info!(
-                    active_count = active_titles.len(),
-                    "download client snapshot: active queue items"
+            Err(error) => {
+                queue_listing_failed = true;
+                warn!(
+                    error = %error,
+                    "download client snapshot: queue listing failed; treating queue as possibly-active to avoid blind double-submits"
                 );
             }
         }
 
         // Fetch recent history — key by download client job ID (works across all
         // clients: NZBGet, SABnzbd, Weaver).
-        if let Ok(history) = app
+        match app
             .services
             .integrations
             .download_client
             .list_history()
             .await
         {
-            for item in &history {
+            Ok(history) => {
+                for item in &history {
                 if item.state == DownloadQueueState::Completed {
                     completed_client_ids.insert(download_client_item_identity(
                         Some(item.client_id.as_str()),
@@ -262,10 +283,18 @@ impl DownloadClientSnapshot {
                     );
                 }
             }
-            if !failed_by_download_id.is_empty() {
-                debug!(
-                    failed_count = failed_by_download_id.len(),
-                    "download client snapshot: failed history items"
+                if !failed_by_download_id.is_empty() {
+                    debug!(
+                        failed_count = failed_by_download_id.len(),
+                        "download client snapshot: failed history items"
+                    );
+                }
+            }
+            Err(error) => {
+                history_listing_failed = true;
+                warn!(
+                    error = %error,
+                    "download client snapshot: history listing failed; failure detection is skipped this cycle"
                 );
             }
         }
@@ -277,13 +306,28 @@ impl DownloadClientSnapshot {
             completed_client_ids,
             completed_raw_item_id_counts,
             failed_by_download_id,
+            queue_listing_failed,
+            history_listing_failed,
         }
     }
 
-    /// Returns true if a release with this title is currently queued/downloading.
+    /// Returns true if a release with this title is currently
+    /// queued/downloading, or if the queue could not be observed this cycle (an
+    /// unknown queue is treated as possibly-active so automatic grabs skip/defer
+    /// instead of double-submitting blind).
     pub(crate) fn is_active(&self, release_title: &str) -> bool {
-        self.active_titles
-            .contains(&release_title.to_ascii_lowercase())
+        self.queue_listing_failed
+            || self
+                .active_titles
+                .contains(&release_title.to_ascii_lowercase())
+    }
+
+    /// Whether the queue could not be listed while building this snapshot.
+    /// Callers that would otherwise expire a release on an "already active"
+    /// signal must instead defer, since the signal here is "unknown", not
+    /// "confirmed active".
+    pub(crate) fn queue_listing_failed(&self) -> bool {
+        self.queue_listing_failed
     }
 
     /// If a download with this job ID failed in history with a blocklist-worthy
@@ -293,6 +337,11 @@ impl DownloadClientSnapshot {
         client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> Option<&FailedDownloadSnapshot> {
+        // Failure detection reads only history; if it could not be observed we
+        // report no failures rather than acting on an incomplete map.
+        if self.history_listing_failed {
+            return None;
+        }
         self.failed_by_download_id
             .get(&download_client_item_identity(
                 client_id,
@@ -306,6 +355,9 @@ impl DownloadClientSnapshot {
         client_id: Option<&str>,
         download_client_item_id: &str,
     ) -> bool {
+        if self.queue_listing_failed {
+            return true;
+        }
         let exact_key = download_client_item_identity(client_id, download_client_item_id);
         self.active_client_ids.contains(&exact_key)
             || self.active_raw_item_id_counts.get(download_client_item_id) == Some(&1)
@@ -349,11 +401,11 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
     let grabbed_items = match app
         .services
         .workflow
-        .wanted_items
-        .list_wanted_items(WantedItemsQuery {
+        .acquisition_scope_states
+        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
             statuses: vec!["grabbed".into()],
             limit: 200,
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await
     {
@@ -507,7 +559,7 @@ fn preferred_failed_release_title(
 async fn resolve_failed_collection_episode_wanted_items(
     app: &AppUseCase,
     submission: &DownloadSubmission,
-) -> AppResult<Vec<WantedItem>> {
+) -> AppResult<Vec<AcquisitionScopeState>> {
     let SubmissionScope::Collection { collection_id } = &submission.scope else {
         return Ok(Vec::new());
     };
@@ -529,19 +581,19 @@ async fn resolve_failed_collection_episode_wanted_items(
     let wanted_items = app
         .services
         .workflow
-        .wanted_items
-        .list_wanted_items(WantedItemsQuery {
+        .acquisition_scope_states
+        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
             media_types: vec!["episode".into()],
             title_id: Some(submission.title_id.clone()),
             limit: 500,
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await?;
 
     Ok(wanted_items
         .into_iter()
         .filter(|item| {
-            matches!(item.status, WantedStatus::Wanted | WantedStatus::Grabbed)
+            matches!(item.status, AcquisitionScopeStatus::Wanted | AcquisitionScopeStatus::Grabbed)
                 && item
                     .episode_id
                     .as_ref()
@@ -733,27 +785,15 @@ pub(crate) async fn process_download_failure(
             )
         }
     } else if let Some(items) = failed_collection_items.as_ref() {
-        let now = Utc::now();
-        let next_search_at = now.to_rfc3339();
-
+        // A failed season pack re-opens every covered episode scope: coverage
+        // pruned, state reset, acquisition woken. The cursor re-converges them
+        // individually (RFC 119 §11 #8 — never a cadence write).
         for item in items {
-            let _ = app
-                .services
-                .workflow
-                .wanted_items
-                .schedule_wanted_item_search(&WantedSearchTransition {
-                    id: item.id.clone(),
-                    next_search_at: Some(next_search_at.clone()),
-                    last_search_at: item.last_search_at.clone(),
-                    search_count: item.search_count,
-                    current_score: item.current_score,
-                    grabbed_release: None,
-                })
-                .await;
+            app.reopen_wanted_scope_for_acquisition(item).await;
         }
 
         let message = format!(
-            "season pack download failed for '{}': {}; re-queuing season episodes for individual search",
+            "season pack download failed for '{}': {}; re-opened season episodes for individual search",
             release_title_for_matching, context.reason
         );
 
@@ -761,7 +801,7 @@ pub(crate) async fn process_download_failure(
             title_id = resolved_title_id.as_deref().unwrap_or(""),
             affected_wanted_items = items.len(),
             release_title = release_title_for_matching,
-            "re-queued season episodes after failed season-pack download"
+            "re-opened season episode scopes after failed season-pack download"
         );
 
         (FailureHandlingOutcome::RequeuedFreshSearch, message)
@@ -799,44 +839,20 @@ pub(crate) async fn process_download_failure(
                     ),
                 ),
                 StandbyRecoveryOutcome::Exhausted => {
-                let immediate_research = should_research_failed_grab(item, &now);
-                let next_search_at = if immediate_research {
-                    now.to_rfc3339()
-                } else {
-                    (now + Duration::minutes(FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES)).to_rfc3339()
-                };
+                    // No standby candidate left: re-open the scope's convergence
+                    // (coverage pruned, state reset) so the cursor re-searches it.
+                    // The failed release is blocklisted below, and standby-first +
+                    // scheduler pacing keep this from tight-looping — never a
+                    // cadence write (RFC 119 §11 #8).
+                    app.reopen_wanted_scope_for_acquisition(item).await;
 
-                let _ = app
-                    .services
-                    .workflow
-                    .wanted_items
-                    .schedule_wanted_item_search(&WantedSearchTransition {
-                        id: item.id.clone(),
-                        next_search_at: Some(next_search_at),
-                        last_search_at: item.last_search_at.clone(),
-                        search_count: item.search_count,
-                        current_score: item.current_score,
-                        grabbed_release: None,
-                    })
-                    .await;
-
-                let message = if immediate_research {
-                    format!(
-                        "download failed for '{}': {}; standby exhausted, re-queuing for fresh search",
-                        release_title_for_matching, context.reason
+                    (
+                        FailureHandlingOutcome::RequeuedFreshSearch,
+                        format!(
+                            "download failed for '{}': {}; standby exhausted, re-opened scope for fresh search",
+                            release_title_for_matching, context.reason
+                        ),
                     )
-                } else {
-                    format!(
-                        "download failed for '{}': {}; standby exhausted, deferring reacquisition",
-                        release_title_for_matching, context.reason
-                    )
-                };
-
-                if immediate_research {
-                    (FailureHandlingOutcome::RequeuedFreshSearch, message)
-                } else {
-                    (FailureHandlingOutcome::RequeuedDeferred, message)
-                }
                 }
             }
         } else {
@@ -924,7 +940,7 @@ async fn resolve_failure_wanted_item(
     app: &AppUseCase,
     title_id: Option<&str>,
     release_title: &str,
-) -> Option<WantedItem> {
+) -> Option<AcquisitionScopeState> {
     let title_id = title_id?.trim();
     if title_id.is_empty() {
         return None;
@@ -933,12 +949,12 @@ async fn resolve_failure_wanted_item(
     let grabbed_items = app
         .services
         .workflow
-        .wanted_items
-        .list_wanted_items(WantedItemsQuery {
+        .acquisition_scope_states
+        .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
             statuses: vec!["grabbed".into()],
             title_id: Some(title_id.to_string()),
             limit: 25,
-            ..WantedItemsQuery::default()
+            ..AcquisitionScopeStatesQuery::default()
         })
         .await
         .ok()?;
@@ -980,8 +996,8 @@ async fn prune_standby_candidates(app: &AppUseCase) {
         let wanted = app
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(&wanted_item_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(&wanted_item_id)
             .await
             .ok()
             .flatten();
@@ -996,7 +1012,7 @@ async fn prune_standby_candidates(app: &AppUseCase) {
             continue;
         };
 
-        if wanted.status != WantedStatus::Grabbed {
+        if wanted.status != AcquisitionScopeStatus::Grabbed {
             let _ = app
                 .services
                 .workflow
@@ -1024,7 +1040,7 @@ async fn prune_standby_candidates(app: &AppUseCase) {
 }
 async fn recover_from_standby_candidates(
     app: &AppUseCase,
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     failed_release_title: &str,
     dl_snapshot: &DownloadClientSnapshot,
     now: &DateTime<Utc>,
@@ -1077,6 +1093,23 @@ async fn recover_from_standby_candidates(
                 .update_pending_release_status(&standby.id, PendingReleaseStatus::Expired, None)
                 .await;
             continue;
+        }
+
+        if dl_snapshot.queue_listing_failed() {
+            // Cannot confirm the release isn't already active; keep the standby
+            // for a later cycle rather than expiring it on an unknown signal.
+            info!(
+                title_id = item.title_id.as_str(),
+                standby_release = standby.release_title.as_str(),
+                "standby reacquisition: queue listing failed, keeping release pending"
+            );
+            let _ = app
+                .services
+                .workflow
+                .pending_releases
+                .update_pending_release_status(&standby.id, PendingReleaseStatus::Standby, None)
+                .await;
+            return StandbyRecoveryOutcome::Deferred;
         }
 
         if dl_snapshot.is_active(&standby.release_title) {
@@ -1192,7 +1225,7 @@ async fn recover_from_standby_candidates(
 )]
 async fn persist_standby_candidates(
     app: &AppUseCase,
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     title: &Title,
     results: &[IndexerSearchResult],
     start_index: usize,
@@ -1302,5 +1335,63 @@ async fn persist_standby_candidates(
             standby_candidates = persisted,
             "persisted standby candidates for failed-download recovery"
         );
+    }
+}
+
+#[cfg(test)]
+mod client_snapshot_tests {
+    use super::*;
+
+    fn snapshot(queue_listing_failed: bool, history_listing_failed: bool) -> DownloadClientSnapshot {
+        DownloadClientSnapshot {
+            active_titles: std::collections::HashSet::new(),
+            active_client_ids: std::collections::HashSet::new(),
+            active_raw_item_id_counts: std::collections::HashMap::new(),
+            completed_client_ids: std::collections::HashSet::new(),
+            completed_raw_item_id_counts: std::collections::HashMap::new(),
+            failed_by_download_id: std::collections::HashMap::new(),
+            queue_listing_failed,
+            history_listing_failed,
+        }
+    }
+
+    #[test]
+    fn queue_listing_failure_treats_everything_as_active() {
+        let snap = snapshot(true, false);
+        assert!(snap.queue_listing_failed());
+        // Any title / client item is treated as possibly-active so automatic
+        // grabs skip/defer instead of double-submitting blind.
+        assert!(snap.is_active("Some.Release.That.Is.Not.In.Any.Queue"));
+        assert!(snap.has_active_client_item(Some("client-1"), "nzo_missing"));
+        assert!(snap.has_active_client_item(None, "nzo_missing"));
+    }
+
+    #[test]
+    fn observable_empty_queue_reports_nothing_active() {
+        let snap = snapshot(false, false);
+        assert!(!snap.queue_listing_failed());
+        assert!(!snap.is_active("Some.Release"));
+        assert!(!snap.has_active_client_item(Some("client-1"), "nzo_missing"));
+    }
+
+    #[test]
+    fn history_listing_failure_reports_no_failures() {
+        let mut snap = snapshot(false, true);
+        snap.failed_by_download_id.insert(
+            "client-1:nzo_1".to_string(),
+            FailedDownloadSnapshot {
+                reason: "MISSING ARTICLES".to_string(),
+                download_client_item_id: "nzo_1".to_string(),
+                client_id: "client-1".to_string(),
+                client_name: None,
+            },
+        );
+        // Even with a populated map, an unobservable history must not surface
+        // failures (failure detection is skipped this cycle).
+        assert!(snap.failed_item(Some("client-1"), "nzo_1").is_none());
+
+        // With history observable, the same entry is reported.
+        snap.history_listing_failed = false;
+        assert!(snap.failed_item(Some("client-1"), "nzo_1").is_some());
     }
 }

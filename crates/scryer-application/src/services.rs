@@ -529,11 +529,50 @@ impl ExternalImportMonitorWarmupProgressSnapshot {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ExternalImportArrSourceKind {
+    Sonarr,
+    Radarr,
+}
+
+impl ExternalImportArrSourceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sonarr => "sonarr",
+            Self::Radarr => "radarr",
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ExternalImportArrSourceSeriesEntry {
+    pub series: crate::external_import::ArrSeries,
+    pub episodes: Vec<crate::external_import::ArrEpisode>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExternalImportArrSourceWarmupResult {
+    pub source_key: String,
+    pub kind: ExternalImportArrSourceKind,
+    pub base_url: String,
+    pub version: Option<String>,
+    pub root_folders: Vec<crate::external_import::ArrRootFolder>,
+    pub title_root_paths: Vec<String>,
+    pub naming_config: Option<crate::external_import::ArrNamingConfig>,
+    pub media_management_config: Option<crate::external_import::ArrMediaManagementConfig>,
+    pub metadata_providers: Vec<crate::external_import::ArrMetadataProvider>,
+    pub quality_profiles: Vec<crate::external_import::ArrQualityProfile>,
+    pub signal_warnings: Vec<String>,
+    pub download_clients: Vec<crate::external_import::ArrDownloadClient>,
+    pub indexers: Vec<crate::external_import::ArrIndexer>,
+}
+
 #[derive(Clone)]
 pub struct ExternalImportMonitorWarmupBeginResult {
     pub snapshot: ExternalImportMonitorWarmupProgressSnapshot,
     pub created: bool,
     pub cancel_token: tokio_util::sync::CancellationToken,
+    pub replaced_session_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -544,6 +583,7 @@ struct ExternalImportMonitorWarmupSessionHandle {
     cancel_token: tokio_util::sync::CancellationToken,
     tx: tokio::sync::watch::Sender<ExternalImportMonitorWarmupProgressSnapshot>,
     scan_hints: Option<crate::LibraryScanHintSet>,
+    arr_source_result: Option<ExternalImportArrSourceWarmupResult>,
 }
 
 #[derive(Default)]
@@ -569,6 +609,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
             connection_fingerprint.to_string(),
         );
         let mut state = self.state.lock().await;
+        let mut replaced_session_id = None;
 
         if let Some(existing_session_id) = state
             .session_ids_by_actor_fingerprint
@@ -586,37 +627,14 @@ impl ExternalImportMonitorWarmupOrchestrator {
                         snapshot: existing_snapshot,
                         created: false,
                         cancel_token: existing_handle.cancel_token.clone(),
+                        replaced_session_id: None,
                     };
                 }
             }
 
             state.session_ids_by_actor_fingerprint.remove(&actor_key);
-        }
-
-        for ((session_actor_user_id, session_fingerprint), session_id) in
-            state.session_ids_by_actor_fingerprint.clone()
-        {
-            if session_actor_user_id != actor_user_id
-                || session_fingerprint == connection_fingerprint
-            {
-                continue;
-            }
-
-            if let Some(handle) = state.sessions_by_id.get_mut(&session_id)
-                && !handle.claimed
-            {
-                let mut snapshot = handle.tx.borrow().clone();
-                if !snapshot.status.is_terminal() {
-                    snapshot.status = ExternalImportMonitorWarmupStatus::Canceled;
-                    snapshot.error_message = None;
-                    snapshot.touch();
-                    handle.tx.send_replace(snapshot);
-                }
-                handle.cancel_token.cancel();
-            }
-            state
-                .session_ids_by_actor_fingerprint
-                .remove(&(session_actor_user_id, session_fingerprint));
+            state.sessions_by_id.remove(&existing_session_id);
+            replaced_session_id = Some(existing_session_id);
         }
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -633,6 +651,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
                 cancel_token: cancel_token.clone(),
                 tx,
                 scan_hints: None,
+                arr_source_result: None,
             },
         );
 
@@ -640,6 +659,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
             snapshot: initial_snapshot,
             created: true,
             cancel_token,
+            replaced_session_id,
         }
     }
 
@@ -680,13 +700,39 @@ impl ExternalImportMonitorWarmupOrchestrator {
 
     pub async fn set_scan_hints(
         &self,
+        actor_user_id: &str,
         session_id: &str,
         scan_hints: crate::LibraryScanHintSet,
     ) -> bool {
         let mut state = self.state.lock().await;
+        if !state.sessions_by_id.contains_key(session_id) {
+            if scan_hints.is_empty() {
+                return false;
+            }
+            let mut snapshot =
+                ExternalImportMonitorWarmupProgressSnapshot::new(session_id.to_string());
+            snapshot.status = ExternalImportMonitorWarmupStatus::Completed;
+            snapshot.phase = ExternalImportMonitorWarmupPhase::Ready;
+            let (tx, _rx) = tokio::sync::watch::channel(snapshot);
+            state.sessions_by_id.insert(
+                session_id.to_string(),
+                ExternalImportMonitorWarmupSessionHandle {
+                    actor_user_id: actor_user_id.to_string(),
+                    connection_fingerprint: session_id.to_string(),
+                    claimed: true,
+                    cancel_token: tokio_util::sync::CancellationToken::new(),
+                    tx,
+                    scan_hints: None,
+                    arr_source_result: None,
+                },
+            );
+        }
         let Some(handle) = state.sessions_by_id.get_mut(session_id) else {
             return false;
         };
+        if handle.actor_user_id != actor_user_id {
+            return false;
+        }
         handle.scan_hints = (!scan_hints.is_empty()).then_some(scan_hints);
         true
     }
@@ -700,6 +746,32 @@ impl ExternalImportMonitorWarmupOrchestrator {
         state.sessions_by_id.get(session_id).and_then(|handle| {
             (handle.actor_user_id == actor_user_id)
                 .then(|| handle.scan_hints.clone())
+                .flatten()
+        })
+    }
+
+    pub async fn set_arr_source_result(
+        &self,
+        session_id: &str,
+        result: ExternalImportArrSourceWarmupResult,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get_mut(session_id) else {
+            return false;
+        };
+        handle.arr_source_result = Some(result);
+        true
+    }
+
+    pub async fn arr_source_result(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<ExternalImportArrSourceWarmupResult> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id)
+                .then(|| handle.arr_source_result.clone())
                 .flatten()
         })
     }
@@ -752,6 +824,55 @@ impl ExternalImportMonitorWarmupOrchestrator {
             (handle.actor_user_id == actor_user_id).then(|| handle.connection_fingerprint.clone())
         })
     }
+
+    pub async fn remove(&self, actor_user_id: &str, session_id: &str) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get(session_id) else {
+            return false;
+        };
+        if handle.actor_user_id != actor_user_id {
+            return false;
+        }
+        state.sessions_by_id.remove(session_id);
+        state
+            .session_ids_by_actor_fingerprint
+            .retain(|_, existing_session_id| existing_session_id != session_id);
+        true
+    }
+
+    pub async fn prune_terminal_older_than(&self, max_age: chrono::Duration) -> Vec<String> {
+        let mut state = self.state.lock().await;
+        let now = Utc::now();
+        let mut removed = Vec::new();
+        let session_ids = state.sessions_by_id.keys().cloned().collect::<Vec<_>>();
+
+        for session_id in session_ids {
+            let Some(handle) = state.sessions_by_id.get(&session_id) else {
+                continue;
+            };
+            if !handle.connection_fingerprint.starts_with("arr-source=") {
+                continue;
+            }
+            let snapshot = handle.tx.borrow().clone();
+            if !snapshot.status.is_terminal() {
+                continue;
+            }
+            let Ok(updated_at) = chrono::DateTime::parse_from_rfc3339(&snapshot.updated_at) else {
+                continue;
+            };
+            if now.signed_duration_since(updated_at.with_timezone(&Utc)) < max_age {
+                continue;
+            }
+
+            state.sessions_by_id.remove(&session_id);
+            state
+                .session_ids_by_actor_fingerprint
+                .retain(|_, existing_session_id| existing_session_id != &session_id);
+            removed.push(session_id);
+        }
+
+        removed
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -760,15 +881,17 @@ pub enum ProviderCatalogFamily {
     Notification,
     Indexer,
     DownloadClient,
+    ArchiveExtractor,
 }
 
 impl ProviderCatalogFamily {
-    pub const fn all() -> [Self; 4] {
+    pub const fn all() -> [Self; 5] {
         [
             Self::Subtitle,
             Self::Notification,
             Self::Indexer,
             Self::DownloadClient,
+            Self::ArchiveExtractor,
         ]
     }
 
@@ -778,6 +901,7 @@ impl ProviderCatalogFamily {
             Self::Notification => "notification",
             Self::Indexer => "indexer",
             Self::DownloadClient => "download_client",
+            Self::ArchiveExtractor => "archive_extractor",
         }
     }
 }
@@ -798,9 +922,12 @@ pub struct AppRuntimeEventState {
 pub struct AppRuntimeCatalogState {
     pub(crate) monitored_title_matcher:
         Arc<RwLock<crate::import_title_resolution::MonitoredTitleMatcherCache>>,
-    pub title_hydration_wake: Arc<tokio::sync::Notify>,
     pub poster_wake: Arc<tokio::sync::Notify>,
     pub fanart_wake: Arc<tokio::sync::Notify>,
+    pub(crate) title_hydration_wake: Arc<tokio::sync::Notify>,
+    pub(crate) title_recommendation_refresh_queue:
+        Arc<tokio::sync::Mutex<crate::catalog_workflow::TitleRecommendationRefreshQueue>>,
+    pub(crate) title_recommendation_refresh_wake: Arc<tokio::sync::Notify>,
     pub image_processing_limit: Arc<Semaphore>,
     pub title_image_maintenance_lock: Arc<tokio::sync::RwLock<()>>,
     pub title_image_cache_clear_scheduled: Arc<std::sync::atomic::AtomicBool>,
@@ -817,6 +944,10 @@ pub struct AppRuntimeAcquisitionState {
     pub tracked_download_handle: Option<tracked_downloads::TrackedDownloadHandle>,
     pub tracked_download_snapshot:
         Arc<tokio::sync::RwLock<HashMap<String, tracked_downloads::TrackedDownloadQueueMetadata>>>,
+    /// Cancellation tokens for in-flight interactive acquisition-search jobs
+    /// (RFC 119 §7.3), keyed by job-run id — mirrors the library-scan cancel map.
+    pub acquisition_search_cancellation_tokens:
+        Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
 }
 
 pub(crate) struct ReleaseCandidatePasswordTicket {
@@ -833,6 +964,8 @@ pub(crate) struct ReleaseCandidatePasswordTicket {
 #[derive(Clone)]
 pub struct AppRuntimeImportState {
     pub external_import_warmup_orchestrator: ExternalImportMonitorWarmupOrchestrator,
+    pub external_import_apply_lock: Arc<tokio::sync::Mutex<()>>,
+    pub external_import_source_chunk_cleanup_done: Arc<tokio::sync::Mutex<bool>>,
     pub(crate) same_path_upgrade_guard_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -841,14 +974,19 @@ pub struct AppRuntimeLibraryState {
     pub library_scan_tracker: LibraryScanTracker,
     pub library_scan_cancellation_tokens:
         Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
+    pub library_scan_title_walk_limit: Arc<Semaphore>,
     pub library_scan_analysis_limit: Arc<Semaphore>,
 }
 
 #[derive(Clone)]
 pub struct AppRuntimeJobState {
     pub job_run_tracker: JobRunTracker,
+    pub discovery_sync_wake: Arc<tokio::sync::Notify>,
     pub backup_execution_guards: BackupExecutionGuardTable,
     pub title_deletion_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Single-flight guard for the interactive acquisition-search job (RFC 119
+    /// §7.3) — mirrors `title_deletion_lock`.
+    pub acquisition_search_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone)]
@@ -903,6 +1041,7 @@ pub struct AppRuntimeEnvironmentState {
     pub(crate) supported_plugin_required_features: Arc<HashSet<String>>,
     pub(crate) config_dir: Arc<PathBuf>,
     pub(crate) performance_snapshot: Arc<OnceCell<RuntimePerformanceSnapshot>>,
+    fixed_now: Arc<std::sync::RwLock<Option<DateTime<Utc>>>>,
 }
 
 impl AppRuntimeEnvironmentState {
@@ -923,6 +1062,21 @@ impl AppRuntimeEnvironmentState {
             ),
             config_dir: Arc::new(config_dir.into()),
             performance_snapshot: Arc::new(OnceCell::new()),
+            fixed_now: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    pub(crate) fn now(&self) -> DateTime<Utc> {
+        self.fixed_now
+            .read()
+            .ok()
+            .and_then(|guard| *guard)
+            .unwrap_or_else(Utc::now)
+    }
+
+    pub fn set_fixed_now_for_tests(&self, now: Option<DateTime<Utc>>) {
+        if let Ok(mut guard) = self.fixed_now.write() {
+            *guard = now;
         }
     }
 }
@@ -1007,9 +1161,13 @@ impl AppRuntimeState {
                 monitored_title_matcher: Arc::new(RwLock::new(
                     crate::import_title_resolution::MonitoredTitleMatcherCache::default(),
                 )),
-                title_hydration_wake: Arc::new(tokio::sync::Notify::new()),
                 poster_wake: Arc::new(tokio::sync::Notify::new()),
                 fanart_wake: Arc::new(tokio::sync::Notify::new()),
+                title_hydration_wake: Arc::new(tokio::sync::Notify::new()),
+                title_recommendation_refresh_queue: Arc::new(tokio::sync::Mutex::new(
+                    crate::catalog_workflow::TitleRecommendationRefreshQueue::default(),
+                )),
+                title_recommendation_refresh_wake: Arc::new(tokio::sync::Notify::new()),
                 image_processing_limit: Arc::new(Semaphore::new(4)),
                 title_image_maintenance_lock: Arc::new(tokio::sync::RwLock::new(())),
                 title_image_cache_clear_scheduled: Arc::new(std::sync::atomic::AtomicBool::new(
@@ -1024,23 +1182,31 @@ impl AppRuntimeState {
                 rss_seen_guids: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
                 tracked_download_handle: None,
                 tracked_download_snapshot: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+                acquisition_search_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
             },
             imports: AppRuntimeImportState {
                 external_import_warmup_orchestrator:
                     ExternalImportMonitorWarmupOrchestrator::default(),
+                external_import_apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+                external_import_source_chunk_cleanup_done: Arc::new(tokio::sync::Mutex::new(false)),
                 same_path_upgrade_guard_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
             library: AppRuntimeLibraryState {
                 library_scan_tracker: LibraryScanTracker::new(),
                 library_scan_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
+                library_scan_title_walk_limit: Arc::new(Semaphore::new(
+                    LIBRARY_SCAN_GLOBAL_TITLE_WALK_CONCURRENCY,
+                )),
                 library_scan_analysis_limit: Arc::new(Semaphore::new(
                     GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY,
                 )),
             },
             jobs: AppRuntimeJobState {
                 job_run_tracker: JobRunTracker::new(),
+                discovery_sync_wake: Arc::new(tokio::sync::Notify::new()),
                 backup_execution_guards: BackupExecutionGuardTable::default(),
                 title_deletion_lock: Arc::new(tokio::sync::Mutex::new(())),
+                acquisition_search_lock: Arc::new(tokio::sync::Mutex::new(())),
             },
             health: AppRuntimeHealthState {
                 results: Arc::new(tokio::sync::RwLock::new(Vec::new())),
@@ -1083,6 +1249,7 @@ pub struct AppCatalogServices {
 #[derive(Clone)]
 pub struct AppIdentityServices {
     pub(crate) users: Arc<dyn UserRepository>,
+    pub(crate) ui_settings: Arc<dyn UserUiSettingsRepository>,
     pub(crate) external_accounts: Arc<dyn UserExternalAccountRepository>,
     pub(crate) webauthn: Arc<dyn WebauthnRepository>,
     pub(crate) totp: Arc<dyn TotpRepository>,
@@ -1118,6 +1285,7 @@ impl<T> RuntimeFeature<T> {
 #[derive(Clone)]
 pub struct AppLibraryServices {
     pub(crate) metadata_gateway: Arc<dyn MetadataGateway>,
+    pub(crate) discovery: Arc<dyn DiscoveryRepository>,
     pub(crate) library_scanner: Arc<dyn LibraryScanner>,
     pub(crate) library_renamer: Arc<dyn LibraryRenamer>,
     pub(crate) media_files: Arc<dyn MediaFileRepository>,
@@ -1131,6 +1299,8 @@ pub struct AppLibraryServices {
 #[derive(Clone)]
 pub struct AppIntegrationServices {
     pub(crate) indexer_configs: Arc<dyn IndexerConfigRepository>,
+    pub(crate) indexer_proxy_configs: Arc<dyn IndexerProxyConfigRepository>,
+    pub(crate) scope_indexer_coverage: Arc<dyn ScopeIndexerCoverageRepository>,
     pub(crate) indexer_caps_refresher: RuntimeFeature<Arc<dyn IndexerCapsSnapshotRefresher>>,
     pub(crate) indexer_client: Arc<dyn IndexerClient>,
     pub(crate) download_client: Arc<dyn DownloadClient>,
@@ -1141,16 +1311,21 @@ pub struct AppIntegrationServices {
     pub(crate) external_identity_verifier: Arc<dyn ExternalIdentityVerifier>,
     pub(crate) media_server_connections: Arc<dyn MediaServerConnectionRepository>,
     pub(crate) indexer_stats: Arc<dyn IndexerStatsTracker>,
+    pub(crate) upstream_scheduler: Arc<dyn UpstreamScheduler>,
     pub(crate) plugin_provider: RuntimeFeature<Arc<dyn IndexerPluginProvider>>,
     pub(crate) download_client_plugin_provider:
         RuntimeFeature<Arc<dyn DownloadClientPluginProvider>>,
     pub(crate) subtitle_plugin_provider: RuntimeFeature<Arc<dyn SubtitlePluginProvider>>,
+    pub(crate) archive_extractor_plugin_provider:
+        RuntimeFeature<Arc<dyn ArchiveExtractorPluginProvider>>,
 }
 
 #[derive(Clone)]
 pub struct AppWorkflowServices {
     pub(crate) imports: Arc<dyn ImportRepository>,
     pub(crate) external_import_monitor_snapshots: Arc<dyn ExternalImportMonitorSnapshotRepository>,
+    pub(crate) external_import_setup_secret_drafts:
+        Arc<dyn ExternalImportSetupSecretDraftRepository>,
     pub(crate) download_queue_commands: Arc<dyn DownloadQueueCommandRepository>,
     pub(crate) workflow_operations: Arc<dyn WorkflowOperationRepository>,
     pub(crate) file_importer: Arc<dyn FileImporter>,
@@ -1158,7 +1333,7 @@ pub struct AppWorkflowServices {
     pub(crate) release_attempts: Arc<dyn ReleaseAttemptRepository>,
     pub(crate) acquisition_state: Arc<dyn AcquisitionStateRepository>,
     pub(crate) download_submissions: Arc<dyn DownloadSubmissionRepository>,
-    pub(crate) wanted_items: Arc<dyn WantedItemRepository>,
+    pub(crate) acquisition_scope_states: Arc<dyn AcquisitionScopeStateRepository>,
     pub(crate) housekeeping: Arc<dyn HousekeepingRepository>,
     pub(crate) pending_releases: Arc<dyn PendingReleaseRepository>,
     pub(crate) blocklist_repo: Arc<dyn BlocklistRepository>,
@@ -1326,6 +1501,7 @@ impl AppServices {
             },
             identity: AppIdentityServices {
                 users,
+                ui_settings: Arc::new(null_repositories::NullUserUiSettingsRepository),
                 external_accounts: Arc::new(null_repositories::NullUserExternalAccountRepository),
                 webauthn: Arc::new(null_repositories::NullWebauthnRepository),
                 totp: Arc::new(null_repositories::NullTotpRepository),
@@ -1337,6 +1513,7 @@ impl AppServices {
             },
             library: AppLibraryServices {
                 metadata_gateway: Arc::new(crate::library_scan::NullMetadataGateway),
+                discovery: Arc::new(null_repositories::NullDiscoveryRepository),
                 library_scanner: Arc::new(crate::library_scan::NullLibraryScanner),
                 library_renamer: Arc::new(crate::library_rename::NullLibraryRenamer),
                 media_files: Arc::new(NullMediaFileRepository),
@@ -1350,6 +1527,12 @@ impl AppServices {
             },
             integrations: AppIntegrationServices {
                 indexer_configs,
+                indexer_proxy_configs: Arc::new(
+                    null_repositories::NullIndexerProxyConfigRepository,
+                ),
+                scope_indexer_coverage: Arc::new(
+                    null_repositories::NullScopeIndexerCoverageRepository,
+                ),
                 indexer_caps_refresher: RuntimeFeature::Disabled,
                 indexer_client,
                 download_client,
@@ -1365,14 +1548,19 @@ impl AppServices {
                     null_repositories::NullMediaServerConnectionRepository,
                 ),
                 indexer_stats: Arc::new(NullIndexerStatsTracker),
+                upstream_scheduler: Arc::new(NullUpstreamScheduler),
                 plugin_provider: RuntimeFeature::Disabled,
                 download_client_plugin_provider: RuntimeFeature::Disabled,
                 subtitle_plugin_provider: RuntimeFeature::Disabled,
+                archive_extractor_plugin_provider: RuntimeFeature::Disabled,
             },
             workflow: AppWorkflowServices {
                 imports: Arc::new(NullImportRepository),
                 external_import_monitor_snapshots: Arc::new(
                     null_repositories::NullExternalImportMonitorSnapshotRepository,
+                ),
+                external_import_setup_secret_drafts: Arc::new(
+                    null_repositories::NullExternalImportSetupSecretDraftRepository,
                 ),
                 download_queue_commands: Arc::new(
                     null_repositories::NullDownloadQueueCommandRepository,
@@ -1383,7 +1571,7 @@ impl AppServices {
                 release_attempts,
                 acquisition_state: Arc::new(NullAcquisitionStateRepository),
                 download_submissions: Arc::new(NullDownloadSubmissionRepository),
-                wanted_items: Arc::new(NullWantedItemRepository),
+                acquisition_scope_states: Arc::new(NullAcquisitionScopeStateRepository),
                 housekeeping: Arc::new(NullHousekeepingRepository),
                 pending_releases: Arc::new(NullPendingReleaseRepository),
                 blocklist_repo: Arc::new(NullBlocklistRepository),
@@ -1460,7 +1648,7 @@ struct AppServicesBuildConfiguration {
     media_files: bool,
     acquisition_state: bool,
     download_submissions: bool,
-    wanted_items: bool,
+    acquisition_scope_states: bool,
     rule_sets: bool,
     pp_scripts: bool,
     plugin_installations: bool,
@@ -1506,8 +1694,8 @@ impl AppServicesBuildConfiguration {
         if !self.download_submissions {
             missing.push("download_submissions");
         }
-        if !self.wanted_items {
-            missing.push("wanted_items");
+        if !self.acquisition_scope_states {
+            missing.push("acquisition_scope_states");
         }
         if !self.rule_sets {
             missing.push("rule_sets");
@@ -1601,6 +1789,11 @@ impl AppServicesBuilder {
         Arc<dyn WebauthnRepository>
     );
     app_services_builder_setter!(with_totp_store, identity.totp, Arc<dyn TotpRepository>);
+    app_services_builder_setter!(
+        with_user_ui_settings_store,
+        identity.ui_settings,
+        Arc<dyn UserUiSettingsRepository>
+    );
     app_services_builder_setter!(
         with_external_account_store,
         identity.external_accounts,
@@ -1698,6 +1891,16 @@ impl AppServicesBuilder {
         Arc<dyn BuiltinDownloadClientConnectionTester>
     );
     app_services_builder_setter!(
+        with_indexer_proxy_config_store,
+        integrations.indexer_proxy_configs,
+        Arc<dyn IndexerProxyConfigRepository>
+    );
+    app_services_builder_setter!(
+        with_scope_indexer_coverage_store,
+        integrations.scope_indexer_coverage,
+        Arc<dyn ScopeIndexerCoverageRepository>
+    );
+    app_services_builder_setter!(
         with_external_identity_verifier,
         integrations.external_identity_verifier,
         Arc<dyn ExternalIdentityVerifier>
@@ -1713,6 +1916,11 @@ impl AppServicesBuilder {
         metadata_gateway,
         Arc<dyn MetadataGateway>
     );
+    app_services_builder_setter!(
+        with_discovery_store,
+        library.discovery,
+        Arc<dyn DiscoveryRepository>
+    );
     app_services_builder_required_setter!(
         with_library_scanner,
         library.library_scanner,
@@ -1723,6 +1931,11 @@ impl AppServicesBuilder {
         with_library_renamer,
         library.library_renamer,
         Arc<dyn LibraryRenamer>
+    );
+    app_services_builder_setter!(
+        with_media_analyzer,
+        library.media_analyzer,
+        Arc<dyn MediaAnalyzer>
     );
     app_services_builder_required_setter!(
         with_domain_events,
@@ -1740,6 +1953,11 @@ impl AppServicesBuilder {
         with_external_import_monitor_snapshots,
         workflow.external_import_monitor_snapshots,
         Arc<dyn ExternalImportMonitorSnapshotRepository>
+    );
+    app_services_builder_setter!(
+        with_external_import_setup_secret_drafts,
+        workflow.external_import_setup_secret_drafts,
+        Arc<dyn ExternalImportSetupSecretDraftRepository>
     );
     app_services_builder_setter!(
         with_download_queue_commands,
@@ -1782,10 +2000,10 @@ impl AppServicesBuilder {
         Arc<dyn AcquisitionStateRepository>
     );
     app_services_builder_required_setter!(
-        with_wanted_items,
-        workflow.wanted_items,
-        wanted_items,
-        Arc<dyn WantedItemRepository>
+        with_acquisition_scope_states,
+        workflow.acquisition_scope_states,
+        acquisition_scope_states,
+        Arc<dyn AcquisitionScopeStateRepository>
     );
     app_services_builder_required_setter!(
         with_pending_releases,
@@ -1891,6 +2109,11 @@ impl AppServicesBuilder {
         integrations.indexer_stats,
         Arc<dyn IndexerStatsTracker>
     );
+    app_services_builder_setter!(
+        with_upstream_scheduler,
+        integrations.upstream_scheduler,
+        Arc<dyn UpstreamScheduler>
+    );
     app_services_builder_runtime_feature_setter!(
         with_indexer_caps_refresher,
         integrations.indexer_caps_refresher,
@@ -1915,6 +2138,11 @@ impl AppServicesBuilder {
         with_subtitle_plugin_provider,
         integrations.subtitle_plugin_provider,
         Arc<dyn SubtitlePluginProvider>
+    );
+    app_services_builder_runtime_feature_setter!(
+        with_archive_extractor_plugin_provider,
+        integrations.archive_extractor_plugin_provider,
+        Arc<dyn ArchiveExtractorPluginProvider>
     );
     pub fn with_notification_provider(
         mut self,
@@ -1986,6 +2214,25 @@ pub struct AppUseCase {
 }
 
 impl AppUseCase {
+    pub async fn upstream_scheduler_snapshot(
+        &self,
+        filter: SchedulerSnapshotFilter,
+    ) -> AppResult<SchedulerSnapshot> {
+        self.services
+            .integrations
+            .upstream_scheduler
+            .snapshot(filter)
+            .await
+    }
+
+    pub async fn flush_upstream_scheduler(&self) -> AppResult<()> {
+        self.services
+            .integrations
+            .upstream_scheduler
+            .flush_pending()
+            .await
+    }
+
     pub fn set_recovery_admin_login_enabled(&self, enabled: bool) {
         self.runtime
             .security
@@ -2122,6 +2369,8 @@ impl AppUseCase {
                 .notification_event_broadcast
                 .send(stored.sequence);
         }
+        self.maybe_accelerate_discovery_sync_for_scan_completion(stored)
+            .await;
     }
 
     pub async fn append_domain_events(
@@ -2168,7 +2417,53 @@ impl AppUseCase {
                 .notification_event_broadcast
                 .send(last.sequence);
         }
+        for event in &stored {
+            self.maybe_accelerate_discovery_sync_for_scan_completion(event)
+                .await;
+        }
         Ok(stored)
+    }
+
+    async fn maybe_accelerate_discovery_sync_for_scan_completion(&self, event: &DomainEvent) {
+        let scryer_domain::DomainEventPayload::LibraryScanCompleted(data) = &event.payload else {
+            return;
+        };
+        if data.found_titles <= 0 {
+            return;
+        }
+
+        match self
+            .services
+            .library
+            .discovery
+            .get_discovery_sync_state(DISCOVERY_DEFAULT_SCOPE_KEY)
+            .await
+        {
+            Ok(Some(state)) if state.last_success_generation_id.is_some() => {}
+            Ok(_) => {
+                if let Err(error) = self
+                    .schedule_discovery_sync_soon_silent(
+                        "library_scan_completed_before_first_snapshot",
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        sequence = event.sequence,
+                        facet = event.facet.as_ref().map(MediaFacet::as_str),
+                        "failed to accelerate discovery sync after library scan"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    sequence = event.sequence,
+                    facet = event.facet.as_ref().map(MediaFacet::as_str),
+                    "failed to inspect discovery sync state for scan acceleration"
+                );
+            }
+        }
     }
 
     pub async fn update_import_status_and_notify(
@@ -2402,7 +2697,10 @@ impl AppUseCase {
         }
     }
 
-    async fn derive_wanted_item_library_id(&self, wanted: &WantedItem) -> AppResult<String> {
+    async fn derive_wanted_item_library_id(
+        &self,
+        wanted: &AcquisitionScopeState,
+    ) -> AppResult<String> {
         if let Some(library_id) = wanted.library_id.as_deref() {
             return Ok(library_id.to_string());
         }
@@ -2413,6 +2711,35 @@ impl AppUseCase {
             .await?
             .map(|title| title.library_id)
             .ok_or_else(|| AppError::NotFound(format!("title {}", wanted.title_id)))
+    }
+
+    /// Retain only the acquisition scope states whose owning library the actor
+    /// holds `permission` on. Mirrors the per-item permission derivation used by
+    /// `get_wanted_item` / `get_wanted_item_for_management` (the joined
+    /// `library_id` is the title's library), silently dropping forbidden or
+    /// orphaned rows for batch/dataloader callers.
+    pub(crate) async fn filter_wanted_items_for_permission(
+        &self,
+        actor: &User,
+        items: Vec<AcquisitionScopeState>,
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, permission)
+            .await?
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        if allowed_library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(items
+            .into_iter()
+            .filter(|item| {
+                item.library_id
+                    .as_deref()
+                    .is_some_and(|library_id| allowed_library_ids.contains(library_id))
+            })
+            .collect())
     }
 
     pub async fn find_download_submission_by_client_item_id(
@@ -2581,12 +2908,107 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn list_episode_media_files(
+        &self,
+        actor: &User,
+        title_id: &str,
+        episode_id: &str,
+    ) -> AppResult<Vec<TitleMediaFile>> {
+        let title = self
+            .services
+            .catalog
+            .titles
+            .get_by_id(title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.require_library_permission(
+            actor,
+            &title.library_id,
+            scryer_domain::LibraryPermission::View,
+        )
+        .await?;
+
+        let episode_ids = vec![episode_id.to_string()];
+        let scoped_files = self
+            .services
+            .library
+            .media_files
+            .list_live_media_files_for_episode_ids(title_id, &episode_ids)
+            .await?;
+
+        Ok(scoped_files
+            .into_iter()
+            .filter_map(|scoped_file| {
+                if !scoped_file
+                    .episode_ids
+                    .iter()
+                    .any(|scoped_episode_id| scoped_episode_id == episode_id)
+                {
+                    return None;
+                }
+
+                let mut media_file = scoped_file.media_file;
+                media_file.episode_id = Some(episode_id.to_string());
+                Some(media_file)
+            })
+            .collect())
+    }
+
+    /// Batch variant of [`Self::list_episode_media_files`] for one title:
+    /// one permission check and one scoped-files fetch cover every requested
+    /// episode id, grouped per episode. A missing or non-`View`-visible title
+    /// yields an empty map (silent drop, matching the loader-facing batches).
+    pub async fn list_episode_media_files_for_title(
+        &self,
+        actor: &User,
+        title_id: &str,
+        episode_ids: &[String],
+    ) -> AppResult<std::collections::HashMap<String, Vec<TitleMediaFile>>> {
+        if episode_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let Some(title) = self.services.catalog.titles.get_by_id(title_id).await? else {
+            return Ok(std::collections::HashMap::new());
+        };
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?;
+        if !allowed_library_ids.contains(&title.library_id) {
+            return Ok(std::collections::HashMap::new());
+        }
+        let scoped_files = self
+            .services
+            .library
+            .media_files
+            .list_live_media_files_for_episode_ids(title_id, episode_ids)
+            .await?;
+        let mut files_by_episode: std::collections::HashMap<String, Vec<TitleMediaFile>> =
+            std::collections::HashMap::new();
+        for scoped_file in scoped_files {
+            for episode_id in episode_ids {
+                if scoped_file
+                    .episode_ids
+                    .iter()
+                    .any(|scoped_episode_id| scoped_episode_id == episode_id)
+                {
+                    let mut media_file = scoped_file.media_file.clone();
+                    media_file.episode_id = Some(episode_id.clone());
+                    files_by_episode
+                        .entry(episode_id.clone())
+                        .or_default()
+                        .push(media_file);
+                }
+            }
+        }
+        Ok(files_by_episode)
+    }
+
     pub async fn get_title_wanted_item(
         &self,
         actor: &User,
         title_id: &str,
         episode_id: Option<&str>,
-    ) -> AppResult<Option<WantedItem>> {
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         let title = self
             .services
             .catalog
@@ -2602,8 +3024,32 @@ impl AppUseCase {
         .await?;
         self.services
             .workflow
-            .wanted_items
-            .get_wanted_item_for_title(title_id, episode_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_for_title(title_id, episode_id)
+            .await
+    }
+
+    /// Batch variant of [`Self::get_title_wanted_item`]: returns every acquisition
+    /// scope state for the `View`-visible subset of `title_ids`. Callers key the
+    /// flat result by `(title_id, episode_id)`.
+    pub async fn get_title_wanted_items_for_titles(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        let visible_title_ids = self
+            .get_titles_by_ids(actor, title_ids)
+            .await?
+            .into_iter()
+            .map(|title| title.id)
+            .collect::<Vec<_>>();
+        if visible_title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.services
+            .workflow
+            .acquisition_scope_states
+            .list_acquisition_scope_states_for_title_ids(&visible_title_ids)
             .await
     }
 
@@ -2628,12 +3074,12 @@ impl AppUseCase {
         &self,
         actor: &User,
         wanted_item_id: &str,
-    ) -> AppResult<Option<WantedItem>> {
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         let wanted = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(wanted_item_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(wanted_item_id)
             .await?;
         if let Some(wanted) = wanted.as_ref() {
             let library_id = self.derive_wanted_item_library_id(wanted).await?;
@@ -2645,6 +3091,27 @@ impl AppUseCase {
             .await?;
         }
         Ok(wanted)
+    }
+
+    /// Batch variant of [`Self::get_wanted_item_for_management`]: loads wanted
+    /// items by id and silently drops those the actor cannot manage.
+    pub async fn get_wanted_items_by_ids_for_management(
+        &self,
+        actor: &User,
+        ids: &[String],
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        let items = self
+            .services
+            .workflow
+            .acquisition_scope_states
+            .list_acquisition_scope_states_by_ids(ids)
+            .await?;
+        self.filter_wanted_items_for_permission(
+            actor,
+            items,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await
     }
 
     pub async fn get_title_for_download_actions(
@@ -3152,6 +3619,49 @@ mod tests {
 
         assert!(second.created);
         assert_ne!(second.snapshot.session_id, first.snapshot.session_id);
+    }
+
+    #[tokio::test]
+    async fn external_import_warmup_prune_only_removes_arr_source_sessions() {
+        let orchestrator = ExternalImportMonitorWarmupOrchestrator::default();
+        let source = orchestrator
+            .begin(
+                "user-1",
+                "arr-source=sonarr|http://sonarr|key",
+                ExternalImportMonitorWarmupProgressSnapshot::new("source-session".into()),
+            )
+            .await;
+        let apply = orchestrator
+            .begin(
+                "user-1",
+                crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID,
+                ExternalImportMonitorWarmupProgressSnapshot::new(
+                    crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID.to_string(),
+                ),
+            )
+            .await;
+        let old_updated_at = (Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
+
+        for snapshot in [&source.snapshot, &apply.snapshot] {
+            let mut completed = snapshot.clone();
+            completed.status = ExternalImportMonitorWarmupStatus::Completed;
+            completed.updated_at = old_updated_at.clone();
+            let session_id = completed.session_id.clone();
+            assert!(orchestrator.update(&session_id, completed).await);
+        }
+
+        let removed = orchestrator
+            .prune_terminal_older_than(chrono::Duration::hours(2))
+            .await;
+
+        assert_eq!(removed, vec!["source-session".to_string()]);
+        assert!(
+            orchestrator
+                .snapshot("user-1", crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID)
+                .await
+                .is_some(),
+            "apply session should not be pruned as a source session"
+        );
     }
 
     #[tokio::test]

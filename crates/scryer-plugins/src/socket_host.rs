@@ -1,23 +1,21 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use extism::{Function, UserData, ValType, host_fn};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use crate::types::{
     PluginDescriptor, SocketCloseRequest, SocketCloseResponse, SocketError, SocketErrorCode,
-    SocketOpenRequest, SocketOpenResponse, SocketPermission, SocketReadRequest, SocketReadResponse,
-    SocketResponse, SocketStartTlsRequest, SocketStartTlsResponse, SocketTlsMode,
-    SocketWriteRequest, SocketWriteResponse, allowed_host_pattern_is_valid,
-    socket_host_pattern_config_key,
+    SocketOpenRequest, SocketOpenResponse, SocketReadRequest, SocketReadResponse, SocketResponse,
+    SocketStartTlsRequest, SocketStartTlsResponse, SocketTlsMode, SocketWriteRequest,
+    SocketWriteResponse, allowed_host_pattern_is_valid, socket_host_pattern_config_key,
 };
 
-const SOCKET_HOST_NAMESPACE: &str = "extism:host/user";
+pub(crate) const SOCKET_HOST_NAMESPACE: &str = "extism:host/user";
 const MAX_OPEN_SOCKETS: usize = 4;
 const MAX_READ_BYTES: usize = 64 * 1024;
 const MAX_WRITE_BYTES: usize = 64 * 1024;
@@ -28,13 +26,13 @@ const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub(crate) struct SocketHost {
-    state: UserData<SocketHostState>,
+    state: Arc<Mutex<SocketHostState>>,
 }
 
 impl SocketHost {
     pub(crate) fn disabled() -> Self {
         Self {
-            state: UserData::new(SocketHostState::new(Vec::new())),
+            state: Arc::new(Mutex::new(SocketHostState::new(Vec::new()))),
         }
     }
 
@@ -43,65 +41,54 @@ impl SocketHost {
         config_json: Option<&str>,
     ) -> Self {
         Self {
-            state: UserData::new(SocketHostState::new(resolve_permissions(
-                &descriptor.socket_permissions,
-                config_json,
+            state: Arc::new(Mutex::new(SocketHostState::new(
+                resolve_socket_permissions(descriptor, config_json),
             ))),
         }
     }
 
-    pub(crate) fn functions(&self) -> Vec<Function> {
-        let params = || [ValType::I64];
-        let results = || [ValType::I64];
+    #[cfg(test)]
+    pub(crate) fn allows_for_test(&self, host: &str, port: u16, tls_mode: SocketTlsMode) -> bool {
+        self.state.lock().expect("socket host state lock").allows(
+            &normalize_host(host),
+            port,
+            tls_mode,
+        )
+    }
 
-        vec![
-            Function::new(
-                "scryer_socket_open",
-                params(),
-                results(),
-                self.state.clone(),
-                scryer_socket_open,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_read",
-                params(),
-                results(),
-                self.state.clone(),
-                scryer_socket_read,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_write",
-                params(),
-                results(),
-                self.state.clone(),
-                scryer_socket_write,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_starttls",
-                params(),
-                results(),
-                self.state.clone(),
-                scryer_socket_starttls,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_close",
-                params(),
-                results(),
-                self.state.clone(),
-                scryer_socket_close,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-        ]
+    pub(crate) fn call(&self, function: &str, input: String) -> Result<String, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|error| format!("socket state lock poisoned: {error}"))?;
+        let output = match function {
+            "scryer_socket_open" => {
+                let request = decode_input(input);
+                encode_response(request.and_then(|request| state.open(request)))
+            }
+            "scryer_socket_read" => {
+                let request = decode_input(input);
+                encode_response(request.and_then(|request| state.read(request)))
+            }
+            "scryer_socket_write" => {
+                let request = decode_input(input);
+                encode_response(request.and_then(|request| state.write(request)))
+            }
+            "scryer_socket_starttls" => {
+                let request = decode_input(input);
+                encode_response(request.and_then(|request| state.starttls(request)))
+            }
+            "scryer_socket_close" => {
+                let request = decode_input(input);
+                encode_response(request.map(|request| state.close(request)))
+            }
+            other => return Err(format!("unsupported socket host function: {other}")),
+        };
+        Ok(output)
     }
 
     pub(crate) fn cleanup(&self) {
-        if let Ok(state) = self.state.get()
-            && let Ok(mut state) = state.lock()
-        {
+        if let Ok(mut state) = self.state.lock() {
             state.cleanup();
         }
     }
@@ -378,43 +365,6 @@ impl ResolvedSocketPermission {
     }
 }
 
-fn resolve_permissions(
-    permissions: &[SocketPermission],
-    config_json: Option<&str>,
-) -> Vec<ResolvedSocketPermission> {
-    let config = config_json.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
-
-    permissions
-        .iter()
-        .filter_map(|permission| {
-            let host_pattern = resolve_host_pattern(&permission.host_pattern, config.as_ref())?;
-            Some(ResolvedSocketPermission {
-                host_pattern,
-                ports: permission.ports.clone(),
-                tls_modes: permission.tls_modes.clone(),
-            })
-        })
-        .collect()
-}
-
-fn resolve_host_pattern(pattern: &str, config: Option<&serde_json::Value>) -> Option<String> {
-    if let Some(key) = socket_host_pattern_config_key(pattern) {
-        let value = config?
-            .get(key)?
-            .as_str()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())?;
-        let host = normalize_host(value);
-        if host.contains('*') || !allowed_host_pattern_is_valid(&host) {
-            return None;
-        }
-        return Some(host);
-    }
-
-    let host = normalize_host(pattern);
-    allowed_host_pattern_is_valid(&host).then_some(host)
-}
-
 fn host_matches_pattern(pattern: &str, host: &str) -> bool {
     if let Some(suffix) = pattern.strip_prefix("*.") {
         return host
@@ -426,6 +376,48 @@ fn host_matches_pattern(pattern: &str, host: &str) -> bool {
 
 fn normalize_host(host: &str) -> String {
     host.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn resolve_socket_permissions(
+    descriptor: &PluginDescriptor,
+    config_json: Option<&str>,
+) -> Vec<ResolvedSocketPermission> {
+    let config = config_json.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+    descriptor
+        .socket_permissions
+        .iter()
+        .filter_map(|permission| {
+            let host_pattern =
+                resolve_socket_host_pattern(&permission.host_pattern, config.as_ref())?;
+            if permission.ports.is_empty()
+                || permission.tls_modes.is_empty()
+                || !allowed_host_pattern_is_valid(&host_pattern)
+            {
+                return None;
+            }
+            Some(ResolvedSocketPermission {
+                host_pattern: normalize_host(&host_pattern),
+                ports: permission.ports.clone(),
+                tls_modes: permission.tls_modes.clone(),
+            })
+        })
+        .collect()
+}
+
+fn resolve_socket_host_pattern(
+    pattern: &str,
+    config: Option<&serde_json::Value>,
+) -> Option<String> {
+    let pattern = pattern.trim();
+    let Some(key) = socket_host_pattern_config_key(pattern) else {
+        return Some(pattern.to_string());
+    };
+    config?
+        .get(key)?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn timeout_or_default(value_ms: Option<u64>, default: Duration) -> Duration {
@@ -590,47 +582,68 @@ fn map_io_error(error: io::Error) -> SocketError {
     socket_error(code, error.to_string())
 }
 
-host_fn!(scryer_socket_open(state: SocketHostState; input: String) -> String {
-    let state = state.get()?;
-    let mut state = state
-        .lock()
-        .map_err(|error| extism::Error::msg(format!("socket state lock poisoned: {error}")))?;
-    let request = decode_input(input);
-    Ok(encode_response(request.and_then(|request| state.open(request))))
-});
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{
+        NotificationCapabilities, NotificationDescriptor, PluginDescriptor, ProviderDescriptor,
+        SDK_VERSION, SocketPermission, current_sdk_constraint,
+    };
 
-host_fn!(scryer_socket_read(state: SocketHostState; input: String) -> String {
-    let state = state.get()?;
-    let mut state = state
-        .lock()
-        .map_err(|error| extism::Error::msg(format!("socket state lock poisoned: {error}")))?;
-    let request = decode_input(input);
-    Ok(encode_response(request.and_then(|request| state.read(request))))
-});
+    #[test]
+    fn disabled_socket_host_denies_open() {
+        let host = SocketHost::disabled();
+        let request = SocketOpenRequest {
+            host: "127.0.0.1".to_string(),
+            port: 25,
+            tls_mode: SocketTlsMode::Plain,
+            connect_timeout_ms: Some(1),
+            read_timeout_ms: Some(1),
+            write_timeout_ms: Some(1),
+        };
 
-host_fn!(scryer_socket_write(state: SocketHostState; input: String) -> String {
-    let state = state.get()?;
-    let mut state = state
-        .lock()
-        .map_err(|error| extism::Error::msg(format!("socket state lock poisoned: {error}")))?;
-    let request = decode_input(input);
-    Ok(encode_response(request.and_then(|request| state.write(request))))
-});
+        let response = host
+            .call(
+                "scryer_socket_open",
+                serde_json::to_string(&request).unwrap(),
+            )
+            .unwrap();
 
-host_fn!(scryer_socket_starttls(state: SocketHostState; input: String) -> String {
-    let state = state.get()?;
-    let mut state = state
-        .lock()
-        .map_err(|error| extism::Error::msg(format!("socket state lock poisoned: {error}")))?;
-    let request = decode_input(input);
-    Ok(encode_response(request.and_then(|request| state.starttls(request))))
-});
+        assert!(response.contains("\"ok\":false"), "{response}");
+        assert!(response.contains("permission_denied"), "{response}");
+    }
 
-host_fn!(scryer_socket_close(state: SocketHostState; input: String) -> String {
-    let state = state.get()?;
-    let mut state = state
-        .lock()
-        .map_err(|error| extism::Error::msg(format!("socket state lock poisoned: {error}")))?;
-    let request = decode_input(input);
-    Ok(encode_response(request.map(|request| state.close(request))))
-});
+    #[test]
+    fn descriptor_socket_permissions_resolve_notification_config_host() {
+        let descriptor = PluginDescriptor {
+            id: "email".to_string(),
+            name: "Email".to_string(),
+            version: "1.0.0".to_string(),
+            sdk_version: SDK_VERSION.to_string(),
+            sdk_constraint: current_sdk_constraint(),
+            socket_permissions: vec![SocketPermission {
+                host_pattern: "${smtp_host}".to_string(),
+                ports: vec![25, 465, 587],
+                tls_modes: vec![
+                    SocketTlsMode::Plain,
+                    SocketTlsMode::Tls,
+                    SocketTlsMode::Starttls,
+                ],
+            }],
+            provider: ProviderDescriptor::Notification(NotificationDescriptor {
+                provider_type: "email".to_string(),
+                provider_aliases: Vec::new(),
+                default_base_url: None,
+                allowed_hosts: Vec::new(),
+                capabilities: NotificationCapabilities::default(),
+                config_fields: Vec::new(),
+            }),
+        };
+
+        let host = SocketHost::from_descriptor(&descriptor, Some(r#"{"smtp_host":"smtp"}"#));
+
+        assert!(host.allows_for_test("smtp", 587, SocketTlsMode::Starttls));
+        assert!(!host.allows_for_test("localhost", 587, SocketTlsMode::Starttls));
+        assert!(!host.allows_for_test("smtp", 2525, SocketTlsMode::Starttls));
+    }
+}

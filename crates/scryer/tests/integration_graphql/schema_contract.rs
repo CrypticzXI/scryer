@@ -109,21 +109,165 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         .filter_map(|ty| ty["name"].as_str())
         .collect();
 
-    assert_eq!(query_field_count, 103);
-    assert_eq!(mutation_field_count, 157);
+    // RFC 119 cutover: the wanted/cutoff/search surface changed — the top-level
+    // `wantedItems` became the derived Missing/Upgrades view, the unpaged
+    // `cutoffUnmetTitles` query was dropped, the four per-item trigger mutations +
+    // `resetWantedItem` were replaced by `triggerAcquisitionSearch` /
+    // `cancelAcquisitionSearch` / `acquisitionSearchJob`, and the payloads gained
+    // convergence/recency fields (with new enums + the job payload).
+    // 0.17.0 re-pinned this census for the intentionally API-breaking release:
+    // query fields moved 119 -> 121 with the added Query.episodeById /
+    // Query.collectionById id-anchored lookups; the other counts are unchanged.
+    // 0.17.0 API surface trim (RFC 129 root wave): removed 5 dead query roots
+    // (discoverySyncStatus, libraryScanSession, mediaServerConnection,
+    // outboundRateLimitSnapshot, upstreamSchedulerSnapshot), 1 dead mutation
+    // (queueReplacementRelease), and the 5 exclusive snapshot payload OBJECT types.
+    // 0.17.0 API surface trim (RFC 129 field wave): removed dead output fields inside
+    // consumed types plus 4 never-selected OBJECT types (DiscoverySyncRunPayload and the
+    // ExternalImportLibrarySetting{Application,Evidence,Value}Payload trio); the trio's
+    // exclusive enums (ExternalImportLibrarySetting{Confidence,Disposition,Key}) drop with
+    // it. Root-field counts unchanged; OBJECT 259->255, ENUM 80->77, public types 498->491.
+    // 0.17.0 semantic waves (RFC 129 slice 5): stringly String fields became real enums
+    // (+12 ENUM), and QueueDownloadScopePayload / ProviderConfigFieldValue became unions
+    // (+2 UNION with 6 scope + 5 config-value member OBJECT types, +11 OBJECT).
+    // Root-field counts unchanged; ENUM 77->89, OBJECT 255->266, public types 491->516.
+    // Library catalog filter options add one query and two payload OBJECT types;
+    // external subtitle listing and blocklist lookup add two query roots and eight public types
+    // (five OBJECT, two INPUT_OBJECT, and one ENUM support types).
+    assert_eq!(
+        query_field_count, 119,
+        "query fields: {query_field_names:?}"
+    );
+    assert_eq!(mutation_field_count, 163);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 435);
-    assert_eq!(kind_count("OBJECT"), 224);
-    assert_eq!(kind_count("INPUT_OBJECT"), 138);
-    assert_eq!(kind_count("ENUM"), 63);
+    assert_eq!(public_types.len(), 526);
+    assert_eq!(kind_count("OBJECT"), 273);
+    assert_eq!(kind_count("INPUT_OBJECT"), 151);
+    assert_eq!(kind_count("ENUM"), 90);
     assert_eq!(kind_count("SCALAR"), 10);
+    assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
+    assert!(query_field_names.contains(&"indexerProxyConfigs"));
+    assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
+    assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
+    assert!(query_field_names.contains(&"episode"));
+    assert!(query_field_names.contains(&"titleCatalogFilterOptions"));
+    // 0.17.0 dataloader/dual-mode workstream added the id-anchored lookups.
+    assert!(query_field_names.contains(&"episodeById"));
+    assert!(query_field_names.contains(&"collectionById"));
+    assert!(!query_field_names.contains(&"episodeMediaFiles"));
     assert!(query_field_names.contains(&"runtimeInfo"));
+    assert!(query_field_names.contains(&"cutoffUnmetTitlesPage"));
+    assert!(mutation_field_names.contains(&"clearExternalImportSetupSecretDraft"));
+    assert!(mutation_field_names.contains(&"createIndexerProxyConfig"));
+    assert!(mutation_field_names.contains(&"deleteIndexerProxyConfig"));
+    assert!(mutation_field_names.contains(&"saveExternalImportSetupSecretDraft"));
+    assert!(mutation_field_names.contains(&"testIndexerProxyConfig"));
+    assert!(mutation_field_names.contains(&"updateIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"updateBackupSettings"));
     assert!(public_type_names.contains(&"BackupSettingsPayload"));
+    assert!(public_type_names.contains(&"CreateIndexerProxyConfigInput"));
+    assert!(public_type_names.contains(&"DeleteIndexerProxyConfigPayload"));
+    assert!(public_type_names.contains(&"IndexerProxyConfigPayload"));
+    assert!(public_type_names.contains(&"IndexerProxyTestResultPayload"));
+    assert!(public_type_names.contains(&"SaveExternalImportSetupSecretDraftInput"));
+    assert!(public_type_names.contains(&"UpdateIndexerProxyConfigInput"));
+    assert!(public_type_names.contains(&"ExternalImportSetupSecretDraftPayload"));
     assert!(public_type_names.contains(&"RuntimeInfoPayload"));
     assert!(public_type_names.contains(&"RuntimePathStyleValue"));
     assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
+    assert!(public_type_names.contains(&"CutoffUnmetTitlesPagePayload"));
+    // RFC 119 interactive-search job + convergence surface is present…
+    assert!(query_field_names.contains(&"acquisitionSearchJob"));
+    assert!(mutation_field_names.contains(&"triggerAcquisitionSearch"));
+    assert!(mutation_field_names.contains(&"cancelAcquisitionSearch"));
+    assert!(public_type_names.contains(&"AcquisitionSearchJobPayload"));
+    assert!(public_type_names.contains(&"AcquisitionSearchJobStateValue"));
+    assert!(public_type_names.contains(&"TriggerAcquisitionSearchInput"));
+    assert!(public_type_names.contains(&"ConvergenceStateValue"));
+    assert!(public_type_names.contains(&"RecencyLaneValue"));
+    assert!(public_type_names.contains(&"WantedKindValue"));
+    // …and the retired per-item trigger mutations / unpaged cutoff query / phase
+    // enum are gone.
+    assert!(!query_field_names.contains(&"cutoffUnmetTitles"));
+    assert!(!mutation_field_names.contains(&"triggerTitleWantedSearch"));
+    assert!(!mutation_field_names.contains(&"triggerSeasonWantedSearch"));
+    assert!(!mutation_field_names.contains(&"triggerWantedSearch"));
+    assert!(!mutation_field_names.contains(&"resetWantedItem"));
+    assert!(!public_type_names.contains(&"WantedSearchPhaseValue"));
+    assert!(!public_type_names.contains(&"TriggerTitleWantedSearchInput"));
+    assert!(!public_type_names.contains(&"TriggerSeasonWantedSearchInput"));
+    assert!(!public_type_names.contains(&"TriggerWantedSearchInput"));
+    assert!(!public_type_names.contains(&"ResetWantedItemPayload"));
+
+    // 0.17.0 API surface trim (RFC 129 root wave): dead root fields and their
+    // exclusive snapshot payload types are gone.
+    assert!(!query_field_names.contains(&"discoverySyncStatus"));
+    assert!(!query_field_names.contains(&"libraryScanSession"));
+    assert!(!query_field_names.contains(&"mediaServerConnection"));
+    assert!(!query_field_names.contains(&"outboundRateLimitSnapshot"));
+    assert!(!query_field_names.contains(&"upstreamSchedulerSnapshot"));
+    assert!(!mutation_field_names.contains(&"queueReplacementRelease"));
+    assert!(!public_type_names.contains(&"OutboundRateLimitSnapshotPayload"));
+    assert!(!public_type_names.contains(&"OutboundHostRpsSnapshotEntryPayload"));
+    assert!(!public_type_names.contains(&"OutboundDestinationCooldownSnapshotEntryPayload"));
+    assert!(!public_type_names.contains(&"UpstreamSchedulerSnapshotPayload"));
+    assert!(!public_type_names.contains(&"UpstreamSchedulerSnapshotEntryPayload"));
+
+    // 0.17.0 API surface trim (RFC 129 field wave): never-selected reachable types are
+    // gone. FinalizeExternalImportPayload.librarySettingApplications was the only anchor
+    // for the external-import library-setting projection, so the trio payload types and
+    // their exclusive enums drop with the field; DiscoverySyncRunPayload was only reachable
+    // through the removed DiscoverySyncStatusPayload.recentRuns field.
+    assert!(!public_type_names.contains(&"DiscoverySyncRunPayload"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingApplicationPayload"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingEvidencePayload"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingValuePayload"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingKey"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingConfidence"));
+    assert!(!public_type_names.contains(&"ExternalImportLibrarySettingDisposition"));
+}
+
+#[tokio::test]
+async fn graphql_introspection_external_import_finalize_settings_payload_is_trimmed() {
+    // 0.17.0 API surface trim (RFC 129 field wave): the never-selected library-setting
+    // projection on FinalizeExternalImportPayload was removed, so the trio payload types
+    // and their exclusive enums no longer appear in the schema.
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          finalizePayload: __type(name: "FinalizeExternalImportPayload") {
+            fields { name }
+          }
+          applicationPayload: __type(name: "ExternalImportLibrarySettingApplicationPayload") {
+            name
+          }
+          valuePayload: __type(name: "ExternalImportLibrarySettingValuePayload") {
+            name
+          }
+          settingKey: __type(name: "ExternalImportLibrarySettingKey") {
+            name
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let finalize_fields: Vec<&str> = body["data"]["finalizePayload"]["fields"]
+        .as_array()
+        .expect("fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(finalize_fields, vec!["monitorWarmupSessionId"]);
+
+    assert!(body["data"]["applicationPayload"].is_null());
+    assert!(body["data"]["valuePayload"].is_null());
+    assert!(body["data"]["settingKey"].is_null());
 }
 
 #[tokio::test]
@@ -393,15 +537,8 @@ async fn graphql_introspection_media_requests_changed_uses_typed_payload() {
         assert_eq!(field["type"]["kind"], "NON_NULL", "{name}");
         assert_eq!(field["type"]["ofType"]["name"], "ID", "{name}");
     }
-    for name in [
-        "createdTitleId",
-        "requestedQualityProfileId",
-        "approvedQualityProfileId",
-    ] {
-        let field = field(name);
-        assert_eq!(field["type"]["kind"], "SCALAR", "{name}");
-        assert_eq!(field["type"]["name"], "ID", "{name}");
-    }
+    // 0.17.0 trim: the denormalized created/requested/approved id+name fields
+    // were removed from MediaRequestChangedPayload (never selected by clients).
     let event_type = field("eventType");
     assert_eq!(event_type["type"]["kind"], "NON_NULL");
     assert_eq!(event_type["type"]["ofType"]["name"], "DomainEventTypeValue");
@@ -608,7 +745,7 @@ async fn graphql_introspection_uninstall_plugin_uses_payload_result() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["pluginId", "uninstalled"]);
+    assert_eq!(payload_fields, vec!["pluginId"]);
 }
 
 #[tokio::test]
@@ -638,7 +775,7 @@ async fn graphql_introspection_query_root_uses_semantic_search_and_browse_fields
     assert!(names.contains(&"titleHistory"));
     assert!(!names.contains(&"titleEvents"));
     assert!(!names.contains(&"episodeHistory"));
-    assert!(names.contains(&"libraryScanSession"));
+    assert!(!names.contains(&"libraryScanSession"));
     assert!(!names.contains(&"domainEvents"));
     assert!(names.contains(&"downloadHistory"));
 }
@@ -760,8 +897,6 @@ async fn graphql_introspection_pending_releases_uses_page_payload() {
             .unwrap_or_else(|| panic!("PendingReleasesPayload.{name} should exist"))
     };
     assert_eq!(page_field("items")["type"]["kind"], "NON_NULL");
-    assert_eq!(page_field("limit")["type"]["ofType"]["name"], "Int");
-    assert_eq!(page_field("offset")["type"]["ofType"]["name"], "Int");
     assert_eq!(page_field("hasMore")["type"]["ofType"]["name"], "Boolean");
     assert_eq!(page_field("totalCount")["type"]["ofType"]["name"], "Int");
 
@@ -1061,9 +1196,9 @@ async fn graphql_introspection_title_history_filter_uses_event_type_enum() {
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
-    assert!(names.contains(&"download_failed"));
-    assert!(names.contains(&"download_ignored"));
-    assert!(names.contains(&"rematched"));
+    assert!(names.contains(&"DOWNLOAD_FAILED"));
+    assert!(names.contains(&"DOWNLOAD_IGNORED"));
+    assert!(names.contains(&"REMATCHED"));
 }
 
 #[tokio::test]
@@ -1589,6 +1724,9 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
           configValuePayload: __type(name: "ProviderConfigValuePayload") {
             fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
           }
+          configFieldValue: __type(name: "ProviderConfigFieldValue") {
+            possibleTypes { name }
+          }
           configValueInput: __type(name: "ProviderConfigValueInput") {
             inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
           }
@@ -1672,11 +1810,22 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
             "hostBinding",
             "options",
             "helpText",
-            "stringValue",
-            "boolValue",
-            "intValue",
-            "floatValue",
-            "secretStored"
+            "value"
+        ]
+    );
+    assert_eq!(
+        body["data"]["configFieldValue"]["possibleTypes"]
+            .as_array()
+            .expect("ProviderConfigFieldValue should expose possible types")
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "StringConfigValuePayload",
+            "BoolConfigValuePayload",
+            "IntConfigValuePayload",
+            "FloatConfigValuePayload",
+            "SecretConfigValuePayload"
         ]
     );
     assert_eq!(
@@ -1752,10 +1901,6 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
     };
 
     assert_optional_string(
-        output_field("configValuePayload", "stringValue"),
-        "ProviderConfigValuePayload.stringValue",
-    );
-    assert_optional_string(
         input_field("configValueInput", "secretValue"),
         "ProviderConfigValueInput.secretValue",
     );
@@ -1763,14 +1908,14 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
         input_field("configValueInput", "clearSecret"),
         "ProviderConfigValueInput.clearSecret",
     );
-    let secret_stored = output_field("configValuePayload", "secretStored");
+    let value = output_field("configValuePayload", "value");
     assert_eq!(
-        secret_stored["type"]["kind"], "NON_NULL",
-        "ProviderConfigValuePayload.secretStored"
+        value["type"]["kind"], "UNION",
+        "ProviderConfigValuePayload.value"
     );
     assert_eq!(
-        secret_stored["type"]["ofType"]["name"], "Boolean",
-        "ProviderConfigValuePayload.secretStored"
+        value["type"]["name"], "ProviderConfigFieldValue",
+        "ProviderConfigValuePayload.value"
     );
     let field_type = output_field("configValuePayload", "fieldType");
     assert_eq!(
@@ -1985,7 +2130,7 @@ async fn graphql_introspection_config_deletes_use_id_and_payload_results() {
             .iter()
             .filter_map(|field| field["name"].as_str())
             .collect();
-        assert_eq!(field_names, vec!["id", "deleted"]);
+        assert_eq!(field_names, vec!["id"]);
     }
 }
 
@@ -2086,14 +2231,12 @@ async fn graphql_introspection_media_server_delete_uses_id_and_payload_result() 
             .expect("query arg should exist")
             .clone()
     };
-    for (field_name, arg_name) in [
-        ("mediaServerConnection", "id"),
-        ("jellyfinServerUsers", "connectionId"),
-    ] {
-        let arg = query_arg(field_name, arg_name);
-        assert_eq!(arg["type"]["kind"], "NON_NULL", "{field_name}");
-        assert_eq!(arg["type"]["ofType"]["name"], "ID", "{field_name}");
-    }
+    // mediaServerConnection (singular) removed in the 0.17.0 root-wave trim;
+    // the plural mediaServerConnections + MediaServerConnectionPayload type stay.
+    let field_name = "jellyfinServerUsers";
+    let arg = query_arg(field_name, "connectionId");
+    assert_eq!(arg["type"]["kind"], "NON_NULL", "{field_name}");
+    assert_eq!(arg["type"]["ofType"]["name"], "ID", "{field_name}");
 
     let output_field = |type_alias: &str, field_name: &str| {
         body["data"][type_alias]["fields"]
@@ -2154,7 +2297,7 @@ async fn graphql_introspection_media_server_delete_uses_id_and_payload_result() 
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "deleted"]);
+    assert_eq!(payload_fields, vec!["id"]);
 }
 
 #[tokio::test]
@@ -2224,7 +2367,7 @@ async fn graphql_introspection_library_delete_uses_id_and_payload_result() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "deleted"]);
+    assert_eq!(payload_fields, vec!["id"]);
 }
 
 #[tokio::test]
@@ -2302,7 +2445,7 @@ async fn graphql_introspection_media_file_delete_uses_payload_result() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "deleted"]);
+    assert_eq!(payload_fields, vec!["id"]);
 }
 
 #[tokio::test]
@@ -2380,7 +2523,7 @@ async fn graphql_introspection_title_delete_uses_payload_result() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "deleted"]);
+    assert_eq!(payload_fields, vec!["id"]);
 }
 
 #[tokio::test]
@@ -2453,7 +2596,7 @@ async fn graphql_introspection_release_blocklist_clear_uses_id_and_payload_resul
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "cleared"]);
+    assert_eq!(payload_fields, vec!["id"]);
 }
 
 #[tokio::test]
@@ -2491,7 +2634,7 @@ async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_res
           pendingInput: __type(name: "PendingReleaseActionInput") { name }
           pausePayload: __type(name: "PauseWantedItemPayload") { fields { name } }
           resumePayload: __type(name: "ResumeWantedItemPayload") { fields { name } }
-          resetPayload: __type(name: "ResetWantedItemPayload") { fields { name } }
+          resetPayload: __type(name: "ResetWantedItemPayload") { name }
           forceGrabPayload: __type(name: "ForceGrabPendingReleasePayload") { fields { name } }
           dismissPayload: __type(name: "DismissPendingReleasePayload") { fields { name } }
         }
@@ -2525,7 +2668,6 @@ async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_res
     for (name, payload_name) in [
         ("pauseWantedItem", "PauseWantedItemPayload"),
         ("resumeWantedItem", "ResumeWantedItemPayload"),
-        ("resetWantedItem", "ResetWantedItemPayload"),
         ("forceGrabPendingRelease", "ForceGrabPendingReleasePayload"),
         ("dismissPendingRelease", "DismissPendingReleasePayload"),
     ] {
@@ -2535,12 +2677,20 @@ async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_res
         assert_eq!(id_arg(field)["type"]["ofType"]["name"], "ID");
     }
 
+    // RFC 119 cutover: `resetWantedItem` and its payload were removed — the
+    // interactive search job (`triggerAcquisitionSearch`) owns re-search now.
+    assert!(body["data"]["resetPayload"].is_null());
+    assert!(
+        !mutation_fields
+            .iter()
+            .any(|field| field["name"] == "resetWantedItem")
+    );
+
     for (payload, flag) in [
-        ("pausePayload", "paused"),
-        ("resumePayload", "resumed"),
-        ("resetPayload", "reset"),
+        ("pausePayload", ""),
+        ("resumePayload", ""),
         ("forceGrabPayload", "grabbed"),
-        ("dismissPayload", "dismissed"),
+        ("dismissPayload", ""),
     ] {
         let field_names: Vec<&str> = body["data"][payload]["fields"]
             .as_array()
@@ -2548,7 +2698,12 @@ async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_res
             .iter()
             .filter_map(|field| field["name"].as_str())
             .collect();
-        assert_eq!(field_names, vec!["id", flag]);
+        let expected = if flag.is_empty() {
+            vec!["id"]
+        } else {
+            vec!["id", flag]
+        };
+        assert_eq!(field_names, expected);
     }
 }
 
@@ -2628,7 +2783,7 @@ async fn graphql_introspection_rule_set_delete_uses_id_and_payload_result() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(payload_fields, vec!["id", "deleted"]);
+    assert_eq!(payload_fields, vec!["id"]);
 
     let input_field = |type_alias: &str, name: &str| {
         body["data"][type_alias]["inputFields"]
@@ -2853,6 +3008,9 @@ async fn graphql_introspection_subtitle_actions_use_payload_results() {
           searchInput: __type(name: "SearchSubtitlesInput") {
             inputFields { name type { kind name ofType { kind name } } }
           }
+          searchPayload: __type(name: "SubtitleSearchResult") {
+            fields { name type { kind name ofType { kind name } } }
+          }
           downloadInput: __type(name: "DownloadSubtitleInput") {
             inputFields { name type { kind name ofType { kind name } } }
           }
@@ -2961,6 +3119,8 @@ async fn graphql_introspection_subtitle_actions_use_payload_results() {
 
     assert_input_non_null("searchInput", "mediaFileId", "ID");
     assert_input_non_null("searchInput", "language", "String");
+    assert_payload_non_null("searchPayload", "score", "Int");
+    assert_payload_non_null("searchPayload", "scorePercent", "Int");
     assert_input_non_null("downloadInput", "mediaFileId", "ID");
     assert_input_non_null("downloadInput", "providerFileId", "String");
     assert_input_non_null("downloadInput", "language", "String");
@@ -3021,6 +3181,8 @@ async fn graphql_introspection_subtitle_actions_use_payload_results() {
     }
     assert_payload_optional("externalSubtitlePayload", "episodeId", "ID");
     assert_payload_optional("externalSubtitlePayload", "providerFileId", "String");
+    assert_payload_optional("externalSubtitlePayload", "score", "Int");
+    assert_payload_optional("externalSubtitlePayload", "scorePercent", "Int");
 
     for field_name in ["id", "mediaFileId"] {
         assert_payload_non_null("externalSubtitleBlocklistEntryPayload", field_name, "ID");
@@ -3049,9 +3211,10 @@ async fn graphql_introspection_title_acquisition_inputs_use_id_fields() {
           assignTrackedDownloadTitle: __type(name: "AssignTrackedDownloadTitleInput") { inputFields { name type { ...TypeRef } } }
           resolvePendingImport: __type(name: "ResolvePendingImportInput") { inputFields { name type { ...TypeRef } } }
           bindPendingImport: __type(name: "BindPendingImportInput") { inputFields { name type { ...TypeRef } } }
-          triggerWantedSearch: __type(name: "TriggerWantedSearchInput") { inputFields { name type { ...TypeRef } } }
-          triggerTitleWantedSearch: __type(name: "TriggerTitleWantedSearchInput") { inputFields { name type { ...TypeRef } } }
-          triggerSeasonWantedSearch: __type(name: "TriggerSeasonWantedSearchInput") { inputFields { name type { ...TypeRef } } }
+          triggerAcquisitionSearch: __type(name: "TriggerAcquisitionSearchInput") { inputFields { name type { ...TypeRef } } }
+          triggerWantedSearch: __type(name: "TriggerWantedSearchInput") { name }
+          triggerTitleWantedSearch: __type(name: "TriggerTitleWantedSearchInput") { name }
+          triggerSeasonWantedSearch: __type(name: "TriggerSeasonWantedSearchInput") { name }
           deleteTitle: __type(name: "DeleteTitleInput") { inputFields { name type { ...TypeRef } } }
           deleteTitlesItem: __type(name: "DeleteTitlesItemInput") { inputFields { name type { ...TypeRef } } }
           deleteTitlesPreview: __type(name: "DeleteTitlesPreviewInput") { inputFields { name type { ...TypeRef } } }
@@ -3164,9 +3327,6 @@ async fn graphql_introspection_title_acquisition_inputs_use_id_fields() {
         ("assignTrackedDownloadTitle", "titleId"),
         ("resolvePendingImport", "pendingImportId"),
         ("bindPendingImport", "pendingImportId"),
-        ("triggerWantedSearch", "wantedItemId"),
-        ("triggerTitleWantedSearch", "titleId"),
-        ("triggerSeasonWantedSearch", "titleId"),
         ("deleteTitle", "titleId"),
         ("deleteTitlesItem", "titleId"),
         ("setTitleMonitored", "titleId"),
@@ -3209,6 +3369,15 @@ async fn graphql_introspection_title_acquisition_inputs_use_id_fields() {
     assert_non_null_id_list("deleteTitlesPreview", "titleIds");
     assert_non_null_id_list("bindPendingImport", "episodeIds");
     assert_nullable_id_list("queueDownloadScope", "episodeSet");
+
+    // RFC 119: the interactive search job input replaces the per-item trigger
+    // inputs; its scoping ids are all optional.
+    assert_nullable_id("triggerAcquisitionSearch", "titleId");
+    assert_nullable_id("triggerAcquisitionSearch", "wantedItemId");
+    assert_nullable_id_list("triggerAcquisitionSearch", "libraryIds");
+    assert!(body["data"]["triggerWantedSearch"].is_null());
+    assert!(body["data"]["triggerTitleWantedSearch"].is_null());
+    assert!(body["data"]["triggerSeasonWantedSearch"].is_null());
 }
 
 #[tokio::test]
@@ -3243,6 +3412,19 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
             }
           }
           cancelInput: __type(name: "CancelExternalImportMonitorWarmupInput") { name }
+          sourceWarmupInput: __type(name: "StartExternalImportArrSourceWarmupInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
           cancelPayload: __type(name: "CancelExternalImportMonitorWarmupPayload") {
             fields { name }
           }
@@ -3267,18 +3449,34 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
             .find(|field| field["name"] == name)
             .expect("mutation field should exist")
     };
+    let mutation_arg = |field_name: &str, arg_name: &str| {
+        mutation(field_name)["args"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{field_name} should expose args"))
+            .iter()
+            .find(|arg| arg["name"] == arg_name)
+            .unwrap_or_else(|| panic!("{field_name}.{arg_name} should exist"))
+            .clone()
+    };
 
-    let cancel = mutation("cancelExternalImportMonitorWarmup");
+    let start = mutation("startExternalImportArrSourceWarmup");
+    assert_eq!(
+        start["type"]["ofType"]["name"],
+        "ExternalImportMonitorWarmupProgressPayload"
+    );
+    let start_input_arg = mutation_arg("startExternalImportArrSourceWarmup", "input");
+    assert_eq!(start_input_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        start_input_arg["type"]["ofType"]["name"],
+        "StartExternalImportArrSourceWarmupInput"
+    );
+
+    let cancel = mutation("cancelExternalImportArrSourceWarmup");
     assert_eq!(
         cancel["type"]["ofType"]["name"],
         "CancelExternalImportMonitorWarmupPayload"
     );
-    let session_id_arg = cancel["args"]
-        .as_array()
-        .expect("cancelExternalImportMonitorWarmup should expose args")
-        .iter()
-        .find(|arg| arg["name"] == "sessionId")
-        .expect("sessionId arg should exist");
+    let session_id_arg = mutation_arg("cancelExternalImportArrSourceWarmup", "sessionId");
     assert_eq!(session_id_arg["type"]["kind"], "NON_NULL");
     assert_eq!(session_id_arg["type"]["ofType"]["name"], "ID");
 
@@ -3286,6 +3484,34 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
     assert_eq!(
         finalize["type"]["ofType"]["name"],
         "FinalizeExternalImportPayload"
+    );
+    let finalize_input_arg = mutation_arg("finalizeExternalImport", "input");
+    assert_eq!(finalize_input_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        finalize_input_arg["type"]["ofType"]["name"],
+        "FinalizeExternalImportInput"
+    );
+
+    let source_warmup_fields = body["data"]["sourceWarmupInput"]["inputFields"]
+        .as_array()
+        .expect("StartExternalImportArrSourceWarmupInput should expose fields");
+    let source_warmup_field = |name: &str| {
+        source_warmup_fields
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| {
+                panic!("StartExternalImportArrSourceWarmupInput.{name} should exist")
+            })
+            .clone()
+    };
+    let kind = source_warmup_field("kind");
+    assert_eq!(kind["type"]["kind"], "NON_NULL");
+    assert_eq!(kind["type"]["ofType"]["name"], "ExternalArrSourceKind");
+    let connection = source_warmup_field("connection");
+    assert_eq!(connection["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        connection["type"]["ofType"]["name"],
+        "ExternalImportConnectionInput"
     );
 
     let cancel_fields: Vec<&str> = body["data"]["cancelPayload"]["fields"]
@@ -3302,7 +3528,261 @@ async fn graphql_introspection_external_import_finalize_uses_payload_results() {
         .iter()
         .filter_map(|field| field["name"].as_str())
         .collect();
-    assert_eq!(finalize_fields, vec!["finalized", "monitorWarmupSessionId"]);
+    assert_eq!(finalize_fields, vec!["monitorWarmupSessionId"]);
+}
+
+fn graphql_type_leaf_name(type_value: &Value) -> Option<&str> {
+    let mut current = type_value;
+    loop {
+        if let Some(name) = current["name"].as_str() {
+            return Some(name);
+        }
+        current = &current["ofType"];
+        if current.is_null() {
+            return None;
+        }
+    }
+}
+
+fn introspection_names(body: &Value, type_alias: &str, field_key: &str) -> Vec<String> {
+    body["data"][type_alias][field_key]
+        .as_array()
+        .unwrap_or_else(|| panic!("{type_alias} should expose {field_key}"))
+        .iter()
+        .filter_map(|field| field["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+fn introspection_entry<'a>(
+    body: &'a Value,
+    type_alias: &str,
+    field_key: &str,
+    name: &str,
+) -> &'a Value {
+    body["data"][type_alias][field_key]
+        .as_array()
+        .unwrap_or_else(|| panic!("{type_alias} should expose {field_key}"))
+        .iter()
+        .find(|field| field["name"] == name)
+        .unwrap_or_else(|| panic!("{type_alias}.{name} should exist"))
+}
+
+#[tokio::test]
+async fn graphql_introspection_external_import_secret_draft_api_is_typed() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          queryRoot: __type(name: "QueryRoot") {
+            fields { name }
+          }
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          saveInput: __type(name: "SaveExternalImportSetupSecretDraftInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          instanceInput: __type(name: "ExternalImportSetupInstanceApiKeyInput") {
+            inputFields { name }
+          }
+          draftPayload: __type(name: "ExternalImportSetupSecretDraftPayload") {
+            fields { name }
+          }
+          statusPayload: __type(name: "ExternalImportSetupSecretDraftStatusPayload") {
+            fields { name }
+          }
+          savePayload: __type(name: "SaveExternalImportSetupSecretDraftPayload") {
+            fields { name }
+          }
+          clearPayload: __type(name: "ClearExternalImportSetupSecretDraftPayload") {
+            fields { name }
+          }
+          instancePayload: __type(name: "ExternalImportSetupInstanceApiKeyPayload") {
+            fields { name }
+          }
+          apiKeyOverridePayload: __type(name: "ExternalImportSetupApiKeyOverridePayload") {
+            fields { name }
+          }
+          passwordOverridePayload: __type(name: "ExternalImportSetupPasswordOverridePayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let query_names = introspection_names(&body, "queryRoot", "fields");
+    assert!(query_names.contains(&"externalImportSetupSecretDraft".to_string()));
+    assert!(query_names.contains(&"externalImportSetupSecretDraftStatus".to_string()));
+
+    let mutation_names = introspection_names(&body, "mutationRoot", "fields");
+    assert!(mutation_names.contains(&"saveExternalImportSetupSecretDraft".to_string()));
+    assert!(mutation_names.contains(&"clearExternalImportSetupSecretDraft".to_string()));
+
+    let save_mutation = introspection_entry(
+        &body,
+        "mutationRoot",
+        "fields",
+        "saveExternalImportSetupSecretDraft",
+    );
+    let save_input_arg = save_mutation["args"]
+        .as_array()
+        .expect("save mutation args")
+        .iter()
+        .find(|arg| arg["name"] == "input")
+        .expect("save input arg");
+    assert_eq!(
+        graphql_type_leaf_name(&save_input_arg["type"]),
+        Some("SaveExternalImportSetupSecretDraftInput")
+    );
+
+    let clear_mutation = introspection_entry(
+        &body,
+        "mutationRoot",
+        "fields",
+        "clearExternalImportSetupSecretDraft",
+    );
+    assert!(
+        clear_mutation["args"]
+            .as_array()
+            .expect("clear mutation args")
+            .is_empty()
+    );
+
+    assert_eq!(
+        introspection_names(&body, "saveInput", "inputFields"),
+        vec![
+            "instanceApiKeys",
+            "downloadClientApiKeyOverrides",
+            "downloadClientPasswordOverrides",
+            "indexerApiKeyOverrides",
+        ]
+    );
+    for (field_name, expected_item_type) in [
+        ("instanceApiKeys", "ExternalImportSetupInstanceApiKeyInput"),
+        (
+            "downloadClientApiKeyOverrides",
+            "DownloadClientApiKeyOverrideInput",
+        ),
+        (
+            "downloadClientPasswordOverrides",
+            "DownloadClientPasswordOverrideInput",
+        ),
+        ("indexerApiKeyOverrides", "IndexerApiKeyOverrideInput"),
+    ] {
+        let field = introspection_entry(&body, "saveInput", "inputFields", field_name);
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{field}");
+        assert_eq!(field["type"]["ofType"]["kind"], "LIST", "{field}");
+        assert_eq!(
+            graphql_type_leaf_name(&field["type"]),
+            Some(expected_item_type)
+        );
+    }
+
+    assert_eq!(
+        introspection_names(&body, "instanceInput", "inputFields"),
+        vec!["instanceId", "kind", "apiKey"]
+    );
+    assert_eq!(
+        introspection_names(&body, "draftPayload", "fields"),
+        vec![
+            "instanceApiKeys",
+            "downloadClientApiKeyOverrides",
+            "downloadClientPasswordOverrides",
+            "indexerApiKeyOverrides",
+            "updatedAt",
+        ]
+    );
+    assert_eq!(
+        introspection_names(&body, "statusPayload", "fields"),
+        vec!["hasDraft", "ownedByCurrentUser", "updatedAt"]
+    );
+    assert_eq!(
+        introspection_names(&body, "savePayload", "fields"),
+        vec!["overwroteAnotherUserDraft", "updatedAt"]
+    );
+    assert_eq!(
+        introspection_names(&body, "clearPayload", "fields"),
+        vec!["cleared"]
+    );
+    assert_eq!(
+        introspection_names(&body, "instancePayload", "fields"),
+        vec!["instanceId", "kind", "apiKey"]
+    );
+    assert_eq!(
+        introspection_names(&body, "apiKeyOverridePayload", "fields"),
+        vec!["dedupKey", "apiKey"]
+    );
+    assert_eq!(
+        introspection_names(&body, "passwordOverridePayload", "fields"),
+        vec!["dedupKey", "password"]
+    );
+
+    for type_alias in [
+        "saveInput",
+        "instanceInput",
+        "draftPayload",
+        "statusPayload",
+        "savePayload",
+        "clearPayload",
+        "instancePayload",
+        "apiKeyOverridePayload",
+        "passwordOverridePayload",
+    ] {
+        let names = if body["data"][type_alias]["inputFields"].is_array() {
+            introspection_names(&body, type_alias, "inputFields")
+        } else {
+            introspection_names(&body, type_alias, "fields")
+        };
+        for name in names {
+            assert_ne!(
+                name, "draftJson",
+                "{type_alias} should not expose draftJson"
+            );
+            assert!(
+                !name.to_ascii_lowercase().contains("json"),
+                "{type_alias}.{name} should not expose opaque JSON fields"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -3313,10 +3793,46 @@ async fn graphql_introspection_external_import_does_not_project_api_keys() {
         r#"
         {
           downloadClient: __type(name: "ExternalImportDownloadClientPayload") {
-            fields { name type { kind name ofType { kind name } } }
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
           }
           indexer: __type(name: "ExternalImportIndexerPayload") {
-            fields { name type { kind name ofType { kind name } } }
+            fields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
           }
         }
         "#,
@@ -3355,6 +3871,23 @@ async fn graphql_introspection_external_import_does_not_project_api_keys() {
             api_key_present["type"]["ofType"]["name"], "Boolean",
             "{type_alias}.apiKeyPresent"
         );
+        let source_keys = field(type_alias, "sourceKeys");
+        assert_eq!(
+            source_keys["type"]["kind"], "NON_NULL",
+            "{type_alias}.sourceKeys"
+        );
+        assert_eq!(
+            source_keys["type"]["ofType"]["kind"], "LIST",
+            "{type_alias}.sourceKeys"
+        );
+        assert_eq!(
+            source_keys["type"]["ofType"]["ofType"]["kind"], "NON_NULL",
+            "{type_alias}.sourceKeys"
+        );
+        assert_eq!(
+            source_keys["type"]["ofType"]["ofType"]["ofType"]["name"], "String",
+            "{type_alias}.sourceKeys"
+        );
     }
 }
 
@@ -3366,15 +3899,141 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
         r#"
         {
           queryRoot: __type(name: "QueryRoot") {
-            fields { name args { name type { kind name ofType { kind name } } } }
+            fields {
+              name
+              args {
+                name
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                      ofType {
+                        kind
+                        name
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
           subscriptionRoot: __type(name: "SubscriptionRoot") {
             fields { name args { name type { kind name ofType { kind name } } } }
           }
+          previewInput: __type(name: "PreviewExternalImportInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          executeInput: __type(name: "ExecuteExternalImportInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
           finalizeInput: __type(name: "FinalizeExternalImportInput") {
-            inputFields { name type { kind name ofType { kind name } } }
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          aggregateProgressInput: __type(name: "ExternalImportAggregateWarmupProgressInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+          mappingInput: __type(name: "ExternalImportSourceLibraryMappingInput") {
+            inputFields {
+              name
+              type {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                    }
+                  }
+                }
+              }
+            }
           }
           progressPayload: __type(name: "ExternalImportMonitorWarmupProgressPayload") {
+            fields { name type { kind name ofType { kind name } } }
+          }
+          aggregateProgressPayload: __type(name: "ExternalImportAggregateWarmupProgressPayload") {
             fields { name type { kind name ofType { kind name } } }
           }
         }
@@ -3398,8 +4057,19 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
             .unwrap_or_else(|| panic!("{field_name}.{arg_name} should exist"))
             .clone()
     };
+    let root_has_field = |root_alias: &str, field_name: &str| {
+        body["data"][root_alias]["fields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{root_alias} should expose fields"))
+            .iter()
+            .any(|field| field["name"] == field_name)
+    };
+    assert!(
+        !root_has_field("queryRoot", "externalImportMonitorWarmupStatus"),
+        "legacy externalImportMonitorWarmupStatus query should not exist"
+    );
     for (root_alias, field_name) in [
-        ("queryRoot", "externalImportMonitorWarmupStatus"),
+        ("queryRoot", "externalImportArrSourceWarmupStatus"),
         ("subscriptionRoot", "externalImportMonitorWarmupProgress"),
     ] {
         let arg = root_arg(root_alias, field_name, "sessionId");
@@ -3407,14 +4077,112 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
         assert_eq!(arg["type"]["ofType"]["name"], "ID", "{field_name}");
     }
 
-    let finalize_field = body["data"]["finalizeInput"]["inputFields"]
-        .as_array()
-        .expect("FinalizeExternalImportInput should expose input fields")
-        .iter()
-        .find(|field| field["name"] == "monitorWarmupSessionId")
-        .expect("monitorWarmupSessionId should exist");
-    assert_eq!(finalize_field["type"]["kind"], "SCALAR");
-    assert_eq!(finalize_field["type"]["name"], "ID");
+    let aggregate_arg = root_arg(
+        "queryRoot",
+        "externalImportAggregateWarmupProgress",
+        "input",
+    );
+    assert_eq!(aggregate_arg["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        aggregate_arg["type"]["ofType"]["name"],
+        "ExternalImportAggregateWarmupProgressInput"
+    );
+
+    let input_field = |type_alias: &str, field_name: &str| {
+        body["data"][type_alias]["inputFields"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{type_alias} should expose input fields"))
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("{type_alias}.{field_name} should exist"))
+            .clone()
+    };
+    let assert_non_null_id = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], "ID", "{label}");
+    };
+    let assert_non_null_string = |field: Value, label: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], "String", "{label}");
+    };
+    let assert_non_null_named = |field: Value, label: &str, name: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["name"], name, "{label}");
+    };
+    let assert_non_null_list = |field: Value, label: &str, item_name: &str| {
+        assert_eq!(field["type"]["kind"], "NON_NULL", "{label}");
+        assert_eq!(field["type"]["ofType"]["kind"], "LIST", "{label}");
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["kind"], "NON_NULL",
+            "{label}"
+        );
+        assert_eq!(
+            field["type"]["ofType"]["ofType"]["ofType"]["name"], item_name,
+            "{label}"
+        );
+    };
+    // Nullable (manual-root) fields surface the named type directly, not wrapped
+    // in NON_NULL.
+    let assert_nullable_named = |field: Value, label: &str, kind: &str, name: &str| {
+        assert_eq!(field["type"]["kind"], kind, "{label}");
+        assert_eq!(field["type"]["name"], name, "{label}");
+    };
+
+    for type_alias in [
+        "previewInput",
+        "executeInput",
+        "finalizeInput",
+        "aggregateProgressInput",
+    ] {
+        assert_non_null_list(
+            input_field(type_alias, "sourceWarmupSessionIds"),
+            &format!("{type_alias}.sourceWarmupSessionIds"),
+            "ID",
+        );
+    }
+    assert_non_null_list(
+        input_field("finalizeInput", "mappings"),
+        "finalizeInput.mappings",
+        "ExternalImportSourceLibraryMappingInput",
+    );
+
+    // Manual-root support: these three are nullable (absent for a manually
+    // added root that no warmup surfaced).
+    assert_nullable_named(
+        input_field("mappingInput", "sourceWarmupSessionId"),
+        "mappingInput.sourceWarmupSessionId",
+        "SCALAR",
+        "ID",
+    );
+    assert_nullable_named(
+        input_field("mappingInput", "sourceKey"),
+        "mappingInput.sourceKey",
+        "SCALAR",
+        "String",
+    );
+    assert_nullable_named(
+        input_field("mappingInput", "kind"),
+        "mappingInput.kind",
+        "ENUM",
+        "ExternalArrSourceKind",
+    );
+    assert_non_null_string(
+        input_field("mappingInput", "arrRootPath"),
+        "mappingInput.arrRootPath",
+    );
+    assert_non_null_string(
+        input_field("mappingInput", "scryerRootPath"),
+        "mappingInput.scryerRootPath",
+    );
+    assert_non_null_id(
+        input_field("mappingInput", "libraryId"),
+        "mappingInput.libraryId",
+    );
+    assert_non_null_named(
+        input_field("mappingInput", "facet"),
+        "mappingInput.facet",
+        "MediaFacetValue",
+    );
 
     let payload_field = body["data"]["progressPayload"]["fields"]
         .as_array()
@@ -3424,6 +4192,23 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
         .expect("sessionId should exist");
     assert_eq!(payload_field["type"]["kind"], "NON_NULL");
     assert_eq!(payload_field["type"]["ofType"]["name"], "ID");
+
+    let aggregate_payload_fields: Vec<&str> = body["data"]["aggregateProgressPayload"]["fields"]
+        .as_array()
+        .expect("ExternalImportAggregateWarmupProgressPayload should expose fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert_eq!(
+        aggregate_payload_fields,
+        vec![
+            "status",
+            "titlesTotalKnown",
+            "titlesFetched",
+            "titlesTotal",
+            "errorMessage"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -3722,27 +4507,24 @@ async fn graphql_introspection_account_setup_and_settings_actions_use_semantic_p
             .collect()
     };
 
-    assert_eq!(
-        payload_fields("deleteMyPasskeyPayload"),
-        vec!["id", "deleted"]
-    );
+    assert_eq!(payload_fields("deleteMyPasskeyPayload"), vec!["id"]);
     assert_eq!(
         payload_fields("revokeMyOauthAppPayload"),
         vec!["grantId", "revoked"]
     );
-    assert_eq!(payload_fields("deleteUserPayload"), vec!["id", "deleted"]);
+    assert_eq!(payload_fields("deleteUserPayload"), vec!["id"]);
     assert_eq!(
         payload_fields("unlinkExternalAccountPayload"),
-        vec!["linkedAccountId", "unlinked"]
+        vec!["linkedAccountId"]
     );
     assert_eq!(
         payload_fields("clearTitleImageCachePayload"),
-        vec!["accepted"]
+        vec!["requestedAt"]
     );
     assert_eq!(payload_fields("completeSetupPayload"), vec!["completed"]);
     assert_eq!(
         payload_fields("reorderDownloadClientConfigsPayload"),
-        vec!["ids", "reordered"]
+        vec!["ids"]
     );
     assert_eq!(
         payload_fields("setTitleRequiredAudioPayload"),
@@ -3750,11 +4532,11 @@ async fn graphql_introspection_account_setup_and_settings_actions_use_semantic_p
     );
     assert_eq!(
         payload_fields("rehydrateAllMetadataPayload"),
-        vec!["language", "titlesCleared", "accepted"]
+        vec!["language", "titlesCleared"]
     );
     assert_eq!(
         payload_fields("deletePostProcessingScriptPayload"),
-        vec!["id", "deleted"]
+        vec!["id"]
     );
     assert_eq!(
         payload_fields("triggerTitleMismatchRecoverySearchPayload"),
@@ -3967,7 +4749,12 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         .filter_map(|field| field["name"].as_str())
         .collect();
     assert!(acquisition_names.contains(&"pollIntervalSeconds"));
-    assert!(acquisition_names.contains(&"batchSize"));
+    // RFC 119: the wanted-scheduler cadence knobs (syncIntervalSeconds/batchSize)
+    // were replaced by the convergence-cursor knobs.
+    assert!(acquisition_names.contains(&"longTailBackfillMaxScopesPerCycle"));
+    assert!(acquisition_names.contains(&"longTailReconvergeDays"));
+    assert!(!acquisition_names.contains(&"batchSize"));
+    assert!(!acquisition_names.contains(&"syncIntervalSeconds"));
 
     let general_fields = body["data"]["generalSettings"]["fields"]
         .as_array()

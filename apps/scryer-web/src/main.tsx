@@ -5,6 +5,7 @@ import { Provider as UrqlProvider } from "urql";
 import { ThemeProvider } from "next-themes";
 import { backendClient } from "@/lib/graphql/urql-client";
 import { SELECTABLE_THEMES } from "@/lib/theme";
+import { UiSettingsProvider } from "@/lib/context/ui-settings-context";
 
 import "@fontsource-variable/inter";
 import "@fontsource-variable/space-grotesk";
@@ -18,7 +19,9 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ThemeProvider attribute="class" defaultTheme="dark" enableSystem themes={[...SELECTABLE_THEMES]}>
       <UrqlProvider value={backendClient}>
-        <RouterProvider router={router} />
+        <UiSettingsProvider>
+          <RouterProvider router={router} />
+        </UiSettingsProvider>
       </UrqlProvider>
     </ThemeProvider>
   </StrictMode>,

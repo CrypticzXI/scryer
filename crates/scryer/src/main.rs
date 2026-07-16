@@ -32,12 +32,12 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use scryer_application::{
-    AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, AppUseCase, AutoBackupRunOutcome,
-    DownloadClientPluginProvider, DownloadQueuePollerOptions, FacetRegistry, IndexerPluginProvider,
-    JobTriggerSource, MovieFacetHandler, NotificationPluginProvider, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
-    PluginHttpTrustConfigRuntime, PluginInstallationRepository, RUNTIME_PLUGIN_LOAD_CONCURRENCY,
-    RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler, SubtitlePluginProvider,
-    SystemInfoProvider, TitleImageKind, TitleImageRepository,
+    AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, AppUseCase, ArchiveExtractorPluginProvider,
+    AutoBackupRunOutcome, DownloadClientPluginProvider, DownloadQueuePollerOptions, FacetRegistry,
+    IndexerPluginProvider, JobTriggerSource, MovieFacetHandler, NotificationPluginProvider,
+    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, PluginHttpTrustConfigRuntime, PluginInstallationRepository,
+    RUNTIME_PLUGIN_LOAD_CONCURRENCY, RuntimePluginLoad, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler,
+    SubtitlePluginProvider, SystemInfoProvider, TitleImageKind, TitleImageRepository,
     load_runtime_plugin_from_persisted_installation_payload, start_background_acquisition_poller,
     start_background_auto_backup_scheduler, start_background_download_delete_poller,
     start_background_library_refresh_loop, start_background_manual_import_poller,
@@ -50,8 +50,8 @@ use scryer_infrastructure::{
     BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
     DatastoreCustomizationStore, DatastoreEngine, FileSystemLibraryRenamer,
     FileSystemLibraryScanner, FileSystemStagedNzbStore, MetadataGatewayClient, MigrationMode,
-    MultiIndexerSearchClient, NzbgetDownloadClient, PrioritizedDownloadClientRouter, SettingsStore,
-    SmgEnrollmentConfig, WeaverSubscriptionBridgeClient, resolve_datastore_config_from_env,
+    MultiIndexerSearchClient, PrioritizedDownloadClientRouter, SettingsStore, SmgEnrollmentConfig,
+    WeaverSubscriptionBridgeClient, resolve_datastore_config_from_env,
     restore_backup_bundle_to_datastore_path, start_weaver_subscription_bridge, validate_datastore,
 };
 use scryer_interface::context::{
@@ -81,7 +81,7 @@ use middleware::{
 use oauth_routes::{OAuthRouteState, oauth_router};
 use rate_limit::ScryerRateLimiter;
 use settings_bootstrap::{
-    MOVIES_PATH_KEY, SERIES_PATH_KEY, extract_pending_migration_ids, load_service_runtime_settings,
+    MOVIES_PATH_KEY, SERIES_PATH_KEY, extract_pending_migration_ids,
     migrate_legacy_download_client_default_category_settings,
     migrate_legacy_download_client_routing_settings, normalize_media_path_setting,
     normalize_quality_profile_settings, parse_migration_mode, seed_service_setting_definitions,
@@ -902,12 +902,6 @@ async fn bootstrap_application(
     }
     tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "settings normalized");
 
-    let t = std::time::Instant::now();
-    let runtime_settings = load_service_runtime_settings(bootstrap_settings_store.clone())
-        .await
-        .map_err(|e| format!("failed to load service runtime settings: {e}"))?;
-    tracing::info!(elapsed_ms = %t.elapsed().as_millis(), "runtime settings loaded");
-
     tracing::info!(elapsed_ms = %bootstrap_start.elapsed().as_millis(), "bootstrap complete");
 
     let indexer_configs = datastore.indexer_configs();
@@ -967,6 +961,11 @@ async fn bootstrap_application(
         .filter(|plugin| plugin.descriptor.plugin_type() == "subtitle_provider")
         .cloned()
         .collect::<Vec<_>>();
+    let archive_extractor_runtime_plugins = runtime_plugins
+        .iter()
+        .filter(|plugin| plugin.descriptor.plugin_type() == "archive_extractor")
+        .cloned()
+        .collect::<Vec<_>>();
     let notification_runtime_plugins = runtime_plugins
         .iter()
         .filter(|plugin| plugin.descriptor.plugin_type() == "notification")
@@ -979,23 +978,25 @@ async fn bootstrap_application(
                 &disabled_builtin_plugins,
             ),
         ));
-    let fallback_download_client = Arc::new(NzbgetDownloadClient::with_staged_nzb_store(
-        runtime_settings.nzbget_url,
-        runtime_settings.nzbget_username,
-        runtime_settings.nzbget_password,
-        runtime_settings.nzbget_dupe_mode,
-        staged_nzb_store.clone(),
-        staged_nzb_pipeline_limit.clone(),
-    ));
-    let download_client = Arc::new(PrioritizedDownloadClientRouter::new(
-        download_client_configs.clone(),
-        settings_for_router.clone(),
-        fallback_download_client,
-        staged_nzb_store.clone(),
-        staged_nzb_pipeline_limit.clone(),
-        Some(download_client_plugin_provider.clone()),
-    ));
+    let download_client = Arc::new(
+        PrioritizedDownloadClientRouter::new(
+            download_client_configs.clone(),
+            settings_for_router.clone(),
+            staged_nzb_store.clone(),
+            staged_nzb_pipeline_limit.clone(),
+            Some(download_client_plugin_provider.clone()),
+        )
+        .with_indexer_config_repositories(
+            indexer_configs.clone(),
+            datastore.indexer_proxy_configs(),
+        ),
+    );
     let indexer_stats = datastore.indexer_stats_tracker();
+    let indexer_learning = datastore.indexer_search_learning_repository();
+    let upstream_scheduler = datastore
+        .upstream_scheduler()
+        .await
+        .map_err(|e| format!("failed to initialize upstream scheduler: {e}"))?;
 
     let dynamic_provider = Arc::new(scryer_plugins::DynamicPluginProvider::new(
         scryer_plugins::build_indexer_plugin_provider_from_runtime_plugins(
@@ -1013,12 +1014,22 @@ async fn bootstrap_application(
                 &disabled_builtin_plugins,
             ),
         ));
+    let archive_extractor_plugin_provider: Arc<dyn ArchiveExtractorPluginProvider> =
+        Arc::new(scryer_plugins::DynamicArchiveExtractorPluginProvider::new(
+            scryer_plugins::build_archive_extractor_plugin_provider_from_runtime_plugins(
+                &archive_extractor_runtime_plugins,
+                &disabled_builtin_plugins,
+            ),
+        ));
 
     let indexer_client = MultiIndexerSearchClient::new(
         indexer_configs.clone(),
         indexer_stats.clone(),
         plugin_provider.clone(),
-    );
+    )
+    .with_indexer_proxy_config_repository(datastore.indexer_proxy_configs())
+    .with_search_learning_repository(indexer_learning)
+    .with_upstream_scheduler(upstream_scheduler.clone());
 
     let indexer_client = Arc::new(indexer_client);
     let title_images_for_route: Arc<dyn TitleImageRepository> = datastore.title_images();
@@ -1143,8 +1154,10 @@ async fn bootstrap_application(
         .with_staged_nzb_store(staged_nzb_store)
         .with_staged_nzb_pipeline_limit(staged_nzb_pipeline_limit)
         .with_indexer_stats(indexer_stats)
+        .with_upstream_scheduler(upstream_scheduler.clone())
         .with_indexer_caps_refresher(Arc::new(
-            scryer_infrastructure::indexer_caps::DirectNabCapsSnapshotRefresher::new(),
+            scryer_infrastructure::indexer_caps::DirectNabCapsSnapshotRefresher::new()
+                .with_upstream_scheduler(upstream_scheduler.clone()),
         ))
         .with_plugin_http_trust_runtime(plugin_http_runtime)
         .with_plugin_provider(plugin_provider)
@@ -1154,6 +1167,7 @@ async fn bootstrap_application(
         .with_download_client_plugin_provider(download_client_plugin_provider.clone())
         .with_subtitle_provider_configs(subtitle_provider_configs)
         .with_subtitle_plugin_provider(subtitle_plugin_provider)
+        .with_archive_extractor_plugin_provider(archive_extractor_plugin_provider)
         .with_notification_provider(Arc::new(notif_provider))
         .with_plugin_descriptor_loader(Arc::new(scryer_plugins::WasmPluginDescriptorLoader))
         .with_tracked_download_handle(TrackedDownloadHandle::new(tracked_download_tx))
@@ -1171,6 +1185,13 @@ async fn bootstrap_application(
         facet_registry,
         webauthn,
     );
+    tokio::spawn(flush_upstream_scheduler_after_shutdown(
+        shutdown_token.child_token(),
+        {
+            let app_use_case = app_use_case.clone();
+            move || async move { app_use_case.flush_upstream_scheduler().await }
+        },
+    ));
     tracing::info!(
         build_lane = %app_use_case.runtime_build_lane(),
         build_class = %app_use_case.runtime_build_class(),
@@ -1211,6 +1232,12 @@ async fn bootstrap_application(
         bootstrap_settings_store.clone(),
     )
     .await;
+    startup_migrations::_0005_title_metadata_rehydration_017::rehydrate_title_metadata_for_017_upgrade(
+        &app_use_case,
+        bootstrap_settings_store.clone(),
+        VERSION,
+    )
+    .await;
     spawn_post_upgrade_auto_backup_if_pending(
         app_use_case.clone(),
         bootstrap_settings_store.clone(),
@@ -1229,6 +1256,12 @@ async fn bootstrap_application(
     app_use_case.connect_library_scan_tracker().await;
     spawn_sigstore_trust_root_prime_task(app_use_case.clone());
     spawn_plugin_catalog_refresh_task(app_use_case.clone());
+
+    // A persisted running job run whose worker died in a previous process is
+    // unfinishable; fail those rows before any poller can wait on them forever.
+    if let Err(e) = app_use_case.reconcile_interrupted_job_runs().await {
+        tracing::warn!(error = %e, "failed to reconcile interrupted job runs on startup");
+    }
 
     if let Err(e) = app_use_case.reconcile_default_library_roots().await {
         tracing::warn!(error = %e, "failed to reconcile default library roots on startup");
@@ -1680,6 +1713,21 @@ async fn run_validate_only(config: DatastoreConfig) {
                 eprintln!("{error}");
             }
             std::process::exit(1);
+        }
+    }
+}
+
+async fn flush_upstream_scheduler_after_shutdown<F, Fut, E>(token: CancellationToken, flush: F)
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), E>>,
+    E: std::fmt::Display,
+{
+    token.cancelled().await;
+    match flush().await {
+        Ok(()) => tracing::debug!("flushed upstream scheduler state during shutdown"),
+        Err(error) => {
+            tracing::warn!(%error, "failed to flush upstream scheduler state during shutdown")
         }
     }
 }
@@ -2715,8 +2763,8 @@ mod tests {
         ResolvedLogFileConfig, SelfRestartController, UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
         bootstrap_plugin_installations, collect_runtime_plugin_load_candidates,
         comma_separated_env_has_entries, extract_data_dir, extract_log_file,
-        load_runtime_plugin_state, resolve_auth_mode, resolve_log_file_config,
-        restart_spec_from_parts, title_image_handler,
+        flush_upstream_scheduler_after_shutdown, load_runtime_plugin_state, resolve_auth_mode,
+        resolve_log_file_config, restart_spec_from_parts, title_image_handler,
         validate_unauthenticated_public_access_allowlist_config,
     };
     use chrono::Utc;
@@ -2741,6 +2789,31 @@ mod tests {
     use scryer_infrastructure::{DatastoreCustomizationStore, SqliteServices};
     use tempfile::tempdir;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn shutdown_flush_waiter_flushes_scheduler_after_cancellation() {
+        let token = tokio_util::sync::CancellationToken::new();
+        let flush_count = Arc::new(AtomicUsize::new(0));
+        let flush_count_for_task = Arc::clone(&flush_count);
+        let handle = tokio::spawn(flush_upstream_scheduler_after_shutdown(
+            token.clone(),
+            move || async move {
+                flush_count_for_task.fetch_add(1, Ordering::SeqCst);
+                Ok::<(), &'static str>(())
+            },
+        ));
+
+        tokio::task::yield_now().await;
+        assert_eq!(flush_count.load(Ordering::SeqCst), 0);
+
+        token.cancel();
+        tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("shutdown flush waiter should finish")
+            .expect("shutdown flush task should not panic");
+
+        assert_eq!(flush_count.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn restart_spec_builder_preserves_executable_args_and_env() {

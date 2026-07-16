@@ -1897,13 +1897,6 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
-            &self,
-            _: usize,
-        ) -> AppResult<Vec<String>> {
-            Ok(vec![])
-        }
-
         async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
             Ok(())
         }
@@ -2078,13 +2071,6 @@ mod tests {
             _: usize,
             _: &[MediaFacet],
         ) -> AppResult<Vec<PendingTitleHydration>> {
-            Ok(vec![])
-        }
-
-        async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
-            &self,
-            _: usize,
-        ) -> AppResult<Vec<String>> {
             Ok(vec![])
         }
 
@@ -2653,6 +2639,7 @@ mod tests {
             facet,
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![],
             created_by: None,
             created_at: Utc::now(),
@@ -2663,10 +2650,11 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
-            genres: vec![],
+            popularity: None,
             content_status: None,
             language: None,
             first_aired: None,

@@ -1,9 +1,27 @@
 import * as React from "react";
-import { FolderOpen, Pencil, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
+import { createPortal } from "react-dom";
+import { useBeforeUnload, useBlocker } from "react-router-dom";
+import {
+  FileText,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  HardDrive,
+  Import as ImportIcon,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Save,
+  Send,
+  SlidersVertical,
+  Trash2,
+} from "lucide-react";
+import { AddNewButton } from "@/components/common/add-new-button";
+import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { IconButton } from "@/components/ui/icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,9 +38,10 @@ import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { DownloadClientRoutingPanel } from "@/components/views/media-content/download-client-routing-panel";
 import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
+  LIBRARY_FOOTER_SLOT_ID,
+  LIBRARY_HEADER_ACTIONS_SLOT_ID,
+  LIBRARY_SECONDARY_NAV_SLOT_ID,
+} from "@/components/views/media-content/facet-settings-section";
 import type {
   DownloadClientRecord,
   DownloadClientRoutingEntry,
@@ -49,17 +68,23 @@ import {
   isLocalPathFormatValidForStyle,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
+import {
+  FILE_CHMOD_PRESETS,
+  FOLDER_CHMOD_PRESETS,
+  formatChmodMode,
+  isChmodPresetValue,
+} from "@/lib/constants/chmod";
 
 const INHERIT_VALUE = "__inherit__";
 const BOOLEAN_TRUE_VALUE = "true";
 const BOOLEAN_FALSE_VALUE = "false";
 const FILLER_POLICY_OPTIONS = [
-  { value: "download_all", labelKey: "settings.fillerPolicyDownloadAll" },
-  { value: "skip_filler", labelKey: "settings.fillerPolicySkipFiller" },
+  { value: "DOWNLOAD_ALL", labelKey: "settings.fillerPolicyDownloadAll" },
+  { value: "SKIP_FILLER", labelKey: "settings.fillerPolicySkipFiller" },
 ] as const;
 const RECAP_POLICY_OPTIONS = [
-  { value: "download_all", labelKey: "settings.recapPolicyDownloadAll" },
-  { value: "skip_recap", labelKey: "settings.recapPolicySkipRecap" },
+  { value: "DOWNLOAD_ALL", labelKey: "settings.recapPolicyDownloadAll" },
+  { value: "SKIP_RECAP", labelKey: "settings.recapPolicySkipRecap" },
 ] as const;
 const BOOLEAN_OVERRIDE_OPTIONS = [
   { value: INHERIT_VALUE, labelKey: "settings.libraryInheritFacet" },
@@ -68,8 +93,8 @@ const BOOLEAN_OVERRIDE_OPTIONS = [
 ] as const;
 const IMPORT_MODE_OPTIONS = [
   { value: INHERIT_VALUE, labelKey: "settings.libraryInheritFacet" },
-  { value: "hardlink_or_copy", labelKey: "settings.importModeHardlinkCopy" },
-  { value: "move", labelKey: "settings.importModeMove" },
+  { value: "HARDLINK_OR_COPY", labelKey: "settings.importModeHardlinkCopy" },
+  { value: "MOVE", labelKey: "settings.importModeMove" },
 ] as const;
 
 type LibraryMutationInput = {
@@ -85,6 +110,7 @@ type MediaLibrarySettingsPanelProps = {
   librariesLoading: boolean;
   rootValidationLibraries: LibraryRecord[];
   rootValidationLibrariesLoading: boolean;
+  invalidRootPathsByLibraryId: Record<string, string[]>;
   preferredLibraryId: string;
   allLibrariesValue: string;
   loading: boolean;
@@ -106,9 +132,53 @@ type MediaLibrarySettingsPanelProps = {
   onUpdateLibrary: (libraryId: string, input: LibraryMutationInput) => Promise<LibraryRecord | null | void> | LibraryRecord | null | void;
   onDeleteLibrary: (libraryId: string) => Promise<boolean | void> | boolean | void;
   onScan: (libraryId: string) => Promise<void> | void;
+  /** Reports whether the content column should widen (dense routing table). */
+  onWideLayoutChange?: (wide: boolean) => void;
+  /** Reports the active library name for the page breadcrumb (null when creating). */
+  onActiveLibraryNameChange?: (name: string | null) => void;
 };
 
 const NEW_LIBRARY_VALUE = "__new_library__";
+
+type SectionIcon = React.ComponentType<{ className?: string }>;
+
+/** Titled settings card matching the Library settings design (icon + heading,
+ * optional description, then content). Used to group each section. */
+function LibrarySettingsSection({
+  icon: Icon,
+  title,
+  description,
+  children,
+}: {
+  icon: SectionIcon;
+  title: string;
+  description?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-[16px] border border-[var(--scry-border)] bg-[var(--scry-surf)] p-5 sm:p-6">
+      <div className="flex items-center gap-2.5">
+        <Icon className="h-[17px] w-[17px] text-[var(--scry-accent-text)]" />
+        <h2 className="text-[16px] font-bold text-[var(--scry-ink2)]">{title}</h2>
+      </div>
+      {description ? (
+        <p className="mt-1.5 text-[12.5px] leading-relaxed text-[var(--scry-muted3)]">
+          {description}
+        </p>
+      ) : null}
+      <div className="mt-5 space-y-5">{children}</div>
+    </section>
+  );
+}
+
+/** Small "Effective <value>" chip shown beneath each inherit/override control. */
+function EffectiveChip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-[7px] border border-[var(--scry-border2)] bg-[var(--scry-chip)] px-2.5 py-[3px] text-[11px] font-semibold text-[var(--scry-text2)]">
+      {children}
+    </span>
+  );
+}
 
 function rootsFromLibrary(library: LibraryRecord | null): RootFolderOption[] {
   return (library?.roots ?? []).map((root) => ({
@@ -176,19 +246,19 @@ function booleanOverrideFromSelectValue(value: string): boolean | null {
 }
 
 function fillerPolicyLabelKey(value: string | null | undefined): string {
-  return value === "skip_filler"
+  return value === "SKIP_FILLER"
     ? "settings.fillerPolicySkipFiller"
     : "settings.fillerPolicyDownloadAll";
 }
 
 function recapPolicyLabelKey(value: string | null | undefined): string {
-  return value === "skip_recap"
+  return value === "SKIP_RECAP"
     ? "settings.recapPolicySkipRecap"
     : "settings.recapPolicyDownloadAll";
 }
 
 function importModeLabelKey(value: ImportMode | null | undefined): string {
-  return value === "move"
+  return value === "MOVE"
     ? "settings.importModeMove"
     : "settings.importModeHardlinkCopy";
 }
@@ -200,6 +270,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   librariesLoading,
   rootValidationLibraries,
   rootValidationLibrariesLoading,
+  invalidRootPathsByLibraryId,
   preferredLibraryId,
   allLibrariesValue,
   loading,
@@ -219,9 +290,15 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   onUpdateLibrary,
   onDeleteLibrary,
   onScan,
+  onWideLayoutChange,
+  onActiveLibraryNameChange,
 }: MediaLibrarySettingsPanelProps) {
   const t = useTranslate();
   const [mode, setMode] = React.useState<"existing" | "new">("existing");
+  const [deleteLibraryOpen, setDeleteLibraryOpen] = React.useState(false);
+  const [pendingLibrarySelection, setPendingLibrarySelection] = React.useState<
+    string | null
+  >(null);
   const [activeLibraryId, setActiveLibraryId] = React.useState<string | null>(null);
   const [draftName, setDraftName] = React.useState("");
   const [draftRoots, setDraftRoots] = React.useState<RootFolderOption[]>([]);
@@ -239,6 +316,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [draftNfoWriteOnImport, setDraftNfoWriteOnImport] = React.useState(INHERIT_VALUE);
   const [draftPlexmatchWriteOnImport, setDraftPlexmatchWriteOnImport] = React.useState(INHERIT_VALUE);
   const [draftImportMode, setDraftImportMode] = React.useState(INHERIT_VALUE);
+  const [draftSetPermissionsLinux, setDraftSetPermissionsLinux] = React.useState(INHERIT_VALUE);
+  const [draftFileChmod, setDraftFileChmod] = React.useState("");
+  const [draftFolderChmod, setDraftFolderChmod] = React.useState("");
+  const [draftChownGroup, setDraftChownGroup] = React.useState("");
   const [draftDownloadClientRoutingMode, setDraftDownloadClientRoutingMode] =
     React.useState<"inherit" | "custom">("inherit");
   const [draftDownloadClientRouting, setDraftDownloadClientRouting] =
@@ -251,11 +332,31 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const [browserOpen, setBrowserOpen] = React.useState(false);
   const [editingIndex, setEditingIndex] = React.useState<number | null>(null);
   const lastHydratedRoutingKeyRef = React.useRef<string | null>(null);
+  const [secondaryNavTarget, setSecondaryNavTarget] =
+    React.useState<HTMLElement | null>(null);
+  const [headerActionsTarget, setHeaderActionsTarget] =
+    React.useState<HTMLElement | null>(null);
+  const [footerTarget, setFooterTarget] = React.useState<HTMLElement | null>(
+    null,
+  );
+  React.useEffect(() => {
+    setSecondaryNavTarget(document.getElementById(LIBRARY_SECONDARY_NAV_SLOT_ID));
+    setHeaderActionsTarget(
+      document.getElementById(LIBRARY_HEADER_ACTIONS_SLOT_ID),
+    );
+    setFooterTarget(document.getElementById(LIBRARY_FOOTER_SLOT_ID));
+  }, []);
+  React.useEffect(() => {
+    onWideLayoutChange?.(draftDownloadClientRoutingMode === "custom");
+  }, [draftDownloadClientRoutingMode, onWideLayoutChange]);
 
   const activeLibrary = React.useMemo(
     () => libraries.find((library) => library.id === activeLibraryId) ?? null,
     [activeLibraryId, libraries],
   );
+  React.useEffect(() => {
+    onActiveLibraryNameChange?.(activeLibrary?.name ?? null);
+  }, [activeLibrary, onActiveLibraryNameChange]);
   React.useEffect(() => {
     if (canCreateLibrary || mode !== "new") {
       return;
@@ -264,8 +365,8 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     setActiveLibraryId(libraries[0]?.id ?? null);
   }, [canCreateLibrary, libraries, mode]);
   const currentFacet = activeLibrary?.facet ?? facet;
-  const isAnimeFacet = currentFacet === "anime";
-  const showPlexmatch = currentFacet === "series" || currentFacet === "anime";
+  const isAnimeFacet = currentFacet === "ANIME";
+  const showPlexmatch = currentFacet === "SERIES" || currentFacet === "ANIME";
   const savedDownloadClientRoutingEntries =
     savedSettings?.downloadClientRoutingOverride ?? null;
   const savedDownloadClientRoutingState = React.useMemo(
@@ -301,6 +402,12 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         booleanOverrideSelectValue(settings?.plexmatchWriteOnImportOverride),
       );
       setDraftImportMode(settings?.importModeOverride ?? INHERIT_VALUE);
+      setDraftSetPermissionsLinux(
+        booleanOverrideSelectValue(settings?.setPermissionsLinuxOverride),
+      );
+      setDraftFileChmod(settings?.fileChmodOverride ?? "");
+      setDraftFolderChmod(settings?.folderChmodOverride ?? "");
+      setDraftChownGroup(settings?.chownGroupOverride ?? "");
     },
     [],
   );
@@ -343,6 +450,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftNfoWriteOnImport(INHERIT_VALUE);
       setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
       setDraftImportMode(INHERIT_VALUE);
+      setDraftSetPermissionsLinux(INHERIT_VALUE);
+      setDraftFileChmod("");
+      setDraftFolderChmod("");
+      setDraftChownGroup("");
       setDraftDownloadClientRoutingMode("inherit");
       setDraftDownloadClientRouting({});
       setDraftDownloadClientRoutingOrder([]);
@@ -477,9 +588,38 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     });
     return invalidPaths;
   }, [localPathStyle, normalizedDraftRoots]);
+  const validatedInvalidRootPathKeys = React.useMemo(() => {
+    if (!activeLibrary?.id) {
+      return new Set<string>();
+    }
+    return new Set(
+      (invalidRootPathsByLibraryId[activeLibrary.id] ?? []).map(
+        normalizeComparableRootPath,
+      ),
+    );
+  }, [activeLibrary?.id, invalidRootPathsByLibraryId]);
   const hasInvalidRootFolderPaths = invalidRootFolderPaths.size > 0;
   const actionBusy = loading || librariesLoading || rootValidationLibrariesLoading || saving;
   const settingsBusy = actionBusy || settingsLoading;
+  const showUnixPermissions = localPathStyle !== "windows";
+  const effectiveDraftSetPermissionsLinux =
+    draftSetPermissionsLinux === INHERIT_VALUE
+      ? (savedSettings?.setPermissionsLinux ?? false)
+      : draftSetPermissionsLinux === BOOLEAN_TRUE_VALUE;
+  const permissionFieldsDisabled =
+    settingsBusy || !effectiveDraftSetPermissionsLinux;
+  const draftFileChmodSelectValue = draftFileChmod.trim() || INHERIT_VALUE;
+  const draftFolderChmodSelectValue = draftFolderChmod.trim() || INHERIT_VALUE;
+  const customFileChmod =
+    draftFileChmodSelectValue !== INHERIT_VALUE &&
+    !isChmodPresetValue(FILE_CHMOD_PRESETS, draftFileChmodSelectValue)
+      ? draftFileChmodSelectValue
+      : null;
+  const customFolderChmod =
+    draftFolderChmodSelectValue !== INHERIT_VALUE &&
+    !isChmodPresetValue(FOLDER_CHMOD_PRESETS, draftFolderChmodSelectValue)
+      ? draftFolderChmodSelectValue
+      : null;
   const downloadClientRoutingBusy =
     downloadClientsLoading || draftDownloadClientRoutingLoading;
   const savedRoots = React.useMemo(() => rootsFromLibrary(activeLibrary), [activeLibrary]);
@@ -515,9 +655,9 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
             ? null
             : (draftScoringPersona as ScoringPersonaId),
         fillerPolicy:
-          isAnimeFacet && draftFillerPolicy !== INHERIT_VALUE ? draftFillerPolicy : null,
+          isAnimeFacet && draftFillerPolicy !== INHERIT_VALUE ? (draftFillerPolicy as 'DOWNLOAD_ALL' | 'SKIP_FILLER') : null,
         recapPolicy:
-          isAnimeFacet && draftRecapPolicy !== INHERIT_VALUE ? draftRecapPolicy : null,
+          isAnimeFacet && draftRecapPolicy !== INHERIT_VALUE ? (draftRecapPolicy as 'DOWNLOAD_ALL' | 'SKIP_RECAP') : null,
         monitorSpecials:
           isAnimeFacet ? booleanOverrideFromSelectValue(draftMonitorSpecials) : null,
         interSeasonMovies:
@@ -530,6 +670,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
           : null,
         importMode:
           draftImportMode === INHERIT_VALUE ? null : (draftImportMode as ImportMode),
+        setPermissionsLinux: booleanOverrideFromSelectValue(draftSetPermissionsLinux),
+        fileChmod: draftFileChmod.trim() === "" ? null : draftFileChmod.trim(),
+        folderChmod: draftFolderChmod.trim() === "" ? null : draftFolderChmod.trim(),
+        chownGroup: draftChownGroup.trim() === "" ? null : draftChownGroup.trim(),
         indexerRouting: savedSettings?.indexerRoutingOverride ?? null,
       };
       if (canManageDownloadClientRouting) {
@@ -541,6 +685,9 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       canManageDownloadClientRouting,
       draftDownloadClientRoutingEntries,
       draftFillerPolicy,
+      draftChownGroup,
+      draftFileChmod,
+      draftFolderChmod,
       draftImportMode,
       draftInterSeasonMovies,
       draftMonitorFillerMovies,
@@ -552,6 +699,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       draftRecapPolicy,
       draftRequiredAudioLanguages,
       draftScoringPersona,
+      draftSetPermissionsLinux,
       isAnimeFacet,
       savedSettings,
       showPlexmatch,
@@ -576,6 +724,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
         settingsDraft.plexmatchWriteOnImport !==
           savedSettings.plexmatchWriteOnImportOverride ||
         settingsDraft.importMode !== savedSettings.importModeOverride ||
+        settingsDraft.setPermissionsLinux !== savedSettings.setPermissionsLinuxOverride ||
+        settingsDraft.fileChmod !== savedSettings.fileChmodOverride ||
+        settingsDraft.folderChmod !== savedSettings.folderChmodOverride ||
+        settingsDraft.chownGroup !== savedSettings.chownGroupOverride ||
         (canManageDownloadClientRouting &&
           ((draftDownloadClientRoutingMode === "custom") !==
             Boolean(savedDownloadClientRoutingEntries) ||
@@ -593,9 +745,24 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     draftName.trim() !== (activeLibrary?.name ?? "") ||
     !rootsEqual(draftRoots, savedRoots) ||
     hasSettingsChanges;
+  const shouldBlockNavigation = hasDraftChanges && !saving;
+  const libraryNavigationBlocker = useBlocker(shouldBlockNavigation);
+
+  useBeforeUnload(
+    React.useCallback(
+      (event: BeforeUnloadEvent) => {
+        if (!shouldBlockNavigation) {
+          return;
+        }
+        event.preventDefault();
+        event.returnValue = "";
+      },
+      [shouldBlockNavigation],
+    ),
+  );
   const selectedValue = mode === "new" ? NEW_LIBRARY_VALUE : activeLibraryId ?? "";
 
-  const handleSelectLibrary = (value: string) => {
+  const applyLibrarySelection = React.useCallback((value: string) => {
     if (value === NEW_LIBRARY_VALUE) {
       if (!canCreateLibrary) {
         return;
@@ -617,6 +784,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       setDraftNfoWriteOnImport(INHERIT_VALUE);
       setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
       setDraftImportMode(INHERIT_VALUE);
+      setDraftSetPermissionsLinux(INHERIT_VALUE);
+      setDraftFileChmod("");
+      setDraftFolderChmod("");
+      setDraftChownGroup("");
       setDraftDownloadClientRoutingMode("inherit");
       setDraftDownloadClientRouting({});
       setDraftDownloadClientRoutingOrder([]);
@@ -625,6 +796,17 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     }
     setMode("existing");
     setActiveLibraryId(value);
+  }, [canCreateLibrary]);
+
+  const handleSelectLibrary = (value: string) => {
+    if (value === selectedValue) {
+      return;
+    }
+    if (shouldBlockNavigation) {
+      setPendingLibrarySelection(value);
+      return;
+    }
+    applyLibrarySelection(value);
   };
 
   const handleAddPath = (path: string) => {
@@ -680,30 +862,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   };
 
   const handleNewLibrary = () => {
-    if (!canCreateLibrary) {
-      return;
-    }
-    setMode("new");
-    setActiveLibraryId(null);
-    setDraftName("");
-    setDraftRoots([]);
-    setSavedSettings(null);
-    setDraftRequiredAudioLanguages([]);
-    setDraftQualityProfileId(INHERIT_VALUE);
-    setDraftRequestQualityProfileIds([]);
-    setDraftScoringPersona(INHERIT_VALUE);
-    setDraftFillerPolicy(INHERIT_VALUE);
-    setDraftRecapPolicy(INHERIT_VALUE);
-    setDraftMonitorSpecials(INHERIT_VALUE);
-    setDraftInterSeasonMovies(INHERIT_VALUE);
-    setDraftMonitorFillerMovies(INHERIT_VALUE);
-    setDraftNfoWriteOnImport(INHERIT_VALUE);
-    setDraftPlexmatchWriteOnImport(INHERIT_VALUE);
-    setDraftImportMode(INHERIT_VALUE);
-    setDraftDownloadClientRoutingMode("inherit");
-    setDraftDownloadClientRouting({});
-    setDraftDownloadClientRoutingOrder([]);
-    setDraftDownloadClientRoutingLoading(false);
+    handleSelectLibrary(NEW_LIBRARY_VALUE);
   };
 
   const handleDownloadClientRoutingModeChange = React.useCallback(
@@ -856,15 +1015,39 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     void onScan(libraryId);
   };
 
-  const handleDeleteLibrary = async () => {
+  const handleDeleteLibrary = () => {
     if (!activeLibrary || activeLibrary.isDefault) {
       return;
     }
-    if (!window.confirm(t("settings.libraryDeleteConfirm", { name: activeLibrary.name }))) {
+    setDeleteLibraryOpen(true);
+  };
+
+  const handleConfirmDeleteLibrary = async () => {
+    setDeleteLibraryOpen(false);
+    if (!activeLibrary || activeLibrary.isDefault) {
       return;
     }
     await onDeleteLibrary(activeLibrary.id);
   };
+
+  const handleConfirmDiscardLibraryChanges = React.useCallback(() => {
+    if (libraryNavigationBlocker.state === "blocked") {
+      libraryNavigationBlocker.proceed();
+      return;
+    }
+    if (pendingLibrarySelection !== null) {
+      const nextSelection = pendingLibrarySelection;
+      setPendingLibrarySelection(null);
+      applyLibrarySelection(nextSelection);
+    }
+  }, [applyLibrarySelection, libraryNavigationBlocker, pendingLibrarySelection]);
+
+  const handleCancelDiscardLibraryChanges = React.useCallback(() => {
+    if (libraryNavigationBlocker.state === "blocked") {
+      libraryNavigationBlocker.reset();
+    }
+    setPendingLibrarySelection(null);
+  }, [libraryNavigationBlocker]);
 
   const handleScan = () => {
     if (!activeLibrary || mode === "new") {
@@ -892,56 +1075,87 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
 
   return (
     <>
-      <Card id="media-library-settings-panel">
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <CardTitle>{settingsTitle}</CardTitle>
-          <Button
-            type="button"
-            variant="default"
-            onClick={handleScan}
-            disabled={libraryScanDisabled}
-          >
-            <RefreshCw className={`mr-1.5 h-4 w-4${scanLoading ? " animate-spin" : ""}`} />
-            {scanLoading
-              ? t("settings.libraryScanRunning")
-              : t("settings.libraryScanButton")}
-          </Button>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <Select
-              value={selectedValue}
-              onValueChange={handleSelectLibrary}
-              disabled={actionBusy || libraries.length === 0}
+      {secondaryNavTarget
+        ? createPortal(
+            <div>
+              <div className="mb-2 px-1 text-[11px] font-bold uppercase tracking-[0.05em] text-[var(--scry-faint2)]">
+                {t("settings.librariesLabel")}
+              </div>
+              <ul className="space-y-1">
+                {libraries.map((library) => {
+                  const active = mode !== "new" && selectedValue === library.id;
+                  return (
+                    <li key={library.id}>
+                      <button
+                        id={selectorId("media-library-list-item", library.id)}
+                        type="button"
+                        onClick={() => handleSelectLibrary(library.id)}
+                        disabled={actionBusy}
+                        aria-current={active ? "true" : undefined}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-[10px] border border-transparent px-3 py-2 text-left text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] disabled:opacity-60",
+                          active &&
+                            "border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] text-[var(--scry-ink2)]",
+                        )}
+                      >
+                        <Folder
+                          className={cn(
+                            "h-4 w-4 shrink-0 text-[var(--scry-faint)]",
+                            active && "text-[var(--scry-accent-text)]",
+                          )}
+                        />
+                        <span className="min-w-0 flex-1 truncate">
+                          {library.name}
+                        </span>
+                        {library.isDefault ? (
+                          <span className="shrink-0 rounded-[6px] border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.05em] text-[var(--scry-accent-text)]">
+                            {t("label.default")}
+                          </span>
+                        ) : null}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {canCreateLibrary ? (
+                <AddNewButton
+                  id="media-library-new"
+                  icon={Plus}
+                  label={t("settings.libraryNewButton")}
+                  onClick={handleNewLibrary}
+                  disabled={actionBusy}
+                  aria-current={mode === "new" ? "true" : undefined}
+                  className={cn(
+                    "mt-2 w-full justify-start",
+                    mode === "new" &&
+                      "bg-[rgba(var(--scry-accent-rgb),0.16)]",
+                  )}
+                />
+              ) : null}
+            </div>,
+            secondaryNavTarget,
+          )
+        : null}
+      {headerActionsTarget && activeLibrary && mode !== "new"
+        ? createPortal(
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleScan}
+              disabled={libraryScanDisabled}
             >
-              <SelectTrigger id="media-library-select" className="w-full sm:w-[260px]">
-                <SelectValue placeholder={t("settings.librariesLabel")} />
-              </SelectTrigger>
-              <SelectContent>
-                {canCreateLibrary && mode === "new" ? (
-                  <SelectItem value={NEW_LIBRARY_VALUE}>{t("settings.libraryNew")}</SelectItem>
-                ) : null}
-                {libraries.map((library) => (
-                  <SelectItem key={library.id} value={library.id}>
-                    {library.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {canCreateLibrary ? (
-              <Button
-                id="media-library-new"
-                type="button"
-                variant="outline"
-                onClick={handleNewLibrary}
-                disabled={actionBusy}
-              >
-                <Plus className="mr-1.5 h-4 w-4" />
-                {t("settings.libraryNewButton")}
-              </Button>
-            ) : null}
-          </div>
-
+              <RefreshCw
+                className={`mr-1.5 h-4 w-4${scanLoading ? " animate-spin" : ""}`}
+              />
+              {scanLoading
+                ? t("settings.libraryScanRunning")
+                : t("settings.libraryScanButton")}
+            </Button>,
+            headerActionsTarget,
+          )
+        : null}
+      <div id="media-library-settings-panel" className="space-y-[18px]">
           {scanSummary ? (
             <p className="text-xs text-muted-foreground">{libraryScanSummaryText}</p>
           ) : null}
@@ -956,18 +1170,20 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
           ) : null}
 
           {mode === "new" || activeLibrary ? (
-            <div className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)]">
-                <div className="space-y-2">
-                  <Label htmlFor="media-library-name">{t("settings.libraryNameLabel")}</Label>
-                  <Input
-                    id="media-library-name"
-                    value={draftName}
-                    onChange={(event) => setDraftName(event.target.value)}
-                    placeholder={t("settings.libraryNamePlaceholder")}
-                    disabled={actionBusy}
-                  />
-                </div>
+            <div className="space-y-[18px]">
+              <LibrarySettingsSection
+                icon={HardDrive}
+                title={t("settings.identityStorageTitle")}
+              >
+              <div className="space-y-2">
+                <Label htmlFor="media-library-name">{t("settings.libraryNameLabel")}</Label>
+                <Input
+                  id="media-library-name"
+                  value={draftName}
+                  onChange={(event) => setDraftName(event.target.value)}
+                  placeholder={t("settings.libraryNamePlaceholder")}
+                  disabled={actionBusy}
+                />
               </div>
 
               <div className="space-y-3">
@@ -979,7 +1195,16 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                   {sortedFolders.map(({ rf, originalIndex: index }) => {
                     const conflictingLibraryNames =
                       conflictingLibraryNamesByRootPath.get(rf.path) ?? null;
-                    const pathIsInvalid = invalidRootFolderPaths.has(rf.path);
+                    const pathFormatIsInvalid = invalidRootFolderPaths.has(rf.path);
+                    const pathValidationIsInvalid =
+                      validatedInvalidRootPathKeys.has(
+                        normalizeComparableRootPath(rf.path),
+                      );
+                    const pathIsInvalid =
+                      pathFormatIsInvalid || pathValidationIsInvalid;
+                    const invalidRootTooltip = pathFormatIsInvalid
+                      ? t("settings.downloadClientRemotePathMappingsLocalRequired")
+                      : t("settings.rootFolderInvalidTooltip");
 
                     return (
                       <li
@@ -987,57 +1212,54 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                         id={selectorId("media-library-root-row", rf.path)}
                         className="space-y-1"
                       >
-                        <div className="flex items-center gap-2">
-                          <code className="flex-1 truncate rounded-md border border-border bg-muted/50 px-3 py-1.5 font-mono text-sm">
+                        <div className="flex items-center gap-2.5 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] py-1.5 pl-3.5 pr-2">
+                          <FolderOpen className="h-4 w-4 shrink-0 text-[var(--scry-faint)]" />
+                          <span className="flex-1 truncate font-[var(--font-code)] text-[13.5px] text-[var(--scry-text2)]">
                             {rf.path}
-                          </code>
+                          </span>
+                          {pathIsInvalid ? (
+                            <span
+                              className="shrink-0 rounded-[7px] border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.06em] text-destructive"
+                              title={invalidRootTooltip}
+                            >
+                              {t("settings.rootFolderInvalid")}
+                            </span>
+                          ) : null}
                           {rf.isDefault ? (
-                            <span className="shrink-0 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
+                            <span className="shrink-0 rounded-[7px] border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-accent-text)]">
                               {t("label.default")}
                             </span>
                           ) : (
-                            <button
+                            <Button
                               id={selectorId("media-library-root-set-default", rf.path)}
                               type="button"
-                              className="shrink-0 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground hover:underline"
                               onClick={() => handleSetDefault(index)}
                               disabled={actionBusy}
                             >
                               {t("settings.rootFolderSetDefault")}
-                            </button>
+                            </Button>
                           )}
-                          <Button
+                          <IconButton
                             id={selectorId("media-library-root-edit", rf.path)}
-                            type="button"
-                            variant="secondary"
-                            size="icon-sm"
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.edit,
-                            )}
+                            label={t("label.edit")}
+                            tone="edit"
                             onClick={() => openEdit(index)}
                             disabled={actionBusy}
-                            aria-label={t("label.edit")}
-                            title={t("label.edit")}
                           >
                             <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             id={selectorId("media-library-root-delete", rf.path)}
-                            type="button"
-                            variant="secondary"
-                            size="icon-sm"
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.delete,
-                            )}
+                            label={t("label.delete")}
+                            tone="delete"
                             onClick={() => handleRemovePath(index)}
                             disabled={actionBusy}
-                            aria-label={t("label.delete")}
-                            title={t("label.delete")}
                           >
                             <Trash2 className="h-4 w-4" />
-                          </Button>
+                          </IconButton>
                         </div>
                         {conflictingLibraryNames ? (
                           <p className="text-xs text-destructive">
@@ -1046,30 +1268,28 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                             })}
                           </p>
                         ) : null}
-                        {pathIsInvalid ? (
-                          <p className="text-xs text-destructive">
-                            {t("settings.downloadClientRemotePathMappingsLocalRequired")}
-                          </p>
-                        ) : null}
                       </li>
                     );
                   })}
                 </ul>
-                <Button
+                <AddNewButton
                   id="media-library-add-root"
-                  type="button"
-                  variant="outline"
+                  icon={FolderPlus}
+                  label={t("settings.rootFolderAdd")}
                   onClick={openAdd}
                   disabled={actionBusy}
-                >
-                  <FolderOpen className="mr-1.5 h-4 w-4" />
-                  {t("settings.rootFolderAdd")}
-                </Button>
+                />
                 <p className="text-xs text-muted-foreground">
                   {loading ? t("label.loading") : t("settings.rootFoldersHelp")}
                 </p>
               </div>
+              </LibrarySettingsSection>
 
+              <LibrarySettingsSection
+                icon={SlidersVertical}
+                title={t("settings.mediaProfilesTitle")}
+                description={t("settings.mediaProfilesHelp")}
+              >
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="space-y-2">
                   <Label>{t("settings.libraryRequiredAudioLabel")}</Label>
@@ -1079,40 +1299,12 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     disabled={settingsBusy}
                   />
                   {savedSettings ? (
-                    <p className="text-xs text-muted-foreground">
+                    <EffectiveChip>
                       {t("settings.libraryEffectiveAudio", {
                         value: savedSettings.requiredAudioLanguages.join(", ") || t("label.none"),
                       })}
-                    </p>
+                    </EffectiveChip>
                   ) : null}
-                  <div className="space-y-2 rounded-md border border-border/70 p-2">
-                    <Label>{t("settings.libraryRequestQualityProfilesLabel")}</Label>
-                    {qualityProfiles.map((profile) => {
-                      const checked = draftRequestQualityProfileIds.includes(profile.id);
-                      return (
-                        <label
-                          key={profile.id}
-                          className="flex items-center gap-2 text-xs text-muted-foreground"
-                        >
-                          <Checkbox
-                            checked={checked}
-                            disabled={settingsBusy}
-                            onCheckedChange={(value) => {
-                              setDraftRequestQualityProfileIds((current) =>
-                                value
-                                  ? [...current, profile.id]
-                                  : current.filter((profileId) => profileId !== profile.id),
-                              );
-                            }}
-                          />
-                          <span>{profile.name}</span>
-                        </label>
-                      );
-                    })}
-                    <p className="text-xs text-muted-foreground">
-                      {t("settings.libraryRequestQualityProfilesHelp")}
-                    </p>
-                  </div>
                 </div>
                 <div className="space-y-2">
                   <Label>{t("settings.libraryQualityProfileLabel")}</Label>
@@ -1136,14 +1328,14 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     </SelectContent>
                   </Select>
                   {savedSettings ? (
-                    <p className="text-xs text-muted-foreground">
+                    <EffectiveChip>
                       {t("settings.libraryEffectiveProfile", {
                         value:
                           qualityProfiles.find(
                             (profile) => profile.id === savedSettings.qualityProfileId,
                           )?.name ?? savedSettings.qualityProfileId,
                       })}
-                    </p>
+                    </EffectiveChip>
                   ) : null}
                 </div>
                 <div className="space-y-2">
@@ -1168,7 +1360,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     </SelectContent>
                   </Select>
                   {savedSettings ? (
-                    <p className="text-xs text-muted-foreground">
+                    <EffectiveChip>
                       {t("settings.libraryEffectivePersona", {
                         value: t(
                           SCORING_PERSONA_CHOICES.find(
@@ -1176,13 +1368,64 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                           )?.labelKey ?? "qualityProfile.personaBalanced",
                         ),
                       })}
-                    </p>
+                    </EffectiveChip>
                   ) : null}
                 </div>
               </div>
 
-              <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
-                <div className="max-w-md space-y-2">
+              <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <Send className="h-[15px] w-[15px] text-[var(--scry-accent-text)]" />
+                  <span className="text-[13.5px] font-semibold text-[var(--scry-body)]">
+                    {t("settings.libraryRequestQualityProfilesLabel")}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2.5">
+                  {qualityProfiles.map((profile) => {
+                    const checked = draftRequestQualityProfileIds.includes(profile.id);
+                    return (
+                      <label
+                        key={profile.id}
+                        className={cn(
+                          "flex h-[42px] cursor-pointer items-center gap-2.5 rounded-[10px] border px-3.5 text-[13px] font-semibold transition",
+                          checked
+                            ? "border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-ink2)]"
+                            : "border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[var(--scry-text2)]",
+                        )}
+                      >
+                        <Checkbox
+                          checked={checked}
+                          disabled={settingsBusy}
+                          onCheckedChange={(value) => {
+                            setDraftRequestQualityProfileIds((current) =>
+                              value
+                                ? [...current, profile.id]
+                                : current.filter((profileId) => profileId !== profile.id),
+                            );
+                          }}
+                        />
+                        <span>{profile.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="mt-3 text-xs text-[var(--scry-muted3)]">
+                  {t("settings.libraryRequestQualityProfilesHelp")}
+                </p>
+              </div>
+              </LibrarySettingsSection>
+
+              <LibrarySettingsSection
+                icon={ImportIcon}
+                title={t("settings.importBehaviorTitle")}
+              >
+              <div
+                className={cn(
+                  "grid gap-5",
+                  canManageDownloadClientRouting && "md:grid-cols-2",
+                )}
+              >
+                <div className="space-y-2">
                   <Label>{t("settings.importModeLabel")}</Label>
                   <Select
                     value={draftImportMode}
@@ -1204,21 +1447,174 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    {t("settings.importModeDescription")}
-                  </p>
                   {savedSettings ? (
-                    <p className="text-xs text-muted-foreground">
+                    <EffectiveChip>
                       {t("settings.libraryEffectiveProfile", {
                         value: t(importModeLabelKey(savedSettings.importMode)),
                       })}
-                    </p>
+                    </EffectiveChip>
+                  ) : null}
+                  {showUnixPermissions ? (
+                    <div className="grid gap-3 pt-2 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>{t("settings.setPermissionsLinuxLabel")}</Label>
+                        <Select
+                          value={draftSetPermissionsLinux}
+                          onValueChange={setDraftSetPermissionsLinux}
+                          disabled={settingsBusy}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {BOOLEAN_OVERRIDE_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                {t(option.labelKey)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {savedSettings ? (
+                          <EffectiveChip>
+                            {t("settings.libraryEffectiveProfile", {
+                              value: savedSettings.setPermissionsLinux
+                                ? t("label.enabled")
+                                : t("label.disabled"),
+                            })}
+                          </EffectiveChip>
+                        ) : null}
+                      </div>
+                      <div className="space-y-2">
+                        <Label>{t("settings.fileChmodLabel")}</Label>
+                        <Select
+                          value={draftFileChmodSelectValue}
+                          onValueChange={(value) =>
+                            setDraftFileChmod(
+                              value === INHERIT_VALUE ? "" : value,
+                            )
+                          }
+                          disabled={permissionFieldsDisabled}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={INHERIT_VALUE}>
+                              {t("settings.libraryInheritFacet")}
+                            </SelectItem>
+                            {FILE_CHMOD_PRESETS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                <span className="flex w-full items-center justify-between gap-4">
+                                  <span>
+                                    {option.value} - {t(option.labelKey)}
+                                  </span>
+                                  <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                    {formatChmodMode(option.value, "file")}
+                                  </span>
+                                </span>
+                              </SelectItem>
+                            ))}
+                            {customFileChmod ? (
+                              <SelectItem value={customFileChmod}>
+                                <span className="flex w-full items-center justify-between gap-4">
+                                  <span>
+                                    {customFileChmod} -{" "}
+                                    {t("settings.chmodPresetCustom")}
+                                  </span>
+                                  <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                    {formatChmodMode(customFileChmod, "file")}
+                                  </span>
+                                </span>
+                              </SelectItem>
+                            ) : null}
+                          </SelectContent>
+                        </Select>
+                        {savedSettings ? (
+                          <EffectiveChip>
+                            {t("settings.libraryEffectiveProfile", {
+                              value: savedSettings.fileChmod ?? t("label.none"),
+                            })}
+                          </EffectiveChip>
+                        ) : null}
+                      </div>
+                      <div className="space-y-2">
+                        <Label>{t("settings.folderChmodLabel")}</Label>
+                        <Select
+                          value={draftFolderChmodSelectValue}
+                          onValueChange={(value) =>
+                            setDraftFolderChmod(
+                              value === INHERIT_VALUE ? "" : value,
+                            )
+                          }
+                          disabled={permissionFieldsDisabled}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={INHERIT_VALUE}>
+                              {t("settings.libraryInheritFacet")}
+                            </SelectItem>
+                            {FOLDER_CHMOD_PRESETS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                <span className="flex w-full items-center justify-between gap-4">
+                                  <span>
+                                    {option.value} - {t(option.labelKey)}
+                                  </span>
+                                  <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                    {formatChmodMode(option.value, "folder")}
+                                  </span>
+                                </span>
+                              </SelectItem>
+                            ))}
+                            {customFolderChmod ? (
+                              <SelectItem value={customFolderChmod}>
+                                <span className="flex w-full items-center justify-between gap-4">
+                                  <span>
+                                    {customFolderChmod} -{" "}
+                                    {t("settings.chmodPresetCustom")}
+                                  </span>
+                                  <span className="font-[var(--font-code)] text-xs text-muted-foreground">
+                                    {formatChmodMode(customFolderChmod, "folder")}
+                                  </span>
+                                </span>
+                              </SelectItem>
+                            ) : null}
+                          </SelectContent>
+                        </Select>
+                        {savedSettings ? (
+                          <EffectiveChip>
+                            {t("settings.libraryEffectiveProfile", {
+                              value: savedSettings.folderChmod ?? t("label.none"),
+                            })}
+                          </EffectiveChip>
+                        ) : null}
+                      </div>
+                      <div className="space-y-2">
+                        <Label>{t("settings.chownGroupLabel")}</Label>
+                        <Input
+                          value={draftChownGroup}
+                          onChange={(event) =>
+                            setDraftChownGroup(event.target.value)
+                          }
+                          disabled={permissionFieldsDisabled}
+                          placeholder={
+                            savedSettings?.chownGroup ??
+                            t("settings.libraryInheritFacet")
+                          }
+                        />
+                        {savedSettings ? (
+                          <EffectiveChip>
+                            {t("settings.libraryEffectiveProfile", {
+                              value: savedSettings.chownGroup ?? t("label.none"),
+                            })}
+                          </EffectiveChip>
+                        ) : null}
+                      </div>
+                    </div>
                   ) : null}
                 </div>
-              </div>
-
-              {canManageDownloadClientRouting ? (
-                <div className="space-y-3">
+                {canManageDownloadClientRouting ? (
                   <div className="space-y-2">
                     <Label>{t("settings.downloadClientRouting")}</Label>
                     <Select
@@ -1243,31 +1639,32 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       </SelectContent>
                     </Select>
                   </div>
-                  {draftDownloadClientRoutingMode === "custom" ? (
-                    <DownloadClientRoutingPanel
-                      scopeLabel={activeLibrary?.name ?? settingsTitle}
-                      downloadClients={downloadClients}
-                      activeScopeRouting={draftDownloadClientRouting}
-                      activeScopeRoutingOrder={draftDownloadClientRoutingOrder}
-                      downloadClientRoutingLoading={downloadClientRoutingBusy}
-                      downloadClientRoutingSaving={saving}
-                      updateDownloadClientRoutingForScope={
-                        updateDownloadClientRoutingDraft
-                      }
-                      moveDownloadClientInScope={moveDownloadClientRoutingDraft}
-                    />
-                  ) : null}
-                </div>
+                ) : null}
+              </div>
+              {canManageDownloadClientRouting &&
+              draftDownloadClientRoutingMode === "custom" ? (
+                <DownloadClientRoutingPanel
+                  scopeLabel={activeLibrary?.name ?? settingsTitle}
+                  downloadClients={downloadClients}
+                  activeScopeRouting={draftDownloadClientRouting}
+                  activeScopeRoutingOrder={draftDownloadClientRoutingOrder}
+                  downloadClientRoutingLoading={downloadClientRoutingBusy}
+                  downloadClientRoutingSaving={saving}
+                  updateDownloadClientRoutingForScope={
+                    updateDownloadClientRoutingDraft
+                  }
+                  moveDownloadClientInScope={moveDownloadClientRoutingDraft}
+                />
               ) : null}
+              </LibrarySettingsSection>
 
-              <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
-                <div className="space-y-1">
-                  <h3 className="text-sm font-medium text-card-foreground">
-                    {t("settings.sidecarFilesTitle")}
-                  </h3>
-                </div>
+              <LibrarySettingsSection
+                icon={FileText}
+                title={t("settings.sidecarFilesTitle")}
+              >
+              <div>
                 <div
-                  className={`mt-4 grid gap-3 ${showPlexmatch ? "md:grid-cols-2" : "md:grid-cols-1"}`}
+                  className={`grid gap-3 ${showPlexmatch ? "md:grid-cols-2" : "md:grid-cols-1"}`}
                 >
                   <div className="space-y-2">
                     <Label>{t("settings.nfoWriteOnImportLabel")}</Label>
@@ -1291,7 +1688,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       {t("settings.nfoWriteOnImportDescription")}
                     </p>
                     {savedSettings ? (
-                      <p className="text-xs text-muted-foreground">
+                      <EffectiveChip>
                         {t("settings.libraryEffectiveProfile", {
                           value: t(
                             savedSettings.nfoWriteOnImport
@@ -1299,7 +1696,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                               : "label.disabled",
                           ),
                         })}
-                      </p>
+                      </EffectiveChip>
                     ) : null}
                   </div>
                   {showPlexmatch ? (
@@ -1325,7 +1722,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                         {t("settings.plexmatchWriteOnImportDescription")}
                       </p>
                       {savedSettings?.plexmatchWriteOnImport != null ? (
-                        <p className="text-xs text-muted-foreground">
+                        <EffectiveChip>
                           {t("settings.libraryEffectiveProfile", {
                             value: t(
                               savedSettings.plexmatchWriteOnImport
@@ -1333,21 +1730,20 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                                 : "label.disabled",
                             ),
                           })}
-                        </p>
+                        </EffectiveChip>
                       ) : null}
                     </div>
                   ) : null}
                 </div>
               </div>
+              </LibrarySettingsSection>
 
               {isAnimeFacet ? (
-                <div className="rounded-lg border border-border/70 bg-muted/10 p-4">
-                  <div className="space-y-1">
-                    <h3 className="text-sm font-medium text-card-foreground">
-                      {t("settings.animeSettings")}
-                    </h3>
-                  </div>
-                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <LibrarySettingsSection
+                  icon={SlidersVertical}
+                  title={t("settings.animeSettings")}
+                >
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                     <div className="space-y-2">
                       <Label>{t("settings.fillerPolicyLabel")}</Label>
                       <Select
@@ -1497,69 +1893,115 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       ) : null}
                     </div>
                   </div>
-                </div>
+                </LibrarySettingsSection>
               ) : null}
               {settingsError ? (
                 <p className="text-xs text-destructive">{settingsError}</p>
               ) : null}
 
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  id="media-library-save-scan"
-                  type="button"
-                  variant="primary"
-                  onClick={handleSaveAndScanLibrary}
-                  disabled={
-                    settingsBusy ||
-                    downloadClientRoutingBusy ||
-                    !draftName.trim() ||
-                    !hasDraftChanges ||
-                    hasRootFolderConflicts ||
-                    hasInvalidRootFolderPaths
-                  }
-                >
-                  <Save className="mr-1.5 h-4 w-4" />
-                  {t("settings.librarySaveAndScanButton")}
-                </Button>
-                <Button
-                  id="media-library-save"
-                  type="button"
-                  variant="outline"
-                  onClick={handleSaveLibrary}
-                  disabled={
-                    settingsBusy ||
-                    downloadClientRoutingBusy ||
-                    !draftName.trim() ||
-                    !hasDraftChanges ||
-                    hasRootFolderConflicts ||
-                    hasInvalidRootFolderPaths
-                  }
-                >
-                  {t("settings.librarySaveOnlyButton")}
-                </Button>
-                {mode !== "new" && activeLibrary && !activeLibrary.isDefault ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleDeleteLibrary}
-                    disabled={actionBusy}
-                    className={boxedActionButtonToneClass.delete}
-                  >
-                    <Trash2 className="mr-1.5 h-4 w-4" />
-                    {t("settings.libraryDeleteButton")}
-                  </Button>
-                ) : null}
-              </div>
             </div>
           ) : null}
-        </CardContent>
-      </Card>
+          {footerTarget && (mode === "new" || activeLibrary)
+            ? createPortal(
+                <div className="border-t border-[var(--scry-border2)] bg-[var(--scry-surf)]">
+                  <div
+                    className={cn(
+                      "mx-auto flex w-full flex-wrap items-center gap-2 px-4 py-3.5 sm:px-6 md:px-[30px]",
+                      draftDownloadClientRoutingMode === "custom"
+                        ? "max-w-[1280px]"
+                        : "max-w-[920px]",
+                    )}
+                  >
+                    {mode !== "new" &&
+                    activeLibrary &&
+                    !activeLibrary.isDefault ? (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        onClick={handleDeleteLibrary}
+                        disabled={actionBusy}
+                      >
+                        <Trash2 className="mr-1.5 h-4 w-4" />
+                        {t("settings.libraryDeleteButton")}
+                      </Button>
+                    ) : null}
+                    {hasDraftChanges ? (
+                      <span className="text-xs text-[var(--scry-muted3)]">
+                        {t("settings.libraryUnsavedChanges")}
+                      </span>
+                    ) : null}
+                    <Button
+                      id="media-library-save"
+                      type="button"
+                      variant="outline"
+                      onClick={handleSaveLibrary}
+                      disabled={
+                        settingsBusy ||
+                        downloadClientRoutingBusy ||
+                        !draftName.trim() ||
+                        !hasDraftChanges ||
+                        hasRootFolderConflicts ||
+                        hasInvalidRootFolderPaths
+                      }
+                      className="ml-auto"
+                    >
+                      {t("settings.librarySaveOnlyButton")}
+                    </Button>
+                    <Button
+                      id="media-library-save-scan"
+                      type="button"
+                      variant="primary"
+                      onClick={handleSaveAndScanLibrary}
+                      disabled={
+                        settingsBusy ||
+                        downloadClientRoutingBusy ||
+                        !draftName.trim() ||
+                        !hasDraftChanges ||
+                        hasRootFolderConflicts ||
+                        hasInvalidRootFolderPaths
+                      }
+                    >
+                      <Save className="mr-1.5 h-4 w-4" />
+                      {t("settings.librarySaveAndScanButton")}
+                    </Button>
+                  </div>
+                </div>,
+                footerTarget,
+              )
+            : null}
+      </div>
       <FolderBrowserDialog
         open={browserOpen}
         onOpenChange={setBrowserOpen}
         onSelect={handleBrowserSelect}
+        selectionTypes={["folder"]}
         initialPath={browserInitialPath}
         title={browserTitle}
+      />
+      <ConfirmDialog
+        open={deleteLibraryOpen}
+        title={t("settings.libraryDeleteButton")}
+        description={
+          activeLibrary
+            ? t("settings.libraryDeleteConfirm", { name: activeLibrary.name })
+            : ""
+        }
+        confirmLabel={t("label.delete")}
+        cancelLabel={t("label.cancel")}
+        onConfirm={handleConfirmDeleteLibrary}
+        onCancel={() => setDeleteLibraryOpen(false)}
+      />
+      <ConfirmDialog
+        open={
+          libraryNavigationBlocker.state === "blocked" ||
+          pendingLibrarySelection !== null
+        }
+        title={t("settings.unsavedLibraryChangesTitle")}
+        description={t("settings.unsavedLibraryChangesConfirm")}
+        confirmLabel={t("label.discard")}
+        cancelLabel={t("label.cancel")}
+        onConfirm={handleConfirmDiscardLibraryChanges}
+        onCancel={handleCancelDiscardLibraryChanges}
       />
     </>
   );

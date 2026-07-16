@@ -380,7 +380,6 @@ async fn graphql_introspection_lists_title_fields() {
         ("titleMediaFile", "titleId"),
         ("movieEntity", "id"),
         ("seriesMovieLink", "id"),
-        ("seriesMovieLink", "seriesTitleId"),
         ("wantedItem", "id"),
         ("wantedItem", "titleId"),
         ("releaseDecision", "id"),
@@ -445,17 +444,17 @@ async fn graphql_introspection_lists_title_fields() {
     }
 
     for (type_alias, expected_fields) in [
-        (
-            "wantedItemsPage",
-            vec!["items", "limit", "offset", "hasMore", "totalCount"],
-        ),
+        // 0.17.0 pagination unification: pages expose {items, totalCount,
+        // hasMore}; input echoes (limit/offset) were removed. The bare
+        // wantedItemsPage relation stays items-only.
+        ("wantedItemsPage", vec!["items"]),
         (
             "releaseDecisionsPage",
-            vec!["items", "limit", "offset", "hasMore"],
+            vec!["items", "totalCount", "hasMore"],
         ),
         (
             "pendingReleasesPage",
-            vec!["items", "limit", "offset", "hasMore", "totalCount"],
+            vec!["items", "hasMore", "totalCount"],
         ),
     ] {
         let fields: Vec<&str> = body["data"][type_alias]["fields"]
@@ -520,7 +519,13 @@ async fn graphql_introspection_lists_title_fields() {
         .collect();
     assert_eq!(
         title_catalog_fields,
-        vec!["items", "limit", "offset", "hasMore", "totalCount"]
+        vec![
+            "items",
+            "hasMore",
+            "totalCount",
+            "filterCounts",
+            "managedBytes",
+        ]
     );
     let subscription_fields = body["data"]["subscriptionRoot"]["fields"]
         .as_array()
@@ -547,11 +552,10 @@ async fn graphql_introspection_lists_title_fields() {
         ("linkedAccounts", "userId"),
         ("pendingImportBindingPreview", "pendingImportId"),
         ("postProcessingScriptRuns", "scriptId"),
-        ("titleBySlug", "libraryId"),
         ("externalSubtitleBlocklistEntries", "mediaFileId"),
     ] {
         let arg = query_arg(field_name, arg_name);
-        if field_name == "linkedAccounts" || field_name == "titleBySlug" {
+        if field_name == "linkedAccounts" {
             assert_eq!(arg["type"]["kind"], "SCALAR", "{field_name}.{arg_name}");
             assert_eq!(arg["type"]["name"], "ID", "{field_name}.{arg_name}");
         } else {
@@ -581,11 +585,19 @@ async fn graphql_introspection_lists_title_fields() {
         assert_eq!(arg["type"]["name"], expected_name);
     }
 
-    for (field_name, arg_name) in [("downloadQueue", "titleId"), ("wantedItems", "titleId")] {
-        let arg = query_arg(field_name, arg_name);
-        assert_eq!(arg["type"]["kind"], "SCALAR");
-        assert_eq!(arg["type"]["name"], "ID");
-    }
+    // RFC 119: `wantedItems` is the derived view now — the state-row `titleId`
+    // filter was dropped (use `titleSearch` or the interactive job's `titleId`).
+    let download_queue_title_id = query_arg("downloadQueue", "titleId");
+    assert_eq!(download_queue_title_id["type"]["kind"], "SCALAR");
+    assert_eq!(download_queue_title_id["type"]["name"], "ID");
+    assert!(
+        query_field("wantedItems")["args"]
+            .as_array()
+            .expect("wantedItems args")
+            .iter()
+            .all(|arg| arg["name"] != "titleId"),
+        "wantedItems.titleId was removed in the RFC 119 derived view"
+    );
     let subscription_title_id = subscription_arg("downloadQueue", "titleId");
     assert_eq!(subscription_title_id["type"]["kind"], "SCALAR");
     assert_eq!(subscription_title_id["type"]["name"], "ID");
@@ -595,7 +607,7 @@ async fn graphql_introspection_lists_title_fields() {
         "myMediaRequests",
         "pendingImports",
         "wantedItems",
-        "cutoffUnmetTitles",
+        "cutoffUnmetTitlesPage",
         "calendarEpisodes",
     ] {
         let arg = query_arg(field_name, "libraryIds");
@@ -700,7 +712,10 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
           indexerSearchResult: __type(name: "IndexerSearchResultPayload") { fields { name type { kind name ofType { kind name } } } }
           titleReleaseBlocklistEntry: __type(name: "TitleReleaseBlocklistEntryPayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
           importRecord: __type(name: "ImportRecordPayload") { fields { name type { kind name ofType { kind name } } } }
-          queueDownloadScope: __type(name: "QueueDownloadScopePayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
+          episodeScope: __type(name: "EpisodeScopePayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
+          episodeSetScope: __type(name: "EpisodeSetScopePayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
+          seriesMovieScope: __type(name: "SeriesMovieScopePayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
+          collectionScope: __type(name: "CollectionScopePayload") { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
           autoBackupSettings: __type(name: "AutoBackupSettingsPayload") { fields { name type { kind name ofType { kind name } } } }
           indexerConfig: __type(name: "IndexerConfigPayload") { fields { name type { kind name ofType { kind name } } } }
           downloadClientConfig: __type(name: "DownloadClientConfigPayload") { fields { name type { kind name ofType { kind name } } } }
@@ -806,6 +821,11 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
         ("titleHistoryEvent", "id"),
         ("titleHistoryEvent", "titleId"),
         ("restoreInspect", "uploadId"),
+        // 0.17.0: QueueDownloadScopePayload became a union; the scope ids are
+        // non-null fields on the member payloads now.
+        ("episodeScope", "episodeId"),
+        ("seriesMovieScope", "seriesMovieLinkId"),
+        ("collectionScope", "collectionId"),
     ] {
         assert_non_null_id_field(type_alias, name);
     }
@@ -820,9 +840,6 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
         ("domainEventEnvelope", "actorUserId"),
         ("domainEventEnvelope", "titleId"),
         ("libraryScanProgress", "libraryId"),
-        ("queueDownloadScope", "episodeId"),
-        ("queueDownloadScope", "seriesMovieLinkId"),
-        ("queueDownloadScope", "collectionId"),
         ("postProcessingScriptRun", "titleId"),
         ("titleHistoryEvent", "episodeId"),
         ("titleHistoryEvent", "collectionId"),
@@ -835,7 +852,7 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
 
     for (type_alias, name) in [
         ("titleReleaseBlocklistEntry", "episodeIds"),
-        ("queueDownloadScope", "episodeIds"),
+        ("episodeSetScope", "episodeIds"),
         ("titleHistoryEvent", "episodeIds"),
     ] {
         assert_non_null_id_list_field(type_alias, name);
@@ -853,7 +870,6 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
         ("queueItem", "lastUpdatedAt"),
         ("queueItem", "importedAt"),
         ("mediaFile", "grabbedAt"),
-        ("wantedItem", "nextSearchAt"),
         ("wantedItem", "lastSearchAt"),
         ("titleAcquisitionDiagnostics", "latestDecisionAt"),
         ("titleAcquisitionDiagnostics", "latestWantedSearchAt"),
@@ -883,10 +899,6 @@ async fn graphql_introspection_exposes_typed_timestamps_as_datetime() {
         ("login", "expiresAt"),
         ("title", "createdAt"),
         ("collection", "createdAt"),
-        ("movieEntity", "createdAt"),
-        ("movieEntity", "updatedAt"),
-        ("seriesMovieLink", "createdAt"),
-        ("seriesMovieLink", "updatedAt"),
         ("mediaFile", "createdAt"),
         ("wantedItem", "createdAt"),
         ("wantedItem", "updatedAt"),
@@ -1058,11 +1070,8 @@ async fn graphql_introspection_exposes_calendar_dates_as_date_scalar() {
 
     for (type_alias, name) in [
         ("title", "firstAired"),
-        ("title", "digitalReleaseDate"),
-        ("movieEntity", "digitalReleaseDate"),
         ("episode", "airDate"),
         ("calendarEpisode", "airDate"),
-        ("wantedItem", "baselineDate"),
         ("metadataMovie", "tmdbReleaseDate"),
     ] {
         assert_optional_date_field(type_alias, name);
@@ -1145,7 +1154,6 @@ async fn graphql_introspection_exposes_byte_counts_as_long_scalar() {
         ("releaseDecision", "releaseSizeBytes"),
         ("pendingRelease", "releaseSizeBytes"),
         ("indexerSearchResult", "sizeBytes"),
-        ("importResult", "fileSizeBytes"),
         ("mediaRenamePlanItem", "sourceSizeBytes"),
         ("registryPlugin", "bytes"),
     ] {
@@ -1244,9 +1252,7 @@ async fn graphql_introspection_delete_rename_and_cutoff_payloads_use_id_fields()
     for (type_alias, name) in [
         ("mediaRenamePlan", "titleId"),
         ("mediaRenamePlanItem", "collectionId"),
-        ("mediaRenamePlanItem", "mediaFileId"),
         ("mediaRenameApplyItem", "collectionId"),
-        ("mediaRenameApplyItem", "mediaFileId"),
         ("manualImportFile", "suggestedEpisodeId"),
         ("cutoffUnmetItem", "episodeId"),
     ] {
@@ -1371,13 +1377,13 @@ async fn graphql_introspection_exposes_core_graph_relationship_fields() {
     assert_eq!(
         pending_release_status_names,
         vec![
-            "waiting",
-            "standby",
-            "processing",
-            "grabbed",
-            "superseded",
-            "expired",
-            "dismissed"
+            "WAITING",
+            "STANDBY",
+            "PROCESSING",
+            "GRABBED",
+            "SUPERSEDED",
+            "EXPIRED",
+            "DISMISSED"
         ]
     );
 }
@@ -1394,6 +1400,7 @@ async fn graphql_traverses_core_graph_relationships() {
         library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         root_folder_id: scryer_domain::root_folder_id_for_path("/data/series"),
         created_by: None,
@@ -1405,10 +1412,11 @@ async fn graphql_traverses_core_graph_relationships() {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: Some(24),
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -1492,7 +1500,7 @@ async fn graphql_traverses_core_graph_relationships() {
         .await
         .expect("link file to episode");
 
-    let wanted_item = WantedItem {
+    let wanted_item = AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -1507,12 +1515,8 @@ async fn graphql_traverses_core_graph_relationships() {
         season_number: Some("1".to_string()),
         episode_number: episode.episode_number.clone(),
         media_type: "episode".to_string(),
-        search_phase: "primary".to_string(),
-        next_search_at: None,
         last_search_at: None,
-        search_count: 1,
-        baseline_date: None,
-        status: scryer_application::WantedStatus::Wanted,
+        status: scryer_application::AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: Some(120),
         latest_release_decision: None,
@@ -1521,7 +1525,7 @@ async fn graphql_traverses_core_graph_relationships() {
         updated_at: "2026-03-20T00:00:00Z".to_string(),
     };
     ctx.library_state
-        .upsert_wanted_item(&wanted_item)
+        .upsert_acquisition_scope_state(&wanted_item)
         .await
         .expect("seed wanted item");
 
@@ -1575,7 +1579,7 @@ async fn graphql_traverses_core_graph_relationships() {
     let body = gql(
         &ctx,
         r#"
-        query CoreGraph($titleId: ID!, $wantedItemId: ID!) {
+        query CoreGraph($titleId: ID!, $wantedItemId: ID!, $episodeId: ID!, $mismatchTitleId: ID!) {
           title(id: $titleId) {
             id
             downloadQueueItems {
@@ -1652,11 +1656,24 @@ async fn graphql_traverses_core_graph_relationships() {
               items { id }
             }
           }
+          episode(titleId: $titleId, episodeId: $episodeId) {
+            id
+            parentTitle { id }
+            mediaFiles {
+              id
+              episode { id }
+            }
+          }
+          mismatchedEpisode: episode(titleId: $mismatchTitleId, episodeId: $episodeId) {
+            id
+          }
         }
         "#,
         json!({
             "titleId": title.id,
             "wantedItemId": wanted_item.id,
+            "episodeId": episode.id,
+            "mismatchTitleId": Id::new().0,
         }),
     )
     .await;
@@ -1693,7 +1710,7 @@ async fn graphql_traverses_core_graph_relationships() {
     );
     assert_eq!(
         title_wanted_item["pendingReleases"]["items"][0]["status"],
-        "waiting"
+        "WAITING"
     );
     assert_eq!(
         title_wanted_item["releaseDecisions"]["items"][0]["id"],
@@ -1718,6 +1735,14 @@ async fn graphql_traverses_core_graph_relationships() {
         body["data"]["wantedItem"]["releaseDecisions"]["items"][0]["id"],
         decision.id
     );
+    assert_eq!(body["data"]["episode"]["id"], episode.id);
+    assert_eq!(body["data"]["episode"]["parentTitle"]["id"], title.id);
+    assert_eq!(body["data"]["episode"]["mediaFiles"][0]["id"], file_id);
+    assert_eq!(
+        body["data"]["episode"]["mediaFiles"][0]["episode"]["id"],
+        episode.id
+    );
+    assert!(body["data"]["mismatchedEpisode"].is_null());
 }
 
 #[tokio::test]
@@ -1802,8 +1827,8 @@ async fn graphql_introspection_exposes_queue_and_source_enums() {
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
-    assert!(queue_state_names.contains(&"import_pending"));
-    assert!(!queue_state_names.contains(&"importpending"));
+    assert!(queue_state_names.contains(&"IMPORT_PENDING"));
+    assert!(!queue_state_names.contains(&"IMPORTPENDING"));
 
     let source_kinds = body["data"]["sourceKind"]["enumValues"]
         .as_array()
@@ -1814,7 +1839,7 @@ async fn graphql_introspection_exposes_queue_and_source_enums() {
         .collect();
     assert_eq!(
         source_kind_names,
-        vec!["nzbFile", "nzbUrl", "torrentFile", "magnetUri"]
+        vec!["NZB_FILE", "NZB_URL", "TORRENT_FILE", "MAGNET_URI"]
     );
 }
 
@@ -1956,15 +1981,15 @@ async fn graphql_introspection_exposes_queue_action_payloads() {
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
-    assert!(action_kind_names.contains(&"queued_manual_import"));
-    assert!(action_kind_names.contains(&"assigned_tracked_download_title"));
-    assert!(action_kind_names.contains(&"delete_queued"));
+    assert!(action_kind_names.contains(&"QUEUED_MANUAL_IMPORT"));
+    assert!(action_kind_names.contains(&"ASSIGNED_TRACKED_DOWNLOAD_TITLE"));
+    assert!(action_kind_names.contains(&"DELETE_QUEUED"));
 }
 
 #[tokio::test]
 async fn graphql_queue_manual_import_returns_ok_and_persists_pending_request() {
     let ctx = TestContext::new().await;
-    let title_id = add_test_title(&ctx, "Queued Manual Import Movie", "movie").await;
+    let title_id = add_test_title(&ctx, "Queued Manual Import Movie", "MOVIE").await;
 
     Mock::given(method("POST"))
         .and(path("/jsonrpc"))
@@ -2052,7 +2077,7 @@ async fn graphql_queue_manual_import_returns_ok_and_persists_pending_request() {
         .expect("queue manual import should return an import id");
     assert_eq!(
         body["data"]["queueManualImport"]["kind"],
-        json!("queued_manual_import")
+        json!("QUEUED_MANUAL_IMPORT")
     );
 
     let history_body = gql(
@@ -2079,8 +2104,8 @@ async fn graphql_queue_manual_import_returns_ok_and_persists_pending_request() {
         .find(|entry| entry["id"].as_str() == Some(import_id))
         .expect("queued manual import should be present in history");
     assert_eq!(queued["sourceRef"], json!("999"));
-    assert_eq!(queued["importType"], json!("manual_import"));
-    assert_eq!(queued["status"], json!("pending"));
+    assert_eq!(queued["importType"], json!("MANUAL_IMPORT"));
+    assert_eq!(queued["status"], json!("PENDING"));
 }
 
 #[tokio::test]
@@ -2124,7 +2149,7 @@ async fn graphql_delete_download_returns_ok_and_persists_queued_delete_command()
     let command_id = action["commandId"]
         .as_str()
         .expect("delete download should return a queued command id");
-    assert_eq!(action["kind"], json!("delete_queued"));
+    assert_eq!(action["kind"], json!("DELETE_QUEUED"));
     assert_eq!(action["removed"], json!(false));
     assert_eq!(action["clientType"], json!("nzbget"));
     assert!(action["queueItem"].is_null());
@@ -2270,7 +2295,7 @@ async fn graphql_delete_download_marks_history_item_completed_after_poller_runs(
     assert_no_errors(&delete_body);
     assert_eq!(
         delete_body["data"]["deleteDownload"]["kind"],
-        json!("delete_queued")
+        json!("DELETE_QUEUED")
     );
 
     let token = tokio_util::sync::CancellationToken::new();
@@ -2332,7 +2357,7 @@ async fn graphql_delete_download_marks_history_item_completed_after_poller_runs(
         &ctx,
         r#"
         {
-                    downloadHistory(limit: 100, offset: 0, filters: [all]) {
+                    downloadHistory(limit: 100, offset: 0, filters: [ALL]) {
             items {
               downloadClientItemId
               state
@@ -2354,8 +2379,8 @@ async fn graphql_delete_download_marks_history_item_completed_after_poller_runs(
         .find(|item| item["downloadClientItemId"].as_str() == Some("123"))
         .expect("history item should remain visible in history");
 
-    assert_eq!(item["state"], json!("completed"));
-    assert_eq!(item["deleteStatus"], json!("completed"));
+    assert_eq!(item["state"], json!("COMPLETED"));
+    assert_eq!(item["deleteStatus"], json!("COMPLETED"));
     assert!(item["deleteErrorMessage"].is_null());
 }
 
@@ -2385,9 +2410,16 @@ async fn graphql_introspection_exposes_wanted_enums() {
           wantedMediaType: __type(name: "WantedMediaTypeValue") {
             enumValues { name }
           }
-          wantedSearchPhase: __type(name: "WantedSearchPhaseValue") {
+          convergenceState: __type(name: "ConvergenceStateValue") {
             enumValues { name }
           }
+          recencyLane: __type(name: "RecencyLaneValue") {
+            enumValues { name }
+          }
+          wantedKind: __type(name: "WantedKindValue") {
+            enumValues { name }
+          }
+          wantedSearchPhase: __type(name: "WantedSearchPhaseValue") { name }
         }
         "#,
         json!({}),
@@ -2410,11 +2442,21 @@ async fn graphql_introspection_exposes_wanted_enums() {
         field("mediaType")["type"]["ofType"]["name"],
         "WantedMediaTypeValue"
     );
-    assert_eq!(field("searchPhase")["type"]["kind"], "NON_NULL");
+    // RFC 119: cadence display (searchPhase) is replaced by convergence + recency.
+    assert!(fields.iter().all(|field| field["name"] != "searchPhase"));
+    assert!(body["data"]["wantedSearchPhase"].is_null());
+    assert_eq!(field("convergenceState")["type"]["kind"], "NON_NULL");
     assert_eq!(
-        field("searchPhase")["type"]["ofType"]["name"],
-        "WantedSearchPhaseValue"
+        field("convergenceState")["type"]["ofType"]["name"],
+        "ConvergenceStateValue"
     );
+    assert_eq!(field("recencyLane")["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        field("recencyLane")["type"]["ofType"]["name"],
+        "RecencyLaneValue"
+    );
+    assert_eq!(field("indexersCovered")["type"]["ofType"]["name"], "Int");
+    assert_eq!(field("indexersRouted")["type"]["ofType"]["name"], "Int");
     assert_eq!(field("status")["type"]["kind"], "NON_NULL");
     assert_eq!(
         field("status")["type"]["ofType"]["name"],
@@ -2429,7 +2471,7 @@ async fn graphql_introspection_exposes_wanted_enums() {
         .collect();
     assert_eq!(
         status_names,
-        vec!["wanted", "grabbed", "paused", "completed"]
+        vec!["WANTED", "GRABBED", "PAUSED", "COMPLETED"]
     );
 
     let media_type_names: Vec<&str> = body["data"]["wantedMediaType"]["enumValues"]
@@ -2438,24 +2480,34 @@ async fn graphql_introspection_exposes_wanted_enums() {
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
-    assert_eq!(media_type_names, vec!["movie", "episode", "series_movie"]);
+    assert_eq!(media_type_names, vec!["MOVIE", "EPISODE", "SERIES_MOVIE"]);
 
-    let search_phase_names: Vec<&str> = body["data"]["wantedSearchPhase"]["enumValues"]
+    let convergence_names: Vec<&str> = body["data"]["convergenceState"]["enumValues"]
         .as_array()
-        .expect("WantedSearchPhaseValue should expose enum values")
+        .expect("ConvergenceStateValue should expose enum values")
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
     assert_eq!(
-        search_phase_names,
-        vec![
-            "pre_air",
-            "pre_release",
-            "primary",
-            "secondary",
-            "long_tail"
-        ]
+        convergence_names,
+        vec!["QUEUED", "SEARCHING", "CONVERGED", "DEFERRED"]
     );
+
+    let recency_names: Vec<&str> = body["data"]["recencyLane"]["enumValues"]
+        .as_array()
+        .expect("RecencyLaneValue should expose enum values")
+        .iter()
+        .filter_map(|value| value["name"].as_str())
+        .collect();
+    assert_eq!(recency_names, vec!["HOT", "COLD"]);
+
+    let wanted_kind_names: Vec<&str> = body["data"]["wantedKind"]["enumValues"]
+        .as_array()
+        .expect("WantedKindValue should expose enum values")
+        .iter()
+        .filter_map(|value| value["name"].as_str())
+        .collect();
+    assert_eq!(wanted_kind_names, vec!["MISSING", "CUTOFF_UPGRADE"]);
 }
 
 #[tokio::test]
@@ -2568,12 +2620,12 @@ async fn graphql_introspection_exposes_import_enums() {
     assert_eq!(
         import_status_names,
         vec![
-            "pending",
-            "running",
-            "processing",
-            "completed",
-            "failed",
-            "skipped"
+            "PENDING",
+            "RUNNING",
+            "PROCESSING",
+            "COMPLETED",
+            "FAILED",
+            "SKIPPED"
         ]
     );
 
@@ -2583,8 +2635,8 @@ async fn graphql_introspection_exposes_import_enums() {
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
-    assert!(import_type_names.contains(&"series_download"));
-    assert!(import_type_names.contains(&"rename_io_failed"));
+    assert!(import_type_names.contains(&"SERIES_DOWNLOAD"));
+    assert!(import_type_names.contains(&"RENAME_IO_FAILED"));
 
     let import_decision_names: Vec<&str> = body["data"]["importDecision"]["enumValues"]
         .as_array()
@@ -2595,12 +2647,12 @@ async fn graphql_introspection_exposes_import_enums() {
     assert_eq!(
         import_decision_names,
         vec![
-            "imported",
-            "rejected",
-            "skipped",
-            "conflict",
-            "unmatched",
-            "failed"
+            "IMPORTED",
+            "REJECTED",
+            "SKIPPED",
+            "CONFLICT",
+            "UNMATCHED",
+            "FAILED"
         ]
     );
 
@@ -2610,9 +2662,9 @@ async fn graphql_introspection_exposes_import_enums() {
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
-    assert!(import_skip_reason_names.contains(&"password_required"));
-    assert!(import_skip_reason_names.contains(&"post_download_rule_blocked"));
-    assert!(import_skip_reason_names.contains(&"unparseable_episode"));
+    assert!(import_skip_reason_names.contains(&"PASSWORD_REQUIRED"));
+    assert!(import_skip_reason_names.contains(&"POST_DOWNLOAD_RULE_BLOCKED"));
+    assert!(import_skip_reason_names.contains(&"UNPARSEABLE_EPISODE"));
 }
 
 #[tokio::test]
@@ -2777,9 +2829,9 @@ async fn graphql_introspection_exposes_activity_enums() {
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
-    assert!(activity_kind_names.contains(&"title_updated"));
-    assert!(activity_kind_names.contains(&"metadata_hydration_completed"));
-    assert!(activity_kind_names.contains(&"import_rejected"));
+    assert!(activity_kind_names.contains(&"TITLE_UPDATED"));
+    assert!(activity_kind_names.contains(&"METADATA_HYDRATION_COMPLETED"));
+    assert!(activity_kind_names.contains(&"IMPORT_REJECTED"));
 
     let activity_severity_names: Vec<&str> = body["data"]["activitySeverity"]["enumValues"]
         .as_array()
@@ -2789,7 +2841,7 @@ async fn graphql_introspection_exposes_activity_enums() {
         .collect();
     assert_eq!(
         activity_severity_names,
-        vec!["info", "success", "warning", "error"]
+        vec!["INFO", "SUCCESS", "WARNING", "ERROR"]
     );
 
     let activity_channel_names: Vec<&str> = body["data"]["activityChannel"]["enumValues"]
@@ -2798,5 +2850,5 @@ async fn graphql_introspection_exposes_activity_enums() {
         .iter()
         .filter_map(|value| value["name"].as_str())
         .collect();
-    assert_eq!(activity_channel_names, vec!["web_ui", "toast"]);
+    assert_eq!(activity_channel_names, vec!["WEB_UI", "TOAST"]);
 }

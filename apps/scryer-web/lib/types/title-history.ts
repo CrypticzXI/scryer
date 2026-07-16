@@ -7,7 +7,7 @@ export type TitleHistoryEvent = {
   episodeIds: string[];
   collectionId: string | null;
   eventType: string;
-  actorKind: string | null;
+  actorKind: 'USER' | 'ANONYMOUS' | 'SYSTEM' | null;
   actorUserId: string | null;
   actorDisplayName: string | null;
   sourceTitle: string | null;
@@ -26,12 +26,13 @@ export type TitleHistoryEvent = {
   blocklistReason: string | null;
   sourcePath: string | null;
   destPath: string | null;
-  dataJson: string | null;
+  dataJson: unknown;
   occurredAt: string;
   createdAt: string;
 };
 
 export type TitleHistoryPage = {
-  records: TitleHistoryEvent[];
+  items: TitleHistoryEvent[];
   totalCount: number;
+  hasMore: boolean;
 };

@@ -14,6 +14,8 @@ use crate::queries::sql_runtime::{
     SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore, repo_err,
 };
 
+use super::{normalize_title_image_source_url, title_image_blob_digest};
+
 const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_kind, actor_user_id, actor_display_name, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
 
 #[derive(Clone)]
@@ -240,7 +242,14 @@ async fn missing_variant_specs(
     )
     .await?;
     let stored_source = rows.first().map(|row| row.text("source_url")).transpose()?;
-    let source_changed = stored_source.is_none_or(|stored_source| stored_source != source_url);
+    let normalized_source = normalize_title_image_source_url(source_url)?;
+    let normalized_stored_source = stored_source
+        .as_deref()
+        .map(normalize_title_image_source_url)
+        .transpose()?;
+    let source_changed = normalized_stored_source
+        .as_deref()
+        .is_none_or(|stored_source| stored_source != normalized_source);
     let existing_keys = rows
         .iter()
         .filter_map(|row| row.opt_text("variant_key").transpose())
@@ -259,6 +268,7 @@ async fn clear_title_image_cache_tx(tx: &mut SqlTx<'_>) -> AppResult<()> {
     }
 
     SqlRuntime::execute(SqlExec::Tx(tx), "DELETE FROM title_image_variants", &[]).await?;
+    SqlRuntime::execute(SqlExec::Tx(tx), "DELETE FROM title_image_blobs", &[]).await?;
     SqlRuntime::execute(SqlExec::Tx(tx), "DELETE FROM title_images", &[]).await?;
     SqlRuntime::execute(
         SqlExec::Tx(tx),
@@ -354,6 +364,50 @@ async fn upsert_title_image_source_result_tx(
     event: Option<&NewDomainEvent>,
 ) -> AppResult<Option<DomainEvent>> {
     let now = Utc::now();
+    let (remote_source_column, _) = title_image_source_columns(result.kind);
+    let current_source_sql =
+        format!("SELECT {remote_source_column} AS source_url FROM titles WHERE id = {{}}");
+    let current_source = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        &current_source_sql,
+        &[SqlArg::Text(title_id.to_string())],
+    )
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?
+    .opt_text("source_url")?;
+    let Some(current_source) = current_source else {
+        return Ok(None);
+    };
+    let normalized_current_source = normalize_title_image_source_url(&current_source)?;
+    let normalized_requested_source =
+        normalize_title_image_source_url(&result.requested_source_url)?;
+    let normalized_result_source = normalize_title_image_source_url(&result.source_url)?;
+    if normalized_requested_source != normalized_result_source {
+        return Err(AppError::Repository(
+            "processed title image source does not match the requested source".to_string(),
+        ));
+    }
+    if normalized_current_source != normalized_requested_source {
+        return Ok(None);
+    }
+
+    let canonicalize_source_sql = format!(
+        "UPDATE titles SET {remote_source_column} = {{}} WHERE id = {{}} AND {remote_source_column} = {{}} RETURNING id"
+    );
+    let canonicalized = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        &canonicalize_source_sql,
+        &[
+            SqlArg::Text(normalized_result_source),
+            SqlArg::Text(title_id.to_string()),
+            SqlArg::Text(current_source),
+        ],
+    )
+    .await?;
+    if canonicalized.is_none() {
+        return Ok(None);
+    }
+
     let existing = SqlRuntime::fetch_optional(
         SqlExec::Tx(tx),
         "SELECT id, source_url FROM title_images WHERE title_id = {} AND kind = {}",
@@ -383,6 +437,7 @@ async fn upsert_title_image_source_result_tx(
     }
 
     for variant in &result.variants {
+        upsert_title_image_blob_tx(tx, variant, now).await?;
         upsert_title_image_variant_tx(tx, &image_id, variant, now).await?;
     }
 
@@ -421,6 +476,65 @@ fn preferred_local_variant_path(
         })
 }
 
+async fn upsert_title_image_blob_tx(
+    tx: &mut SqlTx<'_>,
+    variant: &TitleImageVariantRecord,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<()> {
+    let computed_digest = title_image_blob_digest(&variant.bytes);
+    if variant.digest != computed_digest {
+        return Err(AppError::Repository(format!(
+            "title image variant {} supplied digest {} but bytes hash to {}",
+            variant.variant_key, variant.digest, computed_digest
+        )));
+    }
+
+    SqlRuntime::execute(
+        SqlExec::Tx(tx),
+        "INSERT INTO title_image_blobs (
+            digest, format, width, height, bytes, created_at, updated_at
+         ) VALUES ({}, {}, {}, {}, {}, {}, {})
+         ON CONFLICT (digest) DO NOTHING",
+        &[
+            SqlArg::Text(variant.digest.clone()),
+            SqlArg::Text(variant.format.clone()),
+            SqlArg::I32(variant.width),
+            SqlArg::I32(variant.height),
+            SqlArg::OptBytes(Some(variant.bytes.clone())),
+            SqlArg::Timestamp(now),
+            SqlArg::Timestamp(now),
+        ],
+    )
+    .await?;
+
+    let stored = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        "SELECT format, width, height, bytes FROM title_image_blobs WHERE digest = {}",
+        &[SqlArg::Text(variant.digest.clone())],
+    )
+    .await?
+    .ok_or_else(|| {
+        AppError::Repository(format!(
+            "title image blob {} was not persisted",
+            variant.digest
+        ))
+    })?;
+    let stored_bytes = stored
+        .opt_bytes("bytes")?
+        .ok_or_else(|| AppError::Repository("title image blob missing bytes".into()))?;
+    if stored.text("format")? != variant.format
+        || stored.i32("width")? != variant.width
+        || stored.i32("height")? != variant.height
+        || stored_bytes != variant.bytes
+    {
+        return Err(AppError::Repository(format!(
+            "title image blob {} conflicts with existing content",
+            variant.digest
+        )));
+    }
+    Ok(())
+}
+
 async fn upsert_title_image_variant_tx(
     tx: &mut SqlTx<'_>,
     image_id: &str,
@@ -431,26 +545,15 @@ async fn upsert_title_image_variant_tx(
     SqlRuntime::execute(
         SqlExec::Tx(tx),
         "INSERT INTO title_image_variants (
-            id, title_image_id, variant_key, path, format, width, height, bytes, digest,
-            created_at, updated_at
-         ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+            id, title_image_id, variant_key, blob_digest, created_at, updated_at
+         ) VALUES ({}, {}, {}, {}, {}, {})
          ON CONFLICT (title_image_id, variant_key) DO UPDATE SET
-            path = excluded.path,
-            format = excluded.format,
-            width = excluded.width,
-            height = excluded.height,
-            bytes = excluded.bytes,
-            digest = excluded.digest,
+            blob_digest = excluded.blob_digest,
             updated_at = excluded.updated_at",
         &[
             SqlArg::Text(variant_id),
             SqlArg::Text(image_id.to_string()),
             SqlArg::Text(variant.variant_key.clone()),
-            SqlArg::OptText(None),
-            SqlArg::Text(variant.format.clone()),
-            SqlArg::I32(variant.width),
-            SqlArg::I32(variant.height),
-            SqlArg::OptBytes(Some(variant.bytes.clone())),
             SqlArg::Text(variant.digest.clone()),
             SqlArg::Timestamp(now),
             SqlArg::Timestamp(now),
@@ -611,9 +714,10 @@ async fn fetch_title_image_blob(
 ) -> AppResult<Option<TitleImageBlob>> {
     fetch_optional_blob(
         exec,
-        "SELECT tiv.format, tiv.digest, tiv.bytes
+        "SELECT tib.format, tib.digest, tib.bytes
          FROM title_image_variants tiv
          INNER JOIN title_images ti ON ti.id = tiv.title_image_id
+         INNER JOIN title_image_blobs tib ON tib.digest = tiv.blob_digest
          WHERE ti.title_id = {} AND ti.kind = {} AND tiv.variant_key = {}",
         &[
             SqlArg::Text(title_id.to_string()),

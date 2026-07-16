@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use scryer_domain::DownloadQueueCommandAction;
-use scryer_domain::ExternalId;
-use scryer_domain::Title;
+use scryer_domain::{CanonicalMediaTag, DownloadQueueCommandAction, ExternalId, Title};
 use serde::{Deserialize, Serialize};
 
 use crate::SubmissionScope;
@@ -16,6 +14,23 @@ pub struct LibraryRootDraft {
     pub is_default: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TitleExternalRating {
+    pub source: String,
+    pub value: Option<f64>,
+    pub score: Option<f64>,
+    pub normalized: f64,
+    pub votes: Option<i32>,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TitleRatingSummary {
+    pub rating: Option<f64>,
+    pub rating_sources: Vec<String>,
+    pub external_ratings: Vec<TitleExternalRating>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TitleMetadataUpdate {
     pub name: Option<String>,
@@ -27,7 +42,8 @@ pub struct TitleMetadataUpdate {
     pub slug: Option<String>,
     pub imdb_id: Option<String>,
     pub runtime_minutes: Option<i32>,
-    pub genres: Vec<String>,
+    pub popularity: Option<f64>,
+    pub canonical_tags: Vec<CanonicalMediaTag>,
     pub content_status: Option<String>,
     pub language: Option<String>,
     pub first_aired: Option<String>,
@@ -39,6 +55,8 @@ pub struct TitleMetadataUpdate {
     pub metadata_language: Option<String>,
     pub metadata_fetched_at: Option<String>,
     pub digital_release_date: Option<String>,
+    /// Ratings returned by SMG/MDBList. `Some(default)` clears stale stored ratings.
+    pub ratings: Option<TitleRatingSummary>,
     /// Additional external IDs to merge onto the title (e.g. MAL, AniList from anime mappings).
     pub extra_external_ids: Vec<ExternalId>,
     /// Additional tags to merge onto the title (e.g. MAL score, anime media type).
@@ -98,6 +116,15 @@ pub struct CutoffUnmetItem {
     pub episode_number: Option<String>,
     pub current_tier: String,
     pub target_tier: String,
+}
+
+/// One bounded page of cutoff-unmet targets (RFC 119: bounded views). `total` is
+/// the full unmet count for the query so the UI can paginate without loading the
+/// whole set into the browser.
+#[derive(Clone, Debug)]
+pub struct CutoffUnmetPage {
+    pub items: Vec<CutoffUnmetItem>,
+    pub total: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -196,11 +223,27 @@ impl ExternalImportMonitorSnapshotEntryKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalImportMonitorSnapshotChunk {
+    pub session_id: String,
     pub facet: scryer_domain::MediaFacet,
     pub entry_kind: ExternalImportMonitorSnapshotEntryKind,
     pub chunk_index: i32,
     pub payload_ndjson: String,
     pub created_at: String,
+}
+
+pub const EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID: &str = "external-import-monitor-apply";
+pub const EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX: &str = "external-import-monitor-apply:";
+
+pub fn external_import_monitor_apply_session_id_for_library(library_id: &str) -> String {
+    format!(
+        "{EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX}{}",
+        library_id.trim()
+    )
+}
+
+pub fn is_external_import_monitor_apply_session_id(session_id: &str) -> bool {
+    session_id == EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID
+        || session_id.starts_with(EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_PREFIX)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -255,6 +298,7 @@ pub struct LibraryScanHint {
     pub source: LibraryScanHintSource,
     pub facet: LibraryScanHintFacet,
     pub path_key: String,
+    pub full_path_key: Option<String>,
     pub ids: Vec<ExternalIdHint>,
 }
 
@@ -275,6 +319,10 @@ impl LibraryScanHintSet {
         if let Some(existing) = self.hints.iter_mut().find(|existing| {
             existing.facet == hint.facet
                 && stored_path_keys_match(&existing.path_key, &hint.path_key)
+                && optional_stored_path_keys_match(
+                    existing.full_path_key.as_deref(),
+                    hint.full_path_key.as_deref(),
+                )
         }) {
             if existing.ids.is_empty() || !external_ids_overlap(&existing.ids, &hint.ids) {
                 existing.ids.clear();
@@ -312,9 +360,54 @@ impl LibraryScanHintSet {
         facet: LibraryScanHintFacet,
         candidate_path_key: &str,
     ) -> Option<&LibraryScanHint> {
-        self.hints.iter().find(|hint| {
-            hint.facet == facet && stored_path_keys_match(&hint.path_key, candidate_path_key)
-        })
+        self.hint_for_scan_path(facet, candidate_path_key, None)
+    }
+
+    pub fn hint_for_scan_path(
+        &self,
+        facet: LibraryScanHintFacet,
+        candidate_path_key: &str,
+        candidate_full_path_key: Option<&str>,
+    ) -> Option<&LibraryScanHint> {
+        let leaf_matches = self
+            .hints
+            .iter()
+            .filter(|hint| {
+                hint.facet == facet
+                    && !hint.ids.is_empty()
+                    && stored_path_keys_match(&hint.path_key, candidate_path_key)
+            })
+            .collect::<Vec<_>>();
+        let first = leaf_matches.first().copied()?;
+        if leaf_matches
+            .iter()
+            .all(|hint| external_ids_overlap(&first.ids, &hint.ids))
+        {
+            return Some(first);
+        }
+
+        let full_path_key = candidate_full_path_key?;
+        let full_matches = leaf_matches
+            .into_iter()
+            .filter(|hint| {
+                hint.full_path_key
+                    .as_deref()
+                    .is_some_and(|hint_key| stored_path_keys_match(hint_key, full_path_key))
+            })
+            .collect::<Vec<_>>();
+        let first = full_matches.first().copied()?;
+        full_matches
+            .iter()
+            .all(|hint| external_ids_overlap(&first.ids, &hint.ids))
+            .then_some(first)
+    }
+}
+
+fn optional_stored_path_keys_match(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => stored_path_keys_match(left, right),
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -343,6 +436,28 @@ pub fn library_scan_folder_leaf_key(path: &str) -> Option<String> {
     let components = leaf_path_components(path);
     let folder = components.last()?;
     Some(format!("folder:{}", normalize_leaf_path_component(folder)))
+}
+
+pub fn library_scan_file_full_path_key(path: &str) -> Option<String> {
+    full_path_key("file-path", path)
+}
+
+pub fn library_scan_folder_full_path_key(path: &str) -> Option<String> {
+    full_path_key("folder-path", path)
+}
+
+fn full_path_key(prefix: &str, path: &str) -> Option<String> {
+    let components = leaf_path_components(path);
+    (!components.is_empty()).then(|| {
+        format!(
+            "{prefix}:{}",
+            components
+                .into_iter()
+                .map(normalize_leaf_path_component)
+                .collect::<Vec<_>>()
+                .join("/")
+        )
+    })
 }
 
 fn leaf_path_components(path: &str) -> Vec<&str> {
@@ -441,6 +556,7 @@ pub struct TitleImageVariantSpec {
 #[derive(Clone, Debug)]
 pub struct TitleImageSourceResult {
     pub kind: TitleImageKind,
+    pub requested_source_url: String,
     pub source_url: String,
     pub source_etag: Option<String>,
     pub source_last_modified: Option<String>,
@@ -606,11 +722,34 @@ pub enum SortDirection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TitleCatalogSortKey {
     Title,
+    Library,
     Monitored,
     Quality,
     Episodes,
     Status,
     Size,
+    Added,
+    Year,
+    Runtime,
+    Root,
+    Popularity,
+    MediaResolution,
+    MediaHdr,
+    MediaAudioCodec,
+    RatingScryer,
+    RatingImdb,
+    RatingRottenTomatoes,
+    RatingPopcornmeter,
+    RatingMetacritic,
+    RatingMetacriticUser,
+    RatingLetterboxd,
+    RatingTmdb,
+    RatingTvdb,
+    RatingTrakt,
+    RatingMyanimelist,
+    RatingAnilist,
+    RatingAnidb,
+    RatingMdblist,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -628,10 +767,30 @@ impl Default for TitleCatalogSort {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TitleCatalogFilter {
     pub monitored: Option<bool>,
     pub content_statuses: Vec<TitleCatalogContentStatus>,
+    pub root_folder_ids: Vec<String>,
+    pub genre_tag_keys: Vec<String>,
+    pub theme_tag_keys: Vec<String>,
+    pub minimum_year: Option<i32>,
+    pub maximum_year: Option<i32>,
+    pub minimum_rating: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TitleCatalogTagFilterOption {
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TitleCatalogFilterOptions {
+    pub genres: Vec<TitleCatalogTagFilterOption>,
+    pub tags: Vec<TitleCatalogTagFilterOption>,
+    pub minimum_year: Option<i32>,
+    pub maximum_year: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -647,6 +806,19 @@ pub struct TitleCatalogResult {
     pub offset: usize,
     pub has_more: bool,
     pub total_count: usize,
+    pub filter_counts: TitleCatalogFilterCounts,
+    /// Exact managed media bytes for the authorized facet/library scope.
+    /// This deliberately ignores catalog search and filter state.
+    pub managed_bytes: i64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TitleCatalogFilterCounts {
+    pub all: usize,
+    pub monitored: usize,
+    pub unmonitored: usize,
+    pub continuing: usize,
+    pub ended: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -757,7 +929,8 @@ pub struct PendingImportBindingPreview {
 pub struct ResolvePendingImportResult {
     pub title: scryer_domain::Title,
     pub created: bool,
-    pub library_scan: LibraryScanSummary,
+    pub library_scan: Option<LibraryScanSummary>,
+    pub metadata_hydration_state: AddTitleHydrationState,
 }
 
 #[derive(Clone, Debug)]
@@ -774,7 +947,7 @@ pub struct CancelLibraryScanResult {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WantedStatus {
+pub enum AcquisitionScopeStatus {
     #[default]
     Wanted,
     Grabbed,
@@ -782,7 +955,7 @@ pub enum WantedStatus {
     Completed,
 }
 
-impl WantedStatus {
+impl AcquisitionScopeStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Wanted => "wanted",
@@ -804,38 +977,25 @@ impl WantedStatus {
 }
 
 #[derive(Clone, Debug)]
-pub struct WantedGrabTransition {
+pub struct AcquisitionScopeGrabTransition {
     pub id: String,
     pub last_search_at: Option<String>,
-    pub search_count: i64,
     pub current_score: Option<i32>,
     pub grabbed_release: String,
 }
 
 #[derive(Clone, Debug)]
-pub struct WantedSearchTransition {
+pub struct AcquisitionScopeCompleteTransition {
     pub id: String,
-    pub next_search_at: Option<String>,
     pub last_search_at: Option<String>,
-    pub search_count: i64,
     pub current_score: Option<i32>,
     pub grabbed_release: Option<String>,
 }
 
 #[derive(Clone, Debug)]
-pub struct WantedCompleteTransition {
+pub struct AcquisitionScopePauseTransition {
     pub id: String,
     pub last_search_at: Option<String>,
-    pub search_count: i64,
-    pub current_score: Option<i32>,
-    pub grabbed_release: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct WantedPauseTransition {
-    pub id: String,
-    pub last_search_at: Option<String>,
-    pub search_count: i64,
     pub current_score: Option<i32>,
     pub grabbed_release: Option<String>,
 }
@@ -867,8 +1027,17 @@ pub struct LibraryScanUnmatchedItem {
     pub updated_at: String,
 }
 
+/// Per-scope acquisition state (RFC 119). A row exists because something
+/// *happened* to the scope — a search recorded decisions, a release was
+/// grabbed or went pending, the user paused it — never because a sweep
+/// materialized it. What to search is the derived target set
+/// (`AcquisitionTarget`); this is the ledger of grabs, scores, and user
+/// intent layered on top of it. `last_search_at` is state, not cadence: it
+/// feeds the upgrade cooldown and failed-grab staleness checks. The persisted
+/// table may still be named `wanted_items`; do not treat that legacy storage
+/// name as permission to seed target-truth rows.
 #[derive(Clone, Debug)]
-pub struct WantedItem {
+pub struct AcquisitionScopeState {
     pub id: String,
     pub title_id: String,
     pub title_name: Option<String>,
@@ -883,12 +1052,8 @@ pub struct WantedItem {
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
     pub media_type: String,
-    pub search_phase: String,
-    pub next_search_at: Option<String>,
     pub last_search_at: Option<String>,
-    pub search_count: i64,
-    pub baseline_date: Option<String>,
-    pub status: WantedStatus,
+    pub status: AcquisitionScopeStatus,
     pub grabbed_release: Option<String>,
     pub current_score: Option<i32>,
     pub latest_release_decision: Option<ReleaseDecision>,
@@ -1226,6 +1391,7 @@ pub struct ReleaseCandidateProvenance {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IndexerSearchResult {
+    pub indexer_id: Option<String>,
     pub source: String,
     pub title: String,
     pub link: Option<String>,
@@ -1254,6 +1420,37 @@ pub struct IndexerSearchResult {
     pub auto_decision_summary: Option<String>,
 }
 
+/// Per-indexer outcome of a single search query (RFC 119 convergence). Determines
+/// which routed indexers may be recorded as coverage: only an indexer that actually
+/// fired a query and returned a response (empty included) counts — never one the
+/// scheduler deferred/skipped, and never one whose query errored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexerSearchOutcome {
+    /// The query executed and returned a response — `empty` distinguishes a
+    /// zero-result response (still coverage) from a populated one.
+    Fired { empty: bool },
+    /// The scheduler declined to query this indexer this cycle (deferred/skipped:
+    /// destination cooldown, host-RPS, account quota, disabled) — not queried.
+    Skipped,
+    /// The query was attempted but failed (rate-limited / transport / provider).
+    Errored,
+}
+
+impl IndexerSearchOutcome {
+    /// Whether this indexer actually executed a query and returned a response.
+    /// Only a fired indexer may be recorded as convergence coverage (RFC 119 §D2).
+    pub fn fired(&self) -> bool {
+        matches!(self, Self::Fired { .. })
+    }
+}
+
+/// A single indexer's outcome within an [`IndexerSearchResponse`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerQueryOutcome {
+    pub indexer_id: String,
+    pub outcome: IndexerSearchOutcome,
+}
+
 /// Wrapper around search results that also carries API limit metadata
 /// from the indexer response.
 #[derive(Clone, Debug)]
@@ -1263,6 +1460,10 @@ pub struct IndexerSearchResponse {
     pub api_max: Option<u32>,
     pub grab_current: Option<u32>,
     pub grab_max: Option<u32>,
+    /// Per-indexer outcomes for this query (RFC 119): which routed indexers fired
+    /// (empty or not), were skipped/deferred, or errored. Empty for synthetic or
+    /// no-eligible-indexer responses.
+    pub indexer_outcomes: Vec<IndexerQueryOutcome>,
 }
 
 #[derive(Clone, Debug)]
@@ -1576,6 +1777,8 @@ pub(crate) struct ReleaseCandidateTokenClaims {
     pub title_id: String,
     pub scope_kind: String,
     pub scope_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer_id: Option<String>,
     pub source_hint: String,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: String,
@@ -1618,6 +1821,15 @@ pub struct TitleQualitySummary {
     pub quality_tier: String,
 }
 
+/// Primary movie media technical summary for title list projections.
+#[derive(Clone, Debug)]
+pub struct TitleMovieMediaSummary {
+    pub title_id: String,
+    pub resolution: Option<String>,
+    pub hdr_format: Option<String>,
+    pub audio_codec: Option<String>,
+}
+
 /// Aggregated current quality tier per movie title or per episodic item, based
 /// on the lowest-quality live media file linked to that item.
 #[derive(Clone, Debug)]
@@ -1629,10 +1841,100 @@ pub struct CutoffUnmetQualitySummary {
     pub quality_tier: String,
 }
 
+/// The two derived acquisition-target kinds (RFC 119 §D1). `Missing` scopes have
+/// no primary file; `CutoffUpgrade` scopes have a file whose quality is strictly
+/// below the effective profile cutoff. Both converge the same way — they differ
+/// only in which derived query produces them and in recency lane (upgrades are
+/// always cold: the file already plays).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WantedKind {
+    Missing,
+    CutoffUpgrade,
+}
+
+impl WantedKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::CutoffUpgrade => "cutoff_upgrade",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "missing" => Some(Self::Missing),
+            "cutoff_upgrade" => Some(Self::CutoffUpgrade),
+            _ => None,
+        }
+    }
+}
+
+/// A monitored episode with no live primary media file — a raw candidate for the
+/// derived missing-target set (RFC 119 §D1: targets are computed from library
+/// state, never materialized). Policy gates (air-date window, recency lane) are
+/// applied by the application layer.
+#[derive(Clone, Debug)]
+pub struct MissingEpisodeCandidate {
+    pub episode_id: String,
+    pub title_id: String,
+    pub library_id: String,
+    pub title_facet: String,
+    pub collection_id: Option<String>,
+    pub season_number: Option<String>,
+    pub episode_number: Option<String>,
+    pub air_date: Option<String>,
+    pub title_created_at: String,
+}
+
+/// A monitored title with no live primary media file at all. The application
+/// layer keeps only movie-shaped facets (episodic facets are covered per
+/// episode) and applies the minimum-availability gate.
+#[derive(Clone, Debug)]
+pub struct MissingTitleCandidate {
+    pub title_id: String,
+    pub library_id: String,
+    pub title_facet: String,
+    pub min_availability: Option<String>,
+    pub first_aired: Option<String>,
+    pub digital_release_date: Option<String>,
+    pub created_at: String,
+}
+
+/// A monitored series-movie link with no linked live media file. The
+/// application layer applies the filler opt-in gate.
+#[derive(Clone, Debug)]
+pub struct MissingSeriesMovieLinkCandidate {
+    pub series_movie_link_id: String,
+    pub title_id: String,
+    pub library_id: String,
+    pub title_facet: String,
+    pub continuity_status: Option<String>,
+    pub movie_digital_release_date: Option<String>,
+    pub link_created_at: String,
+}
+
+/// Raw candidates for the derived missing-target set: monitored, fileless
+/// scopes straight from library state, in one sweep (RFC 119 §D1).
+#[derive(Clone, Debug, Default)]
+pub struct MissingScopeCandidates {
+    pub episodes: Vec<MissingEpisodeCandidate>,
+    pub titles: Vec<MissingTitleCandidate>,
+    pub series_movie_links: Vec<MissingSeriesMovieLinkCandidate>,
+}
+
 /// Aggregated episode progress counts per title, excluding specials.
 #[derive(Clone, Debug)]
 pub struct TitleEpisodeProgressSummary {
     pub title_id: String,
+    pub owned_episodes: i64,
+    pub monitored_episodes: i64,
+    pub total_episodes: i64,
+}
+
+/// Aggregated episode progress counts per collection.
+#[derive(Clone, Debug)]
+pub struct CollectionEpisodeProgressSummary {
+    pub collection_id: String,
     pub owned_episodes: i64,
     pub monitored_episodes: i64,
     pub total_episodes: i64,
@@ -1824,20 +2126,279 @@ pub struct HousekeepingReport {
     pub orphaned_media_files: u32,
     pub stale_release_decisions: u32,
     pub stale_release_attempts: u32,
-    pub expired_event_outboxes: u32,
     pub stale_history_events: u32,
     pub stale_history_records: u32,
     pub staged_nzb_artifacts_pruned: u32,
     pub recycled_purged: u32,
+    pub discovery_pruned_runs: u32,
     pub ran_at: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiTheme {
+    Light,
+    #[default]
+    Dark,
+    Pride,
+    System,
+}
+
+impl UiTheme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Dark => "dark",
+            Self::Pride => "pride",
+            Self::System => "system",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            "pride" => Some(Self::Pride),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiDateTimeFormat {
+    #[default]
+    Locale,
+    Iso24h,
+}
+
+impl UiDateTimeFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Locale => "locale",
+            Self::Iso24h => "iso24h",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "locale" => Some(Self::Locale),
+            "iso24h" => Some(Self::Iso24h),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiDensity {
+    Compact,
+    #[default]
+    Comfortable,
+}
+
+impl UiDensity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Comfortable => "comfortable",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "compact" => Some(Self::Compact),
+            "comfortable" => Some(Self::Comfortable),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiSidebarMode {
+    Collapsed,
+    #[default]
+    Expanded,
+}
+
+impl UiSidebarMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Collapsed => "collapsed",
+            Self::Expanded => "expanded",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "collapsed" => Some(Self::Collapsed),
+            "expanded" => Some(Self::Expanded),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiDefaultLandingView {
+    #[default]
+    Movies,
+    Series,
+    Anime,
+    Activity,
+    Calendar,
+    Wanted,
+    History,
+    Settings,
+    System,
+}
+
+impl UiDefaultLandingView {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Movies => "movies",
+            Self::Series => "series",
+            Self::Anime => "anime",
+            Self::Activity => "activity",
+            Self::Calendar => "calendar",
+            Self::Wanted => "wanted",
+            Self::History => "history",
+            Self::Settings => "settings",
+            Self::System => "system",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "movies" => Some(Self::Movies),
+            "series" => Some(Self::Series),
+            "anime" => Some(Self::Anime),
+            "activity" => Some(Self::Activity),
+            "calendar" => Some(Self::Calendar),
+            "wanted" => Some(Self::Wanted),
+            "history" => Some(Self::History),
+            "settings" => Some(Self::Settings),
+            "system" => Some(Self::System),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum UiSettingsFacet {
+    Movies,
+    Series,
+    Anime,
+}
+
+impl UiSettingsFacet {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Movies => "movies",
+            Self::Series => "series",
+            Self::Anime => "anime",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "movies" | "movie" => Some(Self::Movies),
+            "series" => Some(Self::Series),
+            "anime" => Some(Self::Anime),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum UiTableViewMode {
+    Compact,
+    PosterTable,
+}
+
+impl UiTableViewMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::PosterTable => "poster-table",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "compact" => Some(Self::Compact),
+            "poster-table" => Some(Self::PosterTable),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiTableColumnSetting {
+    pub facet: UiSettingsFacet,
+    pub table_view_mode: UiTableViewMode,
+    pub column_id: String,
+    pub column_order: i32,
+    pub visible: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiSettings {
+    pub user_id: String,
+    pub theme: UiTheme,
+    pub date_time_format: UiDateTimeFormat,
+    pub highlight_color: Option<String>,
+    pub secondary_color: Option<String>,
+    pub high_contrast_mode: bool,
+    pub reduce_motion: bool,
+    pub hide_sponsor_button: bool,
+    pub density: UiDensity,
+    pub sidebar_mode: UiSidebarMode,
+    pub default_landing_view: UiDefaultLandingView,
+    pub table_columns: Vec<UiTableColumnSetting>,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiSettingsUpdate {
+    pub theme: UiTheme,
+    pub date_time_format: UiDateTimeFormat,
+    pub highlight_color: Option<String>,
+    pub secondary_color: Option<String>,
+    pub high_contrast_mode: bool,
+    pub reduce_motion: bool,
+    pub hide_sponsor_button: bool,
+    pub density: UiDensity,
+    pub sidebar_mode: UiSidebarMode,
+    pub default_landing_view: UiDefaultLandingView,
+    pub table_columns: Vec<UiTableColumnSetting>,
+}
+
+impl UiSettings {
+    pub fn defaults_for_user(user_id: impl Into<String>) -> Self {
+        Self {
+            user_id: user_id.into(),
+            theme: UiTheme::default(),
+            date_time_format: UiDateTimeFormat::default(),
+            highlight_color: None,
+            secondary_color: None,
+            high_contrast_mode: false,
+            reduce_motion: false,
+            hide_sponsor_button: false,
+            density: UiDensity::default(),
+            sidebar_mode: UiSidebarMode::default(),
+            default_landing_view: UiDefaultLandingView::default(),
+            table_columns: Vec::new(),
+            created_at: None,
+            updated_at: None,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         ExternalIdHint, ExternalIdProvider, LibraryScanHint, LibraryScanHintFacet,
-        LibraryScanHintSet, LibraryScanHintSource, library_scan_file_leaf_key,
-        library_scan_folder_leaf_key,
+        LibraryScanHintSet, LibraryScanHintSource, library_scan_file_full_path_key,
+        library_scan_file_leaf_key, library_scan_folder_leaf_key,
     };
 
     #[test]
@@ -1857,16 +2418,16 @@ mod tests {
     }
 
     #[test]
-    fn library_scan_hint_set_marks_conflicting_leaf_key_ambiguous() {
-        let path_key = library_scan_file_leaf_key(
-            "/mnt/media/Foundation (2021)/Season 01/Foundation.S01E01.mkv",
-        )
-        .expect("leaf key");
+    fn library_scan_hint_set_resolves_conflicting_leaf_key_by_full_path() {
+        let first_path = "/mnt/media/Foundation (2021)/Season 01/Foundation.S01E01.mkv";
+        let second_path = "/other/Foundation (2021)/Season 01/Foundation.S01E01.mkv";
+        let path_key = library_scan_file_leaf_key(first_path).expect("leaf key");
         let mut hints = LibraryScanHintSet::new();
         hints.push(LibraryScanHint {
             source: LibraryScanHintSource::ExternalImportSonarr,
             facet: LibraryScanHintFacet::Series,
             path_key: path_key.clone(),
+            full_path_key: library_scan_file_full_path_key(first_path),
             ids: vec![ExternalIdHint {
                 provider: ExternalIdProvider::Tvdb,
                 value: "366972".to_string(),
@@ -1876,15 +2437,25 @@ mod tests {
             source: LibraryScanHintSource::ExternalImportSonarr,
             facet: LibraryScanHintFacet::Series,
             path_key: path_key.clone(),
+            full_path_key: library_scan_file_full_path_key(second_path),
             ids: vec![ExternalIdHint {
                 provider: ExternalIdProvider::Tvdb,
                 value: "999999".to_string(),
             }],
         });
 
+        assert!(
+            hints
+                .hint_for_stored_path(LibraryScanHintFacet::Series, &path_key)
+                .is_none()
+        );
         let hint = hints
-            .hint_for_stored_path(LibraryScanHintFacet::Series, &path_key)
-            .expect("ambiguous hint remains addressable");
-        assert!(hint.ids.is_empty());
+            .hint_for_scan_path(
+                LibraryScanHintFacet::Series,
+                &path_key,
+                library_scan_file_full_path_key(first_path).as_deref(),
+            )
+            .expect("full path resolves conflict");
+        assert_eq!(hint.ids[0].value, "366972");
     }
 }

@@ -1,6 +1,7 @@
 #![allow(unused_imports)]
 
 mod customization;
+mod discovery;
 mod downloads;
 mod indexers;
 mod media;
@@ -10,6 +11,7 @@ mod oauth;
 pub mod security;
 mod settings;
 pub mod storage;
+mod upstream_scheduler;
 mod users;
 mod workflow;
 
@@ -129,6 +131,10 @@ pub mod migrations {
     pub use crate::storage::migrations::*;
 }
 
+pub mod upstream_scheduling {
+    pub use crate::upstream_scheduler::InMemoryUpstreamScheduler;
+}
+
 pub(crate) mod notification_store {
     pub(crate) use crate::notifications::store::*;
 }
@@ -239,6 +245,8 @@ pub mod sqlite {
     pub use crate::customization::rule_set_store::RuleSetStore;
     pub use crate::downloads::config_store::DownloadClientConfigStore;
     pub use crate::indexers::config_store::IndexerConfigStore;
+    pub use crate::indexers::proxy_config_store::IndexerProxyConfigStore;
+    pub use crate::indexers::scope_indexer_coverage_store::ScopeIndexerCoverageStore;
     #[cfg(feature = "image-processing")]
     pub use crate::media::images::processor::HttpTitleImageProcessor;
     pub use crate::media::images::title_image_store::TitleImageStore;
@@ -264,7 +272,8 @@ pub mod sqlite {
     pub use crate::workflow::release_store::ReleaseStore;
     pub use crate::workflow::stores::{
         AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadSubmissionStore,
-        ExternalImportMonitorStore, ImportStore, WorkflowOperationStore,
+        ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore, ImportStore,
+        WorkflowOperationStore,
     };
 }
 
@@ -280,7 +289,10 @@ pub use downloads::config_store::DownloadClientConfigStore;
 pub use downloads::staged_nzb_store::FileSystemStagedNzbStore;
 pub use indexers::config_store::IndexerConfigStore;
 pub use indexers::providers::prowlarr::{NativeProwlarrIndexerProvider, PROWLARR_PROVIDER_TYPE};
+pub use indexers::proxy_config_store::IndexerProxyConfigStore;
+pub use indexers::scope_indexer_coverage_store::ScopeIndexerCoverageStore;
 pub use indexers::search_client::MultiIndexerSearchClient;
+pub use indexers::search_learning::IndexerSearchLearningStore;
 pub use indexers::stats::InMemoryIndexerStatsTracker;
 #[cfg(feature = "image-processing")]
 pub use media::images::processor::HttpTitleImageProcessor;
@@ -330,5 +342,6 @@ pub use workflow::file_importer::FsFileImporter;
 pub use workflow::release_store::ReleaseStore;
 pub use workflow::stores::{
     AcquisitionStore, DomainEventStore, DownloadQueueCommandStore, DownloadSubmissionStore,
-    ExternalImportMonitorStore, ImportStore, WorkflowOperationStore,
+    ExternalImportMonitorStore, ExternalImportSetupSecretDraftStore, ImportStore,
+    WorkflowOperationStore,
 };

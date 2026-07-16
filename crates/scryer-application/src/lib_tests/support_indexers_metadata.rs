@@ -19,6 +19,8 @@ impl IndexerClient for MockIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         if let Some(tvdb) = ids.get("tvdb_id") {
             tracing::info!(tvdb_id = %tvdb, category = ?category, "mock nzbgeek search");
@@ -27,7 +29,9 @@ impl IndexerClient for MockIndexerClient {
             tracing::info!(imdb_id = %imdb, category = ?category, "mock nzbgeek search");
         }
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
+                indexer_id: None,
                 source: "nzbgeek".into(),
                 title: format!("match for {query}"),
                 link: None,
@@ -144,6 +148,8 @@ impl IndexerClient for TrackingIndexerClient {
         episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         self.searches.lock().await.push(RecordedIndexerSearch {
             query: query.clone(),
@@ -161,7 +167,9 @@ impl IndexerClient for TrackingIndexerClient {
         let release_slug = release_title.replace([' ', '/'], ".");
 
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
+                indexer_id: None,
                 source: "nzbgeek".into(),
                 title: release_title.clone(),
                 link: Some(format!("https://example.invalid/info/{release_slug}")),
@@ -201,6 +209,14 @@ impl IndexerClient for TrackingIndexerClient {
 pub(super) struct FixedReleaseIndexerClient {
     pub(super) release_title: String,
     pub(super) indexer_languages: Option<Vec<String>>,
+    /// Indexer ids this stand-in reports as having fired (RFC 119 per-indexer
+    /// outcomes). Empty by default — set via [`with_fired_indexers`] when a test
+    /// drives the real coverage chokepoint and needs specific indexers recorded.
+    pub(super) fired_indexer_ids: Vec<String>,
+    /// When set, every fired indexer reports `Fired { empty: true }` and the
+    /// response carries no results — a genuine zero-hit response (RFC 119 §D2:
+    /// "no results" is still coverage).
+    pub(super) empty_response: bool,
 }
 
 impl FixedReleaseIndexerClient {
@@ -208,7 +224,22 @@ impl FixedReleaseIndexerClient {
         Self {
             release_title: release_title.into(),
             indexer_languages: None,
+            fired_indexer_ids: Vec::new(),
+            empty_response: false,
         }
+    }
+
+    pub(super) fn with_fired_indexers(
+        mut self,
+        indexer_ids: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.fired_indexer_ids = indexer_ids.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub(super) fn with_empty_response(mut self) -> Self {
+        self.empty_response = true;
+        self
     }
 }
 
@@ -228,9 +259,33 @@ impl IndexerClient for FixedReleaseIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
+        let indexer_outcomes = self
+            .fired_indexer_ids
+            .iter()
+            .map(|id| crate::IndexerQueryOutcome {
+                indexer_id: id.clone(),
+                outcome: crate::IndexerSearchOutcome::Fired {
+                    empty: self.empty_response,
+                },
+            })
+            .collect();
+        if self.empty_response {
+            return Ok(IndexerSearchResponse {
+                indexer_outcomes,
+                results: Vec::new(),
+                api_current: None,
+                api_max: None,
+                grab_current: None,
+                grab_max: None,
+            });
+        }
         Ok(IndexerSearchResponse {
+            indexer_outcomes,
             results: vec![IndexerSearchResult {
+                indexer_id: None,
                 source: "nzbgeek".into(),
                 title: self.release_title.clone(),
                 link: Some("https://example.invalid/info".to_string()),
@@ -293,6 +348,8 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         let query = query.trim();
         let release_title = if query.contains("Deferred Movie") {
@@ -309,7 +366,9 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
         };
 
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
+                indexer_id: None,
                 source: "nzbgeek".into(),
                 title: release_title.clone(),
                 link: Some("https://example.invalid/info".to_string()),
@@ -397,6 +456,8 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         self.calls.lock().await.push(RecordedSearchCall {
             query,
@@ -408,7 +469,9 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
         });
 
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: vec![IndexerSearchResult {
+                indexer_id: None,
                 source: "nzbgeek".into(),
                 title: self.release_title.clone(),
                 link: Some("https://example.invalid/info".to_string()),
@@ -458,6 +521,8 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         self.calls.lock().await.push(RecordedStructuredQueryCall {
             query,
@@ -467,6 +532,7 @@ impl IndexerClient for RecordingStructuredQueryIndexerClient {
         });
 
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: vec![],
             api_current: None,
             api_max: None,
@@ -505,13 +571,17 @@ impl IndexerClient for MultiReleaseIndexerClient {
         _episode: Option<u32>,
         _absolute_episode: Option<u32>,
         _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
+        _cancel_token: tokio_util::sync::CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
         Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
             results: self
                 .release_titles
                 .iter()
                 .enumerate()
                 .map(|(index, release_title)| IndexerSearchResult {
+                    indexer_id: None,
                     source: "nzbgeek".into(),
                     title: release_title.clone(),
                     link: Some(format!("https://example.invalid/info/{index}")),

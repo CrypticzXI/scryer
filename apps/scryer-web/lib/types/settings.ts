@@ -37,6 +37,39 @@ export type GeneralSettings = {
   pluginHttpTrustedCertificates: TrustedCertificateEntry[];
 };
 
+export type UiDateTimeFormat = "LOCALE" | "ISO24H";
+
+export type UiTableColumnSetting = {
+  facet: string;
+  tableViewMode: string;
+  columnId: string;
+  columnOrder: number;
+  visible: boolean;
+};
+
+export type UiSettings = {
+  theme: "LIGHT" | "DARK" | "PRIDE" | "SYSTEM";
+  dateTimeFormat: UiDateTimeFormat;
+  highlightColor: string | null;
+  secondaryColor: string | null;
+  highContrastMode: boolean;
+  reduceMotion: boolean;
+  hideSponsorButton: boolean;
+  density: "COMPACT" | "COMFORTABLE";
+  sidebarMode: "EXPANDED" | "COLLAPSED";
+  defaultLandingView:
+    | "MOVIES"
+    | "SERIES"
+    | "ANIME"
+    | "ACTIVITY"
+    | "CALENDAR"
+    | "WANTED"
+    | "HISTORY"
+    | "SETTINGS"
+    | "SYSTEM";
+  tableColumns: UiTableColumnSetting[];
+};
+
 export type TrustedCertificateEntry = {
   fingerprintSha256: string;
   pem: string;
@@ -54,9 +87,9 @@ export type SecuritySettings = {
   envOverrideDescription: string | null;
 };
 
-export type ExternalAccountProvider = "plex" | "jellyfin";
-export type ExternalAccountStatus = "pending_claim" | "active" | "disabled";
-export type MediaServerProvider = "jellyfin" | "plex" | "emby";
+export type ExternalAccountProvider = "PLEX" | "JELLYFIN";
+export type ExternalAccountStatus = "PENDING_CLAIM" | "ACTIVE" | "DISABLED";
+export type MediaServerProvider = "JELLYFIN" | "PLEX" | "EMBY";
 
 export type MediaServerPathMapping = {
   sourcePath: string;
@@ -92,9 +125,9 @@ export type PlexServerDiscovery = {
 };
 
 export type MediaServerUserGroupStatus =
-  | "ready"
-  | "missing_credentials"
-  | "error";
+  | "READY"
+  | "MISSING_CREDENTIALS"
+  | "ERROR";
 
 export type MediaServerUser = {
   id: string;
@@ -220,10 +253,10 @@ export type TotpEnrollmentComplete = {
   recoveryCodes: string[];
 };
 
-export type ImportMode = "hardlink_or_copy" | "move";
+export type ImportMode = "HARDLINK_OR_COPY" | "MOVE";
 
 export type MediaSettings = {
-  scope: "movie" | "series" | "anime";
+  scope: "MOVIE" | "SERIES" | "ANIME";
   libraryPath: string;
   rootFolders: { path: string; isDefault: boolean }[];
   requiredAudioLanguages: string[];
@@ -240,6 +273,10 @@ export type MediaSettings = {
   nfoWriteOnImport: boolean;
   plexmatchWriteOnImport: boolean | null;
   importMode: ImportMode;
+  setPermissionsLinux: boolean;
+  fileChmod: string | null;
+  folderChmod: string | null;
+  chownGroup: string | null;
 };
 
 export type LibraryPaths = {

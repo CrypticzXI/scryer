@@ -1,6 +1,4 @@
 const ACQUISITION_SCAN_QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-const ACQUISITION_MAX_WANTED_ITEMS_PER_SLICE: usize = 12;
-const ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE: usize = 10;
 const ACQUISITION_SLICE_YIELD_INTERVAL: usize = 10;
 fn active_scan_facet_labels(facets: &[MediaFacet]) -> Vec<&'static str> {
     facets.iter().map(MediaFacet::as_str).collect()
@@ -50,7 +48,7 @@ fn title_scoped_domain_event(
     new_global_domain_event(None, payload)
 }
 fn episode_collection_id_for_wanted_item(
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     episode: Option<&Episode>,
 ) -> Option<String> {
     episode
@@ -75,7 +73,7 @@ fn series_movie_submission_scope(series_movie_link_id: Option<String>) -> Submis
         .unwrap_or(SubmissionScope::Title)
 }
 pub(crate) fn direct_download_submission_scope_for_wanted_item(
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     _episode: Option<&Episode>,
 ) -> SubmissionScope {
     match item.media_type.as_str() {
@@ -87,7 +85,7 @@ pub(crate) fn direct_download_submission_scope_for_wanted_item(
     }
 }
 pub(crate) fn collection_download_submission_scope_for_wanted_item(
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     episode: Option<&Episode>,
 ) -> SubmissionScope {
     match item.media_type.as_str() {

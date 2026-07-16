@@ -13,7 +13,16 @@ query GetSeries($id: String!, $includeEpisodes: Boolean!, $language: String!) {
       runtime_minutes
       poster_url
       country
-      genres
+      canonical_tags {
+        key
+        category
+        name
+        confidence
+        sources
+        source_tag_keys
+        is_adult
+        is_spoiler
+      }
       aliases
       tagged_aliases {
         name
@@ -83,7 +92,6 @@ query GetSeries($id: String!, $includeEpisodes: Boolean!, $language: String!) {
         runtime_minutes
         sort_title
         imdb_id
-        genres
         studio
         digital_release_date
         association_confidence

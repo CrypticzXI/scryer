@@ -65,7 +65,10 @@ export function TitleHistoryModal({
         const result = await client
           .query<{ titleHistory: TitleHistoryPage }>(titleHistoryQuery, {
             filter: {
-              eventTypes: eventTypes.length > 0 ? eventTypes : null,
+              eventTypes:
+                eventTypes.length > 0
+                  ? eventTypes.map((value) => value.toUpperCase())
+                  : null,
               titleIds: [titleId],
               episodeId: episodeId ?? null,
               groupByEvent: episodeId == null,
@@ -78,7 +81,7 @@ export function TitleHistoryModal({
         if (result.data?.titleHistory) {
           const page = result.data.titleHistory;
           setEvents((prev) =>
-            append ? [...prev, ...page.records] : page.records,
+            append ? [...prev, ...page.items] : page.items,
           );
           setTotalCount(page.totalCount);
         }
@@ -139,7 +142,10 @@ export function TitleHistoryModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100%-1rem)] max-w-[95vw] sm:max-w-5xl lg:max-w-6xl max-h-[85vh] overflow-hidden flex flex-col">
+      <DialogContent
+        id="title-history-dialog"
+        className="w-[calc(100%-1rem)] max-w-[95vw] sm:max-w-5xl lg:max-w-6xl max-h-[85vh] overflow-hidden flex flex-col"
+      >
         <DialogHeader>
           <DialogTitle>{titleName} — {t("history.title")}</DialogTitle>
         </DialogHeader>

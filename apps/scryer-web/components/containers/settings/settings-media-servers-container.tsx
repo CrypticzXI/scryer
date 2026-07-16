@@ -47,7 +47,7 @@ type PendingMediaServerEditorAction =
   | null;
 
 const DEFAULT_MEDIA_SERVER_DRAFT: MediaServerConnectionDraft = {
-  provider: "jellyfin",
+  provider: "JELLYFIN",
   displayName: "Jellyfin",
   baseUrl: "",
   enabled: true,
@@ -165,7 +165,7 @@ function buildCreateInput(
   plexAuthToken: string | null,
   effectiveFormLoginEnabled: boolean,
 ) {
-  const supportsAuth = draft.provider === "jellyfin" || draft.provider === "plex";
+  const supportsAuth = draft.provider === "JELLYFIN" || draft.provider === "PLEX";
   const input: Record<string, unknown> = {
     provider: draft.provider,
     displayName: draft.displayName.trim(),
@@ -184,15 +184,15 @@ function buildCreateInput(
   const apiKey = normalizeOptional(draft.apiKey);
   const adminUsername = normalizeOptional(draft.adminUsername);
   const adminPassword = normalizeOptional(draft.adminPassword);
-  if (draft.provider === "plex" && draft.plexServerId && plexAuthToken) {
+  if (draft.provider === "PLEX" && draft.plexServerId && plexAuthToken) {
     input.plexServerId = draft.plexServerId;
     input.plexAuthToken = plexAuthToken;
   }
-  if (draft.provider === "emby" && apiKey) input.apiKey = apiKey;
-  if (draft.provider === "jellyfin" && draft.jellyfinCredentialMode === "apiKey" && apiKey) {
+  if (draft.provider === "EMBY" && apiKey) input.apiKey = apiKey;
+  if (draft.provider === "JELLYFIN" && draft.jellyfinCredentialMode === "apiKey" && apiKey) {
     input.apiKey = apiKey;
   }
-  if (draft.provider === "jellyfin" && draft.jellyfinCredentialMode === "adminLogin") {
+  if (draft.provider === "JELLYFIN" && draft.jellyfinCredentialMode === "adminLogin") {
     if (adminUsername) input.adminUsername = adminUsername;
     if (adminPassword) input.adminPassword = adminPassword;
   }
@@ -264,7 +264,7 @@ export function SettingsMediaServersContainer() {
 
   const refreshLibraries = useCallback(async () => {
     const { data, error } = await client
-      .query(librariesQuery, { facet: null, permission: "view" }, { requestPolicy: "network-only" })
+      .query(librariesQuery, { facet: null, permission: "VIEW" }, { requestPolicy: "network-only" })
       .toPromise();
     if (error) throw error;
     setLibraries((data?.libraries ?? []) as LibraryRecord[]);
@@ -411,7 +411,7 @@ export function SettingsMediaServersContainer() {
     setEditorError(null);
     const name = draft.displayName.trim();
     const baseUrl = draft.baseUrl.trim();
-    if (!name || (draft.provider !== "plex" && !baseUrl)) {
+    if (!name || (draft.provider !== "PLEX" && !baseUrl)) {
       const message = t("settings.mediaServerValidation");
       setEditorError(message);
       setGlobalStatus(message);
@@ -425,7 +425,7 @@ export function SettingsMediaServersContainer() {
       return;
     }
     if (
-      draft.provider === "plex" &&
+      draft.provider === "PLEX" &&
       (draft.loginEnabled || draft.linkingEnabled || draft.autoAddEnabled) &&
       !draft.machineIdPresent &&
       !draft.plexServerId
@@ -489,7 +489,7 @@ export function SettingsMediaServersContainer() {
         }),
         run: async () => {
           const plexAuthToken =
-            connection.provider === "plex" ? await authenticateWithPlexPin() : null;
+            connection.provider === "PLEX" ? await authenticateWithPlexPin() : null;
           const { data, error } = await client
             .mutation(testMediaServerConnectionMutation, {
               input: {

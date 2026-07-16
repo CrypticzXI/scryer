@@ -3,12 +3,6 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use crate::scoring_weights::ScoringPersona;
 use crate::types::{IndexerSearchResult, TitleMediaFile};
 
-/// Flat polling interval for movies without a baseline date.
-const MOVIE_FALLBACK_INTERVAL_HOURS: i64 = 72;
-
-/// Polling interval for long-tail wanted items after the active search window.
-const LONG_TAIL_INTERVAL_HOURS: i64 = 72;
-
 /// Episodes become searchable six hours before air time.
 pub(crate) const EPISODE_PRE_AIR_WINDOW_HOURS: i64 = 6;
 
@@ -133,53 +127,6 @@ pub fn evaluate_upgrade(
     UpgradeDecision::RejectInsufficientDelta
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SearchPhase {
-    PreAir,
-    PreRelease,
-    Primary,
-    Secondary,
-    LongTail,
-}
-
-impl SearchPhase {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::PreAir => "pre_air",
-            Self::PreRelease => "pre_release",
-            Self::Primary => "primary",
-            Self::Secondary => "secondary",
-            Self::LongTail => "long_tail",
-        }
-    }
-}
-
-impl std::fmt::Display for SearchPhase {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl std::str::FromStr for SearchPhase {
-    type Err = std::convert::Infallible;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s.trim().to_ascii_lowercase().as_str() {
-            "pre_air" => Self::PreAir,
-            "pre_release" => Self::PreRelease,
-            "secondary" => Self::Secondary,
-            "long_tail" => Self::LongTail,
-            _ => Self::Primary,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SearchSchedule {
-    pub next_search_at: String,
-    pub search_phase: SearchPhase,
-}
-
 pub(crate) fn parse_schedule_baseline_date(baseline_date: Option<&str>) -> Option<DateTime<Utc>> {
     baseline_date.and_then(|d| {
         // Try RFC 3339 first, then fall back to "YYYY-MM-DD" (midnight UTC).
@@ -201,118 +148,6 @@ pub(crate) fn episode_search_window_is_open(
 ) -> bool {
     parse_schedule_baseline_date(baseline_date)
         .is_some_and(|baseline| *now >= baseline - Duration::hours(EPISODE_PRE_AIR_WINDOW_HOURS))
-}
-
-/// Compute the next search schedule based on media type, baseline date, and current phase.
-pub fn compute_search_schedule(
-    media_type: &str,
-    baseline_date: Option<&str>,
-    current_phase: &str,
-    now: &DateTime<Utc>,
-) -> SearchSchedule {
-    let baseline = parse_schedule_baseline_date(baseline_date);
-
-    match media_type {
-        "movie" => compute_movie_schedule(baseline, current_phase, now),
-        "episode" => compute_episode_schedule(baseline, current_phase, now),
-        _ => compute_episode_schedule(baseline, current_phase, now),
-    }
-}
-
-fn compute_movie_schedule(
-    baseline: Option<DateTime<Utc>>,
-    _current_phase: &str,
-    now: &DateTime<Utc>,
-) -> SearchSchedule {
-    let Some(baseline) = baseline else {
-        return SearchSchedule {
-            next_search_at: (*now + Duration::hours(MOVIE_FALLBACK_INTERVAL_HOURS)).to_rfc3339(),
-            search_phase: SearchPhase::Primary,
-        };
-    };
-
-    // Movie phases:
-    // pre_release: baseline -24h to baseline, every 60m
-    // primary: baseline to +7d, every 15m
-    // secondary: +7d to +30d, every 2h
-    // long_tail: >30d, every 72h (runs forever, no paused phase)
-
-    let pre_release_start = baseline - Duration::hours(24);
-    let primary_end = baseline + Duration::days(7);
-    let secondary_end = baseline + Duration::days(30);
-
-    if *now < pre_release_start {
-        return SearchSchedule {
-            next_search_at: pre_release_start.to_rfc3339(),
-            search_phase: SearchPhase::PreRelease,
-        };
-    }
-
-    let (phase, interval) = if *now < baseline {
-        (SearchPhase::PreRelease, Duration::minutes(60))
-    } else if *now < primary_end {
-        (SearchPhase::Primary, Duration::minutes(15))
-    } else if *now < secondary_end {
-        (SearchPhase::Secondary, Duration::hours(2))
-    } else {
-        (
-            SearchPhase::LongTail,
-            Duration::hours(LONG_TAIL_INTERVAL_HOURS),
-        )
-    };
-
-    SearchSchedule {
-        next_search_at: (*now + interval).to_rfc3339(),
-        search_phase: phase,
-    }
-}
-
-fn compute_episode_schedule(
-    baseline: Option<DateTime<Utc>>,
-    _current_phase: &str,
-    now: &DateTime<Utc>,
-) -> SearchSchedule {
-    let Some(baseline) = baseline else {
-        return SearchSchedule {
-            next_search_at: (*now + Duration::hours(EPISODE_PRE_AIR_WINDOW_HOURS)).to_rfc3339(),
-            search_phase: SearchPhase::Primary,
-        };
-    };
-
-    // Episode phases:
-    // pre_air: air -6h to air, every 30m
-    // primary: air to +48h, every 15m
-    // secondary: +48h to +14d, every 1h
-    // long_tail: >14d, every 72h (runs forever, no paused phase)
-
-    let pre_air_start = baseline - Duration::hours(EPISODE_PRE_AIR_WINDOW_HOURS);
-    let primary_end = baseline + Duration::hours(48);
-    let secondary_end = baseline + Duration::days(14);
-
-    if *now < pre_air_start {
-        return SearchSchedule {
-            next_search_at: pre_air_start.to_rfc3339(),
-            search_phase: SearchPhase::PreAir,
-        };
-    }
-
-    let (phase, interval) = if *now < baseline {
-        (SearchPhase::PreAir, Duration::minutes(30))
-    } else if *now < primary_end {
-        (SearchPhase::Primary, Duration::minutes(15))
-    } else if *now < secondary_end {
-        (SearchPhase::Secondary, Duration::hours(1))
-    } else {
-        (
-            SearchPhase::LongTail,
-            Duration::hours(LONG_TAIL_INTERVAL_HOURS),
-        )
-    };
-
-    SearchSchedule {
-        next_search_at: (*now + interval).to_rfc3339(),
-        search_phase: phase,
-    }
 }
 
 #[cfg(test)]
@@ -396,29 +231,6 @@ mod tests {
         // Cross-tier: delta >= 1000, so cross_tier_min_delta (30) applies
         let decision = evaluate_upgrade(2050, Some(1000), true, None, &now, &t(), None);
         assert_eq!(decision, UpgradeDecision::AcceptUpgrade);
-    }
-
-    #[test]
-    fn test_movie_schedule_before_baseline() {
-        let now = Utc::now();
-        let baseline = (now + Duration::days(7)).to_rfc3339();
-        let schedule = compute_search_schedule("movie", Some(&baseline), "primary", &now);
-        assert_eq!(schedule.search_phase, SearchPhase::PreRelease);
-    }
-
-    #[test]
-    fn test_episode_schedule_after_air() {
-        let now = Utc::now();
-        let baseline = (now - Duration::hours(1)).to_rfc3339();
-        let schedule = compute_search_schedule("episode", Some(&baseline), "primary", &now);
-        assert_eq!(schedule.search_phase, SearchPhase::Primary);
-    }
-
-    #[test]
-    fn test_episode_schedule_no_baseline() {
-        let now = Utc::now();
-        let schedule = compute_search_schedule("episode", None, "primary", &now);
-        assert_eq!(schedule.search_phase, SearchPhase::Primary);
     }
 
     #[test]

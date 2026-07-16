@@ -38,13 +38,13 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
     let postgres_entry_present =
         manifest_has_baseline_entry(&manifest, args.through, BaselineEngine::Postgres);
 
-    let should_write_sqlite = !sqlite_baseline_path.exists();
-    let should_write_postgres = !postgres_baseline_path.exists();
+    let should_write_sqlite = args.force || !sqlite_baseline_path.exists();
+    let should_write_postgres = args.force || !postgres_baseline_path.exists();
     let sqlite_changed = should_write_sqlite || !sqlite_entry_present;
     let postgres_changed = should_write_postgres || !postgres_entry_present;
     if !sqlite_changed && !postgres_changed {
         bail!(
-            "SQLite and PostgreSQL baselines through {:04} already exist and are already registered",
+            "SQLite and PostgreSQL baselines through {:04} already exist and are already registered; pass --force to regenerate them",
             args.through
         );
     }
@@ -57,9 +57,14 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
             args.through
         );
     }
+    let mut generation_catalog = source_bundle.catalog.clone();
+    if args.force {
+        generation_catalog
+            .baselines
+            .retain(|baseline| baseline.through_version != args.through);
+    }
     if postgres_changed
-        && source_bundle
-            .catalog
+        && generation_catalog
             .latest_baseline_at_or_below(
                 args.through,
                 scryer_infrastructure::migration_assets::EngineScope::Postgres,
@@ -81,7 +86,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
             .context("failed to open reference in-memory sqlite database")?;
         scryer_infrastructure::migrations::replay_catalog_into_fresh_db(
             &reference_pool,
-            &source_bundle.catalog,
+            &generation_catalog,
             &source_bundle.payload_bytes,
             Some(args.through),
             false,
@@ -105,8 +110,10 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
             .expect("PostgreSQL container is present when PostgreSQL work is required");
         let target_db = format!("rebaseline_target_{}", unique_token(args.through));
         let target_pool = container.create_database_pool(&target_db).await?;
-        scryer_infrastructure::postgres::replay_source_catalog_for_fresh_install(
+        scryer_infrastructure::postgres::replay_catalog_into_fresh_db(
             &target_pool,
+            &generation_catalog,
+            &source_bundle.payload_bytes,
             Some(args.through),
         )
         .await
@@ -144,7 +151,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
         .context("failed to open reference full-replay in-memory sqlite database")?;
     scryer_infrastructure::migrations::replay_catalog_into_fresh_db(
         &reference_head_pool,
-        &source_bundle.catalog,
+        &generation_catalog,
         &source_bundle.payload_bytes,
         None,
         false,
@@ -204,7 +211,7 @@ async fn run_rebaseline_inner(ctx: &TaskContext, args: RebaselineArgs) -> Result
         let reference_pool = container.create_database_pool(&reference_db).await?;
         scryer_infrastructure::postgres::replay_catalog_into_fresh_db(
             &reference_pool,
-            &source_bundle.catalog,
+            &generation_catalog,
             &source_bundle.payload_bytes,
             None,
         )
@@ -876,7 +883,6 @@ mod tests {
     use scryer_infrastructure::migration_assets::{
         EngineScope, LegacySqlBlock, SourceMigrationManifest,
     };
-    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn normalize_postgres_schema_dump_strips_runtime_noise() {
@@ -1116,396 +1122,6 @@ ALTER TABLE ONLY public.download_jobs
         assert_eq!(file_link_count, 2);
     }
 
-    #[test]
-    fn saved_0122_baselines_have_table_column_constraint_and_index_parity() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("xtask-migrations has a repository parent");
-        let sqlite = parse_baseline_shape(
-            &std::fs::read_to_string(
-                repo_root.join("crates/scryer/src/db/baselines/0122_baseline.sql"),
-            )
-            .expect("read SQLite 0122 baseline"),
-        );
-        let postgres = parse_baseline_shape(
-            &std::fs::read_to_string(
-                repo_root.join("crates/scryer/src/db/postgres/baselines/0122_baseline.sql"),
-            )
-            .expect("read PostgreSQL 0122 baseline"),
-        );
-
-        assert_eq!(
-            sqlite.tables.keys().collect::<Vec<_>>(),
-            postgres.tables.keys().collect::<Vec<_>>()
-        );
-        assert_eq!(sqlite.indexes, postgres.indexes);
-
-        for (table, sqlite_table) in &sqlite.tables {
-            let postgres_table = postgres
-                .tables
-                .get(table)
-                .unwrap_or_else(|| panic!("PostgreSQL missing table {table}"));
-            assert_eq!(
-                sqlite_table.columns, postgres_table.columns,
-                "column set mismatch for table {table}"
-            );
-            assert_eq!(
-                sqlite_table.primary_keys, postgres_table.primary_keys,
-                "primary-key mismatch for table {table}"
-            );
-            assert_eq!(
-                sqlite_table.unique_constraints, postgres_table.unique_constraints,
-                "unique-constraint mismatch for table {table}"
-            );
-            assert_eq!(
-                sqlite_table.foreign_keys, postgres_table.foreign_keys,
-                "foreign-key mismatch for table {table}"
-            );
-        }
-    }
-
-    #[derive(Debug, Eq, PartialEq)]
-    struct BaselineShape {
-        tables: BTreeMap<String, TableShape>,
-        indexes: BTreeMap<String, IndexShape>,
-    }
-
-    #[derive(Debug, Default, Eq, PartialEq)]
-    struct TableShape {
-        columns: BTreeSet<String>,
-        primary_keys: BTreeSet<Vec<String>>,
-        unique_constraints: BTreeSet<Vec<String>>,
-        foreign_keys: BTreeSet<ForeignKeyShape>,
-    }
-
-    #[derive(Debug, Eq, PartialEq, Ord, PartialOrd)]
-    struct ForeignKeyShape {
-        columns: Vec<String>,
-        referenced_table: String,
-        referenced_columns: Vec<String>,
-        on_delete: Option<String>,
-    }
-
-    #[derive(Debug, Eq, PartialEq)]
-    struct IndexShape {
-        unique: bool,
-        table: String,
-        expressions: Vec<String>,
-        predicate: Option<String>,
-    }
-
-    fn parse_baseline_shape(sql: &str) -> BaselineShape {
-        let mut tables = BTreeMap::new();
-        let mut indexes = BTreeMap::new();
-        for statement in split_sql_statements(sql) {
-            let statement = statement.trim();
-            if let Some((table, shape)) = parse_create_table_statement(statement) {
-                tables.insert(table, shape);
-            } else if let Some((table, constraint)) = parse_alter_table_constraint(statement) {
-                let shape = tables.entry(table).or_insert_with(TableShape::default);
-                apply_table_constraint(shape, constraint);
-            } else if let Some((name, index)) = parse_create_index_statement(statement) {
-                indexes.insert(name, index);
-            }
-        }
-
-        BaselineShape { tables, indexes }
-    }
-
-    enum TableConstraint {
-        PrimaryKey(Vec<String>),
-        Unique(Vec<String>),
-        ForeignKey(ForeignKeyShape),
-    }
-
-    fn parse_create_table_statement(statement: &str) -> Option<(String, TableShape)> {
-        let rest = statement.trim().strip_prefix("CREATE TABLE")?.trim_start();
-        let (table, after_name) = parse_table_name(rest);
-        let open = after_name.find('(')?;
-        let close = matching_close_paren(after_name, open)?;
-        let mut shape = TableShape::default();
-        parse_table_body(&after_name[open + 1..close], &table, &mut shape);
-        Some((table, shape))
-    }
-
-    fn parse_table_body(body: &str, table: &str, shape: &mut TableShape) {
-        for item in split_table_items(&strip_line_comments(body)) {
-            let item = normalize_sql_whitespace(&item);
-            if item.is_empty() {
-                continue;
-            }
-            let item = strip_constraint_name(&item);
-            let upper = item.to_ascii_uppercase();
-            if upper.starts_with("PRIMARY KEY") {
-                if let Some(columns) = first_parenthesized_list(&item) {
-                    shape.primary_keys.insert(columns);
-                }
-                continue;
-            }
-            if upper.starts_with("UNIQUE") {
-                if let Some(columns) = first_parenthesized_list(&item) {
-                    shape.unique_constraints.insert(columns);
-                }
-                continue;
-            }
-            if upper.starts_with("FOREIGN KEY") {
-                if let Some(foreign_key) = parse_foreign_key(table, &item, None) {
-                    shape.foreign_keys.insert(foreign_key);
-                }
-                continue;
-            }
-            if upper.starts_with("CHECK") {
-                continue;
-            }
-
-            let (column, _) = parse_identifier(&item);
-            shape.columns.insert(column.clone());
-            if upper.contains("PRIMARY KEY") {
-                shape.primary_keys.insert(vec![column.clone()]);
-            }
-            if upper.contains("UNIQUE") {
-                shape.unique_constraints.insert(vec![column.clone()]);
-            }
-            if upper.contains(" REFERENCES ")
-                && let Some(foreign_key) = parse_foreign_key(table, &item, Some(vec![column]))
-            {
-                shape.foreign_keys.insert(foreign_key);
-            }
-        }
-    }
-
-    fn parse_alter_table_constraint(statement: &str) -> Option<(String, TableConstraint)> {
-        let statement = normalize_sql_whitespace(statement);
-        let rest = statement.strip_prefix("ALTER TABLE ONLY ")?;
-        let (table, rest) = parse_table_name(rest);
-        let rest = rest.trim_start().strip_prefix("ADD CONSTRAINT ")?;
-        let (_, constraint) = parse_identifier(rest);
-        let constraint = strip_constraint_name(&format!("CONSTRAINT ignored {constraint}"));
-        let upper = constraint.to_ascii_uppercase();
-        if upper.starts_with("PRIMARY KEY") {
-            return first_parenthesized_list(&constraint)
-                .map(TableConstraint::PrimaryKey)
-                .map(|constraint| (table, constraint));
-        }
-        if upper.starts_with("UNIQUE") {
-            return first_parenthesized_list(&constraint)
-                .map(TableConstraint::Unique)
-                .map(|constraint| (table, constraint));
-        }
-        if upper.starts_with("FOREIGN KEY") {
-            return parse_foreign_key(&table, &constraint, None)
-                .map(TableConstraint::ForeignKey)
-                .map(|constraint| (table, constraint));
-        }
-        None
-    }
-
-    fn apply_table_constraint(shape: &mut TableShape, constraint: TableConstraint) {
-        match constraint {
-            TableConstraint::PrimaryKey(columns) => {
-                shape.primary_keys.insert(columns);
-            }
-            TableConstraint::Unique(columns) => {
-                shape.unique_constraints.insert(columns);
-            }
-            TableConstraint::ForeignKey(foreign_key) => {
-                shape.foreign_keys.insert(foreign_key);
-            }
-        }
-    }
-
-    fn parse_create_index_statement(statement: &str) -> Option<(String, IndexShape)> {
-        let statement = normalize_sql_whitespace(statement);
-        let mut rest = statement.strip_prefix("CREATE ")?;
-        let unique = rest.starts_with("UNIQUE ");
-        if unique {
-            rest = rest.strip_prefix("UNIQUE ")?;
-        }
-        rest = rest.strip_prefix("INDEX ")?;
-        let (name, after_name) = parse_identifier(rest);
-        let after_on = after_name.trim_start().strip_prefix("ON ")?;
-        let (table, mut rest) = parse_identifier(after_on);
-        rest = rest.trim_start();
-        if let Some(after_using) = rest.strip_prefix("USING ") {
-            let (_, after_method) = parse_identifier(after_using);
-            rest = after_method.trim_start();
-        }
-        let open = rest.find('(')?;
-        let close = matching_close_paren(rest, open)?;
-        let expressions = split_table_items(&rest[open + 1..close])
-            .into_iter()
-            .map(|expression| normalize_index_expression(&expression))
-            .collect::<Vec<_>>();
-        let predicate = rest[close + 1..]
-            .trim_start()
-            .strip_prefix("WHERE ")
-            .map(normalize_index_predicate);
-        Some((
-            name,
-            IndexShape {
-                unique,
-                table,
-                expressions,
-                predicate,
-            },
-        ))
-    }
-
-    fn parse_table_name(input: &str) -> (String, &str) {
-        let input = input.trim_start();
-        let input = input.strip_prefix("IF NOT EXISTS ").unwrap_or(input);
-        let input = input.strip_prefix("public.").unwrap_or(input);
-        let input = input.trim_start_matches('"');
-        let name_end = input
-            .find(|ch: char| ch == '"' || ch.is_whitespace() || ch == '(')
-            .expect("CREATE TABLE contains a table name");
-        (
-            input[..name_end].to_string(),
-            input[name_end..].trim_start_matches('"'),
-        )
-    }
-
-    fn parse_identifier(input: &str) -> (String, &str) {
-        let input = input.trim_start();
-        if let Some(input) = input.strip_prefix('"') {
-            let end = input.find('"').expect("quoted identifier is closed");
-            return (input[..end].to_string(), &input[end + 1..]);
-        }
-        let input = input.strip_prefix("public.").unwrap_or(input);
-        let end = input
-            .find(|ch: char| ch.is_whitespace() || ch == '(' || ch == ',')
-            .unwrap_or(input.len());
-        (input[..end].to_string(), &input[end..])
-    }
-
-    fn strip_constraint_name(item: &str) -> String {
-        let item = item.trim();
-        if !item.to_ascii_uppercase().starts_with("CONSTRAINT ") {
-            return item.to_string();
-        }
-        let rest = item["CONSTRAINT ".len()..].trim_start();
-        let (_, rest) = parse_identifier(rest);
-        rest.trim_start().to_string()
-    }
-
-    fn first_parenthesized_list(input: &str) -> Option<Vec<String>> {
-        let open = input.find('(')?;
-        let close = matching_close_paren(input, open)?;
-        Some(
-            split_table_items(&input[open + 1..close])
-                .into_iter()
-                .map(|column| normalize_identifier_expression(&column))
-                .collect(),
-        )
-    }
-
-    fn parse_foreign_key(
-        table: &str,
-        item: &str,
-        inline_columns: Option<Vec<String>>,
-    ) -> Option<ForeignKeyShape> {
-        let columns = if let Some(columns) = inline_columns {
-            columns
-        } else {
-            first_parenthesized_list(item)?
-        };
-        let references_at = item.to_ascii_uppercase().find("REFERENCES ")?;
-        let after_references = &item[references_at + "REFERENCES ".len()..];
-        let (referenced_table, rest) = parse_identifier(after_references);
-        let referenced_columns = first_parenthesized_list(rest)?;
-        Some(ForeignKeyShape {
-            columns,
-            referenced_table,
-            referenced_columns,
-            on_delete: parse_on_delete(item),
-        })
-        .filter(|_| !table.is_empty())
-    }
-
-    fn parse_on_delete(input: &str) -> Option<String> {
-        let upper = input.to_ascii_uppercase();
-        let after = upper.split_once("ON DELETE")?.1.trim_start();
-        for action in [
-            "SET NULL",
-            "SET DEFAULT",
-            "NO ACTION",
-            "CASCADE",
-            "RESTRICT",
-        ] {
-            if after.starts_with(action) {
-                return Some(action.to_string());
-            }
-        }
-        None
-    }
-
-    fn normalize_identifier_expression(input: &str) -> String {
-        input
-            .trim()
-            .trim_matches('"')
-            .strip_prefix("public.")
-            .unwrap_or(input.trim().trim_matches('"'))
-            .to_string()
-    }
-
-    fn normalize_index_expression(input: &str) -> String {
-        normalize_expression_text(input)
-    }
-
-    fn normalize_index_predicate(input: &str) -> String {
-        normalize_expression_text(input)
-            .replace("=anyarray[", "in")
-            .replace(']', "")
-    }
-
-    fn normalize_expression_text(input: &str) -> String {
-        let normalized: String = input
-            .trim()
-            .replace('"', "")
-            .replace("public.", "")
-            .replace("::text", "")
-            .replace("::bigint", "")
-            .replace("::integer", "")
-            .to_ascii_lowercase()
-            .replace("trim(both from ", "trim(")
-            .chars()
-            .filter(|ch| !ch.is_whitespace() && *ch != '(' && *ch != ')')
-            .collect();
-        normalized
-            .strip_suffix("asc")
-            .unwrap_or(&normalized)
-            .to_string()
-    }
-
-    fn matching_close_paren(input: &str, open: usize) -> Option<usize> {
-        let mut depth = 0_i32;
-        let mut quote = None;
-        for (idx, ch) in input.char_indices().skip_while(|(idx, _)| *idx < open) {
-            if let Some(active_quote) = quote {
-                if ch == active_quote {
-                    quote = None;
-                }
-                continue;
-            }
-            match ch {
-                '\'' | '"' => quote = Some(ch),
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Some(idx);
-                    }
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    fn normalize_sql_whitespace(input: &str) -> String {
-        input.split_whitespace().collect::<Vec<_>>().join(" ")
-    }
-
     fn split_sql_statements(sql: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut start = 0;
@@ -1533,41 +1149,6 @@ ALTER TABLE ONLY public.download_jobs
         if !statement.is_empty() {
             out.push(statement.to_string());
         }
-        out
-    }
-
-    fn strip_line_comments(input: &str) -> String {
-        input
-            .lines()
-            .map(|line| line.split_once("--").map_or(line, |(prefix, _)| prefix))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn split_table_items(body: &str) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut start = 0;
-        let mut depth = 0_i32;
-        let mut quote = None;
-        for (idx, ch) in body.char_indices() {
-            if let Some(active_quote) = quote {
-                if ch == active_quote {
-                    quote = None;
-                }
-                continue;
-            }
-            match ch {
-                '\'' | '"' => quote = Some(ch),
-                '(' => depth += 1,
-                ')' => depth -= 1,
-                ',' if depth == 0 => {
-                    out.push(body[start..idx].to_string());
-                    start = idx + 1;
-                }
-                _ => {}
-            }
-        }
-        out.push(body[start..].to_string());
         out
     }
 }

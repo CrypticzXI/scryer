@@ -1,11 +1,19 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 
 import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
 import { useActivityEventStream } from "@/lib/hooks/use-activity-event-stream";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
-  TitleOverviewNativeSnapshot,
+  TitleSidePanelOverviewSnapshot,
 } from "@/lib/title-overview-loader";
+import type { TitleSidePanelOverviewProjection } from "@/lib/graphql/queries";
+import {
+  shouldHandleTitleOverviewActivity,
+  TITLE_OVERVIEW_BULK_REFRESH_DEBOUNCE_MS,
+  TITLE_OVERVIEW_BULK_REFRESH_MAX_WAIT_MS,
+  titleOverviewReactiveRefreshKinds,
+  titleOverviewReactiveRefreshPlan,
+} from "@/lib/utils/title-overview-refresh-policy";
 
 type UseTitleOverviewReactiveRefreshOptions<
   TTitle = unknown,
@@ -16,8 +24,9 @@ type UseTitleOverviewReactiveRefreshOptions<
 > = {
   titleId?: string | null;
   blocklistLimit: number;
-  applyNativeSnapshot: (
-    snapshot: TitleOverviewNativeSnapshot<
+  projection: TitleSidePanelOverviewProjection;
+  applyOverviewSnapshot: (
+    snapshot: TitleSidePanelOverviewSnapshot<
       TTitle,
       TDiagnostics,
       TEvent,
@@ -36,10 +45,6 @@ type UseTitleOverviewReactiveRefreshOptions<
   onHydrationFailed?: () => void;
 };
 
-const HYDRATION_STARTED_KIND = "metadata_hydration_started";
-const HYDRATION_COMPLETED_KIND = "metadata_hydration_completed";
-const HYDRATION_FAILED_KIND = "metadata_hydration_failed";
-
 export function useTitleOverviewReactiveRefresh<
   TTitle = unknown,
   TDiagnostics = unknown,
@@ -49,7 +54,8 @@ export function useTitleOverviewReactiveRefresh<
 >({
   titleId,
   blocklistLimit,
-  applyNativeSnapshot,
+  projection,
+  applyOverviewSnapshot,
   applyDownloadFeedbackSnapshot,
   importKinds,
   pause = false,
@@ -66,33 +72,47 @@ export function useTitleOverviewReactiveRefresh<
 >) {
   const {
     queueTitleOverviewDownloadFeedbackRefresh,
-    queueTitleOverviewNativeRefresh,
+    queueTitleSidePanelOverviewRefresh,
   } = useReactiveRefresh();
-  const applyNativeSnapshotRef = useRef(applyNativeSnapshot);
+  const titleIdRef = useRef(titleId ?? null);
+  const applyOverviewSnapshotRef = useRef(applyOverviewSnapshot);
   const applyDownloadFeedbackSnapshotRef = useRef(applyDownloadFeedbackSnapshot);
   const onHydrationStartedRef = useRef(onHydrationStarted);
   const onHydrationCompletedRef = useRef(onHydrationCompleted);
   const onHydrationFailedRef = useRef(onHydrationFailed);
+  const bulkOverviewRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const bulkOverviewRefreshStartedAtRef = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    titleIdRef.current = titleId ?? null;
+  }, [titleId]);
 
   useEffect(() => {
-    applyNativeSnapshotRef.current = applyNativeSnapshot;
+    applyOverviewSnapshotRef.current = applyOverviewSnapshot;
     applyDownloadFeedbackSnapshotRef.current = applyDownloadFeedbackSnapshot;
     onHydrationStartedRef.current = onHydrationStarted;
     onHydrationCompletedRef.current = onHydrationCompleted;
     onHydrationFailedRef.current = onHydrationFailed;
   });
 
-  const queueNativeRefresh = () => {
-    if (!titleId) {
+  const queueOverviewRefresh = () => {
+    const requestedTitleId = titleId;
+    if (!requestedTitleId) {
       return;
     }
 
-    queueTitleOverviewNativeRefresh({
-      titleId,
+    queueTitleSidePanelOverviewRefresh({
+      titleId: requestedTitleId,
       blocklistLimit,
+      projection,
       apply(snapshot) {
-        applyNativeSnapshotRef.current(
-          snapshot as TitleOverviewNativeSnapshot<
+        if (titleIdRef.current !== requestedTitleId) {
+          return;
+        }
+        applyOverviewSnapshotRef.current(
+          snapshot as TitleSidePanelOverviewSnapshot<
             TTitle,
             TDiagnostics,
             TEvent,
@@ -108,13 +128,17 @@ export function useTitleOverviewReactiveRefresh<
   };
 
   const queueDownloadFeedbackRefresh = () => {
-    if (!titleId || !downloadFeedbackEnabled) {
+    const requestedTitleId = titleId;
+    if (!requestedTitleId || !downloadFeedbackEnabled) {
       return;
     }
 
     queueTitleOverviewDownloadFeedbackRefresh({
-      titleId,
+      titleId: requestedTitleId,
       apply(snapshot) {
+        if (titleIdRef.current !== requestedTitleId) {
+          return;
+        }
         applyDownloadFeedbackSnapshotRef.current(snapshot);
       },
       onError(error) {
@@ -124,18 +148,58 @@ export function useTitleOverviewReactiveRefresh<
   };
 
   const queueRefresh = () => {
-    queueNativeRefresh();
+    queueOverviewRefresh();
     queueDownloadFeedbackRefresh();
   };
 
+  const clearBulkOverviewRefresh = () => {
+    if (bulkOverviewRefreshTimerRef.current) {
+      clearTimeout(bulkOverviewRefreshTimerRef.current);
+      bulkOverviewRefreshTimerRef.current = null;
+    }
+    bulkOverviewRefreshStartedAtRef.current = null;
+  };
+
+  const queueBulkOverviewRefresh = () => {
+    if (!titleId) {
+      return;
+    }
+
+    const now = Date.now();
+    const startedAt = bulkOverviewRefreshStartedAtRef.current ?? now;
+    bulkOverviewRefreshStartedAtRef.current = startedAt;
+    const elapsedMs = now - startedAt;
+    const delayMs =
+      elapsedMs >= TITLE_OVERVIEW_BULK_REFRESH_MAX_WAIT_MS
+        ? 0
+        : Math.min(
+            TITLE_OVERVIEW_BULK_REFRESH_DEBOUNCE_MS,
+            TITLE_OVERVIEW_BULK_REFRESH_MAX_WAIT_MS - elapsedMs,
+          );
+
+    if (bulkOverviewRefreshTimerRef.current) {
+      clearTimeout(bulkOverviewRefreshTimerRef.current);
+    }
+    bulkOverviewRefreshTimerRef.current = setTimeout(() => {
+      bulkOverviewRefreshTimerRef.current = null;
+      bulkOverviewRefreshStartedAtRef.current = null;
+      queueOverviewRefresh();
+    }, delayMs);
+  };
+
+  useEffect(
+    () => () => {
+      if (bulkOverviewRefreshTimerRef.current) {
+        clearTimeout(bulkOverviewRefreshTimerRef.current);
+        bulkOverviewRefreshTimerRef.current = null;
+      }
+      bulkOverviewRefreshStartedAtRef.current = null;
+    },
+    [pause, titleId],
+  );
+
   const activityKinds = useMemo(
-    () =>
-      new Set([
-        ...importKinds,
-        HYDRATION_STARTED_KIND,
-        HYDRATION_COMPLETED_KIND,
-        HYDRATION_FAILED_KIND,
-      ]),
+    () => titleOverviewReactiveRefreshKinds(importKinds),
     [importKinds],
   );
 
@@ -144,19 +208,47 @@ export function useTitleOverviewReactiveRefresh<
     titleId,
     pause,
     onEvent(activity) {
-      switch (activity.kind) {
-        case HYDRATION_STARTED_KIND:
+      if (!shouldHandleTitleOverviewActivity(titleId, activity.titleId)) {
+        return;
+      }
+
+      const refreshPlan = titleOverviewReactiveRefreshPlan(
+        activity.kind,
+        importKinds,
+      );
+      switch (refreshPlan.type) {
+        case "hydrationStarted":
           onHydrationStartedRef.current?.();
           return;
-        case HYDRATION_COMPLETED_KIND:
+        case "hydrationCompleted":
           onHydrationCompletedRef.current?.();
-          queueRefresh();
+          clearBulkOverviewRefresh();
+          queueOverviewRefresh();
           return;
-        case HYDRATION_FAILED_KIND:
+        case "hydrationFailed":
           onHydrationFailedRef.current?.();
           return;
-        default:
-          queueRefresh();
+        case "refresh":
+          if (refreshPlan.mode === "bulk") {
+            queueBulkOverviewRefresh();
+            return;
+          }
+
+          clearBulkOverviewRefresh();
+          if (refreshPlan.downloadFeedback) {
+            queueRefresh();
+            return;
+          }
+          queueOverviewRefresh();
+          return;
+        case "none":
+          return;
+        default: {
+          const exhaustiveCheck: never = refreshPlan;
+          throw new Error(
+            `unsupported title overview refresh plan: ${exhaustiveCheck}`,
+          );
+        }
       }
     },
   });

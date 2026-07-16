@@ -296,8 +296,6 @@ impl DownloadMutations {
             title_id: result.title_id.map(Into::into),
             source_path: result.source_path,
             dest_path: result.dest_path,
-            file_size_bytes: result.file_size_bytes.map(Long::from),
-            link_type: result.link_type.map(|s| s.as_str().to_string()),
             error_message: result.error_message,
         })
     }

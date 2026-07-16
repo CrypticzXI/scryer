@@ -102,7 +102,6 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
             errors
             items {
               collectionId
-              mediaFileId
               currentPath
               proposedPath
               writeAction
@@ -113,7 +112,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
         "#,
         json!({
             "input": {
-                "facet": "anime",
+                "facet": "ANIME",
                 "titleId": title.id,
                 "dryRun": true
             }
@@ -131,7 +130,6 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
 
     let item = &plan["items"][0];
     assert_eq!(item["collectionId"], Value::Null);
-    assert_eq!(item["mediaFileId"], json!(file_id));
     assert_eq!(
         item["currentPath"],
         json!(file_path.to_string_lossy().to_string())
@@ -258,16 +256,16 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
         "#,
         json!({
             "input": {
-                "scope": "anime",
+                "scope": "ANIME",
                 "renameTemplate": "{title} - {episode_title} - {source} - {group} - {quality}.{ext}",
-                "renameCollisionPolicy": "replace_if_better",
-                "renameMissingMetadataPolicy": "skip"
+                "renameCollisionPolicy": "REPLACE_IF_BETTER",
+                "renameMissingMetadataPolicy": "SKIP"
             }
         }),
     )
     .await;
     assert_no_errors(&update);
-    assert_eq!(update["data"]["updateMediaSettings"]["scope"], "anime");
+    assert_eq!(update["data"]["updateMediaSettings"]["scope"], "ANIME");
     assert_eq!(
         update["data"]["updateMediaSettings"]["renameTemplate"],
         "{title} - {episode_title} - {source} - {group} - {quality}.{ext}"
@@ -281,7 +279,6 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
             total
             renamable
             items {
-              mediaFileId
               currentPath
               proposedPath
             }
@@ -290,7 +287,7 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
         "#,
         json!({
             "input": {
-                "facet": "anime",
+                "facet": "ANIME",
                 "titleId": title.id,
                 "dryRun": true
             }
@@ -302,7 +299,6 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
     let plan = &body["data"]["mediaRenamePreview"];
     assert_eq!(plan["total"].as_i64(), Some(1));
     assert_eq!(plan["renamable"].as_i64(), Some(1));
-    assert_eq!(plan["items"][0]["mediaFileId"], json!(file_id));
     assert_eq!(
         plan["items"][0]["currentPath"],
         json!(file_path.to_string_lossy().to_string())
@@ -418,7 +414,6 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
             items {
               collectionId
               seriesMovieLinkIds
-              mediaFileId
               currentPath
               proposedPath
               writeAction
@@ -428,7 +423,7 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
         "#,
         json!({
             "input": {
-                "facet": "anime",
+                "facet": "ANIME",
                 "titleId": title.id,
                 "dryRun": true
             }
@@ -444,7 +439,6 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
     let item = &plan["items"][0];
     assert_eq!(item["collectionId"], serde_json::Value::Null);
     assert_eq!(item["seriesMovieLinkIds"], json!([series_movie_link.id]));
-    assert_eq!(item["mediaFileId"], json!(file_id));
     assert_eq!(
         item["currentPath"],
         json!(file_path.to_string_lossy().to_string())
@@ -732,7 +726,7 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
         })
         .await
         .expect("create movie collection");
-    let file_id = ctx
+    let _file_id = ctx
         .media_files
         .insert_media_file(&InsertMediaFileInput {
             title_id: title.id.clone(),
@@ -753,7 +747,6 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
             renamable
             items {
               collectionId
-              mediaFileId
               currentPath
               proposedPath
               writeAction
@@ -763,7 +756,7 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
         "#,
         json!({
             "input": {
-                "facet": "movie",
+                "facet": "MOVIE",
                 "titleId": title.id,
                 "dryRun": true
             }
@@ -778,7 +771,6 @@ async fn graphql_media_rename_preview_for_movies_stays_collection_based() {
 
     let item = &plan["items"][0];
     assert_eq!(item["collectionId"], json!(collection.id));
-    assert_eq!(item["mediaFileId"], json!(file_id));
     assert_eq!(
         item["currentPath"],
         json!(file_path.to_string_lossy().to_string())
@@ -905,7 +897,7 @@ async fn apply_media_rename_for_movies_updates_collection_and_media_file_paths()
 async fn apply_media_rename_for_movies_uses_folder_template_and_updates_title_folder_path() {
     let mut ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
-    set_folder_template(&ctx, "movie", "{title} ({year})").await;
+    set_folder_template(&ctx, "MOVIE", "{title} ({year})").await;
     ctx.app = ctx.app.with_test_overrides(|builder| {
         builder.with_library_renamer(std::sync::Arc::new(FileSystemLibraryRenamer::new()))
     });
@@ -1019,7 +1011,7 @@ async fn apply_media_rename_for_movies_uses_folder_template_and_updates_title_fo
 async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_error_not_replace() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
-    set_rename_collision_policy(&ctx, "anime", "replace_if_better").await;
+    set_rename_collision_policy(&ctx, "ANIME", "REPLACE_IF_BETTER").await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
     configure_default_library_root(&ctx, MediaFacet::Anime, media_root.path()).await;
 
@@ -1152,7 +1144,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
         "#,
         json!({
             "input": {
-                "facet": "anime",
+                "facet": "ANIME",
                 "titleId": title.id,
                 "dryRun": true
             }
@@ -1181,7 +1173,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
 async fn graphql_media_rename_preview_for_movies_tracked_destination_returns_error_not_replace() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
-    set_rename_collision_policy(&ctx, "movie", "replace_if_better").await;
+    set_rename_collision_policy(&ctx, "MOVIE", "REPLACE_IF_BETTER").await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
     configure_default_library_root(&ctx, MediaFacet::Movie, media_root.path()).await;
 
@@ -1269,7 +1261,7 @@ async fn graphql_media_rename_preview_for_movies_tracked_destination_returns_err
         "#,
         json!({
             "input": {
-                "facet": "movie",
+                "facet": "MOVIE",
                 "titleId": title.id,
                 "dryRun": true
             }
@@ -1373,7 +1365,6 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
             total
             renamable
             items {
-              mediaFileId
               proposedPath
               writeAction
             }
@@ -1382,7 +1373,7 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
         "#,
         json!({
             "input": {
-                "facet": "anime",
+                "facet": "ANIME",
                 "titleId": title.id,
                 "dryRun": true
             }
@@ -1394,7 +1385,6 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
     let plan = &body["data"]["mediaRenamePreview"];
     assert_eq!(plan["total"].as_i64(), Some(1));
     assert_eq!(plan["renamable"].as_i64(), Some(1));
-    assert_eq!(plan["items"][0]["mediaFileId"], json!(file_id));
     assert_eq!(plan["items"][0]["writeAction"], "move");
     assert_eq!(
         plan["items"][0]["proposedPath"],
@@ -1414,7 +1404,7 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
 async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emit_replace() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
-    set_rename_collision_policy(&ctx, "movie", "replace_if_better").await;
+    set_rename_collision_policy(&ctx, "MOVIE", "REPLACE_IF_BETTER").await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
     configure_default_library_root(&ctx, MediaFacet::Movie, media_root.path()).await;
 
@@ -1475,7 +1465,7 @@ async fn graphql_media_rename_preview_for_untracked_existing_target_does_not_emi
         "#,
         json!({
             "input": {
-                "facet": "movie",
+                "facet": "MOVIE",
                 "titleId": title.id,
                 "dryRun": true
             }

@@ -1,54 +1,53 @@
 import type { LibraryScanProgress } from "./library-scans";
 
 export type JobCategory =
-  | "library"
-  | "acquisition"
-  | "maintenance"
-  | "subtitles"
-  | "system";
+  | "LIBRARY"
+  | "ACQUISITION"
+  | "MAINTENANCE"
+  | "SUBTITLES"
+  | "SYSTEM";
 
-export type JobSection = "primary" | "maintenance";
+export type JobSection = "PRIMARY" | "MAINTENANCE";
 
 export type JobScheduleKind =
-  | "manual"
-  | "interval"
-  | "startup_interval"
-  | "daily_at_time";
+  | "MANUAL"
+  | "INTERVAL"
+  | "STARTUP_AND_INTERVAL"
+  | "DAILY_AT_TIME";
 
 export type JobTriggerSource =
-  | "manual"
-  | "scheduled_startup"
-  | "scheduled_interval"
-  | "scheduled_daily"
-  | "system_internal";
+  | "MANUAL"
+  | "SCHEDULED_STARTUP"
+  | "SCHEDULED_INTERVAL"
+  | "SCHEDULED_DAILY"
+  | "SYSTEM_INTERNAL";
 
 export type JobRunStatus =
-  | "queued"
-  | "discovering"
-  | "running"
-  | "completed"
-  | "warning"
-  | "failed";
+  | "QUEUED"
+  | "DISCOVERING"
+  | "RUNNING"
+  | "COMPLETED"
+  | "WARNING"
+  | "FAILED";
 
 export type JobKey =
-  | "library_scan_movies"
-  | "library_scan_series"
-  | "library_scan_anime"
-  | "background_library_refresh_movies"
-  | "background_library_refresh_series"
-  | "background_library_refresh_anime"
-  | "rss_sync"
-  | "subtitle_search"
-  | "metadata_refresh"
-  | "plugin_registry_refresh"
-  | "housekeeping"
-  | "health_checks"
-  | "wanted_sync"
-  | "pending_release_processing"
-  | "staged_nzb_prune"
-  | "title_image_cache_refresh"
-  | "title_deletion"
-  | "auto_backup";
+  | "LIBRARY_SCAN_MOVIES"
+  | "LIBRARY_SCAN_SERIES"
+  | "LIBRARY_SCAN_ANIME"
+  | "BACKGROUND_LIBRARY_REFRESH_MOVIES"
+  | "BACKGROUND_LIBRARY_REFRESH_SERIES"
+  | "BACKGROUND_LIBRARY_REFRESH_ANIME"
+  | "RSS_SYNC"
+  | "SUBTITLE_SEARCH"
+  | "PLUGIN_REGISTRY_REFRESH"
+  | "HOUSEKEEPING"
+  | "HEALTH_CHECKS"
+  | "PENDING_RELEASE_PROCESSING"
+  | "STAGED_NZB_PRUNE"
+  | "TITLE_IMAGE_CACHE_REFRESH"
+  | "TITLE_DELETION"
+  | "ACQUISITION_SEARCH"
+  | "AUTO_BACKUP";
 
 export type JobScheduleInfo = {
   kind: JobScheduleKind;
@@ -79,9 +78,9 @@ export type JobRun = {
   triggerSource: JobTriggerSource;
   startedAt: string;
   completedAt: string | null;
-  summaryJson: string | null;
+  summaryJson: unknown;
   summaryText: string | null;
   errorText: string | null;
-  progressJson: string | null;
+  progressJson: unknown;
   libraryScanProgress: LibraryScanProgress | null;
 };

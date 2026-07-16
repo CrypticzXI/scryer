@@ -260,7 +260,7 @@ where
     )
     .with_media_files(media_file_store)
     .with_libraries(libraries)
-    .with_wanted_items(wanted_store)
+    .with_acquisition_scope_states(wanted_store)
     .with_pending_releases(pending_release_store)
     .with_blocklist_repo(blocklist_store)
     .with_library_probe_signatures(library_probe_store)
@@ -355,6 +355,7 @@ fn indexer_config(
         is_enabled: true,
         enable_interactive_search: true,
         enable_auto_search: true,
+        indexer_proxy_config_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
@@ -568,7 +569,11 @@ async fn protected_rar_routing_flip_uses_fresh_enabled_shared_newznab_source() {
     .expect("write first routing state");
 
     let first_results = app
-        .search_indexers_for_title(&user, title_id.clone())
+        .search_indexers_for_title(
+            &user,
+            title_id.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("first search should succeed");
     let urls_after_first_search = captured_urls(&newznab).await;
@@ -606,7 +611,7 @@ async fn protected_rar_routing_flip_uses_fresh_enabled_shared_newznab_source() {
     .expect("write second routing state");
 
     let second_results = app
-        .search_indexers_for_title(&user, title_id)
+        .search_indexers_for_title(&user, title_id, tokio_util::sync::CancellationToken::new())
         .await
         .expect("second search should succeed");
     assert!(
@@ -656,7 +661,13 @@ async fn multi_indexer_url_trace_anime_episode() {
     .await;
 
     let _results = app
-        .search_indexers_for_episode(&user, title_id, "02".into(), "03".into())
+        .search_indexers_for_episode(
+            &user,
+            title_id,
+            "02".into(),
+            "03".into(),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("search should succeed");
 
@@ -684,7 +695,13 @@ async fn multi_indexer_url_trace_series_episode() {
     .await;
 
     let _results = app
-        .search_indexers_for_episode(&user, title_id, "05".into(), "01".into())
+        .search_indexers_for_episode(
+            &user,
+            title_id,
+            "05".into(),
+            "01".into(),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("search should succeed");
 
@@ -715,7 +732,7 @@ async fn multi_indexer_url_trace_movie() {
     .await;
 
     let _results = app
-        .search_indexers_for_title(&user, title_id)
+        .search_indexers_for_title(&user, title_id, tokio_util::sync::CancellationToken::new())
         .await
         .expect("search should succeed");
 
@@ -761,7 +778,7 @@ async fn multi_indexer_url_trace_movie_lantern_tide() {
         .await;
 
     let _results = app
-        .search_indexers_for_title(&user, title_id)
+        .search_indexers_for_title(&user, title_id, tokio_util::sync::CancellationToken::new())
         .await
         .expect("search should succeed");
 

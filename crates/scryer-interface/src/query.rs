@@ -2,11 +2,14 @@ use async_graphql::{Context, ID, MergedObject, Object, Result as GqlResult};
 
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AppError, DownloadImportFilter, JwtSessionScope, MediaRequestCounts, OAuthAuthorizationSource,
-    PendingImportCounts, RuntimePathStyle, SCRYER_VERSION, SortDirection,
+    AppError, DownloadImportFilter, ExternalImportArrSourceKind as AppArrSourceKind,
+    ExternalImportMonitorWarmupStatus,
+    ExternalImportSetupSecretDraft as AppExternalImportSetupSecretDraft,
+    ExternalImportSetupSecretDraftStatus, ExternalImportSetupSecretInstanceKind,
+    ExternalImportSetupSecretOverrideDraft, JwtSessionScope, MediaRequestCounts,
+    OAuthAuthorizationSource, PendingImportCounts, RuntimePathStyle, SCRYER_VERSION, SortDirection,
     TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey,
-    TitleHistoryFilter, WantedItemsQuery, is_supported_title_history_event_type,
-    supported_title_history_event_types,
+    TitleHistoryFilter, is_supported_title_history_event_type, supported_title_history_event_types,
 };
 use scryer_domain::{AppPermission, LibraryPermission, TitleHistoryEventType};
 use scryer_interface_metadata::MetadataQueries;
@@ -15,20 +18,47 @@ use std::{fs, io, path::Path};
 
 use crate::context::{
     actor_from_ctx, actor_has_any_library_permission, actor_has_app_permission, app_from_ctx,
-    current_user_from_ctx, mfa_verification_from_ctx, require_app_permission, to_gql_error,
+    current_user_from_ctx, mfa_verification_from_ctx, require_app_permission,
+    require_config_app_permission, to_gql_error,
 };
 use crate::mappers::{
-    from_activity_event, from_backup_info, from_collection, from_delete_preview,
-    from_delete_titles_preview, from_domain_event, from_download_queue_item, from_episode,
-    from_external_import_monitor_warmup_progress, from_job_definition, from_job_run, from_library,
-    from_library_scan_session, from_library_settings, from_linked_account, from_media_rename_plan,
-    from_media_request, from_media_request_counts, from_pending_import_connection,
-    from_pending_import_counts, from_pending_release, from_provider_type, from_runtime_path_style,
-    from_smg_scryer_update_notice, from_smg_version_compatibility_notice, from_system_health,
-    from_title, from_title_acquisition_diagnostics, from_title_history_page,
+    catalog_discovery_query_from_input, discovery_home_filter_options_query_from_input,
+    discovery_home_query_from_input, discovery_item_detail_query_from_input,
+    discovery_items_query_from_input, from_activity_event, from_backup_info,
+    from_catalog_discovery, from_collection, from_delete_preview, from_delete_titles_preview,
+    from_discovery_home, from_discovery_home_cards, from_discovery_home_filter_options,
+    from_discovery_item, from_discovery_items_result, from_domain_event, from_download_queue_item,
+    from_episode, from_external_import_monitor_warmup_progress, from_job_definition, from_job_run,
+    from_library, from_library_scan_session, from_library_settings, from_linked_account,
+    from_media_rename_plan, from_media_request, from_media_request_counts,
+    from_pending_import_connection, from_pending_import_counts, from_pending_release,
+    from_provider_type, from_runtime_path_style, from_smg_scryer_update_notice,
+    from_smg_version_compatibility_notice, from_system_health, from_title,
+    from_title_acquisition_diagnostics, from_title_history_page,
     from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
+    from_wanted_scope_view,
 };
 use crate::types::*;
+
+fn from_metadata_search_item(
+    item: scryer_application::RichMetadataSearchItem,
+) -> MetadataSearchItemPayload {
+    MetadataSearchItemPayload {
+        tvdb_id: item.tvdb_id,
+        name: item.name,
+        imdb_id: item.imdb_id,
+        slug: item.slug,
+        type_hint: item.type_hint,
+        year: item.year,
+        status: item.status,
+        overview: item.overview,
+        popularity: item.popularity,
+        poster_url: item.poster_url,
+        language: item.language,
+        runtime_minutes: item.runtime_minutes,
+        sort_title: item.sort_title,
+    }
+}
 
 fn browse_path_read_dir(path: &str) -> Result<fs::ReadDir, AppError> {
     let target = Path::new(path);
@@ -44,6 +74,15 @@ fn browse_path_read_dir(path: &str) -> Result<fs::ReadDir, AppError> {
     }
 
     fs::read_dir(target).map_err(|error| browse_path_io_error(path, error))
+}
+
+fn library_root_path_is_valid(path: &str) -> bool {
+    let target = Path::new(path.trim());
+    if !target.is_absolute() {
+        return false;
+    }
+
+    fs::read_dir(target).is_ok()
 }
 
 fn browse_path_io_error(path: &str, error: io::Error) -> AppError {
@@ -118,11 +157,34 @@ fn title_catalog_sort_from_input(sort: Option<TitleCatalogSortInput>) -> TitleCa
     };
     let key = match sort.key {
         TitleCatalogSortKeyValue::Title => TitleCatalogSortKey::Title,
+        TitleCatalogSortKeyValue::Library => TitleCatalogSortKey::Library,
         TitleCatalogSortKeyValue::Monitored => TitleCatalogSortKey::Monitored,
         TitleCatalogSortKeyValue::Quality => TitleCatalogSortKey::Quality,
         TitleCatalogSortKeyValue::Episodes => TitleCatalogSortKey::Episodes,
         TitleCatalogSortKeyValue::Status => TitleCatalogSortKey::Status,
         TitleCatalogSortKeyValue::Size => TitleCatalogSortKey::Size,
+        TitleCatalogSortKeyValue::Added => TitleCatalogSortKey::Added,
+        TitleCatalogSortKeyValue::Year => TitleCatalogSortKey::Year,
+        TitleCatalogSortKeyValue::Runtime => TitleCatalogSortKey::Runtime,
+        TitleCatalogSortKeyValue::Root => TitleCatalogSortKey::Root,
+        TitleCatalogSortKeyValue::Popularity => TitleCatalogSortKey::Popularity,
+        TitleCatalogSortKeyValue::MediaResolution => TitleCatalogSortKey::MediaResolution,
+        TitleCatalogSortKeyValue::MediaHdr => TitleCatalogSortKey::MediaHdr,
+        TitleCatalogSortKeyValue::MediaAudioCodec => TitleCatalogSortKey::MediaAudioCodec,
+        TitleCatalogSortKeyValue::RatingScryer => TitleCatalogSortKey::RatingScryer,
+        TitleCatalogSortKeyValue::RatingImdb => TitleCatalogSortKey::RatingImdb,
+        TitleCatalogSortKeyValue::RatingRottenTomatoes => TitleCatalogSortKey::RatingRottenTomatoes,
+        TitleCatalogSortKeyValue::RatingPopcornmeter => TitleCatalogSortKey::RatingPopcornmeter,
+        TitleCatalogSortKeyValue::RatingMetacritic => TitleCatalogSortKey::RatingMetacritic,
+        TitleCatalogSortKeyValue::RatingMetacriticUser => TitleCatalogSortKey::RatingMetacriticUser,
+        TitleCatalogSortKeyValue::RatingLetterboxd => TitleCatalogSortKey::RatingLetterboxd,
+        TitleCatalogSortKeyValue::RatingTmdb => TitleCatalogSortKey::RatingTmdb,
+        TitleCatalogSortKeyValue::RatingTvdb => TitleCatalogSortKey::RatingTvdb,
+        TitleCatalogSortKeyValue::RatingTrakt => TitleCatalogSortKey::RatingTrakt,
+        TitleCatalogSortKeyValue::RatingMyanimelist => TitleCatalogSortKey::RatingMyanimelist,
+        TitleCatalogSortKeyValue::RatingAnilist => TitleCatalogSortKey::RatingAnilist,
+        TitleCatalogSortKeyValue::RatingAnidb => TitleCatalogSortKey::RatingAnidb,
+        TitleCatalogSortKeyValue::RatingMdblist => TitleCatalogSortKey::RatingMdblist,
     };
     let direction = sort
         .direction
@@ -131,11 +193,40 @@ fn title_catalog_sort_from_input(sort: Option<TitleCatalogSortInput>) -> TitleCa
     TitleCatalogSort { key, direction }
 }
 
-fn title_catalog_filter_from_input(filter: Option<TitleCatalogFilterInput>) -> TitleCatalogFilter {
+fn title_catalog_tag_filter_keys(
+    field_name: &str,
+    keys: Option<Vec<String>>,
+) -> Result<Vec<String>, AppError> {
+    let keys = keys.unwrap_or_default();
+    if keys.iter().any(|key| key.trim().is_empty()) {
+        return Err(AppError::Validation(format!(
+            "title catalog {field_name} entries must not be blank"
+        )));
+    }
+    Ok(keys)
+}
+
+fn title_catalog_filter_from_input(
+    filter: Option<TitleCatalogFilterInput>,
+) -> Result<TitleCatalogFilter, AppError> {
     let Some(filter) = filter else {
-        return TitleCatalogFilter::default();
+        return Ok(TitleCatalogFilter::default());
     };
-    TitleCatalogFilter {
+    if let (Some(minimum_year), Some(maximum_year)) = (filter.minimum_year, filter.maximum_year)
+        && minimum_year > maximum_year
+    {
+        return Err(AppError::Validation(
+            "title catalog minimumYear must not exceed maximumYear".to_owned(),
+        ));
+    }
+    let minimum_rating = filter.minimum_rating;
+    if minimum_rating.is_some_and(|rating| !rating.is_finite() || !(0.0..=10.0).contains(&rating)) {
+        return Err(AppError::Validation(
+            "title catalog minimumRating must be a finite value between 0 and 10".to_owned(),
+        ));
+    }
+
+    Ok(TitleCatalogFilter {
         monitored: filter.monitored,
         content_statuses: filter
             .content_statuses
@@ -146,7 +237,30 @@ fn title_catalog_filter_from_input(filter: Option<TitleCatalogFilterInput>) -> T
                 TitleCatalogContentStatusValue::Ended => TitleCatalogContentStatus::Ended,
             })
             .collect(),
+        root_folder_ids: normalize_catalog_filter_values(
+            filter
+                .root_folder_ids
+                .unwrap_or_default()
+                .into_iter()
+                .map(String::from),
+        ),
+        genre_tag_keys: title_catalog_tag_filter_keys("genreTagKeys", filter.genre_tag_keys)?,
+        theme_tag_keys: title_catalog_tag_filter_keys("themeTagKeys", filter.theme_tag_keys)?,
+        minimum_year: filter.minimum_year,
+        maximum_year: filter.maximum_year,
+        minimum_rating,
+    })
+}
+
+fn normalize_catalog_filter_values(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let value = value.trim();
+        if !value.is_empty() && !normalized.iter().any(|candidate| candidate == value) {
+            normalized.push(value.to_string());
+        }
     }
+    normalized
 }
 
 fn usize_to_i32_saturating(value: usize) -> i32 {
@@ -194,7 +308,51 @@ fn from_download_import_page(
     }
 }
 
-fn from_cutoff_unmet_item(item: scryer_application::CutoffUnmetItem) -> CutoffUnmetItemPayload {
+fn wanted_kind_to_application(value: WantedKindValue) -> scryer_application::WantedKind {
+    match value {
+        WantedKindValue::Missing => scryer_application::WantedKind::Missing,
+        WantedKindValue::CutoffUpgrade => scryer_application::WantedKind::CutoffUpgrade,
+    }
+}
+
+fn from_acquisition_search_job_view(
+    view: scryer_application::AcquisitionSearchJobView,
+) -> scryer_application::AppResult<AcquisitionSearchJobPayload> {
+    let state = match view.state.as_str() {
+        "completed" => AcquisitionSearchJobStateValue::Completed,
+        "cancelled" => AcquisitionSearchJobStateValue::Cancelled,
+        "failed" => AcquisitionSearchJobStateValue::Failed,
+        _ => AcquisitionSearchJobStateValue::Running,
+    };
+    let started_at = chrono::DateTime::parse_from_rfc3339(&view.started_at)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|error| {
+            scryer_application::AppError::Validation(format!(
+                "invalid acquisition search job started_at: {error}"
+            ))
+        })?;
+    let finished_at = view
+        .finished_at
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc));
+    Ok(AcquisitionSearchJobPayload {
+        id: view.id.into(),
+        state,
+        total: view.total,
+        processed: view.processed,
+        grabbed_count: view.grabbed_count,
+        failed_count: view.failed_count,
+        current_title: view.current_title,
+        started_at,
+        finished_at,
+    })
+}
+
+fn from_cutoff_unmet_item(
+    item: scryer_application::CutoffUnmetItem,
+    convergence: scryer_application::WantedViewConvergence,
+) -> CutoffUnmetItemPayload {
     CutoffUnmetItemPayload {
         title_id: item.title_id.into(),
         title_name: item.title_name,
@@ -208,128 +366,26 @@ fn from_cutoff_unmet_item(item: scryer_application::CutoffUnmetItem) -> CutoffUn
         episode_number: item.episode_number,
         current_tier: item.current_tier,
         target_tier: item.target_tier,
+        convergence_state: convergence_state_to_value(convergence.state),
+        indexers_covered: convergence.indexers_covered,
+        indexers_routed: convergence.indexers_routed,
     }
 }
 
-async fn title_payloads_from_titles(
-    app: &scryer_application::AppUseCase,
-    actor: &scryer_domain::User,
-    titles: Vec<scryer_domain::Title>,
-    selection: TitlePayloadSelection,
-) -> GqlResult<Vec<TitlePayload>> {
-    if titles.is_empty() {
-        return Ok(Vec::new());
+fn convergence_state_to_value(
+    state: scryer_application::WantedConvergenceState,
+) -> ConvergenceStateValue {
+    match state {
+        scryer_application::WantedConvergenceState::Queued => ConvergenceStateValue::Queued,
+        scryer_application::WantedConvergenceState::Searching => ConvergenceStateValue::Searching,
+        scryer_application::WantedConvergenceState::Converged => ConvergenceStateValue::Converged,
+        scryer_application::WantedConvergenceState::Deferred => ConvergenceStateValue::Deferred,
     }
-
-    let title_ids: Vec<String> = titles.iter().map(|t| t.id.clone()).collect();
-    let libraries = if selection.include_library_context {
-        app.list_libraries_for_permission(actor, None, scryer_domain::LibraryPermission::View)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        Vec::new()
-    };
-    let library_map: std::collections::HashMap<&str, (&String, &String)> = libraries
-        .iter()
-        .map(|library| (library.id.as_str(), (&library.name, &library.slug)))
-        .collect();
-    let summaries = if selection.include_quality_tier {
-        app.list_primary_collection_summaries(actor, &title_ids)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        Vec::new()
-    };
-    let media_size_summaries = if selection.include_size_bytes {
-        app.list_title_media_size_summaries(actor, &title_ids)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        Vec::new()
-    };
-    let quality_summaries = if selection.include_current_quality_tier {
-        app.list_title_quality_summaries(actor, &title_ids)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        Vec::new()
-    };
-    let episode_progress_summaries = if selection.include_episode_progress {
-        app.list_title_episode_progress_summaries(actor, &title_ids)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        Vec::new()
-    };
-    let collections_by_title_id = if selection.include_collections {
-        app.list_collections_for_titles(actor, &titles)
-            .await
-            .map_err(to_gql_error)?
-    } else {
-        std::collections::HashMap::new()
-    };
-    let summary_map: std::collections::HashMap<&str, _> =
-        summaries.iter().map(|s| (s.title_id.as_str(), s)).collect();
-    let media_size_map: std::collections::HashMap<&str, i64> = media_size_summaries
-        .iter()
-        .map(|summary| (summary.title_id.as_str(), summary.total_size_bytes))
-        .collect();
-    let quality_map: std::collections::HashMap<&str, &String> = quality_summaries
-        .iter()
-        .map(|summary| (summary.title_id.as_str(), &summary.quality_tier))
-        .collect();
-    let episode_progress_map: std::collections::HashMap<&str, _> = episode_progress_summaries
-        .iter()
-        .map(|summary| (summary.title_id.as_str(), summary))
-        .collect();
-
-    Ok(titles
-        .into_iter()
-        .map(|t| {
-            let id = t.id.clone();
-            let library_id = t.library_id.clone();
-            let mut payload = from_title(t);
-            if let Some((library_name, library_slug)) = library_map.get(library_id.as_str()) {
-                payload.library_name = Some((*library_name).clone());
-                payload.library_slug = Some((*library_slug).clone());
-            }
-            if let Some(s) = summary_map.get(id.as_str()) {
-                payload.quality_tier = s.label.clone();
-            }
-            if let Some(quality_tier) = quality_map.get(id.as_str()) {
-                payload.current_quality_tier = Some((*quality_tier).clone());
-            }
-            payload.size_bytes = media_size_map.get(id.as_str()).copied().map(Long::from);
-            if let Some(summary) = episode_progress_map.get(id.as_str()) {
-                payload.episodes_owned = Some(summary.owned_episodes);
-                payload.episodes_monitored = Some(summary.monitored_episodes);
-                payload.episodes_total = Some(summary.total_episodes);
-            }
-            if selection.include_collections {
-                payload.preloaded_collections = Some(
-                    collections_by_title_id
-                        .get(id.as_str())
-                        .cloned()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(from_collection)
-                        .collect(),
-                );
-            }
-            payload
-        })
-        .collect())
 }
 
 #[derive(Clone, Copy)]
 struct TitlePayloadSelection {
     include_external_ids: bool,
-    include_library_context: bool,
-    include_quality_tier: bool,
-    include_current_quality_tier: bool,
-    include_size_bytes: bool,
-    include_episode_progress: bool,
-    include_collections: bool,
 }
 
 impl TitlePayloadSelection {
@@ -340,15 +396,6 @@ impl TitlePayloadSelection {
         };
         Self {
             include_external_ids: title_field_exists("externalIds"),
-            include_library_context: title_field_exists("libraryName")
-                || title_field_exists("librarySlug"),
-            include_quality_tier: title_field_exists("qualityTier"),
-            include_current_quality_tier: title_field_exists("currentQualityTier"),
-            include_size_bytes: title_field_exists("sizeBytes"),
-            include_episode_progress: title_field_exists("episodesOwned")
-                || title_field_exists("episodesMonitored")
-                || title_field_exists("episodesTotal"),
-            include_collections: title_field_exists("collections"),
         }
     }
 }
@@ -369,6 +416,9 @@ struct SystemQueries;
 struct AcquisitionQueries;
 
 #[derive(Default)]
+struct ExternalImportQueries;
+
+#[derive(Default)]
 struct UtilityQueries;
 
 #[derive(Default)]
@@ -382,10 +432,109 @@ pub struct QueryRoot(
     SettingsQueries,
     SystemQueries,
     AcquisitionQueries,
+    ExternalImportQueries,
     MetadataQueries,
     UtilityQueries,
     AccountQueries,
 );
+
+fn gql_secret_instance_kind_query(
+    kind: ExternalImportSetupSecretInstanceKind,
+) -> ExternalImportConnectionKind {
+    match kind {
+        ExternalImportSetupSecretInstanceKind::Sonarr => ExternalImportConnectionKind::Sonarr,
+        ExternalImportSetupSecretInstanceKind::Radarr => ExternalImportConnectionKind::Radarr,
+        ExternalImportSetupSecretInstanceKind::Prowlarr => ExternalImportConnectionKind::Prowlarr,
+    }
+}
+
+fn api_key_override_payload_query(
+    override_entry: ExternalImportSetupSecretOverrideDraft,
+) -> ExternalImportSetupApiKeyOverridePayload {
+    ExternalImportSetupApiKeyOverridePayload {
+        dedup_key: override_entry.dedup_key,
+        api_key: override_entry.secret,
+    }
+}
+
+fn password_override_payload_query(
+    override_entry: ExternalImportSetupSecretOverrideDraft,
+) -> ExternalImportSetupPasswordOverridePayload {
+    ExternalImportSetupPasswordOverridePayload {
+        dedup_key: override_entry.dedup_key,
+        password: override_entry.secret,
+    }
+}
+
+fn external_import_setup_secret_draft_payload_query(
+    draft: AppExternalImportSetupSecretDraft,
+) -> ExternalImportSetupSecretDraftPayload {
+    let secrets = draft.secrets;
+    ExternalImportSetupSecretDraftPayload {
+        instance_api_keys: secrets
+            .instance_api_keys
+            .into_iter()
+            .map(|entry| ExternalImportSetupInstanceApiKeyPayload {
+                instance_id: ID::from(entry.instance_id),
+                kind: gql_secret_instance_kind_query(entry.kind),
+                api_key: entry.api_key,
+            })
+            .collect(),
+        download_client_api_key_overrides: secrets
+            .download_client_api_key_overrides
+            .into_iter()
+            .map(api_key_override_payload_query)
+            .collect(),
+        download_client_password_overrides: secrets
+            .download_client_password_overrides
+            .into_iter()
+            .map(password_override_payload_query)
+            .collect(),
+        indexer_api_key_overrides: secrets
+            .indexer_api_key_overrides
+            .into_iter()
+            .map(api_key_override_payload_query)
+            .collect(),
+        updated_at: draft.updated_at,
+    }
+}
+
+fn external_import_setup_secret_status_payload_query(
+    status: ExternalImportSetupSecretDraftStatus,
+) -> ExternalImportSetupSecretDraftStatusPayload {
+    ExternalImportSetupSecretDraftStatusPayload {
+        has_draft: status.has_draft,
+        owned_by_current_user: status.owned_by_current_user,
+        updated_at: status.updated_at,
+    }
+}
+
+#[Object]
+impl ExternalImportQueries {
+    async fn external_import_setup_secret_draft(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<Option<ExternalImportSetupSecretDraftPayload>> {
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let app = app_from_ctx(ctx)?;
+        app.get_external_import_setup_secret_draft(&actor)
+            .await
+            .map(|draft| draft.map(external_import_setup_secret_draft_payload_query))
+            .map_err(to_gql_error)
+    }
+
+    async fn external_import_setup_secret_draft_status(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<ExternalImportSetupSecretDraftStatusPayload> {
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let app = app_from_ctx(ctx)?;
+        app.external_import_setup_secret_draft_status(&actor)
+            .await
+            .map(external_import_setup_secret_status_payload_query)
+            .map_err(to_gql_error)
+    }
+}
 
 #[Object]
 impl AccountQueries {
@@ -433,32 +582,86 @@ impl CatalogQueries {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let selection = TitlePayloadSelection::from_ctx(ctx);
+        let lookahead = ctx.look_ahead();
+        let catalog_filter = title_catalog_filter_from_input(filter).map_err(to_gql_error)?;
+        let include_catalog_counts = lookahead.field("hasMore").exists()
+            || lookahead.field("totalCount").exists()
+            || lookahead.field("filterCounts").exists()
+            || lookahead.field("managedBytes").exists();
         let page = app
             .list_titles(
                 &actor,
                 facet.map(MediaFacetValue::into_domain),
                 optional_ids_to_strings(library_ids),
                 query,
-                title_catalog_filter_from_input(filter),
+                catalog_filter,
                 title_catalog_sort_from_input(sort),
                 title_catalog_page_limit(limit),
                 title_catalog_page_offset(offset),
                 selection.include_external_ids,
+                include_catalog_counts,
             )
             .await
             .map_err(to_gql_error)?;
-        let limit = page.limit;
-        let offset = page.offset;
         let has_more = page.has_more;
         let total_count = page.total_count;
-        let items = title_payloads_from_titles(&app, &actor, page.items, selection).await?;
+        let filter_counts = page.filter_counts.clone();
+        let managed_bytes = page.managed_bytes;
+        let items = page.items.into_iter().map(from_title).collect();
 
         Ok(TitleCatalogPayload {
             items,
-            limit: usize_to_i32_saturating(limit),
-            offset: usize_to_i32_saturating(offset),
             has_more,
             total_count: usize_to_i32_saturating(total_count),
+            filter_counts: TitleCatalogFilterCountsPayload {
+                all: usize_to_i32_saturating(filter_counts.all),
+                monitored: usize_to_i32_saturating(filter_counts.monitored),
+                unmonitored: usize_to_i32_saturating(filter_counts.unmonitored),
+                continuing: usize_to_i32_saturating(filter_counts.continuing),
+                ended: usize_to_i32_saturating(filter_counts.ended),
+            },
+            managed_bytes: Long::from(managed_bytes),
+        })
+    }
+
+    async fn title_catalog_filter_options(
+        &self,
+        ctx: &Context<'_>,
+        facet: Option<MediaFacetValue>,
+        library_ids: Option<Vec<ID>>,
+        root_folder_ids: Option<Vec<ID>>,
+    ) -> GqlResult<TitleCatalogFilterOptionsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let options = app
+            .title_catalog_filter_options(
+                &actor,
+                facet.map(MediaFacetValue::into_domain),
+                optional_ids_to_strings(library_ids),
+                normalize_catalog_filter_values(
+                    root_folder_ids
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(String::from),
+                ),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let map_options = |values: Vec<scryer_application::TitleCatalogTagFilterOption>| {
+            values
+                .into_iter()
+                .map(|option| CanonicalTagFilterOptionPayload {
+                    key: option.key,
+                    name: option.name,
+                })
+                .collect()
+        };
+
+        Ok(TitleCatalogFilterOptionsPayload {
+            genres: map_options(options.genres),
+            themes: map_options(options.tags),
+            minimum_year: options.minimum_year,
+            maximum_year: options.maximum_year,
         })
     }
 
@@ -481,6 +684,40 @@ impl CatalogQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(libraries.into_iter().map(from_library).collect())
+    }
+
+    async fn catalog_has_valid_root(
+        &self,
+        ctx: &Context<'_>,
+        facet: MediaFacetValue,
+    ) -> GqlResult<bool> {
+        require_library_settings_permission(ctx).await?;
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let libraries = app
+            .list_libraries_for_permission(
+                &actor,
+                Some(facet.into_domain()),
+                LibraryPermission::ManageLibrary,
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let root_paths = libraries
+            .into_iter()
+            .flat_map(|library| library.roots.into_iter().map(|root| root.path))
+            .collect::<Vec<_>>();
+        let has_valid_root = tokio::task::spawn_blocking(move || {
+            root_paths
+                .iter()
+                .any(|path| library_root_path_is_valid(path))
+        })
+        .await
+        .map_err(|error| {
+            to_gql_error(AppError::Repository(format!(
+                "catalog root validation task failed: {error}"
+            )))
+        })?;
+        Ok(has_valid_root)
     }
 
     async fn media_requests(
@@ -552,13 +789,12 @@ impl CatalogQueries {
     ) -> GqlResult<Vec<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let selection = TitlePayloadSelection::from_ctx(ctx);
         let titles = app
             .list_titles_by_external_ids(&actor, &source, &values)
             .await
             .map_err(to_gql_error)?;
 
-        title_payloads_from_titles(&app, &actor, titles, selection).await
+        Ok(titles.into_iter().map(from_title).collect())
     }
 
     async fn title(&self, ctx: &Context<'_>, id: ID) -> GqlResult<Option<TitlePayload>> {
@@ -572,39 +808,70 @@ impl CatalogQueries {
                 .await
         }
         .map_err(to_gql_error)?;
-        let Some(title) = title else {
-            return Ok(None);
-        };
-        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title], selection).await?;
-        Ok(payloads.pop())
+        Ok(title.map(from_title))
+    }
+
+    async fn episode(
+        &self,
+        ctx: &Context<'_>,
+        title_id: ID,
+        episode_id: ID,
+    ) -> GqlResult<Option<EpisodePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let episode = app
+            .get_episode(&actor, episode_id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(episode
+            .filter(|episode| episode.title_id == title_id.as_ref())
+            .map(from_episode))
+    }
+
+    /// Fetch an episode by its globally unique id — targeted-refetch primitive;
+    /// unlike `episode`, no parent title id is required.
+    async fn episode_by_id(&self, ctx: &Context<'_>, id: ID) -> GqlResult<Option<EpisodePayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let episode = app
+            .get_episode(&actor, id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(episode.map(from_episode))
+    }
+
+    /// Fetch a collection by its globally unique id — targeted-refetch primitive.
+    async fn collection_by_id(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> GqlResult<Option<CollectionPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let collection = app
+            .get_collection(&actor, id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(collection.map(from_collection))
     }
 
     async fn title_by_slug(
         &self,
         ctx: &Context<'_>,
         facet: MediaFacetValue,
-        library_id: Option<ID>,
         library_slug: Option<String>,
         slug: String,
     ) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let selection = TitlePayloadSelection::from_ctx(ctx);
         let Some(title) = app
-            .get_title_by_slug(
-                &actor,
-                facet.into_domain(),
-                library_id.map(String::from),
-                library_slug,
-                &slug,
-            )
+            .get_title_by_slug(&actor, facet.into_domain(), None, library_slug, &slug)
             .await
             .map_err(to_gql_error)?
         else {
             return Ok(None);
         };
-        let mut payloads = title_payloads_from_titles(&app, &actor, vec![title], selection).await?;
-        Ok(payloads.pop())
+        Ok(Some(from_title(title)))
     }
 
     async fn media_rename_preview(
@@ -725,21 +992,36 @@ impl CatalogQueries {
 
         let safe_limit = limit.unwrap_or(50).clamp(1, 200) as usize;
         let title_id = title_id.to_string();
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        struct CancelOnDrop(tokio_util::sync::CancellationToken);
+        impl Drop for CancelOnDrop {
+            fn drop(&mut self) {
+                self.0.cancel();
+            }
+        }
+        let _cancel_on_drop = CancelOnDrop(cancel_token.clone());
         let results = match (series_movie_link_id, season, episode) {
             (Some(series_movie_link_id), None, None) => app
                 .search_indexers_for_series_movie(
                     &actor,
                     title_id,
                     series_movie_link_id.to_string(),
+                    cancel_token.clone(),
                 )
                 .await
                 .map_err(to_gql_error)?,
             (None, Some(season), Some(episode)) => app
-                .search_indexers_for_episode(&actor, title_id, season, episode)
+                .search_indexers_for_episode(
+                    &actor,
+                    title_id,
+                    season,
+                    episode,
+                    cancel_token.clone(),
+                )
                 .await
                 .map_err(to_gql_error)?,
             (None, None, None) => app
-                .search_indexers_for_title(&actor, title_id)
+                .search_indexers_for_title(&actor, title_id, cancel_token.clone())
                 .await
                 .map_err(to_gql_error)?,
             (None, Some(_), None) | (None, None, Some(_)) => {
@@ -787,11 +1069,12 @@ impl CatalogQueries {
             offset: filter.offset.unwrap_or(0).max(0) as usize,
         };
 
+        let offset = f.offset;
         let page = app
             .list_title_history(&actor, &f)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_title_history_page(page).map_err(to_gql_error)?)
+        Ok(from_title_history_page(page, offset).map_err(to_gql_error)?)
     }
 
     async fn title_release_blocklist(
@@ -884,33 +1167,104 @@ impl ActivityQueries {
             .collect())
     }
 
-    async fn library_scan_session(
-        &self,
-        ctx: &Context<'_>,
-        session_id: ID,
-    ) -> GqlResult<Option<LibraryScanProgressPayload>> {
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let session = app
-            .library_scan_session(&actor, session_id.as_str())
-            .await
-            .map_err(to_gql_error)?;
-        Ok(session.map(from_library_scan_session))
-    }
-
-    async fn external_import_monitor_warmup_status(
+    async fn external_import_arr_source_warmup_status(
         &self,
         ctx: &Context<'_>,
         session_id: ID,
     ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        app.maintain_external_import_arr_source_sessions(&actor)
+            .await
+            .map_err(to_gql_error)?;
         let session_id = String::from(session_id);
         let snapshot = app
             .get_external_import_monitor_warmup_status(&actor, &session_id)
             .await
             .map_err(to_gql_error)?;
         Ok(from_external_import_monitor_warmup_progress(snapshot))
+    }
+
+    async fn external_import_aggregate_warmup_progress(
+        &self,
+        ctx: &Context<'_>,
+        input: ExternalImportAggregateWarmupProgressInput,
+    ) -> GqlResult<ExternalImportAggregateWarmupProgressPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.maintain_external_import_arr_source_sessions(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        if input.source_warmup_session_ids.is_empty() {
+            return Ok(ExternalImportAggregateWarmupProgressPayload {
+                status: ExternalImportMonitorWarmupStatusValue::Completed,
+                titles_total_known: true,
+                titles_fetched: 0,
+                titles_total: 0,
+                error_message: None,
+            });
+        }
+
+        let mut status = ExternalImportMonitorWarmupStatusValue::Completed;
+        let mut titles_total_known = true;
+        let mut titles_fetched = 0i32;
+        let mut titles_total = 0i32;
+        let mut error_message = None;
+
+        for session_id in input.source_warmup_session_ids {
+            let session_id_string = session_id.to_string();
+            let snapshot = app
+                .get_external_import_monitor_warmup_status(&actor, &session_id_string)
+                .await
+                .map_err(to_gql_error)?;
+            let source = app
+                .external_import_arr_source_warmup_result(&actor, &session_id_string)
+                .await
+                .map_err(to_gql_error)?;
+            let (known, fetched, total) = match source.kind {
+                AppArrSourceKind::Radarr => (
+                    snapshot.movies_total_known,
+                    snapshot.movies_progress.completed,
+                    snapshot.movies_progress.total,
+                ),
+                AppArrSourceKind::Sonarr => (
+                    snapshot.series_total_known,
+                    snapshot.series_progress.completed,
+                    snapshot.series_progress.total,
+                ),
+            };
+            titles_total_known &= known;
+            titles_fetched = titles_fetched.saturating_add(fetched);
+            titles_total = titles_total.saturating_add(total);
+
+            match snapshot.status {
+                ExternalImportMonitorWarmupStatus::Failed => {
+                    status = ExternalImportMonitorWarmupStatusValue::Failed;
+                    error_message = snapshot.error_message;
+                }
+                ExternalImportMonitorWarmupStatus::Canceled
+                    if status != ExternalImportMonitorWarmupStatusValue::Failed =>
+                {
+                    status = ExternalImportMonitorWarmupStatusValue::Canceled;
+                    error_message = snapshot.error_message;
+                }
+                ExternalImportMonitorWarmupStatus::Queued
+                | ExternalImportMonitorWarmupStatus::Running
+                    if matches!(status, ExternalImportMonitorWarmupStatusValue::Completed) =>
+                {
+                    status = ExternalImportMonitorWarmupStatusValue::Running;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(ExternalImportAggregateWarmupProgressPayload {
+            status,
+            titles_total_known,
+            titles_fetched,
+            titles_total,
+            error_message,
+        })
     }
 
     async fn pending_import_counts(
@@ -1013,7 +1367,26 @@ impl ActivityQueries {
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(from_pending_import_connection(connection))
+        Ok(from_pending_import_connection(connection, offset))
+    }
+
+    async fn pending_import_title_search(
+        &self,
+        ctx: &Context<'_>,
+        pending_import_id: ID,
+        query: String,
+        #[graphql(default = 8)] limit: i32,
+        #[graphql(default_with = "\"eng\".to_string()")] language: String,
+        year: Option<i32>,
+    ) -> GqlResult<Vec<MetadataSearchItemPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let pending_import_id = String::from(pending_import_id);
+        let results = app
+            .pending_import_title_search(&actor, &pending_import_id, &query, limit, &language, year)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(results.into_iter().map(from_metadata_search_item).collect())
     }
 
     async fn pending_import_binding_preview(
@@ -1111,6 +1484,95 @@ impl JobAndDownloadQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(runs.into_iter().map(from_job_run).collect())
+    }
+
+    async fn discovery_home(
+        &self,
+        ctx: &Context<'_>,
+        input: Option<DiscoveryHomeInput>,
+    ) -> GqlResult<DiscoveryHomePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let query = discovery_home_query_from_input(input).map_err(to_gql_error)?;
+        let result = app
+            .discovery_home(&actor, query)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_discovery_home(result))
+    }
+
+    async fn discovery_home_cards(
+        &self,
+        ctx: &Context<'_>,
+        input: Option<DiscoveryHomeInput>,
+    ) -> GqlResult<DiscoveryHomeCardsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let query = discovery_home_query_from_input(input).map_err(to_gql_error)?;
+        let result = app
+            .discovery_home_cards(&actor, query)
+            .await
+            .map_err(to_gql_error)?;
+        from_discovery_home_cards(result).map_err(to_gql_error)
+    }
+
+    async fn discovery_home_filter_options(
+        &self,
+        ctx: &Context<'_>,
+        input: Option<DiscoveryHomeFilterOptionsInput>,
+    ) -> GqlResult<DiscoveryHomeFilterOptionsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let options = app
+            .discovery_home_filter_options(
+                &actor,
+                discovery_home_filter_options_query_from_input(input),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_discovery_home_filter_options(options))
+    }
+
+    async fn discovery_items(
+        &self,
+        ctx: &Context<'_>,
+        input: Option<DiscoveryItemsInput>,
+    ) -> GqlResult<DiscoveryItemsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .discovery_items(&actor, discovery_items_query_from_input(input))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_discovery_items_result(result))
+    }
+
+    async fn discovery_item_detail(
+        &self,
+        ctx: &Context<'_>,
+        input: DiscoveryItemDetailInput,
+    ) -> GqlResult<Option<DiscoveryItemPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let item = app
+            .discovery_item_detail(&actor, discovery_item_detail_query_from_input(input))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(item.map(from_discovery_item))
+    }
+
+    async fn catalog_discovery(
+        &self,
+        ctx: &Context<'_>,
+        input: CatalogDiscoveryInput,
+    ) -> GqlResult<CatalogDiscoveryPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let result = app
+            .catalog_discovery(&actor, catalog_discovery_query_from_input(input))
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_catalog_discovery(result))
     }
 
     async fn download_queue(
@@ -1331,44 +1793,41 @@ impl SystemQueries {
     ) -> GqlResult<PendingReleasesPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let mut releases = app
-            .list_pending_releases(&actor)
-            .await
-            .map_err(to_gql_error)?;
-        if let Some(filter) = filter {
-            if let Some(title_id) = filter.title_id {
-                let title_id = String::from(title_id);
-                releases.retain(|release| release.title_id == title_id);
-            }
-            if let Some(wanted_item_id) = filter.wanted_item_id {
-                let wanted_item_id = String::from(wanted_item_id);
-                releases.retain(|release| release.wanted_item_id == wanted_item_id);
-            }
-            if let Some(statuses) = filter.statuses {
-                let statuses = statuses
+        let (title_id, wanted_item_id, statuses) = match filter {
+            Some(filter) => (
+                filter.title_id.map(String::from),
+                filter.wanted_item_id.map(String::from),
+                filter
+                    .statuses
+                    .unwrap_or_default()
                     .into_iter()
                     .map(PendingReleaseStatusValue::into_application)
-                    .collect::<Vec<_>>();
-                releases.retain(|release| statuses.contains(&release.status));
-            }
-        }
-
-        let total_count = releases.len();
-        let limit = limit.clamp(1, 500) as usize;
-        let offset = offset.max(0) as usize;
+                    .collect::<Vec<_>>(),
+            ),
+            None => (None, None, Vec::new()),
+        };
+        let limit = limit.clamp(1, 500);
+        let offset = offset.max(0);
+        let (releases, total_count) = app
+            .list_pending_releases_page(
+                &actor,
+                title_id,
+                wanted_item_id,
+                statuses,
+                i64::from(limit),
+                i64::from(offset),
+            )
+            .await
+            .map_err(to_gql_error)?;
         let items = releases
             .into_iter()
-            .skip(offset)
-            .take(limit)
             .map(from_pending_release)
             .collect::<Vec<_>>();
-        let has_more = offset.saturating_add(items.len()) < total_count;
+        let has_more = i64::from(offset).saturating_add(items.len() as i64) < total_count;
         Ok(PendingReleasesPayload {
             items,
-            limit: usize_to_i32_saturating(limit),
-            offset: usize_to_i32_saturating(offset),
             has_more,
-            total_count: usize_to_i32_saturating(total_count),
+            total_count: total_count.min(i64::from(i32::MAX)) as i32,
         })
     }
 
@@ -1530,71 +1989,83 @@ impl SystemQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl AcquisitionQueries {
+    /// RFC 119 §6/§7: the derived Missing / Upgrades view. `wantedKind` selects the
+    /// target set (`MISSING` derived from fileless monitored scopes, `CUTOFF_UPGRADE`
+    /// from below-cutoff files). Results are the derived targets joined to the
+    /// activity-state row (when one exists) and enriched with per-scope convergence
+    /// progress. The retired state-row status / decision-code filters are dropped —
+    /// they only distinguished state rows, which are no longer the target source.
     async fn wanted_items(
         &self,
         ctx: &Context<'_>,
-        statuses: Option<Vec<WantedStatusValue>>,
-        media_types: Option<Vec<WantedMediaTypeValue>>,
-        title_id: Option<ID>,
+        #[graphql(default)] wanted_kind: WantedKindValue,
+        facet: Option<MediaFacetValue>,
         library_ids: Option<Vec<ID>>,
         title_search: Option<String>,
-        latest_decision_codes: Option<Vec<String>>,
         #[graphql(default = 50)] limit: i64,
         #[graphql(default = 0)] offset: i64,
     ) -> GqlResult<WantedItemsListPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let (items, total) = app
-            .list_wanted_items(
+        let (views, total) = app
+            .list_wanted_scope_views(
                 &actor,
-                WantedItemsQuery {
-                    statuses: statuses
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|value| value.as_str().to_string())
-                        .collect(),
-                    media_types: media_types
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|value| value.as_str().to_string())
-                        .collect(),
-                    title_id: title_id.map(String::from),
-                    library_ids: optional_ids_to_strings(library_ids).unwrap_or_default(),
-                    title_search,
-                    latest_decision_codes: latest_decision_codes.unwrap_or_default(),
-                    limit,
-                    offset,
-                },
+                wanted_kind_to_application(wanted_kind),
+                facet.map(MediaFacetValue::into_domain),
+                optional_ids_to_strings(library_ids).unwrap_or_default(),
+                title_search,
+                limit,
+                offset,
             )
             .await
             .map_err(to_gql_error)?;
+        let items = views
+            .into_iter()
+            .map(from_wanted_scope_view)
+            .collect::<scryer_application::AppResult<Vec<_>>>()
+            .map_err(to_gql_error)?;
+        let has_more = offset.saturating_add(items.len() as i64) < total;
         Ok(WantedItemsListPayload {
-            items: items
-                .into_iter()
-                .map(from_wanted_item)
-                .collect::<scryer_application::AppResult<Vec<_>>>()
-                .map_err(to_gql_error)?,
-            total,
+            items,
+            total_count: total,
+            has_more,
         })
     }
 
-    async fn cutoff_unmet_titles(
+    /// RFC 119 bounded view: a single page of cutoff-unmet (Upgrades) targets plus
+    /// the full unmet count and per-item convergence progress, so the UI paginates
+    /// instead of loading the whole set. The unpaged `cutoffUnmetTitles` query was
+    /// removed in this release (RFC 119 §6): the full-array browser load is retired.
+    async fn cutoff_unmet_titles_page(
         &self,
         ctx: &Context<'_>,
         facet: Option<MediaFacetValue>,
         library_ids: Option<Vec<ID>>,
-    ) -> GqlResult<Vec<CutoffUnmetItemPayload>> {
+        limit: i32,
+        offset: i32,
+    ) -> GqlResult<CutoffUnmetTitlesPagePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
-        let items = app
-            .list_cutoff_unmet_titles(
+        let (items, total) = app
+            .list_cutoff_unmet_titles_page_with_convergence(
                 &actor,
                 facet.map(MediaFacetValue::into_domain),
                 optional_ids_to_strings(library_ids),
+                limit.max(0) as usize,
+                offset.max(0) as usize,
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(items.into_iter().map(from_cutoff_unmet_item).collect())
+        let items: Vec<_> = items
+            .into_iter()
+            .map(|(item, convergence)| from_cutoff_unmet_item(item, convergence))
+            .collect();
+        let has_more = (offset.max(0) as usize).saturating_add(items.len()) < total;
+        Ok(CutoffUnmetTitlesPagePayload {
+            items,
+            total_count: total as i64,
+            has_more,
+        })
     }
 
     async fn title_acquisition_diagnostics(
@@ -1609,6 +2080,24 @@ impl AcquisitionQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(from_title_acquisition_diagnostics(diagnostics).map_err(to_gql_error)?)
+    }
+
+    /// Progress of an interactive acquisition-search job (RFC 119 §7.3), polled by
+    /// the UI alongside the `jobRunEvents` push. `None` when no such job exists.
+    async fn acquisition_search_job(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> GqlResult<Option<AcquisitionSearchJobPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let view = app
+            .acquisition_search_job(&actor, id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        view.map(from_acquisition_search_job_view)
+            .transpose()
+            .map_err(to_gql_error)
     }
 
     // ── Rule Sets ──────────────────────────────────────────────────────
@@ -1953,20 +2442,25 @@ impl UtilityQueries {
         })
     }
 
+    /// Browses local paths after the caller passes the library-settings read permission check.
+    ///
+    /// Directories are returned by default; set `includeFiles` to `true` to include regular files.
     async fn browse_path(
         &self,
         ctx: &Context<'_>,
         #[graphql(default_with = "String::from(\"/\")")] path: String,
+        include_files: Option<bool>,
     ) -> GqlResult<Vec<DirectoryEntryPayload>> {
         require_library_settings_permission(ctx).await?;
         let read_dir = browse_path_read_dir(&path).map_err(to_gql_error)?;
         let mut entries: Vec<DirectoryEntryPayload> = Vec::new();
+        let include_files = include_files.unwrap_or(false);
         for entry in read_dir.flatten() {
             let ft = match entry.file_type() {
                 Ok(ft) => ft,
                 Err(_) => continue,
             };
-            if !ft.is_dir() {
+            if !(ft.is_dir() || include_files && ft.is_file()) {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -1977,6 +2471,7 @@ impl UtilityQueries {
             entries.push(DirectoryEntryPayload {
                 name,
                 path: full_path,
+                is_directory: ft.is_dir(),
             });
         }
         entries.sort_by_key(|a| a.name.to_lowercase());
@@ -2016,7 +2511,9 @@ impl UtilityQueries {
             .map_err(to_gql_error)?;
         downloads
             .into_iter()
-            .map(|d| {
+            .map(|listing| {
+                let score_percent = listing.score_percent;
+                let d = listing.download;
                 Ok(ExternalSubtitlePayload {
                     id: d.id.into(),
                     media_file_id: d.media_file_id.into(),
@@ -2028,6 +2525,7 @@ impl UtilityQueries {
                     provider_file_id: d.provider_file_id,
                     file_path: d.file_path,
                     score: d.score,
+                    score_percent,
                     hearing_impaired: d.hearing_impaired,
                     forced: d.forced,
                     ai_translated: d.ai_translated,

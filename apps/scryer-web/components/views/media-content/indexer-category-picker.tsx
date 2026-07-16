@@ -4,9 +4,10 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { resolveFloatingPanelPlacement } from "@/lib/floating-panel";
+import { selectorId } from "@/lib/utils/dom-ids";
 import { ChevronDown } from "lucide-react";
 
-export type ViewCategoryId = "movie" | "series" | "anime";
+export type ViewCategoryId = "MOVIE" | "SERIES" | "ANIME";
 
 export type IndexerCategoryDefinition = {
   code: string;
@@ -95,9 +96,9 @@ export const INDEXER_CATEGORY_GROUPS_BY_SCOPE: Record<
   ViewCategoryId,
   Array<"movies" | "series" | "other">
 > = {
-  movie: ["movies", "other"],
-  series: ["series", "other"],
-  anime: ["series", "other"],
+  MOVIE: ["movies", "other"],
+  SERIES: ["series", "other"],
+  ANIME: ["series", "other"],
 };
 
 export function sortCategoryCodes(values: string[]): string[] {
@@ -159,6 +160,7 @@ type IndexerCategoryPickerProps = {
   disabled: boolean;
   triggerId?: string;
   panelId?: string;
+  categoryIdPrefix?: string;
   categoriesLabel?: string;
   onChange: (categories: string[]) => void;
 };
@@ -183,6 +185,7 @@ export const IndexerCategoryPicker = React.memo(function IndexerCategoryPicker({
   disabled,
   triggerId,
   panelId,
+  categoryIdPrefix,
   onChange,
   categoriesLabel,
 }: IndexerCategoryPickerProps) {
@@ -308,6 +311,11 @@ export const IndexerCategoryPicker = React.memo(function IndexerCategoryPicker({
                 <label className="mb-1 flex items-center justify-between rounded-md px-2 py-1 text-sm capitalize text-foreground hover:bg-accent/60">
                   <span className="flex items-center gap-2">
                     <Checkbox
+                      id={
+                        categoryIdPrefix
+                          ? selectorId(categoryIdPrefix, group.code)
+                          : undefined
+                      }
                       checked={selectedSet.has(group.code)}
                       onCheckedChange={() => toggleCategoryHeader(groupKey)}
                       aria-label={`${t("indexerCategory.labelCategory")}: ${t(group.labelKey)} ${group.code}`}
@@ -315,7 +323,7 @@ export const IndexerCategoryPicker = React.memo(function IndexerCategoryPicker({
                     />
                     {t(group.labelKey)}
                   </span>
-                  <span className="text-xs font-mono text-muted-foreground">{group.code}</span>
+                  <span className="text-xs font-[var(--font-code)] text-muted-foreground">{group.code}</span>
                 </label>
                 <div className="space-y-1 pl-3">
                   {group.categories.map((category) => (
@@ -325,6 +333,11 @@ export const IndexerCategoryPicker = React.memo(function IndexerCategoryPicker({
                     >
                       <span className="flex items-center gap-2 text-foreground">
                         <Checkbox
+                          id={
+                            categoryIdPrefix
+                              ? selectorId(categoryIdPrefix, category.code)
+                              : undefined
+                          }
                           checked={selectedSet.has(category.code)}
                           onCheckedChange={() => toggleCategory(category.code)}
                           aria-label={`${t("indexerCategory.labelCategory")}: ${t(category.labelKey)} ${category.code}`}
@@ -332,7 +345,7 @@ export const IndexerCategoryPicker = React.memo(function IndexerCategoryPicker({
                         />
                         {t(category.labelKey)}
                       </span>
-                      <span className="text-xs font-mono text-muted-foreground">{category.code}</span>
+                      <span className="text-xs font-[var(--font-code)] text-muted-foreground">{category.code}</span>
                     </label>
                   ))}
                 </div>

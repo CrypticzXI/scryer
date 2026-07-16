@@ -43,15 +43,20 @@ fn plugin_http_client(profile: PluginHttpClientProfile) -> AppResult<&'static Ou
 }
 fn map_plugin_outbound_error(label: &str, error: OutboundHttpError) -> AppError {
     match error {
-        OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
-            match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
+        OutboundHttpError::RateLimited(rate_limited) => {
+            let retry_after = rate_limited.retry_after.filter(|delay| !delay.is_zero());
+            AppError::rate_limited_temporary_unavailable(
+                match retry_after {
                 Some(delay) => format!(
                     "failed to download {label}: rate limited, retry after {}s",
                     delay.as_secs()
                 ),
                 None => format!("failed to download {label}: rate limited"),
             },
-        ),
+                retry_after,
+                RateLimitCooldownAction::AlreadyRecorded,
+            )
+        }
         OutboundHttpError::Transport { source, .. } => {
             AppError::Repository(format!("failed to download {label}: {source}"))
         }

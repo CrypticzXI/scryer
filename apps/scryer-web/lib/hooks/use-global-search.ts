@@ -39,6 +39,7 @@ import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
 import type { AuthUser } from "@/lib/hooks/use-auth";
 import {
+  authorizationCacheSignature,
   hasAnyLibraryPermission,
   LIBRARY_PERMISSIONS,
 } from "@/lib/utils/permissions";
@@ -51,12 +52,12 @@ export type CatalogQualityProfileOption = {
 };
 
 export type MetadataCatalogMonitorType =
-  | "monitored"
-  | "unmonitored"
-  | "futureEpisodes"
-  | "missingAndFutureEpisodes"
-  | "allEpisodes"
-  | "none";
+  | "MONITORED"
+  | "UNMONITORED"
+  | "FUTURE_EPISODES"
+  | "MISSING_AND_FUTURE_EPISODES"
+  | "ALL_EPISODES"
+  | "NONE";
 
 export type { RootFolderOption } from "@/lib/types/titles";
 import type { LibraryRecord, RootFolderOption } from "@/lib/types/titles";
@@ -85,6 +86,14 @@ export type AnimeCatalogDefaults = {
 
 function isMetadataEmpty(results: MetadataSearchResults): boolean {
   return Object.values(results).every((arr) => arr.length === 0);
+}
+
+function hasOpenDialogContent(): boolean {
+  if (typeof document === "undefined") {
+    return false;
+  }
+
+  return document.querySelector("[data-slot='dialog-content'][data-state='open']") !== null;
 }
 
 function normalizeOrderedLookupValues(values: string[]): string[] {
@@ -171,6 +180,18 @@ function sameExternalIds(
   );
 }
 
+function sameStringList(
+  previous: string[] | null | undefined,
+  next: string[] | null | undefined,
+): boolean {
+  const previousItems = previous ?? [];
+  const nextItems = next ?? [];
+  return (
+    previousItems.length === nextItems.length &&
+    previousItems.every((item, index) => item === nextItems[index])
+  );
+}
+
 function sameTitleList(
   previous: TitleRecord[],
   next: TitleRecord[],
@@ -184,12 +205,29 @@ function sameTitleList(
         item.id === nextItem.id &&
         item.name === nextItem.name &&
         item.facet === nextItem.facet &&
+        item.libraryId === nextItem.libraryId &&
         item.monitored === nextItem.monitored &&
+        sameStringList(item.tags, nextItem.tags) &&
+        (item.libraryName ?? null) === (nextItem.libraryName ?? null) &&
+        (item.librarySlug ?? null) === (nextItem.librarySlug ?? null) &&
         (item.slug ?? null) === (nextItem.slug ?? null) &&
+        (item.sortTitle ?? null) === (nextItem.sortTitle ?? null) &&
         (item.year ?? null) === (nextItem.year ?? null) &&
         (item.posterUrl ?? null) === (nextItem.posterUrl ?? null) &&
         (item.posterSourceUrl ?? null) === (nextItem.posterSourceUrl ?? null) &&
+        (item.rootFolderId ?? null) === (nextItem.rootFolderId ?? null) &&
+        (item.rootFolderPath ?? null) === (nextItem.rootFolderPath ?? null) &&
+        (item.qualityTier ?? null) === (nextItem.qualityTier ?? null) &&
+        (item.currentQualityTier ?? null) ===
+          (nextItem.currentQualityTier ?? null) &&
+        (item.sizeBytes ?? null) === (nextItem.sizeBytes ?? null) &&
+        (item.episodesOwned ?? null) === (nextItem.episodesOwned ?? null) &&
+        (item.episodesMonitored ?? null) ===
+          (nextItem.episodesMonitored ?? null) &&
+        (item.episodesTotal ?? null) === (nextItem.episodesTotal ?? null) &&
+        (item.contentStatus ?? null) === (nextItem.contentStatus ?? null) &&
         (item.metadataFetchedAt ?? null) === (nextItem.metadataFetchedAt ?? null) &&
+        (item.createdAt ?? null) === (nextItem.createdAt ?? null) &&
         sameExternalIds(item.externalIds, nextItem.externalIds)
       );
     })
@@ -210,7 +248,8 @@ function sameCatalogLookup(
 
 const AUTOCOMPLETE_MIN_CHARS = 2;
 const AUTOCOMPLETE_DEBOUNCE_MS = 250;
-const AUTOCOMPLETE_LIMIT = 10;
+const AUTOCOMPLETE_LIMIT = 20;
+const EMPTY_QUERY_CATALOG_LIMIT = 12;
 
 type UseGlobalSearchArgs = {
   authenticatedUser: AuthUser;
@@ -229,13 +268,14 @@ export interface UseGlobalSearchResult {
   metadataSearchLoading: boolean;
   tvdbCandidates: MetadataTvdbSearchItem[];
   runTvdbSearch: (query: string) => Promise<MetadataTvdbSearchItem[]>;
-  forceSearchGlobal: () => Promise<void>;
+  forceSearchGlobal: (queryOverride?: string) => Promise<void>;
   setTvdbCandidates: (value: MetadataTvdbSearchItem[]) => void;
   catalogSearchResults: TitleRecord[];
   metadataSearchResults: MetadataSearchResults;
   isGlobalSearchPanelOpen: boolean;
   openGlobalSearchPanel: (force?: boolean) => void;
   closeGlobalSearchPanel: () => void;
+  clearGlobalSearch: () => void;
   resetGlobalSearch: () => void;
   catalogQualityProfileOptions: CatalogQualityProfileOption[];
   catalogConfigLoading: boolean;
@@ -266,7 +306,7 @@ export interface UseGlobalSearchResult {
 }
 
 function monitorTypeToMonitored(monitorType: MetadataCatalogMonitorType): boolean {
-  return monitorType !== "unmonitored" && monitorType !== "none";
+  return monitorType !== "UNMONITORED" && monitorType !== "NONE";
 }
 
 function normalizeCatalogAddRequestKey(
@@ -292,13 +332,59 @@ function normalizeCatalogAddRequestKey(
   return `${facet}|${normalizedIds}`;
 }
 
+function metadataResultExternalIds(result: MetadataTvdbSearchItem): ExternalId[] {
+  const tvdbId = String(result.tvdbId).trim();
+  const imdbId = result.imdbId?.trim();
+  const seen = new Set<string>();
+  const ids: ExternalId[] = [];
+  for (const externalId of [
+    ...(result.externalIds ?? []),
+    ...(tvdbId ? [{ source: "tvdb", value: tvdbId }] : []),
+    ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
+  ]) {
+    const source = externalId.source.trim().toLowerCase();
+    const value = externalId.value.trim();
+    const key = `${source}:${value}`;
+    if (!source || !value || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    ids.push({ source, value });
+  }
+  return ids;
+}
+
 function librariesByFacetFromList(libraries: LibraryRecord[]): Record<Facet, LibraryRecord[]> {
   return libraries.reduce(
     (acc: Record<Facet, LibraryRecord[]>, library: LibraryRecord) => {
       acc[library.facet]?.push(library);
       return acc;
     },
-    { movie: [], series: [], anime: [] },
+    { MOVIE: [], SERIES: [], ANIME: [] },
+  );
+}
+
+const EMPTY_LIBRARIES_BY_FACET: Record<Facet, LibraryRecord[]> = {
+  MOVIE: [],
+  SERIES: [],
+  ANIME: [],
+};
+
+function sameRootFolderOptions(
+  previous: RootFolderOption[],
+  next: RootFolderOption[],
+): boolean {
+  return (
+    previous.length === next.length &&
+    previous.every((entry, index) => {
+      const candidate = next[index];
+      return (
+        candidate !== undefined &&
+        (entry.id ?? null) === (candidate.id ?? null) &&
+        entry.path === candidate.path &&
+        entry.isDefault === candidate.isDefault
+      );
+    })
   );
 }
 
@@ -306,7 +392,7 @@ function sameLibrariesByFacet(
   previous: Record<Facet, LibraryRecord[]>,
   next: Record<Facet, LibraryRecord[]>,
 ): boolean {
-  return (["movie", "series", "anime"] as Facet[]).every((facet) => {
+  return (["MOVIE", "SERIES", "ANIME"] as Facet[]).every((facet) => {
     const previousFacetLibraries = previous[facet];
     const nextFacetLibraries = next[facet];
     return (
@@ -318,11 +404,12 @@ function sameLibrariesByFacet(
           entry.id === candidate.id &&
           entry.name === candidate.name &&
           entry.slug === candidate.slug &&
+          entry.isDefault === candidate.isDefault &&
           (entry.requestQualityProfileDefaultId ?? null) ===
             (candidate.requestQualityProfileDefaultId ?? null) &&
           (entry.requestQualityProfileIds ?? []).join("|") ===
             (candidate.requestQualityProfileIds ?? []).join("|") &&
-          entry.roots.length === candidate.roots.length
+          sameRootFolderOptions(entry.roots, candidate.roots)
         );
       })
     );
@@ -337,9 +424,14 @@ export function useGlobalSearch({
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const catalogAuthorizationSignature = authorizationCacheSignature(authenticatedUser);
   const canManageTitle = hasAnyLibraryPermission(
     authenticatedUser,
     LIBRARY_PERMISSIONS.manageTitles,
+  );
+  const canViewCatalog = hasAnyLibraryPermission(
+    authenticatedUser,
+    LIBRARY_PERMISSIONS.view,
   );
   const [queueFacet, setQueueFacet] = useState<Facet>(initialQueueFacet);
   const catalogChangeSignal = 0;
@@ -394,26 +486,48 @@ export function useGlobalSearch({
   const [isGlobalSearchPanelOpen, setIsGlobalSearchPanelOpen] = useState(false);
   const [catalogConfigLoading, setCatalogConfigLoading] = useState(false);
   const [rootFoldersByFacet, setRootFoldersByFacet] = useState<Record<Facet, RootFolderOption[]>>(
-    () => ({ movie: [], series: [], anime: [] }),
+    () => ({ MOVIE: [], SERIES: [], ANIME: [] }),
   );
   const [librariesByFacet, setLibrariesByFacet] = useState<Record<Facet, LibraryRecord[]>>(
-    () => ({ movie: [], series: [], anime: [] }),
+    () => ({ MOVIE: [], SERIES: [], ANIME: [] }),
   );
   const [requestableLibrariesByFacet, setRequestableLibrariesByFacet] = useState<
     Record<Facet, LibraryRecord[]>
-  >(() => ({ movie: [], series: [], anime: [] }));
+  >(() => ({ MOVIE: [], SERIES: [], ANIME: [] }));
+  const [catalogConfigAuthorizationSignature, setCatalogConfigAuthorizationSignature] =
+    useState<string | null>(null);
+  const catalogConfigMatchesAuthorization =
+    catalogConfigAuthorizationSignature === catalogAuthorizationSignature;
+  const visibleLibrariesByFacet = catalogConfigMatchesAuthorization
+    ? librariesByFacet
+    : EMPTY_LIBRARIES_BY_FACET;
+  const visibleRequestableLibrariesByFacet = catalogConfigMatchesAuthorization
+    ? requestableLibrariesByFacet
+    : EMPTY_LIBRARIES_BY_FACET;
   const forcedOpenRef = useRef(false);
   const autocompleteRequestId = useRef(0);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
+  const autocompleteDebounceTimerRef = useRef<number | null>(null);
+  const skipNextAutocompleteQueryRef = useRef<string | null>(null);
   const pendingCatalogAddKeysRef = useRef<Set<string>>(new Set());
   const pendingRequestKeysRef = useRef<Set<string>>(new Set());
   const catalogConfigRefreshPromiseRef = useRef<{
     mode: CatalogConfigAccessMode;
+    authorizationSignature: string;
     promise: Promise<void>;
   } | null>(null);
   const catalogConfigRefreshTokenRef = useRef(0);
+  const catalogConfigLoadedRef = useRef(false);
+  const catalogAuthorizationSignatureRef = useRef(catalogAuthorizationSignature);
+  useEffect(() => {
+    catalogAuthorizationSignatureRef.current = catalogAuthorizationSignature;
+  }, [catalogAuthorizationSignature]);
 
   const cancelAutocomplete = useCallback(() => {
+    if (autocompleteDebounceTimerRef.current !== null) {
+      window.clearTimeout(autocompleteDebounceTimerRef.current);
+      autocompleteDebounceTimerRef.current = null;
+    }
     autocompleteRequestId.current += 1;
     autocompleteAbortRef.current?.abort();
     autocompleteAbortRef.current = null;
@@ -429,7 +543,7 @@ export function useGlobalSearch({
 
   const resolveDefaultQualityProfileIdForFacet = useCallback(
     (facet: Facet) => {
-      const scopeId = facetById(facet)?.scopeId ?? "movie";
+      const scopeId = facetById(facet)?.scopeId ?? "MOVIE";
       const overrideProfileId = coerceProfileSetting(
         categoryQualityProfileOverrides[scopeId],
       );
@@ -462,13 +576,14 @@ export function useGlobalSearch({
 
   const isCatalogConfigReady = useCallback(
     (facet: Facet) =>
-      requestableLibrariesByFacet[facet].length > 0 ||
+      visibleRequestableLibrariesByFacet[facet].length > 0 ||
       (catalogQualityProfileOptions.length > 0 &&
-        (librariesByFacet[facet].length > 0 || rootFoldersByFacet[facet].length > 0)),
+        (visibleLibrariesByFacet[facet].length > 0 ||
+          rootFoldersByFacet[facet].length > 0)),
     [
       catalogQualityProfileOptions,
-      librariesByFacet,
-      requestableLibrariesByFacet,
+      visibleLibrariesByFacet,
+      visibleRequestableLibrariesByFacet,
       rootFoldersByFacet,
     ],
   );
@@ -477,14 +592,19 @@ export function useGlobalSearch({
     const accessMode: CatalogConfigAccessMode = canManageTitle
       ? "manager"
       : "requester";
-    if (catalogConfigRefreshPromiseRef.current?.mode === accessMode) {
+    if (
+      catalogConfigRefreshPromiseRef.current?.mode === accessMode &&
+      catalogConfigRefreshPromiseRef.current.authorizationSignature ===
+        catalogAuthorizationSignature
+    ) {
       return catalogConfigRefreshPromiseRef.current.promise;
     }
 
     const refreshToken = catalogConfigRefreshTokenRef.current + 1;
     catalogConfigRefreshTokenRef.current = refreshToken;
     const isCurrentRefresh = () =>
-      catalogConfigRefreshTokenRef.current === refreshToken;
+      catalogConfigRefreshTokenRef.current === refreshToken &&
+      catalogAuthorizationSignatureRef.current === catalogAuthorizationSignature;
 
     const refreshPromise = (async () => {
       setCatalogConfigLoading(true);
@@ -498,6 +618,8 @@ export function useGlobalSearch({
           .toPromise();
         if (error) throw error;
         if (!isCurrentRefresh()) return;
+        catalogConfigLoadedRef.current = true;
+        setCatalogConfigAuthorizationSignature(catalogAuthorizationSignature);
 
         const parsedProfiles = (data.qualityProfileSettings?.profiles ?? []).map(
           (profile: { id: string; name: string }) => ({
@@ -527,9 +649,9 @@ export function useGlobalSearch({
         const nextOverrides: Record<ViewCategoryId, string> =
           qualityProfileSettingsToCategoryOverrides(data.qualityProfileSettings);
         setCategoryQualityProfileOverrides((previous) =>
-          previous.movie === nextOverrides.movie &&
-          previous.series === nextOverrides.series &&
-          previous.anime === nextOverrides.anime
+          previous.MOVIE === nextOverrides.MOVIE &&
+          previous.SERIES === nextOverrides.SERIES &&
+          previous.ANIME === nextOverrides.ANIME
             ? previous
             : nextOverrides,
         );
@@ -547,12 +669,12 @@ export function useGlobalSearch({
           );
 
           const nextRootFolders: Record<Facet, RootFolderOption[]> = {
-            movie: data.movieSettings?.rootFolders ?? [],
-            series: data.seriesSettings?.rootFolders ?? [],
-            anime: data.animeSettings?.rootFolders ?? [],
+            MOVIE: data.movieSettings?.rootFolders ?? [],
+            SERIES: data.seriesSettings?.rootFolders ?? [],
+            ANIME: data.animeSettings?.rootFolders ?? [],
           };
           setRootFoldersByFacet((previous) => {
-            const same = (["movie", "series", "anime"] as Facet[]).every((f) => {
+            const same = (["MOVIE", "SERIES", "ANIME"] as Facet[]).every((f) => {
               const prev = previous[f];
               const next = nextRootFolders[f];
               return prev.length === next.length && prev.every((e, i) => e.path === next[i]?.path && e.isDefault === next[i]?.isDefault);
@@ -592,6 +714,8 @@ export function useGlobalSearch({
               ? previous
               : nextRequestableLibrariesByFacet;
           });
+          catalogConfigLoadedRef.current = true;
+          setCatalogConfigAuthorizationSignature(catalogAuthorizationSignature);
         } catch {
           // ignore requestable library fallback failures here; search remains functional
         }
@@ -599,7 +723,11 @@ export function useGlobalSearch({
       } finally {
         if (isCurrentRefresh()) {
           setCatalogConfigLoading(false);
-          if (catalogConfigRefreshPromiseRef.current?.mode === accessMode) {
+          if (
+            catalogConfigRefreshPromiseRef.current?.mode === accessMode &&
+            catalogConfigRefreshPromiseRef.current.authorizationSignature ===
+              catalogAuthorizationSignature
+          ) {
             catalogConfigRefreshPromiseRef.current = null;
           }
         }
@@ -608,10 +736,11 @@ export function useGlobalSearch({
 
     catalogConfigRefreshPromiseRef.current = {
       mode: accessMode,
+      authorizationSignature: catalogAuthorizationSignature,
       promise: refreshPromise,
     };
     return refreshPromise;
-  }, [canManageTitle, client]);
+  }, [canManageTitle, catalogAuthorizationSignature, client]);
 
   const ensureCatalogConfigReady = useCallback(
     async (facet: Facet) => {
@@ -622,6 +751,32 @@ export function useGlobalSearch({
     },
     [isCatalogConfigReady, refreshCatalogQualityProfileState],
   );
+
+  const primeCatalogConfigForMetadataActions = useCallback(async () => {
+    if (
+      catalogConfigLoadedRef.current &&
+      catalogConfigMatchesAuthorization
+    ) {
+      return;
+    }
+
+    try {
+      await refreshCatalogQualityProfileState();
+    } catch {
+      // Search should still render results if config priming unexpectedly fails.
+    }
+  }, [catalogConfigMatchesAuthorization, refreshCatalogQualityProfileState]);
+
+  useEffect(() => {
+    catalogConfigRefreshTokenRef.current += 1;
+    catalogConfigRefreshPromiseRef.current = null;
+    catalogConfigLoadedRef.current = false;
+    setCatalogConfigAuthorizationSignature(null);
+    setCatalogConfigLoading(false);
+    setRootFoldersByFacet({ MOVIE: [], SERIES: [], ANIME: [] });
+    setLibrariesByFacet({ MOVIE: [], SERIES: [], ANIME: [] });
+    setRequestableLibrariesByFacet({ MOVIE: [], SERIES: [], ANIME: [] });
+  }, [catalogAuthorizationSignature]);
 
   useEffect(() => {
     void refreshCatalogQualityProfileState();
@@ -651,6 +806,7 @@ export function useGlobalSearch({
       },
       [searchSettingsKeys, refreshCatalogQualityProfileState],
     ),
+    { enabled: canViewCatalog },
   );
 
   const isMetadataSearchResultInAnyCatalog = useCallback(
@@ -681,7 +837,7 @@ export function useGlobalSearch({
       }
 
       try {
-        if (title.facet === "movie") {
+        if (title.facet === "MOVIE") {
           const { data, error } = await client.query(metadataMovieQuery, {
             input: {
               tvdbId,
@@ -713,6 +869,18 @@ export function useGlobalSearch({
     [],
   );
   const emptyCatalogTitlesByTvdbId = useMemo<Record<string, TitleRecord>>(() => ({}), []);
+
+  useEffect(() => {
+    if (canViewCatalog) {
+      return;
+    }
+
+    cancelAutocomplete();
+    setCatalogSearchResults((previous) => (previous.length === 0 ? previous : []));
+    setCatalogTitlesByTvdbId((previous) =>
+      Object.keys(previous).length === 0 ? previous : emptyCatalogTitlesByTvdbId,
+    );
+  }, [canViewCatalog, cancelAutocomplete, emptyCatalogTitlesByTvdbId]);
 
   const lookupCatalogTitlesByExternalIds = useCallback(
     async (
@@ -762,11 +930,13 @@ export function useGlobalSearch({
           (searchData.searchMetadata || []) as MetadataTvdbSearchItem[],
           query,
         );
-        const catalogLookup = buildCatalogTitleLookupByTvdbId(
-          await lookupCatalogTitlesByTvdbIds(
-            rankedMatches.map((item) => metadataResultTvdbId(item)),
-          ),
-        );
+        const catalogLookup = canViewCatalog
+          ? buildCatalogTitleLookupByTvdbId(
+              await lookupCatalogTitlesByTvdbIds(
+                rankedMatches.map((item) => metadataResultTvdbId(item)),
+              ),
+            )
+          : {};
         const matches = rankedMatches.filter(
           (item: MetadataTvdbSearchItem) => !isMetadataResultCataloged(catalogLookup, item),
         );
@@ -781,6 +951,7 @@ export function useGlobalSearch({
     },
     [
       client,
+      canViewCatalog,
       lookupCatalogTitlesByTvdbIds,
       mapFacetToTvdbType,
       queueFacet,
@@ -813,7 +984,7 @@ export function useGlobalSearch({
 
       const requestId = ++autocompleteRequestId.current;
       setSearching(true);
-      setCatalogSearchLoading(true);
+      setCatalogSearchLoading(canViewCatalog);
       setMetadataSearchLoading(true);
 
       // Abort previous in-flight autocomplete HTTP requests so cancellation
@@ -824,34 +995,42 @@ export function useGlobalSearch({
       const abortableFetch = makeAbortableFetch(abortController.signal);
       let directCatalogEntries: TitleRecord[] = [];
       let promotedCatalogEntries: TitleRecord[] = [];
+      if (!canViewCatalog) {
+        setCatalogSearchResults((previous) => (previous.length === 0 ? previous : []));
+        setCatalogTitlesByTvdbId((previous) =>
+          Object.keys(previous).length === 0 ? previous : emptyCatalogTitlesByTvdbId,
+        );
+      }
 
       // Fire both queries in parallel but render each result as it arrives
       // so the fast catalog query populates immediately while the metadata
       // spinner keeps spinning.
 
-      const catalogPromise = client.query(catalogSearchTitlesQuery, {
-        query: trimmed,
-        facet: null,
-        limit: AUTOCOMPLETE_LIMIT,
-      }, { fetch: abortableFetch }).toPromise()
-        .then(async ({ data, error }) => {
-          if (error) throw error;
-          if (requestId !== autocompleteRequestId.current) return;
-          const catalogEntries = (data?.titles?.items ?? []) as TitleRecord[];
-          const enriched = await Promise.all(
-            catalogEntries.map((title: TitleRecord) => resolveCatalogPosterUrl(title)),
-          );
-          if (requestId !== autocompleteRequestId.current) return;
-          directCatalogEntries = enriched;
-          const next = directCatalogEntries.slice(0, AUTOCOMPLETE_LIMIT);
-          setCatalogSearchResults((previous) =>
-            sameTitleList(previous, next) ? previous : next,
-          );
-        })
-        .finally(() => {
-          if (requestId !== autocompleteRequestId.current) return;
-          setCatalogSearchLoading(false);
-        });
+      const catalogPromise = canViewCatalog
+        ? client.query(catalogSearchTitlesQuery, {
+            query: trimmed,
+            facet: null,
+            limit: AUTOCOMPLETE_LIMIT,
+          }, { fetch: abortableFetch }).toPromise()
+            .then(async ({ data, error }) => {
+              if (error) throw error;
+              if (requestId !== autocompleteRequestId.current) return;
+              const catalogEntries = (data?.titles?.items ?? []) as TitleRecord[];
+              const enriched = await Promise.all(
+                catalogEntries.map((title: TitleRecord) => resolveCatalogPosterUrl(title)),
+              );
+              if (requestId !== autocompleteRequestId.current) return;
+              directCatalogEntries = enriched;
+              const next = directCatalogEntries.slice(0, AUTOCOMPLETE_LIMIT);
+              setCatalogSearchResults((previous) =>
+                sameTitleList(previous, next) ? previous : next,
+              );
+            })
+            .finally(() => {
+              if (requestId !== autocompleteRequestId.current) return;
+              setCatalogSearchLoading(false);
+            })
+        : Promise.resolve();
 
       const metadataPromise = client.query(searchMetadataMultiQuery, {
         query: trimmed,
@@ -874,31 +1053,42 @@ export function useGlobalSearch({
             (multi.series || []) as MetadataTvdbSearchItem[],
             trimmed,
           );
-          promotedCatalogEntries = await lookupCatalogTitlesByTvdbIds(
-            [
-              ...rankedMovies.map((item) => metadataResultTvdbId(item)),
-              ...rankedAnime.map((item) => metadataResultTvdbId(item)),
-              ...rankedSeries.map((item) => metadataResultTvdbId(item)),
-            ],
-            abortableFetch,
-          );
+          if (canViewCatalog) {
+            promotedCatalogEntries = await lookupCatalogTitlesByTvdbIds(
+              [
+                ...rankedMovies.map((item) => metadataResultTvdbId(item)),
+                ...rankedAnime.map((item) => metadataResultTvdbId(item)),
+                ...rankedSeries.map((item) => metadataResultTvdbId(item)),
+              ],
+              abortableFetch,
+            );
+          }
           if (requestId !== autocompleteRequestId.current) return;
           const nextCatalogLookup = buildCatalogTitleLookupByTvdbId(promotedCatalogEntries);
-          setCatalogTitlesByTvdbId((previous) =>
-            sameCatalogLookup(previous, nextCatalogLookup) ? previous : nextCatalogLookup,
-          );
-          const movieResults = filterCatalogedMetadataResults(rankedMovies, nextCatalogLookup);
-          const animeResults = filterCatalogedMetadataResults(rankedAnime, nextCatalogLookup);
+          if (canViewCatalog) {
+            setCatalogTitlesByTvdbId((previous) =>
+              sameCatalogLookup(previous, nextCatalogLookup) ? previous : nextCatalogLookup,
+            );
+          }
+          const movieResults = canViewCatalog
+            ? filterCatalogedMetadataResults(rankedMovies, nextCatalogLookup)
+            : rankedMovies;
+          const animeResults = canViewCatalog
+            ? filterCatalogedMetadataResults(rankedAnime, nextCatalogLookup)
+            : rankedAnime;
           const animeTvdbIds = new Set(animeResults.map((item) => metadataResultTvdbId(item)));
-          const seriesResults = filterCatalogedMetadataResults(
-            rankedSeries,
-            nextCatalogLookup,
+          const seriesResults = (
+            canViewCatalog
+              ? filterCatalogedMetadataResults(rankedSeries, nextCatalogLookup)
+              : rankedSeries
           ).filter((item) => !animeTvdbIds.has(metadataResultTvdbId(item)));
           const nextMetadata: MetadataSearchResults = {
             movie: movieResults,
             series: seriesResults,
             anime: animeResults,
           };
+          await primeCatalogConfigForMetadataActions();
+          if (requestId !== autocompleteRequestId.current) return;
           setMetadataSearchResults((previous) => {
             const unchanged = Object.keys(nextMetadata).every((key) => {
               const prev = previous[key] ?? [];
@@ -936,13 +1126,14 @@ export function useGlobalSearch({
         promotedCatalogEntries = [];
       }
 
-      const mergedCatalogEntries = mergeCatalogResults(
-        promotedCatalogEntries,
-        directCatalogEntries,
-      );
-      const nextCatalogResults = (
-        await Promise.all(mergedCatalogEntries.map((title) => resolveCatalogPosterUrl(title)))
-      ).slice(0, AUTOCOMPLETE_LIMIT);
+      const mergedCatalogEntries = canViewCatalog
+        ? mergeCatalogResults(promotedCatalogEntries, directCatalogEntries)
+        : [];
+      const nextCatalogResults = canViewCatalog
+        ? (
+            await Promise.all(mergedCatalogEntries.map((title) => resolveCatalogPosterUrl(title)))
+          ).slice(0, AUTOCOMPLETE_LIMIT)
+        : [];
       if (requestId !== autocompleteRequestId.current) return;
       setCatalogSearchResults((previous) =>
         sameTitleList(previous, nextCatalogResults) ? previous : nextCatalogResults,
@@ -952,9 +1143,11 @@ export function useGlobalSearch({
     },
     [
       client,
+      canViewCatalog,
       emptyCatalogTitlesByTvdbId,
       emptyMetadataSearchResults,
       lookupCatalogTitlesByTvdbIds,
+      primeCatalogConfigForMetadataActions,
       resolveCatalogPosterUrl,
       setGlobalStatus,
       sortByRelevance,
@@ -963,12 +1156,63 @@ export function useGlobalSearch({
     ],
   );
 
+  const runEmptyCatalogPreload = useCallback(async () => {
+    if (!canViewCatalog) {
+      setCatalogSearchResults((previous) => (previous.length === 0 ? previous : []));
+      setCatalogSearchLoading(false);
+      setMetadataSearchLoading(false);
+      setSearching(false);
+      return;
+    }
+
+    const requestId = ++autocompleteRequestId.current;
+    setSearching(true);
+    setCatalogSearchLoading(true);
+    setMetadataSearchLoading(false);
+
+    autocompleteAbortRef.current?.abort();
+    const abortController = new AbortController();
+    autocompleteAbortRef.current = abortController;
+    const abortableFetch = makeAbortableFetch(abortController.signal);
+
+    try {
+      const { data, error } = await client.query(catalogSearchTitlesQuery, {
+        query: null,
+        facet: null,
+        limit: EMPTY_QUERY_CATALOG_LIMIT,
+      }, { fetch: abortableFetch }).toPromise();
+      if (error) throw error;
+      if (requestId !== autocompleteRequestId.current) return;
+
+      const next = ((data?.titles?.items ?? []) as TitleRecord[]).slice(0, EMPTY_QUERY_CATALOG_LIMIT);
+      setCatalogSearchResults((previous) =>
+        sameTitleList(previous, next) ? previous : next,
+      );
+      setGlobalStatus(t("label.ready"));
+    } catch (error) {
+      if (requestId !== autocompleteRequestId.current || isAbortError(error)) return;
+      const msg = error instanceof Error ? error.message : t("status.apiError");
+      setGlobalStatus(msg);
+      setCatalogSearchResults((previous) => (previous.length === 0 ? previous : []));
+    } finally {
+      if (requestId === autocompleteRequestId.current) {
+        setCatalogSearchLoading(false);
+        setSearching(false);
+      }
+    }
+  }, [canViewCatalog, client, setGlobalStatus, t]);
+
   useEffect(() => {
     const trimmed = globalSearch.trim();
 
+    if (skipNextAutocompleteQueryRef.current === trimmed) {
+      skipNextAutocompleteQueryRef.current = null;
+      return;
+    }
+    skipNextAutocompleteQueryRef.current = null;
+
     if (trimmed.length < AUTOCOMPLETE_MIN_CHARS) {
       cancelAutocomplete();
-      setCatalogSearchResults((previous) => (previous.length === 0 ? previous : []));
       setMetadataSearchResults((previous) => {
         if (previous.movie.length === 0 && previous.series.length === 0 && previous.anime.length === 0) {
           return previous;
@@ -978,6 +1222,16 @@ export function useGlobalSearch({
       setCatalogTitlesByTvdbId((previous) =>
         Object.keys(previous).length === 0 ? previous : emptyCatalogTitlesByTvdbId,
       );
+      if (
+        trimmed.length === 0 &&
+        isGlobalSearchPanelOpen &&
+        forcedOpenRef.current &&
+        canViewCatalog
+      ) {
+        void runEmptyCatalogPreload();
+      } else {
+        setCatalogSearchResults((previous) => (previous.length === 0 ? previous : []));
+      }
       // Don't auto-close when the panel was force-opened (mobile overlay).
       if (!forcedOpenRef.current) {
         setIsGlobalSearchPanelOpen((isOpen) => (isOpen ? false : isOpen));
@@ -986,17 +1240,25 @@ export function useGlobalSearch({
     }
 
     const debounceTimer = window.setTimeout(() => {
+      autocompleteDebounceTimerRef.current = null;
       void runMetadataAutocomplete(trimmed);
     }, AUTOCOMPLETE_DEBOUNCE_MS);
+    autocompleteDebounceTimerRef.current = debounceTimer;
 
     return () => {
       window.clearTimeout(debounceTimer);
+      if (autocompleteDebounceTimerRef.current === debounceTimer) {
+        autocompleteDebounceTimerRef.current = null;
+      }
     };
   }, [
     cancelAutocomplete,
+    canViewCatalog,
     emptyCatalogTitlesByTvdbId,
     emptyMetadataSearchResults,
     globalSearch,
+    isGlobalSearchPanelOpen,
+    runEmptyCatalogPreload,
     runMetadataAutocomplete,
   ]);
 
@@ -1022,8 +1284,7 @@ export function useGlobalSearch({
     setIsGlobalSearchPanelOpen(false);
   }, []);
 
-  const resetGlobalSearch = useCallback(() => {
-    forcedOpenRef.current = false;
+  const clearGlobalSearchState = useCallback(() => {
     cancelAutocomplete();
     setGlobalSearch("");
     setCatalogSearchResults((previous) => (previous.length === 0 ? previous : []));
@@ -1033,41 +1294,69 @@ export function useGlobalSearch({
     setCatalogTitlesByTvdbId((previous) =>
       Object.keys(previous).length === 0 ? previous : emptyCatalogTitlesByTvdbId,
     );
-    setIsGlobalSearchPanelOpen(false);
   }, [
     cancelAutocomplete,
     emptyCatalogTitlesByTvdbId,
     emptyMetadataSearchResults,
   ]);
 
+  const clearGlobalSearch = useCallback(() => {
+    forcedOpenRef.current = true;
+    clearGlobalSearchState();
+    setIsGlobalSearchPanelOpen(true);
+  }, [clearGlobalSearchState]);
+
+  const resetGlobalSearch = useCallback(() => {
+    forcedOpenRef.current = false;
+    clearGlobalSearchState();
+    setIsGlobalSearchPanelOpen(false);
+  }, [clearGlobalSearchState]);
+
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
-      if (event.key !== "/") {
-        return;
-      }
+      const key = event.key.toLowerCase();
+      const isSlashShortcut =
+        key === "/" && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+      const isCommandShortcut =
+        key === "k" && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey;
 
-      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+      if (!isSlashShortcut && !isCommandShortcut) {
         return;
       }
 
       const target = event.target as HTMLElement | null;
-      if (
+      const isTypingTarget =
         target?.tagName === "INPUT" ||
         target?.tagName === "TEXTAREA" ||
         target?.isContentEditable ||
-        target?.tagName === "SELECT"
-      ) {
+        target?.tagName === "SELECT";
+      if (isSlashShortcut && isTypingTarget) {
+        return;
+      }
+
+      if (hasOpenDialogContent()) {
+        event.preventDefault();
         return;
       }
 
       event.preventDefault();
-      globalSearchInputRef.current?.focus();
-      globalSearchInputRef.current?.select();
+      if (isCommandShortcut && isGlobalSearchPanelOpen) {
+        closeGlobalSearchPanel();
+        globalSearchInputRef.current?.blur();
+        return;
+      }
+
+      forcedOpenRef.current = true;
+      setIsGlobalSearchPanelOpen(true);
+      window.requestAnimationFrame(() => {
+        globalSearchInputRef.current?.focus();
+        globalSearchInputRef.current?.select();
+      });
     };
 
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
-  }, []);
+  }, [closeGlobalSearchPanel, isGlobalSearchPanelOpen]);
 
   const addMetadataSearchResultToCatalog = useCallback(
     async (
@@ -1091,12 +1380,7 @@ export function useGlobalSearch({
 
       const monitored = monitorTypeToMonitored(options.monitorType);
 
-      const tvdbId = String(result.tvdbId).trim();
-      const imdbId = result.imdbId?.trim();
-      const externalIds = [
-        ...(tvdbId ? [{ source: "tvdb", value: tvdbId }] : []),
-        ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
-      ];
+      const externalIds = metadataResultExternalIds(result);
       const requestKey = normalizeCatalogAddRequestKey(facet, externalIds);
       if (pendingCatalogAddKeysRef.current.has(requestKey)) {
         return null;
@@ -1114,10 +1398,10 @@ export function useGlobalSearch({
               qualityProfileId: qualityProfileId || undefined,
               rootFolderId: options.rootFolderId || undefined,
               monitorType: options.monitorType,
-              ...(facet === "movie"
+              ...(facet === "MOVIE"
                 ? {}
                 : { useSeasonFolders: options.seasonFolder }),
-              ...(facet === "anime"
+              ...(facet === "ANIME"
                 ? {
                     monitorSpecials: options.monitorSpecials !== false,
                     interSeasonMovies: options.interSeasonMovies !== false,
@@ -1125,7 +1409,7 @@ export function useGlobalSearch({
                 : {}),
             },
             externalIds,
-            ...(facet === "movie" && options.minAvailability ? { minAvailability: options.minAvailability } : {}),
+            ...(facet === "MOVIE" && options.minAvailability ? { minAvailability: options.minAvailability } : {}),
             year: result.year ?? undefined,
             overview: result.overview || undefined,
             sortTitle: result.sortTitle || undefined,
@@ -1176,12 +1460,7 @@ export function useGlobalSearch({
         return false;
       }
 
-      const tvdbId = String(result.tvdbId).trim();
-      const imdbId = result.imdbId?.trim();
-      const externalIds = [
-        ...(tvdbId ? [{ source: "tvdb", value: tvdbId }] : []),
-        ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
-      ];
+      const externalIds = metadataResultExternalIds(result);
       const requestKey = normalizeCatalogAddRequestKey(facet, externalIds);
       if (pendingRequestKeysRef.current.has(requestKey)) {
         return false;
@@ -1221,12 +1500,17 @@ export function useGlobalSearch({
   );
 
   /** Force-trigger global search (bypasses autocomplete min-char threshold). */
-  const forceSearchGlobal = useCallback(async () => {
-    const trimmed = globalSearch.trim();
+  const forceSearchGlobal = useCallback(async (queryOverride?: string) => {
+    const trimmed = (queryOverride ?? globalSearch).trim();
     if (!trimmed) return;
+    cancelAutocomplete();
+    if (queryOverride !== undefined && trimmed !== globalSearch.trim()) {
+      skipNextAutocompleteQueryRef.current = trimmed;
+      setGlobalSearch(trimmed);
+    }
     setIsGlobalSearchPanelOpen(true);
     await runMetadataAutocomplete(trimmed);
-  }, [globalSearch, runMetadataAutocomplete]);
+  }, [cancelAutocomplete, globalSearch, runMetadataAutocomplete]);
 
   return {
     globalSearch,
@@ -1244,6 +1528,7 @@ export function useGlobalSearch({
     isGlobalSearchPanelOpen,
     openGlobalSearchPanel,
     closeGlobalSearchPanel,
+    clearGlobalSearch,
     resetGlobalSearch,
     catalogQualityProfileOptions,
     catalogConfigLoading,
@@ -1255,8 +1540,8 @@ export function useGlobalSearch({
     requestMetadataSearchResult,
     isMetadataSearchResultInCatalog,
     rootFoldersByFacet,
-    librariesByFacet,
-    requestableLibrariesByFacet,
+    librariesByFacet: visibleLibrariesByFacet,
+    requestableLibrariesByFacet: visibleRequestableLibrariesByFacet,
     queueFacet,
     setQueueFacet,
     catalogChangeSignal,

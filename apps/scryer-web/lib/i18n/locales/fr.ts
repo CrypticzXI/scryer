@@ -72,8 +72,23 @@ const fr: LocaleDictionary = {
   "nav.settings": "Paramètres",
   "nav.library": "Bibliothèque",
   "nav.import": "Importer",
+  "nav.requests": "Demandes",
   "nav.system": "Système",
+  "nav.logs": "Journaux",
+  "nav.serviceLogs": "Journaux du service",
+  "nav.auditLogs": "Journaux d'audit",
+  "nav.usersAccess": "Utilisateurs et accès",
   "nav.group": "Navigation",
+  "nav.mobileTitle": "Navigation Scryer",
+  "nav.mobileDescription": "Navigation principale de Scryer",
+  "nav.mobileTrigger": "Ouvrir la navigation",
+  "nav.group.catalogs": "Catalogues",
+  "nav.group.requests": "Demandes",
+  "nav.group.automation": "Automatisation",
+  "nav.group.configuration": "Configuration",
+  "nav.group.integrations": "Intégrations",
+  "nav.group.system": "Système",
+  "nav.group.more": "Plus",
   "command.paletteTitle": "Aller à",
   "command.paletteDescription":
     "Rechercher les vues, les paramètres et les titres du catalogue",
@@ -81,11 +96,13 @@ const fr: LocaleDictionary = {
   "command.paletteNoResults": "Aucune destination ni aucun titre correspondant",
   "command.paletteGroup": "Navigation",
   settings: "Paramètres",
+  "settings.navGroup.account": "Compte",
+  "settings.navGroup.catalogs": "Catalogues",
+  "settings.navGroup.integrations": "Intégrations",
+  "settings.navGroup.system": "Système",
   "settings.profile": "Profil",
   "settings.general": "Général",
   "settings.security": "Security",
-  "settings.securityDescription":
-    "Choose whether Scryer requires a signed-in user session.",
   "settings.securityEnableFormLogin": "Form login",
   "settings.securityEnableFormLoginHelp":
     "When enabled, Scryer requires an authenticated user session. When disabled, requests resolve as the default admin user.",
@@ -102,8 +119,7 @@ const fr: LocaleDictionary = {
   "settings.securityModeDisabled": "Open admin mode",
   "settings.securityConfirmTitle": "Enable form login?",
   "settings.securityConfirmDescription":
-    "Sign in with an account that can manage settings before Scryer starts requiring login.",
-  "settings.securityConfirmUsername": "Username",
+    "Enter your password before Scryer starts requiring login.",
   "settings.securityConfirmPassword": "Password",
   "settings.securityConfirmAction": "Enable",
   "settings.securityAdminPasswordRequiredTitle": "Set the admin password first",
@@ -114,10 +130,12 @@ const fr: LocaleDictionary = {
   "settings.securityDisableConfirmDescription":
     "Scryer will return to open admin mode after reload.",
   "settings.securityDisableConfirmAction": "Disable",
-  "settings.securityCredentialsInvalid": "Invalid username or password.",
-  "settings.securityCredentialsInsufficient": "That account cannot manage settings.",
+  "settings.securityCredentialsInvalid": "Invalid password.",
+  "settings.securityCredentialsInsufficient":
+    "That account cannot manage settings.",
   "settings.securityEnabledSuccess": "Form login enabled.",
-  "settings.securityDisabledSuccess": "Form login disabled. Reloading into open admin mode…",
+  "settings.securityDisabledSuccess":
+    "Form login disabled. Reloading into open admin mode…",
   "settings.securityPreferenceSaved": "Security preference saved.",
   "settings.securityLoadFailed": "Failed to load security settings.",
   "settings.securitySaveFailed": "Failed to save security settings.",
@@ -137,7 +155,8 @@ const fr: LocaleDictionary = {
   "facetSettings.generalPolicies": "Politiques",
   "facetSettings.sidecarFiles": "Fichiers annexes",
   "facetSettings.scoringPersona": "Persona de scoring",
-  "facetSettings.scoringPersonaOverrideLabel": "Remplacement de la persona de scoring",
+  "facetSettings.scoringPersonaOverrideLabel":
+    "Remplacement de la persona de scoring",
   "facetSettings.scoringPersonaUseDefault": "Utiliser le profil par défaut",
   "facetSettings.scoringBehavior": "Comportement de scoring",
   "facetSettings.scoringBehaviorHint":
@@ -214,6 +233,7 @@ const fr: LocaleDictionary = {
   "settings.libraryScanDiscovering": "Découverte des titres…",
   "settings.libraryScanProgressPending": "En attente de découverte…",
   "settings.libraryScanProgressCalculatingTotal": "Calcul du total…",
+  "settings.libraryScanProgressScannedCount": "{{count}} analysés",
   "settings.libraryScanTitleMatch": "Correspondance des titres",
   "settings.libraryScanFetchingMetadata": "Récupération des métadonnées",
   "settings.libraryScanFilesScanned": "Analyse des médias",
@@ -324,6 +344,27 @@ const fr: LocaleDictionary = {
   "settings.downloadClientRoutingSavedFor":
     "Routage du client de téléchargement enregistré pour « {{name}} ».",
   "settings.delayProfiles": "Profils de délai",
+  "settings.acquisition": "Acquisition",
+  "settings.acquisitionSaved": "Paramètres d'acquisition enregistrés.",
+  "settings.acquisitionIntro": "RSS est la voie d'acquisition permanente : chaque élément recherché est activement recherché une fois par indexeur, puis surveillé via RSS. Le rattrapage actif est cadencé et fini.",
+  "settings.acquisitionEnabled": "Activer l'acquisition automatique",
+  "settings.acquisitionEnabledHelp": "Exécute la boucle d'acquisition en arrière-plan : balayages de recherche de convergence et correspondance RSS.",
+  "settings.acquisitionThresholds": "Seuils de mise à niveau",
+  "settings.acquisitionUpgradeCooldownHours": "Délai entre mises à niveau (heures)",
+  "settings.acquisitionUpgradeCooldownHoursHelp": "Temps minimal entre deux récupérations de mise à niveau pour le même élément.",
+  "settings.acquisitionSameTierMinDelta": "Delta de score minimal au même palier",
+  "settings.acquisitionSameTierMinDeltaHelp": "Une release du même palier de qualité doit dépasser le score du fichier actuel d'au moins cette valeur.",
+  "settings.acquisitionCrossTierMinDelta": "Delta de score minimal entre paliers",
+  "settings.acquisitionCrossTierMinDeltaHelp": "Une release d'un palier de qualité supérieur doit dépasser le score du fichier actuel d'au moins cette valeur.",
+  "settings.acquisitionForcedUpgradeDeltaBypass": "Delta de mise à niveau forcée",
+  "settings.acquisitionForcedUpgradeDeltaBypassHelp": "Une amélioration de score de cette ampleur met à niveau immédiatement, en contournant le délai.",
+  "settings.acquisitionConvergence": "Convergence et cadence",
+  "settings.acquisitionPollIntervalSeconds": "Intervalle d'interrogation (secondes)",
+  "settings.acquisitionPollIntervalSecondsHelp": "Fréquence de réveil de la boucle d'acquisition en arrière-plan.",
+  "settings.acquisitionMaxScopesPerCycle": "Nombre max d'éléments évalués par cycle",
+  "settings.acquisitionMaxScopesPerCycleHelp": "Plafond d'évaluation par cycle de rattrapage. Les limites des indexeurs — pas cette valeur — déterminent le débit réel des requêtes.",
+  "settings.acquisitionReconvergeDays": "Reconvergence après (jours)",
+  "settings.acquisitionReconvergeDaysHelp": "0 le désactive (recommandé) : les éléments convergés sont surveillés via RSS. À n'activer qu'en dernier recours si un flux s'avère incomplet.",
   "settings.delayProfileExisting": "Profils de délai existants",
   "settings.delayProfileNone":
     "Aucun profil de délai configuré. Les versions seront récupérées immédiatement.",
@@ -392,7 +433,8 @@ const fr: LocaleDictionary = {
     "Supprime les téléchargements échoués de l'historique du client de téléchargement.",
   "settings.downloadClientEnabledInfo":
     "Lorsque désactivé, ce client est ignoré lors du routage des téléchargements.",
-  "settings.downloadClientRemotePathMappings": "Correspondances de chemins distants",
+  "settings.downloadClientRemotePathMappings":
+    "Correspondances de chemins distants",
   "settings.downloadClientRemotePathMappingsHelp":
     "Associe les chemins signalés par le client de téléchargement dans son conteneur ou son hôte à des chemins locaux que Scryer peut lire. Saisissez une règle par ligne au format REMOTE => LOCAL.",
   "settings.downloadClientEnabledLabel": "Enable download client",
@@ -538,7 +580,8 @@ const fr: LocaleDictionary = {
   "settings.keepHistoryForever": "Conserver l’historique indéfiniment",
   "settings.historyRetentionDaysHeader": "Conserver l’historique pendant",
   "settings.historyRetentionDaysSuffix": "jours",
-  "settings.historyRetentionDaysLabel": "Conserver l’historique pendant N jours",
+  "settings.historyRetentionDaysLabel":
+    "Conserver l’historique pendant N jours",
   "settings.historyRetentionSaved":
     "Paramètres de rétention de l’historique enregistrés.",
   "settings.historyRetentionValidation":
@@ -562,14 +605,82 @@ const fr: LocaleDictionary = {
     "La réhydratation des métadonnées a commencé. Les titres seront mis à jour en arrière-plan.",
   "settings.tlsRestartNote":
     "Les modifications des paramètres TLS nécessitent un redémarrage du service.",
-  "search.globalPlaceholder":
-    "Trouvez quoi regarder ensuite (appuyez sur /)",
+  "theme.light": "Clair",
+  "theme.dark": "Sombre",
+  "theme.pride": "Pride",
+  "theme.system": "Système",
+  "theme.switchLabel": "Changer de thème (actuel : {{theme}})",
+  "search.globalPlaceholder": "Rechercher films, séries, anime et réglages…",
+  "search.globalPlaceholderNoLibrary":
+    "Rechercher films, séries, anime, paramètres et actions…",
+  "search.overlayPlaceholder":
+    "Rechercher films, séries, anime, votre bibliothèque et la navigation…",
+  "search.overlayPlaceholderNoLibrary":
+    "Rechercher films, séries, anime, paramètres et actions…",
+  "search.shortcutHint": "⌘K",
+  "search.shortcutHintControl": "Ctrl+K",
+  "search.title": "Recherche globale",
+  "search.subtitle":
+    "Rechercher films, séries, anime, votre bibliothèque et la navigation.",
+  "search.subtitleNoLibrary":
+    "Rechercher films, séries, anime, paramètres et actions.",
+  "search.subtitleWithQuery": "Résultats pour « {{query}} »",
+  "search.statusLoading": "Recherche de « {{query}} »…",
+  "search.statusResultOne": "1 résultat pour « {{query}} »",
+  "search.statusResultOther": "{{count}} résultats pour « {{query}} »",
+  "search.statusNoResults": "Aucun résultat pour « {{query}} »",
+  "search.tabAll": "Tout",
+  "search.tabLibrary": "Dans la bibliothèque",
+  "search.tabActions": "Actions",
   "search.catalog": "Catalogue",
+  "search.inLibrary": "Dans la bibliothèque",
+  "search.goToHint": "navigation et actions",
+  "search.actionsAndSettings": "Actions et paramètres",
+  "search.alreadyInCollection": "déjà dans votre collection",
+  "search.everywhereElse": "Partout ailleurs",
+  "search.resultCountOne": "1 résultat",
+  "search.resultCountOther": "{{count}} résultats",
+  "search.monitored": "Surveillé",
+  "search.unmonitored": "Non surveillé",
+  "search.view": "Voir",
+  "search.viewAll": "Tout voir",
+  "search.viewAll.movie": "Voir tous les films",
+  "search.viewAll.series": "Voir toutes les séries",
+  "search.viewAll.anime": "Voir tous les anime",
+  "search.add": "Ajouter",
+  "search.footerTip":
+    "Introuvable ? Essayez un autre terme ou vérifiez vos indexeurs.",
+  "search.searchTips": "Conseils de recherche",
+  "search.tipTitles":
+    "Recherchez par film, série, anime, catalogue, section de paramètres ou action.",
+  "search.tipTitlesNoLibrary":
+    "Recherchez par film, série, anime, section de paramètres ou action.",
+  "search.tipTabs":
+    "Utilisez les onglets pour limiter les résultats à votre bibliothèque, à la navigation ou à un type de catalogue.",
+  "search.tipTabsNoLibrary":
+    "Utilisez les onglets pour limiter les résultats à la navigation ou à un type de catalogue.",
+  "search.tipIndexers":
+    "Utilisez un terme plus large avant de vérifier les indexeurs pour les titres absents des métadonnées.",
+  "search.noMatchesFor": "Aucun résultat pour « {{query}} »",
+  "search.emptyHint":
+    "Essayez un autre film, une série, un anime, un catalogue, une section de paramètres ou une action.",
+  "search.emptyHintNoLibrary":
+    "Essayez un autre film, une série, un anime, une section de paramètres ou une action.",
+  "search.minimumQueryTitle": "Continuez à saisir",
+  "search.minimumQueryHint":
+    "Saisissez au moins 2 caractères pour rechercher dans votre bibliothèque et les métadonnées.",
+  "search.minimumQueryHintNoLibrary":
+    "Saisissez au moins 2 caractères pour rechercher les métadonnées.",
   "search.noCatalogMatches": "Aucune correspondance dans le catalogue géré.",
   "search.noMetadataMatches":
     "Aucune correspondance de métadonnées dans cette section.",
   "search.alreadyCataloged": "Déjà dans le catalogue",
+  "search.cataloged": "Catalogué",
+  "search.unavailable": "Indisponible",
   "search.configureAdd": "Configurer les options d'ajout",
+  "search.request": "Demander",
+  "search.requesting": "Demande en cours…",
+  "search.addConfigLibrary": "Bibliothèque",
   "search.addConfigQualityProfile": "Profil de qualité",
   "search.addConfigRootFolder": "Dossier racine",
   "search.addConfigSeasonFolder": "Dossier de saison",
@@ -621,6 +732,28 @@ const fr: LocaleDictionary = {
   "title.loading": "Aucune donnée chargée",
   "title.noManaged": "Aucun titre trouvé pour cette section.",
   "title.statusTemplate": "{{count}} titre(s) chargé(s).",
+  "title.contextPanelTitle": "Détails du titre",
+  "title.contextEmptyTitle": "Aucun titre sélectionné",
+  "title.contextEmptyBody": "Aucun détail d’aperçu à afficher.",
+  "title.contextForYouTitle": "Recommandé depuis votre bibliothèque",
+  "title.contextForYouSubtitle":
+    "Quelques chemins familiers pour revenir dans ce catalogue.",
+  "title.contextForYouTop": "Top",
+  "title.contextForYouGenre": "Parce que vous aimez {{genre}}",
+  "title.contextForYouRecent": "Ajouts récents",
+  "title.contextForYouEmptyTitle": "Pas encore de recommandations",
+  "title.contextForYouEmptyBody":
+    "Ajoutez ou analysez des titres pour créer cette vue de bibliothèque.",
+  "title.contextMoreLikeThis": "Titres similaires",
+  "title.contextMoreLikeThisScope": "Depuis la vue actuelle",
+  "title.contextOverview": "Aperçu",
+  "title.contextLibrary": "Bibliothèque",
+  "title.contextQuality": "Qualité",
+  "title.contextRootFolder": "Dossier racine",
+  "title.contextSize": "Taille",
+  "title.contextEpisodes": "Épisodes",
+  "title.contextAdded": "Ajouté",
+  "title.openOverview": "Ouvrir l’aperçu",
   "title.table.facet": "Type",
   "title.table.monitored": "Surveillé",
   "title.table.poster": "Affiche",
@@ -629,6 +762,8 @@ const fr: LocaleDictionary = {
   "title.table.status": "État",
   "title.table.size": "Taille",
   "title.viewModeToggle": "Mode d'affichage",
+  "title.viewModeCompact": "Compact",
+  "title.viewModePosterTable": "Liste",
   "title.viewModeTable": "Vue tableau",
   "title.viewModePoster": "Vue affiche",
   "title.interactiveSearchComingSoon":
@@ -661,13 +796,14 @@ const fr: LocaleDictionary = {
   "title.movieCountOne": "{{count}} film",
   "title.movieCountOther": "{{count}} films",
   "title.movieDetails": "Détails du film",
-  "title.searchingReleases":
-    "Recherche de publications sur les indexeurs…",
+  "title.searchingReleases": "Recherche de publications sur les indexeurs…",
   "title.noReleasesFound": "Aucune publication trouvée pour {{name}}.",
-  "title.searchNeedsDownloadClientTitle": "La recherche nécessite un client de téléchargement",
+  "title.searchNeedsDownloadClientTitle":
+    "La recherche nécessite un client de téléchargement",
   "title.searchNeedsDownloadClientDescription":
     "Configurez au moins un client de téléchargement avant d'utiliser la recherche ou la recherche interactive depuis cette page de titre.",
-  "title.searchNeedsDownloadClientAction": "Ouvrir les clients de téléchargement",
+  "title.searchNeedsDownloadClientAction":
+    "Ouvrir les clients de téléchargement",
   "title.blockedReleases": "Publications bloquées",
   "title.noBlockedReleases":
     "Aucune publication bloquée n'a été enregistrée pour ce film.",
@@ -746,6 +882,7 @@ const fr: LocaleDictionary = {
   "nzb.selectTvdbFirst":
     "Sélectionnez un résultat TVDB pour rechercher sur NZBGeek.",
   "nzb.noResultsYet": "Aucun résultat pour le moment.",
+  "nzb.searchFailed": "La recherche de publications a échoué.",
   "nzb.blockedByProfile": "Bloqué par le profil : {{reason}}",
   "nzb.queue": "File d'attente",
   "nzb.queueAdditionalFile": "Ajouter comme fichier supplémentaire",
@@ -842,7 +979,8 @@ const fr: LocaleDictionary = {
   "queue.deleteConfirmTitle": "Supprimer le téléchargement",
   "queue.deleteConfirmDescription":
     "Êtes-vous sûr de vouloir supprimer ce téléchargement de la file d'attente ? Cette action est irréversible.",
-  "queue.manualUnavailableForResult": "La mise en file manuelle n’est pas disponible pour ce résultat.",
+  "queue.manualUnavailableForResult":
+    "La mise en file manuelle n’est pas disponible pour ce résultat.",
   "importHistory.title": "Historique d'importation",
   "importHistory.empty": "Aucun enregistrement d'importation trouvé.",
   "importHistory.status": "État",
@@ -932,17 +1070,6 @@ const fr: LocaleDictionary = {
   "settings.save": "Enregistrer",
   "settings.noPermissions": "Aucun droit",
   "settings.filter": "Filtre",
-  "settings.acquisition": "Acquisition",
-  "settings.acquisitionSaved": "Paramètres d'acquisition enregistrés.",
-  "settings.acq.enabled": "Activer l'acquisition en arrière-plan",
-  "settings.acq.cooldownHours": "Cooldown de mise à niveau (heures)",
-  "settings.acq.sameTierDelta": "Delta min du même palier",
-  "settings.acq.crossTierDelta": "Delta min inter-paliers",
-  "settings.acq.forcedBypassDelta":
-    "Contournement delta forcé pour mise à niveau",
-  "settings.acq.pollInterval": "Intervalle d'interrogation (secondes)",
-  "settings.acq.syncInterval": "Intervalle de synchronisation (secondes)",
-  "settings.acq.batchSize": "Taille du lot",
   "settings.rules": "Règles personnalisées",
   "settings.rulesSection": "Règles de scoring personnalisées",
   "settings.existingRules": "Règles existantes",
@@ -974,13 +1101,16 @@ const fr: LocaleDictionary = {
   "settings.sub.enabled": "Activer la gestion des sous-titres",
   "settings.sub.credentials": "Informations d'identification OpenSubtitles",
   "settings.sub.username": "Nom d'utilisateur",
-  "settings.sub.usernameEmailWarning": "Utilisez votre nom d’utilisateur OpenSubtitles, pas votre adresse e-mail.",
+  "settings.sub.usernameEmailWarning":
+    "Utilisez votre nom d’utilisateur OpenSubtitles, pas votre adresse e-mail.",
   "settings.sub.password": "Mot de passe",
   "settings.sub.apiKey": "Clé API",
   "settings.sub.apiKeyRequiredTitle": "Service de sous-titres indisponible",
-  "settings.sub.apiKeyRequiredBody": "La recherche et le téléchargement de sous-titres restent désactivés jusqu'à ce que le service de sous-titres soit de nouveau disponible.",
+  "settings.sub.apiKeyRequiredBody":
+    "La recherche et le téléchargement de sous-titres restent désactivés jusqu'à ce que le service de sous-titres soit de nouveau disponible.",
   "settings.sub.credentialsRequiredTitle": "Identifiants de sous-titres requis",
-  "settings.sub.credentialsRequiredBody": "Ajoutez ici votre nom d’utilisateur et votre mot de passe de sous-titres avant de rechercher ou télécharger des sous-titres.",
+  "settings.sub.credentialsRequiredBody":
+    "Ajoutez ici votre nom d’utilisateur et votre mot de passe de sous-titres avant de rechercher ou télécharger des sous-titres.",
   "settings.sub.credentialsVerified": "Identifiants de sous-titres vérifiés",
   "settings.sub.languages": "Langues des sous-titres",
   "settings.sub.languagesHelp":
@@ -1070,6 +1200,7 @@ const fr: LocaleDictionary = {
   "settings.pluginCategoryUsenetIndexer": "Indexeur Usenet",
   "settings.pluginCategoryTorrentIndexer": "Indexeur torrent",
   "settings.pluginCategoryDownloadClient": "Client de téléchargement",
+  "settings.pluginCategoryArchiveExtractor": "Extraction d’archives",
   "settings.pluginCategoryNotification": "Notification",
   "settings.pluginCategorySubtitleProvider": "Fournisseur de sous-titres",
   "settings.pluginOfficialOnly": "Officiels uniquement",
@@ -1108,7 +1239,8 @@ const fr: LocaleDictionary = {
     "Failed to install plugin '{{name}}': the published artifact no longer matches the registry checksum. Refresh the registry or try again later.",
   "status.pluginInstallFailedSdkMetadataMismatch":
     "Failed to install plugin '{{name}}': the published artifact does not match the registry SDK compatibility metadata. Refresh the registry or try again later.",
-  "status.pluginInstallFailedWithReason": "Failed to install plugin '{{name}}': {{reason}}",
+  "status.pluginInstallFailedWithReason":
+    "Failed to install plugin '{{name}}': {{reason}}",
   "status.pluginRevertedToBundled":
     "Le plugin « {{name}} » a été rétabli vers la version intégrée.",
   "status.pluginUninstalled": "Plugin « {{name}} » désinstallé.",
@@ -1326,10 +1458,12 @@ const fr: LocaleDictionary = {
   "subtitle.external": "Externe",
   "subtitle.manualSearch": "Recherche manuelle",
   "subtitle.apiKeyRequiredTitle": "Service de sous-titres indisponible",
-  "subtitle.apiKeyRequiredBody": "Le service de sous-titres est actuellement indisponible pour ce fichier.",
+  "subtitle.apiKeyRequiredBody":
+    "Le service de sous-titres est actuellement indisponible pour ce fichier.",
   "subtitle.apiKeyRequiredAction": "Ouvrir les paramètres des sous-titres",
   "subtitle.credentialsRequiredTitle": "Identifiants de sous-titres requis",
-  "subtitle.credentialsRequiredBody": "Configurez votre nom d’utilisateur et votre mot de passe de sous-titres dans Paramètres > Sous-titres avant de rechercher des sous-titres pour ce fichier.",
+  "subtitle.credentialsRequiredBody":
+    "Configurez votre nom d’utilisateur et votre mot de passe de sous-titres dans Paramètres > Sous-titres avant de rechercher des sous-titres pour ce fichier.",
   "subtitle.credentialsRequiredAction": "Ouvrir les paramètres des sous-titres",
   "subtitle.blocklist": "Liste de blocage",
   "subtitle.blocklisted": "Sous-titre ajouté à la liste de blocage",
@@ -1407,7 +1541,8 @@ const fr: LocaleDictionary = {
   "status.nzbFoundForTitle":
     "{{count}} élément(s) NZB trouvé(s) pour {{name}}{{source}}.",
   "status.noNzbFound": "Aucun résultat NZB trouvé.",
-  "status.releaseMissingCandidateToken": "La version sélectionnée ne possède pas de jeton candidat vérifié.",
+  "status.releaseMissingCandidateToken":
+    "La version sélectionnée ne possède pas de jeton candidat vérifié.",
   "status.deleteCatalogConfirm":
     "Retirer {{name}} du catalogue ? Utilisez l'option ci-dessous pour supprimer également les fichiers locaux.",
   "status.titleDeleted": "{{name}} retiré du catalogue.",
@@ -1442,12 +1577,8 @@ const fr: LocaleDictionary = {
   "status.failedToUpdate": "Échec de la mise à jour de l'élément.",
   "status.indexerCreated": "Indexeur enregistré.",
   "status.indexerUpdated": "Indexeur mis à jour.",
-  "status.searchMonitoredQueued":
-    "{{count}} élément(s) surveillé(s) mis en file d'attente pour la recherche en arrière-plan.",
   "status.mismatchRecoveryQueued":
     "{{count}} élément(s) de récupération des incohérences ont été mis en file d’attente.",
-  "status.searchMonitoredEmpty":
-    "Aucun élément surveillé n'est actuellement éligible pour la recherche.",
   "status.titleScanSuccess":
     "Analyse terminée. {{imported}} importé(s), {{skipped}} ignoré(s), {{unmatched}} non apparié(s).",
   "status.titleMonitoringEnabled": "Surveillance du titre activée.",
@@ -1519,7 +1650,8 @@ const fr: LocaleDictionary = {
   "auth.invalidCredentials": "Nom d'utilisateur ou mot de passe incorrect.",
   "auth.signInWithPasskey": "Se connecter avec une passkey",
   "auth.passkeySigningIn": "Connexion avec passkey…",
-  "auth.passkeyUnsupported": "Ce navigateur ne prend pas en charge les passkeys.",
+  "auth.passkeyUnsupported":
+    "Ce navigateur ne prend pas en charge les passkeys.",
   "auth.passkeyCancelled": "La demande de passkey a été annulée.",
   "auth.passkeyFailed": "La demande de passkey a échoué.",
   "auth.logoutButton": "Se déconnecter",
@@ -1527,28 +1659,30 @@ const fr: LocaleDictionary = {
   "nav.wanted": "À rechercher",
   "wanted.title": "Éléments recherchés",
   "wanted.refreshing": "Actualisation…",
-  "wanted.filterStatus": "État",
-  "wanted.filterMediaType": "Type de média",
-  "wanted.filterLatestDecision": "Dernière décision",
   "wanted.colLatestDecision": "Dernière décision",
-  "wanted.allStatuses": "Tous les statuts",
-  "wanted.allTypes": "Tous les types",
-  "wanted.allDecisions": "Toutes les décisions",
   "wanted.totalCount": "{{count}} éléments",
   "wanted.colTitle": "Titre",
   "wanted.colType": "Type",
   "wanted.colStatus": "État",
+  "wanted.colConvergence": "Convergence",
+  "wanted.colLastSearch": "Dernière recherche",
+  "wanted.colIndexers": "Indexeurs",
+  "wanted.convergence.searching": "Recherche {{covered}}/{{routed}}",
+  "wanted.convergence.converged": "Veille RSS",
+  "wanted.convergence.convergedHint": "Tous les indexeurs ont été interrogés — les nouvelles releases arrivent via RSS. Lancez une recherche pour revérifier.",
+  "wanted.convergence.deferred": "En attente de quota d'indexeur",
+  "wanted.convergence.deferredHint": "Tous les indexeurs restants sont en refroidissement ou à court de quota ; la recherche reprend automatiquement.",
+  "wanted.convergence.queuedHot": "En file · récent",
+  "wanted.convergence.queuedCold": "En file · fond de catalogue",
+  "wanted.searchJobStarted": "Recherche lancée.",
+  "wanted.searchJobComplete": "Recherche terminée : {{processed}} recherchés, {{grabbed}} récupérés, {{failed}} en échec.",
+  "wanted.searchJobCancelled": "Recherche annulée après {{processed}} éléments ; {{grabbed}} récupérés.",
   "wanted.colPhase": "Phase",
-  "wanted.colNextSearch": "Prochaine recherche",
   "wanted.colScore": "Score",
-  "wanted.colSearches": "Recherches",
   "wanted.searchNow": "Rechercher maintenant",
   "wanted.pause": "Pause",
   "wanted.resume": "Reprendre",
-  "wanted.reset": "Réinitialiser",
   "wanted.actionRecoverMismatch": "Corriger l’écart",
-  "wanted.searchTriggered":
-    "Recherche déclenchée — le poller la prendra en charge sous peu.",
   "wanted.status.wanted": "À rechercher",
   "wanted.status.grabbed": "Récupéré",
   "wanted.status.completed": "Terminé",
@@ -1556,11 +1690,6 @@ const fr: LocaleDictionary = {
   "wanted.type.movie": "Film",
   "wanted.type.episode": "Épisode",
   "wanted.type.seriesMovie": "Film de série",
-  "wanted.phase.primary": "Principale",
-  "wanted.phase.preRelease": "Pré-sortie",
-  "wanted.phase.preAir": "Pré-diffusion",
-  "wanted.phase.secondary": "Secondaire",
-  "wanted.phase.longTail": "Longue traîne",
   "wanted.decision.eligible": "Éligible",
   "wanted.decision.titleMismatch": "Titre non correspondant",
   "wanted.decision.qualityBlocked": "Bloqué par la qualité",
@@ -1595,7 +1724,7 @@ const fr: LocaleDictionary = {
   "wanted.tabWanted": "Éléments recherchés",
   "wanted.tabCutoff": "Cutoff non atteint",
   "wanted.tabCalendar": "Calendrier",
-  "cutoff.title": "Cutoff non atteint",
+  "cutoff.title": "Mises à niveau",
   "cutoff.searchAll": "Tout rechercher",
   "cutoff.searching": "Recherche…",
   "cutoff.searchProgress": "Recherche de {{current}} sur {{total}}…",
@@ -1611,8 +1740,6 @@ const fr: LocaleDictionary = {
   "cutoff.allFacets": "Tous les types",
   "cutoff.searchTriggered":
     "Recherche de mise à niveau déclenchée pour {{name}}",
-  "cutoff.bulkComplete":
-    "Recherche en lot terminée : {{searched}} sur {{total}} titres recherchés",
   "narrative.movie": "Film",
   "narrative.canonMovieInstallment":
     "Film canonique. Positionné dans l'ordre de visionnage narratif.",
@@ -1665,8 +1792,7 @@ const fr: LocaleDictionary = {
   "settings.notificationEvent.subtitleDownloaded": "Sous-titre téléchargé",
   "settings.notificationEvent.subtitleSearchFailed":
     "Échec de la recherche de sous-titres",
-  "settings.notificationEvent.mediaRequestSubmitted":
-    "Demande média envoyée",
+  "settings.notificationEvent.mediaRequestSubmitted": "Demande média envoyée",
   "settings.notificationEvent.mediaRequestApproved": "Demande média approuvée",
   "settings.notificationEvent.mediaRequestRejected": "Demande média rejetée",
   "settings.notificationEvent.mediaRequestCanceled": "Demande média annulée",

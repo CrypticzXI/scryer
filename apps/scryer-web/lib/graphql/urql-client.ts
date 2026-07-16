@@ -1,4 +1,5 @@
 import {
+  cacheExchange,
   Client,
   fetchExchange,
   subscriptionExchange,
@@ -32,6 +33,8 @@ let onBackendRestarting: (() => void) | null = null;
 
 export const MFA_STEP_UP_REQUIRED_EVENT = "scryer:mfa-step-up-required";
 const MFA_STEP_UP_REQUIRED_STATUS = 460;
+const AUTHLESS_PROOF_REQUIRED_ERROR =
+  "Scryer web client proof is required for unauthenticated access";
 
 export function setOnBackendRestarting(cb: (() => void) | null) {
   onBackendRestarting = cb;
@@ -152,8 +155,41 @@ function headersHaveAuthorization(headersInit?: HeadersInit): boolean {
   return new Headers(headersInit).has("authorization");
 }
 
+function withoutAuthorization(init?: RequestInit): RequestInit | undefined {
+  if (!init?.headers) {
+    return init;
+  }
+  const headers = new Headers(init.headers);
+  headers.delete("authorization");
+  return { ...init, headers };
+}
+
+async function responseRequiresAuthlessProof(response: Response): Promise<boolean> {
+  if (response.status !== 403) {
+    return false;
+  }
+  try {
+    const body = (await response.clone().json()) as unknown;
+    return isRecord(body) && body.error === AUTHLESS_PROOF_REQUIRED_ERROR;
+  } catch {
+    return false;
+  }
+}
+
 export const scryerFetch: typeof fetch = async (input, init) => {
-  const response = await fetch(input, await withAuthlessProof(input, init));
+  let response = await fetch(input, await withAuthlessProof(input, init));
+  const hadClientAuth =
+    headersHaveAuthorization(init?.headers) || getAuthToken() !== null;
+  if (
+    hadClientAuth &&
+    (await responseRequiresAuthlessProof(response))
+  ) {
+    clearClientAuthSession();
+    response = await fetch(
+      input,
+      await withAuthlessProof(input, withoutAuthorization(init)),
+    );
+  }
   if (response.status === 401) {
     redirectToLogin();
     throw new TypeError("Authentication required");
@@ -214,7 +250,9 @@ export const backendClient = new Client({
   preferGetMethod: false,
   requestPolicy: "network-only",
   fetch: scryerFetch,
+  // Keep the lightweight exchange available, but default every request to the network.
   exchanges: [
+    cacheExchange,
     subscriptionExchange({
       forwardSubscription(request) {
         const input = { ...request, query: request.query || "" };

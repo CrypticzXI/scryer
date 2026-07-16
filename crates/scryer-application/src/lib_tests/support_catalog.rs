@@ -16,10 +16,15 @@ pub(super) struct MockTitleRepo {
     pub(super) store: Arc<Mutex<Vec<Title>>>,
     pub(super) create_or_get_existing_error: Arc<Mutex<Option<String>>>,
     pub(super) delete_operation_log: OptionalDeleteOperationLog,
+    pub(super) pending_import_items: Option<Arc<Mutex<Vec<LibraryScanUnmatchedItem>>>>,
+    pub(super) external_id_batch_lookup_calls: AtomicUsize,
 }
 #[derive(Default)]
 pub(super) struct RecordingJobRunRepo {
     pub(super) runs: Arc<Mutex<Vec<JobRunRecord>>>,
+    pub(super) list_job_runs_calls: AtomicUsize,
+    pub(super) list_job_runs_for_actor_calls: AtomicUsize,
+    pub(super) list_active_job_runs_calls: AtomicUsize,
 }
 
 impl RecordingJobRunRepo {
@@ -61,6 +66,7 @@ impl JobRunRepository for RecordingJobRunRepo {
         job_key: Option<JobKey>,
         limit: usize,
     ) -> AppResult<Vec<JobRunRecord>> {
+        self.list_job_runs_calls.fetch_add(1, Ordering::SeqCst);
         Ok(sorted_limited_job_runs(
             self.runs
                 .lock()
@@ -79,6 +85,8 @@ impl JobRunRepository for RecordingJobRunRepo {
         actor_user_id: &str,
         limit: usize,
     ) -> AppResult<Vec<JobRunRecord>> {
+        self.list_job_runs_for_actor_calls
+            .fetch_add(1, Ordering::SeqCst);
         Ok(sorted_limited_job_runs(
             self.runs
                 .lock()
@@ -93,6 +101,8 @@ impl JobRunRepository for RecordingJobRunRepo {
     }
 
     async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
+        self.list_active_job_runs_calls
+            .fetch_add(1, Ordering::SeqCst);
         Ok(self
             .runs
             .lock()
@@ -101,6 +111,21 @@ impl JobRunRepository for RecordingJobRunRepo {
             .filter(|run| !run.status.is_terminal())
             .cloned()
             .collect())
+    }
+
+    async fn reconcile_interrupted_job_runs(&self) -> AppResult<u64> {
+        let now = chrono::Utc::now();
+        let mut runs = self.runs.lock().await;
+        let mut reconciled = 0u64;
+        for run in runs.iter_mut().filter(|run| !run.status.is_terminal()) {
+            run.status = JobRunStatus::Failed;
+            run.progress_json = None;
+            run.error_text = Some("interrupted by restart".to_string());
+            run.completed_at = Some(now);
+            run.updated_at = now;
+            reconciled += 1;
+        }
+        Ok(reconciled)
     }
 }
 
@@ -214,6 +239,41 @@ impl TitleRepository for MockTitleRepo {
         Ok(matches)
     }
 
+    async fn list_existing_external_ids_in_library_and_facet(
+        &self,
+        library_id: &str,
+        facet: MediaFacet,
+        source: &str,
+        values: &[String],
+    ) -> AppResult<std::collections::BTreeSet<String>> {
+        self.external_id_batch_lookup_calls
+            .fetch_add(1, Ordering::SeqCst);
+
+        let requested = values
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .collect::<HashSet<_>>();
+        if requested.is_empty() {
+            return Ok(std::collections::BTreeSet::new());
+        }
+
+        let list = self.store.lock().await;
+        let mut existing = std::collections::BTreeSet::new();
+        for title in list
+            .iter()
+            .filter(|title| title.library_id == library_id.trim() && title.facet == facet)
+        {
+            for external_id in &title.external_ids {
+                let value = external_id.value.trim();
+                if external_id.source.eq_ignore_ascii_case(source) && requested.contains(value) {
+                    existing.insert(value.to_string());
+                }
+            }
+        }
+        Ok(existing)
+    }
+
     async fn list_for_matching(
         &self,
         facet: Option<MediaFacet>,
@@ -298,7 +358,8 @@ impl TitleRepository for MockTitleRepo {
         let mut matching_ids = list
             .iter()
             .filter(|existing| {
-                existing.facet == title.facet
+                existing.library_id == title.library_id
+                    && existing.facet == title.facet
                     && existing.external_ids.iter().any(|existing_external_id| {
                         title.external_ids.iter().any(|incoming_external_id| {
                             existing_external_id
@@ -326,6 +387,85 @@ impl TitleRepository for MockTitleRepo {
                 title: existing.clone(),
                 reused_existing: true,
             });
+        }
+
+        list.push(title.clone());
+        Ok(CreateTitleOutcome {
+            title,
+            reused_existing: false,
+        })
+    }
+
+    async fn create_or_get_existing_and_bind_pending_import(
+        &self,
+        title: Title,
+        pending_import_id: &str,
+    ) -> AppResult<CreateTitleOutcome> {
+        if let Some(message) = self.create_or_get_existing_error.lock().await.clone() {
+            return Err(AppError::Repository(message));
+        }
+
+        let pending_import_items = self.pending_import_items.as_ref().ok_or_else(|| {
+            AppError::Repository(
+                "transactional pending import title creation is not configured".into(),
+            )
+        })?;
+        let mut list = self.store.lock().await;
+        let mut matching_ids = list
+            .iter()
+            .filter(|existing| {
+                existing.library_id == title.library_id
+                    && existing.facet == title.facet
+                    && existing.external_ids.iter().any(|existing_external_id| {
+                        title.external_ids.iter().any(|incoming_external_id| {
+                            existing_external_id
+                                .source
+                                .eq_ignore_ascii_case(&incoming_external_id.source)
+                                && existing_external_id.value == incoming_external_id.value
+                        })
+                    })
+            })
+            .map(|existing| existing.id.clone())
+            .collect::<Vec<_>>();
+        matching_ids.sort();
+        matching_ids.dedup();
+
+        if matching_ids.len() > 1 {
+            return Err(AppError::Validation(
+                "external ids already map to multiple titles".into(),
+            ));
+        }
+
+        if let Some(existing_id) = matching_ids.first()
+            && let Some(existing) = list.iter().find(|entry| entry.id == *existing_id)
+        {
+            return Ok(CreateTitleOutcome {
+                title: existing.clone(),
+                reused_existing: true,
+            });
+        }
+
+        let mut pending_items = pending_import_items.lock().await;
+        let pending_index = pending_items
+            .iter()
+            .position(|item| {
+                item.id == pending_import_id
+                    && item.library_id == title.library_id
+                    && item.facet == title.facet
+                    && item.title_id.is_none()
+            })
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "pending import {pending_import_id} could not be resolved for title {}",
+                    title.id
+                ))
+            })?;
+        if title.facet == MediaFacet::Movie {
+            pending_items.remove(pending_index);
+        } else if let Some(pending_item) = pending_items.get_mut(pending_index) {
+            pending_item.status = PendingImportStatus::Pending;
+            pending_item.title_id = Some(title.id.clone());
+            pending_item.updated_at = Utc::now().to_rfc3339();
         }
 
         list.push(title.clone());
@@ -364,13 +504,6 @@ impl TitleRepository for MockTitleRepo {
                 attempt_count: 0,
             })
             .collect())
-    }
-
-    async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
-        &self,
-        _limit: usize,
-    ) -> AppResult<Vec<String>> {
-        Ok(vec![])
     }
 
     async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
@@ -462,7 +595,6 @@ impl TitleRepository for MockTitleRepo {
         title.slug = metadata.slug;
         title.imdb_id = metadata.imdb_id;
         title.runtime_minutes = metadata.runtime_minutes;
-        title.genres = metadata.genres;
         title.content_status = metadata.content_status;
         title.language = metadata.language;
         title.first_aired = metadata.first_aired;
@@ -473,6 +605,12 @@ impl TitleRepository for MockTitleRepo {
         title.tagged_aliases = metadata.tagged_aliases;
         title.metadata_language = metadata.metadata_language;
         title.metadata_fetched_at = Some(chrono::Utc::now());
+        for external_id in metadata.extra_external_ids {
+            title
+                .external_ids
+                .retain(|candidate| candidate.source != external_id.source);
+            title.external_ids.push(external_id);
+        }
         Ok(title.clone())
     }
 

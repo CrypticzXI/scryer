@@ -1,16 +1,29 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::extraction::{
-    SubtitleExtractionContext, is_supported_subtitle_format, normalize_downloaded_subtitle,
+    SubtitleExtractionContext, is_supported_subtitle_format,
+    normalize_downloaded_subtitle_with_archive_provider,
 };
 use super::language::normalize_subtitle_language_code;
 use super::provider::{SubtitleFile, SubtitleProvider};
-use crate::{AppError, AppResult};
+use crate::{AppError, AppResult, ArchiveExtractorPluginProvider};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SubtitleDownloadSelection {
     pub episode: Option<i32>,
     pub absolute_episode: Option<i32>,
+    pub archive_provider: Option<Arc<dyn ArchiveExtractorPluginProvider>>,
+}
+
+impl std::fmt::Debug for SubtitleDownloadSelection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubtitleDownloadSelection")
+            .field("episode", &self.episode)
+            .field("absolute_episode", &self.absolute_episode)
+            .field("archive_provider", &self.archive_provider.is_some())
+            .finish()
+    }
 }
 
 /// Normalize a language code and ensure it's safe for use in filenames.
@@ -104,13 +117,14 @@ pub async fn download_and_save_with_selection(
     selection: SubtitleDownloadSelection,
 ) -> AppResult<(PathBuf, SubtitleFile)> {
     let language = normalize_language(language)?;
-    let file = normalize_downloaded_subtitle(
+    let file = normalize_downloaded_subtitle_with_archive_provider(
         provider.download(provider_file_id).await?,
         SubtitleExtractionContext {
             language: Some(language.clone()),
             episode: selection.episode,
             absolute_episode: selection.absolute_episode,
         },
+        selection.archive_provider,
     )
     .await?;
     validate_format(&file.format)?;

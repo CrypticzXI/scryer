@@ -1,17 +1,17 @@
 import type { Facet, LibraryScanSummary } from "./titles";
 
 export const libraryScanStatusValues = [
-  "discovering",
-  "running",
-  "completed",
-  "canceled",
-  "warning",
-  "failed",
+  "DISCOVERING",
+  "RUNNING",
+  "COMPLETED",
+  "CANCELED",
+  "WARNING",
+  "FAILED",
 ] as const;
 
 export type LibraryScanStatus = (typeof libraryScanStatusValues)[number];
 
-export const libraryScanModeValues = ["full", "additive"] as const;
+export const libraryScanModeValues = ["FULL", "ADDITIVE"] as const;
 export type LibraryScanMode = (typeof libraryScanModeValues)[number];
 
 export type LibraryScanPhaseProgress = {

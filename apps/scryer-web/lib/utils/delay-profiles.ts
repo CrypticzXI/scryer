@@ -7,7 +7,7 @@ import type {
 
 export const DELAY_PROFILE_CATALOG_KEY = "acquisition.delay_profiles";
 
-const FACET_OPTIONS: readonly DelayProfileFacet[] = ["movie", "series", "anime"];
+const FACET_OPTIONS: readonly DelayProfileFacet[] = ["MOVIE", "SERIES", "ANIME"];
 
 export function buildDelayProfileTemplate(existing: ParsedDelayProfile[]): DelayProfileDraft {
   const maxPriority = existing.reduce((max, p) => Math.max(max, p.priority), 0);
@@ -16,7 +16,7 @@ export function buildDelayProfileTemplate(existing: ParsedDelayProfile[]): Delay
     name: "",
     usenet_delay_minutes: 0,
     torrent_delay_minutes: 0,
-    preferred_protocol: "usenet",
+    preferred_protocol: "USENET",
     min_age_minutes: 0,
     bypass_score_threshold: null,
     applies_to_facets: [],
@@ -104,7 +104,7 @@ export function serializeDelayProfileCatalog(profiles: ParsedDelayProfile[]): st
 }
 
 function normalizeProtocol(value: unknown): DelayProfileProtocol {
-  return value === "torrent" ? "torrent" : "usenet";
+  return value === "torrent" ? "TORRENT" : "USENET";
 }
 
 function normalizeFacet(value: unknown): DelayProfileFacet | null {
@@ -114,11 +114,11 @@ function normalizeFacet(value: unknown): DelayProfileFacet | null {
 
   switch (value.trim().toLowerCase()) {
     case "movie":
-      return "movie";
+      return "MOVIE";
     case "series":
-      return "series";
+      return "SERIES";
     case "anime":
-      return "anime";
+      return "ANIME";
     default:
       return null;
   }

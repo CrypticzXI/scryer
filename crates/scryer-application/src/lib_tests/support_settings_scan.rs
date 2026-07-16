@@ -736,6 +736,7 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
             is_enabled,
             enable_interactive_search,
             enable_auto_search,
+            indexer_proxy_config_id,
             managed_parent_config_id,
             managed_child_key,
             managed_metadata_json,
@@ -771,6 +772,9 @@ impl IndexerConfigRepository for MockIndexerConfigRepo {
         }
         if let Some(enable_auto_search) = enable_auto_search {
             item.enable_auto_search = enable_auto_search;
+        }
+        if let Some(indexer_proxy_config_id) = indexer_proxy_config_id {
+            item.indexer_proxy_config_id = indexer_proxy_config_id;
         }
         if let Some(managed_parent_config_id) = managed_parent_config_id {
             item.managed_parent_config_id = managed_parent_config_id;

@@ -434,6 +434,7 @@ fn build_episode_upgrade_plan(
     incumbents: &[crate::EpisodeScopedMediaFile],
     target_episode_ids: &[String],
     new_score: i32,
+    force_replace: bool,
 ) -> Result<EpisodeUpgradePlan, crate::post_download_gate::ImportedFileRejection> {
     let target_episode_ids = target_episode_ids
         .iter()
@@ -457,7 +458,9 @@ fn build_episode_upgrade_plan(
             return Err(reject_broader_episode_incumbent(incumbent));
         }
 
-        if new_score <= media_file_score(&incumbent.media_file) {
+        // A manual operator replacement always lands, even at a lower score; the
+        // structural broader-episode-set guard above still applies.
+        if !force_replace && new_score <= media_file_score(&incumbent.media_file) {
             return Err(reject_non_upgrade_episode_incumbent(incumbent, new_score));
         }
     }
@@ -674,9 +677,13 @@ async fn import_single_episode_file(
             .and_then(|ep| ep.absolute_number.clone())
     });
     let episode_title = target_episodes.first().and_then(|ep| ep.title.as_deref());
-    let additional_import = completed_import_purpose(app, completed)
-        .await
-        .is_additional_file();
+    let import_purpose = completed_import_purpose(app, completed).await;
+    let additional_import = import_purpose.is_additional_file();
+    let runtime_sample_mode = if import_purpose.is_manual_replacement() {
+        crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck
+    } else {
+        crate::post_download_gate::RuntimeSampleValidationMode::EnforceAutomatic
+    };
     let outcome = execute_resolved_episode_import(
         app,
         actor,
@@ -695,7 +702,7 @@ async fn import_single_episode_file(
         episode_title,
         quality_profile,
         None,
-        crate::post_download_gate::RuntimeSampleValidationMode::EnforceAutomatic,
+        runtime_sample_mode,
         additional_import,
     )
     .await?;

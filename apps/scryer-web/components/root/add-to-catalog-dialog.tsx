@@ -1,14 +1,7 @@
 import * as React from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -16,11 +9,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { useTranslate } from "@/lib/context/translate-context";
 import { defaultMonitorTypeForFacet } from "@/lib/facets/helpers";
-import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
-import { TitlePoster } from "@/components/title-poster";
+import { CatalogActionDialogSummary } from "@/components/root/catalog-action-dialog-summary";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
 import type {
@@ -28,7 +20,7 @@ import type {
   MetadataCatalogAddOptions,
   MetadataCatalogMonitorType,
 } from "@/lib/hooks/use-global-search";
-import type { LibraryRecord } from "@/lib/types/titles";
+import type { LibraryRecord, RootFolderOption } from "@/lib/types/titles";
 
 type AddToCatalogDialogProps = {
   open: boolean;
@@ -39,6 +31,7 @@ type AddToCatalogDialogProps = {
   catalogConfigLoading: boolean;
   defaultQualityProfileId: string;
   manageableLibraries: LibraryRecord[];
+  rootFolderOptions: RootFolderOption[];
   onAdd: (
     result: MetadataTvdbSearchItem,
     facet: Facet,
@@ -67,20 +60,35 @@ function buildDefaultDraft(
   facet: Facet,
   defaultQualityProfileId: string,
   defaultLibraryId?: string,
+  defaultRootFolderId?: string,
 ): MetadataCatalogAddOptions {
   return {
     libraryId: defaultLibraryId,
     qualityProfileId: defaultQualityProfileId,
-    seasonFolder: facet !== "movie",
+    rootFolderId: defaultRootFolderId,
+    seasonFolder: facet !== "MOVIE",
     monitorType: defaultMonitorTypeForFacet(facet),
-    ...(facet === "movie" ? { minAvailability: "announced" } : {}),
-    ...(facet === "anime"
+    ...(facet === "MOVIE" ? { minAvailability: "announced" } : {}),
+    ...(facet === "ANIME"
       ? {
           monitorSpecials: false,
           interSeasonMovies: true,
         }
       : {}),
   };
+}
+
+function defaultLibrary(libraries: LibraryRecord[]): LibraryRecord | null {
+  return libraries.find((library) => library.isDefault) || libraries[0] || null;
+}
+
+function defaultRootFolderId(
+  rootFolders: Array<{ id?: string; isDefault: boolean }>,
+): string | undefined {
+  return (
+    rootFolders.find((rootFolder) => rootFolder.isDefault && rootFolder.id)?.id ||
+    rootFolders.find((rootFolder) => rootFolder.id)?.id
+  );
 }
 
 export function AddToCatalogDialog({
@@ -92,15 +100,18 @@ export function AddToCatalogDialog({
   catalogConfigLoading,
   defaultQualityProfileId,
   manageableLibraries,
+  rootFolderOptions,
   onAdd,
 }: AddToCatalogDialogProps) {
   const t = useTranslate();
   const libraries = manageableLibraries;
+  const fallbackRootFolders = rootFolderOptions;
   const [draft, setDraft] = React.useState<MetadataCatalogAddOptions>(() =>
     buildDefaultDraft(
       facet,
       defaultQualityProfileId,
-      libraries.find((library) => library.isDefault)?.id || libraries[0]?.id,
+      defaultLibrary(libraries)?.id,
+      defaultRootFolderId(defaultLibrary(libraries)?.roots ?? fallbackRootFolders),
     ),
   );
   const [isSubmitting, setIsSubmitting] = React.useState(false);
@@ -108,34 +119,44 @@ export function AddToCatalogDialog({
   // Reset draft when dialog opens
   React.useEffect(() => {
     if (!open) return;
-    setDraft(buildDefaultDraft(
-      facet,
-      defaultQualityProfileId,
-      libraries.find((library) => library.isDefault)?.id || libraries[0]?.id,
-    ));
+    const nextDefaultLibrary = defaultLibrary(libraries);
+    setDraft(
+      buildDefaultDraft(
+        facet,
+        defaultQualityProfileId,
+        nextDefaultLibrary?.id,
+        defaultRootFolderId(nextDefaultLibrary?.roots ?? fallbackRootFolders),
+      ),
+    );
     setIsSubmitting(false);
-  }, [open, facet, defaultQualityProfileId, libraries]);
+  }, [open, facet, defaultQualityProfileId, libraries, fallbackRootFolders]);
 
   const qualityProfileValue =
     draft.qualityProfileId || defaultQualityProfileId;
   const selectedLibrary =
     libraries.find((library) => library.id === draft.libraryId) ||
-    libraries.find((library) => library.isDefault) ||
-    libraries[0] ||
+    defaultLibrary(libraries) ||
     null;
-  const selectedRootFolders = selectedLibrary?.roots ?? [];
+  const selectedRootFolders = selectedLibrary?.roots ?? fallbackRootFolders;
+  const selectableRootFolders = selectedRootFolders.flatMap((rootFolder) => {
+    const id = rootFolder.id?.trim();
+    return id ? [{ ...rootFolder, id }] : [];
+  });
+  const draftRootFolderId = draft.rootFolderId?.trim();
   const effectiveRootFolderId =
-    draft.rootFolderId ||
-    selectedRootFolders.find((rf) => rf.isDefault)?.id ||
-    selectedRootFolders[0]?.id ||
-    "";
+    draftRootFolderId &&
+    selectableRootFolders.some((rootFolder) => rootFolder.id === draftRootFolderId)
+      ? draftRootFolderId
+      : defaultRootFolderId(selectableRootFolders) || "";
   const libraryRequired = libraries.length > 0;
+  const hasCatalogDestination =
+    libraries.length > 0 || selectableRootFolders.length > 0;
   const qualityProfileSelectionDisabled =
     isSubmitting || catalogConfigLoading || catalogQualityProfileOptions.length === 0;
 
   const handleSubmit = React.useCallback(async () => {
     const libraryId = selectedLibrary?.id?.trim();
-    if (libraryRequired && !libraryId) return;
+    if (!hasCatalogDestination || (libraryRequired && !libraryId)) return;
 
     setIsSubmitting(true);
     try {
@@ -157,6 +178,7 @@ export function AddToCatalogDialog({
     draft,
     defaultQualityProfileId,
     facet,
+    hasCatalogDestination,
     libraryRequired,
     onAdd,
     onOpenChange,
@@ -173,56 +195,31 @@ export function AddToCatalogDialog({
   );
 
   const monitorOptions: Array<{ value: MetadataCatalogMonitorType; label: string }> =
-    facet === "movie"
+    facet === "MOVIE"
       ? [
-          { value: "monitored", label: t("search.monitorType.monitored") },
-          { value: "unmonitored", label: t("search.monitorType.unmonitored") },
+          { value: "MONITORED", label: t("search.monitorType.monitored") },
+          { value: "UNMONITORED", label: t("search.monitorType.unmonitored") },
         ]
       : [
-          { value: "futureEpisodes", label: t("search.monitorType.futureEpisodes") },
+          { value: "FUTURE_EPISODES", label: t("search.monitorType.futureEpisodes") },
           {
-            value: "missingAndFutureEpisodes",
+            value: "MISSING_AND_FUTURE_EPISODES",
             label: t("search.monitorType.missingAndFutureEpisodes"),
           },
-          { value: "allEpisodes", label: t("search.monitorType.allEpisodes") },
-          { value: "none", label: t("search.monitorType.none") },
+          { value: "ALL_EPISODES", label: t("search.monitorType.allEpisodes") },
+          { value: "NONE", label: t("search.monitorType.none") },
         ];
-
-  const posterUrl = selectPosterVariantUrl(result.posterUrl, "w70");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent id="add-to-catalog-dialog" className="sm:max-w-md">
-        <DialogHeader>
-          <div className="flex gap-3">
-            <div className="h-20 w-14 flex-none overflow-hidden rounded-md border border-border bg-muted">
-              {posterUrl ? (
-                <TitlePoster
-                  src={posterUrl}
-                  alt={t("media.posterAlt", { name: result.name })}
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
-                  {t("label.noArt")}
-                </div>
-              )}
-            </div>
-            <div className="min-w-0">
-              <DialogTitle className="text-base">{result.name}</DialogTitle>
-              <DialogDescription>
-                {result.year ? result.year : t("label.yearUnknown")}
-              </DialogDescription>
-            </div>
-          </div>
-          {result.overview ? (
-            <p className="mt-2 text-xs text-muted-foreground line-clamp-3">
-              {result.overview}
-            </p>
-          ) : null}
-        </DialogHeader>
+      <DialogContent
+        id="add-to-catalog-dialog"
+        className="max-h-[90vh] gap-0 overflow-y-auto p-0 sm:max-w-5xl"
+      >
+        <CatalogActionDialogSummary result={result} facet={facet} mode="add" />
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-6 p-5 sm:p-7">
+          <div className="grid gap-4 sm:grid-cols-2">
           {libraries.length >= 1 ? (
             <label className="space-y-1 sm:col-span-2">
               <span className="block text-xs font-medium text-card-foreground">
@@ -233,7 +230,7 @@ export function AddToCatalogDialog({
                 onValueChange={(v) => update({ libraryId: v, rootFolderId: undefined })}
                 disabled={isSubmitting || libraries.length === 1}
               >
-                <SelectTrigger id="add-to-catalog-library" className="h-9 w-full">
+                <SelectTrigger id="add-to-catalog-library" className="h-12 w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -259,7 +256,7 @@ export function AddToCatalogDialog({
               >
                 <SelectTrigger
                   id="add-to-catalog-quality-profile"
-                  className="h-9 w-full"
+                  className="h-12 w-full"
                   aria-busy={catalogConfigLoading}
                 >
                   <SelectValue placeholder={catalogConfigLoading ? t("label.loading") : undefined} />
@@ -282,7 +279,7 @@ export function AddToCatalogDialog({
           )}
 
           {/* Root Folder */}
-          {selectedRootFolders.length >= 1 ? (
+          {selectableRootFolders.length >= 1 ? (
             <label className="space-y-1">
               <span className="block text-xs font-medium text-card-foreground">
                 {t("search.addConfigRootFolder")}
@@ -292,13 +289,16 @@ export function AddToCatalogDialog({
                 onValueChange={(v) => update({ rootFolderId: v })}
                 disabled={isSubmitting}
               >
-                <SelectTrigger id="add-to-catalog-root-folder" className="h-9 w-full">
+                <SelectTrigger
+                  id="add-to-catalog-root-folder"
+                  className="h-12 w-full font-[var(--font-code)]"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {selectedRootFolders.map((rf) => (
+                  {selectableRootFolders.map((rf) => (
                     <SelectItem key={rf.id} value={rf.id}>
-                      {rf.path}
+                      <span className="font-[var(--font-code)]">{rf.path}</span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -307,7 +307,7 @@ export function AddToCatalogDialog({
           ) : null}
 
           {/* Season Folder — series + anime */}
-          {facet !== "movie" ? (
+          {facet !== "MOVIE" ? (
             <label className="space-y-1">
               <span className="block text-xs font-medium text-card-foreground">
                 {t("search.addConfigSeasonFolder")}
@@ -317,7 +317,10 @@ export function AddToCatalogDialog({
                 onValueChange={(v) => update({ seasonFolder: v === "enabled" })}
                 disabled={isSubmitting}
               >
-                <SelectTrigger id="add-to-catalog-season-folder" className="h-9 w-full">
+                <SelectTrigger
+                  id="add-to-catalog-season-folder"
+                  className="h-12 w-full"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -329,18 +332,24 @@ export function AddToCatalogDialog({
           ) : null}
 
           {/* Monitored checkbox — movie only */}
-          {facet === "movie" ? (
-            <label className="flex items-center gap-2 sm:col-span-2">
-              <Checkbox
+          {facet === "MOVIE" ? (
+            <label className="flex items-center gap-4 rounded-xl border border-primary/30 bg-primary/10 p-4 sm:col-span-2">
+              <Switch
                 id="add-to-catalog-monitored"
-                checked={draft.monitorType === "monitored"}
+                checked={draft.monitorType === "MONITORED"}
                 onCheckedChange={(v) =>
-                  update({ monitorType: v === true ? "monitored" : "unmonitored" })
+                  update({ monitorType: v === true ? "MONITORED" : "UNMONITORED" })
                 }
                 disabled={isSubmitting}
+                size="lg"
               />
-              <span className="text-sm text-card-foreground">
-                {t("title.monitored")}
+              <span className="min-w-0">
+                <span className="block text-base font-semibold text-card-foreground">
+                  {t("title.monitored")}
+                </span>
+                <span className="block text-sm text-muted-foreground">
+                  {t("search.monitorType.monitored")}
+                </span>
               </span>
             </label>
           ) : (
@@ -356,7 +365,10 @@ export function AddToCatalogDialog({
                 }
                 disabled={isSubmitting}
               >
-                <SelectTrigger id="add-to-catalog-monitor-type" className="h-9 w-full">
+                <SelectTrigger
+                  id="add-to-catalog-monitor-type"
+                  className="h-12 w-full"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -376,18 +388,19 @@ export function AddToCatalogDialog({
             id="add-to-catalog-config-loading"
             className="flex items-center gap-2 rounded-md border border-dashed border-border/80 bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
           >
-            <Loader2 className="h-4 w-4 animate-spin text-emerald-500" />
+            <Loader2 className="h-4 w-4 animate-spin text-primary" />
             <span>{t("label.loading")}</span>
           </div>
         ) : null}
 
-        <DialogFooter>
+          <DialogFooter className="items-stretch gap-3 sm:items-center">
           <Button
             id="add-to-catalog-cancel"
             type="button"
             variant="outline"
             onClick={() => onOpenChange(false)}
             disabled={isSubmitting}
+            className="h-12 px-8"
           >
             {t("label.cancel")}
           </Button>
@@ -399,13 +412,20 @@ export function AddToCatalogDialog({
               isSubmitting ||
               catalogConfigLoading ||
               !qualityProfileValue ||
+              !hasCatalogDestination ||
               (libraryRequired && !selectedLibrary)
             }
-            className="bg-emerald-600 text-foreground hover:bg-emerald-500"
+            className="h-12 gap-2 bg-primary px-8 text-primary-foreground hover:bg-primary/90"
           >
+            {isSubmitting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Plus className="h-5 w-5" />
+            )}
             {isSubmitting ? t("search.adding") : t("title.addToCatalog")}
           </Button>
-        </DialogFooter>
+          </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );

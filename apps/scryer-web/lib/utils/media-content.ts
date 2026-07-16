@@ -12,16 +12,16 @@ export type SearchableQualityProfileBody = {
 export type NzbgetRoutingOrder = Record<ViewCategoryId, string[]>;
 
 const EMPTY_ROUTING_ORDER: NzbgetRoutingOrder = {
-  movie: [],
-  series: [],
-  anime: [],
+  MOVIE: [],
+  SERIES: [],
+  ANIME: [],
 };
 
 export function getDefaultRoutingOrder(): NzbgetRoutingOrder {
   return {
-    movie: [...EMPTY_ROUTING_ORDER.movie],
-    series: [...EMPTY_ROUTING_ORDER.series],
-    anime: [...EMPTY_ROUTING_ORDER.anime],
+    MOVIE: [...EMPTY_ROUTING_ORDER.MOVIE],
+    SERIES: [...EMPTY_ROUTING_ORDER.SERIES],
+    ANIME: [...EMPTY_ROUTING_ORDER.ANIME],
   };
 }
 

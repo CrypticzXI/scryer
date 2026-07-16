@@ -24,23 +24,23 @@ type ProfileCatalogParseResult = {
 };
 
 export function buildDefaultCategoryPersonaSelections(
-  globalPersona: ScoringPersonaId = "balanced",
+  globalPersona: ScoringPersonaId = "BALANCED",
 ): Record<ViewCategoryId, FacetScoringPersonaSelectionRecord> {
   return {
-    movie: {
-      scope: "movie",
+    MOVIE: {
+      scope: "MOVIE",
       overridePersona: null,
       effectivePersona: globalPersona,
       inheritsGlobal: true,
     },
-    series: {
-      scope: "series",
+    SERIES: {
+      scope: "SERIES",
       overridePersona: null,
       effectivePersona: globalPersona,
       inheritsGlobal: true,
     },
-    anime: {
-      scope: "anime",
+    ANIME: {
+      scope: "ANIME",
       overridePersona: null,
       effectivePersona: globalPersona,
       inheritsGlobal: true,
@@ -201,9 +201,9 @@ export function qualityProfileSettingsToCategoryOverrides(
   payload: QualityProfileSettingsPayload | null | undefined,
 ): Record<ViewCategoryId, string> {
   const result: Record<ViewCategoryId, string> = {
-    movie: QUALITY_PROFILE_INHERIT_VALUE,
-    series: QUALITY_PROFILE_INHERIT_VALUE,
-    anime: QUALITY_PROFILE_INHERIT_VALUE,
+    MOVIE: QUALITY_PROFILE_INHERIT_VALUE,
+    SERIES: QUALITY_PROFILE_INHERIT_VALUE,
+    ANIME: QUALITY_PROFILE_INHERIT_VALUE,
   };
 
   for (const selection of payload?.categorySelections ?? []) {
@@ -217,7 +217,7 @@ export function qualityProfileSettingsToCategoryOverrides(
 export function qualityProfileSettingsToCategoryPersonaSelections(
   payload: QualityProfileSettingsPayload | null | undefined,
 ): Record<ViewCategoryId, FacetScoringPersonaSelectionRecord> {
-  const globalPersona = payload?.globalScoringPersona ?? "balanced";
+  const globalPersona = payload?.globalScoringPersona ?? "BALANCED";
   const result = buildDefaultCategoryPersonaSelections(globalPersona);
 
   for (const selection of payload?.categoryPersonaSelections ?? []) {

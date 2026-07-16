@@ -225,6 +225,7 @@ impl TitleMutations {
             resolve_add_title_options(&app, &actor, facet, library_id, options).await?;
         let request = map_add_input(input, resolved_options)?;
         let queued_release = QueuedReleaseSelection {
+            indexer_id: None,
             source_hint,
             source_kind,
             source_title: source_title.clone(),
@@ -371,7 +372,6 @@ impl TitleMutations {
         .map_err(to_gql_error)?;
         Ok(DeleteTitlePayload {
             id: ID::from(title_id),
-            deleted: true,
         })
     }
 
@@ -421,10 +421,7 @@ impl TitleMutations {
         app.clear_title_release_blocklist_entry(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(ClearTitleReleaseBlocklistEntryPayload {
-            id: ID::from(id),
-            cleared: true,
-        })
+        Ok(ClearTitleReleaseBlocklistEntryPayload { id: ID::from(id) })
     }
 
     async fn set_title_monitored(

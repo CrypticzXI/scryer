@@ -1,4 +1,4 @@
-export type StatusToastKind = "success" | "error" | "warning";
+export type StatusToastKind = "SUCCESS" | "ERROR" | "WARNING";
 
 const RENAME_APPLY_COMPLETE_PATTERN =
   /\brename apply complete:\s*(\d+)\s+applied,\s*(\d+)\s+skipped,\s*(\d+)\s+failed\b/i;
@@ -80,12 +80,12 @@ export function classifyStatusToastLevel(message: string): StatusToastKind | nul
     const skipped = Number.parseInt(renameApplyMatch[2] ?? "0", 10);
     const failed = Number.parseInt(renameApplyMatch[3] ?? "0", 10);
     if (failed > 0) {
-      return "error";
+      return "ERROR";
     }
     if (skipped > 0) {
-      return "warning";
+      return "WARNING";
     }
-    return "success";
+    return "SUCCESS";
   }
 
   if (NO_TOAST_PATTERNS.some((pattern) => pattern.test(normalized))) {
@@ -93,15 +93,15 @@ export function classifyStatusToastLevel(message: string): StatusToastKind | nul
   }
 
   if (WARNING_PATTERNS.some((pattern) => pattern.test(normalized))) {
-    return "warning";
+    return "WARNING";
   }
 
   if (ERROR_PATTERNS.some((pattern) => pattern.test(normalized))) {
-    return "error";
+    return "ERROR";
   }
 
   if (SUCCESS_PATTERNS.some((pattern) => pattern.test(normalized))) {
-    return "success";
+    return "SUCCESS";
   }
 
   return null;

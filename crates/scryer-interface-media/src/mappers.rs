@@ -1,28 +1,33 @@
 use crate::types::*;
+use async_graphql::ID;
 use chrono::{DateTime, Utc};
 use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
-    ActivityEvent, BackupInfo, DeletePreview, DownloadClientRoutingSettingsEntry,
-    FacetScoringPersonaSelection, IgnorePendingImportResult, IndexerRoutingSettingsEntry,
-    IndexerSearchResult, JobDefinition, JobRun, LibraryPathsSettings, LibraryScanSummary,
-    LibrarySettings, ManualPluginPreview, MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata,
-    ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
-    PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
-    QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
-    QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
-    RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
-    ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
-    SystemHealth, TitleHistoryPage, TitleReleaseBlocklistEntry,
+    ActivityEvent, BackupInfo, CatalogDiscoveryGroup, CatalogDiscoveryGroupKind,
+    CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface, DeletePreview,
+    DiscoveryFacetRecord, DiscoveryHomeFilterOptions, DiscoveryHomeFilters, DiscoveryHomeQuery,
+    DiscoveryHomeResult, DiscoveryItemDetailQuery, DiscoveryItemRecord, DiscoveryItemsQuery,
+    DiscoveryItemsResult, DiscoverySectionResult, DiscoverySyncStateRecord, DiscoverySyncStatus,
+    DownloadClientRoutingSettingsEntry, FacetScoringPersonaSelection, IgnorePendingImportResult,
+    IndexerProxyTestResult, IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition,
+    JobRun, LibraryPathsSettings, LibraryScanSummary, LibrarySettings, ManualPluginPreview,
+    MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata, ParsedReleaseMetadata,
+    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
+    PendingRelease, PluginCatalogStatus, QualityProfile, QualityProfileCriteria,
+    QualityProfileDecision, QualityProfileSelection, QualityProfileSettings, RegistryPlugin,
+    RenameApplyItemResult, RenameApplyResult, RenamePlan, RenamePlanItem,
+    ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource, ServiceSettings,
+    SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope, SystemHealth,
+    TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
-    DownloadClientConfig, DownloadQueueItem, Episode, IndexerConfig, Library, MediaFacet,
-    MediaRequest, PluginInstallation, PluginSupportTier, RuleSet, SubtitleProviderConfig, Title,
-    TitleHistoryRecord, User,
+    DownloadClientConfig, DownloadQueueItem, Episode, IndexerConfig, IndexerProxyConfig, Library,
+    MediaFacet, MediaRequest, PluginInstallation, PluginSupportTier, RuleSet,
+    SubtitleProviderConfig, Title, TitleHistoryRecord, User,
 };
 use scryer_rules;
 use serde_json::Value;
-use std::fs;
 
 pub fn parse_iso_date(value: Option<String>) -> Option<Date> {
     value.and_then(|value| Date::parse_iso(&value).ok())
@@ -73,30 +78,38 @@ fn provider_config_value_payload(
             _ => true,
         });
 
-    let (string_value, bool_value, int_value, float_value) = if field_is_secret {
-        (None, None, None, None)
+    let typed_value = if field_is_secret {
+        Some(ProviderConfigFieldValue::Secret(SecretConfigValuePayload {
+            stored: secret_stored,
+        }))
     } else {
         match value {
-            Some(Value::Bool(value)) => (None, Some(*value), None, None),
+            Some(Value::Bool(value)) => {
+                Some(ProviderConfigFieldValue::Bool(BoolConfigValuePayload {
+                    value: *value,
+                }))
+            }
             Some(Value::Number(value)) => {
                 let int_value = value.as_i64().or_else(|| {
                     value
                         .as_u64()
                         .and_then(|unsigned| i64::try_from(unsigned).ok())
                 });
-                (
-                    None,
-                    None,
-                    int_value,
-                    if int_value.is_none() {
-                        value.as_f64()
-                    } else {
-                        None
-                    },
-                )
+                match int_value {
+                    Some(value) => Some(ProviderConfigFieldValue::Int(IntConfigValuePayload {
+                        value,
+                    })),
+                    None => value.as_f64().map(|value| {
+                        ProviderConfigFieldValue::Float(FloatConfigValuePayload { value })
+                    }),
+                }
             }
-            Some(Value::String(value)) => (Some(value.clone()), None, None, None),
-            _ => (None, None, None, None),
+            Some(Value::String(value)) => {
+                Some(ProviderConfigFieldValue::String(StringConfigValuePayload {
+                    value: value.clone(),
+                }))
+            }
+            _ => None,
         }
     };
 
@@ -118,11 +131,7 @@ fn provider_config_value_payload(
             .map(provider_config_field_payload_options)
             .unwrap_or_default(),
         help_text: field.and_then(|field| field.help_text.clone()),
-        string_value,
-        bool_value,
-        int_value,
-        float_value,
-        secret_stored,
+        value: typed_value,
     }
 }
 
@@ -443,10 +452,22 @@ pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayloa
             .scoring_persona_override
             .map(ScoringPersonaValue::from_application),
         scoring_persona: ScoringPersonaValue::from_application(settings.scoring_persona),
-        filler_policy_override: settings.filler_policy_override,
-        filler_policy: settings.filler_policy,
-        recap_policy_override: settings.recap_policy_override,
-        recap_policy: settings.recap_policy,
+        filler_policy_override: settings
+            .filler_policy_override
+            .as_deref()
+            .and_then(FillerPolicyValue::from_app_str),
+        filler_policy: settings
+            .filler_policy
+            .as_deref()
+            .and_then(FillerPolicyValue::from_app_str),
+        recap_policy_override: settings
+            .recap_policy_override
+            .as_deref()
+            .and_then(RecapPolicyValue::from_app_str),
+        recap_policy: settings
+            .recap_policy
+            .as_deref()
+            .and_then(RecapPolicyValue::from_app_str),
         monitor_specials_override: settings.monitor_specials_override,
         monitor_specials: settings.monitor_specials,
         inter_season_movies_override: settings.inter_season_movies_override,
@@ -457,10 +478,16 @@ pub fn from_library_settings(settings: LibrarySettings) -> LibrarySettingsPayloa
         nfo_write_on_import: settings.nfo_write_on_import,
         plexmatch_write_on_import_override: settings.plexmatch_write_on_import_override,
         plexmatch_write_on_import: settings.plexmatch_write_on_import,
-        import_mode_override: settings
-            .import_mode_override
-            .map(|mode| mode.as_str().to_string()),
-        import_mode: settings.import_mode.as_str().to_string(),
+        import_mode_override: settings.import_mode_override.map(Into::into),
+        import_mode: settings.import_mode.into(),
+        set_permissions_linux_override: settings.set_permissions_linux_override,
+        set_permissions_linux: settings.set_permissions_linux,
+        file_chmod_override: settings.file_chmod_override,
+        file_chmod: settings.file_chmod,
+        folder_chmod_override: settings.folder_chmod_override,
+        folder_chmod: settings.folder_chmod,
+        chown_group_override: settings.chown_group_override,
+        chown_group: settings.chown_group,
         indexer_routing_override: settings.indexer_routing_override.map(|entries| {
             entries
                 .into_iter()
@@ -529,16 +556,34 @@ pub fn from_media_settings(
         folder_template: settings.folder_template,
         rename_enabled: settings.rename_enabled,
         rename_template: settings.rename_template,
-        rename_collision_policy: settings.rename_collision_policy,
-        rename_missing_metadata_policy: settings.rename_missing_metadata_policy,
-        filler_policy: settings.filler_policy,
-        recap_policy: settings.recap_policy,
+        rename_collision_policy: RenameCollisionPolicyValue::from_app_str(
+            &settings.rename_collision_policy,
+        )
+        .unwrap_or(RenameCollisionPolicyValue::Skip),
+        rename_missing_metadata_policy: RenameMissingMetadataPolicyValue::from_app_str(
+            &settings.rename_missing_metadata_policy,
+        )
+        // Match the application-layer default (DEFAULT_MISSING_METADATA_POLICY):
+        // an unparseable stored value must not flip the semantic to Skip.
+        .unwrap_or(RenameMissingMetadataPolicyValue::FallbackTitle),
+        filler_policy: settings
+            .filler_policy
+            .as_deref()
+            .and_then(FillerPolicyValue::from_app_str),
+        recap_policy: settings
+            .recap_policy
+            .as_deref()
+            .and_then(RecapPolicyValue::from_app_str),
         monitor_specials: settings.monitor_specials,
         inter_season_movies: settings.inter_season_movies,
         monitor_filler_movies: settings.monitor_filler_movies,
         nfo_write_on_import: settings.nfo_write_on_import,
         plexmatch_write_on_import: settings.plexmatch_write_on_import,
-        import_mode: settings.import_mode.as_str().to_string(),
+        import_mode: settings.import_mode.into(),
+        set_permissions_linux: settings.set_permissions_linux,
+        file_chmod: settings.file_chmod,
+        folder_chmod: settings.folder_chmod,
+        chown_group: settings.chown_group,
     }
 }
 
@@ -660,50 +705,30 @@ pub fn from_search_result(result: IndexerSearchResult) -> IndexerSearchResultPay
 
 pub fn from_submission_scope(scope: SubmissionScope) -> QueueDownloadScopePayload {
     match scope {
-        SubmissionScope::Episode { episode_id } => QueueDownloadScopePayload {
-            kind: "episode".to_string(),
-            episode_id: Some(episode_id.into()),
-            episode_ids: Vec::new(),
-            series_movie_link_id: None,
-            collection_id: None,
-        },
-        SubmissionScope::EpisodeSet { episode_ids } => QueueDownloadScopePayload {
-            kind: "episode_set".to_string(),
-            episode_id: None,
-            episode_ids: episode_ids.into_iter().map(Into::into).collect(),
-            series_movie_link_id: None,
-            collection_id: None,
-        },
+        SubmissionScope::Episode { episode_id } => {
+            QueueDownloadScopePayload::episode(episode_id.into())
+        }
+        SubmissionScope::EpisodeSet { episode_ids } => {
+            QueueDownloadScopePayload::EpisodeSet(EpisodeSetScopePayload {
+                episode_ids: episode_ids.into_iter().map(Into::into).collect(),
+            })
+        }
         SubmissionScope::SeriesMovie {
             series_movie_link_id,
-        } => QueueDownloadScopePayload {
-            kind: "series_movie".to_string(),
-            episode_id: None,
-            episode_ids: Vec::new(),
-            series_movie_link_id: Some(series_movie_link_id.into()),
-            collection_id: None,
-        },
-        SubmissionScope::Collection { collection_id } => QueueDownloadScopePayload {
-            kind: "collection".to_string(),
-            episode_id: None,
-            episode_ids: Vec::new(),
-            series_movie_link_id: None,
-            collection_id: Some(collection_id.into()),
-        },
-        SubmissionScope::Title => QueueDownloadScopePayload {
-            kind: "title".to_string(),
-            episode_id: None,
-            episode_ids: Vec::new(),
-            series_movie_link_id: None,
-            collection_id: None,
-        },
-        SubmissionScope::Orphan => QueueDownloadScopePayload {
-            kind: "orphan".to_string(),
-            episode_id: None,
-            episode_ids: Vec::new(),
-            series_movie_link_id: None,
-            collection_id: None,
-        },
+        } => QueueDownloadScopePayload::SeriesMovie(SeriesMovieScopePayload {
+            series_movie_link_id: series_movie_link_id.into(),
+        }),
+        SubmissionScope::Collection { collection_id } => {
+            QueueDownloadScopePayload::Collection(CollectionScopePayload {
+                collection_id: collection_id.into(),
+            })
+        }
+        SubmissionScope::Title => {
+            QueueDownloadScopePayload::Title(TitleScopePayload { whole_title: true })
+        }
+        SubmissionScope::Orphan => {
+            QueueDownloadScopePayload::Orphan(OrphanScopePayload { orphaned: true })
+        }
     }
 }
 
@@ -756,27 +781,20 @@ pub fn from_parsed_release(result: ParsedReleaseMetadata) -> ParsedReleasePayloa
         raw_title: result.raw_title,
         normalized_title: result.normalized_title,
         release_group: result.release_group,
-        languages_audio: result.languages_audio,
-        languages_subtitles: result.languages_subtitles,
-        year: result.year,
         quality: result.quality,
         source: result.source.map(|source| source.to_string()),
         video_codec: result.video_codec.map(|codec| codec.to_string()),
         video_encoding: result.video_encoding,
         audio: result.audio.map(|codec| codec.to_string()),
-        audio_channels: result.audio_channels,
         is_dual_audio: result.is_dual_audio,
         is_atmos: result.is_atmos,
         is_dolby_vision: result.is_dolby_vision,
         detected_hdr: result.detected_hdr,
-        fps: result.fps,
         is_proper_upload: result.is_proper_upload,
         is_remux: result.is_remux,
         is_bd_disk: result.is_bd_disk,
         is_ai_enhanced: result.is_ai_enhanced,
-        parser_version: result.parser_version.to_string(),
         parse_confidence: result.parse_confidence,
-        missing_fields: result.missing_fields,
         parse_hints: result.parse_hints,
         episode: result.episode.map(from_parsed_episode),
     }
@@ -790,8 +808,6 @@ pub fn from_parsed_episode(episode: ParsedEpisodeMetadata) -> ParsedEpisodePaylo
             .into_iter()
             .map(|value| value as i32)
             .collect(),
-        absolute_episode: episode.absolute_episode.map(|value| value as i32),
-        raw: episode.raw,
     }
 }
 
@@ -814,6 +830,7 @@ pub fn from_indexer_config_with_fields(
         name: config.name,
         provider_type: config.provider_type,
         base_url: config.base_url,
+        indexer_proxy_config_id: config.indexer_proxy_config_id.map(Into::into),
         has_api_key,
         is_managed,
         managed_parent_config_id: managed_parent_config_id.map(Into::into),
@@ -831,6 +848,38 @@ pub fn from_indexer_config_with_fields(
         config: provider_config_values_from_json_with_fields(config_json.as_deref(), config_fields),
         created_at: config.created_at,
         updated_at: config.updated_at,
+    }
+}
+
+pub fn from_indexer_proxy_config(config: IndexerProxyConfig) -> IndexerProxyConfigPayload {
+    IndexerProxyConfigPayload {
+        id: config.id.into(),
+        name: config.name,
+        provider_type: config.provider_type.as_str().to_string(),
+        protocol: config.protocol.as_str().to_string(),
+        base_url: config.base_url,
+        request_timeout_seconds: i32::try_from(config.request_timeout_seconds).unwrap_or(i32::MAX),
+        is_enabled: config.is_enabled,
+        last_health_status: config
+            .last_health_status
+            .map(|status| status.as_str().to_string()),
+        last_error_message: config.last_error_message,
+        last_error_at: config.last_error_at,
+        created_at: config.created_at,
+        updated_at: config.updated_at,
+    }
+}
+
+pub fn from_indexer_proxy_test_result(
+    result: IndexerProxyTestResult,
+) -> IndexerProxyTestResultPayload {
+    IndexerProxyTestResultPayload {
+        ok: result.ok,
+        status: result.status.as_str().to_string(),
+        message: result.message,
+        duration_ms: result
+            .duration_ms
+            .map(|value| value.min(i32::MAX as u64) as i32),
     }
 }
 
@@ -1041,6 +1090,8 @@ fn looks_like_secret_config_key(key: &str) -> bool {
     normalized.contains("password")
         || normalized.contains("secret")
         || normalized.contains("token")
+        || normalized == "username"
+        || normalized == "user_name"
         || normalized == "api_key"
         || normalized == "apikey"
         || normalized.contains("api_key")
@@ -1100,9 +1151,7 @@ pub fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPay
         state: DownloadQueueStateValue::from_domain(item.state),
         display_state,
         progress_percent: i32::from(item.progress_percent),
-        import_transfer_phase: item
-            .import_transfer_phase
-            .map(|phase| phase.as_str().to_string()),
+        import_transfer_phase: item.import_transfer_phase.map(Into::into),
         import_transfer_bytes: item.import_transfer_bytes.map(Long::from),
         import_transfer_total_bytes: item.import_transfer_total_bytes.map(Long::from),
         import_transfer_started_at: parse_optional_datetime(
@@ -1167,14 +1216,16 @@ pub fn from_title(title: Title) -> TitlePayload {
         .map(|value| !value.eq_ignore_ascii_case("disabled"));
     let monitor_specials = extract_tag_bool(&title.tags, "scryer:monitor-specials:");
     let inter_season_movies = extract_tag_bool(&title.tags, "scryer:inter-season-movies:");
-    let filler_policy = extract_tag_string(&title.tags, "scryer:filler-policy:");
-    let recap_policy = extract_tag_string(&title.tags, "scryer:recap-policy:");
+    let filler_policy = extract_tag_string(&title.tags, "scryer:filler-policy:")
+        .as_deref()
+        .and_then(FillerPolicyValue::from_app_str);
+    let recap_policy = extract_tag_string(&title.tags, "scryer:recap-policy:")
+        .as_deref()
+        .and_then(RecapPolicyValue::from_app_str);
 
     TitlePayload {
         id: title.id.into(),
         library_id: title.library_id.into(),
-        library_name: None,
-        library_slug: None,
         name: title.name,
         facet: MediaFacetValue::from_domain(title.facet),
         monitored: title.monitored,
@@ -1187,7 +1238,6 @@ pub fn from_title(title: Title) -> TitlePayload {
                 value: id.value,
             })
             .collect(),
-        created_by: title.created_by,
         created_at: title.created_at,
         year: title.year,
         overview: title.overview,
@@ -1199,7 +1249,21 @@ pub fn from_title(title: Title) -> TitlePayload {
         slug: title.slug,
         imdb_id: title.imdb_id,
         runtime_minutes: title.runtime_minutes,
-        genres: title.genres,
+        popularity: title.popularity,
+        canonical_tags: title
+            .canonical_tags
+            .into_iter()
+            .map(|tag| CanonicalMediaTagPayload {
+                key: tag.key,
+                category: tag.category,
+                name: tag.name,
+                confidence: tag.confidence,
+                sources: tag.sources,
+                source_tag_keys: tag.source_tag_keys,
+                is_adult: tag.is_adult,
+                is_spoiler: tag.is_spoiler,
+            })
+            .collect(),
         content_status: title.content_status,
         language: title.language,
         first_aired: parse_date(title.first_aired),
@@ -1209,8 +1273,6 @@ pub fn from_title(title: Title) -> TitlePayload {
         aliases: title.aliases,
         metadata_language: title.metadata_language,
         metadata_fetched_at: title.metadata_fetched_at,
-        min_availability: title.min_availability,
-        digital_release_date: parse_date(title.digital_release_date),
         quality_profile_id: quality_profile_id.map(Into::into),
         root_folder_id: title.root_folder_id.into(),
         monitor_type,
@@ -1219,13 +1281,25 @@ pub fn from_title(title: Title) -> TitlePayload {
         inter_season_movies,
         filler_policy,
         recap_policy,
-        quality_tier: None,
-        current_quality_tier: None,
-        size_bytes: None,
-        episodes_owned: None,
-        episodes_monitored: None,
-        episodes_total: None,
-        preloaded_collections: None,
+    }
+}
+
+pub fn from_title_rating_summary(ratings: TitleRatingSummary) -> TitleRatingPayload {
+    TitleRatingPayload {
+        rating: ratings.rating,
+        rating_sources: ratings.rating_sources,
+        external_ratings: ratings
+            .external_ratings
+            .into_iter()
+            .map(|rating| TitleExternalRatingPayload {
+                source: rating.source,
+                value: rating.value,
+                score: rating.score,
+                normalized: rating.normalized,
+                votes: rating.votes,
+                url: rating.url,
+            })
+            .collect(),
     }
 }
 
@@ -1247,7 +1321,10 @@ pub fn from_media_request(request: MediaRequest) -> MediaRequestPayload {
         content_status: request.content_status,
         requested_quality_profile_id: request.requested_quality_profile_id.map(Into::into),
         requested_quality_profile_name: request.requested_quality_profile_name,
-        requested_monitor_type: request.requested_monitor_type,
+        requested_monitor_type: request
+            .requested_monitor_type
+            .as_deref()
+            .and_then(monitor_type_value_from_normalized),
         resolved_by_user_id: request.resolved_by_user_id.map(Into::into),
         resolved_at: request.resolved_at,
         created_title_id: request.created_title_id.map(Into::into),
@@ -1337,7 +1414,6 @@ pub fn from_pending_import_item(item: PendingImportItem) -> PendingImportItemPay
     PendingImportItemPayload {
         id: item.id.into(),
         library_id: item.library_id.into(),
-        library_slug: item.library_slug,
         facet: MediaFacetValue::from_domain(item.facet),
         status: PendingImportStatusValue::from_application(item.status),
         title_id: item.title_id.map(Into::into),
@@ -1359,14 +1435,18 @@ pub fn from_pending_import_item(item: PendingImportItem) -> PendingImportItemPay
 
 pub fn from_pending_import_connection(
     connection: PendingImportConnection,
+    offset: i64,
 ) -> PendingImportConnectionPayload {
+    let items: Vec<_> = connection
+        .items
+        .into_iter()
+        .map(from_pending_import_item)
+        .collect();
+    let has_more = offset.saturating_add(items.len() as i64) < connection.total;
     PendingImportConnectionPayload {
-        total: connection.total as i32,
-        items: connection
-            .items
-            .into_iter()
-            .map(from_pending_import_item)
-            .collect(),
+        items,
+        total_count: connection.total as i32,
+        has_more,
     }
 }
 
@@ -1376,7 +1456,10 @@ pub fn from_resolve_pending_import_result(
     ResolvePendingImportPayload {
         title: from_title(result.title),
         created: result.created,
-        library_scan: from_library_scan_summary(result.library_scan),
+        library_scan: result.library_scan.map(from_library_scan_summary),
+        metadata_hydration_state: AddTitleHydrationStateValue::from_application(
+            result.metadata_hydration_state,
+        ),
     }
 }
 
@@ -1423,13 +1506,9 @@ pub fn from_library_scan_session(
         title_match_total_known: session.title_match_total_known,
         title_match_progress: from_library_scan_phase_progress(session.title_match_progress),
         hydration_total_known: session.metadata_total_known,
-        hydration_progress: from_library_scan_phase_progress(session.metadata_progress.clone()),
+        hydration_progress: from_library_scan_phase_progress(session.metadata_progress),
         media_analysis_total_known: session.file_total_known,
-        media_analysis_progress: from_library_scan_phase_progress(session.file_progress.clone()),
-        metadata_total_known: session.metadata_total_known,
-        file_total_known: session.file_total_known,
-        metadata_progress: from_library_scan_phase_progress(session.metadata_progress),
-        file_progress: from_library_scan_phase_progress(session.file_progress),
+        media_analysis_progress: from_library_scan_phase_progress(session.file_progress),
         summary: session.summary.map(from_library_scan_summary),
     }
 }
@@ -1470,11 +1549,522 @@ pub fn from_job_run(run: JobRun) -> JobRunPayload {
         trigger_source: JobTriggerSourceValue::from_application(run.trigger_source),
         started_at: run.started_at,
         completed_at: run.completed_at,
-        summary_json: run.summary_json,
+        summary_json: run.summary_json.map(json_string_to_value),
         summary_text: run.summary_text,
         error_text: run.error_text,
-        progress_json: run.progress_json,
+        progress_json: run.progress_json.map(json_string_to_value),
         library_scan_progress: run.library_scan_progress.map(from_library_scan_session),
+    }
+}
+
+pub fn from_discovery_sync_status(status: DiscoverySyncStatus) -> DiscoverySyncStatusPayload {
+    DiscoverySyncStatusPayload {
+        state: from_discovery_sync_state(status.state),
+        pending_context_change_count: Long(status.pending_context_change_count),
+    }
+}
+
+pub fn from_discovery_sync_state(state: DiscoverySyncStateRecord) -> DiscoverySyncStatePayload {
+    DiscoverySyncStatePayload {
+        last_success_generation_id: state.last_success_generation_id.map(ID::from),
+        last_public_feed_generation_id: state.last_public_feed_generation_id.map(ID::from),
+        last_context_snapshot_completed_at: state.last_context_snapshot_completed_at,
+        last_incremental_reload_completed_at: state.last_incremental_reload_completed_at,
+        last_public_feed_completed_at: state.last_public_feed_completed_at,
+        next_context_snapshot_eligible_at: state.next_context_snapshot_eligible_at,
+        next_incremental_reload_eligible_at: state.next_incremental_reload_eligible_at,
+        next_public_feed_eligible_at: state.next_public_feed_eligible_at,
+        updated_at: state.updated_at,
+    }
+}
+
+const DISCOVERY_HOME_MAX_SECTION_LIMIT: i32 = 100;
+
+fn discovery_home_canonical_tag_keys(
+    field_name: &str,
+    keys: Option<Vec<String>>,
+) -> scryer_application::AppResult<Vec<String>> {
+    let keys = keys.unwrap_or_default();
+    if keys.iter().any(|key| key.trim().is_empty()) {
+        return Err(scryer_application::AppError::Validation(format!(
+            "discovery home {field_name} entries must not be blank"
+        )));
+    }
+    Ok(keys)
+}
+
+pub fn discovery_home_query_from_input(
+    input: Option<DiscoveryHomeInput>,
+) -> scryer_application::AppResult<DiscoveryHomeQuery> {
+    let input = input.unwrap_or_default();
+    let filters = input.filters.unwrap_or_default();
+    let limit_per_section = match input.limit_per_section {
+        Some(value) if !(1..=DISCOVERY_HOME_MAX_SECTION_LIMIT).contains(&value) => {
+            return Err(scryer_application::AppError::Validation(format!(
+                "discovery home limitPerSection must be between 1 and {DISCOVERY_HOME_MAX_SECTION_LIMIT}"
+            )));
+        }
+        Some(value) => value as usize,
+        None => 25,
+    };
+    let minimum_rating = filters.minimum_rating;
+    if minimum_rating.is_some_and(|value| !value.is_finite() || !(0.0..=10.0).contains(&value)) {
+        return Err(scryer_application::AppError::Validation(
+            "discovery home minimumRating must be a finite value between 0 and 10".to_owned(),
+        ));
+    }
+    if let (Some(minimum_year), Some(maximum_year)) = (filters.minimum_year, filters.maximum_year)
+        && minimum_year > maximum_year
+    {
+        return Err(scryer_application::AppError::Validation(
+            "discovery home minimumYear must not exceed maximumYear".to_owned(),
+        ));
+    }
+    let genre_tag_keys = discovery_home_canonical_tag_keys("genreTagKeys", filters.genre_tag_keys)?;
+    let theme_tag_keys = discovery_home_canonical_tag_keys("themeTagKeys", filters.theme_tag_keys)?;
+
+    Ok(DiscoveryHomeQuery {
+        include_public: input.include_public.unwrap_or(true),
+        include_personalized: input.include_personalized.unwrap_or(true),
+        include_unresolved: input.include_unresolved.unwrap_or(false),
+        limit_per_section,
+        filters: DiscoveryHomeFilters {
+            content_types: filters
+                .content_types
+                .unwrap_or_default()
+                .into_iter()
+                .map(MediaFacetValue::as_scope_id)
+                .map(str::to_owned)
+                .collect(),
+            genre_tag_keys,
+            theme_tag_keys,
+            studio_slugs: filters.studio_slugs.unwrap_or_default(),
+            minimum_year: filters.minimum_year,
+            maximum_year: filters.maximum_year,
+            minimum_rating,
+        },
+    })
+}
+
+pub fn discovery_home_filter_options_query_from_input(
+    input: Option<DiscoveryHomeFilterOptionsInput>,
+) -> DiscoveryHomeQuery {
+    let input = input.unwrap_or_default();
+    DiscoveryHomeQuery {
+        include_public: input.include_public.unwrap_or(true),
+        include_personalized: input.include_personalized.unwrap_or(true),
+        include_unresolved: input.include_unresolved.unwrap_or(false),
+        ..DiscoveryHomeQuery::default()
+    }
+}
+
+pub fn discovery_items_query_from_input(input: Option<DiscoveryItemsInput>) -> DiscoveryItemsQuery {
+    let input = input.unwrap_or_default();
+    DiscoveryItemsQuery {
+        query: input.query,
+        target_keys: Vec::new(),
+        target_kinds: input.target_kinds.unwrap_or_default(),
+        sources: input.sources.unwrap_or_default(),
+        relation_types: input.relation_types.unwrap_or_default(),
+        relation_subtypes: input.relation_subtypes.unwrap_or_default(),
+        genres: input.genres.unwrap_or_default(),
+        status_tags: input.status_tags.unwrap_or_default(),
+        facet_terms: input.facet_terms.unwrap_or_default(),
+        include_owned: input.include_owned.unwrap_or(false),
+        include_unresolved: input.include_unresolved.unwrap_or(false),
+        include_public: input.include_public.unwrap_or(false),
+        limit: input.limit.map(|value| value.max(1) as usize).unwrap_or(50),
+        offset: input.offset.map(|value| value.max(0) as usize).unwrap_or(0),
+    }
+}
+
+pub fn discovery_item_detail_query_from_input(
+    input: DiscoveryItemDetailInput,
+) -> DiscoveryItemDetailQuery {
+    DiscoveryItemDetailQuery {
+        target_key: input.target_key,
+        include_unresolved: input.include_unresolved.unwrap_or(true),
+    }
+}
+
+pub fn catalog_discovery_query_from_input(input: CatalogDiscoveryInput) -> CatalogDiscoveryQuery {
+    CatalogDiscoveryQuery {
+        facet: input.facet.into_domain(),
+        library_ids: input
+            .library_ids
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        include_unresolved: input.include_unresolved.unwrap_or(true),
+        limit_per_group: input
+            .limit_per_group
+            .map(|value| value.max(1) as usize)
+            .unwrap_or(12),
+        max_groups: input
+            .max_groups
+            .map(|value| value.max(1) as usize)
+            .unwrap_or(6),
+    }
+}
+
+pub fn from_discovery_home(result: DiscoveryHomeResult) -> DiscoveryHomePayload {
+    DiscoveryHomePayload {
+        status: from_discovery_sync_status(result.status),
+        hero_item: result.hero_item.map(from_discovery_item),
+        public_sections: result
+            .public_sections
+            .into_iter()
+            .map(from_discovery_section)
+            .collect(),
+        personalized_sections: result
+            .personalized_sections
+            .into_iter()
+            .map(from_discovery_section)
+            .collect(),
+        complete_collection: result.complete_collection.map(from_discovery_section),
+        facets: result
+            .facets
+            .into_iter()
+            .map(from_discovery_facet)
+            .collect(),
+        can_view_personalized: result.can_view_personalized,
+    }
+}
+
+pub fn from_discovery_home_cards(
+    result: DiscoveryHomeResult,
+) -> scryer_application::AppResult<DiscoveryHomeCardsPayload> {
+    let hero_item = result.hero_item.map(from_discovery_home_hero).transpose()?;
+    let public_sections = result
+        .public_sections
+        .into_iter()
+        .map(from_discovery_home_section)
+        .collect::<scryer_application::AppResult<Vec<_>>>()?;
+    let personalized_sections = result
+        .personalized_sections
+        .into_iter()
+        .map(from_discovery_home_section)
+        .collect::<scryer_application::AppResult<Vec<_>>>()?;
+    let complete_collection = result
+        .complete_collection
+        .map(from_discovery_home_section)
+        .transpose()?;
+
+    Ok(DiscoveryHomeCardsPayload {
+        status: from_discovery_sync_status(result.status),
+        hero_item,
+        public_sections,
+        personalized_sections,
+        complete_collection,
+        can_view_personalized: result.can_view_personalized,
+    })
+}
+
+pub fn from_discovery_home_filter_options(
+    options: DiscoveryHomeFilterOptions,
+) -> DiscoveryHomeFilterOptionsPayload {
+    DiscoveryHomeFilterOptionsPayload {
+        genres: options
+            .genres
+            .into_iter()
+            .map(|option| CanonicalTagFilterOptionPayload {
+                key: option.key,
+                name: option.name,
+            })
+            .collect(),
+        themes: options
+            .themes
+            .into_iter()
+            .map(|option| CanonicalTagFilterOptionPayload {
+                key: option.key,
+                name: option.name,
+            })
+            .collect(),
+        studio_slugs: options.studio_slugs,
+    }
+}
+
+pub fn from_discovery_items_result(result: DiscoveryItemsResult) -> DiscoveryItemsPayload {
+    DiscoveryItemsPayload {
+        items: result.items.into_iter().map(from_discovery_item).collect(),
+        total_count: Long(result.total_count),
+        can_view_personalized: result.can_view_personalized,
+    }
+}
+
+pub fn from_catalog_discovery(result: CatalogDiscoveryResult) -> CatalogDiscoveryPayload {
+    CatalogDiscoveryPayload {
+        can_view_personalized: result.can_view_personalized,
+        groups: result
+            .groups
+            .into_iter()
+            .map(from_catalog_discovery_group)
+            .collect(),
+    }
+}
+
+fn from_catalog_discovery_group(group: CatalogDiscoveryGroup) -> CatalogDiscoveryGroupPayload {
+    CatalogDiscoveryGroupPayload {
+        id: group.id,
+        kind: from_catalog_discovery_group_kind(group.kind),
+        surface: from_catalog_discovery_surface(group.surface),
+        label_value: group.label_value,
+        total_count: Long(group.total_count),
+        items: group.items.into_iter().map(from_discovery_item).collect(),
+    }
+}
+
+fn from_catalog_discovery_group_kind(
+    kind: CatalogDiscoveryGroupKind,
+) -> CatalogDiscoveryGroupKindValue {
+    match kind {
+        CatalogDiscoveryGroupKind::PublicTop => CatalogDiscoveryGroupKindValue::PublicTop,
+        CatalogDiscoveryGroupKind::PublicSection => CatalogDiscoveryGroupKindValue::PublicSection,
+        CatalogDiscoveryGroupKind::GenreAffinity => CatalogDiscoveryGroupKindValue::GenreAffinity,
+        CatalogDiscoveryGroupKind::ThemeAffinity => CatalogDiscoveryGroupKindValue::ThemeAffinity,
+        CatalogDiscoveryGroupKind::Acclaimed => CatalogDiscoveryGroupKindValue::Acclaimed,
+        CatalogDiscoveryGroupKind::CompleteCollection => {
+            CatalogDiscoveryGroupKindValue::CompleteCollection
+        }
+        CatalogDiscoveryGroupKind::Fallback => CatalogDiscoveryGroupKindValue::Fallback,
+    }
+}
+
+fn from_catalog_discovery_surface(
+    surface: CatalogDiscoverySurface,
+) -> CatalogDiscoverySurfaceValue {
+    match surface {
+        CatalogDiscoverySurface::Public => CatalogDiscoverySurfaceValue::Public,
+        CatalogDiscoverySurface::Personalized => CatalogDiscoverySurfaceValue::Personalized,
+    }
+}
+
+pub fn from_discovery_section(section: DiscoverySectionResult) -> DiscoverySectionPayload {
+    DiscoverySectionPayload {
+        section_id: section.section_id,
+        section_type: section.section_type,
+        title: section.title,
+        surface: section.surface,
+        total_count: Long(section.total_count),
+        items: section.items.into_iter().map(from_discovery_item).collect(),
+    }
+}
+
+fn discovery_home_media_facet(
+    value: &str,
+    field_name: &str,
+) -> scryer_application::AppResult<MediaFacetValue> {
+    MediaFacetValue::parse(value).ok_or_else(|| {
+        scryer_application::AppError::Validation(format!(
+            "discovery home {field_name} must be a supported media facet: {value}"
+        ))
+    })
+}
+
+fn from_discovery_home_section(
+    section: DiscoverySectionResult,
+) -> scryer_application::AppResult<DiscoveryHomeSectionPayload> {
+    let surface = match section.surface.as_str() {
+        "public" => DiscoverySurfaceValue::Public,
+        "personalized" => DiscoverySurfaceValue::Personalized,
+        "mixed" => DiscoverySurfaceValue::Mixed,
+        value => {
+            return Err(scryer_application::AppError::Validation(format!(
+                "discovery home section has an unsupported surface: {value}"
+            )));
+        }
+    };
+    let items = section
+        .items
+        .into_iter()
+        .map(from_discovery_home_card)
+        .collect::<scryer_application::AppResult<Vec<_>>>()?;
+
+    Ok(DiscoveryHomeSectionPayload {
+        section_id: section.section_id,
+        section_type: section.section_type,
+        title: section.title,
+        surface,
+        total_count: Long(section.total_count),
+        items,
+    })
+}
+
+fn from_discovery_home_card(
+    item: DiscoveryItemRecord,
+) -> scryer_application::AppResult<DiscoveryHomeCardPayload> {
+    let target_kind = discovery_home_media_facet(&item.target_kind, "card targetKind")?;
+    let content_type = discovery_home_media_facet(
+        item.content_type
+            .as_deref()
+            .unwrap_or(item.target_kind.as_str()),
+        "card contentType",
+    )?;
+
+    Ok(DiscoveryHomeCardPayload {
+        id: item.id.into(),
+        target_key: item.target_key,
+        target_kind,
+        display_title: item.display_title,
+        original_title: item.original_title,
+        sort_title: item.sort_title,
+        year: item.year,
+        poster_url: item.poster_url,
+        content_type,
+        owned_in_input: item.owned_in_input,
+    })
+}
+
+fn from_discovery_home_hero(
+    item: DiscoveryItemRecord,
+) -> scryer_application::AppResult<DiscoveryHomeHeroPayload> {
+    let target_kind = discovery_home_media_facet(&item.target_kind, "hero targetKind")?;
+    let content_type = discovery_home_media_facet(
+        item.content_type
+            .as_deref()
+            .unwrap_or(item.target_kind.as_str()),
+        "hero contentType",
+    )?;
+
+    Ok(DiscoveryHomeHeroPayload {
+        id: item.id.into(),
+        target_key: item.target_key,
+        target_kind,
+        display_title: item.display_title,
+        original_title: item.original_title,
+        sort_title: item.sort_title,
+        year: item.year,
+        poster_url: item.poster_url,
+        background_url: item.background_url,
+        overview: item.overview,
+        content_type,
+        rating: item.rating,
+        rating_sources: item.rating_sources,
+        external_ratings: item
+            .external_ratings
+            .into_iter()
+            .map(|rating| DiscoveryExternalRatingPayload {
+                source: rating.source,
+                value: rating.value,
+                score: rating.score,
+                normalized: rating.normalized,
+                votes: rating.votes,
+                url: rating.url,
+            })
+            .collect(),
+        genre_tags: item
+            .canonical_tags
+            .into_iter()
+            .filter(|tag| tag.category.eq_ignore_ascii_case("genre"))
+            .map(|tag| CanonicalMediaTagPayload {
+                key: tag.key,
+                category: tag.category,
+                name: tag.name,
+                confidence: tag.confidence,
+                sources: tag.sources,
+                source_tag_keys: tag.source_tag_keys,
+                is_adult: tag.is_adult,
+                is_spoiler: tag.is_spoiler,
+            })
+            .collect(),
+        matched_subject_count: item.matched_subject_count,
+        owned_in_input: item.owned_in_input,
+    })
+}
+
+pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
+    DiscoveryItemPayload {
+        id: item.id.into(),
+        target_key: item.target_key,
+        target_kind: item.target_kind,
+        resolved: item.resolved,
+        resolved_title_id: item.resolved_title_id.map(ID::from),
+        display_title: item.display_title,
+        original_title: item.original_title,
+        sort_title: item.sort_title,
+        year: item.year,
+        poster_url: item.poster_url,
+        background_url: item.background_url,
+        overview: item.overview,
+        content_type: item.content_type,
+        canonical_tags: item
+            .canonical_tags
+            .into_iter()
+            .map(|tag| CanonicalMediaTagPayload {
+                key: tag.key,
+                category: tag.category,
+                name: tag.name,
+                confidence: tag.confidence,
+                sources: tag.sources,
+                source_tag_keys: tag.source_tag_keys,
+                is_adult: tag.is_adult,
+                is_spoiler: tag.is_spoiler,
+            })
+            .collect(),
+        rating: item.rating,
+        rating_sources: item.rating_sources,
+        external_ratings: item
+            .external_ratings
+            .into_iter()
+            .map(|rating| DiscoveryExternalRatingPayload {
+                source: rating.source,
+                value: rating.value,
+                score: rating.score,
+                normalized: rating.normalized,
+                votes: rating.votes,
+                url: rating.url,
+            })
+            .collect(),
+        external_ids: item
+            .external_ids
+            .into_iter()
+            .map(|external_id| DiscoveryExternalIdPayload {
+                source: external_id.source,
+                kind: external_id.kind,
+                id: external_id.id,
+                key: external_id.key,
+            })
+            .collect(),
+        status_tags: item.status_tags,
+        source_tags: item
+            .source_tags
+            .into_iter()
+            .flat_map(|tag| {
+                tag.name
+                    .into_iter()
+                    .chain(tag.category)
+                    .chain(tag.values)
+                    .collect::<Vec<_>>()
+            })
+            .collect(),
+        sources: item.sources,
+        best_source: item.best_source,
+        relation_types: item.relation_types,
+        relation_subtypes: item.relation_subtypes,
+        source_count: item.source_count,
+        edge_count: item.edge_count,
+        relation_count: item.relation_count,
+        source_subject_count: item.source_subject_count,
+        rank_score: item.rank_score,
+        matched_subject_titles: item.matched_subject_titles,
+        matched_subject_count: item.matched_subject_count,
+        tmdb_collection_id: item.tmdb_collection_id,
+        tmdb_collection_name: item.tmdb_collection_name,
+        owned_in_input: item.owned_in_input,
+        studio_slug: item.studio_slug,
+        person_ids: item.person_ids,
+        facet_terms: item.facet_terms,
+        context_terms: item.context_terms,
+    }
+}
+
+pub fn from_discovery_facet(facet: DiscoveryFacetRecord) -> DiscoveryFacetPayload {
+    DiscoveryFacetPayload {
+        name: facet.facet_name,
+        value: facet.facet_value,
+        smg_count: facet.smg_count.map(Long),
+        local_count: facet.local_count.map(Long),
     }
 }
 
@@ -1483,8 +2073,12 @@ pub fn from_media_rename_plan(plan: RenamePlan) -> MediaRenamePlanPayload {
         facet: MediaFacetValue::from_domain(plan.facet),
         title_id: plan.title_id.map(Into::into),
         template: plan.template,
-        collision_policy: plan.collision_policy.as_str().to_string(),
-        missing_metadata_policy: plan.missing_metadata_policy.as_str().to_string(),
+        collision_policy: RenameCollisionPolicyValue::from_app_str(plan.collision_policy.as_str())
+            .unwrap_or(RenameCollisionPolicyValue::Skip),
+        missing_metadata_policy: RenameMissingMetadataPolicyValue::from_app_str(
+            plan.missing_metadata_policy.as_str(),
+        )
+        .unwrap_or(RenameMissingMetadataPolicyValue::FallbackTitle),
         fingerprint: plan.fingerprint,
         total: plan.total as i32,
         renamable: plan.renamable as i32,
@@ -1502,7 +2096,6 @@ pub fn from_media_rename_plan(plan: RenamePlan) -> MediaRenamePlanPayload {
 fn from_media_rename_plan_item(item: RenamePlanItem) -> MediaRenamePlanItemPayload {
     MediaRenamePlanItemPayload {
         collection_id: item.collection_id.map(Into::into),
-        media_file_id: item.media_file_id.map(Into::into),
         series_movie_link_ids: item
             .series_movie_link_ids
             .into_iter()
@@ -1515,7 +2108,7 @@ fn from_media_rename_plan_item(item: RenamePlanItem) -> MediaRenamePlanItemPaylo
         reason_code: item.reason_code,
         write_action: item.write_action.as_str().to_string(),
         source_size_bytes: item.source_size_bytes.map(Long::from_u64_saturating),
-        source_mtime_unix_ms: item.source_mtime_unix_ms.map(|value| value.to_string()),
+        source_mtime_unix_ms: item.source_mtime_unix_ms.map(Long::from),
     }
 }
 
@@ -1537,7 +2130,6 @@ pub fn from_media_rename_apply(result: RenameApplyResult) -> MediaRenameApplyPay
 fn from_media_rename_apply_item(item: RenameApplyItemResult) -> MediaRenameApplyItemPayload {
     MediaRenameApplyItemPayload {
         collection_id: item.collection_id.map(Into::into),
-        media_file_id: item.media_file_id.map(Into::into),
         series_movie_link_ids: item
             .series_movie_link_ids
             .into_iter()
@@ -1554,16 +2146,14 @@ fn from_media_rename_apply_item(item: RenameApplyItemResult) -> MediaRenameApply
 }
 
 pub fn from_collection(collection: Collection) -> CollectionPayload {
-    let file_size_bytes = file_size_bytes_for_path(collection.ordered_path.as_deref());
     CollectionPayload {
         id: collection.id.into(),
         title_id: collection.title_id.into(),
-        collection_type: collection.collection_type.as_str().to_string(),
+        collection_type: collection.collection_type.into(),
         collection_index: collection.collection_index,
         label: collection.label,
         ordered_path: collection.ordered_path,
         narrative_order: collection.narrative_order,
-        file_size_bytes: file_size_bytes.map(Long::from),
         first_episode_number: collection.first_episode_number,
         last_episode_number: collection.last_episode_number,
         monitored: collection.monitored,
@@ -1575,59 +2165,33 @@ pub fn from_movie_entity(movie: scryer_domain::MovieEntity) -> MovieEntityPayloa
     MovieEntityPayload {
         id: movie.id.into(),
         title: movie.title,
-        sort_title: movie.sort_title,
         slug: movie.slug,
         year: movie.year,
         overview: movie.overview,
         poster_url: movie.poster_url,
-        background_url: movie.background_url,
-        language: movie.language,
         runtime_minutes: movie.runtime_minutes,
         content_status: movie.content_status,
-        genres: movie.genres,
-        studio: movie.studio,
-        digital_release_date: parse_date(movie.digital_release_date),
         imdb_id: movie.imdb_id,
         tvdb_id: movie.tvdb_id,
         tmdb_id: movie.tmdb_id,
         mal_id: movie.mal_id,
         anidb_id: movie.anidb_id,
-        created_at: movie.created_at,
-        updated_at: movie.updated_at,
     }
 }
 
 pub fn from_series_movie_link(link: scryer_domain::SeriesMovieLink) -> SeriesMovieLinkPayload {
     SeriesMovieLinkPayload {
         id: link.id.into(),
-        series_title_id: link.series_title_id.into(),
         movie: from_movie_entity(link.movie),
-        placement: link.placement,
         narrative_order: link.narrative_order,
         after_season: link.after_season,
         before_season: link.before_season,
         linked_episode_id: link.linked_episode_id.map(Into::into),
-        association_confidence: link.association_confidence,
         continuity_status: link.continuity_status,
         movie_form: link.movie_form,
-        confidence: link.confidence,
         signal_summary: link.signal_summary,
-        source: link.source,
         monitored: link.monitored,
-        created_at: link.created_at,
-        updated_at: link.updated_at,
     }
-}
-
-pub fn file_size_bytes_for_path(ordered_path: Option<&str>) -> Option<i64> {
-    let path = stored_path_to_path_buf(ordered_path?);
-    fs::metadata(&path).ok().and_then(|metadata| {
-        if metadata.is_file() {
-            Some(metadata.len() as i64)
-        } else {
-            None
-        }
-    })
 }
 
 pub fn from_episode(episode: Episode) -> EpisodePayload {
@@ -1635,7 +2199,7 @@ pub fn from_episode(episode: Episode) -> EpisodePayload {
         id: episode.id.into(),
         title_id: episode.title_id.into(),
         collection_id: episode.collection_id.map(Into::into),
-        episode_type: episode.episode_type.as_str().to_string(),
+        episode_type: episode.episode_type.into(),
         episode_number: episode.episode_number,
         season_number: episode.season_number,
         episode_label: episode.episode_label,
@@ -1648,7 +2212,6 @@ pub fn from_episode(episode: Episode) -> EpisodePayload {
         is_filler: episode.is_filler,
         is_recap: episode.is_recap,
         absolute_number: episode.absolute_number,
-        tvdb_id: episode.tvdb_id,
         image_url: episode.image_url,
         monitored: episode.monitored,
         created_at: episode.created_at,
@@ -1698,7 +2261,6 @@ pub fn from_title_media_file(file: scryer_application::TitleMediaFile) -> TitleM
         video_frame_rate: file.video_frame_rate,
         video_profile: file.video_profile,
         audio_codec: file.audio_codec,
-        audio_profile: file.audio_profile,
         audio_channels: file.audio_channels,
         audio_bitrate_kbps: file.audio_bitrate_kbps,
         audio_languages: file.audio_languages,
@@ -1707,7 +2269,6 @@ pub fn from_title_media_file(file: scryer_application::TitleMediaFile) -> TitleM
             .into_iter()
             .map(|s| crate::types::AudioStreamDetailPayload {
                 codec: s.codec,
-                profile: s.profile,
                 channels: s.channels,
                 language: s.language,
                 bitrate_kbps: s.bitrate_kbps,
@@ -1736,7 +2297,6 @@ pub fn from_title_media_file(file: scryer_application::TitleMediaFile) -> TitleM
         resolution: file.resolution,
         video_codec_parsed: file.video_codec_parsed.map(|codec| codec.to_string()),
         audio_codec_parsed: file.audio_codec_parsed,
-        audio_channels_parsed: file.audio_channels_parsed,
         acquisition_score: file.acquisition_score,
         scoring_log: file.scoring_log,
         indexer_source: file.indexer_source,
@@ -1934,7 +2494,7 @@ pub fn from_activity_event(event: ActivityEvent) -> ActivityEventPayload {
             .into_iter()
             .map(ActivityChannelValue::from_application)
             .collect(),
-        actor_kind: event.actor_kind.as_str().to_string(),
+        actor_kind: event.actor_kind.into(),
         actor_user_id: event.actor_user_id.map(Into::into),
         actor_display_name: event.actor_display_name,
         title_id: event.title_id.map(Into::into),
@@ -1996,7 +2556,7 @@ pub fn from_import_record(record: scryer_domain::ImportRecord) -> ImportRecordPa
 }
 
 pub fn from_wanted_item(
-    item: scryer_application::WantedItem,
+    item: scryer_application::AcquisitionScopeState,
 ) -> scryer_application::AppResult<WantedItemPayload> {
     Ok(WantedItemPayload {
         id: item.id.into(),
@@ -2017,16 +2577,7 @@ pub fn from_wanted_item(
                 item.media_type
             ))
         })?,
-        search_phase: WantedSearchPhaseValue::parse(&item.search_phase).ok_or_else(|| {
-            scryer_application::AppError::Validation(format!(
-                "invalid wanted item search_phase '{}'",
-                item.search_phase
-            ))
-        })?,
-        next_search_at: parse_optional_datetime(item.next_search_at, "wanted item next_search_at"),
         last_search_at: parse_optional_datetime(item.last_search_at, "wanted item last_search_at"),
-        search_count: item.search_count,
-        baseline_date: parse_date(item.baseline_date),
         status: WantedStatusValue::from_application(item.status),
         grabbed_release: item.grabbed_release,
         current_score: item.current_score,
@@ -2035,11 +2586,102 @@ pub fn from_wanted_item(
             .map(from_release_decision)
             .transpose()?,
         mismatch_recovery_eligible: item.mismatch_recovery_eligible,
+        // Relation-field state rows (`title.wantedItems`, `episode.wantedItem`) are
+        // not the convergence display surface (RFC 119 §6): the derived Missing /
+        // Upgrades views carry live convergence; here we present a neutral default
+        // so the shared payload stays well-typed off a bare state row.
+        convergence_state: ConvergenceStateValue::Queued,
+        indexers_covered: 0,
+        indexers_routed: 0,
+        recency_lane: RecencyLaneValue::Cold,
         created_at: parse_datetime(&item.created_at, "wanted item created_at")
             .map_err(scryer_application::AppError::Validation)?,
         updated_at: parse_datetime(&item.updated_at, "wanted item updated_at")
             .map_err(scryer_application::AppError::Validation)?,
     })
+}
+
+/// Map a derived Missing/Upgrades view row onto the shared `WantedItemPayload`
+/// (RFC 119 §6). The payload `id` is the scope identity: the state-row id when a
+/// state row exists, else the convergence scope key — so a derived target with no
+/// state row is still addressable (pause/resume and the interactive search job both
+/// accept a scope key). Convergence progress and the recency lane come from the
+/// batched per-page derivation.
+pub fn from_wanted_scope_view(
+    view: scryer_application::WantedScopeView,
+) -> scryer_application::AppResult<WantedItemPayload> {
+    let id = view
+        .state
+        .as_ref()
+        .map(|state| state.id.clone())
+        .unwrap_or_else(|| view.scope_key.clone());
+    let state = view.state;
+    Ok(WantedItemPayload {
+        id: id.into(),
+        title_id: view.title_id.into(),
+        title_name: view.title_name,
+        title_slug: view.title_slug,
+        title_facet: Some(view.facet.as_str().to_string()),
+        library_id: Some(view.library_id.into()),
+        library_name: view.library_name,
+        library_slug: view.library_slug,
+        episode_id: view.episode_id.map(Into::into),
+        collection_id: view.collection_id.map(Into::into),
+        season_number: view.season_number,
+        episode_number: view.episode_number,
+        media_type: WantedMediaTypeValue::parse(&view.media_type).ok_or_else(|| {
+            scryer_application::AppError::Validation(format!(
+                "invalid wanted view media_type '{}'",
+                view.media_type
+            ))
+        })?,
+        last_search_at: state.as_ref().and_then(|state| {
+            parse_optional_datetime(state.last_search_at.clone(), "wanted view last_search_at")
+        }),
+        status: state
+            .as_ref()
+            .map(|state| WantedStatusValue::from_application(state.status))
+            .unwrap_or(WantedStatusValue::Wanted),
+        grabbed_release: state
+            .as_ref()
+            .and_then(|state| state.grabbed_release.clone()),
+        current_score: state.as_ref().and_then(|state| state.current_score),
+        latest_release_decision: state
+            .as_ref()
+            .and_then(|state| state.latest_release_decision.clone())
+            .map(from_release_decision)
+            .transpose()?,
+        mismatch_recovery_eligible: state
+            .as_ref()
+            .is_some_and(|state| state.mismatch_recovery_eligible),
+        convergence_state: convergence_state_value(view.convergence.state),
+        indexers_covered: view.convergence.indexers_covered,
+        indexers_routed: view.convergence.indexers_routed,
+        recency_lane: if view.is_hot {
+            RecencyLaneValue::Hot
+        } else {
+            RecencyLaneValue::Cold
+        },
+        created_at: state
+            .as_ref()
+            .and_then(|state| parse_datetime(&state.created_at, "wanted view created_at").ok())
+            .unwrap_or_else(chrono::Utc::now),
+        updated_at: state
+            .as_ref()
+            .and_then(|state| parse_datetime(&state.updated_at, "wanted view updated_at").ok())
+            .unwrap_or_else(chrono::Utc::now),
+    })
+}
+
+fn convergence_state_value(
+    state: scryer_application::WantedConvergenceState,
+) -> ConvergenceStateValue {
+    match state {
+        scryer_application::WantedConvergenceState::Queued => ConvergenceStateValue::Queued,
+        scryer_application::WantedConvergenceState::Searching => ConvergenceStateValue::Searching,
+        scryer_application::WantedConvergenceState::Converged => ConvergenceStateValue::Converged,
+        scryer_application::WantedConvergenceState::Deferred => ConvergenceStateValue::Deferred,
+    }
 }
 
 pub fn from_release_decision(
@@ -2056,7 +2698,7 @@ pub fn from_release_decision(
         candidate_score: decision.candidate_score,
         current_score: decision.current_score,
         score_delta: decision.score_delta,
-        explanation_json: decision.explanation_json,
+        explanation_json: decision.explanation_json.map(json_string_to_value),
         created_at: parse_datetime(&decision.created_at, "release decision created_at")
             .map_err(scryer_application::AppError::Validation)?,
     })
@@ -2075,7 +2717,7 @@ pub fn from_wanted_status_count(
     item: scryer_application::WantedStatusCount,
 ) -> WantedStatusCountPayload {
     WantedStatusCountPayload {
-        status: scryer_application::WantedStatus::parse(&item.status)
+        status: scryer_application::AcquisitionScopeStatus::parse(&item.status)
             .map(WantedStatusValue::from_application)
             .unwrap_or(WantedStatusValue::Wanted),
         count: item.count,
@@ -2422,18 +3064,18 @@ pub fn from_notification_target(
 
 pub fn from_domain_event(event: DomainEvent) -> DomainEventEnvelopePayload {
     let (stream_kind, stream_id) = match event.stream {
-        scryer_domain::DomainEventStream::Global => ("global".to_string(), None),
+        scryer_domain::DomainEventStream::Global => (StreamKindValue::Global, None),
         scryer_domain::DomainEventStream::Title { title_id } => {
-            ("title".to_string(), Some(title_id))
+            (StreamKindValue::Title, Some(title_id))
         }
         scryer_domain::DomainEventStream::LibraryScan { session_id } => {
-            ("library_scan".to_string(), Some(session_id))
+            (StreamKindValue::LibraryScan, Some(session_id))
         }
         scryer_domain::DomainEventStream::JobRun { run_id } => {
-            ("job_run".to_string(), Some(run_id))
+            (StreamKindValue::JobRun, Some(run_id))
         }
         scryer_domain::DomainEventStream::DownloadQueueItem { item_id } => {
-            ("download_queue_item".to_string(), Some(item_id))
+            (StreamKindValue::DownloadQueueItem, Some(item_id))
         }
     };
 
@@ -2441,7 +3083,7 @@ pub fn from_domain_event(event: DomainEvent) -> DomainEventEnvelopePayload {
         sequence: Long::from(event.sequence),
         event_id: event.event_id.into(),
         occurred_at: event.occurred_at,
-        actor_kind: event.actor_kind.as_str().to_string(),
+        actor_kind: event.actor_kind.into(),
         actor_user_id: event.actor_user_id.map(Into::into),
         actor_display_name: event.actor_display_name,
         title_id: event.title_id.map(Into::into),
@@ -2489,7 +3131,7 @@ pub fn from_plugin_installation(inst: PluginInstallation) -> PluginInstallationP
 
 pub fn from_plugin_catalog_status(status: PluginCatalogStatus) -> PluginCatalogStatusPayload {
     PluginCatalogStatusPayload {
-        refresh_state: status.refresh_state,
+        refresh_state: CatalogRefreshStateValue::from_app_str(&status.refresh_state),
         github_available: status.github_available,
         last_checked_at: parse_optional_datetime(
             status.last_checked_at,
@@ -2550,7 +3192,7 @@ pub fn from_pending_release(pr: PendingRelease) -> PendingReleasePayload {
         release_url: pr.release_url,
         release_size_bytes: pr.release_size_bytes.map(Long::from),
         release_score: pr.release_score,
-        scoring_log_json: pr.scoring_log_json,
+        scoring_log_json: pr.scoring_log_json.map(json_string_to_value),
         indexer_source: pr.indexer_source,
         added_at: parse_required_datetime(&pr.added_at, "pending release added_at"),
         delay_until: parse_required_datetime(&pr.delay_until, "pending release delay_until"),
@@ -2566,7 +3208,7 @@ pub fn from_pp_script(s: scryer_domain::PostProcessingScript) -> PostProcessingS
         script_type: s.script_type.as_str().to_string(),
         script_content: s.script_content,
         applied_facets: s.applied_facets,
-        execution_mode: s.execution_mode.as_str().to_string(),
+        execution_mode: s.execution_mode.into(),
         timeout_secs: s.timeout_secs as i32,
         priority: s.priority,
         enabled: s.enabled,
@@ -2592,7 +3234,6 @@ pub fn from_pp_script_run(
         stdout_tail: r.stdout_tail,
         stderr_tail: r.stderr_tail,
         duration_ms: r.duration_ms.map(|v| v as i32),
-        env_payload_json: r.env_payload_json,
         started_at: parse_required_datetime(&r.started_at, "post-processing script run started_at"),
         completed_at: parse_optional_datetime(
             r.completed_at,
@@ -2613,9 +3254,7 @@ pub fn from_title_history_record(
         episode_ids: record.episode_ids.into_iter().map(Into::into).collect(),
         collection_id: record.collection_id.map(Into::into),
         event_type: record.event_type.as_str().to_string(),
-        actor_kind: record
-            .actor_kind
-            .map(|actor_kind| actor_kind.as_str().to_string()),
+        actor_kind: record.actor_kind.map(Into::into),
         actor_user_id: record.actor_user_id.map(Into::into),
         actor_display_name: record.actor_display_name,
         source_title: record.source_title,
@@ -2634,7 +3273,7 @@ pub fn from_title_history_record(
         blocklist_reason: record.blocklist_reason,
         source_path: record.source_path,
         dest_path: record.dest_path,
-        data_json: record.data_json,
+        data_json: record.data_json.map(json_string_to_value),
         occurred_at: parse_datetime(&record.occurred_at, "title history occurred_at")
             .map_err(scryer_application::AppError::Validation)?,
         created_at: parse_datetime(&record.created_at, "title history created_at")
@@ -2644,25 +3283,57 @@ pub fn from_title_history_record(
 
 pub fn from_title_history_page(
     page: TitleHistoryPage,
+    offset: usize,
 ) -> scryer_application::AppResult<TitleHistoryPagePayload> {
+    let items = page
+        .records
+        .into_iter()
+        .map(from_title_history_record)
+        .collect::<scryer_application::AppResult<Vec<_>>>()?;
+    let has_more = (offset.saturating_add(items.len()) as i64) < page.total_count;
     Ok(TitleHistoryPagePayload {
-        records: page
-            .records
-            .into_iter()
-            .map(from_title_history_record)
-            .collect::<scryer_application::AppResult<Vec<_>>>()?,
+        items,
         total_count: page.total_count,
+        has_more,
     })
+}
+
+/// Media-request storage keeps the flattened, lowercase normalization of the
+/// monitor type ("futureepisodes"); the API exposes the typed enum.
+fn monitor_type_value_from_normalized(value: &str) -> Option<MonitorTypeValue> {
+    match value {
+        "monitored" => Some(MonitorTypeValue::Monitored),
+        "unmonitored" => Some(MonitorTypeValue::Unmonitored),
+        "futureepisodes" => Some(MonitorTypeValue::FutureEpisodes),
+        "missingandfutureepisodes" => Some(MonitorTypeValue::MissingAndFutureEpisodes),
+        "allepisodes" => Some(MonitorTypeValue::AllEpisodes),
+        "none" => Some(MonitorTypeValue::NoneSelected),
+        _ => None,
+    }
+}
+
+/// Boundary conversion for JSON persisted as text in the application layer:
+/// the wire carries real JSON, never a string-encoded document.
+pub fn json_string_to_value(raw: String) -> async_graphql::Json<serde_json::Value> {
+    async_graphql::Json(serde_json::from_str(&raw).unwrap_or(serde_json::Value::Null))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        from_import_record, from_title_history_record, from_wanted_item,
-        provider_config_values_from_json_with_fields, provider_config_values_to_json,
+        discovery_home_query_from_input, from_discovery_home_section, from_import_record,
+        from_title_history_record, from_wanted_item, provider_config_values_from_json_with_fields,
+        provider_config_values_to_json,
     };
-    use crate::types::{MediaFacetValue, PluginConfigFieldTypeValue, ProviderConfigValueInput};
-    use scryer_application::{WantedItem, WantedStatus};
+    use crate::types::{
+        BoolConfigValuePayload, DiscoveryHomeFiltersInput, DiscoveryHomeInput,
+        DiscoverySurfaceValue, FloatConfigValuePayload, IntConfigValuePayload, MediaFacetValue,
+        PluginConfigFieldTypeValue, ProviderConfigFieldValue, ProviderConfigValueInput,
+        SecretConfigValuePayload,
+    };
+    use scryer_application::{
+        AcquisitionScopeState, AcquisitionScopeStatus, DiscoverySectionResult,
+    };
     use scryer_domain::{
         CompletedDownload, ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, ImportRecord,
         ImportStatus, ImportType, TitleHistoryEventType, TitleHistoryRecord,
@@ -2696,8 +3367,8 @@ mod tests {
         }
     }
 
-    fn wanted_item_fixture() -> WantedItem {
-        WantedItem {
+    fn wanted_item_fixture() -> AcquisitionScopeState {
+        AcquisitionScopeState {
             id: "wanted-1".to_string(),
             title_id: "title-1".to_string(),
             title_name: Some("Example".to_string()),
@@ -2712,12 +3383,8 @@ mod tests {
             season_number: None,
             episode_number: None,
             media_type: "movie".to_string(),
-            search_phase: "primary".to_string(),
-            next_search_at: None,
             last_search_at: None,
-            search_count: 0,
-            baseline_date: None,
-            status: WantedStatus::Wanted,
+            status: AcquisitionScopeStatus::Wanted,
             grabbed_release: None,
             current_score: None,
             latest_release_decision: None,
@@ -2772,6 +3439,7 @@ mod tests {
             Some(
                 r#"{
                   "api_key": "super-secret",
+                  "username": "operator",
                   "base_url": "https://example.test",
                   "enabled": true,
                   "retries": 3,
@@ -2796,26 +3464,45 @@ mod tests {
             Some(PluginConfigFieldTypeValue::Password)
         ));
         assert!(api_key.required);
-        assert!(api_key.secret_stored);
-        assert_eq!(api_key.string_value, None);
-        assert_eq!(api_key.bool_value, None);
-        assert_eq!(api_key.int_value, None);
-        assert_eq!(api_key.float_value, None);
+        assert!(matches!(
+            api_key.value,
+            Some(ProviderConfigFieldValue::Secret(SecretConfigValuePayload {
+                stored: true
+            }))
+        ));
+        let username = field("username");
+        assert!(matches!(
+            username.value,
+            Some(ProviderConfigFieldValue::Secret(SecretConfigValuePayload {
+                stored: true
+            }))
+        ));
 
         let base_url = field("base_url");
-        assert_eq!(
-            base_url.string_value.as_deref(),
-            Some("https://example.test")
-        );
-        assert!(!base_url.secret_stored);
-        assert_eq!(field("enabled").bool_value, Some(true));
-        assert_eq!(field("retries").int_value, Some(3));
-        assert_eq!(field("ratio").float_value, Some(1.5));
+        match &base_url.value {
+            Some(ProviderConfigFieldValue::String(payload)) => {
+                assert_eq!(payload.value, "https://example.test");
+            }
+            _ => panic!("base_url should be a string value"),
+        }
+        assert!(matches!(
+            field("enabled").value,
+            Some(ProviderConfigFieldValue::Bool(BoolConfigValuePayload {
+                value: true
+            }))
+        ));
+        assert!(matches!(
+            field("retries").value,
+            Some(ProviderConfigFieldValue::Int(IntConfigValuePayload {
+                value: 3
+            }))
+        ));
+        assert!(matches!(
+            field("ratio").value,
+            Some(ProviderConfigFieldValue::Float(FloatConfigValuePayload { value })) if value == 1.5
+        ));
         let metadata = field("metadata");
-        assert_eq!(metadata.string_value, None);
-        assert_eq!(metadata.bool_value, None);
-        assert_eq!(metadata.int_value, None);
-        assert_eq!(metadata.float_value, None);
+        assert!(metadata.value.is_none());
     }
 
     #[test]
@@ -2924,5 +3611,107 @@ mod tests {
             Some("Example.Show.S01E01.1080p.WEB-DL")
         );
         assert!(matches!(mapped.facet, Some(MediaFacetValue::Anime)));
+    }
+
+    #[test]
+    fn discovery_home_filters_require_valid_ranges() {
+        let invalid_rating = discovery_home_query_from_input(Some(DiscoveryHomeInput {
+            filters: Some(DiscoveryHomeFiltersInput {
+                minimum_rating: Some(10.1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .expect_err("ratings above ten must be rejected");
+        assert!(invalid_rating.to_string().contains("minimumRating"));
+
+        let invalid_years = discovery_home_query_from_input(Some(DiscoveryHomeInput {
+            filters: Some(DiscoveryHomeFiltersInput {
+                minimum_year: Some(2025),
+                maximum_year: Some(2024),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .expect_err("inverted years must be rejected");
+        assert!(invalid_years.to_string().contains("minimumYear"));
+
+        let invalid_limit = discovery_home_query_from_input(Some(DiscoveryHomeInput {
+            limit_per_section: Some(0),
+            ..Default::default()
+        }))
+        .expect_err("zero card limits must be rejected");
+        assert!(invalid_limit.to_string().contains("limitPerSection"));
+
+        let blank_tag_key = discovery_home_query_from_input(Some(DiscoveryHomeInput {
+            filters: Some(DiscoveryHomeFiltersInput {
+                genre_tag_keys: Some(vec!["  ".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .expect_err("blank canonical tag keys must be rejected");
+        assert!(blank_tag_key.to_string().contains("genreTagKeys"));
+    }
+
+    #[test]
+    fn discovery_home_filters_map_media_enums_and_canonical_tag_keys() {
+        let query = discovery_home_query_from_input(Some(DiscoveryHomeInput {
+            filters: Some(DiscoveryHomeFiltersInput {
+                content_types: Some(vec![MediaFacetValue::Anime, MediaFacetValue::Movie]),
+                genre_tag_keys: Some(vec!["Canonical:Genre:Drama".to_string()]),
+                theme_tag_keys: Some(vec!["canonical:theme:found-family".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .expect("semantic filters should map");
+
+        assert_eq!(query.filters.content_types, ["anime", "movie"]);
+        assert_eq!(query.filters.genre_tag_keys, ["Canonical:Genre:Drama"]);
+        assert_eq!(
+            query.filters.theme_tag_keys,
+            ["canonical:theme:found-family"]
+        );
+    }
+
+    #[test]
+    fn discovery_home_section_maps_mixed_surface() {
+        let section = from_discovery_home_section(DiscoverySectionResult {
+            section_id: "top_rated".to_string(),
+            section_type: "TOP_RATED".to_string(),
+            title: "Top Rated".to_string(),
+            surface: "mixed".to_string(),
+            total_count: 0,
+            items: Vec::new(),
+        })
+        .expect("mixed is a supported discovery home surface");
+
+        assert!(matches!(section.surface, DiscoverySurfaceValue::Mixed));
+    }
+
+    #[test]
+    fn discovery_home_section_rejects_unknown_surface_without_panicking() {
+        let error = from_discovery_home_section(DiscoverySectionResult {
+            section_id: "invalid".to_string(),
+            section_type: "PUBLIC_SECTION".to_string(),
+            title: "Invalid".to_string(),
+            surface: "unknown".to_string(),
+            total_count: 0,
+            items: Vec::new(),
+        })
+        .err()
+        .expect("unknown surfaces must be returned as validation errors");
+
+        assert!(error.to_string().contains("unsupported surface"));
+    }
+
+    #[test]
+    fn discovery_home_rejects_unknown_media_facets_without_panicking() {
+        let error = super::discovery_home_media_facet("documentary", "card targetKind")
+            .err()
+            .expect("unsupported media facets must be returned as validation errors");
+
+        assert!(error.to_string().contains("card targetKind"));
     }
 }

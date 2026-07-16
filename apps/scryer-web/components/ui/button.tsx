@@ -5,21 +5,27 @@ import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-offset-0 aria-invalid:ring-[var(--scry-danger-border)] aria-invalid:border-[var(--scry-danger-border-strong)]",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
-        primary: "bg-primary text-primary-foreground hover:bg-primary/90",
+        default:
+          "border-0 bg-primary text-primary-foreground shadow-none hover:bg-primary/90 focus-visible:ring-[var(--scry-accent-ring)]",
+        primary:
+          "border-0 bg-primary text-primary-foreground shadow-none hover:bg-primary/90 focus-visible:ring-[var(--scry-accent-ring)]",
         destructive:
-          "bg-destructive/60 text-foreground hover:bg-destructive/90 focus-visible:ring-destructive/20 focus-visible:ring-destructive/40",
+          "border border-[var(--scry-danger-border)] bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)] hover:border-[var(--scry-danger-border-strong)] hover:bg-[var(--scry-danger-solid-hover)] focus-visible:ring-[var(--scry-danger-border-strong)]",
+        warning:
+          "border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)] hover:border-[var(--scry-warning-border-strong)] hover:bg-[var(--scry-warning-bg-strong)] focus-visible:ring-[var(--scry-warning-border-strong)]",
+        success:
+          "border border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] focus-visible:ring-[var(--scry-success-border-strong)]",
         outline:
-          "border bg-input/30 border-input shadow-xs hover:bg-input/50 hover:text-accent-foreground",
+          "border border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[var(--scry-ink2)] shadow-none hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] focus-visible:ring-[var(--scry-accent-ring)]",
         secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+          "border border-[var(--scry-border2)] bg-[var(--scry-soft)] text-[var(--scry-text2)] shadow-none hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] focus-visible:ring-[var(--scry-accent-ring)]",
         ghost:
-          "hover:bg-accent/50 hover:text-accent-foreground",
-        link: "text-primary underline-offset-4 hover:underline",
+          "text-[var(--scry-muted2)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] focus-visible:ring-[var(--scry-accent-ring)]",
+        link: "text-[var(--scry-accent-text)] underline-offset-4 hover:underline focus-visible:ring-[var(--scry-accent-ring)]",
       },
       size: {
         default: "h-9 px-4 py-2 has-[>svg]:px-3",

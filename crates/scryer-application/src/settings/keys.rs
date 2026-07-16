@@ -17,12 +17,13 @@ pub const LEGACY_NZBGET_CATEGORY_SETTING_KEY: &str = "nzbget.category";
 pub const NZBGET_RECENT_PRIORITY_SETTING_KEY: &str = "nzbget.recent_priority";
 pub const NZBGET_OLDER_PRIORITY_SETTING_KEY: &str = "nzbget.older_priority";
 pub const INDEXER_ROUTING_SETTINGS_KEY: &str = "indexer.routing";
-pub const FRUITLESS_WANTED_RESET_LAST_RUN_KEY: &str =
-    "acquisition.fruitless_wanted_reset.last_run_at";
 pub(crate) const INDEXER_ROUTING_MOVIE_DEFAULT_CATEGORIES: &[&str] = &["2000"];
 pub(crate) const INDEXER_ROUTING_SERIES_DEFAULT_CATEGORIES: &[&str] = &["5000"];
 pub(crate) const INDEXER_ROUTING_ANIME_DEFAULT_CATEGORIES: &[&str] = &["5070"];
 pub const METADATA_LANGUAGE_KEY: &str = "metadata_language";
+// RFC 121 SW5: discovery region seam. Read like metadata_language; a future
+// preferences UI only has to write this key (defaults to "US" -> unchanged).
+pub const DISCOVERY_REGION_KEY: &str = "discovery.region";
 pub const HISTORY_KEEP_FOREVER_KEY: &str = "history.keep_forever";
 pub const HISTORY_RETENTION_DAYS_KEY: &str = "history.retention_days";
 pub const PLUGIN_HTTP_CA_BUNDLE_PEM_KEY: &str = "plugins.http.ca_bundle_pem";
@@ -103,6 +104,10 @@ pub const NFO_WRITE_ON_IMPORT_ANIME_KEY: &str = "nfo.write_on_import.anime";
 pub const PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY: &str = "plexmatch.write_on_import.series";
 pub const PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY: &str = "plexmatch.write_on_import.anime";
 pub const IMPORT_MODE_KEY: &str = "import.mode";
+pub const SET_PERMISSIONS_LINUX_KEY: &str = "permissions.set_linux";
+pub const FILE_CHMOD_KEY: &str = "permissions.file_chmod";
+pub const FOLDER_CHMOD_KEY: &str = "permissions.folder_chmod";
+pub const CHOWN_GROUP_KEY: &str = "permissions.chown_group";
 
 pub const POST_PROCESSING_SCRIPT_MOVIE_KEY: &str = "post_processing.script.movie";
 pub const POST_PROCESSING_SCRIPT_SERIES_KEY: &str = "post_processing.script.series";

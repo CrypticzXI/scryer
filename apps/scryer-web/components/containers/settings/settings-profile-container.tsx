@@ -8,6 +8,7 @@ import {
   linkJellyfinAccountMutation,
   linkPlexAccountMutation,
   revokeMyOauthAppMutation,
+  setMyUiSettingsMutation,
   setUserPasswordMutation,
   totpDisableMutation,
   totpEnrollmentCompleteMutation,
@@ -30,6 +31,10 @@ import {
 } from "@/lib/constants/integration-providers";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import {
+  useUiSettings,
+  uiSettingsInputFromSettings,
+} from "@/lib/context/ui-settings-context";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
 import type {
   ExternalAccountProvider,
@@ -41,6 +46,7 @@ import type {
   TotpEnrollmentComplete,
   TotpEnrollmentStart,
   TotpStatus,
+  UiSettings,
 } from "@/lib/types/settings";
 import type { UserAccountKind } from "@/lib/types/users";
 import { PasskeyClientError, registerPasskey } from "@/lib/utils/passkeys";
@@ -88,6 +94,12 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const t = useTranslate();
   const client = useClient();
   const { login, user: authUser } = useAuth();
+  const { uiSettings, setUiSettings, uiSettingsLoaded, uiSettingsLoading } =
+    useUiSettings();
+  const [savingHighlightColor, setSavingHighlightColor] = useState<string | null>(
+    null,
+  );
+  const [savingSponsorPreference, setSavingSponsorPreference] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -117,7 +129,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const [unlinkingAccountId, setUnlinkingAccountId] = useState<string | null>(null);
   const [linkingProvider, setLinkingProvider] = useState<ExternalAccountProvider | null>(null);
   const [linkAccountDraft, setLinkAccountDraft] = useState<LinkAccountDraft>({
-    provider: "jellyfin",
+    provider: "JELLYFIN",
     connectionId: "",
     jellyfinUsername: "",
     jellyfinPassword: "",
@@ -178,6 +190,112 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     }
   }, [accountKind, authUser?.username, client, userId, username, hasPassword, currentPassword, newPassword, confirmPassword, login, setGlobalStatus, t]);
 
+  const handleSelectHighlightColor = useCallback(
+    async (highlightColor: string) => {
+      if (
+        !uiSettingsLoaded ||
+        uiSettingsLoading ||
+        savingHighlightColor ||
+        uiSettings.highlightColor === highlightColor
+      ) {
+        return;
+      }
+
+      const previous = uiSettings;
+      const next: UiSettings = { ...uiSettings, highlightColor };
+      setSavingHighlightColor(highlightColor);
+      // Apply the accent live while the mutation persists through the interface.
+      setUiSettings(next);
+      try {
+        const result = await client
+          .mutation<{ setMyUiSettings?: UiSettings }, { input: UiSettings }>(
+            setMyUiSettingsMutation,
+            { input: uiSettingsInputFromSettings(next) },
+          )
+          .toPromise();
+        if (result.error || !result.data?.setMyUiSettings) {
+          setUiSettings(previous);
+          setGlobalStatus(
+            result.error?.message ?? t("profile.highlightColorSaveFailed"),
+          );
+          return;
+        }
+        setUiSettings(result.data.setMyUiSettings);
+        setGlobalStatus(t("profile.highlightColorSaved"));
+      } catch (error) {
+        setUiSettings(previous);
+        setGlobalStatus(
+          error instanceof Error
+            ? error.message
+            : t("profile.highlightColorSaveFailed"),
+        );
+      } finally {
+        setSavingHighlightColor(null);
+      }
+    },
+    [
+      client,
+      savingHighlightColor,
+      setGlobalStatus,
+      setUiSettings,
+      t,
+      uiSettings,
+      uiSettingsLoaded,
+      uiSettingsLoading,
+    ],
+  );
+
+  const handleHideSponsorButtonChange = useCallback(
+    async (hideSponsorButton: boolean) => {
+      if (
+        !uiSettingsLoaded ||
+        uiSettingsLoading ||
+        savingSponsorPreference ||
+        uiSettings.hideSponsorButton === hideSponsorButton
+      ) {
+        return;
+      }
+
+      const previous = uiSettings;
+      const next: UiSettings = { ...uiSettings, hideSponsorButton };
+      setSavingSponsorPreference(true);
+      setUiSettings(next);
+      try {
+        const result = await client
+          .mutation<{ setMyUiSettings?: UiSettings }, { input: UiSettings }>(
+            setMyUiSettingsMutation,
+            { input: uiSettingsInputFromSettings(next) },
+          )
+          .toPromise();
+        if (result.error || !result.data?.setMyUiSettings) {
+          setUiSettings(previous);
+          setGlobalStatus(result.error?.message ?? "Failed to update Sponsor preference.");
+          return;
+        }
+        setUiSettings(result.data.setMyUiSettings);
+        setGlobalStatus("Sponsor preference saved.");
+      } catch (error) {
+        setUiSettings(previous);
+        setGlobalStatus(
+          error instanceof Error
+            ? error.message
+            : "Failed to update Sponsor preference.",
+        );
+      } finally {
+        setSavingSponsorPreference(false);
+      }
+    },
+    [
+      client,
+      savingSponsorPreference,
+      setGlobalStatus,
+      setUiSettings,
+      uiSettings,
+      uiSettingsLoaded,
+      uiSettingsLoading,
+    ],
+  );
+
   useEffect(() => {
     if (!userId) {
       setHasPassword(false);
@@ -209,7 +327,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
         const currentUser = result.data?.me;
         const isProfileUser = currentUser?.id === userId;
         setHasPassword(isProfileUser && currentUser.hasPassword === true);
-        setAccountKind(isProfileUser ? currentUser.accountKind ?? "local" : null);
+        setAccountKind(isProfileUser ? currentUser.accountKind ?? "LOCAL" : null);
       } catch (error) {
         if (!cancelled) {
           setHasPassword(false);
@@ -225,7 +343,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [client, setGlobalStatus, t, userId]);
 
   const loadPasskeys = useCallback(async () => {
-    if (!userId || accountKind !== "local") {
+    if (!userId || accountKind !== "LOCAL") {
       setPasskeys([]);
       setLoadingPasskeys(false);
       return;
@@ -396,8 +514,8 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     };
 
     return {
-      jellyfin: eligibleForProvider("jellyfin"),
-      plex: eligibleForProvider("plex"),
+      jellyfin: eligibleForProvider("JELLYFIN"),
+      plex: eligibleForProvider("PLEX"),
     };
   }, [externalAuthSettings, linkedAccounts]);
 
@@ -412,7 +530,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [externalAuthSettings]);
 
   const handleAddPasskey = useCallback(async () => {
-    if (!userId || hasPassword !== true || accountKind !== "local") return;
+    if (!userId || hasPassword !== true || accountKind !== "LOCAL") return;
 
     setAddingPasskey(true);
     try {
@@ -430,12 +548,12 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     setDeletingPasskeyId(id);
     try {
       const result = await client
-        .mutation<{ deleteMyPasskey?: { deleted?: boolean } }, { id: string }>(
+        .mutation<{ deleteMyPasskey?: { id?: string } }, { id: string }>(
           deleteMyPasskeyMutation,
           { id },
         )
         .toPromise();
-      if (result.error || result.data?.deleteMyPasskey?.deleted !== true) {
+      if (result.error || !result.data?.deleteMyPasskey?.id) {
         setGlobalStatus(result.error?.message ?? t("profile.passkeyDeleteFailed"));
         return;
       }
@@ -453,7 +571,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     setRevokingOauthGrantId(grantId);
     try {
       const result = await client
-        .mutation<{ revokeMyOauthApp?: { revoked?: boolean } }, { grantId: string }>(
+        .mutation<{ revokeMyOauthApp?: { grantId?: string; revoked?: boolean } }, { grantId: string }>(
           revokeMyOauthAppMutation,
           { grantId },
         )
@@ -580,12 +698,12 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     setUnlinkingAccountId(id);
     try {
       const result = await client
-        .mutation<{ unlinkExternalAccount?: { unlinked?: boolean } }, { linkedAccountId: string }>(
+        .mutation<{ unlinkExternalAccount?: { linkedAccountId?: string } }, { linkedAccountId: string }>(
           unlinkExternalAccountMutation,
           { linkedAccountId: id },
         )
         .toPromise();
-      if (result.error || result.data?.unlinkExternalAccount?.unlinked !== true) {
+      if (result.error || !result.data?.unlinkExternalAccount?.linkedAccountId) {
         setGlobalStatus(result.error?.message ?? t("profile.linkedAccountUnlinkFailed"));
         return;
       }
@@ -606,7 +724,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     if (!isVisibleExternalAccountProvider(provider)) {
       return;
     }
-    const connections = provider === "jellyfin" ? linkableConnections.jellyfin : linkableConnections.plex;
+    const connections = provider === "JELLYFIN" ? linkableConnections.jellyfin : linkableConnections.plex;
     setLinkingProvider(provider);
     setLinkAccountError(null);
     setLinkAccountDraft({
@@ -641,7 +759,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const handleSubmitJellyfinLink = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (
-      linkingProvider !== "jellyfin" ||
+      linkingProvider !== "JELLYFIN" ||
       !linkAccountDraft.connectionId ||
       !linkAccountDraft.jellyfinUsername.trim() ||
       !linkAccountDraft.jellyfinPassword
@@ -688,7 +806,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
 
   const handleSubmitPlexLink = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (linkingProvider !== "plex" || !linkAccountDraft.connectionId) {
+    if (linkingProvider !== "PLEX" || !linkAccountDraft.connectionId) {
       return;
     }
 
@@ -731,18 +849,24 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   return (
     <SettingsProfileSection
       username={username}
+      highlightColor={uiSettings.highlightColor}
+      savingHighlightColor={savingHighlightColor}
+      onSelectHighlightColor={handleSelectHighlightColor}
+      hideSponsorButton={uiSettings.hideSponsorButton}
+      savingSponsorPreference={savingSponsorPreference}
+      onHideSponsorButtonChange={handleHideSponsorButtonChange}
       currentPassword={currentPassword}
       newPassword={newPassword}
       confirmPassword={confirmPassword}
       saving={saving}
-      canChangePassword={accountKind === "local"}
+      canChangePassword={accountKind === "LOCAL"}
       requiresCurrentPassword={hasPassword === true}
       onCurrentPasswordChange={setCurrentPassword}
       onNewPasswordChange={setNewPassword}
       onConfirmPasswordChange={setConfirmPassword}
       onChangePassword={handleChangePassword}
-      showPasskeys={Boolean(userId) && accountKind === "local"}
-      canAddPasskey={accountKind === "local" && hasPassword === true}
+      showPasskeys={Boolean(userId) && accountKind === "LOCAL"}
+      canAddPasskey={accountKind === "LOCAL" && hasPassword === true}
       passkeys={passkeys}
       oauthApps={oauthApps}
       totpStatus={totpStatus}

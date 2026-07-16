@@ -228,6 +228,39 @@ impl ShowRepository for MockShowRepo {
             .collect())
     }
 
+    async fn list_series_movie_external_id_lookup_matches(
+        &self,
+        library_ids: &[String],
+        lookups: &[TitleExternalIdLookup],
+    ) -> AppResult<Vec<SeriesMovieExternalIdLookupMatch>> {
+        if library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let links = self.series_movie_links.lock().await;
+        Ok(lookups
+            .iter()
+            .filter(|lookup| {
+                let external_id = lookup.external_id.trim();
+                !external_id.is_empty()
+                    && links.iter().any(|link| {
+                        let value = match lookup.source.trim().to_ascii_lowercase().as_str() {
+                            "imdb" => link.movie.imdb_id.as_deref(),
+                            "tvdb" | "tvdb_movie" => link.movie.tvdb_id.as_deref(),
+                            "tmdb" | "tmdb_movie" => link.movie.tmdb_id.as_deref(),
+                            "mal" | "myanimelist" => link.movie.mal_id.as_deref(),
+                            "anidb" => link.movie.anidb_id.as_deref(),
+                            _ => None,
+                        };
+                        value == Some(external_id)
+                    })
+            })
+            .map(|lookup| SeriesMovieExternalIdLookupMatch {
+                lookup_index: lookup.lookup_index,
+            })
+            .collect())
+    }
+
     async fn get_series_movie_link_by_id(
         &self,
         link_id: &str,

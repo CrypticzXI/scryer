@@ -75,6 +75,67 @@ fn render_rename_template_removes_token_spaces() {
 }
 
 #[test]
+fn render_rename_template_truncates_token_chars() {
+    let t = tokens(&[("title", "Twelve Monkeys"), ("ext", "mkv")]);
+    let result = render_rename_template("{title|truncate:6}.{ext}", &t);
+    assert_eq!(result, "Twelve.mkv");
+}
+
+#[test]
+fn render_rename_template_applies_truncate_before_later_filters() {
+    let t = tokens(&[("title", "12 Years a Slave"), ("ext", "mkv")]);
+    let result = render_rename_template("{title|truncate:8|space:}.{ext}", &t);
+    assert_eq!(result, "12Years.mkv");
+}
+
+#[test]
+fn validate_rename_template_accepts_supported_filters_and_literals() {
+    validate_rename_template("{title|truncate:64|space:_}.{ext}")
+        .expect("filtered rename template is allowed");
+    validate_rename_template("{{title|truncate:0}}.{ext}")
+        .expect("escaped literal braces are not token filters");
+}
+
+#[test]
+fn validate_rename_template_for_facet_rejects_unavailable_tokens() {
+    validate_rename_template_for_facet(
+        "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}",
+        &MediaFacet::Anime,
+    )
+    .expect("anime episode tokens are allowed");
+
+    let error = validate_rename_template_for_facet(
+        "{title} - S{season_order:2}E{episode:2} - {quality}.{ext}",
+        &MediaFacet::Movie,
+    )
+    .expect_err("movie templates cannot use episode tokens");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported rename template token")
+    );
+}
+
+#[test]
+fn validate_rename_template_rejects_invalid_filters_and_tokens() {
+    let error = validate_rename_template("{title|truncate:0}.{ext}")
+        .expect_err("truncate limit must be positive");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported rename template token")
+    );
+
+    let error =
+        validate_rename_template("{unknown}.{ext}").expect_err("unknown tokens are rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported rename template token")
+    );
+}
+
+#[test]
 fn render_rename_template_sanitizes_space_filter_in_literal_braces() {
     let t = tokens(&[("ext", "mkv")]);
     let result = render_rename_template("{{title|space:_}}.{ext}", &t);
@@ -130,6 +191,41 @@ fn render_title_folder_template_trims_empty_year_group() {
     let t = tokens(&[("title", "Movie")]);
     let result = render_title_folder_template("{title} ({year})", &t);
     assert_eq!(result, "Movie");
+}
+
+#[test]
+fn render_title_folder_template_literal_braces_around_resolved_token() {
+    let t = tokens(&[("edition", "IMAX")]);
+    let result = render_title_folder_template("{{edition-{edition}}}", &t);
+    assert_eq!(result, "{edition-IMAX}");
+}
+
+#[test]
+fn render_title_folder_template_literal_braces_around_external_id() {
+    let t = tokens(&[("tmdb_id", "123")]);
+    let result = render_title_folder_template("{{tmdb-{tmdb_id}}}", &t);
+    assert_eq!(result, "{tmdb-123}");
+}
+
+#[test]
+fn render_title_folder_template_trims_empty_literal_brace_group() {
+    let t = tokens(&[]);
+    let result = render_title_folder_template("{{{edition}}}", &t);
+    assert_eq!(result, "");
+}
+
+#[test]
+fn render_title_folder_template_replaces_token_spaces() {
+    let t = tokens(&[("title", "12 Years a Slave"), ("year", "2013")]);
+    let result = render_title_folder_template("{title|space:_} ({year})", &t);
+    assert_eq!(result, "12_Years_a_Slave (2013)");
+}
+
+#[test]
+fn render_title_folder_template_truncates_before_replacing_spaces() {
+    let t = tokens(&[("title", "12 Years a Slave"), ("year", "2013")]);
+    let result = render_title_folder_template("{title|truncate:8|space:_} ({year})", &t);
+    assert_eq!(result, "12_Years (2013)");
 }
 
 #[test]
@@ -215,6 +311,8 @@ fn title_folder_template_accepts_external_id_tokens_and_trims_missing_groups() {
     validate_title_folder_template("{title} [{tmdb_id}]").expect("external ID token is allowed");
     validate_title_folder_template("{title} [{tmdb_id:8}]")
         .expect("external ID token padding is allowed");
+    validate_title_folder_template("{title|space:_} [{tmdb_id|truncate:4}]")
+        .expect("folder token filters are allowed");
 
     let mut title = test_movie_title("Movie");
     title.external_ids = vec![ExternalId {
@@ -230,6 +328,25 @@ fn title_folder_template_accepts_external_id_tokens_and_trims_missing_groups() {
     let tokens = build_title_folder_tokens(&title, None);
     let rendered = render_title_folder_template("{title} [{tmdb_id}]", &tokens);
     assert_eq!(rendered, "Movie");
+}
+
+#[test]
+fn title_folder_template_rejects_invalid_truncate_filter() {
+    let error = validate_title_folder_template("{title|truncate:0}")
+        .expect_err("truncate limit must be positive");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported folder template token")
+    );
+
+    let error = validate_title_folder_template("{title|truncate:abc}")
+        .expect_err("truncate limit must be numeric");
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported folder template token")
+    );
 }
 
 #[test]
@@ -575,6 +692,7 @@ fn test_movie_title(name: &str) -> Title {
         root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         created_by: None,
         created_at: Utc::now(),
@@ -585,10 +703,11 @@ fn test_movie_title(name: &str) -> Title {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -653,6 +772,7 @@ fn test_media_file(path: &str) -> TitleMediaFile {
             profile: Some("DTS-HD MA + DTS:X IMAX".to_string()),
             channels: Some(8),
             language: Some("eng".to_string()),
+            name: None,
             bitrate_kbps: Some(4_000),
         }],
         subtitle_languages: vec![],

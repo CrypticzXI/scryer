@@ -3,11 +3,14 @@ use scryer_application::{
     AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerRoutingPlan,
     IndexerSearchResponse, IndexerSearchResult, SearchMode, normalize_release_password,
 };
-use scryer_domain::{IndexerConfig, TaggedAlias};
+use scryer_domain::{IndexerConfig, IndexerProxyConfig, TaggedAlias};
 use std::{collections::BTreeMap, sync::mpsc};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::loader::{apply_allowed_hosts, build_plugin, parse_config_json_entries};
+use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec};
+use crate::loader::{allowed_hosts_for_descriptor, parse_config_json_entries};
+use crate::plugin_http_host::IndexerProxyPolicy;
 use crate::types::{
     ConfigFieldRole, EXPORT_INDEXER_ACTION, EXPORT_INDEXER_SEARCH, IndexerProtocol,
     IndexerSourceKind, PluginDescriptor, PluginSearchContext, PluginSearchOrigin,
@@ -35,7 +38,7 @@ struct IndexerPluginCommand {
 
 impl IndexerPluginWorker {
     fn start(
-        manifest: extism::Manifest,
+        spec: LegacyPluginSpec,
         descriptor: &PluginDescriptor,
         indexer_name: &str,
     ) -> AppResult<Self> {
@@ -48,7 +51,7 @@ impl IndexerPluginWorker {
         std::thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
-                let mut plugin = match build_plugin(manifest) {
+                let mut plugin = match LegacyPlugin::instantiate(spec) {
                     Ok(plugin) => {
                         let _ = ready_tx.send(Ok(()));
                         plugin
@@ -64,15 +67,7 @@ impl IndexerPluginWorker {
                     let result = if command.optional && !plugin.function_exists(command.export) {
                         Ok(None)
                     } else {
-                        plugin
-                            .call::<&str, String>(command.export, &command.input)
-                            .map(Some)
-                            .map_err(|e| {
-                                AppError::Repository(format!(
-                                    "plugin {}() failed: {e}",
-                                    command.export
-                                ))
-                            })
+                        plugin.call_string(command.export, &command.input).map(Some)
                     };
                     let elapsed = start.elapsed();
 
@@ -100,7 +95,11 @@ impl IndexerPluginWorker {
         }
     }
 
-    async fn call_search(&self, input: String) -> AppResult<String> {
+    async fn call_search(
+        &self,
+        input: String,
+        cancel_token: CancellationToken,
+    ) -> AppResult<String> {
         let (response, result) = tokio::sync::oneshot::channel();
         self.tx
             .send(IndexerPluginCommand {
@@ -110,8 +109,13 @@ impl IndexerPluginWorker {
                 response,
             })
             .map_err(|_| AppError::Repository("plugin worker stopped".into()))?;
-        result
-            .await
+        let output = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                return Err(AppError::canceled("plugin indexer search canceled"));
+            }
+            output = result => output,
+        };
+        output
             .map_err(|_| AppError::Repository("plugin worker stopped".into()))?
             .and_then(|output| {
                 output.ok_or_else(|| {
@@ -144,9 +148,16 @@ impl WasmIndexerClient {
         descriptor: PluginDescriptor,
         indexer_name: String,
         config: IndexerConfig,
+        indexer_proxy_config: Option<IndexerProxyConfig>,
     ) -> Result<Self, AppError> {
-        let manifest = build_manifest(wasm_bytes, &descriptor, &indexer_name, &config);
-        let worker = IndexerPluginWorker::start(manifest, &descriptor, &indexer_name)?;
+        let spec = build_legacy_spec(
+            wasm_bytes,
+            &descriptor,
+            &indexer_name,
+            &config,
+            indexer_proxy_config,
+        );
+        let worker = IndexerPluginWorker::start(spec, &descriptor, &indexer_name)?;
 
         info!(
             indexer = indexer_name.as_str(),
@@ -185,6 +196,7 @@ impl WasmIndexerClient {
     async fn call_search_request(
         &self,
         request: &PluginSearchRequest,
+        cancel_token: CancellationToken,
     ) -> AppResult<PluginSearchResponse> {
         let input = serde_json::to_string(request).map_err(|e| {
             AppError::Repository(format!("failed to serialize plugin request: {e}"))
@@ -192,36 +204,45 @@ impl WasmIndexerClient {
 
         tracing::debug!(plugin = %self.descriptor.name, %input, "plugin search request");
 
-        let output = self.worker.call_search(input).await?;
+        let output = self.worker.call_search(input, cancel_token).await?;
 
         decode_plugin_result(&output, EXPORT_INDEXER_SEARCH)
     }
 }
 
-fn build_manifest(
+fn build_legacy_spec(
     wasm_bytes: Vec<u8>,
     descriptor: &PluginDescriptor,
     indexer_name: &str,
     config: &IndexerConfig,
-) -> extism::Manifest {
-    let mut manifest = extism::Manifest::new([extism::Wasm::data(wasm_bytes)]);
+    indexer_proxy_config: Option<IndexerProxyConfig>,
+) -> LegacyPluginSpec {
     let config_entries = build_config_entries(descriptor, indexer_name, config);
     let connection_url = resolve_connection_url(descriptor, config_entries.as_ref());
-    manifest = apply_allowed_hosts(
-        manifest,
+    let allowed_hosts = allowed_hosts_for_descriptor(
         descriptor,
         connection_url.as_deref(),
         config.config_json.as_deref(),
     );
-    manifest = manifest.with_timeout(std::time::Duration::from_secs(30));
-
+    let timeout_seconds = 30
+        + indexer_proxy_config
+            .as_ref()
+            .map(|config| config.request_timeout_seconds as u64 + 5)
+            .unwrap_or(0);
+    let mut spec = LegacyPluginSpec::new(wasm_bytes, descriptor.id.clone());
+    spec.allowed_hosts = allowed_hosts;
+    spec.timeout = std::time::Duration::from_secs(timeout_seconds);
     if let Some(map) = &config_entries {
         for (key, value) in map {
-            manifest = manifest.with_config_key(key, value);
+            spec.config.insert(key.clone(), value.clone());
         }
     }
-
-    manifest
+    spec.indexer_proxy_policy = indexer_proxy_config.map(|proxy_config| IndexerProxyPolicy {
+        indexer_id: config.id.clone(),
+        indexer_name: indexer_name.to_string(),
+        config: proxy_config,
+    });
+    spec
 }
 
 fn build_config_entries(
@@ -795,7 +816,12 @@ impl IndexerClient for WasmIndexerClient {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
         tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<scryer_application::IndexerSearchLearningContext>,
+        cancel_token: CancellationToken,
     ) -> AppResult<IndexerSearchResponse> {
+        if cancel_token.is_cancelled() {
+            return Err(AppError::canceled("plugin indexer search canceled"));
+        }
         let context = build_search_context(
             &query,
             &ids,
@@ -822,22 +848,30 @@ impl IndexerClient for WasmIndexerClient {
             context: Some(context),
         };
 
-        let response = match self.call_search_request(&request).await {
+        let response = match self
+            .call_search_request(&request, cancel_token.child_token())
+            .await
+        {
             Ok(response)
                 if response.results.is_empty() && should_try_generic_search_fallback(&request) =>
             {
                 let fallback_request = generic_search_fallback_request(&request, mode);
-                self.call_search_request(&fallback_request).await?
+                self.call_search_request(&fallback_request, cancel_token.child_token())
+                    .await?
             }
             Ok(response) => response,
             Err(primary_error) if should_try_generic_search_fallback(&request) => {
+                if primary_error.is_canceled() {
+                    return Err(primary_error);
+                }
                 tracing::debug!(
                     plugin = %self.descriptor.name,
                     error = %primary_error,
                     "plugin primary search failed; trying generic fallback"
                 );
                 let fallback_request = generic_search_fallback_request(&request, mode);
-                self.call_search_request(&fallback_request).await?
+                self.call_search_request(&fallback_request, cancel_token.child_token())
+                    .await?
             }
             Err(error) => return Err(error),
         };
@@ -863,6 +897,7 @@ impl IndexerClient for WasmIndexerClient {
                 });
 
                 IndexerSearchResult {
+                    indexer_id: None,
                     source: source.clone(),
                     title: r.title,
                     link: r.link,
@@ -901,6 +936,7 @@ impl IndexerClient for WasmIndexerClient {
 
         Ok(IndexerSearchResponse {
             results,
+            indexer_outcomes: Vec::new(),
             api_current: response.api_current,
             api_max: response.api_max,
             grab_current: response.grab_current,
@@ -1199,6 +1235,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: managed_parent_config_id.map(ToString::to_string),
             managed_child_key: None,
             managed_metadata_json: None,

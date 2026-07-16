@@ -1,7 +1,7 @@
 import * as React from "react";
 import { FolderOpen, Plus, Trash2 } from "lucide-react";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { Translate } from "@/components/root/types";
@@ -217,7 +217,7 @@ export function LocalRemotePathMappingsField({
                         : (event) => updateRow(index, { remotePath: event.target.value })
                     }
                     required={required && isEmpty && index === 0}
-                    className={`font-mono text-sm${localPathFirst ? " cursor-pointer pr-10" : ""}`}
+                    className={`font-[var(--font-code)] text-sm${localPathFirst ? " cursor-pointer pr-10" : ""}`}
                     aria-invalid={
                       (localPathFirst ? rowError.localPath : rowError.remotePath)
                         ? true
@@ -226,18 +226,15 @@ export function LocalRemotePathMappingsField({
                     aria-label={`${label} ${index + 1}`}
                   />
                   {localPathFirst ? (
-                    <Button
+                    <IconButton
                       id={browseButtonId}
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
+                      label={t("setup.browse")}
+                      appearance="ghost"
                       className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
                       onClick={() => setBrowseRowIndex(index)}
-                      title={t("setup.browse")}
-                      aria-label={t("setup.browse")}
                     >
                       <FolderOpen className="h-4 w-4" />
-                    </Button>
+                    </IconButton>
                   ) : null}
                 </div>
 
@@ -260,7 +257,7 @@ export function LocalRemotePathMappingsField({
                         : undefined
                     }
                     required={required && isEmpty && index === 0}
-                    className={`font-mono text-sm${!localPathFirst ? " cursor-pointer pr-10" : ""}`}
+                    className={`font-[var(--font-code)] text-sm${!localPathFirst ? " cursor-pointer pr-10" : ""}`}
                     aria-invalid={
                       (localPathFirst ? rowError.remotePath : rowError.localPath)
                         ? true
@@ -268,34 +265,28 @@ export function LocalRemotePathMappingsField({
                     }
                   />
                   {!localPathFirst ? (
-                    <Button
+                    <IconButton
                       id={browseButtonId}
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
+                      label={t("setup.browse")}
+                      appearance="ghost"
                       className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
                       onClick={() => setBrowseRowIndex(index)}
-                      title={t("setup.browse")}
-                      aria-label={t("setup.browse")}
                     >
                       <FolderOpen className="h-4 w-4" />
-                    </Button>
+                    </IconButton>
                   ) : null}
                 </div>
 
                 {rows.length > 1 ? (
-                  <Button
+                  <IconButton
                     id={removeButtonId}
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
+                    label={t("label.remove")}
+                    appearance="ghost"
                     className="h-9 w-9 shrink-0"
                     onClick={() => removeRow(index)}
-                    title={t("label.remove")}
-                    aria-label={t("label.remove")}
                   >
                     <Trash2 className="h-4 w-4" />
-                  </Button>
+                  </IconButton>
                 ) : (
                   <div className="h-9 w-9 shrink-0" aria-hidden="true" />
                 )}
@@ -310,19 +301,16 @@ export function LocalRemotePathMappingsField({
           );
         })}
 
-        <Button
+        <IconButton
           id={selectorId("path-mapping", fieldKey, "add")}
-          type="button"
-          variant="outline"
-          size="icon"
+          label={t("label.add")}
+          tone="install"
           className="h-10 w-10"
           onClick={addRow}
           disabled={rows.length >= maxRows}
-          title={t("label.add")}
-          aria-label={t("label.add")}
         >
           <Plus className="h-5 w-5" />
-        </Button>
+        </IconButton>
 
         {helpText ? (
           <p className="text-xs text-muted-foreground">{helpText}</p>
@@ -337,6 +325,7 @@ export function LocalRemotePathMappingsField({
           }
         }}
         onSelect={handleFolderSelect}
+        selectionTypes={["folder"]}
         initialPath={browseInitialPath}
         title={label}
       />

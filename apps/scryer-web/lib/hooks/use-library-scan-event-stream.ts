@@ -8,13 +8,14 @@ import {
 import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscription";
 import type { Facet, LibraryScanProgress, LibraryScanStatus } from "@/lib/types";
 import { normalizeLibraryScanProgress } from "@/lib/utils/job-runs";
+import { findActiveLibraryScanSession } from "@/lib/utils/library-scan-sessions";
 
 function isTerminal(status: LibraryScanStatus): boolean {
   return (
-    status === "completed" ||
-    status === "canceled" ||
-    status === "warning" ||
-    status === "failed"
+    status === "COMPLETED" ||
+    status === "CANCELED" ||
+    status === "WARNING" ||
+    status === "FAILED"
   );
 }
 
@@ -155,7 +156,7 @@ export function useLibraryScanEventStream() {
   const sessions = useMemo(
     () =>
       Object.values(sessionsById)
-        .filter((session) => session.mode === "full")
+        .filter((session) => session.mode === "FULL")
         .sort((left, right) => left.startedAt.localeCompare(right.startedAt)),
     [sessionsById],
   );
@@ -181,12 +182,7 @@ export function useLibraryScanEventStream() {
 
   const getActiveSession = useCallback(
     (facet: Facet, libraryId?: string | null) =>
-      sessions.find(
-        (session) =>
-          session.facet === facet &&
-          (libraryId == null || session.libraryId === libraryId) &&
-          !isTerminal(session.status),
-      ) ?? null,
+      findActiveLibraryScanSession(sessions, facet, libraryId),
     [sessions],
   );
 

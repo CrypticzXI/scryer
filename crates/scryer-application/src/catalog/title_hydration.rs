@@ -11,7 +11,6 @@ const TITLE_HYDRATION_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const TITLE_HYDRATION_RETRY_BASE: Duration = Duration::from_secs(10);
 const TITLE_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(300);
 const TITLE_HYDRATION_MAX_ATTEMPTS: i64 = 12;
-const ANIBRIDGE_SCOPED_ID_BACKFILL_BATCH: usize = 500;
 
 fn active_scan_facet_labels(facets: &[MediaFacet]) -> Vec<&'static str> {
     facets.iter().map(MediaFacet::as_str).collect()
@@ -30,7 +29,6 @@ pub async fn start_background_title_hydration_loop(
         max_attempts = TITLE_HYDRATION_MAX_ATTEMPTS,
         "background title hydration loop started"
     );
-    queue_missing_anibridge_scoped_id_hydration(&app).await;
 
     loop {
         let blocked_facets = app
@@ -90,7 +88,6 @@ pub async fn start_background_title_hydration_loop(
                     return;
                 }
             }
-
             continue;
         }
 
@@ -103,6 +100,12 @@ pub async fn start_background_title_hydration_loop(
         if blocked_facets_before_dispatch != blocked_facets {
             metrics::counter!("scryer_title_metadata_hydration_scan_owned_rechecks_total")
                 .increment(1);
+            debug!(
+                blocked_facets = ?active_scan_facet_labels(&blocked_facets),
+                blocked_facets_before_dispatch =
+                    ?active_scan_facet_labels(&blocked_facets_before_dispatch),
+                "title hydration loop: active scan facets changed before dispatch"
+            );
             continue;
         }
 
@@ -121,12 +124,21 @@ pub async fn start_background_title_hydration_loop(
                     title_name = %due_title.title.name,
                     "title hydration loop: clearing retry state because title has no tvdb external id"
                 );
-                let _ = app
+                if let Err(error) = app
                     .services
                     .catalog
                     .titles
                     .clear_title_metadata_hydration_retry_state(&due_title.title.id)
-                    .await;
+                    .await
+                {
+                    warn!(
+                        hydration_source = HydrationSource::BackgroundDue.as_str(),
+                        title_id = %due_title.title.id,
+                        error = %error,
+                        "title hydration loop: failed to clear retry state for title without tvdb id"
+                    );
+                }
+                original_attempts.remove(&due_title.title.id);
                 continue;
             }
             targets.push(HydrationTarget {
@@ -151,7 +163,7 @@ pub async fn start_background_title_hydration_loop(
             metrics::counter!("scryer_title_metadata_hydration_attempts_total").increment(1);
         }
 
-        let title_ids: Vec<String> = targets
+        let title_ids = targets
             .iter()
             .map(|target| target.title.id.clone())
             .collect::<Vec<_>>();
@@ -179,12 +191,20 @@ pub async fn start_background_title_hydration_loop(
                 }
 
                 for title_id in original_attempts.keys() {
-                    let _ = app
+                    if let Err(error) = app
                         .services
                         .catalog
                         .titles
                         .mark_title_metadata_hydration_due_now(title_id)
-                        .await;
+                        .await
+                    {
+                        warn!(
+                            hydration_source = HydrationSource::BackgroundDue.as_str(),
+                            title_id = %title_id,
+                            error = %error,
+                            "title hydration loop: failed to keep unreported title due"
+                        );
+                    }
                 }
             }
             Err(error) => {
@@ -213,75 +233,6 @@ pub async fn start_background_title_hydration_loop(
     }
 }
 
-async fn queue_missing_anibridge_scoped_id_hydration(app: &AppUseCase) {
-    let mut pending_title_ids = std::collections::BTreeSet::new();
-
-    match app
-        .services
-        .catalog
-        .titles
-        .list_anime_title_ids_missing_anibridge_scoped_external_ids(
-            ANIBRIDGE_SCOPED_ID_BACKFILL_BATCH,
-        )
-        .await
-    {
-        Ok(title_ids) => {
-            for title_id in title_ids {
-                pending_title_ids.insert(title_id);
-            }
-        }
-        Err(error) => {
-            warn!(
-                error = %error,
-                "failed to queue anibridge scoped external ID hydration backfill"
-            );
-        }
-    }
-
-    match app
-        .services
-        .catalog
-        .titles
-        .list_anime_title_ids_missing_title_anidb_external_ids(ANIBRIDGE_SCOPED_ID_BACKFILL_BATCH)
-        .await
-    {
-        Ok(title_ids) => {
-            for title_id in title_ids {
-                pending_title_ids.insert(title_id);
-            }
-        }
-        Err(error) => {
-            warn!(
-                error = %error,
-                "failed to queue title-level AniDB hydration backfill"
-            );
-        }
-    }
-
-    if pending_title_ids.is_empty() {
-        return;
-    }
-
-    let mut queued = 0usize;
-    for title_id in pending_title_ids {
-        if app
-            .services
-            .catalog
-            .titles
-            .mark_title_metadata_hydration_due_now(&title_id)
-            .await
-            .is_ok()
-        {
-            queued += 1;
-        }
-    }
-    info!(
-        queued,
-        "queued anime titles for anibridge/title AniDB hydration"
-    );
-    app.runtime.catalog.title_hydration_wake.notify_one();
-}
-
 async fn schedule_title_hydration_retry(
     app: &AppUseCase,
     title_id: &str,
@@ -289,7 +240,7 @@ async fn schedule_title_hydration_retry(
     previous_attempt_count: i64,
 ) {
     let Some((next_attempt_at, next_attempt_count)) =
-        next_title_hydration_retry(chrono::Utc::now(), previous_attempt_count)
+        next_title_hydration_retry(app.runtime.environment.now(), previous_attempt_count)
     else {
         metrics::counter!("scryer_title_metadata_hydration_terminal_failures_total").increment(1);
         warn!(
@@ -299,16 +250,25 @@ async fn schedule_title_hydration_retry(
             max_attempts = TITLE_HYDRATION_MAX_ATTEMPTS,
             "title hydration loop: reached max retry attempts, clearing retry state"
         );
-        let _ = app
+        if let Err(error) = app
             .services
             .catalog
             .titles
             .clear_title_metadata_hydration_retry_state(title_id)
-            .await;
+            .await
+        {
+            warn!(
+                hydration_source = HydrationSource::BackgroundDue.as_str(),
+                facet = facet.as_str(),
+                title_id = %title_id,
+                error = %error,
+                "title hydration loop: failed to clear terminal retry state"
+            );
+        }
         return;
     };
 
-    let _ = app
+    if let Err(error) = app
         .services
         .catalog
         .titles
@@ -317,7 +277,18 @@ async fn schedule_title_hydration_retry(
             &next_attempt_at.to_rfc3339(),
             next_attempt_count,
         )
-        .await;
+        .await
+    {
+        warn!(
+            hydration_source = HydrationSource::BackgroundDue.as_str(),
+            facet = facet.as_str(),
+            title_id = %title_id,
+            attempt_count = next_attempt_count,
+            next_attempt_at = %next_attempt_at,
+            error = %error,
+            "title hydration loop: failed to schedule retry"
+        );
+    }
 }
 
 fn next_title_hydration_retry(

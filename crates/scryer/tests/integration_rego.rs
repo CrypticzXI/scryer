@@ -423,13 +423,12 @@ async fn rego_delete() {
 
     let body = gql(
         &ctx,
-        r#"mutation($id: ID!) { deleteRuleSet(id: $id) { id deleted } }"#,
+        r#"mutation($id: ID!) { deleteRuleSet(id: $id) { id } }"#,
         json!({ "id": id }),
     )
     .await;
     assert_no_errors(&body);
     assert_eq!(body["data"]["deleteRuleSet"]["id"], id);
-    assert_eq!(body["data"]["deleteRuleSet"]["deleted"], true);
 
     // Verify list is empty
     let body = gql(&ctx, "{ ruleSets { id } }", json!({})).await;
@@ -917,7 +916,7 @@ async fn rego_delete_nonexistent() {
     let ctx = TestContext::new().await;
     let body = gql(
         &ctx,
-        r#"mutation($id: ID!) { deleteRuleSet(id: $id) { id deleted } }"#,
+        r#"mutation($id: ID!) { deleteRuleSet(id: $id) { id } }"#,
         json!({ "id": "bogus-id" }),
     )
     .await;

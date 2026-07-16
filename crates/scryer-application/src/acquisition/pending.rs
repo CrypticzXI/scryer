@@ -35,7 +35,7 @@ impl AppUseCase {
     )]
     pub(crate) async fn insert_pending_release(
         &self,
-        wanted: &WantedItem,
+        wanted: &AcquisitionScopeState,
         title: &scryer_domain::Title,
         release_title: &str,
         release_url: Option<&str>,
@@ -108,7 +108,7 @@ impl AppUseCase {
                     .services
                     .workflow
                     .pending_releases
-                    .supersede_pending_releases_for_wanted_item(&wanted.id, &pending.id)
+                    .supersede_pending_releases_for_acquisition_scope_state(&wanted.id, &pending.id)
                     .await;
 
                 info!(
@@ -166,8 +166,8 @@ impl AppUseCase {
             let Some(wanted) = self
                 .services
                 .workflow
-                .wanted_items
-                .get_wanted_item_by_id(&wanted_item_id)
+                .acquisition_scope_states
+                .get_acquisition_scope_state_by_id(&wanted_item_id)
                 .await?
             else {
                 // Wanted item gone — mark all as expired
@@ -183,7 +183,9 @@ impl AppUseCase {
             };
 
             // Skip if already grabbed or completed
-            if wanted.status == WantedStatus::Grabbed || wanted.status == WantedStatus::Completed {
+            if wanted.status == AcquisitionScopeStatus::Grabbed
+                || wanted.status == AcquisitionScopeStatus::Completed
+            {
                 for pr in &releases {
                     let _ = self
                         .services
@@ -220,7 +222,10 @@ impl AppUseCase {
                             .services
                             .workflow
                             .pending_releases
-                            .supersede_pending_releases_for_wanted_item(&wanted_item_id, &pr.id)
+                            .supersede_pending_releases_for_acquisition_scope_state(
+                                &wanted_item_id,
+                                &pr.id,
+                            )
                             .await;
                         grabbed = true;
                         grabbed_count += 1;
@@ -312,6 +317,44 @@ impl AppUseCase {
         Ok(allowed)
     }
 
+    /// Paged, storage-side counterpart to [`Self::list_pending_releases`]. The
+    /// `waiting` base set, the optional `title_id` / `wanted_item_id` / `statuses`
+    /// filters, library authorization, ordering, limit/offset, and the total
+    /// count are all resolved in SQL. Returns `(page, total_matching)`.
+    pub async fn list_pending_releases_page(
+        &self,
+        actor: &User,
+        title_id: Option<String>,
+        wanted_item_id: Option<String>,
+        statuses: Vec<PendingReleaseStatus>,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<(Vec<PendingRelease>, i64)> {
+        let authorized_library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?;
+        if authorized_library_ids.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+        let query = PendingReleasesPageQuery {
+            library_ids: authorized_library_ids,
+            title_id,
+            wanted_item_id,
+            statuses: statuses
+                .into_iter()
+                .map(|status| status.as_str().to_string())
+                .collect(),
+            limit,
+            offset,
+            sort: PendingReleasePageSort::DelayUntilAsc,
+        };
+        self.services
+            .workflow
+            .pending_releases
+            .list_pending_releases_page(query)
+            .await
+    }
+
     pub async fn get_pending_release(
         &self,
         actor: &User,
@@ -341,16 +384,15 @@ impl AppUseCase {
         Ok(release)
     }
 
-    pub async fn list_pending_releases_for_wanted_item(
-        &self,
-        actor: &User,
-        wanted_item_id: &str,
-    ) -> AppResult<Vec<PendingRelease>> {
+    /// Require `View` on the library owning `wanted_item_id`, resolving the
+    /// library from the wanted item (falling back to its title). Shared by the
+    /// per-wanted-item pending-release reads.
+    async fn require_wanted_item_view(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let wanted = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(wanted_item_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(wanted_item_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("wanted item {wanted_item_id}")))?;
         let library_id = if let Some(library_id) = wanted.library_id.as_deref() {
@@ -365,11 +407,46 @@ impl AppUseCase {
                 .ok_or_else(|| AppError::NotFound(format!("title {}", wanted.title_id)))?
         };
         self.require_library_permission(actor, &library_id, scryer_domain::LibraryPermission::View)
-            .await?;
+            .await
+    }
+
+    pub async fn list_pending_releases_for_wanted_item(
+        &self,
+        actor: &User,
+        wanted_item_id: &str,
+    ) -> AppResult<Vec<PendingRelease>> {
+        self.require_wanted_item_view(actor, wanted_item_id).await?;
         self.services
             .workflow
             .pending_releases
             .list_pending_releases_for_wanted_item(wanted_item_id)
+            .await
+    }
+
+    /// Paged, storage-side counterpart to
+    /// [`Self::list_pending_releases_for_wanted_item`]. Authorization is scoped to
+    /// the single wanted item, so no library filter is pushed to the query.
+    pub async fn list_pending_releases_for_wanted_item_page(
+        &self,
+        actor: &User,
+        wanted_item_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<(Vec<PendingRelease>, i64)> {
+        self.require_wanted_item_view(actor, wanted_item_id).await?;
+        let query = PendingReleasesPageQuery {
+            library_ids: Vec::new(),
+            title_id: None,
+            wanted_item_id: Some(wanted_item_id.to_string()),
+            statuses: Vec::new(),
+            limit,
+            offset,
+            sort: PendingReleasePageSort::ReleaseScoreDesc,
+        };
+        self.services
+            .workflow
+            .pending_releases
+            .list_pending_releases_page(query)
             .await
     }
 
@@ -408,8 +485,8 @@ impl AppUseCase {
         let wanted = self
             .services
             .workflow
-            .wanted_items
-            .get_wanted_item_by_id(&pr.wanted_item_id)
+            .acquisition_scope_states
+            .get_acquisition_scope_state_by_id(&pr.wanted_item_id)
             .await?
             .ok_or_else(|| {
                 AppError::Repository(format!("wanted item {} not found", pr.wanted_item_id))
@@ -462,7 +539,7 @@ impl AppUseCase {
     /// Attempt to grab a single pending release.
     pub(crate) async fn try_grab_pending_release(
         &self,
-        wanted: &WantedItem,
+        wanted: &AcquisitionScopeState,
         pr: &PendingRelease,
         now: &chrono::DateTime<Utc>,
     ) -> AppResult<PendingGrabOutcome> {
@@ -574,7 +651,6 @@ impl AppUseCase {
         let is_recent = self.is_recent_for_queue_priority(
             pr.published_at
                 .as_deref()
-                .or(wanted.baseline_date.as_deref())
                 .or(title.first_aired.as_deref())
                 .or(title.digital_release_date.as_deref()),
         );
@@ -602,6 +678,7 @@ impl AppUseCase {
                 download_id: Some(download_id),
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind,
                 source_title: source_title.clone(),
                 source_password: source_password.clone(),
@@ -610,6 +687,7 @@ impl AppUseCase {
                 download_directory: None,
                 release_title: Some(pr.release_title.clone()),
                 indexer_name: pr.indexer_source.clone(),
+                indexer_id: None,
                 info_hash_hint: pr.info_hash.clone(),
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -732,7 +810,6 @@ impl AppUseCase {
                     .commit_successful_grab(&SuccessfulGrabCommit {
                         wanted_item_id: wanted.id.clone(),
                         covered_wanted_item_ids,
-                        search_count: wanted.search_count,
                         current_score: wanted.current_score,
                         grabbed_release: grabbed_json,
                         last_search_at: Some(now.to_rfc3339()),
@@ -779,6 +856,13 @@ impl AppUseCase {
                     "pending release: download submission failed"
                 );
 
+                // An ambiguous submit (the request may have been accepted but
+                // the response was lost) is deferred exactly like an
+                // unavailable client: keep the release, retry next cycle, and
+                // never blocklist. Only a definitive failure expires it.
+                let defer = is_download_submit_unavailable_error(&err)
+                    || err.is_download_submit_ambiguous();
+
                 let _ = self
                     .services
                     .workflow
@@ -787,7 +871,7 @@ impl AppUseCase {
                         Some(title.id.clone()),
                         source_hint,
                         source_title,
-                        if is_download_submit_unavailable_error(&err) {
+                        if defer {
                             ReleaseDownloadAttemptOutcome::Pending
                         } else {
                             ReleaseDownloadAttemptOutcome::Failed
@@ -797,7 +881,7 @@ impl AppUseCase {
                     )
                     .await;
 
-                if is_download_submit_unavailable_error(&err) {
+                if defer {
                     Ok(PendingGrabOutcome::Deferred)
                 } else {
                     Ok(PendingGrabOutcome::Rejected)

@@ -3,19 +3,22 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, AppServices, AppServicesBuilder, DownloadClient,
-    DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository, IndexerStatsTracker,
-    LibraryRepository, LogicalBackupExporter, MediaRequestRepository,
-    MediaServerConnectionRepository, OAuthRepository, PluginInstallationRepository,
-    PostProcessingScriptRepository, QualityProfileRepository, RuleSetRepository,
-    SettingsRepository, ShowRepository, SubtitleProviderConfigRepository, TitleImageProcessor,
-    TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
-    UserRepository, WebauthnRepository,
+    AppError, AppResult, AppServices, AppServicesBuilder, DiscoveryRepository, DownloadClient,
+    DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository,
+    IndexerSearchLearningRepository, IndexerStatsTracker, LibraryRepository, LogicalBackupExporter,
+    MediaRequestRepository, MediaServerConnectionRepository, OAuthRepository,
+    PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
+    RuleSetRepository, ScopeIndexerCoverageRepository, SettingsRepository, ShowRepository,
+    SubtitleProviderConfigRepository, TitleImageProcessor, TitleImageRepository, TitleRepository,
+    TotpRepository, UpstreamScheduler, UserExternalAccountRepository, UserRepository,
+    UserUiSettingsRepository, WebauthnRepository,
 };
 
 #[cfg(feature = "image-processing")]
 use crate::HttpTitleImageProcessor;
+use crate::discovery::store::DiscoveryStore;
 use crate::external_identity::HttpExternalIdentityVerifier;
+use crate::indexers::scope_indexer_coverage_store::ScopeIndexerCoverageStore;
 use crate::postgres::{
     PostgresLogicalBackupExporter, PostgresServices, restore_backup_bundle_into_postgres_pool,
     restore_prepared_backup_directory_into_postgres_pool,
@@ -24,8 +27,9 @@ use crate::queries::sql_runtime::StoreDatastore;
 use crate::{
     AcquisitionStore, BlocklistStore, DomainEventStore, DownloadClientConfigStore,
     DownloadQueueCommandStore, DownloadSubmissionStore, ExternalImportMonitorStore,
-    FileSystemStagedNzbStore, HousekeepingStore, ImportStore, InMemoryIndexerStatsTracker,
-    IndexerConfigStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
+    ExternalImportSetupSecretDraftStore, FileSystemStagedNzbStore, HousekeepingStore, ImportStore,
+    InMemoryIndexerStatsTracker, IndexerConfigStore, IndexerProxyConfigStore,
+    IndexerSearchLearningStore, LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore,
     MediaRequestStore, MediaServerConnectionStore, MetadataGatewayClient, MigrationMode,
     NotificationStore, OAuthStore, PendingReleaseStore, PluginStore, PostProcessingScriptStore,
     QualityProfileStore, ReleaseStore, RuleSetStore, SettingsStore, ShowStore, SmgEnrollmentConfig,
@@ -623,6 +627,7 @@ enum DatastoreStores {
         totp_store: Arc<TotpStore>,
         oauth_store: Arc<OAuthStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
+        indexer_proxy_config_store: Arc<IndexerProxyConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
         rule_set_store: Arc<RuleSetStore>,
@@ -646,8 +651,10 @@ enum DatastoreStores {
         download_submission_store: Arc<DownloadSubmissionStore>,
         import_store: Arc<ImportStore>,
         external_import_monitor_store: Arc<ExternalImportMonitorStore>,
+        external_import_setup_secret_draft_store: Arc<ExternalImportSetupSecretDraftStore>,
         download_queue_command_store: Arc<DownloadQueueCommandStore>,
         workflow_operation_store: Arc<WorkflowOperationStore>,
+        discovery_store: Arc<DiscoveryStore>,
         backup_exporter: Arc<SqliteLogicalBackupExporter>,
     },
     Postgres {
@@ -662,6 +669,7 @@ enum DatastoreStores {
         totp_store: Arc<TotpStore>,
         oauth_store: Arc<OAuthStore>,
         indexer_config_store: Arc<IndexerConfigStore>,
+        indexer_proxy_config_store: Arc<IndexerProxyConfigStore>,
         download_client_config_store: Arc<DownloadClientConfigStore>,
         subtitle_provider_config_store: Arc<SubtitleProviderConfigStore>,
         rule_set_store: Arc<RuleSetStore>,
@@ -685,8 +693,10 @@ enum DatastoreStores {
         download_submission_store: Arc<DownloadSubmissionStore>,
         import_store: Arc<ImportStore>,
         external_import_monitor_store: Arc<ExternalImportMonitorStore>,
+        external_import_setup_secret_draft_store: Arc<ExternalImportSetupSecretDraftStore>,
         download_queue_command_store: Arc<DownloadQueueCommandStore>,
         workflow_operation_store: Arc<WorkflowOperationStore>,
+        discovery_store: Arc<DiscoveryStore>,
         backup_exporter: Arc<PostgresLogicalBackupExporter>,
     },
 }
@@ -723,6 +733,7 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
+        let indexer_proxy_config_store = Arc::new(IndexerProxyConfigStore::new(datastore.clone()));
         let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -767,9 +778,13 @@ impl DatastoreAssembly {
         let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
             Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
+        let external_import_setup_secret_draft_store = Arc::new(
+            ExternalImportSetupSecretDraftStore::new(datastore.clone(), db.encryption_key_state()),
+        );
         let download_queue_command_store =
             Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
         let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
+        let discovery_store = Arc::new(DiscoveryStore::new(datastore.clone()));
         let backup_exporter = Arc::new(SqliteLogicalBackupExporter::new(
             config.database_url.clone(),
         ));
@@ -786,6 +801,7 @@ impl DatastoreAssembly {
             totp_store,
             oauth_store,
             indexer_config_store,
+            indexer_proxy_config_store,
             download_client_config_store,
             subtitle_provider_config_store,
             rule_set_store,
@@ -809,8 +825,10 @@ impl DatastoreAssembly {
             download_submission_store,
             import_store,
             external_import_monitor_store,
+            external_import_setup_secret_draft_store,
             download_queue_command_store,
             workflow_operation_store,
+            discovery_store,
             backup_exporter,
         };
 
@@ -841,6 +859,7 @@ impl DatastoreAssembly {
             datastore.clone(),
             db.encryption_key_state(),
         ));
+        let indexer_proxy_config_store = Arc::new(IndexerProxyConfigStore::new(datastore.clone()));
         let download_client_config_store = Arc::new(DownloadClientConfigStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -885,9 +904,13 @@ impl DatastoreAssembly {
         let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
             Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
+        let external_import_setup_secret_draft_store = Arc::new(
+            ExternalImportSetupSecretDraftStore::new(datastore.clone(), db.encryption_key_state()),
+        );
         let download_queue_command_store =
             Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
         let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
+        let discovery_store = Arc::new(DiscoveryStore::new(datastore.clone()));
         let backup_exporter = Arc::new(PostgresLogicalBackupExporter::new(&db));
 
         let stores = DatastoreStores::Postgres {
@@ -902,6 +925,7 @@ impl DatastoreAssembly {
             totp_store,
             oauth_store,
             indexer_config_store,
+            indexer_proxy_config_store,
             download_client_config_store,
             subtitle_provider_config_store,
             rule_set_store,
@@ -925,8 +949,10 @@ impl DatastoreAssembly {
             download_submission_store,
             import_store,
             external_import_monitor_store,
+            external_import_setup_secret_draft_store,
             download_queue_command_store,
             workflow_operation_store,
+            discovery_store,
             backup_exporter,
         };
 
@@ -1073,6 +1099,21 @@ impl DatastoreAssembly {
         }
     }
 
+    pub fn indexer_proxy_configs(
+        &self,
+    ) -> Arc<dyn scryer_application::IndexerProxyConfigRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                indexer_proxy_config_store,
+                ..
+            } => indexer_proxy_config_store.clone(),
+            DatastoreStores::Postgres {
+                indexer_proxy_config_store,
+                ..
+            } => indexer_proxy_config_store.clone(),
+        }
+    }
+
     pub fn download_client_configs(&self) -> Arc<dyn DownloadClientConfigRepository> {
         match &self.stores {
             DatastoreStores::Sqlite {
@@ -1163,6 +1204,42 @@ impl DatastoreAssembly {
         }
     }
 
+    pub fn indexer_search_learning_repository(&self) -> Arc<dyn IndexerSearchLearningRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite { db, .. } => {
+                Arc::new(IndexerSearchLearningStore::new(db.datastore()))
+            }
+            DatastoreStores::Postgres { db, .. } => {
+                Arc::new(IndexerSearchLearningStore::new(db.datastore()))
+            }
+        }
+    }
+
+    fn scope_indexer_coverage_repository(&self) -> Arc<dyn ScopeIndexerCoverageRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite { db, .. } => {
+                Arc::new(ScopeIndexerCoverageStore::new(db.datastore()))
+            }
+            DatastoreStores::Postgres { db, .. } => {
+                Arc::new(ScopeIndexerCoverageStore::new(db.datastore()))
+            }
+        }
+    }
+
+    pub async fn upstream_scheduler(&self) -> AppResult<Arc<dyn UpstreamScheduler>> {
+        let scheduler = match &self.stores {
+            DatastoreStores::Sqlite { db, .. } => {
+                crate::upstream_scheduler::InMemoryUpstreamScheduler::new_persistent(db.datastore())
+                    .await?
+            }
+            DatastoreStores::Postgres { db, .. } => {
+                crate::upstream_scheduler::InMemoryUpstreamScheduler::new_persistent(db.datastore())
+                    .await?
+            }
+        };
+        Ok(Arc::new(scheduler))
+    }
+
     pub fn metadata_gateway_client(
         &self,
         endpoint: String,
@@ -1220,8 +1297,10 @@ impl DatastoreAssembly {
                 download_submission_store,
                 import_store,
                 external_import_monitor_store,
+                external_import_setup_secret_draft_store,
                 download_queue_command_store,
                 workflow_operation_store,
+                discovery_store,
                 notification_store,
                 settings_store,
                 ..
@@ -1229,6 +1308,7 @@ impl DatastoreAssembly {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
                 let shows: Arc<dyn ShowRepository> = show_store.clone();
                 let users: Arc<dyn UserRepository> = user_store.clone();
+                let ui_settings: Arc<dyn UserUiSettingsRepository> = user_store.clone();
                 let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
                 let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
                 let totp: Arc<dyn TotpRepository> = totp_store.clone();
@@ -1251,14 +1331,17 @@ impl DatastoreAssembly {
                 )
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
+                .with_user_ui_settings_store(ui_settings)
                 .with_external_account_store(external_accounts)
                 .with_oauth_store(oauth)
+                .with_indexer_proxy_config_store(self.indexer_proxy_configs())
                 .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
                 .with_media_server_connection_store(media_server_connection_store.clone())
                 .with_webauthn_store(webauthn)
                 .with_totp_store(totp)
                 .with_media_files(media_file_store.clone())
-                .with_wanted_items(wanted_store.clone())
+                .with_acquisition_scope_states(wanted_store.clone())
+                .with_scope_indexer_coverage_store(self.scope_indexer_coverage_repository())
                 .with_pending_releases(pending_release_store.clone())
                 .with_blocklist_repo(blocklist_store.clone())
                 .with_library_probe_signatures(library_probe_store.clone())
@@ -1274,9 +1357,13 @@ impl DatastoreAssembly {
                 .with_download_submissions(download_submission_store.clone())
                 .with_download_queue_commands(download_queue_command_store.clone())
                 .with_external_import_monitor_snapshots(external_import_monitor_store.clone())
+                .with_external_import_setup_secret_drafts(
+                    external_import_setup_secret_draft_store.clone(),
+                )
                 .with_import_artifacts(import_store.clone())
                 .with_imports(import_store.clone())
                 .with_job_runs(workflow_operation_store.clone())
+                .with_discovery_store(discovery_store.clone())
                 .with_notification_store(notification_store.clone())
                 .with_system_info(settings_store.clone())
                 .with_logical_backup_exporter(self.logical_backup_exporter())
@@ -1313,13 +1400,16 @@ impl DatastoreAssembly {
                 download_submission_store,
                 import_store,
                 external_import_monitor_store,
+                external_import_setup_secret_draft_store,
                 download_queue_command_store,
                 workflow_operation_store,
+                discovery_store,
                 ..
             } => {
                 let titles: Arc<dyn TitleRepository> = title_store.clone();
                 let shows: Arc<dyn ShowRepository> = show_store.clone();
                 let users: Arc<dyn UserRepository> = user_store.clone();
+                let ui_settings: Arc<dyn UserUiSettingsRepository> = user_store.clone();
                 let external_accounts: Arc<dyn UserExternalAccountRepository> = user_store.clone();
                 let webauthn: Arc<dyn WebauthnRepository> = webauthn_store.clone();
                 let totp: Arc<dyn TotpRepository> = totp_store.clone();
@@ -1342,14 +1432,17 @@ impl DatastoreAssembly {
                 )
                 .with_libraries(libraries)
                 .with_media_requests(media_requests)
+                .with_user_ui_settings_store(ui_settings)
                 .with_external_account_store(external_accounts)
                 .with_oauth_store(oauth)
+                .with_indexer_proxy_config_store(self.indexer_proxy_configs())
                 .with_external_identity_verifier(Arc::new(HttpExternalIdentityVerifier::new()))
                 .with_media_server_connection_store(media_server_connection_store.clone())
                 .with_webauthn_store(webauthn)
                 .with_totp_store(totp)
                 .with_media_files(media_file_store.clone())
-                .with_wanted_items(wanted_store.clone())
+                .with_acquisition_scope_states(wanted_store.clone())
+                .with_scope_indexer_coverage_store(self.scope_indexer_coverage_repository())
                 .with_pending_releases(pending_release_store.clone())
                 .with_blocklist_repo(blocklist_store.clone())
                 .with_library_probe_signatures(library_probe_store.clone())
@@ -1365,9 +1458,13 @@ impl DatastoreAssembly {
                 .with_download_submissions(download_submission_store.clone())
                 .with_download_queue_commands(download_queue_command_store.clone())
                 .with_external_import_monitor_snapshots(external_import_monitor_store.clone())
+                .with_external_import_setup_secret_drafts(
+                    external_import_setup_secret_draft_store.clone(),
+                )
                 .with_import_artifacts(import_store.clone())
                 .with_imports(import_store.clone())
                 .with_job_runs(workflow_operation_store.clone())
+                .with_discovery_store(discovery_store.clone())
                 .with_notification_store(notification_store.clone())
                 .with_system_info(settings_store.clone())
                 .with_logical_backup_exporter(self.logical_backup_exporter())
@@ -1553,6 +1650,33 @@ mod tests {
 
     fn data_dir() -> PathBuf {
         std::env::temp_dir().join("scryer-datastore-config-tests")
+    }
+
+    #[tokio::test]
+    async fn sqlite_scope_indexer_coverage_repository_persists_rows() {
+        let data_dir = TempDir::new().expect("data dir");
+        let database_path = data_dir.path().join("scryer.db");
+        let assembly = DatastoreAssembly::connect(DatastoreConfig::sqlite(
+            format!("sqlite://{}", database_path.display()),
+            data_dir.path(),
+            MigrationMode::Apply,
+        ))
+        .await
+        .expect("sqlite datastore assembly");
+
+        let coverage = assembly.scope_indexer_coverage_repository();
+        coverage
+            .record_coverage("title:title-1", "movie", "indexer-1", "fingerprint-1")
+            .await
+            .expect("record coverage");
+
+        assert_eq!(
+            coverage
+                .covered_indexers("title:title-1", "movie", "fingerprint-1", None)
+                .await
+                .expect("read coverage"),
+            vec!["indexer-1".to_string()]
+        );
     }
 
     fn validation_message(result: AppResult<DatastoreConfig>) -> String {
@@ -1753,6 +1877,7 @@ mod tests {
         _temp: TempDir,
     }
 
+    #[cfg(not(feature = "runtime-backups"))]
     const BACKUP_PAYLOAD_SUPPORT_UNAVAILABLE: &str =
         "backup bundle payload support is not compiled into this target";
 
@@ -1794,7 +1919,14 @@ mod tests {
         target_engine: TestBackupEngine,
         postgres_url: Option<&str>,
     ) -> AppResult<()> {
-        match run_backup_restore_round_trip(source_engine, target_engine, postgres_url).await {
+        let result =
+            run_backup_restore_round_trip(source_engine, target_engine, postgres_url).await;
+        #[cfg(feature = "runtime-backups")]
+        {
+            result
+        }
+        #[cfg(not(feature = "runtime-backups"))]
+        match result {
             Err(AppError::Repository(message)) if message == BACKUP_PAYLOAD_SUPPORT_UNAVAILABLE => {
                 eprintln!(
                     "skipping backup/restore round trip; {BACKUP_PAYLOAD_SUPPORT_UNAVAILABLE}"
@@ -1820,6 +1952,7 @@ mod tests {
 
         let result = async {
             source.seed().await?;
+            target.seed_stale_rebuild_only_image_rows().await?;
             let outcome = source.export_backup(&bundle_path, passphrase).await?;
             let inspected = inspect_backup_bundle(&bundle_path, Some(passphrase))?;
             let expected_bundle_tables = BACKUP_TABLE_CATALOG
@@ -1865,8 +1998,16 @@ mod tests {
                 "backup should not include generated title image variant rows"
             );
             assert!(
+                !outcome.summary.row_counts.contains_key("title_image_blobs"),
+                "backup should not include generated title image blob rows"
+            );
+            assert!(
                 !inspected.row_counts.contains_key("title_image_variants"),
                 "inspected bundle should not include generated title image variant rows"
+            );
+            assert!(
+                !inspected.row_counts.contains_key("title_image_blobs"),
+                "inspected bundle should not include generated title image blob rows"
             );
             assert!(
                 outcome.summary.row_counts.contains_key("settings_values"),
@@ -2137,6 +2278,38 @@ mod tests {
                 }
             }
         }
+        async fn seed_stale_rebuild_only_image_rows(&self) -> AppResult<()> {
+            match self.engine {
+                TestBackupEngine::Sqlite => {
+                    let services = SqliteServices::new_with_mode(
+                        self.config.database_url.clone(),
+                        MigrationMode::Apply,
+                    )
+                    .await?;
+                    let datastore = services.datastore();
+                    let titles = TitleStore::new(datastore.clone());
+                    let images = TitleImageStore::new(datastore);
+                    TitleRepository::create(&titles, backup_matrix_title()).await?;
+                    seed_backup_matrix_title_image(&images).await?;
+                    services.pool().close().await;
+                }
+                TestBackupEngine::Postgres => {
+                    let services = PostgresServices::new_with_mode(
+                        self.config.database_url.clone(),
+                        MigrationMode::Apply,
+                    )
+                    .await?;
+                    let datastore = services.datastore();
+                    let titles = TitleStore::new(datastore.clone());
+                    let images = TitleImageStore::new(datastore);
+                    TitleRepository::create(&titles, backup_matrix_title()).await?;
+                    seed_backup_matrix_title_image(&images).await?;
+                    services.pool().close().await;
+                }
+            }
+            Ok(())
+        }
+
         async fn verify_restored(&self) -> AppResult<()> {
             match self.engine {
                 TestBackupEngine::Sqlite => {
@@ -2219,11 +2392,14 @@ mod tests {
     where
         I: TitleImageRepository,
     {
+        let variant_bytes = vec![1, 2, 3, 4, 5];
+        let variant_digest = format!("blake3:{}", blake3::hash(&variant_bytes).to_hex());
         images
             .upsert_title_image_source_result(
                 "backup-lattice-title",
                 TitleImageSourceResult {
                     kind: TitleImageKind::Poster,
+                    requested_source_url: "https://example.invalid/poster.jpg".to_string(),
                     source_url: "https://example.invalid/poster.jpg".to_string(),
                     source_etag: Some("matrix-etag".to_string()),
                     source_last_modified: Some("Wed, 12 Jun 2026 03:00:00 GMT".to_string()),
@@ -2235,8 +2411,8 @@ mod tests {
                         format: "avif".to_string(),
                         width: 250,
                         height: 375,
-                        bytes: vec![1, 2, 3, 4, 5],
-                        digest: "blake3:backup-matrix-poster-w250".to_string(),
+                        bytes: variant_bytes,
+                        digest: variant_digest,
                     }],
                 },
                 None,
@@ -2362,6 +2538,13 @@ mod tests {
                 AppError::Repository(format!("failed to count restored variants: {error}"))
             })?;
         assert_eq!(variant_count, 0);
+        let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
+            .fetch_one(pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to count restored image blobs: {error}"))
+            })?;
+        assert_eq!(blob_count, 0);
         Ok(())
     }
 
@@ -2412,6 +2595,13 @@ mod tests {
                 AppError::Repository(format!("failed to count restored variants: {error}"))
             })?;
         assert_eq!(variant_count, 0);
+        let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
+            .fetch_one(pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to count restored image blobs: {error}"))
+            })?;
+        assert_eq!(blob_count, 0);
         Ok(())
     }
 
@@ -2423,6 +2613,7 @@ mod tests {
             facet: MediaFacet::Movie,
             monitored: true,
             tags: vec!["backup".to_string(), "lattice".to_string()],
+            canonical_tags: vec![],
             external_ids: vec![ExternalId {
                 source: "tmdb".to_string(),
                 value: "424242".to_string(),
@@ -2437,10 +2628,11 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: Some("Backup Lattice Movie".to_string()),
+            catalog_sort_key: String::new(),
             slug: Some("backup-lattice-movie".to_string()),
             imdb_id: Some("tt4242420".to_string()),
             runtime_minutes: Some(101),
-            genres: vec!["Drama".to_string()],
+            popularity: None,
             content_status: Some("released".to_string()),
             language: Some("eng".to_string()),
             first_aired: Some("2026-01-01".to_string()),

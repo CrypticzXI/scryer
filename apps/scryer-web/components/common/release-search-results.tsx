@@ -1,8 +1,18 @@
-
 import * as React from "react";
-import { ChevronDown, ChevronUp, ArrowDown, ArrowUp, Check, FilePlus2 } from "lucide-react";
+import {
+  Ban,
+  ChevronDown,
+  ChevronUp,
+  ArrowDown,
+  ArrowUp,
+  Check,
+  Database,
+  Download,
+  FilePlus2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTranslate } from "@/lib/context/translate-context";
+import { cn } from "@/lib/utils";
 import {
   releaseSearchResultQueueAdditionalId,
   releaseSearchResultQueueId,
@@ -10,8 +20,25 @@ import {
 } from "@/lib/utils/dom-ids";
 import type { Release } from "@/lib/types";
 
-type SortKey = "score" | "size";
-type SortDirection = "asc" | "desc";
+export type ReleaseSearchSortKey = "score" | "size";
+export type ReleaseSearchSortDirection = "asc" | "desc";
+type SortKey = ReleaseSearchSortKey;
+type SortDirection = ReleaseSearchSortDirection;
+type SearchResultPresentation = "default" | "selected-title";
+
+const selectedTitleTagClassNames = [
+  "bg-[var(--scry-facet-series-bg)] text-[var(--scry-facet-series-text)]",
+  "bg-[var(--scry-facet-movie-bg)] text-[var(--scry-facet-movie-text)]",
+  "bg-[var(--scry-facet-anime-bg)] text-[var(--scry-facet-anime-text)]",
+  "bg-[var(--scry-chip)] text-[var(--scry-muted2)]",
+];
+
+function selectedTitleTagClassName(index: number) {
+  return cn(
+    "inline-flex items-center rounded-[6px] px-[9px] py-[3px] text-[10.5px] font-semibold",
+    selectedTitleTagClassNames[index % selectedTitleTagClassNames.length],
+  );
+}
 
 function getScoreText(score: number | undefined) {
   if (score == null) {
@@ -70,22 +97,44 @@ function SearchResultRow({
   onQueue,
   onQueueAdditional,
   blocked,
+  disabled = false,
   requireCandidateToken = false,
   mobile = false,
+  presentation = "default",
 }: {
   result: Release;
   onQueue: (r: Release) => Promise<void> | void;
   onQueueAdditional?: (r: Release) => Promise<void> | void;
   blocked: boolean;
+  disabled?: boolean;
   requireCandidateToken?: boolean;
   mobile?: boolean;
+  presentation?: SearchResultPresentation;
 }) {
   const t = useTranslate();
   const [expanded, setExpanded] = React.useState(false);
   const [queueRequested, setQueueRequested] = React.useState(false);
-  const [additionalQueueRequested, setAdditionalQueueRequested] = React.useState(false);
+  const [additionalQueueRequested, setAdditionalQueueRequested] =
+    React.useState(false);
   const decision = result.qualityProfileDecision;
   const hasLog = decision && decision.scoringLog.length > 0;
+  const blockReason =
+    blocked && decision && decision.blockCodes.length > 0
+      ? decision.blockCodes.join(" · ")
+      : null;
+  const rejectionBadge = blockReason ? (
+    <span className="inline-flex max-w-full items-center gap-1 rounded-[6px] bg-[var(--scry-danger-bg)] px-2 py-0.5 text-[10px] font-bold text-[var(--scry-danger-text-soft)]">
+      <Ban className="h-2.5 w-2.5 shrink-0" />
+      <span className="min-w-0 break-words">{blockReason}</span>
+    </span>
+  ) : null;
+  const approvedBadge =
+    !blocked && decision?.allowed ? (
+      <span className="inline-flex items-center gap-1 rounded-[6px] bg-[var(--scry-success-bg-strong)] px-[7px] py-px text-[10px] font-bold text-[var(--scry-success-text-soft)]">
+        <Check className="h-2.5 w-2.5" />
+        Approved
+      </span>
+    ) : null;
   const parsedBits = [
     result.parsedRelease?.quality,
     result.parsedRelease?.videoCodec,
@@ -97,43 +146,57 @@ function SearchResultRow({
   const parsedMetadata = result.parsedRelease
     ? [
         result.parsedRelease.detectedHdr
-          ? { label: "HDR", className: "bg-cyan-500/20 text-cyan-300" }
+          ? { label: "HDR", className: "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]" }
           : null,
         result.parsedRelease.isDolbyVision
-          ? { label: "Dolby Vision", className: "bg-indigo-500/20 text-indigo-300" }
+          ? {
+              label: "Dolby Vision",
+              className: "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]",
+            }
           : null,
         result.parsedRelease.isProperUpload
-          ? { label: "Proper", className: "bg-amber-500/20 text-amber-300" }
+          ? { label: "Proper", className: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]" }
           : null,
         result.parsedRelease.isRemux
-          ? { label: "Remux", className: "bg-violet-500/20 text-violet-300" }
+          ? { label: "Remux", className: "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]" }
           : null,
         result.parsedRelease.isBdDisk
-          ? { label: "BD", className: "bg-rose-500/20 text-rose-300" }
+          ? { label: "BD", className: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text)]" }
           : null,
         result.parsedRelease.isAiEnhanced
-          ? { label: "AI Enhanced", className: "bg-red-500/20 text-red-300" }
+          ? { label: "AI Enhanced", className: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text)]" }
           : null,
         result.parsedRelease.isAtmos
-          ? { label: "Atmos", className: "bg-purple-500/20 text-purple-300" }
+          ? { label: "Atmos", className: "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]" }
           : null,
       ]
         .filter(Boolean)
-        .filter((value) => value !== null && value !== undefined && typeof value === "object")
+        .filter(
+          (value) =>
+            value !== null && value !== undefined && typeof value === "object",
+        )
         .map((entry) => entry as { label: string; className: string })
     : [];
   const queueUnavailableReason =
     requireCandidateToken && !blocked && !result.candidateToken
       ? t("queue.manualUnavailableForResult")
       : null;
-  const queueDisabled = blocked || queueRequested || queueUnavailableReason !== null;
+  const queueDisabled =
+    disabled || blocked || queueRequested || queueUnavailableReason !== null;
   const queueButtonMuted = blocked || queueUnavailableReason !== null;
   const additionalQueueDisabled =
-    blocked || additionalQueueRequested || queueUnavailableReason !== null || !onQueueAdditional;
+    disabled ||
+    blocked ||
+    additionalQueueRequested ||
+    queueUnavailableReason !== null ||
+    !onQueueAdditional;
   const idVariant = mobile ? "mobile" : undefined;
   const rowId = releaseSearchResultRowId(result, idVariant);
   const queueButtonId = releaseSearchResultQueueId(result, idVariant);
-  const queueAdditionalButtonId = releaseSearchResultQueueAdditionalId(result, idVariant);
+  const queueAdditionalButtonId = releaseSearchResultQueueAdditionalId(
+    result,
+    idVariant,
+  );
 
   const handleQueueClick = React.useCallback(() => {
     if (queueDisabled) {
@@ -144,7 +207,10 @@ function SearchResultRow({
 
     try {
       const maybePromise = onQueue(result);
-      if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+      if (
+        maybePromise &&
+        typeof (maybePromise as Promise<void>).then === "function"
+      ) {
         void (maybePromise as Promise<void>).catch(() => {
           setQueueRequested(false);
         });
@@ -163,7 +229,10 @@ function SearchResultRow({
 
     try {
       const maybePromise = onQueueAdditional(result);
-      if (maybePromise && typeof (maybePromise as Promise<void>).then === "function") {
+      if (
+        maybePromise &&
+        typeof (maybePromise as Promise<void>).then === "function"
+      ) {
         void (maybePromise as Promise<void>).catch(() => {
           setAdditionalQueueRequested(false);
         });
@@ -172,6 +241,147 @@ function SearchResultRow({
       setAdditionalQueueRequested(false);
     }
   }, [additionalQueueDisabled, onQueueAdditional, result]);
+
+  if (presentation === "selected-title") {
+    const scoreToneClassName = decision
+      ? decision.releaseScore < 0
+        ? "text-[var(--scry-danger-text-soft)]"
+        : "text-[var(--scry-success-text-soft)]"
+      : "text-[var(--scry-faint)]";
+    const selectedTitleTags = [
+      ...parsedBits.map((metadataBit, index) => ({
+        className: selectedTitleTagClassName(index),
+        label: metadataBit,
+      })),
+      ...parsedMetadata.map((metadataBit) => ({
+        className: cn(
+          "inline-flex items-center rounded-[6px] px-[9px] py-[3px] text-[10.5px] font-semibold",
+          metadataBit.className,
+        ),
+        label: metadataBit.label,
+      })),
+    ];
+
+    return (
+      <div
+        id={rowId}
+        data-ui="release-search-result-row"
+        data-release-source={result.source ?? ""}
+        data-release-title={result.title}
+        data-release-link={result.link ?? ""}
+        data-release-download-url={result.downloadUrl ?? ""}
+        data-release-candidate-token={result.candidateToken ?? ""}
+        className="flex items-center gap-4 border-b border-[var(--scry-line2)] px-4 py-3.5 transition-colors last:border-b-0 hover:bg-[var(--scry-hover)] max-md:flex-col max-md:items-stretch"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="mb-1.5 break-words text-[13px] font-semibold leading-[1.35] text-[var(--scry-ink2)]">
+            {result.title}
+          </div>
+          <div className="mb-2 flex flex-wrap items-center gap-x-[7px] gap-y-1 text-[11px] text-[var(--scry-faint)]">
+            <Database className="h-3 w-3 shrink-0" />
+            <span>{result.source ?? t("label.unknown")}</span>
+            <span
+              aria-hidden="true"
+              className="h-[3px] w-[3px] rounded-full bg-[var(--scry-faint4)]"
+            />
+            <span>{result.publishedAt ?? t("label.unknown")}</span>
+            {approvedBadge}
+            {rejectionBadge}
+          </div>
+          {selectedTitleTags.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {selectedTitleTags.map((metadataBit, index) => (
+                <span
+                  key={`${metadataBit.label}-${index}`}
+                  className={metadataBit.className}
+                >
+                  {metadataBit.label}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {queueUnavailableReason ? (
+            <p className="mt-2 text-[11px] text-[var(--scry-faint)]">
+              {queueUnavailableReason}
+            </p>
+          ) : null}
+        </div>
+        <div className="w-[74px] shrink-0 text-center max-md:w-auto max-md:text-left">
+          <div
+            className={cn(
+              "text-[14px] font-bold tabular-nums",
+              scoreToneClassName,
+            )}
+          >
+            {getScoreText(decision?.releaseScore)}
+          </div>
+          <div className="mt-0.5 text-[9.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint3)]">
+            Score
+          </div>
+        </div>
+        <div className="w-16 shrink-0 text-right max-md:w-auto max-md:text-left">
+          <div className="font-[var(--font-code)] text-[15px] font-bold text-[var(--scry-ink2)]">
+            {bytesToWholeReadable(result.sizeBytes)}
+          </div>
+        </div>
+        <div className="flex w-[166px] shrink-0 flex-col gap-[7px] max-md:w-full">
+          <Button
+            id={queueButtonId}
+            data-ui="release-search-result-queue"
+            size="sm"
+            onClick={handleQueueClick}
+            disabled={queueDisabled}
+            className={cn(
+              "h-[38px] justify-center gap-[7px] rounded-[10px] border-0 text-[12.5px] font-bold text-[var(--scry-success-on-solid)] shadow-[0_6px_16px_rgba(var(--scry-success-rgb),0.28)]",
+              queueButtonMuted
+                ? "border border-[var(--scry-border2)] bg-[var(--scry-soft)] text-[var(--scry-muted3)] shadow-none hover:bg-[var(--scry-soft)] hover:text-[var(--scry-muted3)]"
+                : "bg-[var(--scry-success-solid)] hover:bg-[var(--scry-success-solid-hover)]",
+            )}
+          >
+            {queueRequested ? (
+              <>
+                <Check className="h-[15px] w-[15px]" />
+                {t("queue.state.queued")}
+              </>
+            ) : (
+              <>
+                <Download className="h-[15px] w-[15px]" />
+                {t("nzb.queue")}
+              </>
+            )}
+          </Button>
+          {onQueueAdditional ? (
+            <Button
+              id={queueAdditionalButtonId}
+              data-ui="release-search-result-queue-additional"
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={handleQueueAdditionalClick}
+              disabled={additionalQueueDisabled}
+              className={cn(
+                "h-[34px] justify-center gap-[7px] rounded-[10px] border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.16)] text-[11.5px] font-semibold text-[var(--scry-accent-text)] shadow-none hover:border-[var(--scry-accent)] hover:bg-[rgba(var(--scry-accent-rgb),0.26)] hover:text-[var(--scry-accent-text)]",
+                additionalQueueRequested &&
+                  "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] hover:text-[var(--scry-success-text)]",
+              )}
+            >
+              {additionalQueueRequested ? (
+                <>
+                  <Check className="h-3.5 w-3.5" />
+                  {t("queue.state.queued")}
+                </>
+              ) : (
+                <>
+                  <FilePlus2 className="h-3.5 w-3.5" />
+                  {t("nzb.queueAdditionalFile")}
+                </>
+              )}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 
   if (mobile) {
     return (
@@ -194,7 +404,10 @@ function SearchResultRow({
             <span aria-hidden="true">•</span>
             <span>{result.publishedAt ?? t("label.unknown")}</span>
             <span aria-hidden="true">•</span>
-            <span className="font-medium text-foreground/80">{bytesToWholeReadable(result.sizeBytes)}</span>
+            <span className="font-[var(--font-code)] font-medium text-foreground/80">
+              {bytesToWholeReadable(result.sizeBytes)}
+            </span>
+            {rejectionBadge}
           </div>
           {parsedBits.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
@@ -220,11 +433,10 @@ function SearchResultRow({
               ))}
             </div>
           ) : null}
-          {decision && decision.blockCodes.length > 0 ? (
-            <p className="text-xs text-red-400">{decision.blockCodes.join(" · ")}</p>
-          ) : null}
           {queueUnavailableReason ? (
-            <p className="text-xs text-muted-foreground">{queueUnavailableReason}</p>
+            <p className="text-xs text-muted-foreground">
+              {queueUnavailableReason}
+            </p>
           ) : null}
           <div className="mt-1 grid gap-2">
             <Button
@@ -237,8 +449,8 @@ function SearchResultRow({
                 queueButtonMuted
                   ? "w-full"
                   : queueRequested
-                    ? "w-full border border-emerald-500/50 dark:border-emerald-300/70 bg-emerald-200 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-100"
-                    : "w-full bg-emerald-600 text-foreground hover:bg-emerald-500 focus-visible:ring-emerald-300/70 border border-emerald-500/60 dark:border-emerald-400/50"
+                    ? "w-full border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]"
+                    : "w-full border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-solid)] text-[var(--scry-success-on-solid)] hover:bg-[var(--scry-success-solid-hover)] focus-visible:ring-[var(--scry-success-border-strong)]"
               }
               variant={queueButtonMuted ? "ghost" : "default"}
             >
@@ -260,7 +472,11 @@ function SearchResultRow({
                 variant="outline"
                 onClick={handleQueueAdditionalClick}
                 disabled={additionalQueueDisabled}
-                className="w-full"
+                className={cn(
+                  "w-full border-[rgba(var(--scry-accent-rgb),0.30)] bg-[rgba(var(--scry-accent-rgb),0.08)] text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.13)] hover:text-[var(--scry-accent-text)] focus-visible:ring-[rgba(var(--scry-accent-rgb),0.25)]",
+                  additionalQueueRequested &&
+                    "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] hover:text-[var(--scry-success-text)]",
+                )}
               >
                 {additionalQueueRequested ? (
                   <span className="inline-flex items-center gap-1.5">
@@ -294,10 +510,15 @@ function SearchResultRow({
       >
         <td className="rounded-l-lg border border-border border-r-0 px-4 py-2 align-middle">
           <div className="space-y-1">
-            <p className="min-w-0 whitespace-normal break-words text-base font-semibold text-foreground">{result.title}</p>
-            <p className="text-xs text-muted-foreground">
-              {result.source ?? t("label.unknown")} • {result.publishedAt ?? t("label.unknown")}
+            <p className="min-w-0 whitespace-normal break-words text-base font-semibold text-foreground">
+              {result.title}
             </p>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <span>{result.source ?? t("label.unknown")}</span>
+              <span aria-hidden="true">•</span>
+              <span>{result.publishedAt ?? t("label.unknown")}</span>
+              {rejectionBadge}
+            </div>
             {parsedBits.length > 0 ? (
               <div className="mt-1 flex flex-wrap gap-1.5">
                 {parsedBits.map((metadataBit) => (
@@ -322,11 +543,10 @@ function SearchResultRow({
                 ))}
               </div>
             ) : null}
-            {decision && decision.blockCodes.length > 0 ? (
-              <p className="mt-1 text-xs text-red-400">{decision.blockCodes.join(" · ")}</p>
-            ) : null}
             {queueUnavailableReason ? (
-              <p className="mt-1 text-xs text-muted-foreground">{queueUnavailableReason}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {queueUnavailableReason}
+              </p>
             ) : null}
           </div>
         </td>
@@ -335,20 +555,28 @@ function SearchResultRow({
             hasLog ? (
               <button
                 type="button"
-                className={`text-sm font-mono underline-offset-2 hover:underline ${decision.releaseScore < 0 ? "text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}
+                className={`text-sm font-[var(--font-code)] underline-offset-2 hover:underline ${decision.releaseScore < 0 ? "text-[var(--scry-danger-text-soft)]" : "text-[var(--scry-success-text)]"}`}
                 onClick={() => setExpanded((prev) => !prev)}
-                aria-label={expanded ? t("nzb.hideScoringLog") : t("nzb.showScoringLog")}
+                aria-label={
+                  expanded ? t("nzb.hideScoringLog") : t("nzb.showScoringLog")
+                }
               >
                 {getScoreText(decision.releaseScore)}
               </button>
             ) : (
-              <span className={`text-sm font-mono ${decision.releaseScore < 0 ? "text-red-400" : "text-emerald-700 dark:text-emerald-300"}`}>{getScoreText(decision.releaseScore)}</span>
+              <span
+                className={`text-sm font-[var(--font-code)] ${decision.releaseScore < 0 ? "text-[var(--scry-danger-text-soft)]" : "text-[var(--scry-success-text)]"}`}
+              >
+                {getScoreText(decision.releaseScore)}
+              </span>
             )
           ) : (
-            <span className="text-sm font-mono text-muted-foreground">{getScoreText(undefined)}</span>
+            <span className="text-sm font-[var(--font-code)] text-muted-foreground">
+              {getScoreText(undefined)}
+            </span>
           )}
         </td>
-        <td className="border border-border border-x-0 px-4 py-2 text-center text-xl font-semibold text-foreground align-middle">
+        <td className="border border-border border-x-0 px-4 py-2 text-center font-[var(--font-code)] text-xl font-semibold text-foreground align-middle">
           {bytesToWholeReadable(result.sizeBytes)}
         </td>
         <td className="rounded-r-lg border border-border border-l-0 px-4 py-2 text-center align-middle">
@@ -363,8 +591,8 @@ function SearchResultRow({
                 queueButtonMuted
                   ? "h-10"
                   : queueRequested
-                    ? "h-10 border border-emerald-500/50 dark:border-emerald-300/70 bg-emerald-200 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-100"
-                    : "h-10 bg-emerald-600 text-foreground hover:bg-emerald-500 focus-visible:ring-emerald-300/70 border border-emerald-500/60 dark:border-emerald-400/50"
+                    ? "h-10 border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]"
+                    : "h-10 border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-solid)] text-[var(--scry-success-on-solid)] hover:bg-[var(--scry-success-solid-hover)] focus-visible:ring-[var(--scry-success-border-strong)]"
               }
               variant={queueButtonMuted ? "ghost" : "default"}
             >
@@ -386,7 +614,11 @@ function SearchResultRow({
                 variant="outline"
                 onClick={handleQueueAdditionalClick}
                 disabled={additionalQueueDisabled}
-                className="h-9"
+                className={cn(
+                  "h-9 border-[rgba(var(--scry-accent-rgb),0.30)] bg-[rgba(var(--scry-accent-rgb),0.08)] text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.13)] hover:text-[var(--scry-accent-text)] focus-visible:ring-[rgba(var(--scry-accent-rgb),0.25)]",
+                  additionalQueueRequested &&
+                    "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] hover:text-[var(--scry-success-text)]",
+                )}
               >
                 {additionalQueueRequested ? (
                   <span className="inline-flex items-center gap-1.5">
@@ -406,9 +638,14 @@ function SearchResultRow({
       </tr>
       {expanded && hasLog ? (
         <tr>
-          <td colSpan={4} className="border border-x border-t-0 border-border p-0">
+          <td
+            colSpan={4}
+            className="border border-x border-t-0 border-border p-0"
+          >
             <div className="bg-background/80 px-3 py-2">
-              <p className="mb-1 text-xs font-semibold text-muted-foreground">{t("nzb.scoringLog")}</p>
+              <p className="mb-1 text-xs font-semibold text-muted-foreground">
+                {t("nzb.scoringLog")}
+              </p>
               <div className="space-y-0.5">
                 {decision.scoringLog.map((entry) => {
                   const badge = entry.source?.startsWith("user:")
@@ -417,7 +654,10 @@ function SearchResultRow({
                       ? "System Rule"
                       : null;
                   return (
-                    <div key={entry.code} className="flex justify-between gap-4 font-mono text-xs">
+                    <div
+                      key={entry.code}
+                      className="flex justify-between gap-4 font-[var(--font-code)] text-xs"
+                    >
                       <span className="flex items-center gap-1.5 text-muted-foreground">
                         {entry.code}
                         {badge && (
@@ -433,7 +673,13 @@ function SearchResultRow({
                           </>
                         )}
                       </span>
-                      <span className={entry.delta < 0 ? "text-red-400" : "text-emerald-600 dark:text-emerald-400"}>
+                      <span
+                        className={
+                          entry.delta < 0
+                            ? "text-[var(--scry-danger-text-soft)]"
+                            : "text-[var(--scry-success-text-soft)]"
+                        }
+                      >
                         {entry.delta > 0 ? "+" : ""}
                         {entry.delta}
                       </span>
@@ -441,9 +687,15 @@ function SearchResultRow({
                   );
                 })}
               </div>
-              <div className="mt-1.5 flex justify-between border-t border-border pt-1.5 font-mono text-xs font-semibold">
+              <div className="mt-1.5 flex justify-between border-t border-border pt-1.5 font-[var(--font-code)] text-xs font-semibold">
                 <span className="text-muted-foreground">{t("nzb.total")}</span>
-                <span className={decision.releaseScore < 0 ? "text-red-400" : "text-emerald-600 dark:text-emerald-400"}>
+                <span
+                  className={
+                    decision.releaseScore < 0
+                      ? "text-[var(--scry-danger-text-soft)]"
+                      : "text-[var(--scry-success-text-soft)]"
+                  }
+                >
                   {getScoreText(decision.releaseScore)}
                 </span>
               </div>
@@ -460,26 +712,52 @@ export function SearchResultBuckets({
   onQueue,
   onQueueAdditional,
   canQueueAdditional,
+  disabled = false,
   requireCandidateToken = false,
+  compact = false,
+  sortKey: controlledSortKey,
+  sortDirection: controlledSortDirection,
+  onSortChange,
+  hideInlineSortControls = false,
+  showBlockedInline = false,
+  presentation = "default",
 }: {
   results: Release[];
   onQueue: (r: Release) => Promise<void> | void;
   onQueueAdditional?: (r: Release) => Promise<void> | void;
   canQueueAdditional?: (r: Release) => boolean;
+  disabled?: boolean;
   requireCandidateToken?: boolean;
+  compact?: boolean;
+  sortKey?: SortKey;
+  sortDirection?: SortDirection;
+  onSortChange?: (key: SortKey, direction: SortDirection) => void;
+  hideInlineSortControls?: boolean;
+  showBlockedInline?: boolean;
+  presentation?: SearchResultPresentation;
 }) {
   const t = useTranslate();
+  const isBlockedEntry = React.useCallback(
+    (entry: Release) =>
+      Boolean(
+        entry.qualityProfileDecision && !entry.qualityProfileDecision.allowed,
+      ),
+    [],
+  );
   const considered = React.useMemo(
-    () => results.filter((r) => !r.qualityProfileDecision || r.qualityProfileDecision.allowed),
-    [results],
+    () => results.filter((entry) => !isBlockedEntry(entry)),
+    [isBlockedEntry, results],
   );
   const blocked = React.useMemo(
-    () => results.filter((r) => r.qualityProfileDecision && !r.qualityProfileDecision.allowed),
-    [results],
+    () => results.filter((entry) => isBlockedEntry(entry)),
+    [isBlockedEntry, results],
   );
   const [showBlocked, setShowBlocked] = React.useState(false);
-  const [sortKey, setSortKey] = React.useState<SortKey>("score");
-  const [sortDirection, setSortDirection] = React.useState<SortDirection>("desc");
+  const [localSortKey, setLocalSortKey] = React.useState<SortKey>("score");
+  const [localSortDirection, setLocalSortDirection] =
+    React.useState<SortDirection>("desc");
+  const sortKey = controlledSortKey ?? localSortKey;
+  const sortDirection = controlledSortDirection ?? localSortDirection;
 
   const sortedConsidered = React.useMemo(
     () => sortBy(considered, sortKey, sortDirection),
@@ -489,18 +767,29 @@ export function SearchResultBuckets({
     () => sortBy(blocked, sortKey, sortDirection),
     [blocked, sortDirection, sortKey],
   );
+  const sortedInlineResults = React.useMemo(
+    () => sortBy(results, sortKey, sortDirection),
+    [results, sortDirection, sortKey],
+  );
 
   const handleSort = React.useCallback(
     (next: SortKey) => {
-      if (sortKey === next) {
-        setSortDirection((previous) => (previous === "asc" ? "desc" : "asc"));
-        return;
-      }
+      const nextDirection: SortDirection =
+        sortKey === next
+          ? sortDirection === "asc"
+            ? "desc"
+            : "asc"
+          : "desc";
 
-      setSortKey(next);
-      setSortDirection("desc");
+      if (controlledSortKey === undefined) {
+        setLocalSortKey(next);
+      }
+      if (controlledSortDirection === undefined) {
+        setLocalSortDirection(nextDirection);
+      }
+      onSortChange?.(next, nextDirection);
     },
-    [sortKey],
+    [controlledSortDirection, controlledSortKey, onSortChange, sortDirection, sortKey],
   );
 
   const renderSortIcon = React.useCallback(
@@ -508,57 +797,83 @@ export function SearchResultBuckets({
       if (sortKey !== key) {
         return <ChevronDown className="h-3 w-3 opacity-30" />;
       }
-      return sortDirection === "desc" ? <ArrowDown className="h-3 w-3" /> : <ArrowUp className="h-3 w-3" />;
+      return sortDirection === "desc" ? (
+        <ArrowDown className="h-3 w-3" />
+      ) : (
+        <ArrowUp className="h-3 w-3" />
+      );
     },
     [sortDirection, sortKey],
   );
 
   const renderTable = React.useCallback(
-    (entries: Release[], isBlocked: boolean) => {
+    (
+      entries: Release[],
+      isBlocked: boolean | ((entry: Release) => boolean),
+    ) => {
+      const resolveBlocked =
+        typeof isBlocked === "function" ? isBlocked : () => isBlocked;
+
       return (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2 md:hidden">
-            <Button
-              type="button"
-              size="xs"
-              variant={sortKey === "score" ? "secondary" : "outline"}
-              onClick={() => handleSort("score")}
+          {hideInlineSortControls ? null : (
+            <div
+              className={cn(
+                "flex flex-wrap items-center gap-2",
+                !compact && "md:hidden",
+              )}
             >
-              Score {renderSortIcon("score")}
-            </Button>
-            <Button
-              type="button"
-              size="xs"
-              variant={sortKey === "size" ? "secondary" : "outline"}
-              onClick={() => handleSort("size")}
-            >
-              Size {renderSortIcon("size")}
-            </Button>
-          </div>
+              <Button
+                type="button"
+                size="xs"
+                variant={sortKey === "score" ? "secondary" : "outline"}
+                onClick={() => handleSort("score")}
+              >
+                Score {renderSortIcon("score")}
+              </Button>
+              <Button
+                type="button"
+                size="xs"
+                variant={sortKey === "size" ? "secondary" : "outline"}
+                onClick={() => handleSort("size")}
+              >
+                Size {renderSortIcon("size")}
+              </Button>
+            </div>
+          )}
 
-          <div className="space-y-2 md:hidden">
+          <div className={cn("space-y-2", !compact && "md:hidden")}>
             {entries.map((result) => (
               <SearchResultRow
                 key={`${result.source}-${result.title}-${result.link}`}
                 result={result}
                 onQueue={onQueue}
                 onQueueAdditional={
-                  onQueueAdditional && (!canQueueAdditional || canQueueAdditional(result))
+                  onQueueAdditional &&
+                  (!canQueueAdditional || canQueueAdditional(result))
                     ? onQueueAdditional
                     : undefined
                 }
-                blocked={isBlocked}
+                blocked={resolveBlocked(result)}
+                disabled={disabled}
                 requireCandidateToken={requireCandidateToken}
                 mobile
               />
             ))}
           </div>
 
-          <div className="hidden overflow-x-auto rounded-md border border-border bg-background/30 md:block">
+          <div
+            className={cn(
+              "hidden overflow-x-auto rounded-md border border-border bg-background/30",
+              !compact && "md:block",
+            )}
+          >
             <table className="w-full table-fixed text-left">
               <thead className="bg-card/80">
                 <tr>
-                  <th className="w-[62%] px-4 py-3 text-base font-bold text-foreground">Release</th>
+                  <th className="w-[62%] px-4 py-3 text-base font-bold text-foreground">
+                    Release
+                  </th>
                   <th className="w-[8%] px-4 py-3 text-center text-base font-bold text-foreground">
                     <button
                       type="button"
@@ -577,7 +892,9 @@ export function SearchResultBuckets({
                       Size {renderSortIcon("size")}
                     </button>
                   </th>
-                  <th className="w-[20%] px-4 py-3 text-center text-base font-bold text-foreground">Actions</th>
+                  <th className="w-[20%] px-4 py-3 text-center text-base font-bold text-foreground">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -587,11 +904,13 @@ export function SearchResultBuckets({
                     result={result}
                     onQueue={onQueue}
                     onQueueAdditional={
-                      onQueueAdditional && (!canQueueAdditional || canQueueAdditional(result))
+                      onQueueAdditional &&
+                      (!canQueueAdditional || canQueueAdditional(result))
                         ? onQueueAdditional
                         : undefined
                     }
-                    blocked={isBlocked}
+                    blocked={resolveBlocked(result)}
+                    disabled={disabled}
                     requireCandidateToken={requireCandidateToken}
                   />
                 ))}
@@ -603,7 +922,10 @@ export function SearchResultBuckets({
     },
     [
       canQueueAdditional,
+      compact,
+      disabled,
       handleSort,
+      hideInlineSortControls,
       onQueue,
       onQueueAdditional,
       renderSortIcon,
@@ -612,10 +934,79 @@ export function SearchResultBuckets({
     ],
   );
 
+  const renderSelectedTitleList = React.useCallback(
+    (
+      entries: Release[],
+      isBlocked: boolean | ((entry: Release) => boolean),
+    ) => {
+      const resolveBlocked =
+        typeof isBlocked === "function" ? isBlocked : () => isBlocked;
+
+      return (
+        <div>
+          {entries.map((result) => (
+            <SearchResultRow
+              key={`${result.source}-${result.title}-${result.link}`}
+              result={result}
+              onQueue={onQueue}
+              onQueueAdditional={
+                onQueueAdditional &&
+                (!canQueueAdditional || canQueueAdditional(result))
+                  ? onQueueAdditional
+                  : undefined
+              }
+              blocked={resolveBlocked(result)}
+              disabled={disabled}
+              requireCandidateToken={requireCandidateToken}
+              presentation="selected-title"
+            />
+          ))}
+        </div>
+      );
+    },
+    [
+      canQueueAdditional,
+      disabled,
+      onQueue,
+      onQueueAdditional,
+      requireCandidateToken,
+    ],
+  );
+
+  if (presentation === "selected-title") {
+    return (
+      <div>
+        {results.length === 0 ? (
+          <p className="p-4 text-sm text-muted-foreground">
+            {t("nzb.noConsideredResults")}
+          </p>
+        ) : (
+          renderSelectedTitleList(sortedInlineResults, isBlockedEntry)
+        )}
+      </div>
+    );
+  }
+
+  if (showBlockedInline) {
+    return (
+      <div className="space-y-3">
+        {results.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            {t("nzb.noConsideredResults")}
+          </p>
+        ) : (
+          renderTable(sortedInlineResults, isBlockedEntry)
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3">
       {considered.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{t("nzb.noConsideredResults")}</p>
+        <p className="text-sm text-muted-foreground">
+          {t("nzb.noConsideredResults")}
+        </p>
       ) : (
         renderTable(sortedConsidered, false)
       )}
@@ -626,10 +1017,18 @@ export function SearchResultBuckets({
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-card-foreground"
             onClick={() => setShowBlocked((v) => !v)}
           >
-            {showBlocked ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            {showBlocked ? (
+              <ChevronUp className="h-3 w-3" />
+            ) : (
+              <ChevronDown className="h-3 w-3" />
+            )}
             {t("nzb.blockedResults", { count: blocked.length })}
           </button>
-          {showBlocked ? <div className="mt-2 space-y-2">{renderTable(sortedBlocked, true)}</div> : null}
+          {showBlocked ? (
+            <div className="mt-2 space-y-2">
+              {renderTable(sortedBlocked, true)}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

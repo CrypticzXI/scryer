@@ -10,8 +10,12 @@ mod activity_history;
 mod auth_runtime_passkeys;
 #[path = "integration_graphql/backups.rs"]
 mod backups;
+#[path = "integration_graphql/dataloader_enrichment.rs"]
+mod dataloader_enrichment;
 #[path = "integration_graphql/downloads_housekeeping_system.rs"]
 mod downloads_housekeeping_system;
+#[path = "integration_graphql/external_import_secret_drafts.rs"]
+mod external_import_secret_drafts;
 #[path = "integration_graphql/library_scan.rs"]
 mod library_scan;
 #[path = "integration_graphql/media_rename.rs"]
@@ -36,20 +40,23 @@ mod title_image_cache;
 mod title_match;
 #[path = "integration_graphql/typed_settings.rs"]
 mod typed_settings;
+#[path = "integration_graphql/ui_settings.rs"]
+mod ui_settings;
 
 use async_trait::async_trait;
 use aws_lc_rs::hmac;
 use chrono::{Duration, Utc};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    AppError, AppResult, BackupInfo, BackupStatus, BackupTrigger, BlocklistRepository,
+    AcquisitionScopeState, AcquisitionScopeStateRepository, AppError, AppResult, BackupInfo,
+    BackupStatus, BackupTrigger, BlocklistRepository, CollectionEpisodeProgressSummary,
     CutoffUnmetQualitySummary, DownloadSubmissionRepository, EpisodeScopedMediaFile, EpisodeUpdate,
     InsertMediaFileInput, JwtSessionScope, LibraryRepository, LibraryRootDraft, MediaFileAnalysis,
     MediaFileRepository, MediaFileRole, MediaServerConnectionRepository, PendingRelease,
     PendingReleaseRepository, ReleaseDecision, ShowRepository, TitleEpisodeProgressSummary,
-    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, TitleRepository,
-    TotpEnrollmentChallengeRecord, TotpFailedAttemptRecord, TotpRepository, UserRepository,
-    WantedItem, WantedItemRepository, WebauthnCredentialRecord, WebauthnRepository,
+    TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary, TitleQualitySummary,
+    TitleRepository, TotpEnrollmentChallengeRecord, TotpFailedAttemptRecord, TotpRepository,
+    UserRepository, WebauthnCredentialRecord, WebauthnRepository,
     start_background_download_delete_poller,
 };
 use scryer_domain::{
@@ -136,28 +143,11 @@ fn schema_sdl(ctx: &TestContext) -> String {
 
 /// Helper to execute a GraphQL query and return the parsed JSON body.
 async fn gql(ctx: &TestContext, query: &str, variables: Value) -> Value {
-    let client = ctx.http_client();
-    let resp = client
-        .post(ctx.graphql_url())
-        .json(&json!({ "query": query, "variables": variables }))
-        .send()
-        .await
-        .expect("request should succeed");
-    assert_eq!(resp.status(), 200);
-    resp.json().await.expect("should be valid JSON")
+    ctx.graphql_json(query, variables, None).await
 }
 
 async fn gql_with_token(ctx: &TestContext, query: &str, variables: Value, token: &str) -> Value {
-    let client = ctx.http_client();
-    let resp = client
-        .post(ctx.graphql_url())
-        .bearer_auth(token)
-        .json(&json!({ "query": query, "variables": variables }))
-        .send()
-        .await
-        .expect("request should succeed");
-    assert_eq!(resp.status(), 200);
-    resp.json().await.expect("should be valid JSON")
+    ctx.graphql_json(query, variables, Some(token)).await
 }
 
 /// Assert no GraphQL errors in response body.
@@ -448,11 +438,28 @@ impl MediaFileRepository for FailingMediaFileRepo {
         self.inner.list_title_media_size_summaries(title_ids).await
     }
 
+    async fn collection_media_size_bytes(
+        &self,
+        title_id: &str,
+        ordered_path: &str,
+    ) -> AppResult<Option<i64>> {
+        self.inner
+            .collection_media_size_bytes(title_id, ordered_path)
+            .await
+    }
+
     async fn list_title_quality_summaries(
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleQualitySummary>> {
         self.inner.list_title_quality_summaries(title_ids).await
+    }
+
+    async fn list_title_movie_media_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMovieMediaSummary>> {
+        self.inner.list_title_movie_media_summaries(title_ids).await
     }
 
     async fn list_cutoff_unmet_quality_summaries(
@@ -470,6 +477,15 @@ impl MediaFileRepository for FailingMediaFileRepo {
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
         self.inner
             .list_title_episode_progress_summaries(title_ids)
+            .await
+    }
+
+    async fn list_collection_episode_progress_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CollectionEpisodeProgressSummary>> {
+        self.inner
+            .list_collection_episode_progress_summaries(title_ids)
             .await
     }
 
@@ -538,11 +554,183 @@ impl MediaFileRepository for FailingMediaFileRepo {
     }
 }
 
+/// Delegating [`MediaFileRepository`] double that counts how many times the
+/// title media-size summary port is invoked. Used to prove that resolving the
+/// `sizeBytes` enrichment across N titles in one GraphQL query issues exactly
+/// one batched repository call when request-scoped loaders are present, versus
+/// one call per title on the loader-absent fallback path.
+struct CountingMediaFileRepo {
+    inner: MediaFileStore,
+    size_summary_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl MediaFileRepository for CountingMediaFileRepo {
+    async fn insert_media_file(&self, input: &InsertMediaFileInput) -> AppResult<String> {
+        self.inner.insert_media_file(input).await
+    }
+
+    async fn link_file_to_episode(&self, file_id: &str, episode_id: &str) -> AppResult<()> {
+        self.inner.link_file_to_episode(file_id, episode_id).await
+    }
+
+    async fn link_file_to_series_movie(
+        &self,
+        file_id: &str,
+        series_movie_link_id: &str,
+    ) -> AppResult<()> {
+        self.inner
+            .link_file_to_series_movie(file_id, series_movie_link_id)
+            .await
+    }
+
+    async fn list_media_files_for_title(&self, title_id: &str) -> AppResult<Vec<TitleMediaFile>> {
+        self.inner.list_media_files_for_title(title_id).await
+    }
+
+    async fn list_series_movie_link_ids_with_files_for_title(
+        &self,
+        title_id: &str,
+    ) -> AppResult<Vec<String>> {
+        self.inner
+            .list_series_movie_link_ids_with_files_for_title(title_id)
+            .await
+    }
+
+    async fn list_live_media_files_for_episode_ids(
+        &self,
+        title_id: &str,
+        episode_ids: &[String],
+    ) -> AppResult<Vec<EpisodeScopedMediaFile>> {
+        self.inner
+            .list_live_media_files_for_episode_ids(title_id, episode_ids)
+            .await
+    }
+
+    async fn collection_media_size_bytes(
+        &self,
+        title_id: &str,
+        ordered_path: &str,
+    ) -> AppResult<Option<i64>> {
+        self.inner
+            .collection_media_size_bytes(title_id, ordered_path)
+            .await
+    }
+
+    async fn list_title_media_size_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMediaSizeSummary>> {
+        self.size_summary_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.list_title_media_size_summaries(title_ids).await
+    }
+
+    async fn list_title_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleQualitySummary>> {
+        self.inner.list_title_quality_summaries(title_ids).await
+    }
+
+    async fn list_title_movie_media_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMovieMediaSummary>> {
+        self.inner.list_title_movie_media_summaries(title_ids).await
+    }
+
+    async fn list_cutoff_unmet_quality_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CutoffUnmetQualitySummary>> {
+        self.inner
+            .list_cutoff_unmet_quality_summaries(title_ids)
+            .await
+    }
+
+    async fn list_title_episode_progress_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
+        self.inner
+            .list_title_episode_progress_summaries(title_ids)
+            .await
+    }
+
+    async fn list_collection_episode_progress_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CollectionEpisodeProgressSummary>> {
+        self.inner
+            .list_collection_episode_progress_summaries(title_ids)
+            .await
+    }
+
+    async fn update_media_file_analysis(
+        &self,
+        file_id: &str,
+        analysis: MediaFileAnalysis,
+    ) -> AppResult<()> {
+        self.inner
+            .update_media_file_analysis(file_id, analysis)
+            .await
+    }
+
+    async fn update_media_file_source_signature(
+        &self,
+        file_id: &str,
+        size_bytes: i64,
+        source_signature_scheme: Option<String>,
+        source_signature_value: Option<String>,
+    ) -> AppResult<()> {
+        self.inner
+            .update_media_file_source_signature(
+                file_id,
+                size_bytes,
+                source_signature_scheme,
+                source_signature_value,
+            )
+            .await
+    }
+
+    async fn update_media_file_path(&self, file_id: &str, file_path: &str) -> AppResult<()> {
+        self.inner.update_media_file_path(file_id, file_path).await
+    }
+
+    async fn set_media_file_roles_for_title(
+        &self,
+        title_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        self.inner
+            .set_media_file_roles_for_title(title_id, primary_file_id, additional_file_ids)
+            .await
+    }
+
+    async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {
+        self.inner.mark_scan_failed(file_id, error).await
+    }
+
+    async fn get_media_file_by_id(&self, file_id: &str) -> AppResult<Option<TitleMediaFile>> {
+        self.inner.get_media_file_by_id(file_id).await
+    }
+
+    async fn get_media_file_by_path(&self, file_path: &str) -> AppResult<Option<TitleMediaFile>> {
+        self.inner.get_media_file_by_path(file_path).await
+    }
+
+    async fn delete_media_file(&self, file_id: &str) -> AppResult<()> {
+        self.inner.delete_media_file(file_id).await
+    }
+}
+
 /// Helper to add a title and return the title ID.
 async fn add_test_title(ctx: &TestContext, name: &str, facet: &str) -> String {
     let tvdb_id = match facet {
-        "movie" => "123456",
-        "series" | "anime" => "345678",
+        "MOVIE" => "123456",
+        "SERIES" | "ANIME" => "345678",
         _ => "123456",
     };
     let body = gql(
@@ -914,18 +1102,18 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
             SettingDefinitionSeed {
                 category: "acquisition".into(),
                 scope: "system".into(),
-                key_name: "acquisition.sync_interval_seconds".into(),
+                key_name: "acquisition.long_tail_backfill_max_scopes_per_cycle".into(),
                 data_type: "number".into(),
-                default_value_json: "3600".into(),
+                default_value_json: "500".into(),
                 is_sensitive: false,
                 validation_json: None,
             },
             SettingDefinitionSeed {
                 category: "acquisition".into(),
                 scope: "system".into(),
-                key_name: "acquisition.batch_size".into(),
+                key_name: "acquisition.long_tail_reconverge_days".into(),
                 data_type: "number".into(),
-                default_value_json: "50".into(),
+                default_value_json: "0".into(),
                 is_sensitive: false,
                 validation_json: None,
             },
@@ -1452,6 +1640,7 @@ async fn create_series_scan_title(
         library_id: series_library_id,
         monitored: true,
         tags,
+        canonical_tags: vec![],
         external_ids: vec![],
         root_folder_id,
         created_by: None,
@@ -1463,10 +1652,11 @@ async fn create_series_scan_title(
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: Some(24),
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -1521,6 +1711,7 @@ async fn create_catalog_title(
         facet,
         monitored,
         tags,
+        canonical_tags: vec![],
         external_ids,
         root_folder_id,
         created_by: None,
@@ -1532,10 +1723,11 @@ async fn create_catalog_title(
         background_url: Some("https://example.com/old-background.jpg".to_string()),
         background_source_url: None,
         sort_title: Some(name.to_string()),
+        catalog_sort_key: String::new(),
         slug: Some("old-slug".to_string()),
         imdb_id: Some("tt0000001".to_string()),
         runtime_minutes: Some(100),
-        genres: vec!["Drama".to_string()],
+        popularity: None,
         content_status: Some("ended".to_string()),
         language: Some("eng".to_string()),
         first_aired: Some("2020-01-01".to_string()),
@@ -1683,7 +1875,6 @@ async fn create_test_series_movie_link(
             language: Some("eng".to_string()),
             runtime_minutes: Some(95),
             content_status: Some("released".to_string()),
-            genres: vec!["Adventure".to_string()],
             studio: title.studio.clone(),
             digital_release_date: Some("2024-01-01".to_string()),
             imdb_id: Some(format!("tt{tvdb_id}")),

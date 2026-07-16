@@ -1,4 +1,4 @@
-use async_graphql::{Enum, ID, InputObject, SimpleObject};
+use async_graphql::{Enum, ID, InputObject, Json, SimpleObject};
 use chrono::{DateTime, Utc};
 
 pub use crate::conversions::{FromApplication, IntoApplication};
@@ -9,14 +9,11 @@ pub use scryer_interface_media_types::*;
 pub struct TitlePayload {
     pub id: ID,
     pub library_id: ID,
-    pub library_name: Option<String>,
-    pub library_slug: Option<String>,
     pub name: String,
     pub facet: MediaFacetValue,
     pub monitored: bool,
     pub tags: Vec<String>,
     pub external_ids: Vec<ExternalIdPayload>,
-    pub created_by: Option<String>,
     pub created_at: DateTime<Utc>,
     pub year: Option<i32>,
     pub overview: Option<String>,
@@ -28,7 +25,8 @@ pub struct TitlePayload {
     pub slug: Option<String>,
     pub imdb_id: Option<String>,
     pub runtime_minutes: Option<i32>,
-    pub genres: Vec<String>,
+    pub popularity: Option<f64>,
+    pub canonical_tags: Vec<CanonicalMediaTagPayload>,
     pub content_status: Option<String>,
     pub language: Option<String>,
     pub first_aired: Option<Date>,
@@ -38,45 +36,69 @@ pub struct TitlePayload {
     pub aliases: Vec<String>,
     pub metadata_language: Option<String>,
     pub metadata_fetched_at: Option<DateTime<Utc>>,
-    pub min_availability: Option<String>,
-    pub digital_release_date: Option<Date>,
     pub quality_profile_id: Option<ID>,
     pub root_folder_id: ID,
     pub monitor_type: Option<MonitorTypeValue>,
     pub use_season_folders: Option<bool>,
     pub monitor_specials: Option<bool>,
     pub inter_season_movies: Option<bool>,
-    pub filler_policy: Option<String>,
-    pub recap_policy: Option<String>,
-    /// Legacy title quality label, populated in list queries.
-    pub quality_tier: Option<String>,
-    /// Lowest live media-file quality tier for the title, populated in list queries.
-    pub current_quality_tier: Option<String>,
-    /// Aggregated media-file size in bytes for the title, populated in list queries.
-    pub size_bytes: Option<Long>,
-    /// Owned-vs-total episode progress, excluding specials, populated in list queries.
-    pub episodes_owned: Option<i64>,
-    /// Monitored episode count, excluding specials, populated in list queries.
-    pub episodes_monitored: Option<i64>,
-    /// Total episode count, excluding specials, populated in list queries.
-    pub episodes_total: Option<i64>,
-    #[graphql(skip)]
-    pub preloaded_collections: Option<Vec<CollectionPayload>>,
+    pub filler_policy: Option<FillerPolicyValue>,
+    pub recap_policy: Option<RecapPolicyValue>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TitleExternalRatingPayload {
+    pub source: String,
+    pub value: Option<f64>,
+    pub score: Option<f64>,
+    pub normalized: f64,
+    pub votes: Option<i32>,
+    pub url: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TitleRatingPayload {
+    pub rating: Option<f64>,
+    pub rating_sources: Vec<String>,
+    pub external_ratings: Vec<TitleExternalRatingPayload>,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum TitleCatalogSortKeyValue {
     Title,
+    Library,
     Monitored,
     Quality,
     Episodes,
     Status,
     Size,
+    Added,
+    Year,
+    Runtime,
+    Root,
+    Popularity,
+    MediaResolution,
+    MediaHdr,
+    MediaAudioCodec,
+    RatingScryer,
+    RatingImdb,
+    RatingRottenTomatoes,
+    RatingPopcornmeter,
+    RatingMetacritic,
+    RatingMetacriticUser,
+    RatingLetterboxd,
+    RatingTmdb,
+    RatingTvdb,
+    RatingTrakt,
+    RatingMyanimelist,
+    RatingAnilist,
+    RatingAnidb,
+    RatingMdblist,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "snake_case")]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum TitleCatalogContentStatusValue {
     Continuing,
     Ended,
@@ -92,15 +114,38 @@ pub struct TitleCatalogSortInput {
 pub struct TitleCatalogFilterInput {
     pub monitored: Option<bool>,
     pub content_statuses: Option<Vec<TitleCatalogContentStatusValue>>,
+    pub root_folder_ids: Option<Vec<ID>>,
+    pub genre_tag_keys: Option<Vec<String>>,
+    pub theme_tag_keys: Option<Vec<String>>,
+    pub minimum_year: Option<i32>,
+    pub maximum_year: Option<i32>,
+    pub minimum_rating: Option<f64>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TitleCatalogFilterOptionsPayload {
+    pub genres: Vec<CanonicalTagFilterOptionPayload>,
+    pub themes: Vec<CanonicalTagFilterOptionPayload>,
+    pub minimum_year: Option<i32>,
+    pub maximum_year: Option<i32>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct TitleCatalogPayload {
     pub items: Vec<TitlePayload>,
-    pub limit: i32,
-    pub offset: i32,
     pub has_more: bool,
     pub total_count: i32,
+    pub filter_counts: TitleCatalogFilterCountsPayload,
+    pub managed_bytes: Long,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct TitleCatalogFilterCountsPayload {
+    pub all: i32,
+    pub monitored: i32,
+    pub unmonitored: i32,
+    pub continuing: i32,
+    pub ended: i32,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -108,12 +153,11 @@ pub struct TitleCatalogPayload {
 pub struct CollectionPayload {
     pub id: ID,
     pub title_id: ID,
-    pub collection_type: String,
+    pub collection_type: CollectionTypeValue,
     pub collection_index: String,
     pub label: Option<String>,
     pub ordered_path: Option<String>,
     pub narrative_order: Option<String>,
-    pub file_size_bytes: Option<Long>,
     pub first_episode_number: Option<String>,
     pub last_episode_number: Option<String>,
     pub monitored: bool,
@@ -131,46 +175,31 @@ pub struct SetCollectionMonitoredPayload {
 pub struct MovieEntityPayload {
     pub id: ID,
     pub title: String,
-    pub sort_title: Option<String>,
     pub slug: Option<String>,
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub poster_url: Option<String>,
-    pub background_url: Option<String>,
-    pub language: Option<String>,
     pub runtime_minutes: Option<i32>,
     pub content_status: Option<String>,
-    pub genres: Vec<String>,
-    pub studio: Option<String>,
-    pub digital_release_date: Option<Date>,
     pub imdb_id: Option<String>,
     pub tvdb_id: Option<String>,
     pub tmdb_id: Option<String>,
     pub mal_id: Option<String>,
     pub anidb_id: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct SeriesMovieLinkPayload {
     pub id: ID,
-    pub series_title_id: ID,
     pub movie: MovieEntityPayload,
-    pub placement: Option<String>,
     pub narrative_order: Option<String>,
     pub after_season: Option<i32>,
     pub before_season: Option<i32>,
     pub linked_episode_id: Option<ID>,
-    pub association_confidence: Option<String>,
     pub continuity_status: Option<String>,
     pub movie_form: Option<String>,
-    pub confidence: Option<String>,
     pub signal_summary: Option<String>,
-    pub source: Option<String>,
     pub monitored: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -179,7 +208,7 @@ pub struct EpisodePayload {
     pub id: ID,
     pub title_id: ID,
     pub collection_id: Option<ID>,
-    pub episode_type: String,
+    pub episode_type: EpisodeTypeValue,
     pub episode_number: Option<String>,
     pub season_number: Option<String>,
     pub episode_label: Option<String>,
@@ -192,7 +221,6 @@ pub struct EpisodePayload {
     pub is_filler: bool,
     pub is_recap: bool,
     pub absolute_number: Option<String>,
-    pub tvdb_id: Option<String>,
     pub image_url: Option<String>,
     pub monitored: bool,
     pub created_at: DateTime<Utc>,
@@ -221,7 +249,6 @@ pub struct TitleMediaFilePayload {
     pub video_frame_rate: Option<String>,
     pub video_profile: Option<String>,
     pub audio_codec: Option<String>,
-    pub audio_profile: Option<String>,
     pub audio_channels: Option<i32>,
     pub audio_bitrate_kbps: Option<i32>,
     pub audio_languages: Vec<String>,
@@ -240,7 +267,6 @@ pub struct TitleMediaFilePayload {
     pub resolution: Option<String>,
     pub video_codec_parsed: Option<String>,
     pub audio_codec_parsed: Option<String>,
-    pub audio_channels_parsed: Option<String>,
     pub acquisition_score: Option<i32>,
     pub scoring_log: Option<String>,
     pub indexer_source: Option<String>,
@@ -277,7 +303,7 @@ pub struct DownloadQueueItemPayload {
     pub state: DownloadQueueStateValue,
     pub display_state: DownloadDisplayStateValue,
     pub progress_percent: i32,
-    pub import_transfer_phase: Option<String>,
+    pub import_transfer_phase: Option<ImportTransferPhaseValue>,
     pub import_transfer_bytes: Option<Long>,
     pub import_transfer_total_bytes: Option<Long>,
     pub import_transfer_started_at: Option<DateTime<Utc>>,
@@ -346,7 +372,8 @@ pub struct PendingImportBindingPreviewPayload {
 pub struct ResolvePendingImportPayload {
     pub title: TitlePayload,
     pub created: bool,
-    pub library_scan: LibraryScanSummaryPayload,
+    pub library_scan: Option<LibraryScanSummaryPayload>,
+    pub metadata_hydration_state: AddTitleHydrationStateValue,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -371,6 +398,11 @@ pub struct ManualImportPreviewPayload {
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct WantedItemPayload {
+    /// Scope identity (RFC 119 §6): the acquisition-state row id when a state row
+    /// exists for this scope, otherwise the convergence scope key itself
+    /// (`episode:<uuid>`, `title:<uuid>`, `series_movie:<uuid>`, …). A derived
+    /// target with no state row is still addressable by this id (pause/resume and
+    /// the interactive search job both accept a scope key here).
     pub id: ID,
     pub title_id: ID,
     pub title_name: Option<String>,
@@ -384,16 +416,23 @@ pub struct WantedItemPayload {
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
     pub media_type: WantedMediaTypeValue,
-    pub search_phase: WantedSearchPhaseValue,
-    pub next_search_at: Option<DateTime<Utc>>,
     pub last_search_at: Option<DateTime<Utc>>,
-    pub search_count: i64,
-    pub baseline_date: Option<Date>,
     pub status: WantedStatusValue,
     pub grabbed_release: Option<String>,
     pub current_score: Option<i32>,
     pub latest_release_decision: Option<ReleaseDecisionPayload>,
     pub mismatch_recovery_eligible: bool,
+    /// Convergence progress for this scope (RFC 119 §6/§7): whether the scope is
+    /// still sweeping indexers, has converged (watching RSS), is queued, or is
+    /// deferred because every uncovered indexer is currently unavailable.
+    pub convergence_state: ConvergenceStateValue,
+    /// Routed indexers already searched under the current fingerprint.
+    pub indexers_covered: i32,
+    /// Routed-enabled indexers for this scope.
+    pub indexers_routed: i32,
+    /// Recency lane (RFC 119 §D3): `Hot` converges promptly, `Cold` drains under
+    /// scheduler backpressure.
+    pub recency_lane: RecencyLaneValue,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -401,16 +440,13 @@ pub struct WantedItemPayload {
 #[derive(SimpleObject, Clone)]
 pub struct WantedItemsListPayload {
     pub items: Vec<WantedItemPayload>,
-    pub total: i64,
+    pub total_count: i64,
+    pub has_more: bool,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct WantedItemsPagePayload {
     pub items: Vec<WantedItemPayload>,
-    pub limit: i32,
-    pub offset: i32,
-    pub has_more: bool,
-    pub total_count: i32,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -437,15 +473,14 @@ pub struct ReleaseDecisionPayload {
     pub candidate_score: i32,
     pub current_score: Option<i32>,
     pub score_delta: Option<i32>,
-    pub explanation_json: Option<String>,
+    pub explanation_json: Option<Json<serde_json::Value>>,
     pub created_at: DateTime<Utc>,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct ReleaseDecisionsPagePayload {
     pub items: Vec<ReleaseDecisionPayload>,
-    pub limit: i32,
-    pub offset: i32,
+    pub total_count: i64,
     pub has_more: bool,
 }
 
@@ -459,7 +494,7 @@ pub struct PendingReleasePayload {
     pub release_url: Option<String>,
     pub release_size_bytes: Option<Long>,
     pub release_score: i32,
-    pub scoring_log_json: Option<String>,
+    pub scoring_log_json: Option<Json<serde_json::Value>>,
     pub indexer_source: Option<String>,
     pub added_at: DateTime<Utc>,
     pub delay_until: DateTime<Utc>,
@@ -476,8 +511,6 @@ pub struct PendingReleaseFilterInput {
 #[derive(SimpleObject, Clone)]
 pub struct PendingReleasesPayload {
     pub items: Vec<PendingReleasePayload>,
-    pub limit: i32,
-    pub offset: i32,
     pub has_more: bool,
     pub total_count: i32,
 }

@@ -547,12 +547,149 @@ file = "postgres/migrations/0139_indexer_system_backoffs.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 140
+description = "0.17 release rollup"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "converge_post_0_16_6_prerelease_schema"
+engine = "all"
+scope = "all"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "migrate_title_image_blobs"
+engine = "all"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0140_0_17_release_rollup.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0140_0_17_release_rollup.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "migrate_title_catalog_sort_keys"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 141
+description = "indexer proxy configs"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0141_indexer_proxy_configs.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0141_indexer_proxy_configs.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 142
+description = "scope indexer coverage convergence ledger"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0142_scope_indexer_coverage.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0142_scope_indexer_coverage.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 143
+description = "wanted_items: drop retired search-scheduler columns"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0143_wanted_items_drop_scheduler_columns.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0143_wanted_items_drop_scheduler_columns.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 144
+description = "drop write-only discovery_raw_pages payload store"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0144_drop_discovery_raw_pages.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0144_drop_discovery_raw_pages.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 145
+description = "discovery_items generation/rank personalized-home index"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0145_discovery_items_generation_rank_index.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0145_discovery_items_generation_rank_index.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 146
+description = "drop retired event outbox payload store"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0146_drop_event_outboxes.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0146_drop_event_outboxes.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
-through_version = 122
-file = "baselines/0122_baseline.sql"
+through_version = 140
+file = "baselines/0140_baseline.sql"
 engine = "sqlite"
 
 [[baseline]]
-through_version = 122
-file = "postgres/baselines/0122_baseline.sql"
+through_version = 140
+file = "postgres/baselines/0140_baseline.sql"
 engine = "postgres"

@@ -134,6 +134,7 @@ function useOverviewScrollRestoration({
   storageKeySuffix,
   kind,
   getTarget,
+  getMaxScrollTop,
   restoreScrollTop,
 }: {
   enabled: boolean;
@@ -141,6 +142,7 @@ function useOverviewScrollRestoration({
   storageKeySuffix: string;
   kind: ScrollTargetKind;
   getTarget: () => ScrollTarget | null;
+  getMaxScrollTop?: (target: ScrollTarget) => number;
   restoreScrollTop?: (nextTop: number) => void;
 }) {
   const location = useLocation();
@@ -205,7 +207,9 @@ function useOverviewScrollRestoration({
         return;
       }
 
-      const nextMaxScroll = maxScrollTop(target, kind);
+      const nextMaxScroll = getMaxScrollTop
+        ? Math.max(0, getMaxScrollTop(target))
+        : maxScrollTop(target, kind);
       const nextTop = Math.min(pendingScrollTop, nextMaxScroll);
       if (restoreScrollTop) {
         restoreScrollTop(nextTop);
@@ -214,11 +218,10 @@ function useOverviewScrollRestoration({
       }
 
       const canFullyRestore = nextMaxScroll >= pendingScrollTop - 4;
-      const reachedTarget =
+      const reachedClampedTarget =
         Math.abs(readScrollTop(target, kind) - nextTop) <= 2;
       if (
-        reachedTarget
-        || canFullyRestore
+        (canFullyRestore && reachedClampedTarget)
         || restoreAttemptsRef.current >= MAX_RESTORE_ATTEMPTS
       ) {
         pendingScrollTopRef.current = null;
@@ -236,7 +239,7 @@ function useOverviewScrollRestoration({
         window.cancelAnimationFrame(frameId);
       }
     };
-  }, [enabled, getTarget, kind, ready, restoreScrollTop]);
+  }, [enabled, getMaxScrollTop, getTarget, kind, ready, restoreScrollTop]);
 }
 
 export function useOverviewWindowScrollRestoration({
@@ -267,15 +270,24 @@ export function useOverviewElementScrollRestoration({
   ready,
   storageKeySuffix,
   scrollRef,
+  getMaxScrollTop,
   restoreScrollTop,
 }: {
   enabled: boolean;
   ready: boolean;
   storageKeySuffix: string;
   scrollRef: React.RefObject<HTMLElement | null>;
+  getMaxScrollTop?: (target: HTMLElement) => number;
   restoreScrollTop?: (nextTop: number) => void;
 }) {
   const getTarget = React.useCallback(() => scrollRef.current, [scrollRef]);
+  const resolveMaxScrollTop = React.useCallback(
+    (target: ScrollTarget) =>
+      getMaxScrollTop
+        ? getMaxScrollTop(target as HTMLElement)
+        : maxScrollTop(target, "element"),
+    [getMaxScrollTop],
+  );
 
   useOverviewScrollRestoration({
     enabled,
@@ -283,6 +295,7 @@ export function useOverviewElementScrollRestoration({
     storageKeySuffix,
     kind: "element",
     getTarget,
+    getMaxScrollTop: resolveMaxScrollTop,
     restoreScrollTop,
   });
 }

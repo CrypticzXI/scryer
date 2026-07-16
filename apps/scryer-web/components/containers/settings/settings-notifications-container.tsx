@@ -1,7 +1,10 @@
 
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
+import { FilteredPluginList } from "@/components/views/settings/filtered-plugin-list";
 import { SettingsNotificationsSection } from "@/components/views/settings/settings-notifications-section";
+import { SETTINGS_REFERENCE_SLOT_ID } from "@/components/containers/settings/settings-container";
 import { useClient } from "urql";
 import { toast } from "sonner";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -27,7 +30,7 @@ import {
   notificationProviderTypesQuery,
   notificationSubscriptionsQuery,
   notificationsInitQuery,
-  titleListEntryQuery,
+  titleAutocompleteSelectionQuery,
 } from "@/lib/graphql/queries";
 import {
   localPathStyleFromRuntimeValue,
@@ -193,7 +196,7 @@ function serializeConfigValues(
     Object.entries(configValues).filter(([, v]) => v !== ""),
   );
   const secretInputKeys = fields
-    .filter((field) => field.fieldType === "password")
+    .filter((field) => field.fieldType === "PASSWORD")
     .map((field) => field.key);
   return providerConfigRecordToValues(nonEmpty, secretInputKeys);
 }
@@ -249,6 +252,10 @@ export function SettingsNotificationsContainer({
   const [pendingDeleteChannel, setPendingDeleteChannel] = useState<NotificationChannel | null>(null);
   const [channelDraft, setChannelDraft] = useState<NotificationChannelDraft>(() => cloneChannelDraft(CHANNEL_INITIAL_DRAFT));
   const [providerTypes, setProviderTypes] = useState<NotificationProviderType[]>([]);
+  const [pluginsTarget, setPluginsTarget] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setPluginsTarget(document.getElementById(SETTINGS_REFERENCE_SLOT_ID));
+  }, []);
   const [notificationTargets, setNotificationTargets] = useState<NotificationTarget[]>([]);
   const [testingChannelId, setTestingChannelId] = useState<string | null>(null);
   const [isChannelEditorOpen, setIsChannelEditorOpen] = useState(false);
@@ -426,7 +433,7 @@ export function SettingsNotificationsContainer({
     void Promise.all(
       unresolvedIds.map(async (titleId) => {
         const { data, error } = await client
-          .query<{ title?: TitleRecord | null }>(titleListEntryQuery, { id: titleId })
+      .query<{ title?: TitleRecord | null }>(titleAutocompleteSelectionQuery, { id: titleId })
           .toPromise();
         if (error) {
           return [titleId, null] as const;
@@ -972,6 +979,15 @@ export function SettingsNotificationsContainer({
 
   return (
     <>
+      {pluginsTarget
+        ? createPortal(
+            <FilteredPluginList
+              family="NOTIFICATION"
+              refreshProviderOptions={refreshProviderTypes}
+            />,
+            pluginsTarget,
+          )
+        : null}
       <SettingsNotificationsSection
         channels={channels}
         localPathStyle={localPathStyle}

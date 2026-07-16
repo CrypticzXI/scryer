@@ -1,9 +1,5 @@
 import { Info } from "lucide-react";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from "@/components/ui/hover-card";
+import { ActionTooltip } from "@/components/ui/tooltip";
 import {
   Popover,
   PopoverContent,
@@ -21,7 +17,7 @@ export function InfoHelp({ text, ariaLabel }: InfoHelpProps) {
   const trigger = (
     <button
       type="button"
-      className="rounded p-0.5 text-muted-foreground transition hover:text-card-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+      className="rounded p-0.5 text-muted-foreground transition hover:text-card-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-info-border-strong)]"
       aria-label={ariaLabel}
     >
       <Info className="h-3.5 w-3.5" />
@@ -40,11 +36,11 @@ export function InfoHelp({ text, ariaLabel }: InfoHelpProps) {
   }
 
   return (
-    <HoverCard openDelay={150} closeDelay={75}>
-      <HoverCardTrigger asChild>{trigger}</HoverCardTrigger>
-      <HoverCardContent>
-        <p className="max-w-[28rem] whitespace-normal break-words">{text}</p>
-      </HoverCardContent>
-    </HoverCard>
+    <ActionTooltip
+      content={text}
+      className="max-w-[28rem] whitespace-normal break-words"
+    >
+      {trigger}
+    </ActionTooltip>
   );
 }

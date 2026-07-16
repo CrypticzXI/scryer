@@ -5,6 +5,7 @@ pub(super) struct MockDomainEventRepo {
     pub(super) events: Arc<Mutex<Vec<DomainEvent>>>,
     pub(super) subscriber_offsets: Arc<Mutex<HashMap<String, i64>>>,
     pub(super) delete_operation_log: OptionalDeleteOperationLog,
+    pub(super) list_calls: AtomicUsize,
 }
 
 impl MockDomainEventRepo {
@@ -30,6 +31,7 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
+        session_id: &str,
         facet: MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
         after_chunk_index: Option<i32>,
@@ -39,7 +41,8 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
         let mut matched = chunks
             .iter()
             .filter(|chunk| {
-                chunk.facet == facet
+                chunk.session_id == session_id
+                    && chunk.facet == facet
                     && chunk.entry_kind == entry_kind
                     && after_chunk_index
                         .map(|after| chunk.chunk_index > after)
@@ -54,12 +57,59 @@ impl ExternalImportMonitorSnapshotRepository for MockExternalImportMonitorSnapsh
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
+        session_id: &str,
         facet: MediaFacet,
     ) -> AppResult<()> {
         let mut chunks = self.chunks.lock().await;
-        chunks.retain(|chunk| chunk.facet != facet);
+        chunks.retain(|chunk| chunk.session_id != session_id || chunk.facet != facet);
         Ok(())
     }
+
+    async fn delete_external_import_monitor_snapshot_chunks_for_session_prefix(
+        &self,
+        session_prefix: &str,
+        facet: MediaFacet,
+    ) -> AppResult<()> {
+        let mut chunks = self.chunks.lock().await;
+        chunks
+            .retain(|chunk| !chunk.session_id.starts_with(session_prefix) || chunk.facet != facet);
+        Ok(())
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks_except_session_prefix(
+        &self,
+        preserved_session_prefix: &str,
+    ) -> AppResult<()> {
+        let mut chunks = self.chunks.lock().await;
+        chunks.retain(|chunk| chunk.session_id.starts_with(preserved_session_prefix));
+        Ok(())
+    }
+}
+
+pub(super) async fn append_movie_monitor_snapshot_chunk_for_library(
+    app: &AppUseCase,
+    user: &User,
+    library_id: &str,
+    entries: Vec<ExternalImportMonitorMovieEntry>,
+) {
+    let payload_ndjson = entries
+        .into_iter()
+        .map(|entry| serde_json::to_string(&entry).expect("serialize movie snapshot entry"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.append_external_import_monitor_snapshot_chunk(
+        user,
+        ExternalImportMonitorSnapshotChunk {
+            session_id: crate::external_import_monitor_apply_session_id_for_library(library_id),
+            facet: MediaFacet::Movie,
+            entry_kind: ExternalImportMonitorSnapshotEntryKind::Movie,
+            chunk_index: 0,
+            payload_ndjson,
+            created_at: Utc::now().to_rfc3339(),
+        },
+    )
+    .await
+    .expect("append movie monitor snapshot chunk");
 }
 
 pub(super) async fn append_series_monitor_snapshot_chunk(
@@ -73,9 +123,13 @@ pub(super) async fn append_series_monitor_snapshot_chunk(
         .map(|entry| serde_json::to_string(&entry).expect("serialize series snapshot entry"))
         .collect::<Vec<_>>()
         .join("\n");
+    let session_id = crate::external_import_monitor_apply_session_id_for_library(
+        &scryer_domain::default_library_id_for_facet(&facet),
+    );
     app.append_external_import_monitor_snapshot_chunk(
         user,
         ExternalImportMonitorSnapshotChunk {
+            session_id,
             facet,
             entry_kind: ExternalImportMonitorSnapshotEntryKind::Series,
             chunk_index: 0,
@@ -123,6 +177,7 @@ impl DomainEventRepository for MockDomainEventRepo {
     }
 
     async fn list(&self, filter: &DomainEventFilter) -> AppResult<Vec<DomainEvent>> {
+        self.list_calls.fetch_add(1, Ordering::SeqCst);
         let events = self.events.lock().await;
         let limit = if filter.limit == 0 {
             usize::MAX

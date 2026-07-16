@@ -115,8 +115,8 @@ function bufferToBase64Url(value: ArrayBuffer | ArrayBufferView | null | undefin
     .replace(/=+$/g, "");
 }
 
-function parseCreationOptions(optionsJson: string): CredentialCreationOptions {
-  const parsed = JSON.parse(optionsJson) as JsonCredentialCreationOptions;
+function parseCreationOptions(optionsJson: unknown): CredentialCreationOptions {
+  const parsed = optionsJson as JsonCredentialCreationOptions;
   const publicKey = parsed.publicKey;
   if (!publicKey?.challenge || !publicKey.user?.id) {
     throw new PasskeyClientError(
@@ -174,10 +174,10 @@ function normalizeRequestOptionsForMode(
 }
 
 function parseRequestOptions(
-  optionsJson: string,
+  optionsJson: unknown,
   mode: RequestOptionsMode = "manual",
 ): CredentialRequestOptions {
-  const parsed = JSON.parse(optionsJson) as JsonCredentialRequestOptions;
+  const parsed = optionsJson as JsonCredentialRequestOptions;
   if (!parsed.publicKey?.challenge) {
     throw new PasskeyClientError(
       "invalid_response",
@@ -212,10 +212,10 @@ function parseRequestOptions(
   };
 }
 
-function credentialToJson(credential: PublicKeyCredential): string {
+function credentialToJson(credential: PublicKeyCredential): unknown {
   const jsonValue = (credential as PublicKeyCredential & { toJSON?: () => unknown }).toJSON?.();
   if (jsonValue) {
-    return JSON.stringify(jsonValue);
+    return jsonValue;
   }
 
   const base = {
@@ -229,7 +229,7 @@ function credentialToJson(credential: PublicKeyCredential): string {
   const response = credential.response;
   if ("attestationObject" in response) {
     const attestation = response as AuthenticatorAttestationResponse;
-    return JSON.stringify({
+    return {
       ...base,
       response: {
         clientDataJSON: bufferToBase64Url(attestation.clientDataJSON),
@@ -239,11 +239,11 @@ function credentialToJson(credential: PublicKeyCredential): string {
             ? attestation.getTransports()
             : undefined,
       },
-    });
+    };
   }
 
   const assertion = response as AuthenticatorAssertionResponse;
-  return JSON.stringify({
+  return {
     ...base,
     response: {
       clientDataJSON: bufferToBase64Url(assertion.clientDataJSON),
@@ -251,7 +251,7 @@ function credentialToJson(credential: PublicKeyCredential): string {
       signature: bufferToBase64Url(assertion.signature),
       userHandle: bufferToBase64Url(assertion.userHandle),
     },
-  });
+  };
 }
 
 async function runMutation<TData, TVariables extends object>(
@@ -304,7 +304,7 @@ export async function authenticateWithPasskey(
       {
         webauthnAuthenticateStart: {
           challengeId: string;
-          optionsJson: string;
+          optionsJson: unknown;
         };
       },
       { username?: string | null }
@@ -324,7 +324,7 @@ export async function authenticateWithPasskey(
 
     return runMutation<
       { webauthnAuthenticateComplete: LoginPayload },
-      { input: { challengeId: string; responseJson: string } }
+      { input: { challengeId: string; responseJson: unknown } }
     >(
       client,
       webauthnAuthenticateCompleteMutation,
@@ -349,7 +349,7 @@ export async function registerPasskey(client: Client = backendClient): Promise<P
       {
         webauthnRegisterStart: {
           challengeId: string;
-          optionsJson: string;
+          optionsJson: unknown;
         };
       },
       Record<string, never>
@@ -365,7 +365,7 @@ export async function registerPasskey(client: Client = backendClient): Promise<P
       {
         input: {
           challengeId: string;
-          responseJson: string;
+          responseJson: unknown;
           friendlyName: string | null;
         };
       }

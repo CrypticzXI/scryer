@@ -85,6 +85,7 @@ pub async fn execute_upgrade_for_test_with_import_mode(
             analysis: None,
             scan_error: None,
             rule_file_doc: None,
+            audio_language_warning: None,
         }),
         rescore_changes: Vec::new(),
         source_snapshot: import_source_snapshot_for_test(source_path)?,

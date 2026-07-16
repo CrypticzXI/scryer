@@ -1,11 +1,33 @@
 
-import { lazy, memo, Suspense, useCallback, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Archive,
+  Bell,
+  Captions,
+  ChevronRight,
+  Database,
+  Download,
+  FolderCog,
+  Puzzle,
+  Rss,
+  Server,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  Timer,
+  User,
+  Users,
+  X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import type { SettingsSection } from "@/components/root/types";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import { useTranslate } from "@/lib/context/translate-context";
+import { cn } from "@/lib/utils";
+import { selectorId } from "@/lib/utils/dom-ids";
+import { buildViewPath } from "@/lib/utils/routing";
 import {
   type ProviderCatalogFamily,
   useProviderCatalogSubscription,
@@ -29,14 +51,14 @@ const SettingsMediaServersContainer = lazy(async () => ({
 const SettingsDownloadClientsContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-download-clients-container")).SettingsDownloadClientsContainer,
 }));
+const SettingsAcquisitionContainer = lazy(async () => ({
+  default: (await import("@/components/containers/settings/settings-acquisition-container")).SettingsAcquisitionContainer,
+}));
 const SettingsDelayProfilesContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-delay-profiles-container")).SettingsDelayProfilesContainer,
 }));
 const SettingsQualityProfilesContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-quality-profiles-container")).SettingsQualityProfilesContainer,
-}));
-const SettingsAcquisitionContainer = lazy(async () => ({
-  default: (await import("@/components/containers/settings/settings-acquisition-container")).SettingsAcquisitionContainer,
 }));
 const SettingsProfileContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-profile-container")).SettingsProfileContainer,
@@ -56,17 +78,47 @@ const SettingsPostProcessingContainer = lazy(async () => ({
 const SettingsSubtitlesContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-subtitles-container")).SettingsSubtitlesContainer,
 }));
-const SettingsRecycleBinContainer = lazy(async () => ({
-  default: (await import("@/components/containers/settings/settings-recycle-bin-container")).SettingsRecycleBinContainer,
-}));
 const SettingsBackupsContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-backups-container")).SettingsBackupsContainer,
 }));
+
+/** DOM id of the right reference rail. Inline plugin managers are portaled here
+ * so they anchor to the top of the pane. */
+export const SETTINGS_REFERENCE_SLOT_ID = "settings-content-reference";
+export const SETTINGS_HEADER_ACTIONS_SLOT_ID = "settings-header-actions";
+
+const DOCKED_REFERENCE_GAP_PX = 20;
+
+type DockedReferenceLayout = {
+  mainMinWidth: number;
+  railMinWidth: number;
+  contentClass: string;
+  mainClass: string;
+  railClass: string;
+};
+
+const STANDARD_FILTERED_PLUGIN_LAYOUT: DockedReferenceLayout = {
+  mainMinWidth: 1080,
+  railMinWidth: 288,
+  contentClass: "max-w-none",
+  mainClass: "min-w-0 max-w-[1280px] flex-[1_1_1280px]",
+  railClass: "sticky top-[26px] z-auto min-w-[288px] max-w-[720px] flex-[1_1_720px]",
+};
+
+const SUBTITLES_FILTERED_PLUGIN_LAYOUT: DockedReferenceLayout = {
+  mainMinWidth: 960,
+  railMinWidth: 320,
+  contentClass: "max-w-none",
+  mainClass: "min-w-0 max-w-[1120px] flex-[1_1_960px]",
+  railClass: "sticky top-[26px] z-auto min-w-[320px] max-w-[560px] flex-[1_1_560px]",
+};
 
 type SettingsContainerProps = {
   settingsSection: SettingsSection;
   userId?: string;
   username?: string;
+  canManageSystemSettings: boolean;
+  canManageCatalogSettings: boolean;
   availableLanguages: LanguageOption[];
   selectedLanguage: LanguageOption | null;
   uiLanguage: LocaleCode;
@@ -77,6 +129,8 @@ export const SettingsContainer = memo(function SettingsContainer({
   settingsSection,
   userId,
   username,
+  canManageSystemSettings,
+  canManageCatalogSettings,
   availableLanguages,
   selectedLanguage,
   uiLanguage,
@@ -86,10 +140,11 @@ export const SettingsContainer = memo(function SettingsContainer({
   const [providerCatalogVersions, setProviderCatalogVersions] = useState<
     Record<ProviderCatalogFamily, number>
   >({
-    subtitle: 0,
-    notification: 0,
-    indexer: 0,
-    download_client: 0,
+    SUBTITLE: 0,
+    NOTIFICATION: 0,
+    INDEXER: 0,
+    DOWNLOAD_CLIENT: 0,
+    ARCHIVE_EXTRACTOR: 0,
   });
   const showPluginsLink =
     settingsSection === "downloadClients" ||
@@ -97,6 +152,200 @@ export const SettingsContainer = memo(function SettingsContainer({
     settingsSection === "notifications" ||
     settingsSection === "subtitles";
   const subscribeToProviderCatalog = showPluginsLink;
+  // Surfaces that embed the FilteredPluginList manage plugins inline, so they
+  // don't need the shortcut to the standalone Plugins page.
+  const showPluginsShortcut =
+    showPluginsLink &&
+    settingsSection !== "indexers" &&
+    settingsSection !== "downloadClients" &&
+    settingsSection !== "notifications" &&
+    settingsSection !== "subtitles";
+  // Pages that render an inline plugins rail anchored to the top of the content pane.
+  const showReferenceRail =
+    settingsSection === "indexers" ||
+    settingsSection === "downloadClients" ||
+    settingsSection === "notifications" ||
+    settingsSection === "subtitles";
+  const isSubtitlesSection = settingsSection === "subtitles";
+  const referenceLayout = showReferenceRail
+    ? isSubtitlesSection
+      ? SUBTITLES_FILTERED_PLUGIN_LAYOUT
+      : STANDARD_FILTERED_PLUGIN_LAYOUT
+    : null;
+  const settingsContentRef = useRef<HTMLElement | null>(null);
+  const [referenceRailOpen, setReferenceRailOpen] = useState(false);
+  const [referenceRailDocked, setReferenceRailDocked] = useState(false);
+
+  useEffect(() => {
+    setReferenceRailOpen(false);
+  }, [referenceRailDocked, settingsSection]);
+
+  useEffect(() => {
+    if (!referenceLayout) {
+      setReferenceRailDocked(false);
+      return;
+    }
+
+    const contentElement = settingsContentRef.current;
+    if (!contentElement) {
+      setReferenceRailDocked(false);
+      return;
+    }
+
+    const minimumDockedWidth =
+      referenceLayout.mainMinWidth +
+      referenceLayout.railMinWidth +
+      DOCKED_REFERENCE_GAP_PX;
+    const syncReferenceRailMode = () => {
+      setReferenceRailDocked(
+        contentElement.getBoundingClientRect().width >= minimumDockedWidth,
+      );
+    };
+
+    syncReferenceRailMode();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", syncReferenceRailMode);
+      return () => window.removeEventListener("resize", syncReferenceRailMode);
+    }
+
+    const resizeObserver = new ResizeObserver(syncReferenceRailMode);
+    resizeObserver.observe(contentElement);
+    return () => resizeObserver.disconnect();
+  }, [referenceLayout]);
+
+  useEffect(() => {
+    if (!referenceRailOpen || referenceRailDocked) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setReferenceRailOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [referenceRailDocked, referenceRailOpen]);
+
+  const settingsSectionLabel =
+    settingsSection === "profile"
+      ? t("settings.profile")
+      : settingsSection === "general"
+        ? t("settings.general")
+        : settingsSection === "backups"
+          ? t("settings.backups")
+          : settingsSection === "security"
+            ? t("settings.security")
+            : settingsSection === "users"
+              ? t("settings.users")
+              : settingsSection === "mediaServers"
+                ? t("settings.mediaServers")
+                : settingsSection === "indexers"
+                  ? t("settings.indexers")
+                  : settingsSection === "downloadClients"
+                    ? t("settings.downloadClients")
+                    : settingsSection === "rules"
+                      ? t("settings.rules")
+                      : settingsSection === "plugins"
+                        ? t("settings.plugins")
+                        : settingsSection === "notifications"
+                          ? t("settings.notifications")
+                          : settingsSection === "post-processing"
+                            ? t("settings.postProcessing")
+                            : settingsSection === "subtitles"
+                              ? t("settings.subtitles")
+                              : settingsSection === "delayProfiles"
+                                ? t("settings.delayProfiles")
+                                : settingsSection === "acquisition"
+                                  ? t("settings.acquisition")
+                                  : t("settings.qualityProfiles");
+  const primarySettingsNav = [
+    {
+      section: "profile" as const,
+      label: t("settings.profile"),
+      icon: User,
+      visible: true,
+    },
+    {
+      section: "general" as const,
+      label: t("settings.general"),
+      icon: Settings2,
+      visible: canManageSystemSettings,
+    },
+    {
+      section: "qualityProfiles" as const,
+      label: t("settings.qualityProfiles"),
+      icon: SlidersHorizontal,
+      visible: canManageCatalogSettings,
+    },
+    {
+      section: "delayProfiles" as const,
+      label: t("settings.delayProfiles"),
+      icon: Timer,
+      visible: canManageCatalogSettings,
+    },
+    {
+      section: "plugins" as const,
+      label: t("settings.plugins"),
+      icon: Puzzle,
+      visible: canManageSystemSettings,
+    },
+  ].filter((item) => item.visible);
+  const showPrimarySettingsSubnav = primarySettingsNav.some(
+    (item) => item.section === settingsSection,
+  );
+  const usesAutomationHeader =
+    settingsSection === "rules" ||
+    settingsSection === "subtitles" ||
+    settingsSection === "post-processing" ||
+    settingsSection === "acquisition";
+  const usesIntegrationsHeader =
+    settingsSection === "downloadClients" ||
+    settingsSection === "indexers" ||
+    settingsSection === "mediaServers" ||
+    settingsSection === "notifications";
+  const usesAccessHeader = settingsSection === "security" || settingsSection === "users";
+  const usesSystemHeader = usesAccessHeader || settingsSection === "backups";
+  const SettingsSectionIcon = (() => {
+    switch (settingsSection) {
+      case "rules":
+        return SlidersHorizontal;
+      case "post-processing":
+        return FolderCog;
+      case "subtitles":
+        return Captions;
+      case "acquisition":
+        return Rss;
+      case "indexers":
+        return Database;
+      case "downloadClients":
+        return Download;
+      case "mediaServers":
+        return Server;
+      case "notifications":
+        return Bell;
+      case "security":
+        return ShieldCheck;
+      case "users":
+        return Users;
+      case "backups":
+        return Archive;
+      default:
+        return (
+          primarySettingsNav.find((item) => item.section === settingsSection)?.icon ??
+          Settings2
+        );
+    }
+  })();
+  const breadcrumbRootLabel =
+    usesAutomationHeader
+      ? t("nav.group.automation")
+      : usesIntegrationsHeader
+        ? t("nav.group.integrations")
+        : usesSystemHeader
+          ? t("nav.group.system")
+      : t("nav.settings");
 
   useProviderCatalogSubscription(
     useCallback((families: ProviderCatalogFamily[]) => {
@@ -117,54 +366,133 @@ export const SettingsContainer = memo(function SettingsContainer({
   );
 
   return (
-    <Card className="bg-card border-border">
-      <CardHeader className="flex items-center justify-between gap-3">
-        <CardTitle>
-          {t("settings.sectionTitle", {
-            section:
-              settingsSection === "profile"
-                ? t("settings.profile")
-                : settingsSection === "general"
-                ? t("settings.general")
-                : settingsSection === "backups"
-                  ? t("settings.backups")
-                : settingsSection === "security"
-                  ? t("settings.security")
-                : settingsSection === "users"
-                  ? t("settings.users")
-                : settingsSection === "mediaServers"
-                  ? t("settings.mediaServers")
-                : settingsSection === "indexers"
-                  ? t("settings.indexers")
-                : settingsSection === "downloadClients"
-                  ? t("settings.downloadClients")
-                : settingsSection === "acquisition"
-                  ? t("settings.acquisition")
-                : settingsSection === "rules"
-                  ? t("settings.rules")
-                : settingsSection === "plugins"
-                  ? t("settings.plugins")
-                : settingsSection === "notifications"
-                  ? t("settings.notifications")
-                : settingsSection === "post-processing"
-                  ? t("settings.postProcessing")
-                : settingsSection === "subtitles"
-                  ? t("settings.subtitles")
-                : settingsSection === "recycleBin"
-                  ? t("settings.recycleBin")
-                : settingsSection === "delayProfiles"
-                  ? t("settings.delayProfiles")
-                    : t("settings.qualityProfiles"),
-          })}
-        </CardTitle>
-        {showPluginsLink ? (
-          <Button asChild variant="primary" className="shrink-0">
-            <Link to="/settings/plugins">{t("settings.plugins")}</Link>
-          </Button>
-        ) : null}
-      </CardHeader>
-      <CardContent>
-        <Suspense fallback={<div className="py-6 text-sm text-muted-foreground">{t("label.loading")}</div>}>
+    <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-transparent md:flex-row">
+      {showPrimarySettingsSubnav ? (
+        <aside
+          data-slot="settings-subnav-scroll"
+          className="w-full shrink-0 border-b border-[var(--scry-border3)] bg-[var(--scry-surfF)] p-3 md:h-full md:w-[218px] md:overflow-y-auto md:border-b-0 md:border-r md:p-[22px_14px]"
+        >
+          <nav className="flex gap-2 overflow-x-auto pb-1 md:flex-col md:overflow-visible md:pb-0">
+            {primarySettingsNav.map((item) => {
+              const Icon = item.icon;
+              const active = settingsSection === item.section;
+              return (
+                <Link
+                  key={item.section}
+                  id={selectorId("root-sidebar-settings", item.section)}
+                  to={buildViewPath("settings", item.section)}
+                  className={cn(
+                    "flex h-9 shrink-0 items-center gap-2 rounded-[9px] px-3 text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] md:w-full",
+                    active &&
+                      "bg-[linear-gradient(90deg,rgba(var(--scry-accent-rgb),0.26),rgba(var(--scry-accent-rgb),0.08))] text-[var(--scry-ink2)] shadow-[inset_2px_0_0_var(--scry-accent-ring)]",
+                  )}
+                >
+                  <Icon
+                    className={cn(
+                      "h-[17px] w-[17px] text-[var(--scry-muted2)]",
+                      active && "text-[var(--scry-accent-text)]",
+                    )}
+                  />
+                  <span className="whitespace-nowrap">{item.label}</span>
+                </Link>
+              );
+            })}
+          </nav>
+        </aside>
+      ) : null}
+      <main
+        ref={settingsContentRef}
+        data-slot="settings-main-scroll"
+        className="min-w-0 flex-1 overflow-y-auto bg-transparent"
+      >
+        <div
+          className={cn(
+            "mx-auto w-full px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]",
+            showReferenceRail
+              ? referenceRailDocked
+                ? referenceLayout?.contentClass
+                : "max-w-[1280px]"
+              : settingsSection === "rules" ||
+                  settingsSection === "post-processing"
+                ? "max-w-none"
+                : "max-w-[1280px]",
+          )}
+        >
+          <div
+            className={cn(
+              showReferenceRail && referenceRailDocked
+                ? "flex items-start justify-center gap-5"
+                : "contents",
+            )}
+          >
+            <div
+              className={cn(
+                showReferenceRail && referenceRailDocked
+                  ? referenceLayout?.mainClass
+                  : showReferenceRail
+                    ? "min-w-0"
+                  : "contents",
+              )}
+            >
+          <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
+            <span>{breadcrumbRootLabel}</span>
+            <ChevronRight className="h-3.5 w-3.5" />
+            <span className="font-semibold text-[var(--scry-accent-text)]">{settingsSectionLabel}</span>
+          </div>
+          <div
+            className={cn(
+              "mb-6 flex gap-3",
+              showReferenceRail && !referenceRailDocked
+                ? "flex-row items-center justify-between"
+                : "flex-col sm:flex-row sm:items-center sm:justify-between",
+            )}
+          >
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
+                <SettingsSectionIcon className="h-[23px] w-[23px]" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
+                  {settingsSectionLabel}
+                </h1>
+                {!usesAutomationHeader &&
+                !usesIntegrationsHeader &&
+                !usesSystemHeader &&
+                settingsSection !== "profile" &&
+                settingsSection !== "general" &&
+                settingsSection !== "qualityProfiles" &&
+                settingsSection !== "delayProfiles" &&
+                settingsSection !== "plugins" ? (
+                  <p className="mt-1 max-w-[640px] text-[13.5px] text-[var(--scry-muted)]">
+                    {t("settings.sectionTitle", { section: settingsSectionLabel })}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+            {showReferenceRail && !referenceRailDocked ? (
+              <Button
+                type="button"
+                variant="primary"
+                className="h-10 w-auto shrink-0 self-start rounded-[10px] px-3 text-[13px]"
+                onClick={() => setReferenceRailOpen(true)}
+                aria-expanded={referenceRailOpen}
+                aria-controls={SETTINGS_REFERENCE_SLOT_ID}
+              >
+                <Puzzle className="h-4 w-4" />
+                {t("settings.plugins")}
+              </Button>
+            ) : settingsSection === "plugins" ? (
+              <div
+                id={SETTINGS_HEADER_ACTIONS_SLOT_ID}
+                className="flex min-h-10 shrink-0 flex-wrap items-center justify-end gap-2 sm:min-w-[29rem]"
+              />
+            ) : showPluginsShortcut ? (
+              <Button asChild variant="primary" className="h-10 shrink-0 rounded-[10px] px-3 text-[13px]">
+                <Link to="/settings/plugins">{t("settings.plugins")}</Link>
+              </Button>
+            ) : null}
+          </div>
+          <Suspense fallback={<div className="py-6 text-sm text-[var(--scry-muted3)]">{t("label.loading")}</div>}>
           {settingsSection === "profile" ? (
             <SettingsProfileContainer
               userId={userId}
@@ -187,37 +515,92 @@ export const SettingsContainer = memo(function SettingsContainer({
             <SettingsMediaServersContainer />
           ) : settingsSection === "indexers" ? (
             <SettingsIndexersContainer
-              providerCatalogVersion={providerCatalogVersions.indexer}
+              providerCatalogVersion={providerCatalogVersions.INDEXER}
             />
           ) : settingsSection === "downloadClients" ? (
             <SettingsDownloadClientsContainer
-              providerCatalogVersion={providerCatalogVersions.download_client}
+              providerCatalogVersion={
+                providerCatalogVersions.DOWNLOAD_CLIENT
+                + providerCatalogVersions.ARCHIVE_EXTRACTOR
+              }
             />
-          ) : settingsSection === "acquisition" ? (
-            <SettingsAcquisitionContainer />
           ) : settingsSection === "rules" ? (
             <SettingsRulesContainer />
           ) : settingsSection === "plugins" ? (
             <SettingsPluginsContainer />
           ) : settingsSection === "notifications" ? (
             <SettingsNotificationsContainer
-              providerCatalogVersion={providerCatalogVersions.notification}
+              providerCatalogVersion={providerCatalogVersions.NOTIFICATION}
             />
           ) : settingsSection === "post-processing" ? (
             <SettingsPostProcessingContainer />
           ) : settingsSection === "subtitles" ? (
             <SettingsSubtitlesContainer
-              providerCatalogVersion={providerCatalogVersions.subtitle}
+              providerCatalogVersion={providerCatalogVersions.SUBTITLE}
             />
-          ) : settingsSection === "recycleBin" ? (
-            <SettingsRecycleBinContainer />
           ) : settingsSection === "delayProfiles" ? (
             <SettingsDelayProfilesContainer />
+          ) : settingsSection === "acquisition" ? (
+            <SettingsAcquisitionContainer />
           ) : (
             <SettingsQualityProfilesContainer />
           )}
-        </Suspense>
-      </CardContent>
-    </Card>
+          </Suspense>
+            </div>
+            {showReferenceRail ? (
+              <>
+                {!referenceRailDocked ? (
+                  <button
+                    type="button"
+                    aria-label={t("label.close")}
+                    className={cn(
+                      "fixed inset-0 z-40 bg-black/45 backdrop-blur-[2px] transition-opacity",
+                      referenceRailOpen
+                        ? "opacity-100"
+                        : "pointer-events-none opacity-0",
+                    )}
+                    onClick={() => setReferenceRailOpen(false)}
+                  />
+                ) : null}
+                <aside
+                  aria-label={t("settings.plugins")}
+                  className={cn(
+                    referenceRailDocked
+                      ? referenceLayout?.railClass
+                      : "fixed bottom-4 right-4 top-[118px] z-50 flex w-[min(420px,calc(100vw-2rem))] min-w-0 flex-col gap-3 overflow-y-auto rounded-[16px] border border-[var(--scry-border)] bg-[var(--scry-bg)] p-3 shadow-[0_20px_50px_rgba(0,0,0,0.38)] transition duration-200",
+                    !referenceRailDocked &&
+                      (referenceRailOpen
+                        ? "translate-x-0 opacity-100"
+                        : "pointer-events-none translate-x-[calc(100%+1rem)] opacity-0"),
+                  )}
+                >
+                  {!referenceRailDocked ? (
+                    <div className="flex items-center justify-between gap-3 rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-bg)] px-3 py-2 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
+                      <div className="flex min-w-0 items-center gap-2 text-[15px] font-semibold text-[var(--scry-ink2)]">
+                        <Puzzle className="h-4 w-4 shrink-0" />
+                        <span className="truncate">{t("settings.plugins")}</span>
+                      </div>
+                      <IconButton
+                        id="settings-plugins-panel-close"
+                        label={t("label.close")}
+                        tone="neutral"
+                        onClick={() => setReferenceRailOpen(false)}
+                      >
+                        <X className="h-4 w-4" />
+                      </IconButton>
+                    </div>
+                  ) : null}
+                  <div
+                    id={SETTINGS_REFERENCE_SLOT_ID}
+                    data-slot="settings-reference"
+                    className="min-w-0"
+                  />
+                </aside>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </main>
+    </div>
   );
 });

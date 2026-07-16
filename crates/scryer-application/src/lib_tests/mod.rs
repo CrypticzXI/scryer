@@ -14,6 +14,7 @@ use tokio::sync::{Mutex, Notify};
 use tokio::time::{Duration, Instant, sleep, timeout};
 
 mod acquisition_recovery;
+mod discovery_sync;
 mod downloads;
 mod libraries;
 mod library_scan;
@@ -23,6 +24,7 @@ mod routing_settings;
 mod search_cutoff;
 mod security_auth;
 mod series_metadata;
+mod title_hydration;
 mod title_image_cache;
 mod title_updates;
 mod user_permissions;

@@ -4,23 +4,22 @@ import { useClient } from "urql";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { DeletePreviewSummary } from "@/components/common/delete-preview-summary";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import {
   blocklistExternalSubtitleMutation,
   deleteExternalSubtitleMutation,
 } from "@/lib/graphql/mutations";
 import { deleteExternalSubtitlePreviewQuery } from "@/lib/graphql/queries";
 import { useDeletePreview } from "@/lib/hooks/use-delete-preview";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 
-function formatDateTime(value: string) {
-  try {
-    return new Date(value).toLocaleString();
-  } catch {
-    return value;
-  }
+function formatDateTime(value: string, dateTimeFormat: UiDateTimeFormat) {
+  return formatUiDateTime(value, dateTimeFormat, { fallback: value });
 }
 
 function canBlocklistSubtitle(subtitle: ExternalSubtitleRecord) {
@@ -64,6 +63,7 @@ export function ExternalSubtitleSection({
   allowBlocklist?: boolean;
 }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const setGlobalStatus = useGlobalStatus();
   const client = useClient();
   const [pendingAction, setPendingAction] = React.useState<PendingSubtitleAction>(null);
@@ -181,7 +181,7 @@ export function ExternalSubtitleSection({
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="rounded-full border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                    <span className="rounded-full border border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--scry-info-text)]">
                       {download.language}
                     </span>
                     {download.provider ? (
@@ -190,86 +190,80 @@ export function ExternalSubtitleSection({
                       </span>
                     ) : null}
                     {download.sourceKind === "discovered" ? (
-                      <span className="rounded-full border border-emerald-500/30 bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                      <span className="rounded-full border border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--scry-success-text)]">
                         {t("subtitle.onDisk")}
                       </span>
                     ) : null}
                     {download.synced ? (
                       <SubtitleFlag
                         label={t("subtitle.synced")}
-                        className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                        className="bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
                       />
                     ) : null}
                     {download.hearingImpaired ? (
                       <SubtitleFlag
                         label={t("subtitle.hearingImpaired")}
-                        className="bg-amber-500/20 text-amber-700 dark:text-amber-300"
+                        className="bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]"
                       />
                     ) : null}
                     {download.forced ? (
                       <SubtitleFlag
                         label={t("subtitle.forced")}
-                        className="bg-purple-500/20 text-purple-700 dark:text-purple-300"
+                        className="bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]"
                       />
                     ) : null}
                     {download.aiTranslated ? (
                       <SubtitleFlag
                         label={t("subtitle.aiTranslated")}
-                        className="bg-rose-500/20 text-rose-700 dark:text-rose-300"
+                        className="bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text)]"
                       />
                     ) : null}
                     {download.machineTranslated ? (
                       <SubtitleFlag
                         label={t("subtitle.machineTranslated")}
-                        className="bg-red-500/20 text-red-700 dark:text-red-300"
+                        className="bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text)]"
                       />
                     ) : null}
-                    {download.score != null ? (
+                    {download.scorePercent != null ? (
                       <span className="text-[11px] text-muted-foreground">
-                        {t("subtitle.scoreWithValue", { score: download.score })}
+                        {t("subtitle.scoreWithValue", { score: `${download.scorePercent}%` })}
                       </span>
                     ) : null}
                   </div>
                   {canDelete || canBlocklist ? (
                     <div className="flex shrink-0 items-center gap-2">
                       {canBlocklist ? (
-                        <Button
-                          type="button"
-                          size="icon-sm"
-                          variant="secondary"
+                        <IconButton
+                          label={t("subtitle.blocklist")}
+                          tone="disabled"
                           onClick={() => {
                             setPendingAction({ kind: "blocklist", subtitle: download });
                             setTypedConfirmation("");
                           }}
-                          title={t("subtitle.blocklist")}
-                          aria-label={t("subtitle.blocklist")}
                         >
                           <Ban className="h-3.5 w-3.5" />
-                        </Button>
+                        </IconButton>
                       ) : null}
                       {canDelete ? (
-                        <Button
-                          type="button"
-                          size="icon-sm"
-                          variant="outline"
+                        <IconButton
+                          label={t("label.delete")}
+                          tone="delete"
                           onClick={() => {
                             setPendingAction({ kind: "delete", subtitle: download });
                             setTypedConfirmation("");
                           }}
-                          title={t("label.delete")}
-                          aria-label={t("label.delete")}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        </IconButton>
                       ) : null}
                     </div>
                   ) : null}
                 </div>
-                <p className="mt-5 break-all font-mono text-[11px] leading-5 text-muted-foreground">
+                <p className="mt-5 break-all font-[var(--font-code)] text-[11px] leading-5 text-muted-foreground">
                   {download.filePath}
                 </p>
                 <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
-                  <span>{formatDateTime(download.downloadedAt)}</span>
+                  <span>{formatDateTime(download.downloadedAt, dateTimeFormat)}</span>
                 </div>
               </div>
             );

@@ -126,6 +126,82 @@ async fn queue_import_request_reuses_existing_row_for_same_identity() {
 }
 
 #[tokio::test]
+async fn already_imported_lookup_ignores_uncataloged_duplicate_file_skips() {
+    let (_, workflow) = import_store_test_harness(1).await;
+    let duplicate_identity =
+        DownloadSourceIdentity::new(Some("client-a"), "weaver", "duplicate-job");
+    let duplicate_download_identity = DownloadSubmissionIdentity {
+        download_id: Some("scryer-download:duplicate-file".to_string()),
+    };
+    let duplicate_id = workflow
+        .queue_import_request_with_identity(
+            duplicate_identity.clone(),
+            ImportType::SeriesDownload.as_str().to_string(),
+            "{}".to_string(),
+            Some(duplicate_download_identity.clone()),
+        )
+        .await
+        .expect("duplicate import should queue");
+    workflow
+        .update_import_status(
+            &duplicate_id,
+            ImportStatus::Skipped,
+            Some(r#"{"skip_reason":"duplicate_file"}"#.to_string()),
+        )
+        .await
+        .expect("duplicate import should be marked skipped");
+
+    assert!(
+        !workflow
+            .is_already_imported(&duplicate_identity)
+            .await
+            .expect("duplicate import lookup should succeed")
+    );
+    assert!(
+        !workflow
+            .is_already_imported_by_download_id(&duplicate_identity, &duplicate_download_identity)
+            .await
+            .expect("duplicate download id lookup should succeed")
+    );
+
+    let cataloged_identity =
+        DownloadSourceIdentity::new(Some("client-a"), "weaver", "cataloged-job");
+    let cataloged_download_identity = DownloadSubmissionIdentity {
+        download_id: Some("scryer-download:already-imported".to_string()),
+    };
+    let cataloged_id = workflow
+        .queue_import_request_with_identity(
+            cataloged_identity.clone(),
+            ImportType::SeriesDownload.as_str().to_string(),
+            "{}".to_string(),
+            Some(cataloged_download_identity.clone()),
+        )
+        .await
+        .expect("cataloged import should queue");
+    workflow
+        .update_import_status(
+            &cataloged_id,
+            ImportStatus::Skipped,
+            Some(r#"{"skip_reason":"already_imported"}"#.to_string()),
+        )
+        .await
+        .expect("cataloged import should be marked skipped");
+
+    assert!(
+        workflow
+            .is_already_imported(&cataloged_identity)
+            .await
+            .expect("cataloged import lookup should succeed")
+    );
+    assert!(
+        workflow
+            .is_already_imported_by_download_id(&cataloged_identity, &cataloged_download_identity)
+            .await
+            .expect("cataloged download id lookup should succeed")
+    );
+}
+
+#[tokio::test]
 async fn queue_import_request_with_download_id_reuses_active_row_only() {
     let (pool, workflow) = import_store_test_harness(1).await;
     let download_identity = DownloadSubmissionIdentity {
@@ -239,6 +315,78 @@ async fn queue_import_request_with_download_id_scopes_active_rows_by_client_and_
     .await
     .expect("active import count should load");
     assert_eq!(active_count, 3);
+}
+
+#[tokio::test]
+async fn stale_processing_recovery_respects_transfer_progress_heartbeat() {
+    let (pool, workflow) = import_store_test_harness(1).await;
+    let threshold_seconds = 45 * 60;
+
+    let stale_id = workflow
+        .queue_import_request(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "stale-job"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("stale import should queue");
+    workflow
+        .update_import_status(&stale_id, ImportStatus::Processing, None)
+        .await
+        .expect("stale import should start processing");
+
+    let heartbeat_id = workflow
+        .queue_import_request(
+            DownloadSourceIdentity::new(Some("client-a"), "weaver", "heartbeat-job"),
+            ImportType::MovieDownload.as_str().to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("heartbeat import should queue");
+    workflow
+        .update_import_status(&heartbeat_id, ImportStatus::Processing, None)
+        .await
+        .expect("heartbeat import should start processing");
+
+    let old_timestamp =
+        (Utc::now() - chrono::Duration::seconds(threshold_seconds + 60)).to_rfc3339();
+    sqlx::query("UPDATE imports SET updated_at = ? WHERE id IN (?, ?)")
+        .bind(&old_timestamp)
+        .bind(&stale_id)
+        .bind(&heartbeat_id)
+        .execute(&pool)
+        .await
+        .expect("imports should be aged");
+
+    workflow
+        .update_import_transfer_progress(
+            &heartbeat_id,
+            scryer_domain::ImportTransferPhase::Copying,
+            1024,
+            4096,
+        )
+        .await
+        .expect("heartbeat progress should update import freshness");
+
+    let recovered = workflow
+        .recover_stale_processing_imports(threshold_seconds)
+        .await
+        .expect("stale processing recovery should run");
+    assert_eq!(recovered, 1);
+
+    let stale = workflow
+        .get_import_by_id(&stale_id)
+        .await
+        .expect("stale import should load")
+        .expect("stale import should exist");
+    let heartbeat = workflow
+        .get_import_by_id(&heartbeat_id)
+        .await
+        .expect("heartbeat import should load")
+        .expect("heartbeat import should exist");
+
+    assert_eq!(stale.status, ImportStatus::Failed);
+    assert_eq!(heartbeat.status, ImportStatus::Processing);
 }
 
 #[tokio::test]

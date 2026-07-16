@@ -1,14 +1,17 @@
 import * as React from "react";
-import { FileInput, FolderOpen, Loader2 } from "lucide-react";
+import { FileInput, FolderOpen, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Clapperboard } from "lucide-react";
 import { useClient } from "urql";
 import type { Release } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
+import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import {
@@ -46,6 +49,11 @@ import {
 } from "./helpers";
 import { OverviewControlPanel } from "../overview-control-panel";
 import { OverviewBackLink } from "../overview-back-link";
+import {
+  TitleMoreLikeThisStrip,
+  type TitleMoreLikeThisStripActions,
+} from "../title-more-like-this-strip";
+import { TitleRatingsStrip } from "../title-ratings-strip";
 import { TitleSettingsPanel } from "./title-settings-panel";
 import { SeasonSection, SeriesMovieTimelineSection } from "./season-section";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
@@ -60,6 +68,7 @@ import {
   TmdbExternalLink,
   TvdbSeriesExternalLink,
 } from "@/components/common/external-media-links";
+import { titleGenreLabels } from "@/lib/utils/title-genres";
 
 const EPISODE_QUEUE_PRECEDENCE: Record<string, number> = {
   downloading: 0,
@@ -74,8 +83,10 @@ function compareEpisodeQueueItems(
   left: DownloadQueueItem,
   right: DownloadQueueItem,
 ): number {
-  const leftRank = EPISODE_QUEUE_PRECEDENCE[left.displayState] ?? Number.MAX_SAFE_INTEGER;
-  const rightRank = EPISODE_QUEUE_PRECEDENCE[right.displayState] ?? Number.MAX_SAFE_INTEGER;
+  const leftRank =
+    EPISODE_QUEUE_PRECEDENCE[left.displayState.toLowerCase()] ?? Number.MAX_SAFE_INTEGER;
+  const rightRank =
+    EPISODE_QUEUE_PRECEDENCE[right.displayState.toLowerCase()] ?? Number.MAX_SAFE_INTEGER;
   if (leftRank !== rightRank) {
     return leftRank - rightRank;
   }
@@ -103,17 +114,17 @@ function coveredEpisodeIdsForQueueItem(
     return Array.from(episodeIds);
   }
 
-  if (scope.kind === "episode" && scope.episodeId) {
+  if (scope.__typename === "EpisodeScopePayload" && scope.episodeId) {
     episodeIds.add(scope.episodeId);
   }
 
-  if (scope.kind === "episode_set") {
+  if (scope.__typename === "EpisodeSetScopePayload") {
     for (const episodeId of scope.episodeIds) {
       episodeIds.add(episodeId);
     }
   }
 
-  if (scope.kind === "collection" && scope.collectionId) {
+  if (scope.__typename === "CollectionScopePayload" && scope.collectionId) {
     for (const episode of episodesByCollection[scope.collectionId] ?? []) {
       episodeIds.add(episode.id);
     }
@@ -133,6 +144,8 @@ type Props = {
   episodesByCollection: Record<string, CollectionEpisode[]>;
   mediaFilesByEpisode: Record<string, EpisodeMediaFile[]>;
   mediaFilesBySeriesMovieLink: Record<string, EpisodeMediaFile[]>;
+  onLoadEpisodeDetail?: (episodeId: string) => Promise<void> | void;
+  onLoadSeriesMovieDetail?: (link: SeriesMovieLink) => Promise<void> | void;
   downloadQueueItems?: DownloadQueueItem[];
   subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
@@ -172,6 +185,7 @@ type Props = {
   onMakePrimaryFile?: (fileId: string) => Promise<void> | void;
   primaryMovieFileUpdatingId?: string | null;
   onOpenFixMatch?: () => void;
+  moreLikeThisActions?: TitleMoreLikeThisStripActions;
 };
 
 export function SeriesOverviewView({
@@ -185,6 +199,8 @@ export function SeriesOverviewView({
   episodesByCollection,
   mediaFilesByEpisode,
   mediaFilesBySeriesMovieLink,
+  onLoadEpisodeDetail,
+  onLoadSeriesMovieDetail,
   downloadQueueItems = [],
   subtitleDownloads,
   onRefreshSubtitles,
@@ -224,14 +240,16 @@ export function SeriesOverviewView({
   onMakePrimaryFile,
   primaryMovieFileUpdatingId = null,
   onOpenFixMatch,
+  moreLikeThisActions,
 }: Props) {
   const emptyEpisodes = React.useMemo<CollectionEpisode[]>(() => [], []);
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const client = useClient();
   const { confirmReplaceConflict, replaceConflictDialog } =
     useDownloadConflictConfirmation();
-  const backLabel = title?.facet === "anime" ? t("nav.anime") : t("nav.series");
+  const backLabel = title?.facet === "ANIME" ? t("nav.anime") : t("nav.series");
   const sortedCollections = React.useMemo(
     () => sortDbCollections(collections),
     [collections],
@@ -277,6 +295,16 @@ export function SeriesOverviewView({
     React.useState<Record<string, boolean>>({});
   const [autoSearchSeriesMovieLoadingByLink, setAutoSearchSeriesMovieLoadingByLink] =
     React.useState<Record<string, boolean>>({});
+  const episodeSearchAbortByIdRef = React.useRef<Record<string, AbortController>>({});
+  const seriesMovieSearchAbortByLinkRef = React.useRef<Record<string, AbortController>>({});
+  React.useEffect(() => {
+    return () => {
+      Object.values(episodeSearchAbortByIdRef.current).forEach((controller) => controller.abort());
+      Object.values(seriesMovieSearchAbortByLinkRef.current).forEach((controller) => controller.abort());
+      episodeSearchAbortByIdRef.current = {};
+      seriesMovieSearchAbortByLinkRef.current = {};
+    };
+  }, []);
   const searchPrerequisiteNotice = canManageTitle && !hasDownloadClients && showSearchPrerequisiteNotice
     ? <TitleSearchDownloadClientNotice />
     : null;
@@ -332,35 +360,69 @@ export function SeriesOverviewView({
     setHistoryOpen(true);
   }, []);
 
-  // Initialize expanded state when data arrives
-  const initializedRef = React.useRef(false);
-  React.useEffect(() => {
-    if (initializedRef.current) return;
+  const defaultExpandedRef = React.useRef(false);
+  const lastDeepLinkedEpisodeIdRef = React.useRef<string | null>(null);
 
-    // If we have an initialEpisodeId, find which collection it belongs to and expand that
-    if (initialEpisodeId && Object.keys(episodesByCollection).length > 0) {
-      for (const [collectionId, episodes] of Object.entries(episodesByCollection)) {
-        const match = episodes.find((ep) => ep.id === initialEpisodeId);
-        if (match) {
-          initializedRef.current = true;
-          setExpandedKeys(new Set([`s-${collectionId}`]));
-          // Scroll to the episode row after DOM updates
-          requestAnimationFrame(() => {
-            const el = document.querySelector(`[data-episode-id="${initialEpisodeId}"]`);
-            el?.scrollIntoView({ behavior: "smooth", block: "center" });
-          });
-          return;
-        }
+  React.useEffect(() => {
+    defaultExpandedRef.current = false;
+  }, [title?.id]);
+
+  React.useEffect(() => {
+    lastDeepLinkedEpisodeIdRef.current = null;
+  }, [initialEpisodeId, title?.id]);
+
+  React.useEffect(() => {
+    if (!initialEpisodeId) return;
+
+    let targetCollectionKey: string | null = null;
+    for (const [collectionId, episodes] of Object.entries(episodesByCollection)) {
+      if (episodes.some((episode) => episode.id === initialEpisodeId)) {
+        targetCollectionKey = `s-${collectionId}`;
+        break;
       }
     }
 
-    if (latestKey) {
-      initializedRef.current = true;
-      const nextExpanded = new Set<string>();
-      nextExpanded.add(latestKey);
-      setExpandedKeys(nextExpanded);
+    if (!targetCollectionKey) {
+      return;
     }
-  }, [latestKey, initialEpisodeId, episodesByCollection]);
+
+    setExpandedKeys((current) => {
+      if (current.has(targetCollectionKey)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(targetCollectionKey);
+      return next;
+    });
+
+    if (lastDeepLinkedEpisodeIdRef.current === initialEpisodeId) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const episodeElement = Array.from(
+          document.querySelectorAll<HTMLElement>("[data-episode-id]"),
+        ).find((element) => element.dataset.episodeId === initialEpisodeId);
+        if (!episodeElement) {
+          return;
+        }
+        lastDeepLinkedEpisodeIdRef.current = initialEpisodeId;
+        episodeElement.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
+  }, [expandedKeys, initialEpisodeId, episodesByCollection]);
+
+  React.useEffect(() => {
+    if (initialEpisodeId || defaultExpandedRef.current || !latestKey) {
+      return;
+    }
+
+    defaultExpandedRef.current = true;
+    const nextExpanded = new Set<string>();
+    nextExpanded.add(latestKey);
+    setExpandedKeys(nextExpanded);
+  }, [initialEpisodeId, latestKey]);
 
   const toggleKey = React.useCallback((key: string) => {
     setExpandedKeys((prev) => {
@@ -400,24 +462,34 @@ export function SeriesOverviewView({
         || "1";
       const episodeNum = episode.episodeNumber?.trim().replace(/\D+/g, "") || "1";
 
+      episodeSearchAbortByIdRef.current[episodeId]?.abort();
+      const abortController = new AbortController();
+      episodeSearchAbortByIdRef.current[episodeId] = abortController;
       client.query(searchForEpisodeQuery, {
         titleId: title.id,
         season: seasonNum,
         episode: episodeNum,
-        }).toPromise()
+      }, {
+        fetch: makeAbortableFetch(abortController.signal),
+      }).toPromise()
         .then(({ data, error: queryError }) => {
           if (queryError) throw queryError;
+          if (abortController.signal.aborted) return;
           dispatchEpisodePanel({
             type: "SET_SEARCH_RESULTS",
             episodeId,
             results: data.searchReleases ?? [],
           });
         })
-        .catch(() => {
+        .catch((error) => {
+          if (isAbortError(error) || abortController.signal.aborted) return;
           dispatchEpisodePanel({ type: "SET_SEARCH_RESULTS", episodeId, results: [] });
         })
         .finally(() => {
-          dispatchEpisodePanel({ type: "SET_SEARCH_LOADING", episodeId, loading: false });
+          if (episodeSearchAbortByIdRef.current[episodeId] === abortController) {
+            delete episodeSearchAbortByIdRef.current[episodeId];
+            dispatchEpisodePanel({ type: "SET_SEARCH_LOADING", episodeId, loading: false });
+          }
         });
     },
     [client, hasDownloadClients, title, collections],
@@ -550,30 +622,40 @@ export function SeriesOverviewView({
         [link.id]: true,
       }));
 
+      seriesMovieSearchAbortByLinkRef.current[link.id]?.abort();
+      const abortController = new AbortController();
+      seriesMovieSearchAbortByLinkRef.current[link.id] = abortController;
       client
         .query(searchForSeriesMovieQuery, {
           titleId: title.id,
           seriesMovieLinkId: link.id,
+        }, {
+          fetch: makeAbortableFetch(abortController.signal),
         })
         .toPromise()
         .then(({ data, error: queryError }) => {
           if (queryError) throw queryError;
+          if (abortController.signal.aborted) return;
           setSeriesMovieSearchResultsByLink((prev) => ({
             ...prev,
             [link.id]: data?.searchReleases ?? [],
           }));
         })
-        .catch(() => {
+        .catch((error) => {
+          if (isAbortError(error) || abortController.signal.aborted) return;
           setSeriesMovieSearchResultsByLink((prev) => ({
             ...prev,
             [link.id]: [],
           }));
         })
         .finally(() => {
-          setSeriesMovieSearchLoadingByLink((prev) => ({
-            ...prev,
-            [link.id]: false,
-          }));
+          if (seriesMovieSearchAbortByLinkRef.current[link.id] === abortController) {
+            delete seriesMovieSearchAbortByLinkRef.current[link.id];
+            setSeriesMovieSearchLoadingByLink((prev) => ({
+              ...prev,
+              [link.id]: false,
+            }));
+          }
         });
     },
     [client, hasDownloadClients, title],
@@ -721,12 +803,6 @@ export function SeriesOverviewView({
   return (
     <>
       <div className="space-y-4">
-      <OverviewBackLink
-        id="series-overview-back-link"
-        label={t("title.backToFacet", { facet: backLabel })}
-        onClick={() => onBackToList?.()}
-      />
-
       <Card
         className="relative overflow-hidden p-0"
         style={overviewBackdropUrl ? { backdropFilter: "none", WebkitBackdropFilter: "none" } : undefined}
@@ -762,13 +838,23 @@ export function SeriesOverviewView({
                 metadataFetchedAt={title.metadataFetchedAt}
                 createdAt={title.createdAt}
                 alt={title.name}
-                className="block h-auto w-32 rounded-lg object-cover shadow-lg sm:w-[180px]"
-                placeholderClassName="flex h-48 w-32 items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60 sm:h-[270px] sm:w-[180px]"
+                className="block h-[300px] w-[200px] rounded-lg object-cover shadow-lg"
+                placeholderClassName="flex h-[300px] w-[200px] items-center justify-center rounded-lg bg-muted text-sm text-muted-foreground/60"
                 emptyLabel={t("title.noPoster")}
               />
             </div>
 
-            <div className="min-w-0 flex-1 flex flex-col">
+            <div className="relative min-w-0 flex-1 flex flex-col pr-12">
+              {onBackToList ? (
+                <IconButton
+                  label={t("label.close")}
+                  tone="neutral"
+                  className="absolute right-0 top-0 z-20 size-10 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-card2)] text-[var(--scry-ink2)] shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur-sm transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
+                  onClick={() => onBackToList()}
+                >
+                  <X className="h-5 w-5" />
+                </IconButton>
+              ) : null}
               <h1 className="text-xl font-bold text-foreground sm:text-2xl">
                 {title.name}
                 {title.year ? (
@@ -782,7 +868,7 @@ export function SeriesOverviewView({
                 <span
                   className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
                     title.monitored
-                      ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+                      ? "bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
                       : "bg-accent text-muted-foreground"
                   }`}
                 >
@@ -803,9 +889,9 @@ export function SeriesOverviewView({
                 ) : null}
               </div>
 
-              {title.genres.length > 0 ? (
+              {titleGenreLabels(title).length > 0 ? (
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {title.genres.map((genre) => (
+                  {titleGenreLabels(title).map((genre) => (
                     <span
                       key={genre}
                       className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground"
@@ -816,45 +902,63 @@ export function SeriesOverviewView({
                 </div>
               ) : null}
 
+              <TitleRatingsStrip ratings={title.ratings} />
+
               {title.overview ? (
                 <p className="mt-4 text-sm leading-relaxed text-foreground/70">
                   {title.overview}
                 </p>
               ) : null}
 
-              <div className="mt-auto flex flex-wrap items-center gap-3 pt-3">
+              <div className="mt-auto flex flex-wrap items-center gap-2 pt-3">
                 {(() => {
                   const externalIds = title.externalIds ?? [];
                   return (
                     <>
-                      <ImdbExternalLink imdbId={externalIds.find((e) => e.source === "imdb")?.value} />
+                      <ImdbExternalLink
+                        imdbId={externalIds.find((e) => e.source === "imdb")?.value}
+                        size="compact"
+                      />
                       <TvdbSeriesExternalLink
                         tvdbId={externalIds.find((e) => e.source === "tvdb")?.value}
                         slug={title.slug}
+                        size="compact"
                       />
                       <TmdbExternalLink
                         mediaType="tv"
                         tmdbId={externalIds.find((e) => e.source === "tmdb")?.value}
+                        size="compact"
                       />
                     </>
                   );
                 })()}
-                {title.facet === "anime" ? (
+                {title.facet === "ANIME" ? (
                   <>
                     {(() => {
                       const externalIds = title.externalIds ?? [];
                       return (
                         <>
-                          <MalExternalLink malId={externalIds.find((e) => e.source === "mal")?.value} />
-                          <AnilistExternalLink anilistId={externalIds.find((e) => e.source === "anilist")?.value} />
-                          <AnidbExternalLink anidbId={externalIds.find((e) => e.source === "anidb")?.value} />
+                          <MalExternalLink
+                            malId={externalIds.find((e) => e.source === "mal")?.value}
+                            size="compact"
+                          />
+                          <AnilistExternalLink
+                            anilistId={externalIds.find((e) => e.source === "anilist")?.value}
+                            size="compact"
+                          />
+                          <AnidbExternalLink
+                            anidbId={externalIds.find((e) => e.source === "anidb")?.value}
+                            size="compact"
+                          />
                         </>
                       );
                     })()}
                   </>
                 ) : null}
                 <span className="ml-auto text-xs text-muted-foreground/60">
-                  {t("title.addedAt", { date: formatDate(title.createdAt) })}
+                  {t("title.addedAt", {
+                    date: formatDate(title.createdAt, dateTimeFormat),
+                  })}
                 </span>
               </div>
             </div>
@@ -926,6 +1030,7 @@ export function SeriesOverviewView({
                       onToggle={() => toggleKey(item.key)}
                       mediaFilesByEpisode={mediaFilesByEpisode}
                       mediaFilesBySeriesMovieLink={mediaFilesBySeriesMovieLink}
+                      onLoadSeriesMovieDetail={onLoadSeriesMovieDetail}
                       subtitleDownloads={subtitleDownloads}
                       onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}
                       seriesMovieSearchResultsByLink={seriesMovieSearchResultsByLink}
@@ -962,9 +1067,12 @@ export function SeriesOverviewView({
                     onToggle={() => toggleKey(item.key)}
                     initiallyOpenEpisodeId={initialEpisodeId}
                     mediaFilesByEpisode={mediaFilesByEpisode}
+              onLoadEpisodeDetail={onLoadEpisodeDetail}
                     downloadQueueItemByEpisodeId={primaryQueueItemByEpisodeId}
                     subtitleDownloads={subtitleDownloads}
                     onRefreshSubtitles={canManageTitle ? onRefreshSubtitles : undefined}
+                    onMakePrimaryFile={canManageTitle ? onMakePrimaryFile : undefined}
+                    primaryMovieFileUpdatingId={primaryMovieFileUpdatingId}
                     releaseBlocklistEntries={releaseBlocklistEntries}
                     clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
                     onClearReleaseBlocklistEntry={
@@ -1022,6 +1130,12 @@ export function SeriesOverviewView({
         </Card>
       </div>
 
+      <TitleMoreLikeThisStrip
+        items={title.moreLikeThis ?? []}
+        fallbackYearLabel={title.facet === "ANIME" ? t("nav.anime") : t("nav.series")}
+        {...moreLikeThisActions}
+      />
+
       <details className="rounded-xl border border-border bg-card text-card-foreground overflow-hidden">
         <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-card-foreground">
           <span className="inline-flex items-center gap-2">
@@ -1049,9 +1163,11 @@ export function SeriesOverviewView({
                         {entry.sourceTitle || t("episode.untitledRelease")}
                       </p>
                       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                        <span className="text-muted-foreground/60">{formatDate(entry.attemptedAt)}</span>
+                        <span className="text-muted-foreground/60">
+                          {formatDate(entry.attemptedAt, dateTimeFormat)}
+                        </span>
                         {entry.errorMessage ? (
-                          <span className="rounded bg-red-950/40 px-2 py-0.5 text-red-200">
+                          <span className="rounded bg-[var(--scry-danger-bg)] px-2 py-0.5 text-[var(--scry-danger-text)]">
                             {entry.errorMessage}
                           </span>
                         ) : null}

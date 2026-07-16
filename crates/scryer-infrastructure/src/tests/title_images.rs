@@ -1,4 +1,5 @@
 use super::*;
+use crate::media::images::normalize_title_image_source_url;
 
 #[tokio::test]
 async fn title_image_refresh_work_uses_global_variant_priorities() {
@@ -55,9 +56,13 @@ async fn title_image_refresh_work_uses_global_variant_priorities() {
         .await
         .expect("poster title should load")
         .expect("poster title should exist");
+    let expected_w250_url = format!(
+        "/images/titles/title-priority-poster/poster/w250?v={}",
+        test_title_image_version("11111111111111111111111111111111")
+    );
     assert_eq!(
         updated_poster.poster_url.as_deref(),
-        Some("/images/titles/title-priority-poster/poster/w250?v=1111111111111111")
+        Some(expected_w250_url.as_str())
     );
 
     let second = title_images
@@ -134,9 +139,284 @@ async fn title_image_refresh_work_uses_global_variant_priorities() {
         .expect("poster title should exist");
     assert_eq!(
         updated_poster.poster_url.as_deref(),
-        Some("/images/titles/title-priority-poster/poster/w250?v=1111111111111111")
+        Some(expected_w250_url.as_str())
     );
 
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn normalized_title_image_urls_advance_to_the_next_variant_after_one_refresh() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_normalized_source_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+    let requested_source_url = "/banners/posters/normalized-source.jpg";
+    let normalized_source_url =
+        normalize_title_image_source_url(requested_source_url).expect("source should normalize");
+    let title = make_test_title("title-normalized-image-source", Some(requested_source_url));
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let first = title_images
+        .list_title_image_refresh_work(1, &[])
+        .await
+        .expect("initial refresh work should list");
+    assert_eq!(first.len(), 1);
+    assert_variant_target(&first[0], TitleImageKind::Poster, "w250");
+
+    let digest = format!("blake3:{}", blake3::hash(&[4, 5, 6]).to_hex());
+    let mut result = test_title_image_source_result(
+        TitleImageKind::Poster,
+        &normalized_source_url,
+        "w250",
+        250,
+        375,
+        &digest,
+    );
+    result.requested_source_url = requested_source_url.to_string();
+    title_images
+        .upsert_title_image_source_result(&title.id, result, None)
+        .await
+        .expect("normalized image result should insert");
+
+    let persisted_source_url: String =
+        sqlx::query_scalar("SELECT poster_url FROM titles WHERE id = ?")
+            .bind(&title.id)
+            .fetch_one(&services.pool)
+            .await
+            .expect("title source should load");
+    assert_eq!(persisted_source_url, normalized_source_url);
+    let next = title_images
+        .list_title_image_refresh_work(1, &[])
+        .await
+        .expect("next refresh work should list");
+    assert_eq!(next.len(), 1);
+    assert_variant_target(&next[0], TitleImageKind::Poster, "w70");
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_image_blobs_deduplicate_and_gc_only_after_last_reference() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_blob_gc_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+    let housekeeping = housekeeping_store(&services);
+    let shared_digest = format!("blake3:{}", blake3::hash(&[4, 5, 6]).to_hex());
+
+    for (id, variant_key) in [
+        ("title-shared-image-a", "w250"),
+        ("title-shared-image-b", "w2048"),
+    ] {
+        let title = make_test_title(id, Some("https://tvdb.example/shared-poster.jpg"));
+        TitleRepository::create(&catalog, title.clone())
+            .await
+            .expect("title should insert");
+        title_images
+            .upsert_title_image_source_result(
+                &title.id,
+                test_title_image_source_result_with_variants(
+                    TitleImageKind::Poster,
+                    "https://tvdb.example/shared-poster.jpg",
+                    vec![test_title_image_variant_record(
+                        variant_key,
+                        250,
+                        375,
+                        &shared_digest,
+                    )],
+                ),
+                None,
+            )
+            .await
+            .expect("title image should insert");
+    }
+
+    let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
+        .fetch_one(&services.pool)
+        .await
+        .expect("blob count should load");
+    let variant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_variants")
+        .fetch_one(&services.pool)
+        .await
+        .expect("variant count should load");
+    assert_eq!(blob_count, 1);
+    assert_eq!(variant_count, 2);
+    assert_eq!(
+        HousekeepingRepository::prune_unreferenced_title_image_blobs(&housekeeping, 100)
+            .await
+            .expect("referenced blob prune should succeed"),
+        0
+    );
+
+    sqlx::query("DELETE FROM title_images WHERE title_id = ?")
+        .bind("title-shared-image-a")
+        .execute(&services.pool)
+        .await
+        .expect("first image reference should delete");
+    assert_eq!(
+        HousekeepingRepository::prune_unreferenced_title_image_blobs(&housekeeping, 100)
+            .await
+            .expect("shared blob prune should succeed"),
+        0
+    );
+
+    sqlx::query("DELETE FROM title_images WHERE title_id = ?")
+        .bind("title-shared-image-b")
+        .execute(&services.pool)
+        .await
+        .expect("last image reference should delete");
+    assert_eq!(
+        HousekeepingRepository::prune_unreferenced_title_image_blobs(&housekeeping, 100)
+            .await
+            .expect("unreferenced blob prune should succeed"),
+        1
+    );
+
+    for (digest, byte) in [("orphan-a", 1_u8), ("orphan-b", 2_u8)] {
+        sqlx::query(
+            "INSERT INTO title_image_blobs (
+                digest, format, width, height, bytes, created_at, updated_at
+             ) VALUES (?, 'avif', 1, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .bind(digest)
+        .bind(vec![byte])
+        .execute(&services.pool)
+        .await
+        .expect("orphan blob should insert");
+    }
+    assert_eq!(
+        HousekeepingRepository::prune_unreferenced_title_image_blobs(&housekeeping, 1)
+            .await
+            .expect("bounded orphan prune should succeed"),
+        1
+    );
+    let remaining_blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
+        .fetch_one(&services.pool)
+        .await
+        .expect("remaining blob count should load");
+    assert_eq!(remaining_blob_count, 1);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_image_blob_upsert_rejects_forged_digest_without_creating_references() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_forged_digest_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+    let source_url = "https://tvdb.example/forged-poster.jpg";
+    let title = make_test_title("title-forged-image-digest", Some(source_url));
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let mut result = test_title_image_source_result(
+        TitleImageKind::Poster,
+        source_url,
+        "w250",
+        250,
+        375,
+        "forged-digest-payload",
+    );
+    result.variants[0].digest =
+        "blake3:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+    let error = title_images
+        .upsert_title_image_source_result(&title.id, result, None)
+        .await
+        .expect_err("forged digest must fail");
+    assert!(error.to_string().contains("digest"));
+
+    let image_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_images")
+        .fetch_one(&services.pool)
+        .await
+        .expect("image count should load");
+    let variant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_variants")
+        .fetch_one(&services.pool)
+        .await
+        .expect("variant count should load");
+    let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
+        .fetch_one(&services.pool)
+        .await
+        .expect("blob count should load");
+    assert_eq!((image_count, variant_count, blob_count), (0, 0, 0));
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn title_image_blob_upsert_rejects_conflicting_blob_metadata() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_title_image_conflicting_blob_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+    let title_images = title_image_store(&services);
+    let source_url = "https://tvdb.example/conflicting-poster.jpg";
+    let title = make_test_title("title-conflicting-image-blob", Some(source_url));
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+    let result = test_title_image_source_result(
+        TitleImageKind::Poster,
+        source_url,
+        "w250",
+        250,
+        375,
+        "conflicting-blob-payload",
+    );
+    let variant = &result.variants[0];
+    sqlx::query(
+        "INSERT INTO title_image_blobs (
+            digest, format, width, height, bytes, created_at, updated_at
+         ) VALUES (?, 'png', 1, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+    )
+    .bind(&variant.digest)
+    .bind(&variant.bytes)
+    .execute(&services.pool)
+    .await
+    .expect("conflicting blob should insert");
+
+    let error = title_images
+        .upsert_title_image_source_result(&title.id, result, None)
+        .await
+        .expect_err("conflicting blob metadata must fail");
+    assert!(error.to_string().contains("conflict"));
+
+    let image_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_images")
+        .fetch_one(&services.pool)
+        .await
+        .expect("image count should load");
+    let variant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_variants")
+        .fetch_one(&services.pool)
+        .await
+        .expect("variant count should load");
+    assert_eq!((image_count, variant_count), (0, 0));
+
+    drop(services);
     let _ = std::fs::remove_file(db);
 }
 
@@ -507,8 +787,13 @@ async fn clear_title_image_cache_repairs_polluted_urls_and_clears_db_cache() {
         .fetch_one(&services.pool)
         .await
         .expect("variant count should load");
+    let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
+        .fetch_one(&services.pool)
+        .await
+        .expect("blob count should load");
     assert_eq!(image_count, 0);
     assert_eq!(variant_count, 0);
+    assert_eq!(blob_count, 0);
 
     let _ = std::fs::remove_file(db);
 }

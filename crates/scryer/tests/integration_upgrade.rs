@@ -18,10 +18,11 @@ use scryer_application::testing::{
 };
 use scryer_application::upgrade::UpgradeResult;
 use scryer_application::{
-    ActivityKind, ActivitySeverity, AppError, AppResult, CutoffUnmetQualitySummary,
-    EpisodeScopedMediaFile, FileImporter, InsertMediaFileInput, LibraryRootDraft,
-    MediaFileAnalysis, MediaFileRepository, TitleEpisodeProgressSummary, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary, TitleRepository,
+    ActivityKind, ActivitySeverity, AppError, AppResult, CollectionEpisodeProgressSummary,
+    CutoffUnmetQualitySummary, EpisodeScopedMediaFile, FileImporter, InsertMediaFileInput,
+    LibraryRootDraft, MediaFileAnalysis, MediaFileRepository, TitleEpisodeProgressSummary,
+    TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary, TitleQualitySummary,
+    TitleRepository,
 };
 use scryer_domain::{
     AppPermission, AppPermissionMask, DomainEvent, DomainEventActorKind, DomainEventFilter,
@@ -174,11 +175,28 @@ impl MediaFileRepository for FailingPathUpdateMediaFileRepo {
         self.inner.list_title_media_size_summaries(title_ids).await
     }
 
+    async fn collection_media_size_bytes(
+        &self,
+        title_id: &str,
+        ordered_path: &str,
+    ) -> AppResult<Option<i64>> {
+        self.inner
+            .collection_media_size_bytes(title_id, ordered_path)
+            .await
+    }
+
     async fn list_title_quality_summaries(
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleQualitySummary>> {
         self.inner.list_title_quality_summaries(title_ids).await
+    }
+
+    async fn list_title_movie_media_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMovieMediaSummary>> {
+        self.inner.list_title_movie_media_summaries(title_ids).await
     }
 
     async fn list_cutoff_unmet_quality_summaries(
@@ -196,6 +214,15 @@ impl MediaFileRepository for FailingPathUpdateMediaFileRepo {
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
         self.inner
             .list_title_episode_progress_summaries(title_ids)
+            .await
+    }
+
+    async fn list_collection_episode_progress_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CollectionEpisodeProgressSummary>> {
+        self.inner
+            .list_collection_episode_progress_summaries(title_ids)
             .await
     }
 
@@ -298,6 +325,7 @@ async fn seed_title(ctx: &TestContext, id: &str) -> Title {
         library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         created_by: None,
         created_at: chrono::Utc::now(),
@@ -308,10 +336,11 @@ async fn seed_title(ctx: &TestContext, id: &str) -> Title {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -345,6 +374,7 @@ async fn seed_title_for_library(
         library_id: library_id.to_string(),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         created_by: None,
         created_at: chrono::Utc::now(),
@@ -355,10 +385,11 @@ async fn seed_title_for_library(
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -1526,6 +1557,7 @@ async fn housekeeping_reconciles_same_path_guard_before_db_swap() {
         library_id: library.id.clone(),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         created_by: None,
         created_at: chrono::Utc::now(),
@@ -1536,10 +1568,11 @@ async fn housekeeping_reconciles_same_path_guard_before_db_swap() {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -1669,6 +1702,7 @@ async fn housekeeping_old_moved_recovery_removes_staged_replacement_file() {
         library_id: library.id.clone(),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         created_by: None,
         created_at: chrono::Utc::now(),
@@ -1679,10 +1713,11 @@ async fn housekeeping_old_moved_recovery_removes_staged_replacement_file() {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -1819,6 +1854,7 @@ async fn housekeeping_skips_recent_same_path_guard() {
         library_id: library.id.clone(),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         created_by: None,
         created_at: chrono::Utc::now(),
@@ -1829,10 +1865,11 @@ async fn housekeeping_skips_recent_same_path_guard() {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -1955,6 +1992,7 @@ async fn housekeeping_disposes_db_swapped_guard_with_encoded_media_root() {
         library_id: library.id.clone(),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         created_by: None,
         created_at: chrono::Utc::now(),
@@ -1965,10 +2003,11 @@ async fn housekeeping_disposes_db_swapped_guard_with_encoded_media_root() {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,

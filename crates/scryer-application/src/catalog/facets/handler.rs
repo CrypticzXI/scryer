@@ -3,8 +3,8 @@ use chrono::Utc;
 use scryer_domain::{ExternalId, MediaFacet};
 
 use crate::{
-    AnimeMapping, AnimeMovie, AppResult, EpisodeMetadata, MetadataGateway, MovieMetadata,
-    SeasonMetadata, SeriesMetadata, TitleMetadataUpdate,
+    AnimeMapping, AnimeMovie, AppResult, DiscoveryTitle, EpisodeMetadata, MetadataGateway,
+    MovieMetadata, SeasonMetadata, SeriesMetadata, TitleMetadataUpdate,
 };
 
 /// Result of hydrating a title's metadata from a metadata gateway.
@@ -15,6 +15,25 @@ pub struct HydrationResult {
     pub episodes: Vec<EpisodeMetadata>,
     pub anime_mappings: Vec<AnimeMapping>,
     pub anime_movies: Vec<AnimeMovie>,
+    pub more_like_this: Vec<DiscoveryTitle>,
+}
+
+pub(crate) fn external_ids_from_hydration_metadata(
+    mut external_ids: Vec<ExternalId>,
+    metadata_update: &TitleMetadataUpdate,
+) -> Vec<ExternalId> {
+    if let Some(imdb_id) = metadata_update
+        .imdb_id
+        .as_deref()
+        .and_then(crate::normalize::normalize_imdb_id)
+    {
+        external_ids.push(ExternalId {
+            source: "imdb".to_string(),
+            value: imdb_id,
+        });
+    }
+    external_ids.extend(metadata_update.extra_external_ids.iter().cloned());
+    external_ids
 }
 
 #[derive(Clone, Copy)]
@@ -64,16 +83,43 @@ pub(crate) fn primary_anime_mapping(anime_mappings: &[AnimeMapping]) -> Option<&
 }
 
 fn primary_anime_mapping_extra_external_ids(anime_mappings: &[AnimeMapping]) -> Vec<ExternalId> {
-    primary_anime_mapping(anime_mappings)
-        .and_then(|mapping| mapping.anidb_id)
-        .filter(|anidb_id| *anidb_id > 0)
-        .map(|anidb_id| {
-            vec![ExternalId {
-                source: "anidb".to_string(),
-                value: anidb_id.to_string(),
-            }]
-        })
-        .unwrap_or_default()
+    let Some(mapping) = primary_anime_mapping(anime_mappings) else {
+        return Vec::new();
+    };
+
+    let mut external_ids = Vec::new();
+    push_positive_external_id(&mut external_ids, "mal", mapping.mal_id);
+    push_positive_external_id(&mut external_ids, "anilist", mapping.anilist_id);
+    push_positive_external_id(&mut external_ids, "anidb", mapping.anidb_id);
+    push_positive_external_id(&mut external_ids, "kitsu", mapping.kitsu_id);
+    push_positive_external_id(&mut external_ids, "simkl", mapping.simkl_id);
+    push_positive_external_id(&mut external_ids, "tvdb", mapping.thetvdb_id);
+    push_positive_external_id(&mut external_ids, "tmdb", mapping.themoviedb_id);
+    push_positive_imdb_external_id(&mut external_ids, mapping.imdb_id);
+    push_positive_external_id(&mut external_ids, "trakt", mapping.trakt_id);
+    external_ids
+}
+
+fn push_positive_external_id(external_ids: &mut Vec<ExternalId>, source: &str, value: Option<i64>) {
+    if let Some(value) = value.filter(|value| *value > 0) {
+        external_ids.push(ExternalId {
+            source: source.to_string(),
+            value: value.to_string(),
+        });
+    }
+}
+
+fn push_positive_imdb_external_id(external_ids: &mut Vec<ExternalId>, value: Option<i64>) {
+    let Some(imdb_id) = value
+        .filter(|value| *value > 0)
+        .and_then(|value| crate::normalize::normalize_imdb_id(&value.to_string()))
+    else {
+        return;
+    };
+    external_ids.push(ExternalId {
+        source: "imdb".to_string(),
+        value: imdb_id,
+    });
 }
 
 /// Build a [`HydrationResult`] from an already-fetched [`MovieMetadata`].
@@ -93,6 +139,12 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
             value: anidb_id.to_string(),
         });
     }
+    if let Some(tmdb_id) = movie.tmdb_id {
+        extra_external_ids.push(scryer_domain::ExternalId {
+            source: "tmdb".into(),
+            value: tmdb_id.to_string(),
+        });
+    }
 
     let update = TitleMetadataUpdate {
         name: non_empty(movie.name),
@@ -108,7 +160,8 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
         } else {
             None
         },
-        genres: movie.genres,
+        popularity: movie.popularity.filter(|value| value.is_finite()),
+        canonical_tags: movie.canonical_tags,
         content_status: non_empty(movie.content_status),
         language: non_empty(movie.language),
         first_aired: None,
@@ -119,6 +172,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
         metadata_language: Some(language.to_string()),
         metadata_fetched_at: Some(Utc::now().to_rfc3339()),
         digital_release_date: movie.tmdb_release_date,
+        ratings: Some(movie.ratings),
         extra_external_ids,
         ..Default::default()
     };
@@ -128,6 +182,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
         episodes: vec![],
         anime_mappings: vec![],
         anime_movies: vec![],
+        more_like_this: vec![],
     }
 }
 
@@ -148,7 +203,7 @@ pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> Hyd
         } else {
             None
         },
-        genres: series.genres,
+        canonical_tags: series.canonical_tags,
         content_status: non_empty(series.content_status),
         language: None,
         first_aired: non_empty(series.first_aired),
@@ -159,6 +214,7 @@ pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> Hyd
         tagged_aliases: series.tagged_aliases,
         metadata_language: Some(language.to_string()),
         metadata_fetched_at: Some(Utc::now().to_rfc3339()),
+        ratings: Some(series.ratings),
         extra_external_ids,
         ..Default::default()
     };
@@ -168,6 +224,7 @@ pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> Hyd
         episodes: series.episodes,
         anime_mappings: series.anime_mappings,
         anime_movies: series.anime_movies,
+        more_like_this: vec![],
     }
 }
 
@@ -241,6 +298,7 @@ mod tests {
 
     fn test_series(anime_mappings: Vec<AnimeMapping>) -> SeriesMetadata {
         SeriesMetadata {
+            target_key: None,
             tvdb_id: 12345,
             name: "Sword Art Online".to_string(),
             sort_name: "Sword Art Online".to_string(),
@@ -254,32 +312,76 @@ mod tests {
             poster_url: String::new(),
             background_url: None,
             country: String::new(),
-            genres: vec![],
+            canonical_tags: vec![],
             aliases: vec![],
             tagged_aliases: vec![],
             seasons: vec![],
             episodes: vec![],
             anime_mappings,
             anime_movies: vec![],
+            ratings: Default::default(),
         }
     }
 
     #[test]
-    fn series_hydration_uses_primary_anime_mapping_for_title_level_anidb() {
+    fn series_hydration_uses_primary_anime_mapping_for_title_level_external_ids() {
+        let mut secondary_mapping = anime_mapping("S", Some(9999));
+        secondary_mapping.mal_id = Some(999);
+        let mut primary_mapping = anime_mapping("R", Some(15146));
+        primary_mapping.mal_id = Some(111_001);
+        primary_mapping.anilist_id = Some(222_002);
+        primary_mapping.kitsu_id = Some(444_004);
+        primary_mapping.simkl_id = Some(555_005);
+        primary_mapping.thetvdb_id = Some(12345);
+        primary_mapping.themoviedb_id = Some(666_006);
+        primary_mapping.imdb_id = Some(777_007);
+        primary_mapping.trakt_id = Some(888_008);
+
         let result = series_to_hydration_result(
-            test_series(vec![
-                anime_mapping("S", Some(9999)),
-                anime_mapping("R", Some(15146)),
-            ]),
+            test_series(vec![secondary_mapping, primary_mapping]),
             "eng",
         );
 
         assert_eq!(
             result.metadata_update.extra_external_ids,
-            vec![ExternalId {
-                source: "anidb".to_string(),
-                value: "15146".to_string(),
-            }]
+            vec![
+                ExternalId {
+                    source: "mal".to_string(),
+                    value: "111001".to_string(),
+                },
+                ExternalId {
+                    source: "anilist".to_string(),
+                    value: "222002".to_string(),
+                },
+                ExternalId {
+                    source: "anidb".to_string(),
+                    value: "15146".to_string(),
+                },
+                ExternalId {
+                    source: "kitsu".to_string(),
+                    value: "444004".to_string(),
+                },
+                ExternalId {
+                    source: "simkl".to_string(),
+                    value: "555005".to_string(),
+                },
+                ExternalId {
+                    source: "tvdb".to_string(),
+                    value: "12345".to_string(),
+                },
+                ExternalId {
+                    source: "tmdb".to_string(),
+                    value: "666006".to_string(),
+                },
+                ExternalId {
+                    source: "imdb".to_string(),
+                    value: "tt777007".to_string(),
+                },
+                ExternalId {
+                    source: "trakt".to_string(),
+                    value: "888008".to_string(),
+                },
+            ]
         );
     }
 

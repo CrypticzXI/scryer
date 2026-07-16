@@ -118,6 +118,7 @@ impl AppUseCase {
         limit: usize,
         offset: usize,
         include_external_ids: bool,
+        include_catalog_counts: bool,
     ) -> AppResult<crate::TitleCatalogResult> {
         let mut library_ids = self
             .authorized_library_ids(actor, facet.clone(), scryer_domain::LibraryPermission::View)
@@ -148,7 +149,40 @@ impl AppUseCase {
                 limit,
                 offset,
                 include_external_ids,
+                include_catalog_counts,
             )
+            .await
+    }
+
+    pub async fn title_catalog_filter_options(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        requested_library_ids: Option<Vec<String>>,
+        root_folder_ids: Vec<String>,
+    ) -> AppResult<crate::TitleCatalogFilterOptions> {
+        let mut library_ids = self
+            .authorized_library_ids(actor, facet.clone(), scryer_domain::LibraryPermission::View)
+            .await?;
+        let requested_library_ids = requested_library_ids
+            .as_ref()
+            .map(|requested| {
+                requested
+                    .iter()
+                    .map(|library_id| library_id.trim())
+                    .filter(|library_id| !library_id.is_empty())
+                    .map(str::to_owned)
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        if !requested_library_ids.is_empty() {
+            library_ids.retain(|library_id| requested_library_ids.contains(library_id));
+        }
+
+        self.services
+            .catalog
+            .titles
+            .title_catalog_filter_options(facet, &library_ids, &root_folder_ids)
             .await
     }
 
@@ -274,14 +308,6 @@ impl AppUseCase {
                 scryer_domain::LibraryPermission::View,
             )
             .await?;
-        let library_name_by_id = authorized_libraries
-            .iter()
-            .map(|library| (library.id.clone(), library.name.clone()))
-            .collect::<HashMap<_, _>>();
-        let library_slug_by_id = authorized_libraries
-            .iter()
-            .map(|library| (library.id.clone(), library.slug.clone()))
-            .collect::<HashMap<_, _>>();
         let mut library_ids = authorized_libraries
             .iter()
             .map(|library| library.id.clone())
@@ -300,6 +326,37 @@ impl AppUseCase {
         if !requested_library_ids.is_empty() {
             library_ids.retain(|library_id| requested_library_ids.contains(library_id));
         }
+        self.compute_cutoff_unmet_items(facet, Some(library_ids))
+            .await
+    }
+
+    /// Actor-less core of the cutoff-unmet derivation (RFC 119 §D1): scopes
+    /// whose primary file sits strictly below the effective profile cutoff.
+    /// The convergence cursor derives upgrade targets from every library
+    /// (`library_filter: None`); the API path passes the actor's authorized
+    /// subset.
+    pub(crate) async fn compute_cutoff_unmet_items(
+        &self,
+        facet: Option<MediaFacet>,
+        library_filter: Option<Vec<String>>,
+    ) -> AppResult<Vec<CutoffUnmetItem>> {
+        let mut libraries = self.services.catalog.libraries.list(facet.clone()).await?;
+        if let Some(filter) = library_filter {
+            let allowed: HashSet<String> = filter.into_iter().collect();
+            libraries.retain(|library| allowed.contains(&library.id));
+        }
+        let library_name_by_id = libraries
+            .iter()
+            .map(|library| (library.id.clone(), library.name.clone()))
+            .collect::<HashMap<_, _>>();
+        let library_slug_by_id = libraries
+            .iter()
+            .map(|library| (library.id.clone(), library.slug.clone()))
+            .collect::<HashMap<_, _>>();
+        let library_ids = libraries
+            .iter()
+            .map(|library| library.id.clone())
+            .collect::<Vec<_>>();
         let titles = self
             .services
             .catalog
@@ -486,6 +543,91 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// RFC 119 bounded view: one page of cutoff-unmet targets plus the full
+    /// count. Computes the unmet set then slices — this bounds what reaches the
+    /// browser (the immediate large-library pain); paging the server-side
+    /// compute is a follow-up. `limit == 0` returns just the total with no items.
+    pub async fn list_cutoff_unmet_titles_page(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        requested_library_ids: Option<Vec<String>>,
+        limit: usize,
+        offset: usize,
+    ) -> AppResult<CutoffUnmetPage> {
+        let all = self
+            .list_cutoff_unmet_titles(actor, facet, requested_library_ids)
+            .await?;
+        let total = all.len();
+        let items = all.into_iter().skip(offset).take(limit).collect();
+        Ok(CutoffUnmetPage { items, total })
+    }
+
+    /// One page of cutoff-unmet targets plus per-item convergence progress (RFC 119
+    /// §6/§7). The page's convergence is derived in one batched coverage round-trip,
+    /// so the Upgrades table shows the same convergence state as the derived
+    /// Missing/Upgrades views.
+    pub async fn list_cutoff_unmet_titles_page_with_convergence(
+        &self,
+        actor: &User,
+        facet: Option<MediaFacet>,
+        requested_library_ids: Option<Vec<String>>,
+        limit: usize,
+        offset: usize,
+    ) -> AppResult<(
+        Vec<(CutoffUnmetItem, crate::WantedViewConvergence)>,
+        usize,
+    )> {
+        let page = self
+            .list_cutoff_unmet_titles_page(actor, facet, requested_library_ids, limit, offset)
+            .await?;
+        let total = page.total;
+
+        let scopes: Vec<(String, String)> = page
+            .items
+            .iter()
+            .filter_map(|item| {
+                let scope = crate::contracts::SubmissionScope::from_persisted(
+                    &item.title_id,
+                    item.episode_id.clone(),
+                    None,
+                    None,
+                    None,
+                );
+                crate::acquisition::convergence::convergence_scope_key(&scope, &item.title_id)
+                    .map(|key| (item.title_id.clone(), key))
+            })
+            .collect();
+        let convergence = self.page_convergence_by_scope_key(&scopes).await;
+
+        let items = page
+            .items
+            .into_iter()
+            .map(|item| {
+                let scope = crate::contracts::SubmissionScope::from_persisted(
+                    &item.title_id,
+                    item.episode_id.clone(),
+                    None,
+                    None,
+                    None,
+                );
+                let convergence = crate::acquisition::convergence::convergence_scope_key(
+                    &scope,
+                    &item.title_id,
+                )
+                .and_then(|key| convergence.get(&key).copied())
+                .unwrap_or(crate::WantedViewConvergence {
+                    state: crate::WantedConvergenceState::Converged,
+                    indexers_covered: 0,
+                    indexers_routed: 0,
+                });
+                (item, convergence)
+            })
+            .collect();
+        Ok((items, total))
+    }
+}
+impl AppUseCase {
     pub(crate) async fn default_media_root_for_title(
         &self,
         title: &scryer_domain::Title,
@@ -525,6 +667,31 @@ impl AppUseCase {
         let created = self
             .create_title_without_hydration_in_library(actor, request, library_id)
             .await?;
+        self.finish_add_title_with_outcome(created).await
+    }
+
+    pub(crate) async fn add_title_and_bind_pending_import_with_outcome_in_library(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+        pending_import_id: &str,
+    ) -> AppResult<AddTitleOutcome> {
+        let created = self
+            .create_title_without_hydration_and_bind_pending_import_in_library(
+                actor,
+                request,
+                library_id,
+                pending_import_id,
+            )
+            .await?;
+        if created.reused_existing {
+            return Ok(AddTitleOutcome {
+                title: created.title,
+                metadata_hydration_state: AddTitleHydrationState::NotRequired,
+                reused_existing_title: true,
+            });
+        }
         self.finish_add_title_with_outcome(created).await
     }
 
@@ -806,22 +973,14 @@ impl AppUseCase {
 }
 impl AppUseCase {
     /// Canonical owner for the "this title should be actionable right now"
-    /// orchestration. Callers must route immediate acquisition seeding through
-    /// this helper instead of open-coding facet splits or wake-ups.
+    /// orchestration. The title's missing scopes are already in the derived
+    /// target set (and hot — it was just added), so acting immediately only
+    /// requires waking the convergence cycle.
     async fn sync_title_for_immediate_acquisition(&self, title: &Title) {
         if !title.monitored {
             return;
         }
-
-        let now = Utc::now();
-        if let Some(handler) = self.facet_registry.get(&title.facet) {
-            if handler.has_episodes() {
-                self.sync_wanted_series_inner(title, &now, true).await;
-            } else {
-                self.sync_wanted_movie_inner(title, &now, true).await;
-            }
-            self.runtime.acquisition.acquisition_wake.notify_one();
-        }
+        self.runtime.acquisition.acquisition_wake.notify_one();
     }
 }
 impl AppUseCase {
@@ -976,8 +1135,8 @@ impl AppUseCase {
             .await?;
         self.services
             .workflow
-            .wanted_items
-            .delete_wanted_items_for_title(title_id)
+            .acquisition_scope_states
+            .delete_acquisition_scope_states_for_title(title_id)
             .await?;
         self.services
             .workflow
@@ -1010,6 +1169,56 @@ impl AppUseCase {
             .await?;
         }
         Ok(title)
+    }
+}
+
+impl AppUseCase {
+    /// Batch variant of [`Self::get_title`]. Loads titles by id in one query and
+    /// silently drops ids the actor cannot `View` (missing/forbidden ids are
+    /// simply absent from the result), matching dataloader lookup semantics.
+    pub async fn get_titles_by_ids(&self, actor: &User, ids: &[String]) -> AppResult<Vec<Title>> {
+        self.get_titles_by_ids_with_permission(actor, ids, scryer_domain::LibraryPermission::View)
+            .await
+    }
+
+    /// Batch variant of [`Self::get_title_for_management`]. Silently drops ids the
+    /// actor cannot manage rather than erroring.
+    pub async fn get_titles_by_ids_for_management(
+        &self,
+        actor: &User,
+        ids: &[String],
+    ) -> AppResult<Vec<Title>> {
+        self.get_titles_by_ids_with_permission(
+            actor,
+            ids,
+            scryer_domain::LibraryPermission::ManageTitles,
+        )
+        .await
+    }
+
+    async fn get_titles_by_ids_with_permission(
+        &self,
+        actor: &User,
+        ids: &[String],
+        permission: scryer_domain::LibraryPermission,
+    ) -> AppResult<Vec<Title>> {
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, permission)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if allowed_library_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .services
+            .catalog
+            .titles
+            .get_by_ids(ids)
+            .await?
+            .into_iter()
+            .filter(|title| allowed_library_ids.contains(&title.library_id))
+            .collect())
     }
 }
 
@@ -1064,8 +1273,14 @@ impl AppUseCase {
         }
         if let Some(requested_library_slug) = library_slug {
             let normalized_slug = requested_library_slug.trim();
-            authorized_libraries
-                .retain(|library| library.slug.eq_ignore_ascii_case(normalized_slug));
+            if normalized_slug
+                .eq_ignore_ascii_case(scryer_domain::default_library_slug_for_facet(&facet))
+            {
+                authorized_libraries.retain(|library| library.is_default);
+            } else {
+                authorized_libraries
+                    .retain(|library| library.slug.eq_ignore_ascii_case(normalized_slug));
+            }
         }
         let library_ids = authorized_libraries
             .into_iter()

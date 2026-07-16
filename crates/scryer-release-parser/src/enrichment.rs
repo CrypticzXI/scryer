@@ -57,6 +57,7 @@ pub(crate) fn enrich_candidate(
 
     let mut enrichment = MetadataEnrichment::default();
     let mut language_context = LanguageScope::Auto;
+    let mut saw_bare_hdr = false;
 
     if let Some(tmdb_id) = parse_tmdb_id_from_tokens(&normalized_tokens) {
         enrichment.tmdb_id = Some(tmdb_id.to_string());
@@ -218,9 +219,11 @@ pub(crate) fn enrich_candidate(
         language_context = LanguageScope::Auto;
 
         if matches!(token, "DOVI" | "DV") || (token == "DOLBY" && next == Some("VISION")) {
+            // Dolby Vision alone (profile 5) has no fallback layer; an
+            // explicit HDR10/HDR10+ token is what marks a non-DV-compatible
+            // base. The quality gates rely on this distinction.
             enrichment.is_dolby_vision = true;
             enrichment.detected_hdr = true;
-            enrichment.has_hdr_fallback = true;
             index += usize::from(token == "DOLBY") + 1;
             continue;
         }
@@ -230,6 +233,12 @@ pub(crate) fn enrich_candidate(
             "HDR" | "HDR10" | "HDR10PLUS" | "HDR10+" | "HDR10P" | "HDRVIVID" | "HLG"
         ) {
             enrichment.detected_hdr = true;
+            if token == "HDR" {
+                saw_bare_hdr = true;
+            }
+            if token == "HDR10" {
+                enrichment.has_hdr_fallback = true;
+            }
             if matches!(token, "HDR10PLUS" | "HDR10+" | "HDR10P") {
                 enrichment.is_hdr10plus = true;
                 enrichment.has_hdr_fallback = true;
@@ -274,6 +283,13 @@ pub(crate) fn enrich_candidate(
     {
         enrichment.anime_version.get_or_insert(version);
         enrichment.is_proper_upload = true;
+    }
+
+    // "DV HDR" / "DoVi HDR" advertises a Dolby Vision release with an HDR10
+    // base layer, in either token order; a bare HDR token without DV carries
+    // no fallback meaning.
+    if saw_bare_hdr && enrichment.is_dolby_vision {
+        enrichment.has_hdr_fallback = true;
     }
 
     enrichment.fps = parse_fps(raw_input);
@@ -1053,34 +1069,68 @@ fn channel_pair_from_codec_prefix(prefix: &str, token: &str, next: Option<&str>)
 }
 
 fn parse_fps(raw_title: &str) -> Option<f32> {
+    // A number standing apart from the FPS word must be a standard frame rate;
+    // otherwise ordinary numerals get claimed ("Top.10.FPS.Games" is not
+    // 10fps). Fused forms ("60FPS") are explicit enough to accept any
+    // plausible rate.
+    const SEPARATED_FRAME_RATES: &[f32] = &[
+        23.976, 24.0, 25.0, 29.97, 30.0, 48.0, 50.0, 59.94, 60.0, 72.0, 90.0, 100.0, 120.0, 144.0,
+        165.0, 240.0, 300.0,
+    ];
     let upper = raw_title.to_ascii_uppercase();
-    let mut previous_numeric = None::<f32>;
-    for chunk in upper.split(|character: char| {
-        character.is_ascii_whitespace() || matches!(character, '[' | ']' | '(' | ')' | '{' | '}')
+    let mut previous = None::<String>;
+    let mut before_previous = None::<String>;
+    for part in upper.split(|character: char| {
+        character.is_ascii_whitespace()
+            || matches!(
+                character,
+                '[' | ']' | '(' | ')' | '{' | '}' | '.' | '_' | '-'
+            )
     }) {
-        let chunk = chunk.trim_matches(&['.', '-', '_', ' '] as &[_]);
-        if chunk.is_empty() {
+        if part.is_empty() {
             continue;
         }
-        if chunk == "FPS" {
-            if let Some(fps) = previous_numeric {
-                return Some(fps);
+        if part == "FPS" {
+            // Decimal rates split apart on the dot ("23.976" -> "23", "976"),
+            // so try the rejoined pair before the single value.
+            let rejoined = match (before_previous.as_deref(), previous.as_deref()) {
+                (Some(int_part), Some(frac_part)) => {
+                    format!("{int_part}.{frac_part}").parse::<f32>().ok()
+                }
+                _ => None,
+            };
+            let single = previous
+                .as_deref()
+                .and_then(|value| value.parse::<f32>().ok());
+            for candidate in [rejoined, single].into_iter().flatten() {
+                if SEPARATED_FRAME_RATES
+                    .iter()
+                    .any(|rate| (rate - candidate).abs() < 0.001)
+                {
+                    return Some(candidate);
+                }
             }
+            before_previous = None;
+            previous = None;
             continue;
         }
-        if let Some(value) = chunk.strip_suffix("FPS") {
+        if let Some(value) = part.strip_suffix("FPS") {
             if let Ok(fps) = value.parse::<f32>()
                 && (10.0..=300.0).contains(&fps)
             {
                 return Some(fps);
             }
-            previous_numeric = None;
+            before_previous = None;
+            previous = None;
             continue;
         }
-        previous_numeric = chunk
-            .parse::<f32>()
-            .ok()
-            .filter(|fps| (10.0..=300.0).contains(fps));
+        if part.bytes().all(|byte| byte.is_ascii_digit()) {
+            before_previous = previous.take();
+            previous = Some(part.to_string());
+        } else {
+            before_previous = None;
+            previous = None;
+        }
     }
     None
 }
@@ -1148,11 +1198,11 @@ fn extract_trailing_version(fragment: &str) -> Option<u32> {
     let upper = fragment.to_ascii_uppercase();
     let bytes = upper.as_bytes();
     let length = bytes.len();
-    if length >= 2 && bytes[length - 2] == b'V' {
-        let version = bytes[length - 1] - b'0';
-        if (2..=9).contains(&version) {
-            return Some(version as u32);
-        }
+    if length >= 2
+        && bytes[length - 2] == b'V'
+        && let digit @ b'2'..=b'9' = bytes[length - 1]
+    {
+        return Some(u32::from(digit - b'0'));
     }
     None
 }

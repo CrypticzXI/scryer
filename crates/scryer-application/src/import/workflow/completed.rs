@@ -34,6 +34,7 @@ async fn analyze_and_persist_imported_media_file(
                 analysis: Some(*analysis),
                 scan_error: None,
                 rule_file_doc: None,
+                audio_language_warning: None,
             }
         }
         Ok(crate::MediaAnalysisOutcome::Invalid(error)) => {
@@ -41,6 +42,7 @@ async fn analyze_and_persist_imported_media_file(
                 analysis: None,
                 scan_error: Some(error),
                 rule_file_doc: None,
+                audio_language_warning: None,
             }
         }
         Err(error) => {
@@ -55,6 +57,7 @@ async fn analyze_and_persist_imported_media_file(
                 analysis: None,
                 scan_error: Some(error.to_string()),
                 rule_file_doc: None,
+                audio_language_warning: None,
             }
         }
     };

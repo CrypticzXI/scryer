@@ -4,7 +4,7 @@ import type { ComponentProps } from "react";
 type TitlePosterProps = Omit<ComponentProps<"img">, "src"> & {
   /** Local AVIF URL (from posterUrl). */
   src?: string | null;
-  /** Original source JPG URL (from posterSourceUrl) — used as <img> fallback. */
+  /** Source JPG URL (from posterSourceUrl) — used as <img> fallback. */
   sourceSrc?: string | null;
 };
 
@@ -20,6 +20,8 @@ export function TitlePoster({
   sourceSrc,
   alt,
   onError,
+  loading = "lazy",
+  decoding = "async",
   ...props
 }: TitlePosterProps) {
   const avifUrl = src ?? undefined;
@@ -45,10 +47,26 @@ export function TitlePoster({
     return (
       <picture>
         <source srcSet={avifUrl} type="image/avif" />
-        <img src={sourceSrc} alt={alt} onError={handleError} {...props} />
+        <img
+          src={sourceSrc}
+          alt={alt}
+          loading={loading}
+          decoding={decoding}
+          onError={handleError}
+          {...props}
+        />
       </picture>
     );
   }
 
-  return <img src={fallbackUrl} alt={alt} onError={handleError} {...props} />;
+  return (
+    <img
+      src={fallbackUrl}
+      alt={alt}
+      loading={loading}
+      decoding={decoding}
+      onError={handleError}
+      {...props}
+    />
+  );
 }

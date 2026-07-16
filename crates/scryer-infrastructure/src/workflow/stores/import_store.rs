@@ -21,6 +21,14 @@ impl ImportStore {
     }
 }
 
+fn already_imported_status_predicate(datastore: &StoreDatastore) -> String {
+    let skip_reason = match datastore {
+        StoreDatastore::Sqlite { .. } => "json_extract(result_json, '$.skip_reason')".to_string(),
+        StoreDatastore::Postgres { .. } => "result_json #>> '{skip_reason}'".to_string(),
+    };
+    format!("(status = 'completed' OR (status = 'skipped' AND {skip_reason} = 'already_imported'))")
+}
+
 #[async_trait]
 impl ImportRepository for ImportStore {
     async fn queue_import_request(
@@ -224,14 +232,17 @@ impl ImportRepository for ImportStore {
     }
 
     async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool> {
+        let already_imported_predicate = already_imported_status_predicate(&self.datastore);
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
-            "SELECT COUNT(1) AS count
+            &format!(
+                "SELECT COUNT(1) AS count
              FROM imports
-             WHERE COALESCE(source_client_id, '') = {}
-               AND source_system = {}
-               AND source_ref = {}
-               AND status IN ('completed', 'skipped')",
+             WHERE COALESCE(source_client_id, '') = {{}}
+               AND source_system = {{}}
+               AND source_ref = {{}}
+               AND {already_imported_predicate}"
+            ),
             &[
                 SqlArg::Text(normalize_download_client_id(identity.client_id.as_deref())),
                 SqlArg::Text(identity.client_type.clone()),
@@ -257,14 +268,17 @@ impl ImportRepository for ImportStore {
             return Ok(false);
         };
 
+        let already_imported_predicate = already_imported_status_predicate(&self.datastore);
         let row = SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
-            "SELECT COUNT(1) AS count
+            &format!(
+                "SELECT COUNT(1) AS count
              FROM imports
-             WHERE status IN ('completed', 'skipped')
-               AND COALESCE(source_client_id, '') = {}
-               AND source_system = {}
-               AND download_id = {}",
+             WHERE {already_imported_predicate}
+               AND COALESCE(source_client_id, '') = {{}}
+               AND source_system = {{}}
+               AND download_id = {{}}"
+            ),
             &[
                 SqlArg::Text(normalize_download_client_id(
                     source_identity.client_id.as_deref(),

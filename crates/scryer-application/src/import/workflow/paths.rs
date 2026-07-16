@@ -578,12 +578,11 @@ async fn try_import_completed_downloads_with_policy(
     items: &[DownloadQueueItem],
     fetch_policy: CompletedDownloadFetchPolicy,
 ) -> HashSet<String> {
-    // TODO: increase to 600 (10 minutes) for production — large NAS copies can take a while
     match app
         .services
         .workflow
         .imports
-        .recover_stale_processing_imports(120)
+        .recover_stale_processing_imports(IMPORT_STALE_RECOVERY_SECONDS)
         .await
     {
         Ok(recovered) if recovered > 0 => {
@@ -1083,17 +1082,6 @@ fn parsed_release_from_file_stem(path: &Path) -> ParsedReleaseMetadata {
         .unwrap_or(fallback);
     normalize_release_title_signal(parse_release_metadata(stem.as_str()))
 }
-fn parsed_usable_release_from_file_stem(path: &Path) -> Option<ParsedReleaseMetadata> {
-    let fallback = path
-        .file_name()
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let stem = path
-        .file_stem()
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or(fallback);
-    parse_usable_release_title(stem.as_str())
-}
 fn parsed_release_from_folder_name(path: &Path) -> Option<ParsedReleaseMetadata> {
     path.file_name()
         .map(|value| value.to_string_lossy().into_owned())
@@ -1105,9 +1093,23 @@ fn parsed_release_from_folder_name(path: &Path) -> Option<ParsedReleaseMetadata>
 fn parsed_release_from_parent_folder(path: &Path) -> Option<ParsedReleaseMetadata> {
     path.parent().and_then(parsed_release_from_folder_name)
 }
+
 fn parsed_usable_release_from_parent_folder(path: &Path) -> Option<ParsedReleaseMetadata> {
     parsed_release_from_parent_folder(path).filter(has_usable_release_title_signal)
 }
+
+fn parsed_usable_release_from_file_stem(path: &Path) -> Option<ParsedReleaseMetadata> {
+    let fallback = path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or(fallback);
+    parse_usable_release_title(stem.as_str())
+}
+
 fn title_evidence_candidates_from_video_files(
     video_files: &[PathBuf],
 ) -> Vec<ParsedReleaseMetadata> {

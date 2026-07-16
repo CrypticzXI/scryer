@@ -1,0 +1,245 @@
+use std::time::Duration;
+
+use crate::{AppError, RateLimitCooldownAction};
+use scryer_outbound_http::OutboundHttpError;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RateLimitSignalSource {
+    AppTemporaryUnavailable,
+    OutboundHttpRateLimited,
+    RetryAfterText,
+    RetryAfterSecondsText,
+    RetryAfterHyphenText,
+    RetryAfterUnderscoreText,
+    RateLimitPhrase,
+    TooManyRequestsPhrase,
+    Http429Phrase,
+    Status429Phrase,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RateLimitSignal {
+    pub retry_after: Option<Duration>,
+    pub source: RateLimitSignalSource,
+    pub cooldown_action: RateLimitCooldownAction,
+    pub status_code: Option<u16>,
+    pub message: Option<String>,
+}
+
+impl RateLimitSignal {
+    pub fn from_error(error: &AppError) -> Option<Self> {
+        match error {
+            AppError::TemporaryUnavailable {
+                message,
+                retry_after,
+                rate_limit_cooldown,
+            } if *rate_limit_cooldown != RateLimitCooldownAction::None => Some(Self {
+                retry_after: *retry_after,
+                source: RateLimitSignalSource::AppTemporaryUnavailable,
+                cooldown_action: *rate_limit_cooldown,
+                status_code: status_code_from_text(message),
+                message: Some(message.clone()),
+            }),
+            AppError::TemporaryUnavailable {
+                rate_limit_cooldown: RateLimitCooldownAction::None,
+                ..
+            } => None,
+            _ => Self::from_text(&error.to_string()),
+        }
+    }
+
+    pub fn from_outbound_http_error(error: &OutboundHttpError) -> Option<Self> {
+        match error {
+            OutboundHttpError::RateLimited(rate_limited) => Some(Self {
+                retry_after: rate_limited.retry_after,
+                source: RateLimitSignalSource::OutboundHttpRateLimited,
+                cooldown_action: RateLimitCooldownAction::AlreadyRecorded,
+                status_code: Some(429),
+                message: Some(format!(
+                    "outbound HTTP rate limited for {}",
+                    rate_limited.request_label
+                )),
+            }),
+            OutboundHttpError::Transport { .. } => None,
+        }
+    }
+
+    pub fn from_text(message: &str) -> Option<Self> {
+        if let Some((retry_after, source)) = retry_after_from_text(message) {
+            return Some(Self {
+                retry_after: Some(retry_after),
+                source,
+                cooldown_action: RateLimitCooldownAction::RecordFallback,
+                status_code: status_code_from_text(message),
+                message: Some(message.to_string()),
+            });
+        }
+
+        let lower = message.to_ascii_lowercase();
+        let source = if lower.contains("too many requests") {
+            RateLimitSignalSource::TooManyRequestsPhrase
+        } else if contains_status_marker(&lower, "http 429") {
+            RateLimitSignalSource::Http429Phrase
+        } else if contains_status_marker(&lower, "status 429") {
+            RateLimitSignalSource::Status429Phrase
+        } else if lower.contains("rate limit") || lower.contains("rate-limit") {
+            RateLimitSignalSource::RateLimitPhrase
+        } else {
+            return None;
+        };
+
+        Some(Self {
+            retry_after: None,
+            source,
+            cooldown_action: RateLimitCooldownAction::RecordFallback,
+            status_code: status_code_from_text(message),
+            message: Some(message.to_string()),
+        })
+    }
+}
+
+fn status_code_from_text(message: &str) -> Option<u16> {
+    for marker in ["http ", "status "] {
+        let lower = message.to_ascii_lowercase();
+        for (index, _) in lower.match_indices(marker) {
+            let digits = lower[index + marker.len()..]
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>();
+            if let Ok(status) = digits.parse::<u16>() {
+                return Some(status);
+            }
+        }
+    }
+    None
+}
+
+fn contains_status_marker(message: &str, marker: &str) -> bool {
+    message.match_indices(marker).any(|(index, _)| {
+        message[index + marker.len()..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !ch.is_ascii_digit())
+    })
+}
+
+fn retry_after_from_text(message: &str) -> Option<(Duration, RateLimitSignalSource)> {
+    let lower = message.to_ascii_lowercase();
+    for (marker, source) in [
+        (
+            "retry_after_seconds=",
+            RateLimitSignalSource::RetryAfterSecondsText,
+        ),
+        ("retry after", RateLimitSignalSource::RetryAfterText),
+        ("retry-after", RateLimitSignalSource::RetryAfterHyphenText),
+        (
+            "retry_after",
+            RateLimitSignalSource::RetryAfterUnderscoreText,
+        ),
+    ] {
+        let Some(index) = lower.find(marker) else {
+            continue;
+        };
+        let suffix = lower[index + marker.len()..].trim_start_matches([':', '=', ' ', '_']);
+        let digits = suffix
+            .chars()
+            .skip_while(|ch| !ch.is_ascii_digit())
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>();
+        if let Ok(seconds) = digits.parse::<u64>()
+            && seconds > 0
+        {
+            return Some((Duration::from_secs(seconds), source));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_retry_after_seconds_from_flattened_plugin_errors() {
+        let signal = RateLimitSignal::from_text("HTTP 429: rate limited; retry_after_seconds=900")
+            .expect("retry after should parse");
+        assert_eq!(signal.retry_after, Some(Duration::from_secs(900)));
+        assert_eq!(signal.source, RateLimitSignalSource::RetryAfterSecondsText);
+
+        let signal = RateLimitSignal::from_text("Prowlarr rate limited (retry after 120s)")
+            .expect("Prowlarr retry after should parse");
+        assert_eq!(signal.retry_after, Some(Duration::from_secs(120)));
+        assert_eq!(signal.source, RateLimitSignalSource::RetryAfterText);
+    }
+
+    #[test]
+    fn detects_rate_limits_without_retry_after() {
+        let signal =
+            RateLimitSignal::from_text("HTTP 429: too many requests").expect("429 should parse");
+        assert_eq!(signal.retry_after, None);
+        assert_eq!(signal.status_code, Some(429));
+        assert_eq!(signal.source, RateLimitSignalSource::TooManyRequestsPhrase);
+    }
+
+    #[test]
+    fn does_not_match_bare_429_substrings() {
+        assert!(RateLimitSignal::from_text("release title contains 429").is_none());
+        assert!(RateLimitSignal::from_text("provider returned id 429001").is_none());
+        assert!(RateLimitSignal::from_text("provider returned HTTP 429001").is_none());
+    }
+
+    #[test]
+    fn preserves_typed_temporary_unavailable_retry_after() {
+        let signal = RateLimitSignal::from_error(&AppError::rate_limited_temporary_unavailable(
+            "provider temporarily unavailable",
+            Some(Duration::from_secs(45)),
+            RateLimitCooldownAction::RecordFallback,
+        ))
+        .expect("typed retry-after should be preserved");
+
+        assert_eq!(signal.retry_after, Some(Duration::from_secs(45)));
+        assert_eq!(
+            signal.cooldown_action,
+            RateLimitCooldownAction::RecordFallback
+        );
+        assert_eq!(
+            signal.source,
+            RateLimitSignalSource::AppTemporaryUnavailable
+        );
+    }
+
+    #[test]
+    fn plain_temporary_unavailable_is_not_a_rate_limit_signal() {
+        assert!(
+            RateLimitSignal::from_error(&AppError::temporary_unavailable(
+                "provider temporarily unavailable",
+                Some(Duration::from_secs(45)),
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn preserves_typed_outbound_http_retry_after() {
+        let error = OutboundHttpError::RateLimited(scryer_outbound_http::RateLimitedError {
+            scope: scryer_outbound_http::RateLimitScopeKey::from("plugin:artifact"),
+            retry_after: Some(Duration::from_secs(75)),
+            attempts: 1,
+            retry_after_source: scryer_outbound_http::RetryAfterSource::Seconds,
+            request_label: std::borrow::Cow::Borrowed("plugin artifact"),
+        });
+        let signal = RateLimitSignal::from_outbound_http_error(&error)
+            .expect("typed outbound rate limit should be preserved");
+
+        assert_eq!(signal.retry_after, Some(Duration::from_secs(75)));
+        assert_eq!(signal.status_code, Some(429));
+        assert_eq!(
+            signal.cooldown_action,
+            RateLimitCooldownAction::AlreadyRecorded
+        );
+        assert_eq!(
+            signal.source,
+            RateLimitSignalSource::OutboundHttpRateLimited
+        );
+    }
+}

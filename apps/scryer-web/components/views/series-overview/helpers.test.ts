@@ -6,7 +6,7 @@ import type {
   SeriesMovieLink,
   TitleCollection,
 } from "@/components/containers/series-overview-container";
-import { buildSeriesTimelineItems } from "./helpers.ts";
+import { buildSeriesTimelineItems, seasonHeading } from "./helpers.ts";
 
 function collection(
   id: string,
@@ -25,6 +25,9 @@ function collection(
     firstEpisodeNumber: null,
     lastEpisodeNumber: null,
     monitored: true,
+    episodesOwned: null,
+    episodesMonitored: null,
+    episodesTotal: null,
     episodes: [],
     createdAt: "2026-01-01T00:00:00Z",
   };
@@ -43,7 +46,6 @@ function movieEntity(id: string, title: string): MovieEntity {
     language: null,
     runtimeMinutes: 60,
     contentStatus: null,
-    genres: [],
     studio: null,
     digitalReleaseDate: null,
     imdbId: null,
@@ -104,6 +106,38 @@ test("buildSeriesTimelineItems keeps specials-placement movies above Specials", 
   );
 
   assert.deepEqual(itemIds(items), ["season-1", "movie-specials", "specials"]);
+});
+
+test("seasonHeading localizes Specials regardless of an upstream label", () => {
+  const t = (
+    key: string,
+    values?: Record<string, string | number | boolean | null | undefined>,
+  ) =>
+    key === "title.specials"
+      ? "Specials"
+      : `Season ${String(values?.number ?? "")}`.trim();
+
+  assert.equal(
+    seasonHeading(
+      { ...collection("specials", "0", "SPECIALS"), label: "特別編" },
+      t,
+    ),
+    "Specials",
+  );
+  assert.equal(
+    seasonHeading(
+      { ...collection("season-zero", "0", "SEASON"), label: "特別編" },
+      t,
+    ),
+    "Specials",
+  );
+  assert.equal(
+    seasonHeading(
+      { ...collection("season-2", "2"), label: "Hidden Inventory" },
+      t,
+    ),
+    "Season 2: Hidden Inventory",
+  );
 });
 
 test("buildSeriesTimelineItems ignores linked S00 episode for movie placement", () => {

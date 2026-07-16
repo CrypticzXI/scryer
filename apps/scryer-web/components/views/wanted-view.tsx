@@ -1,18 +1,25 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { FilterChipButton } from "@/components/common/filter-chip-button";
+import { Link } from "react-router-dom";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { Translate } from "@/components/root/types";
+import { buildViewPath } from "@/lib/utils/routing";
+import { formatUiDateTime } from "@/lib/utils/date-format";
+import { wantedItemRowId, wantedItemSearchNowId } from "@/lib/utils/dom-ids";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { IconButton } from "@/components/ui/icon-button";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
   Table,
+  TableActionsCell,
+  TableActionsHead,
   TableBody,
   TableCell,
+  TableCodeCell,
   TableHead,
   TableHeader,
   TableRow,
@@ -20,8 +27,11 @@ import {
 import {
   ChevronDown,
   ChevronRight,
+  Clock,
   Download,
-  Filter,
+  Gauge,
+  History,
+  ListChecks,
   Pause,
   Play,
   RefreshCw,
@@ -29,23 +39,30 @@ import {
   Search,
   X,
 } from "lucide-react";
+import { ConvergenceBadge } from "@/components/views/convergence-badge";
 import { CutoffUnmetView } from "@/components/views/cutoff-unmet-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
 import type {
+  AcquisitionSearchJob,
   PendingReleaseItem,
+  PendingReleaseStatus,
   LibraryRecord,
   Release,
   ReleaseDecisionItem,
   TitleRecord,
   WantedItem,
   WantedMediaType,
-  WantedSearchPhase,
   WantedStatus,
 } from "@/lib/types";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 
 type CutoffUnmetViewState = {
   items: CutoffUnmetItem[];
+  total: number;
+  offset: number;
+  setOffset: (v: number) => void;
+  limit: number;
   loading: boolean;
   facetFilter: string | undefined;
   setFacetFilter: (v: string | undefined) => void;
@@ -57,25 +74,19 @@ type CutoffUnmetViewState = {
   interactiveSearchingId: string | null;
   activeInteractiveItemId: string | null;
   searchResultsByItemId: Record<string, Release[]>;
-  bulkSearching: boolean;
-  bulkProgress: { current: number; total: number } | null;
+  searchJob: AcquisitionSearchJob | null;
+  searchJobStarting: boolean;
   triggerAutoSearch: (item: CutoffUnmetItem) => Promise<void>;
   triggerInteractiveSearch: (item: CutoffUnmetItem) => Promise<void>;
   queueRelease: (item: CutoffUnmetItem, release: Release) => Promise<void>;
   triggerBulkSearch: () => void;
-  cancelBulkSearch: () => void;
+  cancelBulkSearch: () => Promise<void>;
 };
 
 type WantedViewState = {
   items: WantedItem[];
   total: number;
   loading: boolean;
-  statusFilters: WantedStatus[];
-  setStatusFilters: (v: WantedStatus[]) => void;
-  mediaTypeFilters: WantedMediaType[];
-  setMediaTypeFilters: (v: WantedMediaType[]) => void;
-  latestDecisionCodeFilters: string[];
-  setLatestDecisionCodeFilters: (v: string[]) => void;
   selectedTitle: TitleRecord | null;
   setSelectedTitle: (title: TitleRecord | null) => void;
   libraries: LibraryRecord[];
@@ -93,202 +104,8 @@ type WantedViewState = {
   triggerSearch: (id: string) => Promise<void>;
   pauseItem: (id: string) => Promise<void>;
   resumeItem: (id: string) => Promise<void>;
-  resetItem: (id: string) => Promise<void>;
   triggerMismatchRecovery: (titleId: string) => Promise<void>;
 };
-
-const STATUS_OPTIONS: WantedStatus[] = ["wanted", "grabbed", "completed", "paused"];
-const MEDIA_TYPE_OPTIONS: WantedMediaType[] = ["movie", "episode", "series_movie"];
-const LATEST_DECISION_OPTIONS = [
-  "title_mismatch",
-  "quality_blocked",
-  "upgrade_rejected",
-  "pending_delay",
-  "already_active",
- ] as const;
-
-type WantedFilterOption<T extends string> = {
-  value: T;
-  label: string;
-};
-
-function normalizeMultiSelectValues<T extends string>(
-  selectedValues: T[],
-  allValues: readonly T[],
-): T[] {
-  const selectedSet = new Set(selectedValues);
-  const normalized = allValues.filter((value) => selectedSet.has(value));
-  return normalized.length === 0 || normalized.length === allValues.length ? [] : normalized;
-}
-
-function toggleMultiSelectValue<T extends string>(
-  selectedValues: T[],
-  value: T,
-  allValues: readonly T[],
-): T[] {
-  const selectedSet = new Set(selectedValues.length > 0 ? selectedValues : allValues);
-  if (selectedSet.has(value)) {
-    selectedSet.delete(value);
-  } else {
-    selectedSet.add(value);
-  }
-
-  return normalizeMultiSelectValues(Array.from(selectedSet), allValues);
-}
-
-function WantedFilterSection<T extends string>({
-  title,
-  allLabel,
-  options,
-  selectedValues,
-  onSelectedValuesChange,
-}: {
-  title: string;
-  allLabel: string;
-  options: WantedFilterOption<T>[];
-  selectedValues: T[];
-  onSelectedValuesChange: (values: T[]) => void;
-}) {
-  const implicitAllSelected = selectedValues.length === 0;
-
-  return (
-    <div className="flex flex-col gap-2">
-      <p className="text-xs font-medium text-muted-foreground">{title}</p>
-      <div className="flex flex-col gap-1">
-        <button
-          type="button"
-          onClick={() => onSelectedValuesChange([])}
-          className="flex items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-accent/50"
-        >
-          <Checkbox checked={implicitAllSelected} className="pointer-events-none" />
-          <span>{allLabel}</span>
-        </button>
-        {options.map((option) => {
-          const checked = implicitAllSelected || selectedValues.includes(option.value);
-          const implicitChecked = implicitAllSelected && !selectedValues.includes(option.value);
-          return (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() =>
-                onSelectedValuesChange(
-                  toggleMultiSelectValue(
-                    selectedValues,
-                    option.value,
-                    options.map((entry) => entry.value),
-                  ),
-                )
-              }
-              className="flex items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-accent/50"
-            >
-              <Checkbox
-                checked={checked}
-                className={[
-                  "pointer-events-none",
-                  implicitChecked
-                    ? "data-[state=checked]:border-muted-foreground/30 data-[state=checked]:bg-muted data-[state=checked]:text-muted-foreground"
-                    : "",
-                ].join(" ")}
-              />
-              <span className={implicitChecked ? "text-muted-foreground" : undefined}>
-                {option.label}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function WantedFiltersPopover({
-  statusFilters,
-  setStatusFilters,
-  mediaTypeFilters,
-  setMediaTypeFilters,
-  latestDecisionCodeFilters,
-  setLatestDecisionCodeFilters,
-  onFilterChange,
-}: {
-  statusFilters: WantedStatus[];
-  setStatusFilters: (values: WantedStatus[]) => void;
-  mediaTypeFilters: WantedMediaType[];
-  setMediaTypeFilters: (values: WantedMediaType[]) => void;
-  latestDecisionCodeFilters: string[];
-  setLatestDecisionCodeFilters: (values: string[]) => void;
-  onFilterChange: () => void;
-}) {
-  const t = useTranslate();
-
-  const activeFilterCount =
-    statusFilters.length + mediaTypeFilters.length + latestDecisionCodeFilters.length;
-  const statusOptions = STATUS_OPTIONS.map((value) => ({
-    value,
-    label: formatWantedStatus(value, t),
-  }));
-  const mediaTypeOptions = MEDIA_TYPE_OPTIONS.map((value) => ({
-    value,
-    label: formatWantedMediaType(value, t),
-  }));
-  const latestDecisionOptions = LATEST_DECISION_OPTIONS.map((value) => ({
-    value,
-    label: formatWantedDecisionCode(value, t),
-  }));
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <FilterChipButton
-          selected={activeFilterCount > 0}
-          onClick={() => undefined}
-          icon={<Filter className="h-3.5 w-3.5" />}
-          className="w-full justify-between sm:w-auto"
-        >
-          <span>{t("label.filters")}</span>
-          {activeFilterCount > 0 ? (
-            <span className="rounded-full bg-background/20 px-1.5 py-0.5 text-[11px] leading-none">
-              {activeFilterCount}
-            </span>
-          ) : null}
-        </FilterChipButton>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 p-3">
-        <div className="flex flex-col gap-4">
-          <WantedFilterSection
-            title={t("wanted.filterStatus")}
-            allLabel={t("wanted.allStatuses")}
-            options={statusOptions}
-            selectedValues={statusFilters}
-            onSelectedValuesChange={(values) => {
-              setStatusFilters(values);
-              onFilterChange();
-            }}
-          />
-          <WantedFilterSection
-            title={t("wanted.filterMediaType")}
-            allLabel={t("wanted.allTypes")}
-            options={mediaTypeOptions}
-            selectedValues={mediaTypeFilters}
-            onSelectedValuesChange={(values) => {
-              setMediaTypeFilters(values);
-              onFilterChange();
-            }}
-          />
-          <WantedFilterSection
-            title={t("wanted.filterLatestDecision")}
-            allLabel={t("wanted.allDecisions")}
-            options={latestDecisionOptions}
-            selectedValues={latestDecisionCodeFilters}
-            onSelectedValuesChange={(values) => {
-              setLatestDecisionCodeFilters(values);
-              onFilterChange();
-            }}
-          />
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
 
 type ReleaseDecisionExplanationEntry = {
   code: string;
@@ -297,32 +114,21 @@ type ReleaseDecisionExplanationEntry = {
 
 function formatWantedMediaType(mediaType: WantedMediaType, t: Translate) {
   const key: Record<WantedMediaType, string> = {
-    movie: "wanted.type.movie",
-    episode: "wanted.type.episode",
-    series_movie: "wanted.type.seriesMovie",
+    MOVIE: "wanted.type.movie",
+    EPISODE: "wanted.type.episode",
+    SERIES_MOVIE: "wanted.type.seriesMovie",
   };
   return t(key[mediaType]);
 }
 
 function formatWantedStatus(status: WantedStatus, t: Translate) {
   const key: Record<WantedStatus, string> = {
-    wanted: "wanted.status.wanted",
-    grabbed: "wanted.status.grabbed",
-    completed: "wanted.status.completed",
-    paused: "wanted.status.paused",
+    WANTED: "wanted.status.wanted",
+    GRABBED: "wanted.status.grabbed",
+    COMPLETED: "wanted.status.completed",
+    PAUSED: "wanted.status.paused",
   };
   return t(key[status]);
-}
-
-function formatWantedPhase(phase: WantedSearchPhase, t: Translate) {
-  const key: Record<WantedSearchPhase, string> = {
-    primary: "wanted.phase.primary",
-    pre_release: "wanted.phase.preRelease",
-    pre_air: "wanted.phase.preAir",
-    secondary: "wanted.phase.secondary",
-    long_tail: "wanted.phase.longTail",
-  };
-  return t(key[phase]);
 }
 
 function formatWantedDecisionCode(code: string, t: Translate) {
@@ -343,15 +149,15 @@ function formatWantedDecisionCode(code: string, t: Translate) {
 }
 
 function wantedItemContext(item: WantedItem, t: Translate) {
-  if (item.mediaType === "series_movie") {
+  if (item.mediaType === "SERIES_MOVIE") {
     return t("wanted.context.seriesMovie");
   }
-  if (item.mediaType === "episode" && item.seasonNumber) {
+  if (item.mediaType === "EPISODE" && item.seasonNumber) {
     return t("wanted.context.seasonEpisode", {
       seasonNumber: item.seasonNumber,
     });
   }
-  if (item.mediaType === "episode") {
+  if (item.mediaType === "EPISODE") {
     return t("wanted.context.episode");
   }
   return t("wanted.context.movie");
@@ -386,7 +192,7 @@ function wantedItemOverviewTarget(item: WantedItem): OverviewTitleTarget | null 
 }
 
 function formatWantedEpisodeCode(item: WantedItem): string | null {
-  if (item.mediaType !== "episode") {
+  if (item.mediaType !== "EPISODE") {
     return null;
   }
 
@@ -405,10 +211,10 @@ function wantedItemSubtitle(item: WantedItem, t: Translate): string {
 
 function statusBadge(status: WantedStatus, t: Translate) {
   const colors: Record<WantedStatus, string> = {
-    wanted: "bg-blue-500/20 text-blue-400",
-    grabbed: "bg-amber-500/20 text-amber-400",
-    completed: "bg-green-500/20 text-green-400",
-    paused: "bg-muted text-muted-foreground",
+    WANTED: "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]",
+    GRABBED: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
+    COMPLETED: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
+    PAUSED: "bg-muted text-muted-foreground",
   };
   return (
     <span
@@ -419,38 +225,21 @@ function statusBadge(status: WantedStatus, t: Translate) {
   );
 }
 
-function phaseBadge(phase: WantedSearchPhase, t: Translate) {
-  const colors: Record<WantedSearchPhase, string> = {
-    primary: "bg-green-500/20 text-green-400",
-    pre_release: "bg-purple-500/20 text-purple-400",
-    pre_air: "bg-purple-500/20 text-purple-400",
-    secondary: "bg-yellow-500/20 text-yellow-400",
-    long_tail: "bg-muted text-muted-foreground",
-  };
-  return (
-    <span
-      className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${colors[phase] ?? "bg-muted text-muted-foreground"}`}
-    >
-      {formatWantedPhase(phase, t)}
-    </span>
-  );
-}
-
 function decisionBadge(code: string, t: Translate) {
   const colors: Record<string, string> = {
-    eligible: "bg-green-500/20 text-green-400",
-    title_mismatch: "bg-red-500/20 text-red-400",
-    quality_blocked: "bg-red-500/20 text-red-400",
-    upgrade_rejected: "bg-amber-500/20 text-amber-400",
-    pending_delay: "bg-yellow-500/20 text-yellow-400",
+    eligible: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
+    title_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
+    quality_blocked: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
+    upgrade_rejected: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
+    pending_delay: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
     already_active: "bg-muted text-muted-foreground",
-    download_client_unavailable: "bg-yellow-500/20 text-yellow-400",
-    repack_group_mismatch: "bg-red-500/20 text-red-400",
-    accept_initial: "bg-green-500/20 text-green-400",
-    accept_upgrade: "bg-green-500/20 text-green-400",
-    reject_insufficient_delta: "bg-red-500/20 text-red-400",
-    reject_cooldown: "bg-amber-500/20 text-amber-400",
-    reject_not_allowed: "bg-red-500/20 text-red-400",
+    download_client_unavailable: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
+    repack_group_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
+    accept_initial: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
+    accept_upgrade: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
+    reject_insufficient_delta: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
+    reject_cooldown: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
+    reject_not_allowed: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
   };
   return (
     <span
@@ -461,13 +250,8 @@ function decisionBadge(code: string, t: Translate) {
   );
 }
 
-function formatDate(iso: string | null) {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+function formatDate(iso: string | null, dateTimeFormat: UiDateTimeFormat) {
+  return formatUiDateTime(iso, dateTimeFormat, { fallback: "—" });
 }
 
 function formatBytes(bytes: number | null) {
@@ -479,12 +263,12 @@ function formatBytes(bytes: number | null) {
 }
 
 function parseDecisionExplanation(
-  explanationJson: string | null,
+  explanationJson: unknown,
 ): ReleaseDecisionExplanationEntry[] {
   if (!explanationJson) return [];
 
   try {
-    const parsed = JSON.parse(explanationJson);
+    const parsed = explanationJson;
     if (!Array.isArray(parsed)) return [];
 
     return parsed.flatMap((entry) => {
@@ -527,6 +311,7 @@ type WantedViewProps = {
   wantedState: WantedViewState;
   cutoffState: CutoffUnmetViewState;
   pendingState: PendingViewState;
+  historyContent?: React.ReactNode;
   onOpenOverview?: (
     targetView: ViewId,
     overviewTarget: OverviewTitleTarget,
@@ -539,17 +324,118 @@ export function WantedView({
   wantedState,
   cutoffState,
   pendingState,
+  historyContent,
   onOpenOverview,
 }: WantedViewProps) {
+  const t = useTranslate();
+  const wantedNav = [
+    {
+      section: "wanted" as const,
+      label: t("wanted.title"),
+      count: wantedState.total,
+      icon: ListChecks,
+    },
+    {
+      section: "cutoff" as const,
+      label: t("cutoff.title"),
+      count: cutoffState.total,
+      icon: Gauge,
+    },
+    {
+      section: "pending" as const,
+      label: t("pending.title"),
+      count: pendingState.items.length,
+      icon: Clock,
+    },
+    {
+      section: "history" as const,
+      label: t("history.title"),
+      count: null,
+      icon: History,
+    },
+  ];
+  const activeWantedNavItem =
+    wantedNav.find((item) => item.section === section) ?? wantedNav[0]!;
+  const ActiveWantedIcon = activeWantedNavItem.icon;
+
   return (
-    <div className="space-y-4 md:flex md:h-full md:min-h-0 md:flex-col md:gap-4 md:space-y-0">
-      {section === "cutoff" ? (
-        <CutoffUnmetView state={cutoffState} />
-      ) : section === "pending" ? (
-        <PendingReleasesCard state={pendingState} />
-      ) : (
-        <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
-      )}
+    <div className="md:flex md:h-full md:min-h-0 md:flex-row">
+      <aside className="w-full shrink-0 border-b border-[var(--scry-border3)] bg-[var(--scry-surfF)] p-3 md:h-full md:w-[218px] md:overflow-y-auto md:border-b-0 md:border-r md:p-[22px_14px]">
+        <nav
+          className="flex gap-2 overflow-x-auto pb-1 md:flex-col md:overflow-visible md:pb-0"
+          aria-label={t("nav.wanted")}
+        >
+          {wantedNav.map((item) => {
+            const Icon = item.icon;
+            const active = section === item.section;
+            return (
+              <Link
+                key={item.section}
+                to={buildViewPath("wanted", undefined, undefined, undefined, item.section)}
+                className={cn(
+                  "flex h-9 shrink-0 items-center gap-2 rounded-[9px] px-3 text-[13px] font-medium text-[var(--scry-muted)] transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] md:w-full",
+                  active &&
+                    "bg-[linear-gradient(90deg,rgba(var(--scry-accent-rgb),0.26),rgba(var(--scry-accent-rgb),0.08))] text-[var(--scry-ink2)] shadow-[inset_2px_0_0_var(--scry-accent-ring)]",
+                )}
+              >
+                <Icon
+                  className={cn(
+                    "h-[17px] w-[17px] text-[var(--scry-muted2)]",
+                    active && "text-[var(--scry-accent-text)]",
+                  )}
+                />
+                <span className="whitespace-nowrap">{item.label}</span>
+                {item.count === null ? null : (
+                  <span
+                    className={cn(
+                      "ml-auto rounded-md bg-[var(--scry-chip)] px-1.5 py-0.5 text-[10.5px] font-semibold tabular-nums text-[var(--scry-muted3)]",
+                      active && "bg-[rgba(var(--scry-accent-rgb),0.16)] text-[var(--scry-accent-text)]",
+                    )}
+                  >
+                    {item.count}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+        </nav>
+      </aside>
+      <main className="min-w-0 flex-1 overflow-y-auto bg-transparent">
+        <div className="mx-auto flex min-h-full w-full max-w-none flex-col px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]">
+          <div className="mb-4 flex items-center gap-1.5 text-[12.5px] text-[var(--scry-faint)]">
+            <span>{t("nav.group.automation")}</span>
+            <ChevronRight className="h-3.5 w-3.5" />
+            <span className="font-semibold text-[var(--scry-accent-text)]">
+              {activeWantedNavItem.label}
+            </span>
+          </div>
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-[13px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.35),rgba(123,91,255,0.22))] text-[var(--scry-accent-text)]">
+                <ActiveWantedIcon className="h-[23px] w-[23px]" />
+              </div>
+              <div className="min-w-0">
+                <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
+                  {activeWantedNavItem.label}
+                </h1>
+              </div>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1">
+            {section === "history" ? (
+              historyContent ?? (
+                <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
+              )
+            ) : section === "cutoff" ? (
+              <CutoffUnmetView state={cutoffState} />
+            ) : section === "pending" ? (
+              <PendingReleasesCard state={pendingState} />
+            ) : (
+              <WantedItemsCard state={wantedState} onOpenOverview={onOpenOverview} />
+            )}
+          </div>
+        </div>
+      </main>
     </div>
   );
 }
@@ -566,17 +452,12 @@ function WantedItemsCard({
   ) => void;
 }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const isMobile = useIsMobile();
   const {
     items,
     total,
     loading,
-    statusFilters,
-    setStatusFilters,
-    mediaTypeFilters,
-    setMediaTypeFilters,
-    latestDecisionCodeFilters,
-    setLatestDecisionCodeFilters,
     selectedTitle,
     setSelectedTitle,
     libraries,
@@ -594,7 +475,6 @@ function WantedItemsCard({
     triggerSearch,
     pauseItem,
     resumeItem,
-    resetItem,
     triggerMismatchRecovery,
   } = state;
   const [expandedDecisionIds, setExpandedDecisionIds] = useState<Set<string>>(new Set());
@@ -634,12 +514,17 @@ function WantedItemsCard({
   };
 
   return (
-    <Card className={shouldScrollDesktopTable ? "flex min-h-0 flex-1 flex-col" : undefined}>
-      <CardHeader>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>{t("wanted.title")}</CardTitle>
+    <Card
+      className={
+        shouldScrollDesktopTable
+          ? "flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border-0 bg-transparent shadow-none"
+          : "overflow-hidden rounded-none border-0 bg-transparent shadow-none"
+      }
+    >
+      <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
           <Button
-            className="w-full sm:w-auto"
+            className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none hover:bg-[var(--scry-hover)] sm:w-auto"
             size="sm"
             variant="secondary"
             onClick={() => void refreshItems()}
@@ -650,8 +535,14 @@ function WantedItemsCard({
           </Button>
         </div>
       </CardHeader>
-      <CardContent className={shouldScrollDesktopTable ? "flex min-h-0 flex-1 flex-col space-y-3" : undefined}>
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+      <CardContent
+        className={
+          shouldScrollDesktopTable
+            ? "flex min-h-0 flex-1 flex-col space-y-3 bg-[color-mix(in_srgb,var(--scry-bg)_52%,transparent)] p-4 sm:p-5"
+            : "space-y-4 bg-[color-mix(in_srgb,var(--scry-bg)_52%,transparent)] p-4 sm:p-5"
+        }
+      >
+        <div className="flex flex-col gap-3 rounded-[14px] border border-[var(--scry-border3)] bg-[var(--scry-surfC)] p-3 sm:flex-row sm:flex-wrap sm:items-center">
           <TitleAutocompletePicker
             ariaLabel={t("wanted.filterTitle")}
             className="w-full sm:max-w-sm"
@@ -669,31 +560,21 @@ function WantedItemsCard({
               setOffset(0);
             }}
             disabled={librariesLoading || libraries.length === 0}
-            triggerClassName="w-full sm:w-[180px]"
+            triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[180px]"
           />
 
-          <WantedFiltersPopover
-            statusFilters={statusFilters}
-            setStatusFilters={setStatusFilters}
-            mediaTypeFilters={mediaTypeFilters}
-            setMediaTypeFilters={setMediaTypeFilters}
-            latestDecisionCodeFilters={latestDecisionCodeFilters}
-            setLatestDecisionCodeFilters={setLatestDecisionCodeFilters}
-            onFilterChange={() => setOffset(0)}
-          />
-
-          <span className="self-center text-sm text-muted-foreground sm:ml-auto">
+          <span className="self-center text-sm font-medium text-[var(--scry-muted3)] sm:ml-auto">
             {t("wanted.totalCount", { count: total })}
           </span>
         </div>
 
         {isMobile ? (
           items.length === 0 && !loading ? (
-            <p className="text-center text-muted-foreground">{t("wanted.noItems")}</p>
+            <p className="text-center text-[var(--scry-muted3)]">{t("wanted.noItems")}</p>
           ) : (
             <div className="space-y-3">
               {items.map((item) => (
-                <div key={item.id} className="rounded-xl border border-border bg-card/30 p-3">
+                <div key={item.id} className="rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] p-3 shadow-[0_12px_28px_rgba(2,6,23,0.10)]">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <button
@@ -713,7 +594,12 @@ function WantedItemsCard({
                       </button>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {statusBadge(item.status, t)}
-                        {phaseBadge(item.searchPhase, t)}
+                        <ConvergenceBadge
+                          state={item.convergenceState}
+                          indexersCovered={item.indexersCovered}
+                          indexersRouted={item.indexersRouted}
+                          recencyLane={item.recencyLane}
+                        />
                         <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                           {formatWantedMediaType(item.mediaType, t)}
                         </span>
@@ -733,8 +619,10 @@ function WantedItemsCard({
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                     <div>
-                      <span className="block">{t("wanted.colNextSearch")}</span>
-                      <span className="text-foreground">{formatDate(item.nextSearchAt)}</span>
+                      <span className="block">{t("wanted.colLastSearch")}</span>
+                      <span className="text-foreground">
+                        {formatDate(item.lastSearchAt, dateTimeFormat)}
+                      </span>
                     </div>
                     <div>
                       <span className="block">{t("wanted.colLatestDecision")}</span>
@@ -752,8 +640,10 @@ function WantedItemsCard({
                       <span className="text-foreground">{item.currentScore ?? "—"}</span>
                     </div>
                     <div>
-                      <span className="block">{t("wanted.colSearches")}</span>
-                      <span className="text-foreground">{item.searchCount}</span>
+                      <span className="block">{t("wanted.colIndexers")}</span>
+                      <span className="text-foreground">
+                        {item.indexersCovered}/{item.indexersRouted}
+                      </span>
                     </div>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -761,7 +651,7 @@ function WantedItemsCard({
                       <Search className="h-4 w-4" />
                       <span>{t("wanted.searchNow")}</span>
                     </Button>
-                    {item.status === "paused" ? (
+                    {item.status === "PAUSED" ? (
                       <Button size="sm" variant="secondary" className="flex-1" onClick={() => void resumeItem(item.id)}>
                         <Play className="h-4 w-4" />
                         <span>{t("wanted.resume")}</span>
@@ -772,10 +662,6 @@ function WantedItemsCard({
                         <span>{t("wanted.pause")}</span>
                       </Button>
                     )}
-                    <Button size="sm" variant="outline" className="w-full" onClick={() => void resetItem(item.id)}>
-                      <RotateCcw className="h-4 w-4" />
-                      <span>{t("wanted.reset")}</span>
-                    </Button>
                     {item.mismatchRecoveryEligible ? (
                       <Button
                         size="sm"
@@ -815,7 +701,7 @@ function WantedItemsCard({
                                 </div>
                                 <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
                                   <span>{formatBytes(d.releaseSizeBytes)}</span>
-                                  <span>{formatDate(d.createdAt)}</span>
+                                  <span>{formatDate(d.createdAt, dateTimeFormat)}</span>
                                 </div>
                                 {hasScoringBreakdown ? (
                                   <div className="mt-3 border-t border-border pt-3">
@@ -851,33 +737,39 @@ function WantedItemsCard({
           <div
             className={
               shouldScrollDesktopTable
-                ? "min-h-0 flex-1 overflow-auto rounded-xl border border-border/60"
-                : "overflow-x-auto"
+                ? "min-h-0 flex-1 overflow-y-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]"
+                : "overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]"
             }
           >
-            <Table className="min-w-[980px]">
+            <Table overflow="clip" layout="fixed" density="dense">
               <TableHeader
                 className={shouldScrollDesktopTable ? "[&_th]:sticky [&_th]:top-0 [&_th]:z-10" : undefined}
               >
                 <TableRow>
-                  <TableHead className="w-8" />
+                  <TableHead className="w-10 text-center" />
                   <TableHead>{t("wanted.colTitle")}</TableHead>
-                  <TableHead>Library</TableHead>
-                  <TableHead>{t("wanted.colType")}</TableHead>
-                  <TableHead>{t("wanted.colStatus")}</TableHead>
-                  <TableHead>{t("wanted.colPhase")}</TableHead>
-                  <TableHead>{t("wanted.colLatestDecision")}</TableHead>
-                  <TableHead>{t("wanted.colNextSearch")}</TableHead>
-                  <TableHead>{t("wanted.colScore")}</TableHead>
-                  <TableHead>{t("wanted.colSearches")}</TableHead>
-                  <TableHead>{t("label.actions")}</TableHead>
+                  <TableHead className="w-32 text-center">Library</TableHead>
+                  <TableHead className="w-24 text-center">{t("wanted.colType")}</TableHead>
+                  <TableHead className="w-28 text-center">{t("wanted.colStatus")}</TableHead>
+                  <TableHead className="w-36 text-center">{t("wanted.colConvergence")}</TableHead>
+                  <TableHead className="w-36 text-center">{t("wanted.colLatestDecision")}</TableHead>
+                  <TableHead className="w-32 text-center">{t("wanted.colLastSearch")}</TableHead>
+                  <TableHead className="w-20 text-center">{t("wanted.colScore")}</TableHead>
+                  <TableHead className="w-24 text-center">{t("wanted.colIndexers")}</TableHead>
+                  <TableActionsHead className="w-36">{t("label.actions")}</TableActionsHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {items.map((item) => (
                   <Fragment key={item.id}>
-                    <TableRow className="group">
-                      <TableCell>
+                    <TableRow
+                      id={wantedItemRowId(item.id)}
+                      data-ui="wanted-item-row"
+                      data-wanted-item-id={item.id}
+                      data-wanted-title={item.titleName ?? item.titleId}
+                      className="group"
+                    >
+                      <TableCell className="text-center">
                         <button
                           className="p-0.5 text-muted-foreground hover:text-foreground"
                           onClick={() => void loadDecisions(item.id)}
@@ -889,10 +781,13 @@ function WantedItemsCard({
                           )}
                         </button>
                       </TableCell>
-                      <TableCell className="max-w-[260px] text-sm" title={item.titleName ?? item.titleId}>
+                      <TableCell
+                        className="min-w-0 text-sm"
+                        title={item.titleName ?? item.titleId}
+                      >
                         <button
                           type="button"
-                          className="min-w-0 text-left hover:text-foreground"
+                          className="block min-w-0 max-w-full text-left hover:text-foreground"
                           onClick={() => openWantedItemOverview(item)}
                         >
                           <div className="truncate font-medium hover:underline">
@@ -903,85 +798,93 @@ function WantedItemsCard({
                           </div>
                         </button>
                       </TableCell>
-                      <TableCell className="max-w-[160px] text-xs text-muted-foreground">
+                      <TableCell className="text-center text-xs text-muted-foreground">
                         <span className="block truncate">
                           {item.libraryName ?? item.libraryId ?? "Library"}
                         </span>
                       </TableCell>
-                      <TableCell>{formatWantedMediaType(item.mediaType, t)}</TableCell>
-                      <TableCell>{statusBadge(item.status, t)}</TableCell>
-                      <TableCell>{phaseBadge(item.searchPhase, t)}</TableCell>
-                      <TableCell className="text-xs">
+                      <TableCell className="text-center">
+                        {formatWantedMediaType(item.mediaType, t)}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {statusBadge(item.status, t)}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <ConvergenceBadge
+                          state={item.convergenceState}
+                          indexersCovered={item.indexersCovered}
+                          indexersRouted={item.indexersRouted}
+                          recencyLane={item.recencyLane}
+                        />
+                      </TableCell>
+                      <TableCell className="text-center text-xs">
                         {item.latestReleaseDecision ? (
                           <div className="space-y-1">
                             {decisionBadge(item.latestReleaseDecision.decisionCode, t)}
                             <div className="text-muted-foreground">
-                              {formatDate(item.latestReleaseDecision.createdAt)}
+                              {formatDate(
+                                item.latestReleaseDecision.createdAt,
+                                dateTimeFormat,
+                              )}
                             </div>
                           </div>
                         ) : (
                           "—"
                         )}
                       </TableCell>
-                      <TableCell className="text-xs">
-                        {formatDate(item.nextSearchAt)}
+                      <TableCell className="text-center text-xs">
+                        {formatDate(item.lastSearchAt, dateTimeFormat)}
                       </TableCell>
-                      <TableCell>{item.currentScore ?? "—"}</TableCell>
-                      <TableCell>{item.searchCount}</TableCell>
-                      <TableCell>
-                        <div className="flex gap-1">
-                          <Button
-                            size="icon"
-                            variant="ghost"
+                      <TableCodeCell className="text-center">
+                        {item.currentScore ?? "—"}
+                      </TableCodeCell>
+                      <TableCodeCell className="text-center">
+                        {item.indexersCovered}/{item.indexersRouted}
+                      </TableCodeCell>
+                      <TableActionsCell className="w-36">
+                        <div className="flex flex-wrap justify-center gap-1">
+                          <IconButton
+                            id={wantedItemSearchNowId(item.id)}
+                            data-ui="wanted-item-search-now"
+                            data-wanted-item-id={item.id}
+                            label={t("wanted.searchNow")}
+                            appearance="ghost"
                             className="h-7 w-7"
-                            title={t("wanted.searchNow")}
                             onClick={() => void triggerSearch(item.id)}
                           >
                             <Search className="h-3.5 w-3.5" />
-                          </Button>
-                          {item.status === "paused" ? (
-                            <Button
-                              size="icon"
-                              variant="ghost"
+                          </IconButton>
+                          {item.status === "PAUSED" ? (
+                            <IconButton
+                              label={t("wanted.resume")}
+                              appearance="ghost"
                               className="h-7 w-7"
-                              title={t("wanted.resume")}
                               onClick={() => void resumeItem(item.id)}
                             >
                               <Play className="h-3.5 w-3.5" />
-                            </Button>
+                            </IconButton>
                           ) : (
-                            <Button
-                              size="icon"
-                              variant="ghost"
+                            <IconButton
+                              label={t("wanted.pause")}
+                              appearance="ghost"
                               className="h-7 w-7"
-                              title={t("wanted.pause")}
                               onClick={() => void pauseItem(item.id)}
                             >
                               <Pause className="h-3.5 w-3.5" />
-                            </Button>
+                            </IconButton>
                           )}
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="h-7 w-7"
-                            title={t("wanted.reset")}
-                            onClick={() => void resetItem(item.id)}
-                          >
-                            <RotateCcw className="h-3.5 w-3.5" />
-                          </Button>
                           {item.mismatchRecoveryEligible ? (
-                            <Button
-                              size="icon"
-                              variant="ghost"
+                            <IconButton
+                              label={t("wanted.actionRecoverMismatch")}
+                              appearance="ghost"
                               className="h-7 w-7"
-                              title={t("wanted.actionRecoverMismatch")}
                               onClick={() => void triggerMismatchRecovery(item.titleId)}
                             >
                               <RefreshCw className="h-3.5 w-3.5" />
-                            </Button>
+                            </IconButton>
                           ) : null}
                         </div>
-                      </TableCell>
+                      </TableActionsCell>
                     </TableRow>
                     {expandedItemId === item.id && (
                       <TableRow>
@@ -995,16 +898,30 @@ function WantedItemsCard({
                               {t("wanted.noDecisions")}
                             </p>
                           ) : (
-                            <Table className="min-w-[720px]">
+                            <Table
+                              overflow="clip"
+                              layout="fixed"
+                              density="dense"
+                            >
                               <TableHeader>
                                 <TableRow>
-                                  <TableHead className="w-8" />
+                                  <TableHead className="w-10 text-center" />
                                   <TableHead>{t("wanted.decRelease")}</TableHead>
-                                  <TableHead>{t("wanted.decDecision")}</TableHead>
-                                  <TableHead>{t("wanted.decScore")}</TableHead>
-                                  <TableHead>{t("wanted.decDelta")}</TableHead>
-                                  <TableHead>{t("wanted.decSize")}</TableHead>
-                                  <TableHead>{t("wanted.decDate")}</TableHead>
+                                  <TableHead className="w-28 text-center">
+                                    {t("wanted.decDecision")}
+                                  </TableHead>
+                                  <TableHead className="w-24 text-center">
+                                    {t("wanted.decScore")}
+                                  </TableHead>
+                                  <TableHead className="w-24 text-center">
+                                    {t("wanted.decDelta")}
+                                  </TableHead>
+                                  <TableHead className="w-28 text-center">
+                                    {t("wanted.decSize")}
+                                  </TableHead>
+                                  <TableHead className="w-32 text-center">
+                                    {t("wanted.decDate")}
+                                  </TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
@@ -1016,7 +933,7 @@ function WantedItemsCard({
                                   return (
                                     <Fragment key={d.id}>
                                       <TableRow>
-                                        <TableCell>
+                                        <TableCell className="text-center">
                                           {hasScoringBreakdown ? (
                                             <button
                                               type="button"
@@ -1032,21 +949,25 @@ function WantedItemsCard({
                                           ) : null}
                                         </TableCell>
                                         <TableCell
-                                          className="max-w-[300px] truncate text-xs"
+                                          className="truncate text-xs"
                                           title={d.releaseTitle}
                                         >
                                           {d.releaseTitle}
                                         </TableCell>
-                                        <TableCell>
+                                        <TableCell className="text-center">
                                           {decisionBadge(d.decisionCode, t)}
                                         </TableCell>
-                                        <TableCell>{d.candidateScore}</TableCell>
-                                        <TableCell>{d.scoreDelta ?? "—"}</TableCell>
-                                        <TableCell className="text-xs">
+                                        <TableCodeCell className="text-center">
+                                          {d.candidateScore}
+                                        </TableCodeCell>
+                                        <TableCodeCell className="text-center">
+                                          {d.scoreDelta ?? "—"}
+                                        </TableCodeCell>
+                                        <TableCodeCell className="text-center text-xs">
                                           {formatBytes(d.releaseSizeBytes)}
-                                        </TableCell>
-                                        <TableCell className="text-xs">
-                                          {formatDate(d.createdAt)}
+                                        </TableCodeCell>
+                                        <TableCell className="text-center text-xs">
+                                          {formatDate(d.createdAt, dateTimeFormat)}
                                         </TableCell>
                                       </TableRow>
                                       {scoringExpanded ? (
@@ -1069,7 +990,7 @@ function WantedItemsCard({
                 ))}
                 {items.length === 0 && !loading && (
                   <TableRow>
-                    <TableCell colSpan={10} className="text-center text-muted-foreground">
+                    <TableCell colSpan={11} className="text-center text-muted-foreground">
                       {t("wanted.noItems")}
                     </TableCell>
                   </TableRow>
@@ -1126,7 +1047,7 @@ function ScoringBreakdown({
         {entries.map((entry, index) => (
           <div
             key={`${entry.code}-${index}`}
-            className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 font-mono text-xs text-foreground"
+            className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 font-[var(--font-code)] text-xs text-foreground"
           >
             <span className="truncate" title={entry.code}>
               {entry.code}
@@ -1152,8 +1073,52 @@ function formatTimeRemaining(delayUntil: string, t: Translate): string {
   return t("wanted.timeMinutes", { minutes });
 }
 
+function formatPendingStatus(status: PendingReleaseStatus): string {
+  return status
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function pendingStatusBadge(status: PendingReleaseStatus) {
+  const cls =
+    status === "GRABBED"
+      ? "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
+      : status === "EXPIRED" || status === "DISMISSED"
+        ? "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]"
+        : status === "PROCESSING"
+          ? "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]"
+          : status === "SUPERSEDED"
+            ? "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]"
+            : "border-[var(--scry-border2)] bg-[var(--scry-chip)] text-[var(--scry-muted2)]";
+  return (
+    <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${cls}`}>
+      {formatPendingStatus(status)}
+    </span>
+  );
+}
+
+function pendingPhaseBadge(status: PendingReleaseStatus) {
+  const label =
+    status === "PROCESSING"
+      ? "Processing"
+      : status === "GRABBED"
+        ? "Grabbed"
+        : status === "EXPIRED" || status === "DISMISSED"
+          ? "Closed"
+          : status === "SUPERSEDED"
+            ? "Superseded"
+            : "Scheduled";
+  return (
+    <span className="inline-flex rounded-full border border-[rgba(var(--scry-accent-rgb),0.24)] bg-[rgba(var(--scry-accent-rgb),0.13)] px-2 py-0.5 text-xs font-medium text-[var(--scry-accent-text)]">
+      {label}
+    </span>
+  );
+}
+
 function PendingReleasesCard({ state }: { state: PendingViewState }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const isMobile = useIsMobile();
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const {
@@ -1166,6 +1131,11 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
     forceGrab,
     dismiss,
   } = state;
+  const [expandedPendingId, setExpandedPendingId] = useState<string | null>(null);
+
+  const togglePendingExpanded = (id: string) => {
+    setExpandedPendingId((current) => (current === id ? null : id));
+  };
 
   useEffect(() => {
     const node = loadMoreRef.current;
@@ -1193,12 +1163,11 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
   }, [hasMore, items.length, loadMoreItems, loadingMore]);
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>{t("pending.title")}</CardTitle>
+    <Card className="overflow-hidden rounded-none border-0 bg-transparent shadow-none">
+      <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
           <Button
-            className="w-full sm:w-auto"
+            className="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none hover:bg-[var(--scry-hover)] sm:w-auto"
             size="sm"
             variant="secondary"
             onClick={() => void refreshItems()}
@@ -1209,15 +1178,36 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
           </Button>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="bg-[color-mix(in_srgb,var(--scry-bg)_52%,transparent)] p-4 sm:p-5">
         {isMobile ? (
           items.length === 0 && !loading ? (
-            <p className="text-center text-muted-foreground">{t("pending.noItems")}</p>
+            <p className="text-center text-[var(--scry-muted3)]">{t("pending.noItems")}</p>
           ) : (
             <div className="space-y-3">
-              {items.map((item) => (
-                <div key={item.id} className="rounded-xl border border-border bg-card/30 p-3">
-                  <p className="break-words text-sm font-medium text-foreground">{item.releaseTitle}</p>
+              {items.map((item) => {
+                const expanded = expandedPendingId === item.id;
+                return (
+                <div key={item.id} className="rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] p-3 shadow-[0_12px_28px_rgba(2,6,23,0.10)]">
+                  <div className="flex items-start gap-2">
+                    <button
+                      type="button"
+                      className="mt-0.5 p-0.5 text-muted-foreground hover:text-foreground"
+                      onClick={() => togglePendingExpanded(item.id)}
+                    >
+                      {expanded ? (
+                        <ChevronDown className="h-4 w-4" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4" />
+                      )}
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <p className="break-words text-sm font-medium text-foreground">{item.releaseTitle}</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {pendingStatusBadge(item.status)}
+                        {pendingPhaseBadge(item.status)}
+                      </div>
+                    </div>
+                  </div>
                   <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                     <div>
                       <span className="block">{t("pending.colScore")}</span>
@@ -1225,7 +1215,9 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     </div>
                     <div>
                       <span className="block">{t("pending.colSize")}</span>
-                      <span className="text-foreground">{item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}</span>
+                      <span className="font-[var(--font-code)] text-foreground">
+                        {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}
+                      </span>
                     </div>
                     <div>
                       <span className="block">{t("pending.colIndexer")}</span>
@@ -1233,12 +1225,29 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     </div>
                     <div>
                       <span className="block">{t("pending.colDelayUntil")}</span>
-                      <span className="text-foreground" title={formatDate(item.delayUntil)}>
+                      <span
+                        className="text-foreground"
+                        title={formatDate(item.delayUntil, dateTimeFormat)}
+                      >
                         {formatTimeRemaining(item.delayUntil, t)}
                       </span>
                     </div>
                   </div>
-                  <p className="mt-2 text-xs text-muted-foreground">{formatDate(item.addedAt)}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {formatDate(item.addedAt, dateTimeFormat)}
+                  </p>
+                  {expanded ? (
+                    <div className="mt-3 grid gap-2 rounded-[10px] border border-[var(--scry-border3)] bg-[var(--scry-bg)] p-3 text-xs">
+                      <div>
+                        <span className="block text-muted-foreground">Title ID</span>
+                        <span className="break-all text-foreground">{item.titleId}</span>
+                      </div>
+                      <div>
+                        <span className="block text-muted-foreground">Wanted Item</span>
+                        <span className="break-all text-foreground">{item.wantedItemId}</span>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="mt-3 flex gap-2">
                     <Button size="sm" variant="secondary" className="flex-1" onClick={() => void forceGrab(item.id)}>
                       <Download className="h-4 w-4" />
@@ -1250,82 +1259,130 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     </Button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )
         ) : (
-          <div className="overflow-auto rounded-xl border border-border/60">
-            <Table className="min-w-[760px]">
+          <div className="overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]">
+            <Table overflow="clip" layout="fixed" density="dense">
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10 text-center" />
                   <TableHead>{t("pending.colRelease")}</TableHead>
-                  <TableHead>{t("pending.colScore")}</TableHead>
-                  <TableHead>{t("pending.colSize")}</TableHead>
-                  <TableHead>{t("pending.colIndexer")}</TableHead>
-                  <TableHead>{t("pending.colAddedAt")}</TableHead>
-                  <TableHead>{t("pending.colDelayUntil")}</TableHead>
-                  <TableHead>{t("label.actions")}</TableHead>
+                  <TableHead className="w-28 text-center">{t("wanted.colStatus")}</TableHead>
+                  <TableHead className="w-28 text-center">{t("wanted.colPhase")}</TableHead>
+                  <TableHead className="w-20 text-center">{t("pending.colScore")}</TableHead>
+                  <TableHead className="w-28 text-center">{t("pending.colSize")}</TableHead>
+                  <TableHead className="w-32 text-center">{t("pending.colIndexer")}</TableHead>
+                  <TableHead className="w-32 text-center">{t("pending.colAddedAt")}</TableHead>
+                  <TableHead className="w-32 text-center">{t("pending.colDelayUntil")}</TableHead>
+                  <TableActionsHead className="w-24">{t("label.actions")}</TableActionsHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {items.map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell className="max-w-[300px] truncate text-sm" title={item.releaseTitle}>
-                      {item.releaseTitle}
-                    </TableCell>
-                    <TableCell>{item.releaseScore}</TableCell>
-                    <TableCell className="text-xs">
-                      {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}
-                    </TableCell>
-                    <TableCell className="text-xs">{item.indexerSource ?? "—"}</TableCell>
-                    <TableCell className="text-xs">{formatDate(item.addedAt)}</TableCell>
-                    <TableCell className="text-xs">
-                      <span title={formatDate(item.delayUntil)}>
-                        {formatTimeRemaining(item.delayUntil, t)}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex gap-1">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7"
-                          title={t("pending.forceGrab")}
-                          onClick={() => void forceGrab(item.id)}
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7"
-                          title={t("pending.dismiss")}
-                          onClick={() => void dismiss(item.id)}
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {items.map((item) => {
+                  const expanded = expandedPendingId === item.id;
+                  return (
+                    <Fragment key={item.id}>
+                      <TableRow>
+                        <TableCell className="text-center">
+                          <button
+                            type="button"
+                            className="p-0.5 text-muted-foreground hover:text-foreground"
+                            onClick={() => togglePendingExpanded(item.id)}
+                          >
+                            {expanded ? (
+                              <ChevronDown className="h-4 w-4" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4" />
+                            )}
+                          </button>
+                        </TableCell>
+                        <TableCell className="truncate text-sm" title={item.releaseTitle}>
+                          {item.releaseTitle}
+                        </TableCell>
+                        <TableCell className="text-center">{pendingStatusBadge(item.status)}</TableCell>
+                        <TableCell className="text-center">{pendingPhaseBadge(item.status)}</TableCell>
+                        <TableCodeCell className="text-center">{item.releaseScore}</TableCodeCell>
+                        <TableCodeCell className="text-center text-xs">
+                          {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}
+                        </TableCodeCell>
+                        <TableCell className="text-center text-xs">{item.indexerSource ?? "—"}</TableCell>
+                        <TableCell className="text-center text-xs">
+                          {formatDate(item.addedAt, dateTimeFormat)}
+                        </TableCell>
+                        <TableCell className="text-center text-xs">
+                          <span title={formatDate(item.delayUntil, dateTimeFormat)}>
+                            {formatTimeRemaining(item.delayUntil, t)}
+                          </span>
+                        </TableCell>
+                        <TableActionsCell className="w-24">
+                          <div className="flex justify-center gap-1">
+                            <IconButton
+                              label={t("pending.forceGrab")}
+                              appearance="ghost"
+                              className="h-7 w-7"
+                              onClick={() => void forceGrab(item.id)}
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </IconButton>
+                            <IconButton
+                              label={t("pending.dismiss")}
+                              appearance="ghost"
+                              className="h-7 w-7"
+                              onClick={() => void dismiss(item.id)}
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </IconButton>
+                          </div>
+                        </TableActionsCell>
+                      </TableRow>
+                      {expanded ? (
+                        <TableRow>
+                          <TableCell colSpan={10} className="bg-background/30 p-4">
+                            <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                              <div>
+                                <span className="block text-muted-foreground">Title ID</span>
+                                <span className="break-all text-foreground">{item.titleId}</span>
+                              </div>
+                              <div>
+                                <span className="block text-muted-foreground">Wanted Item</span>
+                                <span className="break-all text-foreground">{item.wantedItemId}</span>
+                              </div>
+                              <div>
+                                <span className="block text-muted-foreground">{t("pending.colAddedAt")}</span>
+                                <span className="text-foreground">{formatDate(item.addedAt, dateTimeFormat)}</span>
+                              </div>
+                              <div>
+                                <span className="block text-muted-foreground">{t("pending.colDelayUntil")}</span>
+                                <span className="text-foreground">{formatDate(item.delayUntil, dateTimeFormat)}</span>
+                              </div>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
                 {items.length === 0 && !loading && (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-muted-foreground">
+                    <TableCell colSpan={10} className="text-center text-muted-foreground">
                       {t("pending.noItems")}
                     </TableCell>
                   </TableRow>
-	                )}
-	              </TableBody>
-	            </Table>
-	          </div>
-	        )}
-	        <div ref={loadMoreRef} aria-hidden="true" className="h-px" />
-	        {loadingMore ? (
-	          <p className="mt-3 text-center text-sm text-muted-foreground">
-	            {t("wanted.refreshing")}
-	          </p>
-	        ) : null}
-	      </CardContent>
-	    </Card>
-	  );
-	}
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+        <div ref={loadMoreRef} aria-hidden="true" className="h-px" />
+        {loadingMore ? (
+          <p className="mt-3 text-center text-sm text-muted-foreground">
+            {t("wanted.refreshing")}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}

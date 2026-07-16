@@ -3,10 +3,15 @@
 //! The sync pipeline:
 //! 1. Applies policy gates that do not require media analysis.
 //! 2. Reads subtitle bytes and detects the rewrite format.
-//! 3. Delegates media analysis, timing, and rewriting to the optional enhanced sync plugin.
+//! 3. Sends stored media metadata hints, then delegates audio/VAD timing and rewriting to the plugin.
 //! 4. Atomically applies the rewritten subtitle bytes returned by the plugin.
 
-use std::{fmt, io::Write, path::Path, sync::Arc};
+use std::{
+    fmt,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::{
     AppError, AppResult,
@@ -15,7 +20,7 @@ use crate::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use scryer_plugin_sdk::{
     SubtitleSyncAlignResponse, SubtitleSyncAlignSkipReason, SubtitleSyncAudioCodec,
-    SubtitleSyncOptions,
+    SubtitleSyncMediaMetadataSnapshot, SubtitleSyncOptions,
 };
 
 /// Result of a subtitle sync operation.
@@ -160,8 +165,16 @@ pub async fn sync_subtitle_with_policy(
     subtitle_path: &Path,
     policy: SyncPolicy,
 ) -> AppResult<SyncResult> {
-    sync_subtitle_with_policy_and_plugin_sync(video_path, subtitle_path, policy, None, false, None)
-        .await
+    sync_subtitle_with_policy_and_plugin_sync(
+        video_path,
+        subtitle_path,
+        policy,
+        None,
+        false,
+        None,
+        None,
+    )
+    .await
 }
 
 pub async fn sync_subtitle_with_policy_and_plugin_sync(
@@ -171,6 +184,7 @@ pub async fn sync_subtitle_with_policy_and_plugin_sync(
     subtitle_sync_client: Option<Arc<dyn SubtitleSyncClient>>,
     plugin_installed: bool,
     reference_subtitle_path: Option<&Path>,
+    media_metadata: Option<SubtitleSyncMediaMetadataSnapshot>,
 ) -> AppResult<SyncResult> {
     if let Some(reason) = policy.skip_reason() {
         tracing::debug!(
@@ -190,6 +204,7 @@ pub async fn sync_subtitle_with_policy_and_plugin_sync(
         subtitle_sync_client,
         plugin_installed,
         reference_subtitle_path,
+        media_metadata,
     )
     .await
 }
@@ -207,8 +222,19 @@ pub async fn sync_subtitle(
         None,
         false,
         None,
+        None,
     )
     .await
+}
+
+struct PreparedSubtitleSyncJob {
+    subtitle_content: Vec<u8>,
+    subtitle_format: SubtitleTimingFormat,
+    subtitle_file_name: Option<String>,
+    subtitle_encoding_hint: Option<String>,
+    reference_subtitle: Option<SubtitleSyncReferenceSubtitle>,
+    expected_codec: Option<SubtitleSyncAudioCodec>,
+    media_metadata: Option<SubtitleSyncMediaMetadataSnapshot>,
 }
 
 pub async fn sync_subtitle_with_plugin_sync(
@@ -218,10 +244,17 @@ pub async fn sync_subtitle_with_plugin_sync(
     subtitle_sync_client: Option<Arc<dyn SubtitleSyncClient>>,
     plugin_installed: bool,
     reference_subtitle_path: Option<&Path>,
+    media_metadata: Option<SubtitleSyncMediaMetadataSnapshot>,
 ) -> AppResult<SyncResult> {
-    let subtitle_content = std::fs::read(subtitle_path)
-        .map_err(|e| AppError::Repository(format!("cannot read subtitle file: {e}")))?;
-    let Some(subtitle_format) = detect_subtitle_format(subtitle_path, &subtitle_content) else {
+    let prepared = prepare_subtitle_sync_job_blocking(
+        video_path.to_path_buf(),
+        subtitle_path.to_path_buf(),
+        reference_subtitle_path.map(Path::to_path_buf),
+        media_metadata,
+    )
+    .await?;
+
+    let Some(prepared) = prepared else {
         tracing::debug!(
             path = %subtitle_path.display(),
             "subtitle sync skipped: unsupported subtitle format"
@@ -236,6 +269,7 @@ pub async fn sync_subtitle_with_plugin_sync(
         ));
     };
 
+    let subtitle_format = prepared.subtitle_format;
     let Some(subtitle_sync_client) = subtitle_sync_client else {
         tracing::warn!(
             path = %video_path.display(),
@@ -257,24 +291,18 @@ pub async fn sync_subtitle_with_plugin_sync(
         ));
     };
 
-    let subtitle_file_name = subtitle_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_string);
-    let subtitle_encoding_hint = subtitle_encoding_hint(&subtitle_content);
-    let reference_subtitle = reference_subtitle_from_path(reference_subtitle_path, subtitle_path);
-
     let response = match subtitle_sync_client
         .align_subtitle(SubtitleSyncJob {
             input_path: video_path.to_path_buf(),
-            subtitle_content,
+            subtitle_content: prepared.subtitle_content,
             subtitle_format: subtitle_format.sdk_format(subtitle_path).to_string(),
-            subtitle_file_name,
-            subtitle_encoding_hint,
-            reference_subtitle,
+            subtitle_file_name: prepared.subtitle_file_name,
+            subtitle_encoding_hint: prepared.subtitle_encoding_hint,
+            reference_subtitle: prepared.reference_subtitle,
             max_offset_seconds,
             sync_options: SubtitleSyncOptions::default(),
-            expected_codec: targeted_audio_codec_for_path(video_path),
+            expected_codec: prepared.expected_codec,
+            media_metadata: prepared.media_metadata,
         })
         .await
     {
@@ -345,6 +373,54 @@ pub async fn sync_subtitle_with_plugin_sync(
     })
 }
 
+async fn prepare_subtitle_sync_job_blocking(
+    video_path: PathBuf,
+    subtitle_path: PathBuf,
+    reference_subtitle_path: Option<PathBuf>,
+    media_metadata: Option<SubtitleSyncMediaMetadataSnapshot>,
+) -> AppResult<Option<PreparedSubtitleSyncJob>> {
+    tokio::task::spawn_blocking(move || {
+        prepare_subtitle_sync_job(
+            &video_path,
+            &subtitle_path,
+            reference_subtitle_path.as_deref(),
+            media_metadata,
+        )
+    })
+    .await
+    .map_err(|error| {
+        AppError::Repository(format!("subtitle sync preparation task failed: {error}"))
+    })?
+}
+
+fn prepare_subtitle_sync_job(
+    _video_path: &Path,
+    subtitle_path: &Path,
+    reference_subtitle_path: Option<&Path>,
+    media_metadata: Option<SubtitleSyncMediaMetadataSnapshot>,
+) -> AppResult<Option<PreparedSubtitleSyncJob>> {
+    let subtitle_content = std::fs::read(subtitle_path)
+        .map_err(|e| AppError::Repository(format!("cannot read subtitle file: {e}")))?;
+    let Some(subtitle_format) = detect_subtitle_format(subtitle_path, &subtitle_content) else {
+        return Ok(None);
+    };
+
+    let expected_codec = expected_codec_from_metadata(media_metadata.as_ref());
+
+    Ok(Some(PreparedSubtitleSyncJob {
+        subtitle_file_name: subtitle_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string),
+        subtitle_encoding_hint: subtitle_encoding_hint(&subtitle_content),
+        reference_subtitle: reference_subtitle_from_path(reference_subtitle_path, subtitle_path),
+        expected_codec,
+        media_metadata,
+        subtitle_content,
+        subtitle_format,
+    }))
+}
+
 fn missing_enhanced_sync_install_hint() -> String {
     format!(
         "subtitle sync requires plugin '{}'; install and enable it to use subtitle sync",
@@ -410,17 +486,13 @@ fn skipped_sync_result(
     }
 }
 
-fn targeted_audio_codec_for_path(video_path: &Path) -> Option<SubtitleSyncAudioCodec> {
-    let analysis = scryer_mediainfo::analyze_file_with_options(
-        video_path,
-        scryer_mediainfo::AnalyzeOptions {
-            profile: scryer_mediainfo::AnalysisProfile::FfprobeParity,
-        },
-    )
-    .ok()?;
+fn expected_codec_from_metadata(
+    metadata: Option<&SubtitleSyncMediaMetadataSnapshot>,
+) -> Option<SubtitleSyncAudioCodec> {
+    let metadata = metadata?;
     targeted_audio_codec(
-        analysis.audio_codec.as_deref(),
-        analysis.audio_profile.as_deref(),
+        metadata.audio_codec.as_deref(),
+        metadata.audio_profile.as_deref(),
     )
 }
 
@@ -752,6 +824,7 @@ mod tests {
             })),
             true,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -787,6 +860,7 @@ mod tests {
                 expected_reference_subtitle: None,
             })),
             true,
+            None,
             None,
         )
         .await
@@ -831,6 +905,7 @@ mod tests {
             })),
             true,
             Some(&reference_path),
+            None,
         )
         .await
         .unwrap();
@@ -865,6 +940,7 @@ mod tests {
                 expected_reference_subtitle: None,
             })),
             true,
+            None,
             None,
         )
         .await
@@ -922,6 +998,7 @@ mod tests {
             Some(Arc::new(MissingRewriteClient)),
             true,
             None,
+            None,
         )
         .await
         .expect_err("missing rewrite should fail");
@@ -951,6 +1028,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -961,6 +1039,90 @@ mod tests {
             Some(SyncSkipReason::SubtitleSyncPluginRequired)
         );
         assert_eq!(result.format, Some(SubtitleTimingFormat::Srt));
+    }
+
+    #[tokio::test]
+    async fn sync_uses_stored_metadata_for_expected_codec_hint() {
+        struct MetadataAssertingClient;
+
+        #[async_trait::async_trait]
+        impl crate::ports::SubtitleSyncClient for MetadataAssertingClient {
+            async fn align_subtitle(
+                &self,
+                job: crate::ports::SubtitleSyncJob,
+            ) -> AppResult<SubtitleSyncAlignResponse> {
+                assert_eq!(job.expected_codec, Some(SubtitleSyncAudioCodec::Eac3));
+                assert_eq!(
+                    job.media_metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.audio_codec.as_deref()),
+                    Some("eac3")
+                );
+                Ok(SubtitleSyncAlignResponse {
+                    applied: false,
+                    offset_ms: 0,
+                    rewritten_subtitle: None,
+                    score: None,
+                    selected_framerate_ratio: None,
+                    consistency_ratio: None,
+                    nosplit_score: None,
+                    split_score: None,
+                    skipped_reason: Some(SubtitleSyncAlignSkipReason::WeakAlignment),
+                    backend: "test-subtitle-sync".to_string(),
+                    warnings: Vec::new(),
+                    message: None,
+                })
+            }
+        }
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let subtitle_path = temp_dir.path().join("subtitle.srt");
+        std::fs::write(&subtitle_path, "1\n00:00:01,000 --> 00:00:02,000\nHello\n").unwrap();
+        let metadata = SubtitleSyncMediaMetadataSnapshot {
+            analysis_source: "scryer_import".to_string(),
+            container_format: Some("matroska".to_string()),
+            duration_seconds: Some(120),
+            video_codec: None,
+            video_width: None,
+            video_height: None,
+            video_bitrate_kbps: None,
+            video_bit_depth: None,
+            video_hdr_format: None,
+            video_frame_rate: None,
+            video_profile: None,
+            audio_codec: Some("eac3".to_string()),
+            audio_profile: None,
+            audio_channels: Some(6),
+            audio_bitrate_kbps: None,
+            audio_languages: vec!["eng".to_string()],
+            audio_streams: Vec::new(),
+            subtitle_languages: Vec::new(),
+            subtitle_codecs: Vec::new(),
+            subtitle_streams: Vec::new(),
+            has_multiaudio: false,
+            num_chapters: None,
+        };
+
+        let result = sync_subtitle_with_policy_and_plugin_sync(
+            Path::new("/tmp/video.mkv"),
+            &subtitle_path,
+            SyncPolicy {
+                enabled: true,
+                forced: false,
+                score: Some(10),
+                threshold: Some(90),
+                max_offset_seconds: 60,
+            },
+            Some(Arc::new(MetadataAssertingClient)),
+            true,
+            None,
+            Some(metadata),
+        )
+        .await
+        .unwrap();
+
+        assert!(!result.applied);
+        assert_eq!(result.skipped_reason, Some(SyncSkipReason::WeakAlignment));
     }
 
     #[tokio::test]

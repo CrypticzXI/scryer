@@ -1,4 +1,142 @@
 use super::*;
+use crate::media_requests::normalize_media_request_external_ids;
+
+#[derive(Default)]
+struct MediaRequestMetadataGateway {
+    movies: HashMap<i64, MovieMetadata>,
+    series: HashMap<i64, SeriesMetadata>,
+    fail_detail: bool,
+}
+
+#[async_trait]
+impl MetadataGateway for MediaRequestMetadataGateway {
+    async fn search_tvdb(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<MetadataSearchItem>> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn search_tvdb_batch(
+        &self,
+        _queries: &[MetadataSearchQuery],
+        _language: &str,
+    ) -> AppResult<HashMap<MetadataSearchQuery, Vec<MetadataSearchItem>>> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn search_tvdb_rich(
+        &self,
+        _query: &str,
+        _type_hint: &str,
+        _limit: i32,
+        _language: &str,
+        _year: Option<i32>,
+    ) -> AppResult<Vec<RichMetadataSearchItem>> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn search_tvdb_multi(
+        &self,
+        _query: &str,
+        _limit: i32,
+        _language: &str,
+    ) -> AppResult<MultiMetadataSearchResult> {
+        Err(AppError::Repository("not implemented in tests".into()))
+    }
+
+    async fn get_movie(&self, tvdb_id: i64, _language: &str) -> AppResult<MovieMetadata> {
+        if self.fail_detail {
+            return Err(AppError::Repository("movie metadata unavailable".into()));
+        }
+        self.movies
+            .get(&tvdb_id)
+            .cloned()
+            .ok_or_else(|| AppError::NotFound(format!("movie {tvdb_id}")))
+    }
+
+    async fn get_series(&self, tvdb_id: i64, _language: &str) -> AppResult<SeriesMetadata> {
+        if self.fail_detail {
+            return Err(AppError::Repository("series metadata unavailable".into()));
+        }
+        self.series
+            .get(&tvdb_id)
+            .cloned()
+            .ok_or_else(|| AppError::NotFound(format!("series {tvdb_id}")))
+    }
+
+    async fn get_metadata_bulk(
+        &self,
+        movie_tvdb_ids: &[i64],
+        series_tvdb_ids: &[i64],
+        _language: &str,
+    ) -> AppResult<BulkMetadataResult> {
+        let movies = movie_tvdb_ids
+            .iter()
+            .filter_map(|tvdb_id| {
+                self.movies
+                    .get(tvdb_id)
+                    .cloned()
+                    .map(|movie| (*tvdb_id, movie))
+            })
+            .collect();
+        let series = series_tvdb_ids
+            .iter()
+            .filter_map(|tvdb_id| {
+                self.series
+                    .get(tvdb_id)
+                    .cloned()
+                    .map(|series| (*tvdb_id, series))
+            })
+            .collect();
+        Ok(BulkMetadataResult { movies, series })
+    }
+}
+
+fn external_id(source: &str, value: impl ToString) -> ExternalId {
+    ExternalId {
+        source: source.to_string(),
+        value: value.to_string(),
+    }
+}
+
+fn assert_external_ids(external_ids: &[ExternalId], expected: &[(&str, &str)]) {
+    let actual = external_ids
+        .iter()
+        .map(|external_id| (external_id.source.as_str(), external_id.value.as_str()))
+        .collect::<HashSet<_>>();
+    let expected = expected.iter().copied().collect::<HashSet<_>>();
+    assert_eq!(actual, expected);
+}
+
+fn make_series_metadata(tvdb_id: i64, name: &str) -> SeriesMetadata {
+    SeriesMetadata {
+        target_key: None,
+        tvdb_id,
+        name: name.to_string(),
+        sort_name: name.to_string(),
+        slug: name.to_ascii_lowercase().replace(' ', "-"),
+        year: Some(2026),
+        content_status: "Continuing".to_string(),
+        first_aired: "2026-01-01".to_string(),
+        overview: format!("{name} overview"),
+        network: "Test Network".to_string(),
+        runtime_minutes: 24,
+        poster_url: format!("https://example.com/{tvdb_id}.jpg"),
+        background_url: None,
+        country: "JP".to_string(),
+        canonical_tags: vec![],
+        aliases: Vec::new(),
+        tagged_aliases: Vec::new(),
+        seasons: Vec::new(),
+        episodes: Vec::new(),
+        anime_mappings: Vec::new(),
+        anime_movies: Vec::new(),
+        ratings: Default::default(),
+    }
+}
 
 #[test]
 fn library_permission_request_shadowing_expands_and_normalizes_masks() {
@@ -86,11 +224,10 @@ async fn submit_media_request_creates_request_requester_and_domain_event() {
         .await
         .expect("request submission should succeed");
 
-    assert!(outcome.accepted);
-
     let requests = harness.media_requests.requests.lock().await;
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
+    assert_eq!(request.id, outcome.request_id);
     assert_eq!(request.library_id, library_id);
     assert_eq!(request.status, MediaRequestStatus::Pending);
     assert_eq!(request.requested_quality_profile_id.as_deref(), Some("4k"));
@@ -105,6 +242,10 @@ async fn submit_media_request_creates_request_requester_and_domain_event() {
     assert_eq!(
         request.external_ids,
         vec![
+            ExternalId {
+                source: "imdb".to_string(),
+                value: "tt0009010".to_string(),
+            },
             ExternalId {
                 source: "imdb".to_string(),
                 value: "tt1234567".to_string(),
@@ -152,7 +293,7 @@ async fn submit_media_request_auto_approves_for_requester_with_auto_approve_perm
         .await
         .expect("request submission should auto-approve");
 
-    assert!(outcome.accepted);
+    assert!(!outcome.request_id.is_empty());
     let titles = harness.titles.store.lock().await;
     assert_eq!(titles.len(), 1);
     let title_id = titles[0].id.clone();
@@ -333,8 +474,7 @@ async fn submit_media_request_duplicate_same_user_creates_separate_submission_an
         .await
         .expect("duplicate request should succeed opaquely");
 
-    assert!(first.accepted);
-    assert!(second.accepted);
+    assert_ne!(first.request_id, second.request_id);
     let requests = harness.media_requests.requests.lock().await;
     assert_eq!(requests.len(), 2);
     assert!(requests.iter().all(|request| request.requesters.len() == 1));
@@ -377,8 +517,7 @@ async fn submit_media_request_second_user_creates_private_submission_without_exp
         .await
         .expect("second request should attach opaquely");
 
-    assert!(first.accepted);
-    assert!(second.accepted);
+    assert_ne!(first.request_id, second.request_id);
     let requests = harness.media_requests.requests.lock().await;
     assert_eq!(requests.len(), 2);
     assert!(requests.iter().all(|request| request.requesters.len() == 1));
@@ -428,6 +567,177 @@ async fn submit_media_request_accepts_search_correlation_id_without_tvdb() {
             value: "tt7654321".to_string(),
         }]
     );
+}
+
+#[tokio::test]
+async fn submit_media_request_enriches_movie_external_ids_from_metadata() {
+    let harness = bootstrap_media_request_app();
+    let tvdb_id = 91_001;
+    let mut movie = make_movie_metadata(tvdb_id, "External Movie");
+    movie.imdb_id = "tt9100100".to_string();
+    movie.tmdb_id = Some(810_010);
+    movie.anidb_id = Some(710_010);
+    let hydration_result =
+        crate::catalog::facets::handler::movie_to_hydration_result(movie.clone(), "eng");
+    let expected_external_ids = normalize_media_request_external_ids(
+        crate::catalog::facets::handler::external_ids_from_hydration_metadata(
+            vec![external_id("TVDB", tvdb_id)],
+            &hydration_result.metadata_update,
+        ),
+    )
+    .expect("hydration external ids should normalize");
+    let app = harness.app.with_test_overrides(|builder| {
+        builder.with_metadata_gateway(Arc::new(MediaRequestMetadataGateway {
+            movies: HashMap::from([(tvdb_id, movie)]),
+            ..Default::default()
+        }))
+    });
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let mut input = media_request_input(library_id, tvdb_id);
+    input.title = "External Movie".to_string();
+    input.external_ids = vec![external_id("TVDB", tvdb_id)];
+
+    app.submit_media_request(&harness.user, input)
+        .await
+        .expect("TVDB-backed movie request should succeed");
+
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].external_ids, expected_external_ids);
+    assert_external_ids(
+        &requests[0].external_ids,
+        &[
+            ("anidb", "710010"),
+            ("imdb", "tt9100100"),
+            ("tmdb", "810010"),
+            ("tvdb", "91001"),
+        ],
+    );
+}
+
+#[tokio::test]
+async fn submit_media_request_enriches_anime_external_ids_from_hydration_metadata() {
+    let harness = bootstrap_media_request_app();
+    let tvdb_id = 91_101;
+    let mut series = make_series_metadata(tvdb_id, "Mapped Anime");
+    series.anime_mappings = vec![AnimeMapping {
+        mal_id: Some(111_001),
+        mal_dub_id: None,
+        anilist_id: Some(222_002),
+        anidb_id: Some(333_003),
+        kitsu_id: Some(444_004),
+        simkl_id: Some(555_005),
+        thetvdb_id: Some(tvdb_id),
+        themoviedb_id: Some(666_006),
+        imdb_id: Some(777_007),
+        trakt_id: Some(888_008),
+        alt_tvdb_id: None,
+        thetvdb_season: None,
+        thetvdb_part: None,
+        score: None,
+        anime_media_type: "tv".to_string(),
+        global_media_type: "series".to_string(),
+        status: "current".to_string(),
+        mapping_type: "default".to_string(),
+        episode_mappings: Vec::new(),
+    }];
+    let hydration_result =
+        crate::catalog::facets::handler::series_to_hydration_result(series.clone(), "eng");
+    let expected_external_ids = normalize_media_request_external_ids(
+        crate::catalog::facets::handler::external_ids_from_hydration_metadata(
+            vec![external_id("tvdb", tvdb_id)],
+            &hydration_result.metadata_update,
+        ),
+    )
+    .expect("hydration external ids should normalize");
+    let app = harness.app.with_test_overrides(|builder| {
+        builder.with_metadata_gateway(Arc::new(MediaRequestMetadataGateway {
+            series: HashMap::from([(tvdb_id, series)]),
+            ..Default::default()
+        }))
+    });
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
+    let mut input = media_request_input(library_id, tvdb_id);
+    input.facet = MediaFacet::Anime;
+    input.title = "Mapped Anime".to_string();
+    input.external_ids = vec![external_id("tvdb", tvdb_id)];
+
+    app.submit_media_request(&harness.user, input)
+        .await
+        .expect("TVDB-backed anime request should succeed");
+
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].external_ids, expected_external_ids);
+    assert_external_ids(
+        &requests[0].external_ids,
+        &[
+            ("anidb", "333003"),
+            ("anilist", "222002"),
+            ("imdb", "tt777007"),
+            ("kitsu", "444004"),
+            ("mal", "111001"),
+            ("simkl", "555005"),
+            ("tmdb", "666006"),
+            ("trakt", "888008"),
+            ("tvdb", "91101"),
+        ],
+    );
+}
+
+#[tokio::test]
+async fn submit_media_request_keeps_original_ids_when_metadata_enrichment_fails() {
+    let harness = bootstrap_media_request_app();
+    let app = harness.app.with_test_overrides(|builder| {
+        builder.with_metadata_gateway(Arc::new(MediaRequestMetadataGateway {
+            fail_detail: true,
+            ..Default::default()
+        }))
+    });
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let mut input = media_request_input(library_id, 91_201);
+    input.external_ids = vec![external_id("TVDB", 91_201)];
+
+    app.submit_media_request(&harness.user, input)
+        .await
+        .expect("metadata failure should fail open");
+
+    let requests = harness.media_requests.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    assert_external_ids(&requests[0].external_ids, &[("tvdb", "91201")]);
+}
+
+#[tokio::test]
+async fn submit_media_request_checks_existing_titles_against_enriched_ids() {
+    let harness = bootstrap_media_request_app();
+    let tvdb_id = 91_301;
+    let tmdb_id = 813_010;
+    let mut movie = make_movie_metadata(tvdb_id, "Existing Via Tmdb");
+    movie.tmdb_id = Some(tmdb_id);
+    let app = harness.app.with_test_overrides(|builder| {
+        builder.with_metadata_gateway(Arc::new(MediaRequestMetadataGateway {
+            movies: HashMap::from([(tvdb_id, movie)]),
+            ..Default::default()
+        }))
+    });
+    let mut existing = make_due_hydration_title("existing-tmdb", MediaFacet::Movie, tvdb_id);
+    existing.external_ids = vec![external_id("tmdb", tmdb_id)];
+    harness.titles.store.lock().await.push(existing);
+
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let mut input = media_request_input(library_id, tvdb_id);
+    input.external_ids = vec![external_id("tvdb", tvdb_id)];
+
+    let error = app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect_err("enriched tmdb identity should block existing title request");
+
+    assert!(
+        matches!(error, AppError::Validation(ref message) if message.contains("already exists")),
+        "unexpected error: {error:?}"
+    );
+    assert!(harness.media_requests.requests.lock().await.is_empty());
 }
 
 #[tokio::test]
@@ -968,7 +1278,6 @@ async fn approve_media_request_creates_title_and_resolves_overlapping_pending_re
         .await
         .expect("approval should create the title");
 
-    assert!(outcome.accepted);
     assert!(outcome.search_error.is_none());
     let titles = harness.titles.store.lock().await;
     assert_eq!(titles.len(), 1);

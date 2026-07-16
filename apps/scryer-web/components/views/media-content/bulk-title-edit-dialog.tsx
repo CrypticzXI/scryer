@@ -106,29 +106,29 @@ export function BulkTitleEditDialog({
       isMovieView
         ? [
             {
-              value: "monitored",
+              value: "MONITORED",
               label: t("search.monitorType.monitored"),
             },
             {
-              value: "unmonitored",
+              value: "UNMONITORED",
               label: t("search.monitorType.unmonitored"),
             },
           ]
         : [
             {
-              value: "futureEpisodes",
+              value: "FUTURE_EPISODES",
               label: t("search.monitorType.futureEpisodes"),
             },
             {
-              value: "missingAndFutureEpisodes",
+              value: "MISSING_AND_FUTURE_EPISODES",
               label: t("search.monitorType.missingAndFutureEpisodes"),
             },
             {
-              value: "allEpisodes",
+              value: "ALL_EPISODES",
               label: t("search.monitorType.allEpisodes"),
             },
             {
-              value: "none",
+              value: "NONE",
               label: t("search.monitorType.none"),
             },
           ],
@@ -220,7 +220,7 @@ export function BulkTitleEditDialog({
               }
               disabled={busy}
             >
-              <SelectTrigger className="h-9 w-full font-mono text-sm">
+              <SelectTrigger className="h-9 w-full font-[var(--font-code)] text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -365,10 +365,10 @@ export function BulkTitleEditDialog({
                   <SelectItem value={INHERIT_VALUE}>
                     {t("title.inheritDefault")}
                   </SelectItem>
-                  <SelectItem value="download_all">
+                  <SelectItem value="DOWNLOAD_ALL">
                     {t("settings.fillerPolicyDownloadAll")}
                   </SelectItem>
-                  <SelectItem value="skip_filler">
+                  <SelectItem value="SKIP_FILLER">
                     {t("settings.fillerPolicySkipFiller")}
                   </SelectItem>
                 </SelectContent>
@@ -395,10 +395,10 @@ export function BulkTitleEditDialog({
                   <SelectItem value={INHERIT_VALUE}>
                     {t("title.inheritDefault")}
                   </SelectItem>
-                  <SelectItem value="download_all">
+                  <SelectItem value="DOWNLOAD_ALL">
                     {t("settings.recapPolicyDownloadAll")}
                   </SelectItem>
-                  <SelectItem value="skip_recap">
+                  <SelectItem value="SKIP_RECAP">
                     {t("settings.recapPolicySkipRecap")}
                   </SelectItem>
                 </SelectContent>

@@ -40,9 +40,9 @@ export function useGlobalStatusToast(setGlobalStatus: SetGlobalStatus, {
       : displayStatus;
     const toastOptions = options?.toastId ? { id: options.toastId } : undefined;
 
-    if (toastLevel === "success") {
+    if (toastLevel === "SUCCESS") {
       toast.success(content, toastOptions);
-    } else if (toastLevel === "error") {
+    } else if (toastLevel === "ERROR") {
       toast.error(content, toastOptions);
     } else {
       toast.warning(content, toastOptions);

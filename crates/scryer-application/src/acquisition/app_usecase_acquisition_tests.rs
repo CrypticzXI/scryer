@@ -1,4 +1,5 @@
 use super::*;
+use crate::acquisition::targets::movie_is_available_for_acquisition;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
@@ -20,48 +21,9 @@ fn days_from_now(n: i64) -> String {
         .to_string()
 }
 
-fn base_title() -> Title {
-    Title {
-        id: "t1".to_string(),
-        name: "Test Movie".to_string(),
-        facet: MediaFacet::Movie,
-        library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
-        root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
-        monitored: true,
-        tags: vec![],
-        external_ids: vec![],
-        created_by: None,
-        created_at: now_utc(),
-        year: Some(2024),
-        overview: None,
-        poster_url: None,
-        poster_source_url: None,
-        background_url: None,
-        background_source_url: None,
-        sort_title: None,
-        slug: None,
-        imdb_id: None,
-        runtime_minutes: None,
-        genres: vec![],
-        content_status: None,
-        language: None,
-        first_aired: None,
-        network: None,
-        studio: None,
-        country: None,
-        aliases: vec![],
-        tagged_aliases: vec![],
-        metadata_language: None,
-        metadata_fetched_at: None,
-        min_availability: None,
-        digital_release_date: None,
-        folder_path: None,
-    }
-}
-
-fn base_episode_wanted_item() -> WantedItem {
+fn base_episode_wanted_item() -> AcquisitionScopeState {
     let now = now_utc().to_rfc3339();
-    WantedItem {
+    AcquisitionScopeState {
         id: "wanted-episode-1".to_string(),
         title_id: "title-1".to_string(),
         title_name: Some("Test Show".to_string()),
@@ -76,12 +38,8 @@ fn base_episode_wanted_item() -> WantedItem {
         season_number: Some("1".to_string()),
         episode_number: Some("1".to_string()),
         media_type: "episode".to_string(),
-        search_phase: "primary".to_string(),
-        next_search_at: None,
         last_search_at: None,
-        search_count: 0,
-        baseline_date: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -91,9 +49,9 @@ fn base_episode_wanted_item() -> WantedItem {
     }
 }
 
-fn base_series_movie_wanted_item() -> WantedItem {
+fn base_series_movie_wanted_item() -> AcquisitionScopeState {
     let now = now_utc().to_rfc3339();
-    WantedItem {
+    AcquisitionScopeState {
         id: "wanted-series-movie-1".to_string(),
         title_id: "title-1".to_string(),
         title_name: Some("Test Show".to_string()),
@@ -108,12 +66,8 @@ fn base_series_movie_wanted_item() -> WantedItem {
         season_number: None,
         episode_number: None,
         media_type: "series_movie".to_string(),
-        search_phase: "primary".to_string(),
-        next_search_at: None,
         last_search_at: None,
-        search_count: 0,
-        baseline_date: None,
-        status: WantedStatus::Wanted,
+        status: AcquisitionScopeStatus::Wanted,
         grabbed_release: None,
         current_score: None,
         latest_release_decision: None,
@@ -121,60 +75,6 @@ fn base_series_movie_wanted_item() -> WantedItem {
         created_at: now.clone(),
         updated_at: now,
     }
-}
-
-fn slice_test_wanted_item(id: usize, title_id: &str) -> WantedItem {
-    let mut item = base_episode_wanted_item();
-    item.id = format!("wanted-{id}");
-    item.title_id = title_id.to_string();
-    item.title_name = Some(title_id.to_string());
-    item.episode_id = Some(format!("episode-{id}"));
-    item.collection_id = Some(format!("season-{id}"));
-    item.created_at = (now_utc() + chrono::Duration::seconds(id as i64)).to_rfc3339();
-    item.updated_at = item.created_at.clone();
-    item
-}
-
-#[test]
-fn cooperative_slice_keeps_existing_per_title_limit() {
-    let due_items = (0..12)
-        .map(|idx| slice_test_wanted_item(idx, "title-one"))
-        .collect();
-
-    let (selected, deferred_per_title, deferred_by_global_limit) =
-        select_due_items_for_cooperative_slice(due_items);
-
-    assert_eq!(selected.len(), ACQUISITION_MAX_WANTED_ITEMS_PER_TITLE_PER_SLICE);
-    assert_eq!(deferred_per_title.get("title-one"), Some(&2));
-    assert_eq!(deferred_by_global_limit, 0);
-}
-
-#[test]
-fn cooperative_slice_enforces_global_limit() {
-    let due_items = (0..14)
-        .map(|idx| slice_test_wanted_item(idx, &format!("title-{idx}")))
-        .collect();
-
-    let (selected, deferred_per_title, deferred_by_global_limit) =
-        select_due_items_for_cooperative_slice(due_items);
-
-    assert_eq!(selected.len(), ACQUISITION_MAX_WANTED_ITEMS_PER_SLICE);
-    assert!(deferred_per_title.is_empty());
-    assert_eq!(deferred_by_global_limit, 2);
-}
-
-#[test]
-fn fruitless_wanted_reset_cooldown_only_blocks_recent_runs() {
-    let now = Utc::now();
-
-    assert!(fruitless_wanted_reset_cooldown_active(
-        now,
-        now - chrono::Duration::hours(23)
-    ));
-    assert!(!fruitless_wanted_reset_cooldown_active(
-        now,
-        now - chrono::Duration::hours(25)
-    ));
 }
 
 fn base_episode() -> Episode {
@@ -208,6 +108,7 @@ fn test_search_result_with_decision(
     decision_code: &str,
 ) -> IndexerSearchResult {
     IndexerSearchResult {
+        indexer_id: None,
         source: "indexer".to_string(),
         title: title.to_string(),
         link: None,
@@ -239,9 +140,9 @@ fn test_search_result_with_decision(
 
 #[test]
 fn announced_always_available_no_dates() {
-    let title = base_title();
-    assert!(is_movie_available_for_acquisition(
-        &title,
+    assert!(movie_is_available_for_acquisition(
+        None,
+        None,
         "announced",
         &now_utc()
     ));
@@ -249,10 +150,10 @@ fn announced_always_available_no_dates() {
 
 #[test]
 fn announced_always_available_future_dates() {
-    let mut title = base_title();
-    title.first_aired = Some(days_from_now(90));
-    assert!(is_movie_available_for_acquisition(
-        &title,
+    let first_aired = days_from_now(90);
+    assert!(movie_is_available_for_acquisition(
+        Some(&first_aired),
+        None,
         "announced",
         &now_utc()
     ));
@@ -260,9 +161,9 @@ fn announced_always_available_future_dates() {
 
 #[test]
 fn unknown_availability_treated_as_announced() {
-    let title = base_title();
-    assert!(is_movie_available_for_acquisition(
-        &title,
+    assert!(movie_is_available_for_acquisition(
+        None,
+        None,
         "preorder",
         &now_utc()
     ));
@@ -288,10 +189,10 @@ async fn skip_interval_does_not_replay_missed_poll_ticks_in_a_burst() {
 
 #[test]
 fn in_cinemas_available_when_past_cinema_date() {
-    let mut title = base_title();
-    title.first_aired = Some(days_ago(10));
-    assert!(is_movie_available_for_acquisition(
-        &title,
+    let first_aired = days_ago(10);
+    assert!(movie_is_available_for_acquisition(
+        Some(&first_aired),
+        None,
         "in_cinemas",
         &now_utc()
     ));
@@ -299,10 +200,10 @@ fn in_cinemas_available_when_past_cinema_date() {
 
 #[test]
 fn in_cinemas_available_when_today_is_cinema_date() {
-    let mut title = base_title();
-    title.first_aired = Some(now_utc().format("%Y-%m-%d").to_string());
-    assert!(is_movie_available_for_acquisition(
-        &title,
+    let first_aired = now_utc().format("%Y-%m-%d").to_string();
+    assert!(movie_is_available_for_acquisition(
+        Some(&first_aired),
+        None,
         "in_cinemas",
         &now_utc()
     ));
@@ -310,10 +211,10 @@ fn in_cinemas_available_when_today_is_cinema_date() {
 
 #[test]
 fn in_cinemas_unavailable_when_future_cinema_date() {
-    let mut title = base_title();
-    title.first_aired = Some(days_from_now(30));
-    assert!(!is_movie_available_for_acquisition(
-        &title,
+    let first_aired = days_from_now(30);
+    assert!(!movie_is_available_for_acquisition(
+        Some(&first_aired),
+        None,
         "in_cinemas",
         &now_utc()
     ));
@@ -321,9 +222,9 @@ fn in_cinemas_unavailable_when_future_cinema_date() {
 
 #[test]
 fn in_cinemas_unavailable_when_no_date() {
-    let title = base_title();
-    assert!(!is_movie_available_for_acquisition(
-        &title,
+    assert!(!movie_is_available_for_acquisition(
+        None,
+        None,
         "in_cinemas",
         &now_utc()
     ));
@@ -331,10 +232,9 @@ fn in_cinemas_unavailable_when_no_date() {
 
 #[test]
 fn in_cinemas_unavailable_when_date_malformed() {
-    let mut title = base_title();
-    title.first_aired = Some("not-a-date".to_string());
-    assert!(!is_movie_available_for_acquisition(
-        &title,
+    assert!(!movie_is_available_for_acquisition(
+        Some("not-a-date"),
+        None,
         "in_cinemas",
         &now_utc()
     ));
@@ -344,10 +244,10 @@ fn in_cinemas_unavailable_when_date_malformed() {
 
 #[test]
 fn released_available_when_past_digital_release() {
-    let mut title = base_title();
-    title.digital_release_date = Some(days_ago(5));
-    assert!(is_movie_available_for_acquisition(
-        &title,
+    let digital = days_ago(5);
+    assert!(movie_is_available_for_acquisition(
+        None,
+        Some(&digital),
         "released",
         &now_utc()
     ));
@@ -355,10 +255,10 @@ fn released_available_when_past_digital_release() {
 
 #[test]
 fn released_unavailable_when_future_digital_release() {
-    let mut title = base_title();
-    title.digital_release_date = Some(days_from_now(14));
-    assert!(!is_movie_available_for_acquisition(
-        &title,
+    let digital = days_from_now(14);
+    assert!(!movie_is_available_for_acquisition(
+        None,
+        Some(&digital),
         "released",
         &now_utc()
     ));
@@ -366,10 +266,10 @@ fn released_unavailable_when_future_digital_release() {
 
 #[test]
 fn released_falls_back_to_cinema_plus_90_days_when_past() {
-    let mut title = base_title();
-    title.first_aired = Some(days_ago(100)); // 100 days ago + 90 = still past
-    assert!(is_movie_available_for_acquisition(
-        &title,
+    let first_aired = days_ago(100); // 100 days ago + 90 = still past
+    assert!(movie_is_available_for_acquisition(
+        Some(&first_aired),
+        None,
         "released",
         &now_utc()
     ));
@@ -377,10 +277,10 @@ fn released_falls_back_to_cinema_plus_90_days_when_past() {
 
 #[test]
 fn released_falls_back_to_cinema_plus_90_days_when_not_yet() {
-    let mut title = base_title();
-    title.first_aired = Some(days_ago(30)); // 30 days ago + 90 = 60 days in future
-    assert!(!is_movie_available_for_acquisition(
-        &title,
+    let first_aired = days_ago(30); // 30 days ago + 90 = 60 days in future
+    assert!(!movie_is_available_for_acquisition(
+        Some(&first_aired),
+        None,
         "released",
         &now_utc()
     ));
@@ -388,9 +288,9 @@ fn released_falls_back_to_cinema_plus_90_days_when_not_yet() {
 
 #[test]
 fn released_unavailable_when_no_dates() {
-    let title = base_title();
-    assert!(!is_movie_available_for_acquisition(
-        &title,
+    assert!(!movie_is_available_for_acquisition(
+        None,
+        None,
         "released",
         &now_utc()
     ));
@@ -398,12 +298,12 @@ fn released_unavailable_when_no_dates() {
 
 #[test]
 fn released_digital_date_takes_priority_over_cinema_fallback() {
-    let mut title = base_title();
     // digital date is in the past (available), even though cinema + 90 would be in future
-    title.digital_release_date = Some(days_ago(1));
-    title.first_aired = Some(days_ago(10)); // cinema only 10d ago, +90 not reached
-    assert!(is_movie_available_for_acquisition(
-        &title,
+    let digital = days_ago(1);
+    let first_aired = days_ago(10); // cinema only 10d ago, +90 not reached
+    assert!(movie_is_available_for_acquisition(
+        Some(&first_aired),
+        Some(&digital),
         "released",
         &now_utc()
     ));
@@ -411,91 +311,16 @@ fn released_digital_date_takes_priority_over_cinema_fallback() {
 
 #[test]
 fn released_malformed_digital_date_falls_back_to_cinema() {
-    let mut title = base_title();
-    title.digital_release_date = Some("bad-date".to_string());
-    title.first_aired = Some(days_ago(100));
-    // digital date parse fails → false; but we fall through to cinema check... actually no.
-    // The code checks digital_release_date first, and on parse failure returns false
-    // (no fallback within that branch). So this returns false.
-    assert!(!is_movie_available_for_acquisition(
-        &title,
+    let first_aired = days_ago(100);
+    // digital date parse fails → false; the code checks digital_release_date first,
+    // and on parse failure returns false (no fallback within that branch). So this
+    // returns false.
+    assert!(!movie_is_available_for_acquisition(
+        Some(&first_aired),
+        Some("bad-date"),
         "released",
         &now_utc()
     ));
-}
-
-#[test]
-fn old_failed_grab_titles_do_not_research_immediately() {
-    let now = now_utc();
-    let item = WantedItem {
-        id: "wanted-1".to_string(),
-        title_id: "title-1".to_string(),
-        title_name: None,
-        title_slug: None,
-        title_facet: None,
-        library_id: None,
-        library_name: None,
-        library_slug: None,
-        episode_id: None,
-        collection_id: None,
-        series_movie_link_id: None,
-        season_number: None,
-        episode_number: None,
-        media_type: "movie".to_string(),
-        search_phase: "primary".to_string(),
-        next_search_at: None,
-        last_search_at: Some((now - chrono::Duration::minutes(45)).to_rfc3339()),
-        search_count: 1,
-        baseline_date: Some(days_ago(30)),
-        status: WantedStatus::Grabbed,
-        grabbed_release: None,
-        current_score: Some(100),
-        latest_release_decision: None,
-        mismatch_recovery_eligible: false,
-        created_at: now.to_rfc3339(),
-        updated_at: now.to_rfc3339(),
-    };
-
-    assert!(is_old_failed_grab_title(&item, &now));
-    assert!(!should_research_failed_grab(&item, &now));
-}
-
-#[test]
-fn fresh_failed_grab_titles_require_stale_last_search() {
-    let now = now_utc();
-    let mut item = WantedItem {
-        id: "wanted-1".to_string(),
-        title_id: "title-1".to_string(),
-        title_name: None,
-        title_slug: None,
-        title_facet: None,
-        library_id: None,
-        library_name: None,
-        library_slug: None,
-        episode_id: None,
-        collection_id: None,
-        series_movie_link_id: None,
-        season_number: None,
-        episode_number: None,
-        media_type: "movie".to_string(),
-        search_phase: "primary".to_string(),
-        next_search_at: None,
-        last_search_at: Some((now - chrono::Duration::minutes(10)).to_rfc3339()),
-        search_count: 1,
-        baseline_date: Some(days_ago(3)),
-        status: WantedStatus::Grabbed,
-        grabbed_release: None,
-        current_score: Some(100),
-        latest_release_decision: None,
-        mismatch_recovery_eligible: false,
-        created_at: now.to_rfc3339(),
-        updated_at: now.to_rfc3339(),
-    };
-
-    assert!(!should_research_failed_grab(&item, &now));
-
-    item.last_search_at = Some((now - chrono::Duration::minutes(25)).to_rfc3339());
-    assert!(should_research_failed_grab(&item, &now));
 }
 
 #[test]

@@ -3,24 +3,31 @@ import { CombinedError, useClient } from "urql";
 
 import {
   buildReactiveRefreshQuery,
+  domainEventFeedSubscription,
   type ReactiveRefreshQueryActionInput,
   type ReactiveRefreshQueryActionPlan,
 } from "@/lib/graphql/queries";
 import { extractDownloadFeedbackWarning } from "@/lib/graphql/download-feedback-timeout";
+import { wsClient } from "@/lib/graphql/ws-client";
+import {
+  createReactiveRefreshEngine,
+  type ReactiveRefreshEngine,
+} from "@/lib/reactive/domain-event-feed";
+import { startDomainEventFeedTransport } from "@/lib/reactive/domain-event-feed-transport";
 import {
   ReactiveRefreshContext,
   type QueueCatalogTitleRefreshOptions,
   type QueueCatalogTitlesRefreshOptions,
   type QueueImportHistoryRefreshOptions,
   type QueueTitleOverviewDownloadFeedbackRefreshOptions,
-  type QueueTitleOverviewNativeRefreshOptions,
+  type QueueTitleSidePanelOverviewRefreshOptions,
   reactiveRefreshEpoch,
   type ReactiveRefreshContextValue,
 } from "@/lib/context/reactive-refresh-context";
 import type { ImportRecord, TitleRecord } from "@/lib/types";
 import type {
   TitleOverviewDownloadFeedbackSnapshot,
-  TitleOverviewNativeSnapshot,
+  TitleSidePanelOverviewSnapshot,
 } from "@/lib/title-overview-loader";
 
 type CatalogTitlesAction = {
@@ -33,13 +40,14 @@ type CatalogTitleAction = {
   kind: "catalogTitle";
 } & QueueCatalogTitleRefreshOptions;
 
-type TitleOverviewNativeAction = {
+type TitleSidePanelOverviewAction = {
   key: string;
-  kind: "titleOverviewNative";
+  kind: "titleSidePanelOverview";
   titleId: string;
   blocklistLimit: number;
+  projection: QueueTitleSidePanelOverviewRefreshOptions["projection"];
   apply: (
-    snapshot: TitleOverviewNativeSnapshot<
+    snapshot: TitleSidePanelOverviewSnapshot<
       unknown,
       unknown,
       unknown,
@@ -47,7 +55,7 @@ type TitleOverviewNativeAction = {
       unknown
     >,
   ) => void;
-  onError?: QueueTitleOverviewNativeRefreshOptions["onError"];
+  onError?: QueueTitleSidePanelOverviewRefreshOptions["onError"];
 };
 
 type TitleOverviewDownloadFeedbackAction = {
@@ -66,7 +74,7 @@ type ImportHistoryAction = {
 type ReactiveRefreshAction =
   | CatalogTitlesAction
   | CatalogTitleAction
-  | TitleOverviewNativeAction
+  | TitleSidePanelOverviewAction
   | TitleOverviewDownloadFeedbackAction
   | ImportHistoryAction;
 
@@ -93,13 +101,15 @@ function actionInputFromPendingAction(
         key: action.key,
         kind: action.kind,
         titleId: action.titleId,
+        projection: action.projection,
       };
-    case "titleOverviewNative":
+    case "titleSidePanelOverview":
       return {
         key: action.key,
         kind: action.kind,
         titleId: action.titleId,
         blocklistLimit: action.blocklistLimit,
+        projection: action.projection,
       };
     case "titleOverviewDownloadFeedback":
       return {
@@ -151,34 +161,35 @@ function applyReactiveRefreshActionResult(
       );
       return;
     }
-    case "titleOverviewNative": {
+    case "titleSidePanelOverview": {
       const typedActionPlan = actionPlan as Extract<
         ReactiveRefreshQueryActionPlan,
-        { kind: "titleOverviewNative" }
+        { kind: "titleSidePanelOverview" }
       >;
-      const titleHistoryPage = payload[typedActionPlan.titleHistoryAlias] as
-        | { records?: unknown[] }
+      const titleHistoryPage = typedActionPlan.titleHistoryAlias
+        ? payload[typedActionPlan.titleHistoryAlias] as
+        | { items?: unknown[] }
         | null
-        | undefined;
+        | undefined
+        : null;
       action.apply({
         title: payload[typedActionPlan.titleAlias] ?? null,
-        acquisitionDiagnostics:
-          payload[typedActionPlan.titleAcquisitionDiagnosticsAlias] ?? null,
-        titleHistory: (titleHistoryPage?.records ?? []) as TitleOverviewNativeSnapshot<
+        acquisitionDiagnostics: null,
+        titleHistory: (titleHistoryPage?.items ?? []) as TitleSidePanelOverviewSnapshot<
           unknown,
           unknown,
           unknown,
           unknown,
           unknown
         >["titleHistory"],
-        titleReleaseBlocklist: (payload[typedActionPlan.titleReleaseBlocklistAlias] ?? []) as TitleOverviewNativeSnapshot<
+        titleReleaseBlocklist: (payload[typedActionPlan.titleReleaseBlocklistAlias] ?? []) as TitleSidePanelOverviewSnapshot<
           unknown,
           unknown,
           unknown,
           unknown,
           unknown
         >["titleReleaseBlocklist"],
-        externalSubtitles: (payload[typedActionPlan.externalSubtitlesAlias] ?? []) as TitleOverviewNativeSnapshot<
+        externalSubtitles: (payload[typedActionPlan.externalSubtitlesAlias] ?? []) as TitleSidePanelOverviewSnapshot<
           unknown,
           unknown,
           unknown,
@@ -228,11 +239,10 @@ function reactiveRefreshActionAliases(
       return [actionPlan.titlesAlias];
     case "catalogTitle":
       return [actionPlan.titleAlias];
-    case "titleOverviewNative":
+    case "titleSidePanelOverview":
       return [
         actionPlan.titleAlias,
-        actionPlan.titleAcquisitionDiagnosticsAlias,
-        actionPlan.titleHistoryAlias,
+        ...(actionPlan.titleHistoryAlias ? [actionPlan.titleHistoryAlias] : []),
         actionPlan.titleReleaseBlocklistAlias,
         actionPlan.externalSubtitlesAlias,
         actionPlan.setupStatusAlias,
@@ -259,11 +269,12 @@ function graphQlErrorAlias(value: unknown): string | null {
   return typeof value.path[0] === "string" ? value.path[0] : null;
 }
 
-function isTitleOverviewNativePartialHistoryError(
+function isTitleSidePanelPartialHistoryError(
   actionPlan: ReactiveRefreshQueryActionPlan,
   graphQlErrors: CombinedError["graphQLErrors"],
-): actionPlan is Extract<ReactiveRefreshQueryActionPlan, { kind: "titleOverviewNative" }> {
-  return actionPlan.kind === "titleOverviewNative"
+): actionPlan is Extract<ReactiveRefreshQueryActionPlan, { kind: "titleSidePanelOverview" }> {
+  return actionPlan.kind === "titleSidePanelOverview"
+    && Boolean(actionPlan.titleHistoryAlias)
     && graphQlErrors.length > 0
     && graphQlErrors.every(
       (graphQlError) => graphQlErrorAlias(graphQlError) === actionPlan.titleHistoryAlias,
@@ -333,14 +344,27 @@ function reactiveRefreshBatchGroup(
 
 export function ReactiveRefreshProvider({
   children,
+  enabled = true,
 }: {
   children: ReactNode;
+  enabled?: boolean;
 }) {
   const client = useClient();
   const pendingActionsRef = useRef<Map<string, ReactiveRefreshAction>>(new Map());
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flushInFlightRef = useRef(false);
   const isMountedRef = useRef(true);
+  const engineRef = useRef<ReactiveRefreshEngine | null>(null);
+  if (engineRef.current === null) {
+    engineRef.current = createReactiveRefreshEngine({
+      debounceMs: REACTIVE_REFRESH_DEBOUNCE_MS,
+    });
+  }
+  const engine = engineRef.current;
+
+  const registerReactiveRefresh = useCallback<
+    ReactiveRefreshContextValue["registerReactiveRefresh"]
+  >((registration) => engine.register(registration), [engine]);
 
   const flushPendingActionGroup = useCallback(async (queuedActions: ReactiveRefreshAction[]) => {
     if (queuedActions.length === 0) {
@@ -394,7 +418,7 @@ export function ReactiveRefreshProvider({
           }
           if (
             actionPlan
-            && isTitleOverviewNativePartialHistoryError(actionPlan, actionError.graphQLErrors)
+            && isTitleSidePanelPartialHistoryError(actionPlan, actionError.graphQLErrors)
           ) {
             return;
           }
@@ -504,8 +528,28 @@ export function ReactiveRefreshProvider({
     };
   }, []);
 
+  // Single `domainEventFeed` subscription — the only invalidation source for
+  // registered views. The transport reconnects with `afterSequence` for lossless
+  // catch-up (graphql-ws already retries the socket; a delivered `error`/
+  // `complete` means the subscription itself dropped) and degrades to a slow
+  // interval refresh of every registered alias if reconnects keep failing.
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    const transport = startDomainEventFeedTransport({
+      query: domainEventFeedSubscription,
+      engine,
+      subscribe: (request, sink) => wsClient.subscribe(request, sink),
+    });
+    return () => {
+      transport.stop();
+    };
+  }, [enabled, engine]);
+
   const value = useMemo<ReactiveRefreshContextValue>(
     () => ({
+      registerReactiveRefresh,
       queueCatalogTitlesRefresh(options: QueueCatalogTitlesRefreshOptions) {
         queuePendingAction({
           ...options,
@@ -520,14 +564,14 @@ export function ReactiveRefreshProvider({
           kind: "catalogTitle",
         });
       },
-        queueTitleOverviewNativeRefresh<
+      queueTitleSidePanelOverviewRefresh<
         TTitle = unknown,
         TDiagnostics = unknown,
         TEvent = unknown,
         TBlocklist = unknown,
         TSubtitle = unknown,
       >(
-          options: QueueTitleOverviewNativeRefreshOptions<
+        options: QueueTitleSidePanelOverviewRefreshOptions<
           TTitle,
           TDiagnostics,
           TEvent,
@@ -537,18 +581,18 @@ export function ReactiveRefreshProvider({
       ) {
         queuePendingAction({
           ...options,
-            key: `titleOverviewNative:${options.titleId}:${options.blocklistLimit}`,
-            kind: "titleOverviewNative",
-          } as TitleOverviewNativeAction);
-        },
-        queueTitleOverviewDownloadFeedbackRefresh(
-          options: QueueTitleOverviewDownloadFeedbackRefreshOptions,
-        ) {
-          queuePendingAction({
-            ...options,
-            key: `titleOverviewDownloadFeedback:${options.titleId}`,
-            kind: "titleOverviewDownloadFeedback",
-          } as TitleOverviewDownloadFeedbackAction);
+          key: `titleSidePanelOverview:${options.titleId}:${options.blocklistLimit}:${options.projection}`,
+          kind: "titleSidePanelOverview",
+        } as TitleSidePanelOverviewAction);
+      },
+      queueTitleOverviewDownloadFeedbackRefresh(
+        options: QueueTitleOverviewDownloadFeedbackRefreshOptions,
+      ) {
+        queuePendingAction({
+          ...options,
+          key: `titleOverviewDownloadFeedback:${options.titleId}`,
+          kind: "titleOverviewDownloadFeedback",
+        } as TitleOverviewDownloadFeedbackAction);
       },
       queueImportHistoryRefresh(options: QueueImportHistoryRefreshOptions) {
         queuePendingAction({
@@ -558,7 +602,7 @@ export function ReactiveRefreshProvider({
         });
       },
     }),
-    [queuePendingAction],
+    [queuePendingAction, registerReactiveRefresh],
   );
 
   return (

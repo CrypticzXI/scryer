@@ -9,6 +9,7 @@ export type LibraryScanProgressContextValue = {
     libraryId?: string | null,
   ) => LibraryScanProgress | null;
   getSessionById: (sessionId: string) => LibraryScanProgress | null;
+  dismissFacetReviewToasts: (facet: Facet) => void;
   refreshSessions: () => Promise<LibraryScanProgress[]>;
 };
 

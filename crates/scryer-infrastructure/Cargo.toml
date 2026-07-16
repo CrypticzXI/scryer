@@ -1,6 +1,6 @@
 [package]
 name = "scryer-infrastructure"
-version = "0.16.8"
+version = "0.17.0"
 edition.workspace = true
 
 [features]
@@ -58,6 +58,9 @@ ravif = { version = "0.13", features = ["threading"], optional = true }
 keyring-core = { workspace = true }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 windows-native-keyring-store = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 scryer-plugin-sdk = { path = "../scryer-plugin-sdk" }

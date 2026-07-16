@@ -1,9 +1,19 @@
-import { useState } from "react";
-import { FolderOpen } from "lucide-react";
+import { useState, type KeyboardEvent } from "react";
+import { FolderOpen, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { FolderBrowserDialog } from "./folder-browser-dialog";
+import {
+  SetupBackButton,
+  SetupPanel,
+  SetupPrimaryButton,
+  SetupStepHeader,
+} from "./setup-chrome";
+
+type MediaPathField = "movies" | "series" | "anime";
 
 interface SetupMediaPathsViewProps {
   t: (key: string) => string;
@@ -18,9 +28,25 @@ interface SetupMediaPathsViewProps {
   onSkip?: () => void;
   saving: boolean;
   error: string | null;
+  invalidPathFields?: Partial<Record<MediaPathField, boolean>>;
 }
 
-type BrowseTarget = "movies" | "series" | "anime" | null;
+type BrowseTarget = MediaPathField | null;
+
+function InvalidPathPill({ show }: { show: boolean }) {
+  if (!show) {
+    return null;
+  }
+
+  return (
+    <Badge
+      tone="negative"
+      className="ml-2 align-middle text-[10px] font-bold uppercase tracking-[0.08em]"
+    >
+      INVALID PATH
+    </Badge>
+  );
+}
 
 export function SetupMediaPathsView({
   t,
@@ -35,9 +61,10 @@ export function SetupMediaPathsView({
   onSkip,
   saving,
   error,
+  invalidPathFields = {},
 }: SetupMediaPathsViewProps) {
   const [browseTarget, setBrowseTarget] = useState<BrowseTarget>(null);
-  const canProceed = true;
+  const canProceed = !Object.values(invalidPathFields).some(Boolean);
 
   const browseInitialPath =
     browseTarget === "movies"
@@ -54,12 +81,24 @@ export function SetupMediaPathsView({
     else if (browseTarget === "anime") onAnimePathChange(path);
   }
 
+  function handlePathInputKeyDown(
+    event: KeyboardEvent<HTMLInputElement>,
+    target: MediaPathField,
+  ) {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    event.preventDefault();
+    setBrowseTarget(target);
+  }
+
   return (
-    <div id="setup-media-paths-view" className="flex flex-col gap-6">
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">{t("setup.mediaPathsTitle")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">{t("setup.mediaPathsDescription")}</p>
-      </div>
+    <SetupPanel id="setup-media-paths-view" className="flex flex-col gap-6">
+      <SetupStepHeader
+        icon={FolderOpen}
+        title={t("setup.mediaPathsTitle")}
+        subtitle={t("setup.mediaPathsDescription")}
+      />
       <div className="mx-auto flex w-full max-w-md flex-col gap-4">
         <div className="space-y-2">
           <Label htmlFor="setup-media-paths-movies-path">
@@ -67,24 +106,36 @@ export function SetupMediaPathsView({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">
               {t("setup.optional")}
             </span>
+            <InvalidPathPill show={invalidPathFields.movies === true} />
           </Label>
           <div className="flex gap-2">
             <Input
               id="setup-media-paths-movies-path"
               value={moviesPath}
-              onChange={(e) => onMoviesPathChange(e.target.value)}
-              placeholder="/data/movies"
-            />
-            <Button
-              id="setup-media-paths-movies-browse"
-              type="button"
-              variant="outline"
-              size="icon"
+              readOnly
               onClick={() => setBrowseTarget("movies")}
-              title={t("setup.browse")}
+              onKeyDown={(event) => handlePathInputKeyDown(event, "movies")}
+              placeholder="/data/movies"
+              className="cursor-pointer font-[var(--font-code)]"
+              aria-invalid={invalidPathFields.movies === true}
+            />
+            <IconButton
+              id="setup-media-paths-movies-browse"
+              label={t("setup.browse")}
+              tone="neutral"
+              onClick={() => setBrowseTarget("movies")}
             >
               <FolderOpen className="h-4 w-4" />
-            </Button>
+            </IconButton>
+            <IconButton
+              id="setup-media-paths-movies-clear"
+              label="Clear movies path"
+              tone="delete"
+              onClick={() => onMoviesPathChange("")}
+              disabled={!moviesPath}
+            >
+              <X className="h-4 w-4" />
+            </IconButton>
           </div>
         </div>
         <div className="space-y-2">
@@ -93,24 +144,36 @@ export function SetupMediaPathsView({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">
               {t("setup.optional")}
             </span>
+            <InvalidPathPill show={invalidPathFields.series === true} />
           </Label>
           <div className="flex gap-2">
             <Input
               id="setup-media-paths-series-path"
               value={seriesPath}
-              onChange={(e) => onSeriesPathChange(e.target.value)}
-              placeholder="/data/series"
-            />
-            <Button
-              id="setup-media-paths-series-browse"
-              type="button"
-              variant="outline"
-              size="icon"
+              readOnly
               onClick={() => setBrowseTarget("series")}
-              title={t("setup.browse")}
+              onKeyDown={(event) => handlePathInputKeyDown(event, "series")}
+              placeholder="/data/series"
+              className="cursor-pointer font-[var(--font-code)]"
+              aria-invalid={invalidPathFields.series === true}
+            />
+            <IconButton
+              id="setup-media-paths-series-browse"
+              label={t("setup.browse")}
+              tone="neutral"
+              onClick={() => setBrowseTarget("series")}
             >
               <FolderOpen className="h-4 w-4" />
-            </Button>
+            </IconButton>
+            <IconButton
+              id="setup-media-paths-series-clear"
+              label="Clear series path"
+              tone="delete"
+              onClick={() => onSeriesPathChange("")}
+              disabled={!seriesPath}
+            >
+              <X className="h-4 w-4" />
+            </IconButton>
           </div>
         </div>
         <div className="space-y-2">
@@ -119,24 +182,36 @@ export function SetupMediaPathsView({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">
               {t("setup.optional")}
             </span>
+            <InvalidPathPill show={invalidPathFields.anime === true} />
           </Label>
           <div className="flex gap-2">
             <Input
               id="setup-media-paths-anime-path"
               value={animePath}
-              onChange={(e) => onAnimePathChange(e.target.value)}
-              placeholder="/data/anime"
-            />
-            <Button
-              id="setup-media-paths-anime-browse"
-              type="button"
-              variant="outline"
-              size="icon"
+              readOnly
               onClick={() => setBrowseTarget("anime")}
-              title={t("setup.browse")}
+              onKeyDown={(event) => handlePathInputKeyDown(event, "anime")}
+              placeholder="/data/anime"
+              className="cursor-pointer font-[var(--font-code)]"
+              aria-invalid={invalidPathFields.anime === true}
+            />
+            <IconButton
+              id="setup-media-paths-anime-browse"
+              label={t("setup.browse")}
+              tone="neutral"
+              onClick={() => setBrowseTarget("anime")}
             >
               <FolderOpen className="h-4 w-4" />
-            </Button>
+            </IconButton>
+            <IconButton
+              id="setup-media-paths-anime-clear"
+              label="Clear anime path"
+              tone="delete"
+              onClick={() => onAnimePathChange("")}
+              disabled={!animePath}
+            >
+              <X className="h-4 w-4" />
+            </IconButton>
           </div>
         </div>
         {error && (
@@ -146,16 +221,18 @@ export function SetupMediaPathsView({
         )}
       </div>
       <div className="flex items-center justify-between pt-2">
-        <Button id="setup-media-paths-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
+        <SetupBackButton id="setup-media-paths-back" onClick={onBack}>
+          {t("setup.back")}
+        </SetupBackButton>
         <div className="flex items-center gap-3">
           {onSkip && (
-            <button id="setup-media-paths-skip" type="button" onClick={onSkip} className="text-sm text-muted-foreground underline-offset-4 hover:underline">
+            <Button id="setup-media-paths-skip" type="button" variant="link" onClick={onSkip}>
               {t("setup.skip")}
-            </button>
+            </Button>
           )}
-          <Button id="setup-media-paths-next" onClick={onNext} disabled={!canProceed || saving}>
+          <SetupPrimaryButton id="setup-media-paths-next" onClick={onNext} disabled={!canProceed || saving}>
             {saving ? t("label.saving") : t("setup.next")}
-          </Button>
+          </SetupPrimaryButton>
         </div>
       </div>
 
@@ -163,9 +240,10 @@ export function SetupMediaPathsView({
         open={browseTarget !== null}
         onOpenChange={(open) => { if (!open) setBrowseTarget(null); }}
         onSelect={handleBrowseSelect}
+        selectionTypes={["folder"]}
         initialPath={browseInitialPath || "/"}
         title={t("setup.browse")}
       />
-    </div>
+    </SetupPanel>
   );
 }

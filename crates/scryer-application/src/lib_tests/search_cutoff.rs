@@ -302,15 +302,27 @@ async fn search_indexers_for_title_keeps_direct_nab_searches_uncategorized_when_
         .await
         .expect("create anime title");
 
-    app.search_indexers_for_title(&user, movie.id.clone())
-        .await
-        .expect("movie search should succeed");
-    app.search_indexers_for_title(&user, series.id.clone())
-        .await
-        .expect("series search should succeed");
-    app.search_indexers_for_title(&user, anime.id.clone())
-        .await
-        .expect("anime search should succeed");
+    app.search_indexers_for_title(
+        &user,
+        movie.id.clone(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("movie search should succeed");
+    app.search_indexers_for_title(
+        &user,
+        series.id.clone(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("series search should succeed");
+    app.search_indexers_for_title(
+        &user,
+        anime.id.clone(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("anime search should succeed");
 
     let calls = recording_client.calls.lock().await.clone();
     assert_eq!(calls.len(), 3);
@@ -390,9 +402,15 @@ async fn search_indexers_for_episode_dedupes_equivalent_structured_series_querie
         .await
         .expect("create series episode");
 
-    app.search_indexers_for_episode(&user, title.id.clone(), "2".to_string(), "11".to_string())
-        .await
-        .expect("series episode search should succeed");
+    app.search_indexers_for_episode(
+        &user,
+        title.id.clone(),
+        "2".to_string(),
+        "11".to_string(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("series episode search should succeed");
 
     let calls = recording_client.calls.lock().await.clone();
     assert_eq!(
@@ -477,9 +495,15 @@ async fn search_indexers_for_episode_dedupes_equivalent_structured_anime_queries
         .await
         .expect("create anime episode");
 
-    app.search_indexers_for_episode(&user, title.id.clone(), "2".to_string(), "11".to_string())
-        .await
-        .expect("anime episode search should succeed");
+    app.search_indexers_for_episode(
+        &user,
+        title.id.clone(),
+        "2".to_string(),
+        "11".to_string(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("anime episode search should succeed");
 
     let calls = recording_client.calls.lock().await.clone();
     assert_eq!(
@@ -534,7 +558,11 @@ async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
         .expect("create anime title");
 
     let results = app
-        .search_indexers_for_title(&user, title.id.clone())
+        .search_indexers_for_title(
+            &user,
+            title.id.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("search indexers for title");
 
@@ -639,7 +667,11 @@ async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
         .expect("persist tagged aliases");
 
     let results = app
-        .search_indexers_for_title(&authed_search_user, title.id.clone())
+        .search_indexers_for_title(
+            &authed_search_user,
+            title.id.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("search indexers for title");
 
@@ -704,10 +736,85 @@ async fn search_indexers_for_title_returns_results_when_candidate_token_attachme
     };
 
     let results = app
-        .search_indexers_for_title(&ghost_actor, title.id.clone())
+        .search_indexers_for_title(
+            &ghost_actor,
+            title.id.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
         .await
         .expect("search should still succeed without candidate signing key");
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].candidate_token, None);
+}
+
+#[tokio::test]
+async fn list_cutoff_unmet_titles_page_bounds_and_total() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, r#""p720""#)
+        .await;
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![cutoff_projection_test_profile("p720", "720p")])
+        .await;
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let (app, user, _) =
+        bootstrap_with_cutoff_projection_state(settings, quality_profiles, media_files.clone());
+
+    // Three monitored movies, each with a below-cutoff (480p vs 720p) file.
+    for name in ["Alpha", "Bravo", "Charlie"] {
+        let title = app
+            .add_title(
+                &user,
+                NewTitle {
+                    name: name.into(),
+                    facet: MediaFacet::Movie,
+                    monitored: true,
+                    tags: vec![],
+                    external_ids: vec![],
+                    min_availability: None,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("create title");
+        media_files
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: format!("/library/{name}.mkv"),
+                size_bytes: 1_000,
+                quality_label: Some("480p".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("insert media file");
+    }
+
+    // First page of 2 of 3, with the full total reported.
+    let page = app
+        .list_cutoff_unmet_titles_page(&user, Some(MediaFacet::Movie), None, 2, 0)
+        .await
+        .expect("paged cutoff query should succeed");
+    assert_eq!(page.total, 3);
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(page.items[0].title_name, "Alpha");
+    assert_eq!(page.items[1].title_name, "Bravo");
+
+    // Second page: remainder.
+    let page = app
+        .list_cutoff_unmet_titles_page(&user, Some(MediaFacet::Movie), None, 2, 2)
+        .await
+        .expect("paged cutoff query should succeed");
+    assert_eq!(page.total, 3);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].title_name, "Charlie");
+
+    // limit == 0 returns just the total.
+    let page = app
+        .list_cutoff_unmet_titles_page(&user, Some(MediaFacet::Movie), None, 0, 0)
+        .await
+        .expect("paged cutoff query should succeed");
+    assert_eq!(page.total, 3);
+    assert!(page.items.is_empty());
 }

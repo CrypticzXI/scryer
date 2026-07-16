@@ -66,6 +66,10 @@ impl AppUseCase {
                     nfo_write_on_import: None,
                     plexmatch_write_on_import: None,
                     import_mode: None,
+                    set_permissions_linux: None,
+                    file_chmod: None,
+                    folder_chmod: None,
+                    chown_group: None,
                 },
             )
             .await?;

@@ -71,7 +71,7 @@ async fn recovery_admin_token_resolves_while_form_login_enabled_and_resets_other
     assert!(
         me["data"]["me"]["appPermissions"]
             .as_array()
-            .is_some_and(|permissions| permissions.contains(&json!("manageUsers"))),
+            .is_some_and(|permissions| permissions.contains(&json!("MANAGE_USERS"))),
         "recovery admin should resolve with ManageUsers: {me}"
     );
 
@@ -415,7 +415,7 @@ async fn graphql_me_reports_effective_oauth_permissions() {
     assert_eq!(session_me["data"]["me"]["username"], "oauth_me_permissions");
     assert_eq!(
         session_me["data"]["me"]["appPermissions"],
-        json!(["manageUsers"])
+        json!(["MANAGE_USERS"])
     );
 }
 
@@ -657,7 +657,7 @@ async fn graphql_local_bypass_session_satisfies_config_step_up_without_totp() {
         .unwrap();
     ctx.auth_runtime.apply_saved_security_settings(true, true);
 
-    set_folder_template(&ctx, "movie", "{title} ({year})").await;
+    set_folder_template(&ctx, "MOVIE", "{title} ({year})").await;
 }
 
 #[tokio::test]
@@ -813,12 +813,8 @@ async fn graphql_settings_mutations_require_config_step_up() {
             r#"mutation($input: ExecuteExternalImportInput!) { executeExternalImport(input: $input) { mediaPathsSaved } }"#,
             json!({
                 "input": {
-                    "sonarr": null,
-                    "radarr": null,
                     "prowlarr": null,
-                    "selectedMoviesPaths": [],
-                    "selectedSeriesPaths": [],
-                    "selectedAnimePaths": [],
+                    "sourceWarmupSessionIds": [],
                     "selectedDownloadClientDedupKeys": [],
                     "selectedIndexerDedupKeys": [],
                     "downloadClientApiKeyOverrides": [],
@@ -826,6 +822,31 @@ async fn graphql_settings_mutations_require_config_step_up() {
                     "indexerApiKeyOverrides": []
                 }
             }),
+        ),
+        (
+            "saveExternalImportSetupSecretDraft",
+            "saveExternalImportSetupSecretDraft",
+            r#"mutation($input: SaveExternalImportSetupSecretDraftInput!) { saveExternalImportSetupSecretDraft(input: $input) { updatedAt } }"#,
+            json!({
+                "input": {
+                    "instanceApiKeys": [
+                        {
+                            "instanceId": "step-up-sonarr",
+                            "kind": "SONARR",
+                            "apiKey": "step-up-secret"
+                        }
+                    ],
+                    "downloadClientApiKeyOverrides": [],
+                    "downloadClientPasswordOverrides": [],
+                    "indexerApiKeyOverrides": []
+                }
+            }),
+        ),
+        (
+            "clearExternalImportSetupSecretDraft",
+            "clearExternalImportSetupSecretDraft",
+            r#"mutation { clearExternalImportSetupSecretDraft { cleared } }"#,
+            json!({}),
         ),
         (
             "createPostProcessingScript",
@@ -847,7 +868,7 @@ async fn graphql_settings_mutations_require_config_step_up() {
             r#"mutation($input: CreateLibraryInput!) { createLibrary(input: $input) { id } }"#,
             json!({
                 "input": {
-                    "facet": "movie",
+                    "facet": "MOVIE",
                     "name": "Step-up Library",
                     "roots": [{ "path": library_root, "isDefault": true }]
                 }
@@ -1128,12 +1149,8 @@ async fn graphql_config_step_up_token_satisfies_protected_settings_mutation() {
         r#"mutation($input: ExecuteExternalImportInput!) { executeExternalImport(input: $input) { mediaPathsSaved errors } }"#,
         json!({
             "input": {
-                "sonarr": null,
-                "radarr": null,
                 "prowlarr": null,
-                "selectedMoviesPaths": [],
-                "selectedSeriesPaths": [],
-                "selectedAnimePaths": [],
+                "sourceWarmupSessionIds": [],
                 "selectedDownloadClientDedupKeys": [],
                 "selectedIndexerDedupKeys": [],
                 "downloadClientApiKeyOverrides": [],
@@ -1542,7 +1559,7 @@ async fn graphql_external_account_invites_expose_last_login() {
         json!({
             "input": {
                 "userId": user_id,
-                "provider": "jellyfin",
+                "provider": "JELLYFIN",
                 "connectionId": "jellyfin-main",
                 "providerUserIdentifier": "jellyfin-user",
                 "providerUserId": "jellyfin-user-id"
@@ -1579,8 +1596,8 @@ async fn graphql_external_account_invites_expose_last_login() {
         .iter()
         .find(|row| row["userId"].as_str() == Some(user_id))
         .expect("created invite row");
-    assert_eq!(row["provider"], "jellyfin");
-    assert_eq!(row["status"], "pending_claim");
+    assert_eq!(row["provider"], "JELLYFIN");
+    assert_eq!(row["status"], "PENDING_CLAIM");
     assert_eq!(row["lastLoginAt"], Value::Null);
 
     let viewer = User {
@@ -1653,7 +1670,7 @@ async fn login_with_valid_credentials_returns_token() {
     assert_eq!(body["data"]["login"]["user"]["username"], "logintest");
     assert_eq!(
         body["data"]["login"]["user"]["appPermissions"],
-        json!(["manageUsers"])
+        json!(["MANAGE_USERS"])
     );
 }
 
@@ -1705,7 +1722,7 @@ async fn me_reports_password_status_for_token_authenticated_user() {
     assert!(me_body["errors"].is_null(), "me should succeed: {me_body}");
     assert_eq!(me_body["data"]["me"]["username"], "metest");
     assert_eq!(me_body["data"]["me"]["hasPassword"], true);
-    assert_eq!(me_body["data"]["me"]["accountKind"], "local");
+    assert_eq!(me_body["data"]["me"]["accountKind"], "LOCAL");
 
     let refreshed_token = ctx
         .app
@@ -1793,6 +1810,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         facet: MediaFacet::Movie,
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![ExternalId {
             source: "tvdb".to_string(),
             value: "998877".to_string(),
@@ -1809,10 +1827,11 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
         background_url: None,
         background_source_url: None,
         sort_title: Some("Scoped Delete Movie".to_string()),
+        catalog_sort_key: String::new(),
         slug: Some("scoped-delete-movie".to_string()),
         imdb_id: Some("tt9988776".to_string()),
         runtime_minutes: Some(90),
-        genres: vec!["Drama".to_string()],
+        popularity: None,
         content_status: Some("released".to_string()),
         language: Some("eng".to_string()),
         first_aired: Some("2024-01-01".to_string()),
@@ -1911,7 +1930,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
                 previewFingerprint: "{fingerprint}"
               }}) {{
                 id
-                deleted
               }}
             }}
             "#
@@ -1921,7 +1939,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
     .await;
     assert_no_errors(&delete_body);
     assert_eq!(delete_body["data"]["deleteMediaFile"]["id"], file_id);
-    assert_eq!(delete_body["data"]["deleteMediaFile"]["deleted"], true);
 
     assert!(
         !file_path.exists(),
@@ -1991,7 +2008,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
                 previewFingerprint: "{catalog_only_fingerprint}"
               }}) {{
                 id
-                deleted
               }}
             }}
             "#
@@ -2003,10 +2019,6 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
     assert_eq!(
         catalog_only_delete_body["data"]["deleteMediaFile"]["id"],
         catalog_only_file_id
-    );
-    assert_eq!(
-        catalog_only_delete_body["data"]["deleteMediaFile"]["deleted"],
-        true
     );
     assert!(
         catalog_only_path.exists(),
@@ -2120,7 +2132,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
                 username: "entrevoketest",
                 password: "s3cr3t!!",
                 appPermissions: [],
-                libraryPermissions: [{{ libraryId: "{library_id}", permissions: [view] }}]
+                libraryPermissions: [{{ libraryId: "{library_id}", permissions: [VIEW] }}]
             }}) {{
                 id
                 username
@@ -2160,7 +2172,7 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
             r#"mutation {{
                 setUserLibraryPermissions(input: {{
                     userId: "{user_id}",
-                    grants: [{{ libraryId: "{library_id}", permissions: [view, request, autoApproveRequests, manageTitles] }}]
+                    grants: [{{ libraryId: "{library_id}", permissions: [VIEW, REQUEST, AUTO_APPROVE_REQUESTS, MANAGE_TITLES] }}]
                 }}) {{
                     id
                     libraryPermissions {{ libraryId permissions }}
@@ -2181,10 +2193,10 @@ async fn token_is_revoked_after_permission_change_until_relogin() {
             .iter()
             .map(|value| value.as_str().expect("permission string"))
             .collect::<Vec<_>>();
-    assert!(permissions.contains(&"view"));
-    assert!(permissions.contains(&"manageTitles"));
-    assert!(permissions.contains(&"request"));
-    assert!(permissions.contains(&"autoApproveRequests"));
+    assert!(permissions.contains(&"VIEW"));
+    assert!(permissions.contains(&"MANAGE_TITLES"));
+    assert!(permissions.contains(&"REQUEST"));
+    assert!(permissions.contains(&"AUTO_APPROVE_REQUESTS"));
 
     let old_result = ctx.app.authenticate_token(&old_token).await;
     assert!(
@@ -2497,6 +2509,345 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
         .expect("authenticate full token");
     assert_eq!(full_claims.session_scope, JwtSessionScope::Full);
     assert!(full_claims.mfa_verified_until.is_some());
+}
+
+#[tokio::test]
+async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .set_initial_own_password(&admin, "admin-pass1".to_string())
+        .await
+        .expect("set initial default admin password");
+
+    let now = Utc::now();
+    let media_servers =
+        MediaServerConnectionStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    MediaServerConnectionRepository::create(
+        &media_servers,
+        MediaServerConnection {
+            id: "jellyfin-main".to_string(),
+            provider: MediaServerProvider::Jellyfin,
+            display_name: "Main Jellyfin".to_string(),
+            base_url: ctx.smg_server.uri(),
+            enabled: true,
+            login_enabled: true,
+            linking_enabled: false,
+            auto_add_enabled: true,
+            default_app_permissions: AppPermissionMask::NONE,
+            default_library_grants: Vec::new(),
+            machine_id: None,
+            api_key: Some("jellyfin-api-key".to_string()),
+            path_mappings: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("seed Jellyfin media server connection");
+
+    Mock::given(method("POST"))
+        .and(path("/Users/AuthenticateByName"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "User": {
+                "Id": "jellyfin-mfa-user-id",
+                "Name": "jellyfin-mfa"
+            }
+        })))
+        .mount(&ctx.smg_server)
+        .await;
+
+    let update = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: true
+          }) {
+            effectiveFormLoginEnabled
+            totpRequireJellyfinLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&update);
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["effectiveFormLoginEnabled"],
+        true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["totpRequireJellyfinLogin"],
+        true
+    );
+
+    let login_body = gql(
+        &ctx,
+        r#"
+        mutation LoginWithJellyfin($connectionId: ID!, $username: String!, $password: String!) {
+          loginWithJellyfin(input: {
+            connectionId: $connectionId
+            username: $username
+            password: $password
+          }) {
+            token
+            mfaEnrollmentRequired
+            mfaVerifiedUntil
+            user { username }
+          }
+        }
+        "#,
+        json!({
+            "connectionId": "jellyfin-main",
+            "username": "jellyfin-mfa",
+            "password": "jellyfin-pass1",
+        }),
+    )
+    .await;
+    assert_no_errors(&login_body);
+    let payload = &login_body["data"]["loginWithJellyfin"];
+    assert_eq!(payload["mfaEnrollmentRequired"], true);
+    assert!(payload["mfaVerifiedUntil"].is_null());
+    assert_eq!(payload["user"]["username"], "jellyfin-mfa");
+
+    let token = payload["token"].as_str().expect("enrollment token");
+    let (_user, claims) = ctx
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .expect("authenticate enrollment token");
+    assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
+
+    let enrollment_start = gql_with_token(
+        &ctx,
+        r#"mutation { totpEnrollmentStart { challengeId secretBase32 } }"#,
+        json!({}),
+        token,
+    )
+    .await;
+    assert_no_errors(&enrollment_start);
+    let challenge_id = enrollment_start["data"]["totpEnrollmentStart"]["challengeId"]
+        .as_str()
+        .expect("challenge id");
+    let secret_base32 = enrollment_start["data"]["totpEnrollmentStart"]["secretBase32"]
+        .as_str()
+        .expect("secret");
+    let code = test_totp_code(secret_base32);
+
+    let complete = gql_with_token(
+        &ctx,
+        r#"
+        mutation CompleteLoginMfaEnrollment($input: TotpEnrollmentCompleteInput!) {
+          completeLoginMfaEnrollment(input: $input) {
+            recoveryCodes
+            login {
+              token
+              mfaEnrollmentRequired
+              mfaVerifiedUntil
+              user { username }
+            }
+          }
+        }
+        "#,
+        json!({
+            "input": {
+                "challengeId": challenge_id,
+                "code": code
+            }
+        }),
+        token,
+    )
+    .await;
+    assert_no_errors(&complete);
+    let complete_payload = &complete["data"]["completeLoginMfaEnrollment"];
+    assert!(
+        complete_payload["recoveryCodes"]
+            .as_array()
+            .is_some_and(|codes| !codes.is_empty()),
+        "Jellyfin login MFA enrollment should return recovery codes: {complete}"
+    );
+    let login_payload = &complete_payload["login"];
+    assert_eq!(login_payload["mfaEnrollmentRequired"], false);
+    assert!(login_payload["mfaVerifiedUntil"].as_str().is_some());
+    assert_eq!(login_payload["user"]["username"], "jellyfin-mfa");
+    let full_token = login_payload["token"].as_str().expect("full token");
+    let (_user, full_claims) = ctx
+        .app
+        .authenticate_token_with_claims(full_token)
+        .await
+        .expect("authenticate full token");
+    assert_eq!(full_claims.session_scope, JwtSessionScope::Full);
+    assert!(full_claims.mfa_verified_until.is_some());
+}
+
+#[tokio::test]
+async fn graphql_jellyfin_pending_invite_for_existing_user_starts_mfa_enrollment() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let admin = ctx
+        .app
+        .set_initial_own_password(&admin, "admin-pass1".to_string())
+        .await
+        .expect("set initial default admin password");
+
+    let user = schema_exec(
+        &ctx,
+        r#"mutation { createUser(input: { username: "jellyfin-invite-mfa", password: "testpass123", appPermissions: [], libraryPermissions: [] }) { id username } }"#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&user);
+    let user_id = user["data"]["createUser"]["id"]
+        .as_str()
+        .expect("created user id");
+
+    let now = Utc::now();
+    let media_servers =
+        MediaServerConnectionStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    MediaServerConnectionRepository::create(
+        &media_servers,
+        MediaServerConnection {
+            id: "jellyfin-invite-main".to_string(),
+            provider: MediaServerProvider::Jellyfin,
+            display_name: "Jellyfin Invite MFA".to_string(),
+            base_url: ctx.smg_server.uri(),
+            enabled: true,
+            login_enabled: true,
+            linking_enabled: false,
+            auto_add_enabled: false,
+            default_app_permissions: AppPermissionMask::NONE,
+            default_library_grants: Vec::new(),
+            machine_id: None,
+            api_key: Some("jellyfin-api-key".to_string()),
+            path_mappings: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("seed Jellyfin media server connection");
+
+    Mock::given(method("GET"))
+        .and(path("/Users"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+            "Id": "jellyfin-invite-user-id",
+            "Name": "jellyfin-invite-user"
+        }])))
+        .mount(&ctx.smg_server)
+        .await;
+
+    let invite = schema_exec(
+        &ctx,
+        &format!(
+            r#"mutation {{
+              createExternalAccountInvite(input: {{
+                userId: "{user_id}"
+                provider: JELLYFIN
+                connectionId: "jellyfin-invite-main"
+                providerUserIdentifier: "jellyfin-invite-user"
+                providerUserId: "jellyfin-invite-user-id"
+              }}) {{ status }}
+            }}"#,
+        ),
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&invite);
+    assert_eq!(
+        invite["data"]["createExternalAccountInvite"]["status"],
+        "PENDING_CLAIM"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/Users/AuthenticateByName"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "User": {
+                "Id": "jellyfin-invite-user-id",
+                "Name": "jellyfin-invite-user"
+            }
+        })))
+        .mount(&ctx.smg_server)
+        .await;
+
+    let security = schema_exec(
+        &ctx,
+        r#"
+        mutation UpdateSecuritySettings {
+          updateSecuritySettings(input: {
+            formLoginEnabled: true
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: true
+          }) {
+            totpRequireJellyfinLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&security);
+
+    let login = gql(
+        &ctx,
+        r#"
+        mutation LoginWithJellyfin($connectionId: ID!, $username: String!, $password: String!) {
+          loginWithJellyfin(input: {
+            connectionId: $connectionId
+            username: $username
+            password: $password
+          }) {
+            token
+            mfaEnrollmentRequired
+            user { username }
+          }
+        }
+        "#,
+        json!({
+            "connectionId": "jellyfin-invite-main",
+            "username": "jellyfin-invite-user",
+            "password": "jellyfin-pass1",
+        }),
+    )
+    .await;
+    assert_no_errors(&login);
+    let payload = &login["data"]["loginWithJellyfin"];
+    assert_eq!(payload["mfaEnrollmentRequired"], true);
+    assert_eq!(payload["user"]["username"], "jellyfin-invite-mfa");
+
+    let token = payload["token"].as_str().expect("enrollment token");
+    let (_user, claims) = ctx
+        .app
+        .authenticate_token_with_claims(token)
+        .await
+        .expect("authenticate enrollment token");
+    assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
+
+    let enrollment_start = gql_with_token(
+        &ctx,
+        r#"mutation { totpEnrollmentStart { challengeId secretBase32 } }"#,
+        json!({}),
+        token,
+    )
+    .await;
+    assert_no_errors(&enrollment_start);
+    assert!(
+        enrollment_start["data"]["totpEnrollmentStart"]["challengeId"]
+            .as_str()
+            .is_some(),
+        "pending Jellyfin invite should start MFA enrollment: {enrollment_start}"
+    );
 }
 
 #[tokio::test]

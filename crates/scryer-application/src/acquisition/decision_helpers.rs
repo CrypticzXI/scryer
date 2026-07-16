@@ -1,12 +1,12 @@
 use crate::acquisition_search_queries::tvdb_id_from_external_ids;
 use crate::{
-    AcquisitionThresholds, AppError, AppUseCase, QualityProfile, TitleMediaFile, WantedItem,
+    AcquisitionThresholds, AppError, AppUseCase, QualityProfile, TitleMediaFile,
     app_usecase_discovery::QualityProfileLookup, default_quality_profile_for_search,
 };
-use chrono::{DateTime, NaiveDate, Utc};
 use scryer_domain::Title;
 
-pub(crate) const FAILED_GRAB_OLD_TITLE_DAYS: i64 = 14;
+/// A season pack that failed within this window is not retried as a pack —
+/// its episodes search individually instead.
 pub(crate) const FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES: i64 = 20;
 
 pub(crate) fn extract_grabbed_release_title(raw: Option<&str>) -> Option<String> {
@@ -26,49 +26,6 @@ pub(crate) fn is_all_clients_failed_error(err: &AppError) -> bool {
 
 pub(crate) fn is_download_submit_unavailable_error(err: &AppError) -> bool {
     err.is_download_submit_unavailable() || is_all_clients_failed_error(err)
-}
-
-pub(crate) fn should_research_failed_grab(item: &WantedItem, now: &DateTime<Utc>) -> bool {
-    !is_old_failed_grab_title(item, now)
-        && is_last_search_stale(item.last_search_at.as_deref(), now)
-}
-
-pub(crate) fn is_old_failed_grab_title(item: &WantedItem, now: &DateTime<Utc>) -> bool {
-    let Some(baseline_date) = item.baseline_date.as_deref() else {
-        return false;
-    };
-    let Some(parsed_date) = parse_failed_grab_baseline_date(baseline_date) else {
-        return false;
-    };
-    now.date_naive()
-        .signed_duration_since(parsed_date)
-        .num_days()
-        > FAILED_GRAB_OLD_TITLE_DAYS
-}
-
-fn is_last_search_stale(last_search_at: Option<&str>, now: &DateTime<Utc>) -> bool {
-    let Some(last_search_at) = last_search_at else {
-        return true;
-    };
-    let Some(last_search_at) = crate::quality_profile::parse_published_at(last_search_at) else {
-        return true;
-    };
-    (*now - last_search_at).num_minutes() > FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES
-}
-
-fn parse_failed_grab_baseline_date(raw: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
-        .ok()
-        .or_else(|| {
-            chrono::DateTime::parse_from_rfc3339(raw)
-                .ok()
-                .map(|value| value.date_naive())
-        })
-        .or_else(|| {
-            chrono::DateTime::parse_from_rfc2822(raw)
-                .ok()
-                .map(|value| value.date_naive())
-        })
 }
 
 #[derive(Clone, Debug)]
@@ -183,6 +140,7 @@ impl AppUseCase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use scryer_domain::{MediaFacet, Title};
 
     fn make_title(facet: MediaFacet) -> Title {
@@ -194,6 +152,7 @@ mod tests {
             facet,
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![],
             created_by: None,
             created_at: Utc::now(),
@@ -204,10 +163,11 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
-            genres: vec![],
+            popularity: None,
             content_status: None,
             language: None,
             first_aired: None,

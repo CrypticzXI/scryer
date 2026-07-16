@@ -1,3 +1,30 @@
+"""
+Progress snapshot for the interactive acquisition-search job (RFC 119 §7.3).
+Survives navigation/refresh — the job runs server-side and its state is queried
+by `id` and pushed via `jobRunEvents`.
+"""
+type AcquisitionSearchJobPayload {
+	id: ID!
+	state: AcquisitionSearchJobStateValue!
+	total: Int!
+	processed: Int!
+	grabbedCount: Int!
+	failedCount: Int!
+	currentTitle: String
+	startedAt: DateTime!
+	finishedAt: DateTime
+}
+
+"""
+Lifecycle of the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+"""
+enum AcquisitionSearchJobStateValue {
+	RUNNING
+	COMPLETED
+	CANCELLED
+	FAILED
+}
+
 type AcquisitionSettingsPayload {
 	enabled: Boolean!
 	upgradeCooldownHours: Int!
@@ -5,13 +32,13 @@ type AcquisitionSettingsPayload {
 	crossTierMinDelta: Int!
 	forcedUpgradeDeltaBypass: Int!
 	pollIntervalSeconds: Int!
-	syncIntervalSeconds: Int!
-	batchSize: Int!
+	longTailBackfillMaxScopesPerCycle: Int!
+	longTailReconvergeDays: Int!
 }
 
 enum ActivityChannelValue {
-	web_ui
-	toast
+	WEB_UI
+	TOAST
 }
 
 type ActivityEventPayload {
@@ -19,7 +46,7 @@ type ActivityEventPayload {
 	kind: ActivityKindValue!
 	severity: ActivitySeverityValue!
 	channels: [ActivityChannelValue!]!
-	actorKind: String!
+	actorKind: ActorKindValue!
 	actorUserId: ID
 	actorDisplayName: String!
 	titleId: ID
@@ -29,39 +56,45 @@ type ActivityEventPayload {
 }
 
 enum ActivityKindValue {
-	setting_saved
-	movie_fetched
-	title_added
-	title_updated
-	metadata_hydration_started
-	metadata_hydration_completed
-	metadata_hydration_failed
-	movie_downloaded
-	series_episode_imported
-	acquisition_search_completed
-	acquisition_candidate_accepted
-	acquisition_candidate_rejected
-	acquisition_download_failed
-	post_processing_completed
-	file_analyzed
-	file_upgraded
-	import_rejected
-	subtitle_downloaded
-	subtitle_search_failed
-	system_notice
+	SETTING_SAVED
+	MOVIE_FETCHED
+	TITLE_ADDED
+	TITLE_UPDATED
+	METADATA_HYDRATION_STARTED
+	METADATA_HYDRATION_COMPLETED
+	METADATA_HYDRATION_FAILED
+	MOVIE_DOWNLOADED
+	SERIES_EPISODE_IMPORTED
+	ACQUISITION_SEARCH_COMPLETED
+	ACQUISITION_CANDIDATE_ACCEPTED
+	ACQUISITION_CANDIDATE_REJECTED
+	ACQUISITION_DOWNLOAD_FAILED
+	POST_PROCESSING_COMPLETED
+	FILE_ANALYZED
+	FILE_UPGRADED
+	IMPORT_REJECTED
+	SUBTITLE_DOWNLOADED
+	SUBTITLE_SEARCH_FAILED
+	SYSTEM_NOTICE
 }
 
 enum ActivitySeverityValue {
-	info
-	success
-	warning
-	error
+	INFO
+	SUCCESS
+	WARNING
+	ERROR
+}
+
+enum ActorKindValue {
+	USER
+	ANONYMOUS
+	SYSTEM
 }
 
 enum AddTitleHydrationStateValue {
-	pending
-	complete
-	not_required
+	PENDING
+	COMPLETE
+	NOT_REQUIRED
 }
 
 input AddTitleInput {
@@ -95,10 +128,10 @@ type AddTitleResult {
 }
 
 enum AppPermissionValue {
-	manageUsers
-	managePermissions
-	manageSystemSettings
-	manageCatalogSettings
+	MANAGE_USERS
+	MANAGE_PERMISSIONS
+	MANAGE_SYSTEM_SETTINGS
+	MANAGE_CATALOG_SETTINGS
 }
 
 input ApproveMediaRequestInput {
@@ -108,7 +141,6 @@ input ApproveMediaRequestInput {
 }
 
 type ApproveMediaRequestPayload {
-	accepted: Boolean!
 	titleId: ID!
 	wantedSearch: WantedSearchPayload
 	searchError: String
@@ -124,7 +156,6 @@ input AssignTrackedDownloadTitleInput {
 
 type AudioStreamDetailPayload {
 	codec: String
-	profile: String
 	channels: Int
 	language: String
 	bitrateKbps: Int
@@ -197,6 +228,10 @@ type BlocklistExternalSubtitlePayload {
 	blocklisted: Boolean!
 }
 
+type BoolConfigValuePayload {
+	value: Boolean!
+}
+
 type CalendarEpisodePayload {
 	id: ID!
 	titleId: ID!
@@ -213,40 +248,150 @@ type CalendarEpisodePayload {
 	monitored: Boolean!
 }
 
+type CancelAcquisitionSearchPayload {
+	id: ID!
+	"""
+	False when the search run had already finished — not an error.
+	"""
+	accepted: Boolean!
+}
+
 type CancelExternalImportMonitorWarmupPayload {
 	sessionId: ID!
+	"""
+	False when the warmup had already finished — not an error.
+	"""
 	canceled: Boolean!
 }
 
 type CancelLibraryScanPayload {
 	sessionId: ID!
+	"""
+	Whether the cancel was accepted; false when the scan had already
+	finished — not an error.
+	"""
 	accepted: Boolean!
 }
 
+type CanonicalMediaTagPayload {
+	key: String!
+	category: String!
+	name: String!
+	confidence: Float
+	sources: [String!]!
+	sourceTagKeys: [String!]!
+	isAdult: Boolean!
+	isSpoiler: Boolean!
+}
+
+type CanonicalTagFilterOptionPayload {
+	key: String!
+	name: String!
+}
+
+enum CatalogDiscoveryGroupKindValue {
+	PUBLIC_TOP
+	PUBLIC_SECTION
+	GENRE_AFFINITY
+	THEME_AFFINITY
+	ACCLAIMED
+	COMPLETE_COLLECTION
+	FALLBACK
+}
+
+type CatalogDiscoveryGroupPayload {
+	id: String!
+	kind: CatalogDiscoveryGroupKindValue!
+	surface: CatalogDiscoverySurfaceValue!
+	labelValue: String
+	totalCount: Long!
+	items: [DiscoveryItemPayload!]!
+}
+
+input CatalogDiscoveryInput {
+	facet: MediaFacetValue!
+	libraryIds: [ID!]
+	includeUnresolved: Boolean
+	limitPerGroup: Int
+	maxGroups: Int
+}
+
+type CatalogDiscoveryPayload {
+	canViewPersonalized: Boolean!
+	groups: [CatalogDiscoveryGroupPayload!]!
+}
+
+enum CatalogDiscoverySurfaceValue {
+	PUBLIC
+	PERSONALIZED
+}
+
+enum CatalogRefreshStateValue {
+	READY
+	DEGRADED
+}
+
+type ClearExternalImportSetupSecretDraftPayload {
+	"""
+	False when there was no draft owned by the caller to clear.
+	"""
+	cleared: Boolean!
+}
+
 type ClearTitleImageCachePayload {
-	accepted: Boolean!
+	"""
+	When the cache-clear request was accepted.
+	"""
+	requestedAt: DateTime!
 }
 
 type ClearTitleReleaseBlocklistEntryPayload {
 	id: ID!
-	cleared: Boolean!
 }
 
 type CollectionPayload {
 	id: ID!
 	titleId: ID!
-	collectionType: String!
+	collectionType: CollectionTypeValue!
 	collectionIndex: String!
 	label: String
 	orderedPath: String
 	narrativeOrder: String
-	fileSizeBytes: Long
 	firstEpisodeNumber: String
 	lastEpisodeNumber: String
 	monitored: Boolean!
 	createdAt: DateTime!
+	"""
+	Byte size of the file backing this collection, resolved on demand from the
+	media-file index (`media_files.file_path` matching this collection's
+	`ordered_path`). Resolved lazily so reads that omit the field pay nothing.
+	"""
+	fileSizeBytes: Long
+	"""
+	Owned-vs-total episode progress for this collection, populated when requested.
+	"""
+	episodesOwned: Int
+	"""
+	Monitored episode count for this collection, populated when requested.
+	"""
+	episodesMonitored: Int
+	"""
+	Total countable episode count for this collection, populated when requested.
+	"""
+	episodesTotal: Int
 	title: TitlePayload
 	episodes: [EpisodePayload!]!
+}
+
+type CollectionScopePayload {
+	collectionId: ID!
+}
+
+enum CollectionTypeValue {
+	SEASON
+	MOVIE
+	ARC
+	SPECIALS
 }
 
 type CompleteSetupPayload {
@@ -254,9 +399,38 @@ type CompleteSetupPayload {
 }
 
 enum ContentScopeValue {
-	movie
-	series
-	anime
+	MOVIE
+	SERIES
+	ANIME
+}
+
+"""
+Convergence state of an acquisition scope (RFC 119 §6/§7). Replaces the retired
+cadence display (`searchPhase`/`nextSearchAt`): the operator sees whether a scope
+is still sweeping indexers, has converged onto RSS, is queued for the cursor, or
+is deferred because every uncovered indexer is currently unavailable.
+"""
+enum ConvergenceStateValue {
+	"""
+	No indexer has been searched under the current fingerprint yet — waiting on
+	the cursor to begin the sweep.
+	"""
+	QUEUED
+	"""
+	Some but not all routed indexers are covered — the convergence sweep is in
+	progress.
+	"""
+	SEARCHING
+	"""
+	Every routed indexer is covered under the current fingerprint — the scope is
+	watched via RSS and only re-checked on demand.
+	"""
+	CONVERGED
+	"""
+	Not converged, and every still-uncovered indexer is currently unavailable
+	(per the scheduler snapshot — cooling down or out of quota).
+	"""
+	DEFERRED
 }
 
 input CreateBackupInput {
@@ -281,12 +455,21 @@ input CreateExternalAccountInviteInput {
 input CreateIndexerConfigInput {
 	name: String!
 	providerType: String!
+	indexerProxyConfigId: ID
 	rateLimitSeconds: Int
 	rateLimitBurst: Int
 	isEnabled: Boolean
 	enableInteractiveSearch: Boolean
 	enableAutoSearch: Boolean
 	config: [ProviderConfigValueInput!]
+}
+
+input CreateIndexerProxyConfigInput {
+	name: String!
+	providerType: String!
+	baseUrl: String!
+	requestTimeoutSeconds: Int
+	isEnabled: Boolean
 }
 
 input CreateLibraryInput {
@@ -345,7 +528,7 @@ input CreatePostProcessingScriptInput {
 	scriptContent: String
 	inlineShellAcknowledged: Boolean
 	appliedFacets: [String!]
-	executionMode: String
+	executionMode: ExecutionModeValue
 	timeoutSecs: Int
 	priority: Int
 	debug: Boolean
@@ -387,6 +570,23 @@ type CutoffUnmetItemPayload {
 	episodeNumber: String
 	currentTier: String!
 	targetTier: String!
+	"""
+	Convergence progress for this upgrade scope (RFC 119 §6/§7) — the same
+	state the Missing/Upgrades views show.
+	"""
+	convergenceState: ConvergenceStateValue!
+	indexersCovered: Int!
+	indexersRouted: Int!
+}
+
+"""
+RFC 119 bounded view: one page of cutoff-unmet targets + the full unmet
+count, so the UI paginates instead of loading the whole set.
+"""
+type CutoffUnmetTitlesPagePayload {
+	items: [CutoffUnmetItemPayload!]!
+	totalCount: Int!
+	hasMore: Boolean!
 }
 
 scalar Date
@@ -436,8 +636,8 @@ type DelayProfilePayload {
 }
 
 enum DelayProfilePreferredProtocolValue {
-	usenet
-	torrent
+	USENET
+	TORRENT
 }
 
 input DeleteBackupInput {
@@ -446,12 +646,14 @@ input DeleteBackupInput {
 
 type DeleteBackupPayload {
 	filename: String!
+	"""
+	False when no backup file with that name existed — not an error.
+	"""
 	deleted: Boolean!
 }
 
 type DeleteDownloadClientConfigPayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 input DeleteDownloadInput {
@@ -474,12 +676,14 @@ type DeleteExternalSubtitlePayload {
 
 type DeleteIndexerConfigPayload {
 	id: ID!
-	deleted: Boolean!
+}
+
+type DeleteIndexerProxyConfigPayload {
+	id: ID!
 }
 
 type DeleteLibraryPayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 input DeleteMediaFileInput {
@@ -491,32 +695,26 @@ input DeleteMediaFileInput {
 
 type DeleteMediaFilePayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 type DeleteMediaServerConnectionPayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 type DeleteMyPasskeyPayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 type DeleteNotificationChannelPayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 type DeleteNotificationSubscriptionPayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 type DeletePostProcessingScriptPayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 type DeletePreviewPayload {
@@ -535,17 +733,19 @@ type DeletePreviewPayload {
 
 type DeleteRecycledItemPayload {
 	id: ID!
+	"""
+	False when the entry was quarantined instead of purged (unsafe to
+	delete) — the file remains on disk.
+	"""
 	deleted: Boolean!
 }
 
 type DeleteRuleSetPayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 type DeleteSubtitleProviderConfigPayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 input DeleteTitleInput {
@@ -557,7 +757,6 @@ input DeleteTitleInput {
 
 type DeleteTitlePayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 type DeleteTitlePreviewResultPayload {
@@ -594,86 +793,299 @@ type DeleteTitlesPreviewPayload {
 
 type DeleteUserPayload {
 	id: ID!
-	deleted: Boolean!
 }
 
 type DirectoryEntryPayload {
 	name: String!
 	path: String!
+	isDirectory: Boolean!
+}
+
+type DiscoveryExternalIdPayload {
+	source: String!
+	kind: String!
+	id: String!
+	key: String!
+}
+
+type DiscoveryExternalRatingPayload {
+	source: String!
+	value: Float
+	score: Float
+	normalized: Float!
+	votes: Int
+	url: String!
+}
+
+type DiscoveryFacetPayload {
+	name: String!
+	value: String!
+	smgCount: Long
+	localCount: Long
+}
+
+type DiscoveryHomeCardPayload {
+	id: ID!
+	targetKey: String!
+	targetKind: MediaFacetValue!
+	displayTitle: String!
+	originalTitle: String
+	sortTitle: String
+	year: Int
+	posterUrl: String
+	contentType: MediaFacetValue!
+	ownedInInput: Boolean!
+}
+
+type DiscoveryHomeCardsPayload {
+	status: DiscoverySyncStatusPayload!
+	heroItem: DiscoveryHomeHeroPayload
+	publicSections: [DiscoveryHomeSectionPayload!]!
+	personalizedSections: [DiscoveryHomeSectionPayload!]!
+	completeCollection: DiscoveryHomeSectionPayload
+	canViewPersonalized: Boolean!
+}
+
+input DiscoveryHomeFilterOptionsInput {
+	includePublic: Boolean
+	includePersonalized: Boolean
+	includeUnresolved: Boolean
+}
+
+type DiscoveryHomeFilterOptionsPayload {
+	genres: [CanonicalTagFilterOptionPayload!]!
+	themes: [CanonicalTagFilterOptionPayload!]!
+	studioSlugs: [String!]!
+}
+
+input DiscoveryHomeFiltersInput {
+	contentTypes: [MediaFacetValue!]
+	genreTagKeys: [String!]
+	themeTagKeys: [String!]
+	studioSlugs: [String!]
+	minimumYear: Int
+	maximumYear: Int
+	minimumRating: Float
+}
+
+type DiscoveryHomeHeroPayload {
+	id: ID!
+	targetKey: String!
+	targetKind: MediaFacetValue!
+	displayTitle: String!
+	originalTitle: String
+	sortTitle: String
+	year: Int
+	posterUrl: String
+	backgroundUrl: String
+	overview: String
+	contentType: MediaFacetValue!
+	rating: Float
+	ratingSources: [String!]!
+	externalRatings: [DiscoveryExternalRatingPayload!]!
+	genreTags: [CanonicalMediaTagPayload!]!
+	matchedSubjectCount: Int!
+	ownedInInput: Boolean!
+}
+
+input DiscoveryHomeInput {
+	includePublic: Boolean
+	includePersonalized: Boolean
+	includeUnresolved: Boolean
+	limitPerSection: Int
+	filters: DiscoveryHomeFiltersInput
+}
+
+type DiscoveryHomePayload {
+	status: DiscoverySyncStatusPayload!
+	heroItem: DiscoveryItemPayload
+	publicSections: [DiscoverySectionPayload!]!
+	personalizedSections: [DiscoverySectionPayload!]!
+	completeCollection: DiscoverySectionPayload
+	facets: [DiscoveryFacetPayload!]!
+	canViewPersonalized: Boolean!
+}
+
+type DiscoveryHomeSectionPayload {
+	sectionId: String!
+	sectionType: String!
+	title: String!
+	surface: DiscoverySurfaceValue!
+	totalCount: Long!
+	items: [DiscoveryHomeCardPayload!]!
+}
+
+input DiscoveryItemDetailInput {
+	targetKey: String!
+	includeUnresolved: Boolean
+}
+
+type DiscoveryItemPayload {
+	id: ID!
+	targetKey: String!
+	targetKind: String!
+	resolved: Boolean!
+	resolvedTitleId: ID
+	displayTitle: String!
+	originalTitle: String
+	sortTitle: String
+	year: Int
+	posterUrl: String
+	backgroundUrl: String
+	overview: String
+	contentType: String
+	canonicalTags: [CanonicalMediaTagPayload!]!
+	rating: Float
+	ratingSources: [String!]!
+	externalRatings: [DiscoveryExternalRatingPayload!]!
+	externalIds: [DiscoveryExternalIdPayload!]!
+	statusTags: [String!]!
+	sourceTags: [String!]!
+	sources: [String!]!
+	bestSource: String
+	relationTypes: [String!]!
+	relationSubtypes: [String!]!
+	sourceCount: Int
+	edgeCount: Int
+	relationCount: Int
+	sourceSubjectCount: Int
+	rankScore: Float
+	matchedSubjectTitles: [String!]!
+	matchedSubjectCount: Int!
+	tmdbCollectionId: String
+	tmdbCollectionName: String
+	ownedInInput: Boolean!
+	studioSlug: String
+	personIds: [Int!]!
+	facetTerms: [String!]!
+	contextTerms: [String!]!
+}
+
+input DiscoveryItemsInput {
+	query: String
+	targetKinds: [String!]
+	sources: [String!]
+	relationTypes: [String!]
+	relationSubtypes: [String!]
+	genres: [String!]
+	statusTags: [String!]
+	facetTerms: [String!]
+	includeOwned: Boolean
+	includeUnresolved: Boolean
+	includePublic: Boolean
+	limit: Int
+	offset: Int
+}
+
+type DiscoveryItemsPayload {
+	items: [DiscoveryItemPayload!]!
+	totalCount: Long!
+	canViewPersonalized: Boolean!
+}
+
+type DiscoverySectionPayload {
+	sectionId: String!
+	sectionType: String!
+	title: String!
+	surface: String!
+	totalCount: Long!
+	items: [DiscoveryItemPayload!]!
+}
+
+enum DiscoverySurfaceValue {
+	PUBLIC
+	PERSONALIZED
+	MIXED
+}
+
+type DiscoverySyncStatePayload {
+	lastSuccessGenerationId: ID
+	lastPublicFeedGenerationId: ID
+	lastContextSnapshotCompletedAt: DateTime
+	lastIncrementalReloadCompletedAt: DateTime
+	lastPublicFeedCompletedAt: DateTime
+	nextContextSnapshotEligibleAt: DateTime
+	nextIncrementalReloadEligibleAt: DateTime
+	nextPublicFeedEligibleAt: DateTime
+	updatedAt: DateTime!
+}
+
+type DiscoverySyncStatusPayload {
+	state: DiscoverySyncStatePayload!
+	pendingContextChangeCount: Long!
 }
 
 type DismissPendingReleasePayload {
 	id: ID!
-	dismissed: Boolean!
 }
 
 type DomainEventEnvelopePayload {
 	sequence: Long!
 	eventId: ID!
 	occurredAt: DateTime!
-	actorKind: String!
+	actorKind: ActorKindValue!
 	actorUserId: ID
 	actorDisplayName: String!
 	titleId: ID
 	facet: MediaFacetValue
 	eventType: DomainEventTypeValue!
-	streamKind: String!
+	streamKind: StreamKindValue!
 	streamId: ID
 	payloadJson: JSON!
 }
 
 enum DomainEventTypeValue {
-	media_request_submitted
-	media_request_updated
-	media_request_approved
-	media_request_rejected
-	media_request_canceled
-	title_added
-	title_updated
-	title_rematched
-	title_deleted
-	configuration_changed
-	discovery_search_completed
-	metadata_hydration_updated
-	release_grabbed
-	download_failed
-	release_blocklisted
-	import_completed
-	import_rejected
-	media_file_imported
-	media_file_analyzed
-	media_file_renamed
-	media_file_deleted
-	media_file_upgraded
-	acquisition_search_completed
-	acquisition_candidate_rejected
-	import_requested
-	import_recovery_completed
-	download_queue_item_command_issued
-	post_processing_completed
-	subtitle_downloaded
-	subtitle_search_failed
-	library_scan_started
-	library_scan_title_discovered
-	library_scan_delta_recorded
-	library_scan_progressed
-	library_scan_completed
-	library_scan_canceled
-	library_scan_failed
-	job_run_started
-	job_run_completed
-	job_run_failed
-	job_next_run_updated
-	download_queue_item_upserted
-	download_queue_item_removed
+	MEDIA_REQUEST_SUBMITTED
+	MEDIA_REQUEST_UPDATED
+	MEDIA_REQUEST_APPROVED
+	MEDIA_REQUEST_REJECTED
+	MEDIA_REQUEST_CANCELED
+	TITLE_ADDED
+	TITLE_UPDATED
+	TITLE_REMATCHED
+	TITLE_DELETED
+	CONFIGURATION_CHANGED
+	DISCOVERY_SEARCH_COMPLETED
+	METADATA_HYDRATION_UPDATED
+	RELEASE_GRABBED
+	DOWNLOAD_FAILED
+	RELEASE_BLOCKLISTED
+	IMPORT_COMPLETED
+	IMPORT_REJECTED
+	MEDIA_FILE_IMPORTED
+	MEDIA_FILE_ANALYZED
+	MEDIA_FILE_RENAMED
+	MEDIA_FILE_DELETED
+	MEDIA_FILE_UPGRADED
+	ACQUISITION_SEARCH_COMPLETED
+	ACQUISITION_CANDIDATE_REJECTED
+	IMPORT_REQUESTED
+	IMPORT_RECOVERY_COMPLETED
+	DOWNLOAD_QUEUE_ITEM_COMMAND_ISSUED
+	POST_PROCESSING_COMPLETED
+	SUBTITLE_DOWNLOADED
+	SUBTITLE_SEARCH_FAILED
+	LIBRARY_SCAN_STARTED
+	LIBRARY_SCAN_TITLE_DISCOVERED
+	LIBRARY_SCAN_DELTA_RECORDED
+	LIBRARY_SCAN_PROGRESSED
+	LIBRARY_SCAN_COMPLETED
+	LIBRARY_SCAN_CANCELED
+	LIBRARY_SCAN_FAILED
+	JOB_RUN_STARTED
+	JOB_RUN_COMPLETED
+	JOB_RUN_FAILED
+	JOB_NEXT_RUN_UPDATED
+	DOWNLOAD_QUEUE_ITEM_UPSERTED
+	DOWNLOAD_QUEUE_ITEM_REMOVED
 }
 
 enum DownloadActivityFilterValue {
-	all
-	downloading
-	queued
-	paused
-	post_processing
+	ALL
+	DOWNLOADING
+	QUEUED
+	PAUSED
+	POST_PROCESSING
 }
 
 """
@@ -736,24 +1148,24 @@ type DownloadClientRoutingEntryPayload {
 }
 
 enum DownloadDisplayStateValue {
-	queued
-	downloading
-	paused
-	post_processing
-	completed
-	failed
-	importing
-	import_pending
-	import_blocked
-	import_failed
-	removing
-	remove_failed
+	QUEUED
+	DOWNLOADING
+	PAUSED
+	POST_PROCESSING
+	COMPLETED
+	FAILED
+	IMPORTING
+	IMPORT_PENDING
+	IMPORT_BLOCKED
+	IMPORT_FAILED
+	REMOVING
+	REMOVE_FAILED
 }
 
 enum DownloadHistoryFilterValue {
-	all
-	success
-	failed
+	ALL
+	SUCCESS
+	FAILED
 }
 
 type DownloadHistoryPagePayload {
@@ -764,19 +1176,19 @@ type DownloadHistoryPagePayload {
 }
 
 enum DownloadHistorySortKeyValue {
-	title
-	client
-	status
-	progress
-	size
+	TITLE
+	CLIENT
+	STATUS
+	PROGRESS
+	SIZE
 }
 
 enum DownloadImportFilterValue {
-	all
-	importing
-	pending
-	blocked
-	failed
+	ALL
+	IMPORTING
+	PENDING
+	BLOCKED
+	FAILED
 }
 
 type DownloadImportPagePayload {
@@ -786,14 +1198,14 @@ type DownloadImportPagePayload {
 }
 
 enum DownloadQueueActionKindValue {
-	queued_manual_import
-	ignored_tracked_download
-	marked_tracked_download_failed
-	assigned_tracked_download_title
-	paused
-	resumed
-	delete_queued
-	deleted
+	QUEUED_MANUAL_IMPORT
+	IGNORED_TRACKED_DOWNLOAD
+	MARKED_TRACKED_DOWNLOAD_FAILED
+	ASSIGNED_TRACKED_DOWNLOAD_TITLE
+	PAUSED
+	RESUMED
+	DELETE_QUEUED
+	DELETED
 }
 
 type DownloadQueueActionPayload {
@@ -808,10 +1220,10 @@ type DownloadQueueActionPayload {
 }
 
 enum DownloadQueueDeleteStatusValue {
-	queued
-	running
-	completed
-	failed
+	QUEUED
+	RUNNING
+	COMPLETED
+	FAILED
 }
 
 type DownloadQueueItemPayload {
@@ -827,7 +1239,7 @@ type DownloadQueueItemPayload {
 	state: DownloadQueueStateValue!
 	displayState: DownloadDisplayStateValue!
 	progressPercent: Int!
-	importTransferPhase: String
+	importTransferPhase: ImportTransferPhaseValue
 	importTransferBytes: Long
 	importTransferTotalBytes: Long
 	importTransferStartedAt: DateTime
@@ -855,22 +1267,22 @@ type DownloadQueueItemPayload {
 }
 
 enum DownloadQueueStateValue {
-	queued
-	downloading
-	verifying
-	repairing
-	extracting
-	paused
-	completed
-	import_pending
-	failed
+	QUEUED
+	DOWNLOADING
+	VERIFYING
+	REPAIRING
+	EXTRACTING
+	PAUSED
+	COMPLETED
+	IMPORT_PENDING
+	FAILED
 }
 
 enum DownloadSourceKindValue {
-	nzbFile
-	nzbUrl
-	torrentFile
-	magnetUri
+	NZB_FILE
+	NZB_URL
+	TORRENT_FILE
+	MAGNET_URI
 }
 
 input DownloadSubtitleInput {
@@ -901,7 +1313,7 @@ type EpisodePayload {
 	id: ID!
 	titleId: ID!
 	collectionId: ID
-	episodeType: String!
+	episodeType: EpisodeTypeValue!
 	episodeNumber: String
 	seasonNumber: String
 	episodeLabel: String
@@ -914,7 +1326,6 @@ type EpisodePayload {
 	isFiller: Boolean!
 	isRecap: Boolean!
 	absoluteNumber: String
-	tvdbId: String
 	imageUrl: String
 	monitored: Boolean!
 	createdAt: DateTime!
@@ -924,13 +1335,26 @@ type EpisodePayload {
 	mediaFiles: [TitleMediaFilePayload!]!
 }
 
+type EpisodeScopePayload {
+	episodeId: ID!
+}
+
+type EpisodeSetScopePayload {
+	episodeIds: [ID!]!
+}
+
+enum EpisodeTypeValue {
+	STANDARD
+	SPECIAL
+	OFFICIAL
+	OVA
+	ONA
+	ALTERNATE
+}
+
 input ExecuteExternalImportInput {
-	sonarr: ExternalImportConnectionInput
-	radarr: ExternalImportConnectionInput
+	sourceWarmupSessionIds: [ID!]!
 	prowlarr: ExternalImportConnectionInput
-	selectedMoviesPaths: [String!]!
-	selectedSeriesPaths: [String!]!
-	selectedAnimePaths: [String!]!
 	selectedDownloadClientDedupKeys: [String!]!
 	selectedIndexerDedupKeys: [String!]!
 	"""
@@ -950,15 +1374,25 @@ input ExecuteExternalImportInput {
 	indexerApiKeyOverrides: [IndexerApiKeyOverrideInput!]!
 }
 
+enum ExecutionModeValue {
+	BLOCKING
+	FIRE_AND_FORGET
+}
+
 enum ExternalAccountProviderValue {
-	plex
-	jellyfin
+	PLEX
+	JELLYFIN
 }
 
 enum ExternalAccountStatusValue {
-	pending_claim
-	active
-	disabled
+	PENDING_CLAIM
+	ACTIVE
+	DISABLED
+}
+
+enum ExternalArrSourceKind {
+	SONARR
+	RADARR
 }
 
 type ExternalAuthRuntimeConnectionPayload {
@@ -985,17 +1419,64 @@ type ExternalIdPayload {
 	value: String!
 }
 
+input ExternalImportAggregateWarmupProgressInput {
+	sourceWarmupSessionIds: [ID!]!
+}
+
+type ExternalImportAggregateWarmupProgressPayload {
+	status: ExternalImportMonitorWarmupStatusValue!
+	titlesTotalKnown: Boolean!
+	titlesFetched: Int!
+	titlesTotal: Int!
+	errorMessage: String
+}
+
+type ExternalImportArrSourcePayload {
+	sessionId: ID!
+	sourceKey: String!
+	kind: ExternalArrSourceKind!
+	baseUrl: String!
+	connected: Boolean!
+	version: String
+	status: ExternalImportMonitorWarmupStatusValue!
+	error: String
+}
+
 input ExternalImportConnectionInput {
 	baseUrl: String!
 	apiKey: String!
 }
 
+"""
+Connection kind for the lightweight, pre-warmup connection probe used by the
+setup wizard's Connect step. Unlike [`ExternalArrSourceKind`] this also
+covers Prowlarr, which has no warmup of its own but can still be
+connection-tested before preview.
+"""
+enum ExternalImportConnectionKind {
+	SONARR
+	RADARR
+	PROWLARR
+}
+
+type ExternalImportConnectionValidationPayload {
+	kind: ExternalImportConnectionKind!
+	baseUrl: String!
+	connected: Boolean!
+	version: String
+	error: String
+}
+
 type ExternalImportDownloadClientPayload {
-	sources: [String!]!
+	sourceKeys: [String!]!
 	name: String!
 	implementation: String!
 	scryerClientType: String
 	host: String
+	"""
+	Port as reported by the source Sonarr/Radarr instance (external
+	passthrough; not guaranteed numeric).
+	"""
 	port: String
 	useSsl: Boolean!
 	urlBase: String
@@ -1007,7 +1488,7 @@ type ExternalImportDownloadClientPayload {
 }
 
 type ExternalImportIndexerPayload {
-	sources: [String!]!
+	sourceKeys: [String!]!
 	name: String!
 	implementation: String!
 	scryerProviderType: String
@@ -1022,11 +1503,11 @@ type ExternalImportIndexerPayload {
 }
 
 enum ExternalImportMonitorWarmupPhaseValue {
-	loading_movies
-	loading_series
-	loading_episodes
-	building_snapshot
-	ready
+	LOADING_MOVIES
+	LOADING_SERIES
+	LOADING_EPISODES
+	BUILDING_SNAPSHOT
+	READY
 }
 
 type ExternalImportMonitorWarmupProgressPayload {
@@ -1057,23 +1538,18 @@ type ExternalImportMonitorWarmupProgressPayload {
 }
 
 enum ExternalImportMonitorWarmupStatusValue {
-	queued
-	running
-	completed
-	canceled
-	failed
+	QUEUED
+	RUNNING
+	COMPLETED
+	CANCELED
+	FAILED
 }
 
 type ExternalImportPreviewPayload {
-	sonarrConnected: Boolean!
-	radarrConnected: Boolean!
 	prowlarrConnected: Boolean!
-	sonarrVersion: String
-	radarrVersion: String
 	prowlarrVersion: String
-	sonarrError: String
-	radarrError: String
 	prowlarrError: String
+	arrSources: [ExternalImportArrSourcePayload!]!
 	rootFolders: [ExternalImportRootFolderPayload!]!
 	downloadClients: [ExternalImportDownloadClientPayload!]!
 	indexers: [ExternalImportIndexerPayload!]!
@@ -1088,8 +1564,62 @@ type ExternalImportResultPayload {
 }
 
 type ExternalImportRootFolderPayload {
-	source: String!
-	path: String!
+	sourceWarmupSessionId: ID!
+	sourceKey: String!
+	kind: ExternalArrSourceKind!
+	arrRootPath: String!
+}
+
+type ExternalImportSetupApiKeyOverridePayload {
+	dedupKey: String!
+	apiKey: String!
+}
+
+input ExternalImportSetupInstanceApiKeyInput {
+	instanceId: ID!
+	kind: ExternalImportConnectionKind!
+	apiKey: String!
+}
+
+type ExternalImportSetupInstanceApiKeyPayload {
+	instanceId: ID!
+	kind: ExternalImportConnectionKind!
+	apiKey: String!
+}
+
+type ExternalImportSetupPasswordOverridePayload {
+	dedupKey: String!
+	password: String!
+}
+
+type ExternalImportSetupSecretDraftPayload {
+	instanceApiKeys: [ExternalImportSetupInstanceApiKeyPayload!]!
+	downloadClientApiKeyOverrides: [ExternalImportSetupApiKeyOverridePayload!]!
+	downloadClientPasswordOverrides: [ExternalImportSetupPasswordOverridePayload!]!
+	indexerApiKeyOverrides: [ExternalImportSetupApiKeyOverridePayload!]!
+	updatedAt: DateTime!
+}
+
+type ExternalImportSetupSecretDraftStatusPayload {
+	hasDraft: Boolean!
+	ownedByCurrentUser: Boolean!
+	updatedAt: DateTime
+}
+
+input ExternalImportSourceLibraryMappingInput {
+	"""
+	Warmup session that surfaced this root. `None` for a manually-added root
+	that no Sonarr/Radarr instance reported: such a root carries no
+	monitored-status snapshot and simply registers its path on the target
+	library. When set, `source_key` and `kind` must also be set.
+	"""
+	sourceWarmupSessionId: ID
+	sourceKey: String
+	kind: ExternalArrSourceKind
+	arrRootPath: String!
+	scryerRootPath: String!
+	libraryId: ID!
+	facet: MediaFacetValue!
 }
 
 type ExternalSubtitleBlocklistEntryPayload {
@@ -1113,6 +1643,7 @@ type ExternalSubtitlePayload {
 	providerFileId: String
 	filePath: String!
 	score: Int
+	scorePercent: Int
 	hearingImpaired: Boolean!
 	forced: Boolean!
 	aiTranslated: Boolean!
@@ -1136,17 +1667,17 @@ type FacetScoringPersonaSelectionPayload {
 	inheritsGlobal: Boolean!
 }
 
+enum FillerPolicyValue {
+	DOWNLOAD_ALL
+	SKIP_FILLER
+}
+
 input FinalizeExternalImportInput {
-	sonarr: ExternalImportConnectionInput
-	radarr: ExternalImportConnectionInput
-	monitorWarmupSessionId: ID
-	selectedMoviesPaths: [String!]!
-	selectedSeriesPaths: [String!]!
-	selectedAnimePaths: [String!]!
+	sourceWarmupSessionIds: [ID!]!
+	mappings: [ExternalImportSourceLibraryMappingInput!]!
 }
 
 type FinalizeExternalImportPayload {
-	finalized: Boolean!
 	monitorWarmupSessionId: ID!
 }
 
@@ -1162,8 +1693,16 @@ type FixTitleMatchPayload {
 	warnings: [String!]!
 }
 
+type FloatConfigValuePayload {
+	value: Float!
+}
+
 type ForceGrabPendingReleasePayload {
 	id: ID!
+	"""
+	False when the grab was rejected (e.g. the release is blocklisted)
+	rather than queued — not an error.
+	"""
 	grabbed: Boolean!
 }
 
@@ -1186,24 +1725,29 @@ input IgnoreTrackedDownloadInput {
 }
 
 enum ImportDecisionValue {
-	imported
-	rejected
-	skipped
-	conflict
-	unmatched
-	failed
+	IMPORTED
+	REJECTED
+	SKIPPED
+	CONFLICT
+	UNMATCHED
+	FAILED
 }
 
 enum ImportErrorCodeValue {
-	file_not_found
-	episode_not_found
-	episode_lookup_failed
-	source_job_failed
-	policy_mismatch
-	io_failed
-	permission_denied
-	disk_full
-	unknown
+	FILE_NOT_FOUND
+	EPISODE_NOT_FOUND
+	EPISODE_LOOKUP_FAILED
+	SOURCE_JOB_FAILED
+	POLICY_MISMATCH
+	IO_FAILED
+	PERMISSION_DENIED
+	DISK_FULL
+	UNKNOWN
+}
+
+enum ImportModeValue {
+	HARDLINK_OR_COPY
+	MOVE
 }
 
 type ImportRecordPayload {
@@ -1232,44 +1776,47 @@ type ImportResultPayload {
 	titleId: ID
 	sourcePath: String!
 	destPath: String
-	fileSizeBytes: Long
-	linkType: String
 	errorMessage: String
 }
 
 enum ImportSkipReasonValue {
-	already_imported
-	duplicate_file
-	post_download_rule_blocked
-	policy_mismatch
-	unresolved_identity
-	unparseable_episode
-	no_video_files
-	disk_full
-	permission_denied
-	password_required
+	ALREADY_IMPORTED
+	DUPLICATE_FILE
+	POST_DOWNLOAD_RULE_BLOCKED
+	POLICY_MISMATCH
+	UNRESOLVED_IDENTITY
+	UNPARSEABLE_EPISODE
+	NO_VIDEO_FILES
+	DISK_FULL
+	PERMISSION_DENIED
+	PASSWORD_REQUIRED
 }
 
 enum ImportStatusValue {
-	pending
-	running
-	processing
-	completed
-	failed
-	skipped
+	PENDING
+	RUNNING
+	PROCESSING
+	COMPLETED
+	FAILED
+	SKIPPED
+}
+
+enum ImportTransferPhaseValue {
+	COPYING
+	FINALIZING
 }
 
 enum ImportTypeValue {
-	movie_download
-	series_download
-	manual_import
-	rename_preview
-	rename_apply_title
-	rename_apply_facet
-	rename_apply_result
-	rename_io_failed
-	rename_move
-	rename_stale_plan
+	MOVIE_DOWNLOAD
+	SERIES_DOWNLOAD
+	MANUAL_IMPORT
+	RENAME_PREVIEW
+	RENAME_APPLY_TITLE
+	RENAME_APPLY_FACET
+	RENAME_APPLY_RESULT
+	RENAME_IO_FAILED
+	RENAME_MOVE
+	RENAME_STALE_PLAN
 }
 
 """
@@ -1287,6 +1834,7 @@ type IndexerConfigPayload {
 	name: String!
 	providerType: String!
 	baseUrl: String!
+	indexerProxyConfigId: ID
 	hasApiKey: Boolean!
 	isManaged: Boolean!
 	managedParentConfigId: ID
@@ -1311,6 +1859,28 @@ type IndexerConfigSyncPayload {
 	createdIds: [ID!]!
 	updatedIds: [ID!]!
 	deletedIds: [ID!]!
+}
+
+type IndexerProxyConfigPayload {
+	id: ID!
+	name: String!
+	providerType: String!
+	protocol: String!
+	baseUrl: String!
+	requestTimeoutSeconds: Int!
+	isEnabled: Boolean!
+	lastHealthStatus: String
+	lastErrorMessage: String
+	lastErrorAt: DateTime
+	createdAt: DateTime!
+	updatedAt: DateTime!
+}
+
+type IndexerProxyTestResultPayload {
+	ok: Boolean!
+	status: String!
+	message: String
+	durationMs: Int
 }
 
 type IndexerQueryStatsPayload {
@@ -1364,6 +1934,10 @@ type IndexerSearchResultPayload {
 	autoDecisionSummary: String
 }
 
+type IntConfigValuePayload {
+	value: Int!
+}
+
 """
 A scalar that can represent any JSON value.
 """
@@ -1377,11 +1951,11 @@ type JellyfinServerUserPayload {
 }
 
 enum JobCategoryValue {
-	library
-	acquisition
-	maintenance
-	subtitles
-	system
+	LIBRARY
+	ACQUISITION
+	MAINTENANCE
+	SUBTITLES
+	SYSTEM
 }
 
 type JobDefinitionPayload {
@@ -1396,25 +1970,25 @@ type JobDefinitionPayload {
 }
 
 enum JobKeyValue {
-	library_scan_movies
-	library_scan_series
-	library_scan_anime
-	background_library_refresh_movies
-	background_library_refresh_series
-	background_library_refresh_anime
-	rss_sync
-	subtitle_search
-	metadata_refresh
-	plugin_registry_refresh
-	housekeeping
-	health_checks
-	auto_backup
-	prowlarr_sync
-	wanted_sync
-	pending_release_processing
-	staged_nzb_prune
-	title_image_cache_refresh
-	title_deletion
+	LIBRARY_SCAN_MOVIES
+	LIBRARY_SCAN_SERIES
+	LIBRARY_SCAN_ANIME
+	BACKGROUND_LIBRARY_REFRESH_MOVIES
+	BACKGROUND_LIBRARY_REFRESH_SERIES
+	BACKGROUND_LIBRARY_REFRESH_ANIME
+	RSS_SYNC
+	SUBTITLE_SEARCH
+	PLUGIN_REGISTRY_REFRESH
+	HOUSEKEEPING
+	HEALTH_CHECKS
+	AUTO_BACKUP
+	PROWLARR_SYNC
+	PENDING_RELEASE_PROCESSING
+	STAGED_NZB_PRUNE
+	DISCOVERY_SYNC
+	TITLE_IMAGE_CACHE_REFRESH
+	TITLE_DELETION
+	ACQUISITION_SEARCH
 }
 
 type JobRunPayload {
@@ -1427,20 +2001,20 @@ type JobRunPayload {
 	triggerSource: JobTriggerSourceValue!
 	startedAt: DateTime!
 	completedAt: DateTime
-	summaryJson: String
+	summaryJson: JSON
 	summaryText: String
 	errorText: String
-	progressJson: String
+	progressJson: JSON
 	libraryScanProgress: LibraryScanProgressPayload
 }
 
 enum JobRunStatusValue {
-	queued
-	discovering
-	running
-	completed
-	warning
-	failed
+	QUEUED
+	DISCOVERING
+	RUNNING
+	COMPLETED
+	WARNING
+	FAILED
 }
 
 type JobScheduleInfoPayload {
@@ -1452,23 +2026,23 @@ type JobScheduleInfoPayload {
 }
 
 enum JobScheduleKindValue {
-	manual
-	interval
-	startup_and_interval
-	daily_at_time
+	MANUAL
+	INTERVAL
+	STARTUP_AND_INTERVAL
+	DAILY_AT_TIME
 }
 
 enum JobSectionValue {
-	primary
-	maintenance
+	PRIMARY
+	MAINTENANCE
 }
 
 enum JobTriggerSourceValue {
-	manual
-	scheduled_startup
-	scheduled_interval
-	scheduled_daily
-	system_internal
+	MANUAL
+	SCHEDULED_STARTUP
+	SCHEDULED_INTERVAL
+	SCHEDULED_DAILY
+	SYSTEM_INTERNAL
 }
 
 type LibraryPathsPayload {
@@ -1496,12 +2070,12 @@ input LibraryPermissionGrantInput {
 }
 
 enum LibraryPermissionValue {
-	view
-	manageTitles
-	resolveImports
-	manageLibrary
-	request
-	autoApproveRequests
+	VIEW
+	MANAGE_TITLES
+	RESOLVE_IMPORTS
+	MANAGE_LIBRARY
+	REQUEST
+	AUTO_APPROVE_REQUESTS
 }
 
 type LibraryRootPayload {
@@ -1511,8 +2085,8 @@ type LibraryRootPayload {
 }
 
 enum LibraryScanModeValue {
-	full
-	additive
+	FULL
+	ADDITIVE
 }
 
 type LibraryScanPhaseProgressPayload {
@@ -1536,20 +2110,16 @@ type LibraryScanProgressPayload {
 	hydrationProgress: LibraryScanPhaseProgressPayload!
 	mediaAnalysisTotalKnown: Boolean!
 	mediaAnalysisProgress: LibraryScanPhaseProgressPayload!
-	metadataTotalKnown: Boolean!
-	fileTotalKnown: Boolean!
-	metadataProgress: LibraryScanPhaseProgressPayload!
-	fileProgress: LibraryScanPhaseProgressPayload!
 	summary: LibraryScanSummaryPayload
 }
 
 enum LibraryScanStatusValue {
-	discovering
-	running
-	completed
-	canceled
-	warning
-	failed
+	DISCOVERING
+	RUNNING
+	COMPLETED
+	CANCELED
+	WARNING
+	FAILED
 }
 
 type LibraryScanSummaryPayload {
@@ -1565,14 +2135,18 @@ input LibrarySettingsInput {
 	qualityProfileId: ID
 	requestQualityProfileIds: [ID!]
 	scoringPersona: ScoringPersonaValue
-	fillerPolicy: String
-	recapPolicy: String
+	fillerPolicy: FillerPolicyValue
+	recapPolicy: RecapPolicyValue
 	monitorSpecials: Boolean
 	interSeasonMovies: Boolean
 	monitorFillerMovies: Boolean
 	nfoWriteOnImport: Boolean
 	plexmatchWriteOnImport: Boolean
-	importMode: String
+	importMode: ImportModeValue
+	setPermissionsLinux: Boolean
+	fileChmod: String
+	folderChmod: String
+	chownGroup: String
 	indexerRouting: [IndexerRoutingEntryInput!]
 	downloadClientRouting: [DownloadClientRoutingEntryInput!]
 }
@@ -1587,10 +2161,10 @@ type LibrarySettingsPayload {
 	requestQualityProfileDefaultId: ID!
 	scoringPersonaOverride: ScoringPersonaValue
 	scoringPersona: ScoringPersonaValue!
-	fillerPolicyOverride: String
-	fillerPolicy: String
-	recapPolicyOverride: String
-	recapPolicy: String
+	fillerPolicyOverride: FillerPolicyValue
+	fillerPolicy: FillerPolicyValue
+	recapPolicyOverride: RecapPolicyValue
+	recapPolicy: RecapPolicyValue
 	monitorSpecialsOverride: Boolean
 	monitorSpecials: Boolean
 	interSeasonMoviesOverride: Boolean
@@ -1601,8 +2175,16 @@ type LibrarySettingsPayload {
 	nfoWriteOnImport: Boolean!
 	plexmatchWriteOnImportOverride: Boolean
 	plexmatchWriteOnImport: Boolean
-	importModeOverride: String
-	importMode: String!
+	importModeOverride: ImportModeValue
+	importMode: ImportModeValue!
+	setPermissionsLinuxOverride: Boolean
+	setPermissionsLinux: Boolean!
+	fileChmodOverride: String
+	fileChmod: String
+	folderChmodOverride: String
+	folderChmod: String
+	chownGroupOverride: String
+	chownGroup: String
 	indexerRoutingOverride: [IndexerRoutingEntryPayload!]
 	downloadClientRoutingOverride: [DownloadClientRoutingEntryPayload!]
 }
@@ -1724,9 +2306,9 @@ input MarkTrackedDownloadFailedInput {
 }
 
 enum MediaFacetValue {
-	movie
-	series
-	anime
+	MOVIE
+	SERIES
+	ANIME
 }
 
 input MediaRenameApplyInput {
@@ -1738,7 +2320,6 @@ input MediaRenameApplyInput {
 
 type MediaRenameApplyItemPayload {
 	collectionId: ID
-	mediaFileId: ID
 	seriesMovieLinkIds: [ID!]!
 	currentPath: String!
 	proposedPath: String
@@ -1766,7 +2347,6 @@ input MediaRenameBulkApplyInput {
 
 type MediaRenamePlanItemPayload {
 	collectionId: ID
-	mediaFileId: ID
 	seriesMovieLinkIds: [ID!]!
 	currentPath: String!
 	proposedPath: String
@@ -1775,15 +2355,15 @@ type MediaRenamePlanItemPayload {
 	reasonCode: String!
 	writeAction: String!
 	sourceSizeBytes: Long
-	sourceMtimeUnixMs: String
+	sourceMtimeUnixMs: Long
 }
 
 type MediaRenamePlanPayload {
 	facet: MediaFacetValue!
 	titleId: ID
 	template: String!
-	collisionPolicy: String!
-	missingMetadataPolicy: String!
+	collisionPolicy: RenameCollisionPolicyValue!
+	missingMetadataPolicy: RenameMissingMetadataPolicyValue!
 	fingerprint: String!
 	total: Int!
 	renamable: Int!
@@ -1800,24 +2380,17 @@ input MediaRenamePreviewInput {
 }
 
 type MediaRequestActionPayload {
-	accepted: Boolean!
+	"""
+	The media request the action applied to.
+	"""
+	requestId: ID!
 }
 
 type MediaRequestChangedPayload {
-	sequence: Long!
 	eventId: ID!
-	occurredAt: DateTime!
 	eventType: DomainEventTypeValue!
 	requestId: ID!
 	libraryId: ID!
-	facet: MediaFacetValue!
-	titleName: String!
-	createdTitleId: ID
-	requestedQualityProfileId: ID
-	requestedQualityProfileName: String
-	requestedMonitorType: String
-	approvedQualityProfileId: ID
-	approvedQualityProfileName: String
 }
 
 type MediaRequestCountsPayload {
@@ -1843,7 +2416,7 @@ type MediaRequestPayload {
 	contentStatus: String
 	requestedQualityProfileId: ID
 	requestedQualityProfileName: String
-	requestedMonitorType: String
+	requestedMonitorType: MonitorTypeValue
 	resolvedByUserId: ID
 	resolvedAt: DateTime
 	createdTitleId: ID
@@ -1864,10 +2437,10 @@ type MediaRequestRequesterPayload {
 }
 
 enum MediaRequestStatusValue {
-	pending
-	approved
-	rejected
-	canceled
+	PENDING
+	APPROVED
+	REJECTED
+	CANCELED
 }
 
 type MediaServerConnectionPayload {
@@ -1909,9 +2482,9 @@ type MediaServerPathMappingPayload {
 }
 
 enum MediaServerProviderValue {
-	jellyfin
-	plex
-	emby
+	JELLYFIN
+	PLEX
+	EMBY
 }
 
 type MediaServerUserGroupPayload {
@@ -1924,9 +2497,9 @@ type MediaServerUserGroupPayload {
 }
 
 enum MediaServerUserGroupStatusValue {
-	ready
-	missing_credentials
-	error
+	READY
+	MISSING_CREDENTIALS
+	ERROR
 }
 
 type MediaServerUserPayload {
@@ -1944,16 +2517,20 @@ type MediaSettingsPayload {
 	folderTemplate: String!
 	renameEnabled: Boolean!
 	renameTemplate: String!
-	renameCollisionPolicy: String!
-	renameMissingMetadataPolicy: String!
-	fillerPolicy: String
-	recapPolicy: String
+	renameCollisionPolicy: RenameCollisionPolicyValue!
+	renameMissingMetadataPolicy: RenameMissingMetadataPolicyValue!
+	fillerPolicy: FillerPolicyValue
+	recapPolicy: RecapPolicyValue
 	monitorSpecials: Boolean
 	interSeasonMovies: Boolean
 	monitorFillerMovies: Boolean
 	nfoWriteOnImport: Boolean!
 	plexmatchWriteOnImport: Boolean
-	importMode: String!
+	importMode: ImportModeValue!
+	setPermissionsLinux: Boolean!
+	fileChmod: String
+	folderChmod: String
+	chownGroup: String
 }
 
 type MetadataEpisodePayload {
@@ -1984,7 +2561,6 @@ type MetadataMoviePayload {
 	runtimeMinutes: Int!
 	sortTitle: String!
 	imdbId: String!
-	genres: [String!]!
 	studio: String!
 	tmdbReleaseDate: Date
 }
@@ -2037,43 +2613,34 @@ type MetadataSeriesPayload {
 	runtimeMinutes: Int!
 	posterUrl: String!
 	country: String!
-	genres: [String!]!
 	aliases: [String!]!
 	seasons: [MetadataSeasonPayload!]!
 	episodes: [MetadataEpisodePayload!]!
 }
 
 enum MonitorTypeValue {
-	monitored
-	unmonitored
-	futureEpisodes
-	missingAndFutureEpisodes
-	allEpisodes
-	none
+	MONITORED
+	UNMONITORED
+	FUTURE_EPISODES
+	MISSING_AND_FUTURE_EPISODES
+	ALL_EPISODES
+	NONE
 }
 
 type MovieEntityPayload {
 	id: ID!
 	title: String!
-	sortTitle: String
 	slug: String
 	year: Int
 	overview: String
 	posterUrl: String
-	backgroundUrl: String
-	language: String
 	runtimeMinutes: Int
 	contentStatus: String
-	genres: [String!]!
-	studio: String
-	digitalReleaseDate: Date
 	imdbId: String
 	tvdbId: String
 	tmdbId: String
 	malId: String
 	anidbId: String
-	createdAt: DateTime!
-	updatedAt: DateTime!
 }
 
 type MutationRoot {
@@ -2106,6 +2673,10 @@ type MutationRoot {
 	triggerJob(jobKey: JobKeyValue!): JobRunPayload!
 	createIndexerConfig(input: CreateIndexerConfigInput!): IndexerConfigPayload!
 	updateIndexerConfig(input: UpdateIndexerConfigInput!): IndexerConfigPayload!
+	createIndexerProxyConfig(input: CreateIndexerProxyConfigInput!): IndexerProxyConfigPayload!
+	updateIndexerProxyConfig(input: UpdateIndexerProxyConfigInput!): IndexerProxyConfigPayload!
+	deleteIndexerProxyConfig(id: ID!): DeleteIndexerProxyConfigPayload!
+	testIndexerProxyConfig(id: ID!): IndexerProxyTestResultPayload!
 	deleteIndexerConfig(id: ID!): DeleteIndexerConfigPayload!
 	createDownloadClientConfig(input: CreateDownloadClientConfigInput!): DownloadClientConfigPayload!
 	updateDownloadClientConfig(input: UpdateDownloadClientConfigInput!): DownloadClientConfigPayload!
@@ -2119,6 +2690,7 @@ type MutationRoot {
 	testIndexerConnection(input: TestIndexerConnectionInput!): ProviderValidationPayload!
 	syncIndexerConfig(id: ID!): IndexerConfigSyncPayload!
 	triggerRssSync: RssSyncReportPayload!
+	setMyUiSettings(input: SetMyUiSettingsInput!): UiSettingsPayload!
 	updateSubtitleSettings(input: UpdateSubtitleSettingsInput!): SubtitleSettingsPayload!
 	updateAcquisitionSettings(input: UpdateAcquisitionSettingsInput!): AcquisitionSettingsPayload!
 	updateGeneralSettings(input: UpdateGeneralSettingsInput!): GeneralSettingsPayload!
@@ -2189,15 +2761,35 @@ type MutationRoot {
 	dismissMediaRequest(requestId: ID!): MediaRequestActionPayload!
 	updateMyMediaRequest(input: UpdateMediaRequestInput!): MediaRequestPayload!
 	cancelMyMediaRequest(requestId: ID!): MediaRequestActionPayload!
-	triggerTitleWantedSearch(input: TriggerTitleWantedSearchInput!): WantedSearchPayload!
+	"""
+	Re-open the title's title-mismatch scopes for search after a rematch
+	(RFC 119 §D2). Retained: a rematch changes the scope fingerprint, so the
+	re-open prunes coverage and the cursor re-converges.
+	"""
 	triggerTitleMismatchRecoverySearch(titleId: ID!): TriggerTitleMismatchRecoverySearchPayload!
-	triggerSeasonWantedSearch(input: TriggerSeasonWantedSearchInput!): WantedSearchPayload!
-	triggerWantedSearch(input: TriggerWantedSearchInput!): WantedSearchPayload!
+	"""
+	Pause acquisition for a scope. `id` is a state-row id or a convergence scope
+	key (RFC 119 §7.4) — a scope key with no row yet materializes one.
+	"""
 	pauseWantedItem(id: ID!): PauseWantedItemPayload!
+	"""
+	Resume acquisition for a paused scope. `id` is a state-row id or a
+	convergence scope key (RFC 119 §7.4).
+	"""
 	resumeWantedItem(id: ID!): ResumeWantedItemPayload!
-	resetWantedItem(id: ID!): ResetWantedItemPayload!
 	forceGrabPendingRelease(id: ID!): ForceGrabPendingReleasePayload!
 	dismissPendingRelease(id: ID!): DismissPendingReleasePayload!
+	"""
+	Start an interactive acquisition-search job over the selected wanted/upgrade
+	scopes (RFC 119 §7.3 / Phase 2). Replaces the retired per-item trigger
+	mutations: one server job (progress/cancel survive refresh) runs the
+	interactive best-release search+grab for every requested scope.
+	"""
+	triggerAcquisitionSearch(input: TriggerAcquisitionSearchInput!): AcquisitionSearchJobPayload!
+	"""
+	Cancel a running interactive acquisition-search job (RFC 119 §7.3).
+	"""
+	cancelAcquisitionSearch(id: ID!): CancelAcquisitionSearchPayload!
 	createRuleSet(input: CreateRuleSetInput!): RuleSetPayload!
 	updateRuleSet(input: UpdateRuleSetInput!): RuleSetPayload!
 	deleteRuleSet(id: ID!): DeleteRuleSetPayload!
@@ -2224,12 +2816,23 @@ type MutationRoot {
 	deleteBackup(input: DeleteBackupInput!): DeleteBackupPayload!
 	inspectRestoreBundle(bundleUpload: Upload!, password: String): RestoreInspectPayload!
 	applyRestoreBundle(uploadId: ID!, password: String): RestoreApplyPayload!
+	saveExternalImportSetupSecretDraft(input: SaveExternalImportSetupSecretDraftInput!): SaveExternalImportSetupSecretDraftPayload!
+	clearExternalImportSetupSecretDraft: ClearExternalImportSetupSecretDraftPayload!
+	startExternalImportArrSourceWarmup(input: StartExternalImportArrSourceWarmupInput!): ExternalImportMonitorWarmupProgressPayload!
+	cancelExternalImportArrSourceWarmup(sessionId: ID!): CancelExternalImportMonitorWarmupPayload!
+	"""
+	Lightweight connection probe for the Connect step. Tests reachability +
+	credentials for a single Sonarr/Radarr/Prowlarr instance without kicking
+	off the (expensive) warmup that fetches the whole library. The wizard
+	fires this on field blur; on success it starts the per-instance warmup
+	separately so warmups run concurrently while the user keeps adding
+	connections.
+	"""
+	validateExternalImportConnection(input: ValidateExternalImportConnectionInput!): ExternalImportConnectionValidationPayload!
 	"""
 	Connect to Sonarr and/or Radarr, fetch their configs, return a preview.
 	"""
 	previewExternalImport(input: PreviewExternalImportInput!): ExternalImportPreviewPayload!
-	startExternalImportMonitorWarmup(input: StartExternalImportMonitorWarmupInput!): ExternalImportMonitorWarmupProgressPayload!
-	cancelExternalImportMonitorWarmup(sessionId: ID!): CancelExternalImportMonitorWarmupPayload!
 	finalizeExternalImport(input: FinalizeExternalImportInput!): FinalizeExternalImportPayload!
 	"""
 	Re-connect to Sonarr/Radarr, fetch configs, and create selected items in Scryer.
@@ -2326,38 +2929,36 @@ type OauthConnectedAppPayload {
 	lastUsedAt: DateTime
 }
 
+"""
+Marker member: the download is not attached to any known scope.
+"""
+type OrphanScopePayload {
+	orphaned: Boolean!
+}
+
 type ParsedEpisodePayload {
 	season: Int
 	episodeNumbers: [Int!]!
-	absoluteEpisode: Int
-	raw: String
 }
 
 type ParsedReleasePayload {
 	rawTitle: String!
 	normalizedTitle: String!
 	releaseGroup: String
-	languagesAudio: [String!]!
-	languagesSubtitles: [String!]!
-	year: Int
 	quality: String
 	source: String
 	videoCodec: String
 	videoEncoding: String
 	audio: String
-	audioChannels: String
 	isDualAudio: Boolean!
 	isAtmos: Boolean!
 	isDolbyVision: Boolean!
 	detectedHdr: Boolean!
-	fps: Float
 	isProperUpload: Boolean!
 	isRemux: Boolean!
 	isBdDisk: Boolean!
 	isAiEnhanced: Boolean!
-	parserVersion: String!
 	parseConfidence: Float!
-	missingFields: [String!]!
 	parseHints: [String!]!
 	episode: ParsedEpisodePayload
 }
@@ -2376,7 +2977,6 @@ input PauseDownloadInput {
 
 type PauseWantedItemPayload {
 	id: ID!
-	paused: Boolean!
 }
 
 type PendingImportBindingFilePreviewPayload {
@@ -2396,8 +2996,9 @@ type PendingImportBindingPreviewPayload {
 }
 
 type PendingImportConnectionPayload {
-	total: Int!
 	items: [PendingImportItemPayload!]!
+	totalCount: Int!
+	hasMore: Boolean!
 }
 
 type PendingImportCountsPayload {
@@ -2409,7 +3010,6 @@ type PendingImportCountsPayload {
 type PendingImportItemPayload {
 	id: ID!
 	libraryId: ID!
-	librarySlug: String
 	facet: MediaFacetValue!
 	status: PendingImportStatusValue!
 	titleId: ID
@@ -2432,8 +3032,8 @@ type PendingImportSearchAttemptPayload {
 }
 
 enum PendingImportStatusValue {
-	pending
-	ignored
+	PENDING
+	IGNORED
 }
 
 input PendingReleaseFilterInput {
@@ -2450,7 +3050,7 @@ type PendingReleasePayload {
 	releaseUrl: String
 	releaseSizeBytes: Long
 	releaseScore: Int!
-	scoringLogJson: String
+	scoringLogJson: JSON
 	indexerSource: String
 	addedAt: DateTime!
 	delayUntil: DateTime!
@@ -2465,19 +3065,17 @@ type PendingReleaseStatusCountPayload {
 }
 
 enum PendingReleaseStatusValue {
-	waiting
-	standby
-	processing
-	grabbed
-	superseded
-	expired
-	dismissed
+	WAITING
+	STANDBY
+	PROCESSING
+	GRABBED
+	SUPERSEDED
+	EXPIRED
+	DISMISSED
 }
 
 type PendingReleasesPayload {
 	items: [PendingReleasePayload!]!
-	limit: Int!
-	offset: Int!
 	hasMore: Boolean!
 	totalCount: Int!
 }
@@ -2488,7 +3086,7 @@ type PlexServerDiscoveryPayload {
 }
 
 type PluginCatalogStatusPayload {
-	refreshState: String!
+	refreshState: CatalogRefreshStateValue!
 	githubAvailable: Boolean!
 	lastCheckedAt: DateTime
 	outageMessage: String
@@ -2516,21 +3114,23 @@ type PluginConfigFieldPayload {
 }
 
 enum PluginConfigFieldRoleValue {
-	connection_url
+	CONNECTION_URL
 }
 
 enum PluginConfigFieldTypeValue {
-	string
-	password
-	multiline
-	bool
-	select
-	number
+	STRING
+	PASSWORD
+	MULTILINE
+	BOOL
+	SELECT
+	NUMBER
+	PATH
+	TAG
 }
 
 enum PluginConfigValueSourceValue {
-	user
-	host_binding
+	USER
+	HOST_BINDING
 }
 
 type PluginHttpTrustedCertificatePayload {
@@ -2539,8 +3139,8 @@ type PluginHttpTrustedCertificatePayload {
 }
 
 enum PluginInstallOperationKindValue {
-	install
-	upgrade
+	INSTALL
+	UPGRADE
 }
 
 type PluginInstallProgressPayload {
@@ -2555,11 +3155,11 @@ type PluginInstallProgressPayload {
 }
 
 enum PluginInstallStateValue {
-	downloading
-	verifying
-	installing
-	succeeded
-	failed
+	DOWNLOADING
+	VERIFYING
+	INSTALLING
+	SUCCEEDED
+	FAILED
 }
 
 type PluginInstallationPayload {
@@ -2594,7 +3194,7 @@ type PostProcessingScriptPayload {
 	scriptType: String!
 	scriptContent: String!
 	appliedFacets: [String!]!
-	executionMode: String!
+	executionMode: ExecutionModeValue!
 	timeoutSecs: Int!
 	priority: Int!
 	enabled: Boolean!
@@ -2616,7 +3216,6 @@ type PostProcessingScriptRunPayload {
 	stdoutTail: String
 	stderrTail: String
 	durationMs: Int
-	envPayloadJson: String
 	startedAt: DateTime!
 	completedAt: DateTime
 }
@@ -2626,8 +3225,7 @@ input PrepareBackupDownloadInput {
 }
 
 input PreviewExternalImportInput {
-	sonarr: ExternalImportConnectionInput
-	radarr: ExternalImportConnectionInput
+	sourceWarmupSessionIds: [ID!]!
 	prowlarr: ExternalImportConnectionInput
 }
 
@@ -2643,11 +3241,18 @@ input PreviewManualImportPathInput {
 }
 
 enum ProviderCatalogFamilyValue {
-	subtitle
-	notification
-	indexer
-	download_client
+	SUBTITLE
+	NOTIFICATION
+	INDEXER
+	DOWNLOAD_CLIENT
+	ARCHIVE_EXTRACTOR
 }
+
+"""
+A provider-config field's stored value: clients branch on `__typename`
+instead of probing a nullable per-type fan-out.
+"""
+union ProviderConfigFieldValue = StringConfigValuePayload | BoolConfigValuePayload | IntConfigValuePayload | FloatConfigValuePayload | SecretConfigValuePayload
 
 input ProviderConfigValueInput {
 	key: String!
@@ -2670,11 +3275,10 @@ type ProviderConfigValuePayload {
 	hostBinding: String
 	options: [PluginConfigFieldOptionPayload!]!
 	helpText: String
-	stringValue: String
-	boolValue: Boolean
-	intValue: Int
-	floatValue: Float
-	secretStored: Boolean!
+	"""
+	The stored value as a typed union; null when the field is unset.
+	"""
+	value: ProviderConfigFieldValue
 }
 
 type ProviderTypePayload {
@@ -2777,13 +3381,25 @@ type QualityProfileSettingsPayload {
 
 type QueryRoot {
 	titles(facet: MediaFacetValue, libraryIds: [ID!], query: String, filter: TitleCatalogFilterInput, sort: TitleCatalogSortInput, limit: Int, offset: Int): TitleCatalogPayload!
+	titleCatalogFilterOptions(facet: MediaFacetValue, libraryIds: [ID!], rootFolderIds: [ID!]): TitleCatalogFilterOptionsPayload!
 	libraries(facet: MediaFacetValue, permission: LibraryPermissionValue): [LibraryPayload!]!
+	catalogHasValidRoot(facet: MediaFacetValue!): Boolean!
 	mediaRequests(facet: MediaFacetValue, libraryIds: [ID!], status: MediaRequestStatusValue): [MediaRequestPayload!]!
 	myMediaRequests(facet: MediaFacetValue, libraryIds: [ID!], status: MediaRequestStatusValue): [MediaRequestPayload!]!
 	librarySettings(libraryId: ID!): LibrarySettingsPayload!
 	titlesByExternalIds(source: String!, values: [String!]!): [TitlePayload!]!
 	title(id: ID!): TitlePayload
-	titleBySlug(facet: MediaFacetValue!, libraryId: ID, librarySlug: String, slug: String!): TitlePayload
+	episode(titleId: ID!, episodeId: ID!): EpisodePayload
+	"""
+	Fetch an episode by its globally unique id — targeted-refetch primitive;
+	unlike `episode`, no parent title id is required.
+	"""
+	episodeById(id: ID!): EpisodePayload
+	"""
+	Fetch a collection by its globally unique id — targeted-refetch primitive.
+	"""
+	collectionById(id: ID!): CollectionPayload
+	titleBySlug(facet: MediaFacetValue!, librarySlug: String, slug: String!): TitlePayload
 	mediaRenamePreview(input: MediaRenamePreviewInput!): MediaRenamePlanPayload!
 	deleteTitlePreview(titleId: ID!): DeletePreviewPayload!
 	deleteTitlesPreview(input: DeleteTitlesPreviewInput!): DeleteTitlesPreviewPayload!
@@ -2796,16 +3412,23 @@ type QueryRoot {
 	activityEvents(limit: Int, offset: Int): [ActivityEventPayload!]!
 	auditLog(eventTypes: [DomainEventTypeValue!], titleId: ID, facet: MediaFacetValue, afterSequence: Long, beforeSequence: Long, limit: Int): [DomainEventEnvelopePayload!]!
 	activeLibraryScans: [LibraryScanProgressPayload!]!
-	libraryScanSession(sessionId: ID!): LibraryScanProgressPayload
-	externalImportMonitorWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
+	externalImportArrSourceWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
+	externalImportAggregateWarmupProgress(input: ExternalImportAggregateWarmupProgressInput!): ExternalImportAggregateWarmupProgressPayload!
 	pendingImportCounts: PendingImportCountsPayload!
 	navigationBadgeCounts: NavigationBadgeCountsPayload!
 	pendingImports(facet: MediaFacetValue!, libraryIds: [ID!], status: PendingImportStatusValue!, limit: Int! = 50, offset: Int! = 0): PendingImportConnectionPayload!
+	pendingImportTitleSearch(pendingImportId: ID!, query: String!, limit: Int! = 8, language: String! = "eng", year: Int): [MetadataSearchItemPayload!]!
 	pendingImportBindingPreview(pendingImportId: ID!): PendingImportBindingPreviewPayload!
 	jobs: [JobDefinitionPayload!]!
 	activeJobRuns: [JobRunPayload!]!
 	jobRuns(jobKey: JobKeyValue!, limit: Int): [JobRunPayload!]!
 	recentJobRuns(limit: Int): [JobRunPayload!]!
+	discoveryHome(input: DiscoveryHomeInput): DiscoveryHomePayload!
+	discoveryHomeCards(input: DiscoveryHomeInput): DiscoveryHomeCardsPayload!
+	discoveryHomeFilterOptions(input: DiscoveryHomeFilterOptionsInput): DiscoveryHomeFilterOptionsPayload!
+	discoveryItems(input: DiscoveryItemsInput): DiscoveryItemsPayload!
+	discoveryItemDetail(input: DiscoveryItemDetailInput!): DiscoveryItemPayload
+	catalogDiscovery(input: CatalogDiscoveryInput!): CatalogDiscoveryPayload!
 	downloadQueue(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, titleId: ID, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]!
 	downloadImport(limit: Int, offset: Int, filter: DownloadImportFilterValue): DownloadImportPagePayload!
 	downloadHistory(limit: Int, offset: Int, filters: [DownloadHistoryFilterValue!], clientIds: [ID!], scryerSubmittedOnly: Boolean, sortKey: DownloadHistorySortKeyValue, sortDirection: SortDirectionValue): DownloadHistoryPagePayload!
@@ -2815,10 +3438,10 @@ type QueryRoot {
 	recycleBinSettings: RecycleBinSettingsPayload!
 	autoBackupSettings: AutoBackupSettingsPayload!
 	backupSettings: BackupSettingsPayload!
+	myUiSettings: UiSettingsPayload!
 	securitySettings: SecuritySettingsPayload!
 	externalAuthRuntimeSettings: ExternalAuthRuntimeSettingsPayload!
 	mediaServerConnections(provider: MediaServerProviderValue): [MediaServerConnectionPayload!]!
-	mediaServerConnection(id: ID!): MediaServerConnectionPayload
 	jellyfinServerUsers(connectionId: ID!, search: String): [JellyfinServerUserPayload!]!
 	mediaServerUsers(search: String): [MediaServerUserGroupPayload!]!
 	authRuntimeState: AuthRuntimeStatePayload!
@@ -2833,8 +3456,9 @@ type QueryRoot {
 	downloadClientRouting(scope: ContentScopeValue!): [DownloadClientRoutingEntryPayload!]!
 	indexerRouting(scope: ContentScopeValue!): [IndexerRoutingEntryPayload!]!
 	indexers(providerType: String): [IndexerConfigPayload!]!
+	indexerProxyConfigs: [IndexerProxyConfigPayload!]!
 	rootFolders(facet: MediaFacetValue!): [RootFolderPayload!]!
-	downloadClientConfigs(clientType: String): [DownloadClientConfigPayload!]!
+	downloadClientConfigs: [DownloadClientConfigPayload!]!
 	subtitleProviderConfigs(providerType: String): [SubtitleProviderConfigPayload!]!
 	users: [UserPayload!]!
 	runtimeInfo: RuntimeInfoPayload!
@@ -2849,9 +3473,28 @@ type QueryRoot {
 	previewManualImport(input: PreviewManualImportInput!): ManualImportPreviewPayload!
 	previewManualImportPath(input: PreviewManualImportPathInput!): ManualImportPreviewPayload!
 	me: UserPayload
-	wantedItems(statuses: [WantedStatusValue!], mediaTypes: [WantedMediaTypeValue!], titleId: ID, libraryIds: [ID!], titleSearch: String, latestDecisionCodes: [String!], limit: Int! = 50, offset: Int! = 0): WantedItemsListPayload!
-	cutoffUnmetTitles(facet: MediaFacetValue, libraryIds: [ID!]): [CutoffUnmetItemPayload!]!
+	"""
+	RFC 119 §6/§7: the derived Missing / Upgrades view. `wantedKind` selects the
+	target set (`MISSING` derived from fileless monitored scopes, `CUTOFF_UPGRADE`
+	from below-cutoff files). Results are the derived targets joined to the
+	activity-state row (when one exists) and enriched with per-scope convergence
+	progress. The retired state-row status / decision-code filters are dropped —
+	they only distinguished state rows, which are no longer the target source.
+	"""
+	wantedItems(wantedKind: WantedKindValue! = MISSING, facet: MediaFacetValue, libraryIds: [ID!], titleSearch: String, limit: Int! = 50, offset: Int! = 0): WantedItemsListPayload!
+	"""
+	RFC 119 bounded view: a single page of cutoff-unmet (Upgrades) targets plus
+	the full unmet count and per-item convergence progress, so the UI paginates
+	instead of loading the whole set. The unpaged `cutoffUnmetTitles` query was
+	removed in this release (RFC 119 §6): the full-array browser load is retired.
+	"""
+	cutoffUnmetTitlesPage(facet: MediaFacetValue, libraryIds: [ID!], limit: Int!, offset: Int!): CutoffUnmetTitlesPagePayload!
 	titleAcquisitionDiagnostics(titleId: ID!): TitleAcquisitionDiagnosticsPayload!
+	"""
+	Progress of an interactive acquisition-search job (RFC 119 §7.3), polled by
+	the UI alongside the `jobRunEvents` push. `None` when no such job exists.
+	"""
+	acquisitionSearchJob(id: ID!): AcquisitionSearchJobPayload
 	ruleSets: [RuleSetPayload!]!
 	postProcessingScripts: [PostProcessingScriptPayload!]!
 	postProcessingScriptRuns(scriptId: ID!, limit: Int): [PostProcessingScriptRunPayload!]!
@@ -2872,6 +3515,8 @@ type QueryRoot {
 	indexerProviderTypes: [ProviderTypePayload!]!
 	downloadClientProviderTypes: [ProviderTypePayload!]!
 	subtitleProviderTypes: [ProviderTypePayload!]!
+	externalImportSetupSecretDraft: ExternalImportSetupSecretDraftPayload
+	externalImportSetupSecretDraftStatus: ExternalImportSetupSecretDraftStatusPayload!
 	searchMetadata(query: String!, type: MediaFacetValue!, limit: Int! = 25, language: String! = "eng", year: Int): [MetadataSearchItemPayload!]!
 	searchMetadataMulti(query: String!, limit: Int! = 25, language: String! = "eng"): MetadataSearchMultiPayload!
 	metadataMovie(input: MetadataMovieInput!): MetadataMoviePayload!
@@ -2883,7 +3528,12 @@ type QueryRoot {
 	notificationProviderTypes: [ProviderTypePayload!]!
 	notificationEventTypes: [String!]!
 	setupStatus: SetupStatusPayload!
-	browsePath(path: String! = "/"): [DirectoryEntryPayload!]!
+	"""
+	Browses local paths after the caller passes the library-settings read permission check.
+	
+	Directories are returned by default; set `includeFiles` to `true` to include regular files.
+	"""
+	browsePath(path: String! = "/", includeFiles: Boolean): [DirectoryEntryPayload!]!
 	serviceLogs(limit: Int! = 250): ServiceLogsPayload!
 	"""
 	List external subtitles for a title.
@@ -2940,8 +3590,8 @@ enum QueueDownloadPurposeValue {
 }
 
 enum QueueDownloadResultStatusValue {
-	queued
-	conflict
+	QUEUED
+	CONFLICT
 }
 
 input QueueDownloadScopeInput @oneOf {
@@ -2952,13 +3602,11 @@ input QueueDownloadScopeInput @oneOf {
 	title: Boolean
 }
 
-type QueueDownloadScopePayload {
-	kind: String!
-	episodeId: ID
-	episodeIds: [ID!]!
-	seriesMovieLinkId: ID
-	collectionId: ID
-}
+"""
+The acquisition scope a queued download targets, as a real union: clients
+branch on `__typename` instead of a string discriminator.
+"""
+union QueueDownloadScopePayload = EpisodeScopePayload | EpisodeSetScopePayload | SeriesMovieScopePayload | CollectionScopePayload | TitleScopePayload | OrphanScopePayload
 
 input QueueManualImportInput {
 	titleId: ID
@@ -2972,6 +3620,21 @@ input QueuePathManualImportInput {
 	titleId: ID!
 	path: String!
 	files: [ManualImportFileMappingInput!]!
+}
+
+enum RecapPolicyValue {
+	DOWNLOAD_ALL
+	SKIP_RECAP
+}
+
+"""
+Recency lane of an acquisition scope (RFC 119 §D3): `Hot` scopes converge
+promptly (high candidate value to the scheduler); `Cold` scopes drain under
+backpressure.
+"""
+enum RecencyLaneValue {
+	HOT
+	COLD
 }
 
 type RecycleBinSettingsPayload {
@@ -3031,7 +3694,6 @@ input RehydrateAllMetadataInput {
 type RehydrateAllMetadataPayload {
 	language: String!
 	titlesCleared: Int!
-	accepted: Boolean!
 }
 
 type ReleaseDecisionPayload {
@@ -3045,7 +3707,7 @@ type ReleaseDecisionPayload {
 	candidateScore: Int!
 	currentScore: Int
 	scoreDelta: Int
-	explanationJson: String
+	explanationJson: JSON
 	createdAt: DateTime!
 	title: TitlePayload
 	wantedItem: WantedItemPayload
@@ -3053,9 +3715,19 @@ type ReleaseDecisionPayload {
 
 type ReleaseDecisionsPagePayload {
 	items: [ReleaseDecisionPayload!]!
-	limit: Int!
-	offset: Int!
+	totalCount: Int!
 	hasMore: Boolean!
+}
+
+enum RenameCollisionPolicyValue {
+	SKIP
+	ERROR
+	REPLACE_IF_BETTER
+}
+
+enum RenameMissingMetadataPolicyValue {
+	SKIP
+	FALLBACK_TITLE
 }
 
 input ReorderDownloadClientConfigsInput {
@@ -3064,23 +3736,18 @@ input ReorderDownloadClientConfigsInput {
 
 type ReorderDownloadClientConfigsPayload {
 	ids: [ID!]!
-	reordered: Boolean!
-}
-
-type ResetWantedItemPayload {
-	id: ID!
-	reset: Boolean!
 }
 
 input ResolvePendingImportInput {
 	pendingImportId: ID!
-	tvdbId: String!
+	title: AddTitleInput!
 }
 
 type ResolvePendingImportPayload {
 	title: TitlePayload!
 	created: Boolean!
-	libraryScan: LibraryScanSummaryPayload!
+	libraryScan: LibraryScanSummaryPayload
+	metadataHydrationState: AddTitleHydrationStateValue!
 }
 
 type RestoreApplyPayload {
@@ -3094,7 +3761,6 @@ type RestoreInspectPayload {
 
 type RestoreRecycledItemPayload {
 	id: ID!
-	restored: Boolean!
 }
 
 type RestoreSummaryPayload {
@@ -3115,7 +3781,6 @@ input ResumeDownloadInput {
 
 type ResumeWantedItemPayload {
 	id: ID!
-	resumed: Boolean!
 }
 
 input RetryImportInput {
@@ -3125,6 +3790,10 @@ input RetryImportInput {
 
 type RevokeMyOauthAppPayload {
 	grantId: ID!
+	"""
+	False when the grant was already revoked (or not owned by the caller)
+	— access was not newly cut.
+	"""
 	revoked: Boolean!
 }
 
@@ -3190,6 +3859,18 @@ enum RuntimePathStyleValue {
 	WINDOWS
 }
 
+input SaveExternalImportSetupSecretDraftInput {
+	instanceApiKeys: [ExternalImportSetupInstanceApiKeyInput!]!
+	downloadClientApiKeyOverrides: [DownloadClientApiKeyOverrideInput!]!
+	downloadClientPasswordOverrides: [DownloadClientPasswordOverrideInput!]!
+	indexerApiKeyOverrides: [IndexerApiKeyOverrideInput!]!
+}
+
+type SaveExternalImportSetupSecretDraftPayload {
+	overwroteAnotherUserDraft: Boolean!
+	updatedAt: DateTime!
+}
+
 input SaveQualityProfileSettingsInput {
 	profiles: [QualityProfileInput!]!
 	globalProfileId: ID
@@ -3228,10 +3909,10 @@ type ScoringOverridesPayload {
 }
 
 enum ScoringPersonaValue {
-	balanced
-	audiophile
-	efficient
-	compatible
+	BALANCED
+	AUDIOPHILE
+	EFFICIENT
+	COMPATIBLE
 }
 
 input SearchReleasesInput {
@@ -3245,6 +3926,13 @@ input SearchReleasesInput {
 input SearchSubtitlesInput {
 	mediaFileId: ID!
 	language: String!
+}
+
+"""
+Secret fields never echo their value; `stored` reports presence.
+"""
+type SecretConfigValuePayload {
+	stored: Boolean!
 }
 
 type SecuritySettingsPayload {
@@ -3261,22 +3949,19 @@ type SecuritySettingsPayload {
 
 type SeriesMovieLinkPayload {
 	id: ID!
-	seriesTitleId: ID!
 	movie: MovieEntityPayload!
-	placement: String
 	narrativeOrder: String
 	afterSeason: Int
 	beforeSeason: Int
 	linkedEpisodeId: ID
-	associationConfidence: String
 	continuityStatus: String
 	movieForm: String
-	confidence: String
 	signalSummary: String
-	source: String
 	monitored: Boolean!
-	createdAt: DateTime!
-	updatedAt: DateTime!
+}
+
+type SeriesMovieScopePayload {
+	seriesMovieLinkId: ID!
 }
 
 type ServiceLogsPayload {
@@ -3304,6 +3989,20 @@ type SetCollectionMonitoredPayload {
 input SetEpisodeMonitoredInput {
 	episodeId: ID!
 	monitored: Boolean!
+}
+
+input SetMyUiSettingsInput {
+	theme: UiThemeValue!
+	dateTimeFormat: UiDateTimeFormatValue
+	highlightColor: String
+	secondaryColor: String
+	highContrastMode: Boolean!
+	reduceMotion: Boolean!
+	hideSponsorButton: Boolean!
+	density: UiDensityValue!
+	sidebarMode: UiSidebarModeValue!
+	defaultLandingView: UiDefaultLandingViewValue!
+	tableColumns: [UiTableColumnSettingInput!]!
 }
 
 input SetPrimaryMovieFileInput {
@@ -3382,13 +4081,25 @@ type SmgVersionCompatibilityNoticePayload {
 }
 
 enum SortDirectionValue {
-	asc
-	desc
+	ASC
+	DESC
 }
 
-input StartExternalImportMonitorWarmupInput {
-	sonarr: ExternalImportConnectionInput
-	radarr: ExternalImportConnectionInput
+input StartExternalImportArrSourceWarmupInput {
+	kind: ExternalArrSourceKind!
+	connection: ExternalImportConnectionInput!
+}
+
+enum StreamKindValue {
+	GLOBAL
+	TITLE
+	LIBRARY_SCAN
+	JOB_RUN
+	DOWNLOAD_QUEUE_ITEM
+}
+
+type StringConfigValuePayload {
+	value: String!
 }
 
 input SubmitMediaRequestInput {
@@ -3408,7 +4119,10 @@ input SubmitMediaRequestInput {
 }
 
 type SubmitMediaRequestPayload {
-	accepted: Boolean!
+	"""
+	The submitted (or deduplicated) media request.
+	"""
+	requestId: ID!
 }
 
 type SubscriptionRoot {
@@ -3461,6 +4175,7 @@ type SubtitleSearchResult {
 	language: String!
 	releaseInfo: String
 	score: Int!
+	scorePercent: Int!
 	hearingImpaired: Boolean!
 	forced: Boolean!
 	aiTranslated: Boolean!
@@ -3521,6 +4236,7 @@ input TestIndexerConnectionInput {
 	providerType: String!
 	config: [ProviderConfigValueInput!]
 	indexerId: ID
+	indexerProxyConfigId: ID
 }
 
 input TestMediaServerConnectionInput {
@@ -3545,21 +4261,42 @@ type TitleAcquisitionDiagnosticsPayload {
 }
 
 enum TitleCatalogContentStatusValue {
-	continuing
-	ended
+	CONTINUING
+	ENDED
+}
+
+type TitleCatalogFilterCountsPayload {
+	all: Int!
+	monitored: Int!
+	unmonitored: Int!
+	continuing: Int!
+	ended: Int!
 }
 
 input TitleCatalogFilterInput {
 	monitored: Boolean
 	contentStatuses: [TitleCatalogContentStatusValue!]
+	rootFolderIds: [ID!]
+	genreTagKeys: [String!]
+	themeTagKeys: [String!]
+	minimumYear: Int
+	maximumYear: Int
+	minimumRating: Float
+}
+
+type TitleCatalogFilterOptionsPayload {
+	genres: [CanonicalTagFilterOptionPayload!]!
+	themes: [CanonicalTagFilterOptionPayload!]!
+	minimumYear: Int
+	maximumYear: Int
 }
 
 type TitleCatalogPayload {
 	items: [TitlePayload!]!
-	limit: Int!
-	offset: Int!
 	hasMore: Boolean!
 	totalCount: Int!
+	filterCounts: TitleCatalogFilterCountsPayload!
+	managedBytes: Long!
 }
 
 input TitleCatalogSortInput {
@@ -3568,12 +4305,44 @@ input TitleCatalogSortInput {
 }
 
 enum TitleCatalogSortKeyValue {
-	title
-	monitored
-	quality
-	episodes
-	status
-	size
+	TITLE
+	LIBRARY
+	MONITORED
+	QUALITY
+	EPISODES
+	STATUS
+	SIZE
+	ADDED
+	YEAR
+	RUNTIME
+	ROOT
+	POPULARITY
+	MEDIA_RESOLUTION
+	MEDIA_HDR
+	MEDIA_AUDIO_CODEC
+	RATING_SCRYER
+	RATING_IMDB
+	RATING_ROTTEN_TOMATOES
+	RATING_POPCORNMETER
+	RATING_METACRITIC
+	RATING_METACRITIC_USER
+	RATING_LETTERBOXD
+	RATING_TMDB
+	RATING_TVDB
+	RATING_TRAKT
+	RATING_MYANIMELIST
+	RATING_ANILIST
+	RATING_ANIDB
+	RATING_MDBLIST
+}
+
+type TitleExternalRatingPayload {
+	source: String!
+	value: Float
+	score: Float
+	normalized: Float!
+	votes: Int
+	url: String!
 }
 
 type TitleHistoryEventPayload {
@@ -3585,7 +4354,7 @@ type TitleHistoryEventPayload {
 	episodeIds: [ID!]!
 	collectionId: ID
 	eventType: String!
-	actorKind: String
+	actorKind: ActorKindValue
 	actorUserId: ID
 	actorDisplayName: String
 	sourceTitle: String
@@ -3604,26 +4373,26 @@ type TitleHistoryEventPayload {
 	blocklistReason: String
 	sourcePath: String
 	destPath: String
-	dataJson: String
+	dataJson: JSON
 	occurredAt: DateTime!
 	createdAt: DateTime!
 }
 
 enum TitleHistoryEventTypeValue {
-	requested
-	grabbed
-	download_failed
-	blocklisted
-	download_completed
-	imported
-	import_failed
-	import_skipped
-	file_upgraded
-	file_recycled
-	file_deleted
-	file_renamed
-	download_ignored
-	rematched
+	REQUESTED
+	GRABBED
+	DOWNLOAD_FAILED
+	BLOCKLISTED
+	DOWNLOAD_COMPLETED
+	IMPORTED
+	IMPORT_FAILED
+	IMPORT_SKIPPED
+	FILE_UPGRADED
+	FILE_RECYCLED
+	FILE_DELETED
+	FILE_RENAMED
+	DOWNLOAD_IGNORED
+	REMATCHED
 }
 
 input TitleHistoryFilterInput {
@@ -3639,16 +4408,17 @@ input TitleHistoryFilterInput {
 }
 
 type TitleHistoryPagePayload {
-	records: [TitleHistoryEventPayload!]!
+	items: [TitleHistoryEventPayload!]!
 	totalCount: Int!
+	hasMore: Boolean!
 }
 
 enum TitleMatchTypeValue {
-	submission
-	client_parameter
-	title_parse
-	id_only
-	unmatched
+	SUBMISSION
+	CLIENT_PARAMETER
+	TITLE_PARSE
+	ID_ONLY
+	UNMATCHED
 }
 
 type TitleMediaFilePayload {
@@ -3671,7 +4441,6 @@ type TitleMediaFilePayload {
 	videoFrameRate: String
 	videoProfile: String
 	audioCodec: String
-	audioProfile: String
 	audioChannels: Int
 	audioBitrateKbps: Int
 	audioLanguages: [String!]!
@@ -3689,7 +4458,6 @@ type TitleMediaFilePayload {
 	resolution: String
 	videoCodecParsed: String
 	audioCodecParsed: String
-	audioChannelsParsed: String
 	acquisitionScore: Int
 	scoringLog: String
 	indexerSource: String
@@ -3709,21 +4477,18 @@ input TitleOptionsInput {
 	useSeasonFolders: Boolean
 	monitorSpecials: Boolean
 	interSeasonMovies: Boolean
-	fillerPolicy: String
-	recapPolicy: String
+	fillerPolicy: FillerPolicyValue
+	recapPolicy: RecapPolicyValue
 }
 
 type TitlePayload {
 	id: ID!
 	libraryId: ID!
-	libraryName: String
-	librarySlug: String
 	name: String!
 	facet: MediaFacetValue!
 	monitored: Boolean!
 	tags: [String!]!
 	externalIds: [ExternalIdPayload!]!
-	createdBy: String
 	createdAt: DateTime!
 	year: Int
 	overview: String
@@ -3735,7 +4500,8 @@ type TitlePayload {
 	slug: String
 	imdbId: String
 	runtimeMinutes: Int
-	genres: [String!]!
+	popularity: Float
+	canonicalTags: [CanonicalMediaTagPayload!]!
 	contentStatus: String
 	language: String
 	firstAired: Date
@@ -3745,40 +4511,54 @@ type TitlePayload {
 	aliases: [String!]!
 	metadataLanguage: String
 	metadataFetchedAt: DateTime
-	minAvailability: String
-	digitalReleaseDate: Date
 	qualityProfileId: ID
 	rootFolderId: ID!
 	monitorType: MonitorTypeValue
 	useSeasonFolders: Boolean
 	monitorSpecials: Boolean
 	interSeasonMovies: Boolean
-	fillerPolicy: String
-	recapPolicy: String
+	fillerPolicy: FillerPolicyValue
+	recapPolicy: RecapPolicyValue
 	"""
-	Legacy title quality label, populated in list queries.
+	Effective target quality-profile label for the title.
 	"""
 	qualityTier: String
 	"""
-	Lowest live media-file quality tier for the title, populated in list queries.
+	Lowest live media-file quality tier for the title.
 	"""
 	currentQualityTier: String
 	"""
-	Aggregated media-file size in bytes for the title, populated in list queries.
+	Aggregated media-file size in bytes for the title.
 	"""
 	sizeBytes: Long
 	"""
-	Owned-vs-total episode progress, excluding specials, populated in list queries.
+	Owned-vs-total episode progress, excluding specials.
 	"""
 	episodesOwned: Int
 	"""
-	Monitored episode count, excluding specials, populated in list queries.
+	Monitored episode count, excluding specials.
 	"""
 	episodesMonitored: Int
 	"""
-	Total episode count, excluding specials, populated in list queries.
+	Total episode count, excluding specials.
 	"""
 	episodesTotal: Int
+	"""
+	Primary movie media resolution.
+	"""
+	mediaResolution: String
+	"""
+	Primary movie media HDR format.
+	"""
+	mediaHdr: String
+	"""
+	Primary movie media audio codec.
+	"""
+	mediaAudioCodec: String
+	libraryName: String
+	librarySlug: String
+	ratings: TitleRatingPayload!
+	moreLikeThis(limit: Int! = 12): [DiscoveryItemPayload!]!
 	rootFolderPath: String!
 	requiredAudioLanguagesOverride: [String!]
 	effectiveRequiredAudioLanguages: [String!]!
@@ -3791,6 +4571,12 @@ type TitlePayload {
 	downloadQueueItems(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]!
 }
 
+type TitleRatingPayload {
+	rating: Float
+	ratingSources: [String!]!
+	externalRatings: [TitleExternalRatingPayload!]!
+}
+
 type TitleReleaseBlocklistEntryPayload {
 	id: ID!
 	sourceHint: String
@@ -3798,6 +4584,13 @@ type TitleReleaseBlocklistEntryPayload {
 	errorMessage: String
 	attemptedAt: DateTime!
 	episodeIds: [ID!]!
+}
+
+"""
+Marker member: the scope is the whole title.
+"""
+type TitleScopePayload {
+	wholeTitle: Boolean!
 }
 
 input TogglePluginInput {
@@ -3839,25 +4632,54 @@ input TotpVerifyInput {
 }
 
 enum TrackedDownloadStateValue {
-	downloading
-	import_pending
-	importing
-	imported
-	import_blocked
-	failed_pending
-	failed
-	ignored
+	DOWNLOADING
+	IMPORT_PENDING
+	IMPORTING
+	IMPORTED
+	IMPORT_BLOCKED
+	FAILED_PENDING
+	FAILED
+	IGNORED
 }
 
 enum TrackedDownloadStatusValue {
-	ok
-	warning
-	error
+	OK
+	WARNING
+	ERROR
 }
 
-input TriggerSeasonWantedSearchInput {
-	titleId: ID!
-	seasonNumber: Int!
+"""
+Scope selector for the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+A bare input searches every derived target of `wanted_kind`; narrowing fields
+filter that set. `wanted_item_id` (a state-row id or a convergence scope key)
+resolves a single scope.
+"""
+input TriggerAcquisitionSearchInput {
+	"""
+	Which derived target set to search. Defaults to `Missing`.
+	"""
+	wantedKind: WantedKindValue
+	"""
+	Restrict to one facet.
+	"""
+	facet: MediaFacetValue
+	"""
+	Restrict to these libraries.
+	"""
+	libraryIds: [ID!]
+	"""
+	Restrict to one title.
+	"""
+	titleId: ID
+	"""
+	Restrict to one season of `title_id` (episodic facets).
+	"""
+	seasonNumber: Int
+	"""
+	Search exactly one scope: a state-row id or a convergence scope key
+	(`episode:<uuid>`, `title:<uuid>`, `series_movie:<uuid>`, …).
+	"""
+	wantedItemId: ID
 }
 
 type TriggerTitleMismatchRecoverySearchPayload {
@@ -3865,24 +4687,87 @@ type TriggerTitleMismatchRecoverySearchPayload {
 	queuedCount: Int!
 }
 
-input TriggerTitleWantedSearchInput {
-	titleId: ID!
-	replaceInProgress: Boolean
+enum UiDateTimeFormatValue {
+	LOCALE
+	ISO24H
 }
 
-input TriggerWantedSearchInput {
-	wantedItemId: ID!
-	replaceInProgress: Boolean
+enum UiDefaultLandingViewValue {
+	MOVIES
+	SERIES
+	ANIME
+	ACTIVITY
+	CALENDAR
+	WANTED
+	HISTORY
+	SETTINGS
+	SYSTEM
+}
+
+enum UiDensityValue {
+	COMPACT
+	COMFORTABLE
+}
+
+enum UiSettingsFacetValue {
+	MOVIES
+	SERIES
+	ANIME
+}
+
+type UiSettingsPayload {
+	theme: UiThemeValue!
+	dateTimeFormat: UiDateTimeFormatValue!
+	highlightColor: String
+	secondaryColor: String
+	highContrastMode: Boolean!
+	reduceMotion: Boolean!
+	hideSponsorButton: Boolean!
+	density: UiDensityValue!
+	sidebarMode: UiSidebarModeValue!
+	defaultLandingView: UiDefaultLandingViewValue!
+	tableColumns: [UiTableColumnSettingPayload!]!
+}
+
+enum UiSidebarModeValue {
+	COLLAPSED
+	EXPANDED
+}
+
+input UiTableColumnSettingInput {
+	facet: UiSettingsFacetValue!
+	tableViewMode: UiTableViewModeValue!
+	columnId: String!
+	columnOrder: Int!
+	visible: Boolean!
+}
+
+type UiTableColumnSettingPayload {
+	facet: UiSettingsFacetValue!
+	tableViewMode: UiTableViewModeValue!
+	columnId: String!
+	columnOrder: Int!
+	visible: Boolean!
+}
+
+enum UiTableViewModeValue {
+	COMPACT
+	POSTER_TABLE
+}
+
+enum UiThemeValue {
+	LIGHT
+	DARK
+	PRIDE
+	SYSTEM
 }
 
 type UninstallPluginPayload {
 	pluginId: ID!
-	uninstalled: Boolean!
 }
 
 type UnlinkExternalAccountPayload {
 	linkedAccountId: ID!
-	unlinked: Boolean!
 }
 
 input UpdateAcquisitionSettingsInput {
@@ -3892,8 +4777,8 @@ input UpdateAcquisitionSettingsInput {
 	crossTierMinDelta: Int!
 	forcedUpgradeDeltaBypass: Int!
 	pollIntervalSeconds: Int!
-	syncIntervalSeconds: Int!
-	batchSize: Int!
+	longTailBackfillMaxScopesPerCycle: Int!
+	longTailReconvergeDays: Int!
 }
 
 input UpdateAutoBackupSettingsInput {
@@ -3930,12 +4815,21 @@ input UpdateIndexerConfigInput {
 	id: ID!
 	name: String
 	providerType: String
+	indexerProxyConfigId: ID
 	rateLimitSeconds: Int
 	rateLimitBurst: Int
 	isEnabled: Boolean
 	enableInteractiveSearch: Boolean
 	enableAutoSearch: Boolean
 	config: [ProviderConfigValueInput!]
+}
+
+input UpdateIndexerProxyConfigInput {
+	id: ID!
+	name: String
+	baseUrl: String
+	requestTimeoutSeconds: Int
+	isEnabled: Boolean
 }
 
 input UpdateIndexerRoutingInput {
@@ -3997,16 +4891,20 @@ input UpdateMediaSettingsInput {
 	folderTemplate: String
 	renameEnabled: Boolean
 	renameTemplate: String
-	renameCollisionPolicy: String
-	renameMissingMetadataPolicy: String
-	fillerPolicy: String
-	recapPolicy: String
+	renameCollisionPolicy: RenameCollisionPolicyValue
+	renameMissingMetadataPolicy: RenameMissingMetadataPolicyValue
+	fillerPolicy: FillerPolicyValue
+	recapPolicy: RecapPolicyValue
 	monitorSpecials: Boolean
 	interSeasonMovies: Boolean
 	monitorFillerMovies: Boolean
 	nfoWriteOnImport: Boolean
 	plexmatchWriteOnImport: Boolean
-	importMode: String
+	importMode: ImportModeValue
+	setPermissionsLinux: Boolean
+	fileChmod: String
+	folderChmod: String
+	chownGroup: String
 }
 
 input UpdateNotificationChannelInput {
@@ -4035,7 +4933,7 @@ input UpdatePostProcessingScriptInput {
 	scriptContent: String
 	inlineShellAcknowledged: Boolean
 	appliedFacets: [String!]
-	executionMode: String
+	executionMode: ExecutionModeValue
 	timeoutSecs: Int
 	priority: Int
 	enabled: Boolean
@@ -4108,8 +5006,8 @@ A multipart file upload
 scalar Upload
 
 enum UserAccountKindValue {
-	local
-	external_auto_provisioned
+	LOCAL
+	EXTERNAL_AUTO_PROVISIONED
 }
 
 type UserLibraryPermissionGrantPayload {
@@ -4128,12 +5026,24 @@ type UserPayload {
 	libraryPermissions: [UserLibraryPermissionGrantPayload!]!
 }
 
+input ValidateExternalImportConnectionInput {
+	kind: ExternalImportConnectionKind!
+	connection: ExternalImportConnectionInput!
+}
+
 input ValidateRuleSetInput {
 	regoSource: String!
 	ruleSetId: ID
 }
 
 type WantedItemPayload {
+	"""
+	Scope identity (RFC 119 §6): the acquisition-state row id when a state row
+	exists for this scope, otherwise the convergence scope key itself
+	(`episode:<uuid>`, `title:<uuid>`, `series_movie:<uuid>`, …). A derived
+	target with no state row is still addressable by this id (pause/resume and
+	the interactive search job both accept a scope key here).
+	"""
 	id: ID!
 	titleId: ID!
 	titleName: String
@@ -4147,16 +5057,31 @@ type WantedItemPayload {
 	seasonNumber: String
 	episodeNumber: String
 	mediaType: WantedMediaTypeValue!
-	searchPhase: WantedSearchPhaseValue!
-	nextSearchAt: DateTime
 	lastSearchAt: DateTime
-	searchCount: Int!
-	baselineDate: Date
 	status: WantedStatusValue!
 	grabbedRelease: String
 	currentScore: Int
 	latestReleaseDecision: ReleaseDecisionPayload
 	mismatchRecoveryEligible: Boolean!
+	"""
+	Convergence progress for this scope (RFC 119 §6/§7): whether the scope is
+	still sweeping indexers, has converged (watching RSS), is queued, or is
+	deferred because every uncovered indexer is currently unavailable.
+	"""
+	convergenceState: ConvergenceStateValue!
+	"""
+	Routed indexers already searched under the current fingerprint.
+	"""
+	indexersCovered: Int!
+	"""
+	Routed-enabled indexers for this scope.
+	"""
+	indexersRouted: Int!
+	"""
+	Recency lane (RFC 119 §D3): `Hot` converges promptly, `Cold` drains under
+	scheduler backpressure.
+	"""
+	recencyLane: RecencyLaneValue!
 	createdAt: DateTime!
 	updatedAt: DateTime!
 	title: TitlePayload
@@ -4168,35 +5093,33 @@ type WantedItemPayload {
 
 type WantedItemsListPayload {
 	items: [WantedItemPayload!]!
-	total: Int!
+	totalCount: Int!
+	hasMore: Boolean!
 }
 
 type WantedItemsPagePayload {
 	items: [WantedItemPayload!]!
-	limit: Int!
-	offset: Int!
-	hasMore: Boolean!
-	totalCount: Int!
+}
+
+"""
+Which derived acquisition-target set a wanted view lists (RFC 119 §6/§7):
+`Missing` scopes have no primary file; `CutoffUpgrade` scopes have a file below
+the effective profile cutoff.
+"""
+enum WantedKindValue {
+	MISSING
+	CUTOFF_UPGRADE
 }
 
 enum WantedMediaTypeValue {
-	movie
-	episode
-	series_movie
+	MOVIE
+	EPISODE
+	SERIES_MOVIE
 }
 
 type WantedSearchPayload {
 	queuedCount: Int!
 	skippedInProgressCount: Int!
-	conflict: QueueDownloadConflictPayload
-}
-
-enum WantedSearchPhaseValue {
-	pre_air
-	pre_release
-	primary
-	secondary
-	long_tail
 }
 
 type WantedStatusCountPayload {
@@ -4205,25 +5128,25 @@ type WantedStatusCountPayload {
 }
 
 enum WantedStatusValue {
-	wanted
-	grabbed
-	paused
-	completed
+	WANTED
+	GRABBED
+	PAUSED
+	COMPLETED
 }
 
 type WebauthnChallengePayload {
 	challengeId: ID!
-	optionsJson: String!
+	optionsJson: JSON!
 }
 
 input WebauthnCompleteInput {
 	challengeId: ID!
-	responseJson: String!
+	responseJson: JSON!
 }
 
 input WebauthnRegisterCompleteInput {
 	challengeId: ID!
-	responseJson: String!
+	responseJson: JSON!
 	friendlyName: String
 }
 

@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Table,
+  TableActionsHead,
   TableBody,
   TableCell,
   TableHead,
@@ -17,6 +18,8 @@ import {
 } from "@/components/ui/table";
 import type { TitleHistoryEvent } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
+import { formatUiDate, formatUiTime } from "@/lib/utils/date-format";
 import { redactHistoryApiKeys } from "@/lib/utils/history-redaction";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { HistoryEventIcon } from "./history-event-icon";
@@ -28,17 +31,6 @@ import {
   getTitleHistoryEventLabel,
   getTitleHistoryEventMeta,
 } from "./title-history-event-meta";
-
-function formatTimestamp(ts: string): string {
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(new Date(ts));
-  } catch {
-    return ts;
-  }
-}
 
 function formatFacetLabel(facet: string | null): string {
   if (!facet) {
@@ -99,6 +91,7 @@ export function HistoryEventTable({
   onRetry?: (importId: string, password?: string) => Promise<void>;
 }) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const [expandedRows, setExpandedRows] = React.useState<Record<string, boolean>>({});
   const [passwordDrafts, setPasswordDrafts] = React.useState<Record<string, string>>({});
   const [retryingId, setRetryingId] = React.useState<string | null>(null);
@@ -158,26 +151,28 @@ export function HistoryEventTable({
   }
 
   return (
-    <div className="overflow-x-auto">
-      <Table className={showTitle || showFacet || showActor || showActions ? "min-w-[1080px]" : "min-w-[720px]"}>
+    <div className="overflow-hidden">
+      <Table overflow="clip" layout="fixed" density="dense">
         <TableHeader>
           <TableRow>
-            <TableHead className="w-10" />
+            <TableHead className="w-10 text-center" />
             <TableHead className="w-36">{t("history.event")}</TableHead>
             {showTitle ? (
-              <TableHead className="w-52">{t("history.titleColumn")}</TableHead>
+              <TableHead className="w-48">{t("history.titleColumn")}</TableHead>
             ) : null}
             <TableHead>{t("history.sourceTitle")}</TableHead>
             {showFacet ? (
-              <TableHead className="w-28">{t("history.facet")}</TableHead>
+              <TableHead className="w-24 text-center">{t("history.facet")}</TableHead>
             ) : null}
             {showActor ? (
-              <TableHead className="w-36">{t("history.actor")}</TableHead>
+              <TableHead className="w-32 text-center">{t("history.actor")}</TableHead>
             ) : null}
-            <TableHead className="w-28">{t("history.quality")}</TableHead>
-            <TableHead className="w-44">{t("history.date")}</TableHead>
+            <TableHead className="w-28 text-center">{t("history.quality")}</TableHead>
+            <TableHead className="w-40 text-center">{t("history.date")}</TableHead>
             {showActions ? (
-              <TableHead className="w-36 text-right">{t("history.actions")}</TableHead>
+              <TableActionsHead className="w-32">
+                {t("history.actions")}
+              </TableActionsHead>
             ) : null}
           </TableRow>
         </TableHeader>
@@ -195,8 +190,14 @@ export function HistoryEventTable({
 
             return (
               <React.Fragment key={event.id}>
-                <TableRow id={selectorId("history-event-row", event.eventType, event.id)}>
-                  <TableCell>
+                <TableRow
+                  id={selectorId(
+                    "history-event-row",
+                    event.eventType,
+                    event.id,
+                  )}
+                >
+                  <TableCell className="text-center">
                     {hasExpandableContent ? (
                       <button
                         type="button"
@@ -226,8 +227,17 @@ export function HistoryEventTable({
                   </TableCell>
                   {showTitle ? (
                     <TableCell className="align-top">
-                      <div className="text-sm font-medium text-foreground">
-                        {titleNameMap?.[event.titleId] ?? event.titleName ?? event.titleId}
+                      <div
+                        className="truncate text-sm font-medium text-foreground"
+                        title={
+                          titleNameMap?.[event.titleId] ??
+                          event.titleName ??
+                          event.titleId
+                        }
+                      >
+                        {titleNameMap?.[event.titleId] ??
+                          event.titleName ??
+                          event.titleId}
                       </div>
                       {event.episodeIds.length > 0 ? (
                         <div className="mt-1 text-xs text-muted-foreground">
@@ -241,36 +251,49 @@ export function HistoryEventTable({
                     </TableCell>
                   ) : null}
                   <TableCell className="align-top">
-                    <div className="text-sm text-foreground">{primarySourceLabel(event)}</div>
+                    <div
+                      className="truncate text-sm text-foreground"
+                      title={primarySourceLabel(event)}
+                    >
+                      {primarySourceLabel(event)}
+                    </div>
                     {secondarySourceLabel(event) ? (
-                      <div className="mt-1 text-xs text-muted-foreground">
+                      <div
+                        className="mt-1 truncate text-xs text-muted-foreground"
+                        title={secondarySourceLabel(event) ?? undefined}
+                      >
                         {secondarySourceLabel(event)}
                       </div>
                     ) : null}
                   </TableCell>
                   {showFacet ? (
-                    <TableCell className="align-top text-sm text-muted-foreground">
+                    <TableCell className="align-top text-center text-sm text-muted-foreground">
                       {formatFacetLabel(event.facet)}
                     </TableCell>
                   ) : null}
                   {showActor ? (
                     <TableCell
                       id={selectorId("history-event-actor", event.eventType, event.id)}
-                      className="align-top text-sm text-muted-foreground"
+                      className="align-top text-center text-sm text-muted-foreground"
                     >
                       {actorLabel(event)}
                     </TableCell>
                   ) : null}
-                  <TableCell className="align-top text-sm text-muted-foreground">
+                  <TableCell className="align-top text-center text-sm text-muted-foreground">
                     {event.quality ?? "\u2014"}
                   </TableCell>
-                  <TableCell className="align-top text-sm text-muted-foreground">
-                    {formatTimestamp(event.occurredAt ?? event.createdAt)}
+                  <TableCell className="align-top text-center text-sm text-muted-foreground">
+                    <div className="font-medium text-foreground">
+                      {formatUiDate(event.occurredAt ?? event.createdAt, dateTimeFormat)}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {formatUiTime(event.occurredAt ?? event.createdAt, dateTimeFormat)}
+                    </div>
                   </TableCell>
                   {showActions ? (
-                    <TableCell className="align-top">
+                    <TableCell className="align-top text-center">
                       {retryable && !event.retryRequiresPassword && !isExpanded ? (
-                        <div className="flex justify-end">
+                        <div className="flex justify-center">
                           <Button
                             type="button"
                             variant="outline"

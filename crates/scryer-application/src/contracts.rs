@@ -16,6 +16,11 @@ pub enum DownloadSubmissionPurpose {
     #[default]
     Standard,
     AdditionalFile,
+    /// A manually-queued release chosen by the operator to replace the existing
+    /// primary file. On import it bypasses the required-audio gate (like a manual
+    /// file-pick) and forces the upgrade/replace path regardless of score, so a
+    /// known-correct lower-scored release can replace a mis-scored one.
+    ManualReplacement,
 }
 
 impl DownloadSubmissionPurpose {
@@ -23,18 +28,25 @@ impl DownloadSubmissionPurpose {
         match self {
             Self::Standard => "standard",
             Self::AdditionalFile => "additional_file",
+            Self::ManualReplacement => "manual_replacement",
         }
     }
 
     pub fn from_label(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "additional_file" => Self::AdditionalFile,
+            "manual_replacement" => Self::ManualReplacement,
             _ => Self::Standard,
         }
     }
 
     pub fn is_additional_file(self) -> bool {
         self == Self::AdditionalFile
+    }
+
+    /// A manual operator-chosen replacement for the primary file.
+    pub fn is_manual_replacement(self) -> bool {
+        self == Self::ManualReplacement
     }
 }
 
@@ -223,7 +235,6 @@ impl DownloadSourceIdentity {
 pub struct SuccessfulGrabCommit {
     pub wanted_item_id: String,
     pub covered_wanted_item_ids: Vec<String>,
-    pub search_count: i64,
     pub current_score: Option<i32>,
     pub grabbed_release: String,
     pub last_search_at: Option<String>,
@@ -289,11 +300,47 @@ pub struct IndexerConfigUpdate {
     pub is_enabled: Option<bool>,
     pub enable_interactive_search: Option<bool>,
     pub enable_auto_search: Option<bool>,
+    pub indexer_proxy_config_id: Option<Option<String>>,
     pub managed_parent_config_id: Option<Option<String>>,
     pub managed_child_key: Option<Option<String>>,
     pub managed_metadata_json: Option<Option<String>>,
     pub caps_snapshot_json: Option<Option<String>>,
     pub config_json: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewIndexerProxyConfig {
+    pub name: String,
+    pub provider_type: scryer_domain::IndexerProxyProviderType,
+    pub base_url: String,
+    pub request_timeout_seconds: Option<u32>,
+    pub is_enabled: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct IndexerProxyConfigUpdate {
+    pub id: String,
+    pub name: Option<String>,
+    pub base_url: Option<String>,
+    pub request_timeout_seconds: Option<u32>,
+    pub is_enabled: Option<bool>,
+}
+
+impl IndexerProxyConfigUpdate {
+    pub fn has_changes(&self) -> bool {
+        self.name.is_some()
+            || self.base_url.is_some()
+            || self.request_timeout_seconds.is_some()
+            || self.is_enabled.is_some()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerProxyTestResult {
+    pub ok: bool,
+    pub status: scryer_domain::IndexerProxyHealthStatus,
+    pub message: Option<String>,
+    pub duration_ms: Option<u64>,
 }
 
 impl IndexerConfigUpdate {
@@ -306,6 +353,7 @@ impl IndexerConfigUpdate {
             || self.is_enabled.is_some()
             || self.enable_interactive_search.is_some()
             || self.enable_auto_search.is_some()
+            || self.indexer_proxy_config_id.is_some()
             || self.managed_parent_config_id.is_some()
             || self.managed_child_key.is_some()
             || self.managed_metadata_json.is_some()
@@ -421,6 +469,7 @@ pub struct SubtitleGenerationInput {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct QueuedReleaseSelection {
+    pub indexer_id: Option<String>,
     pub source_hint: Option<String>,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
@@ -584,7 +633,7 @@ pub struct DeleteExecutionConfirmation {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct WantedItemsQuery {
+pub struct AcquisitionScopeStatesQuery {
     pub statuses: Vec<String>,
     pub media_types: Vec<String>,
     pub title_id: Option<String>,
@@ -600,6 +649,33 @@ pub struct ReleaseDecisionsQuery {
     pub wanted_item_id: Option<String>,
     pub title_id: Option<String>,
     pub limit: i64,
+    pub offset: i64,
+}
+
+/// Ordering for a paged pending-releases read. Preserves the historic per-call
+/// order: the root pending-releases view sorted by `delay_until ASC` while the
+/// per-wanted-item view sorted by `release_score DESC`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PendingReleasePageSort {
+    #[default]
+    DelayUntilAsc,
+    ReleaseScoreDesc,
+}
+
+/// Storage-level filter for a single page of `waiting` pending releases plus the
+/// matching total count. `library_ids` scopes rows to titles in those libraries
+/// (empty means no library filter — the caller has already authorized the
+/// scope, e.g. a single wanted item). `statuses` narrows within the `waiting`
+/// base set to preserve the historic in-memory status filter semantics.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PendingReleasesPageQuery {
+    pub library_ids: Vec<String>,
+    pub title_id: Option<String>,
+    pub wanted_item_id: Option<String>,
+    pub statuses: Vec<String>,
+    pub limit: i64,
+    pub offset: i64,
+    pub sort: PendingReleasePageSort,
 }
 
 /// Parsed media properties from media analysis — application-layer DTO.
@@ -610,6 +686,7 @@ pub struct AudioStreamDetail {
     pub profile: Option<String>,
     pub channels: Option<i32>,
     pub language: Option<String>,
+    pub name: Option<String>,
     pub bitrate_kbps: Option<i32>,
 }
 
@@ -741,6 +818,7 @@ pub struct DownloadClientAddRequest {
     pub download_id: Option<String>,
     pub source_hint: Option<String>,
     pub staged_nzb: Option<StagedNzbRef>,
+    pub resolved_download_artifact: Option<ResolvedDownloadArtifact>,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
     pub source_password: Option<String>,
@@ -749,6 +827,7 @@ pub struct DownloadClientAddRequest {
     pub download_directory: Option<String>,
     pub release_title: Option<String>,
     pub indexer_name: Option<String>,
+    pub indexer_id: Option<String>,
     pub info_hash_hint: Option<String>,
     pub seed_goal_ratio: Option<f64>,
     pub seed_goal_seconds: Option<i64>,
@@ -771,6 +850,7 @@ impl DownloadClientAddRequest {
             download_id: None,
             source_hint,
             staged_nzb: None,
+            resolved_download_artifact: None,
             source_kind,
             source_title,
             source_password,
@@ -779,6 +859,7 @@ impl DownloadClientAddRequest {
             download_directory: None,
             release_title: None,
             indexer_name: None,
+            indexer_id: None,
             info_hash_hint: None,
             seed_goal_ratio: None,
             seed_goal_seconds: None,
@@ -786,6 +867,25 @@ impl DownloadClientAddRequest {
             season_pack: None,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum ResolvedDownloadArtifact {
+    Nzb {
+        bytes: Vec<u8>,
+        file_name: Option<String>,
+        content_type: Option<String>,
+    },
+    Magnet {
+        uri: String,
+        info_hash_hint: Option<String>,
+    },
+    TorrentFile {
+        bytes: Vec<u8>,
+        file_name: Option<String>,
+        content_type: Option<String>,
+        info_hash_hint: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]

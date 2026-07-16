@@ -70,6 +70,7 @@ fn test_title(name: &str) -> scryer_domain::Title {
         library_id: scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Movie),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         root_folder_id: scryer_domain::root_folder_id_for_path("/data/movies"),
         created_by: None,
@@ -81,10 +82,11 @@ fn test_title(name: &str) -> scryer_domain::Title {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -152,6 +154,18 @@ async fn qbittorrent_mock_handler(
 ) -> impl IntoResponse {
     let method = request.method().clone();
     let uri = request.uri().clone();
+    let origin = request
+        .headers()
+        .get("origin")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let referer = request
+        .headers()
+        .get("referer")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let cookie = request
         .headers()
         .get("cookie")
@@ -167,9 +181,22 @@ async fn qbittorrent_mock_handler(
         .lock()
         .expect("qbittorrent mock request log")
         .push(format!(
-            "{} {} cookie={} body={}",
-            method, uri, cookie, body
+            "{} {} origin={} referer={} cookie={} body={}",
+            method, uri, origin, referer, cookie, body
         ));
+
+    if method.as_str() == "POST"
+        && uri.path() == "/api/v2/auth/login"
+        && !qbittorrent_mock_browser_headers_ok(&origin, &referer)
+    {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+    if uri.path().starts_with("/api/v2/")
+        && uri.path() != "/api/v2/auth/login"
+        && !qbittorrent_mock_api_headers_ok(&origin, &referer, &cookie)
+    {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
 
     match (method.as_str(), uri.path()) {
         ("POST", "/api/v2/auth/login") => {
@@ -261,6 +288,22 @@ async fn qbittorrent_mock_handler(
     }
 }
 
+fn qbittorrent_mock_browser_headers_ok(origin: &str, referer: &str) -> bool {
+    let origin = origin.trim().trim_end_matches('/');
+    let referer = referer.trim().trim_end_matches('/');
+    !origin.is_empty()
+        && !referer.is_empty()
+        && origin == referer
+        && (origin.starts_with("http://") || origin.starts_with("https://"))
+}
+
+fn qbittorrent_mock_api_headers_ok(origin: &str, referer: &str, cookie: &str) -> bool {
+    qbittorrent_mock_browser_headers_ok(origin, referer)
+        && cookie
+            .split(';')
+            .any(|part| part.trim().starts_with("SID="))
+}
+
 fn qbittorrent_wasm_bytes() -> Vec<u8> {
     let artifact_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -331,6 +374,7 @@ fn request_with_staged_nzb(
         download_id: None,
         source_hint: None,
         staged_nzb: Some(staged_nzb),
+        resolved_download_artifact: None,
         source_kind: Some(DownloadSourceKind::NzbFile),
         source_title: Some(source_title.to_string()),
         source_password: None,
@@ -339,6 +383,7 @@ fn request_with_staged_nzb(
         download_directory: None,
         release_title: None,
         indexer_name: None,
+        indexer_id: None,
         info_hash_hint: None,
         seed_goal_ratio: None,
         seed_goal_seconds: None,
@@ -1123,21 +1168,18 @@ async fn mount_list_queue_mocks(server: &MockServer) {
         .await;
 }
 
-/// Create a router backed by the test DB, with `fallback_uri` as the fallback client.
-fn build_router(ctx: &TestContext, fallback_uri: String) -> PrioritizedDownloadClientRouter {
-    build_router_with_cache(ctx, fallback_uri, Arc::new(NullStagedNzbStore))
+/// Create a router backed by the test DB.
+fn build_router(ctx: &TestContext) -> PrioritizedDownloadClientRouter {
+    build_router_with_cache(ctx, Arc::new(NullStagedNzbStore))
 }
 
 fn build_router_with_cache(
     ctx: &TestContext,
-    fallback_uri: String,
     staged_nzb_store: Arc<dyn scryer_application::StagedNzbStore>,
 ) -> PrioritizedDownloadClientRouter {
-    let fallback = NzbgetDownloadClient::new(fallback_uri, None, None, "SCORE".to_string());
     PrioritizedDownloadClientRouter::new(
         download_client_config_repo(ctx),
         Arc::new(NullSettingsRepository),
-        Arc::new(fallback),
         staged_nzb_store,
         Arc::new(Semaphore::new(4)),
         None,
@@ -1158,7 +1200,7 @@ async fn router_routes_to_highest_priority_client() {
     insert_download_client_config(&ctx, router_config("c1", &ctx.nzbget_server.uri(), 1, true))
         .await;
 
-    let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
+    let router = build_router(&ctx);
     let items = router
         .list_queue()
         .await
@@ -1186,7 +1228,7 @@ async fn router_falls_back_to_next_client_on_primary_failure() {
         .await;
     insert_download_client_config(&ctx, router_config("c2", &second_server.uri(), 2, true)).await;
 
-    let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
+    let router = build_router(&ctx);
     let items = router
         .list_queue()
         .await
@@ -1204,30 +1246,25 @@ async fn router_falls_back_to_next_client_on_primary_failure() {
 }
 
 #[tokio::test]
-async fn router_uses_fallback_when_no_clients_configured() {
+async fn router_returns_empty_queue_when_no_clients_configured() {
     let ctx = TestContext::new().await;
 
-    // No configs in DB — the fallback client is the only option.
     mount_list_queue_mocks(&ctx.nzbget_server).await;
-
-    // The fallback is pointed at the only mocked server.
-    let fallback =
-        NzbgetDownloadClient::new(ctx.nzbget_server.uri(), None, None, "SCORE".to_string());
-    let router = PrioritizedDownloadClientRouter::new(
-        download_client_config_repo(&ctx),
-        Arc::new(NullSettingsRepository),
-        Arc::new(fallback),
-        Arc::new(NullStagedNzbStore),
-        Arc::new(Semaphore::new(4)),
-        None,
-    );
+    let router = build_router(&ctx);
 
     let items = router
         .list_queue()
         .await
-        .expect("fallback client should be used when no configs exist");
+        .expect("no configured clients should produce an empty queue");
 
-    assert_eq!(items.len(), 2);
+    assert!(items.is_empty());
+    assert!(
+        ctx.nzbget_server
+            .received_requests()
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -1255,7 +1292,7 @@ async fn router_skips_client_with_invalid_config() {
     mount_list_queue_mocks(&second_server).await;
     insert_download_client_config(&ctx, router_config("good", &second_server.uri(), 2, true)).await;
 
-    let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
+    let router = build_router(&ctx);
     let items = router
         .list_queue()
         .await
@@ -1292,7 +1329,7 @@ async fn router_skips_client_missing_base_url() {
     )
     .await;
 
-    let router = build_router(&ctx, "http://127.0.0.1:1".to_string());
+    let router = build_router(&ctx);
     let items = router
         .list_queue()
         .await
@@ -1312,26 +1349,14 @@ async fn router_disabled_clients_are_not_used() {
     )
     .await;
 
-    // No enabled clients → fallback is used.
-    let fallback_server = MockServer::start().await;
-    mount_list_queue_mocks(&fallback_server).await;
-    let fallback =
-        NzbgetDownloadClient::new(fallback_server.uri(), None, None, "SCORE".to_string());
-    let router = PrioritizedDownloadClientRouter::new(
-        download_client_config_repo(&ctx),
-        Arc::new(NullSettingsRepository),
-        Arc::new(fallback),
-        Arc::new(NullStagedNzbStore),
-        Arc::new(Semaphore::new(4)),
-        None,
-    );
+    let router = build_router(&ctx);
 
     let items = router
         .list_queue()
         .await
-        .expect("fallback should be used when only client is disabled");
+        .expect("only disabled clients should produce an empty queue");
 
-    assert_eq!(items.len(), 2);
+    assert!(items.is_empty());
     // Disabled client's server received no requests.
     assert!(
         ctx.nzbget_server
@@ -1385,11 +1410,7 @@ async fn router_reuses_single_staged_nzb_across_client_failover() {
     )
     .await;
 
-    let router = build_router_with_cache(
-        &ctx,
-        "http://127.0.0.1:1".to_string(),
-        staged_nzb_store.clone(),
-    );
+    let router = build_router_with_cache(&ctx, staged_nzb_store.clone());
     let result = router
         .submit_to_download_queue(
             &test_title("Router Failover"),
@@ -1444,11 +1465,7 @@ async fn router_deletes_staged_nzb_after_final_failure() {
     )
     .await;
 
-    let router = build_router_with_cache(
-        &ctx,
-        "http://127.0.0.1:1".to_string(),
-        staged_nzb_store.clone(),
-    );
+    let router = build_router_with_cache(&ctx, staged_nzb_store.clone());
     let error = router
         .submit_to_download_queue(
             &test_title("Router Failure"),
@@ -2180,13 +2197,28 @@ async fn sabnzbd_submit_download_deletes_self_staged_nzb_on_failure() {
         .mount(&server)
         .await;
 
-    Mock::given(method("POST"))
+    // Resolve the API path to `/api`, and keep the queue/history empty so the
+    // ambiguous-addfile reconciliation finds nothing and surfaces the
+    // ambiguous error.
+    Mock::given(method("GET"))
         .and(path("/api"))
-        .respond_with(ResponseTemplate::new(500).set_body_string("addfile failed"))
+        .and(query_param("mode", "queue"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/queue_empty.json")),
+        )
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "history"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"history":{"slots":[]}}"#))
+        .mount(&server)
+        .await;
+    // The addfile POST fails after the upload was sent → ambiguous, not a
+    // definitive rejection. With path-pinning there is no re-POST to the
+    // alternate `/sabnzbd/api` path.
     Mock::given(method("POST"))
-        .and(path("/sabnzbd/api"))
+        .and(path("/api"))
         .respond_with(ResponseTemplate::new(500).set_body_string("addfile failed"))
         .mount(&server)
         .await;
@@ -2210,8 +2242,299 @@ async fn sabnzbd_submit_download_deletes_self_staged_nzb_on_failure() {
         .await
         .expect_err("submit should fail");
 
-    assert!(matches!(error, AppError::DownloadSubmitUnavailable(_)));
+    assert!(
+        matches!(error, AppError::DownloadSubmitAmbiguous(_)),
+        "expected ambiguous submit error, got {error:?}"
+    );
+    // The addfile POST must not have been re-sent to the alternate path.
+    let addfile_posts = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|request| request.method.as_str() == "POST" && request.url.path() == "/api")
+        .count();
+    assert_eq!(addfile_posts, 1, "exactly one addfile POST should be sent");
     assert_eq!(staged_nzb_store.count_staged_artifacts().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn sabnzbd_submit_download_reconciles_ambiguous_addfile_from_queue() {
+    let server = MockServer::start().await;
+    let staged_nzb_store = new_staged_nzb_store().await;
+
+    Mock::given(method("GET"))
+        .and(path("/getnzb"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(load_fixture("nzbgeek/nzb_content.xml").into_bytes()),
+        )
+        .mount(&server)
+        .await;
+
+    // The probe and the ambiguous-addfile reconciliation both read the queue,
+    // which already contains the job we just uploaded (queue.json has a slot
+    // named "My.Movie.2024.1080p.BluRay" -> nzo_id "SABnzbd_nzo_kyt1f0").
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "queue"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/queue.json")),
+        )
+        .mount(&server)
+        .await;
+    // addfile fails after the upload was sent → ambiguous. Reconciliation must
+    // adopt the queued job instead of re-POSTing (which would duplicate it).
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("gateway boom"))
+        .mount(&server)
+        .await;
+
+    let client = SabnzbdDownloadClient::with_staged_nzb_store(
+        server.uri(),
+        "test-api-key".to_string(),
+        staged_nzb_store,
+        Arc::new(Semaphore::new(4)),
+    );
+
+    let result = client
+        .submit_to_download_queue(
+            &test_title("My.Movie.2024.1080p.BluRay"),
+            Some(format!("{}/getnzb?id=movie", server.uri())),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("My.Movie.2024.1080p.BluRay".to_string()),
+            None,
+            Some("movies".to_string()),
+        )
+        .await
+        .expect("ambiguous addfile should reconcile to the queued job");
+
+    assert_eq!(result.job_id, "SABnzbd_nzo_kyt1f0");
+    assert_eq!(result.client_type, "sabnzbd");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method.as_str() == "POST" && request.url.path() == "/api")
+            .count(),
+        1,
+        "the addfile POST must be sent exactly once"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/sabnzbd/api")
+            .count(),
+        0,
+        "an ambiguous addfile must never re-POST to the alternate path"
+    );
+}
+
+#[tokio::test]
+async fn sabnzbd_submit_download_reconciles_title_with_sab_illegal_characters() {
+    // A release title with SAB-illegal characters (`:`) is stored by SAB under
+    // a sanitized final_name ("Mission_ Impossible"). Reconciliation must match
+    // it client-side and must NOT rely on the server-side `search` param (which
+    // matches the sanitized name, not the raw title) — otherwise the landed job
+    // would be missed and the next cycle would re-submit into a duplicate.
+    let server = MockServer::start().await;
+    let staged_nzb_store = new_staged_nzb_store().await;
+
+    Mock::given(method("GET"))
+        .and(path("/getnzb"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(load_fixture("nzbgeek/nzb_content.xml").into_bytes()),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "queue"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"queue":{"slots":[{"status":"Downloading","filename":"Mission_ Impossible","nzo_id":"SABnzbd_nzo_mi","cat":"movies"}]}}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(ResponseTemplate::new(502).set_body_string("bad gateway"))
+        .mount(&server)
+        .await;
+
+    let client = SabnzbdDownloadClient::with_staged_nzb_store(
+        server.uri(),
+        "test-api-key".to_string(),
+        staged_nzb_store,
+        Arc::new(Semaphore::new(4)),
+    );
+
+    let result = client
+        .submit_to_download_queue(
+            &test_title("Mission: Impossible"),
+            Some(format!("{}/getnzb?id=mi", server.uri())),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Mission: Impossible".to_string()),
+            None,
+            Some("movies".to_string()),
+        )
+        .await
+        .expect("illegal-char title should still reconcile from the queue");
+
+    assert_eq!(result.job_id, "SABnzbd_nzo_mi");
+
+    // The reconciliation must fetch the queue unfiltered — no `search` param —
+    // so a sanitized final_name is still discoverable.
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .filter(|request| request.method.as_str() == "GET" && request.url.path() == "/api")
+            .all(|request| request.url.query_pairs().all(|(key, _)| key != "search")),
+        "reconciliation must not depend on SAB's server-side search of the sanitized name"
+    );
+}
+
+#[tokio::test]
+async fn sabnzbd_submit_download_resolves_sabnzbd_compat_path() {
+    // altmount-style backend: `/api` is a different application; the SAB-compat
+    // API is served only under `/sabnzbd/api`. The idempotent probe must
+    // discover this and pin the addfile POST to `/sabnzbd/api`.
+    let server = MockServer::start().await;
+    let staged_nzb_store = new_staged_nzb_store().await;
+
+    Mock::given(method("GET"))
+        .and(path("/getnzb"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(load_fixture("nzbgeek/nzb_content.xml").into_bytes()),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sabnzbd/api"))
+        .and(query_param("mode", "queue"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/queue_empty.json")),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/sabnzbd/api"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/addurl.json")),
+        )
+        .mount(&server)
+        .await;
+
+    let client = SabnzbdDownloadClient::with_staged_nzb_store(
+        server.uri(),
+        "test-api-key".to_string(),
+        staged_nzb_store,
+        Arc::new(Semaphore::new(4)),
+    );
+
+    let result = client
+        .submit_to_download_queue(
+            &test_title("Compat Path"),
+            Some(format!("{}/getnzb?id=compat", server.uri())),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Compat.Path.Release".to_string()),
+            None,
+            Some("movies".to_string()),
+        )
+        .await
+        .expect("addfile should route to the resolved sabnzbd-compat path");
+
+    assert_eq!(result.job_id, "SABnzbd_nzo_abc123");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(
+                |request| request.method.as_str() == "POST" && request.url.path() == "/sabnzbd/api"
+            )
+            .count(),
+        1,
+        "addfile should be POSTed to the resolved /sabnzbd/api path"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method.as_str() == "POST" && request.url.path() == "/api")
+            .count(),
+        0,
+        "addfile must never be POSTed to the unrouted /api path"
+    );
+}
+
+#[tokio::test]
+async fn sabnzbd_submit_download_rejects_definitive_status_false() {
+    let server = MockServer::start().await;
+    let staged_nzb_store = new_staged_nzb_store().await;
+
+    Mock::given(method("GET"))
+        .and(path("/getnzb"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(load_fixture("nzbgeek/nzb_content.xml").into_bytes()),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "queue"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/queue_empty.json")),
+        )
+        .mount(&server)
+        .await;
+    // A definitive SAB rejection (e.g. duplicate) — never retried, never
+    // failed over, and blocklist-worthy downstream.
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"status": false, "error": "Duplicate NZB"}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let client = SabnzbdDownloadClient::with_staged_nzb_store(
+        server.uri(),
+        "test-api-key".to_string(),
+        staged_nzb_store,
+        Arc::new(Semaphore::new(4)),
+    );
+
+    let error = client
+        .submit_to_download_queue(
+            &test_title("Duplicate Release"),
+            Some(format!("{}/getnzb?id=dup", server.uri())),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Duplicate.Release".to_string()),
+            None,
+            Some("movies".to_string()),
+        )
+        .await
+        .expect_err("a definitive rejection should fail the submit");
+
+    assert!(
+        matches!(error, AppError::DownloadSubmitRejected(_)),
+        "expected a rejected submit error, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("Duplicate NZB"),
+        "rejection should carry SAB's detail: {error}"
+    );
 }
 
 #[tokio::test]
@@ -2220,6 +2543,16 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
     let staged_nzb_store = new_staged_nzb_store().await;
     let nzb_xml = load_fixture("nzbgeek/nzb_content.xml");
 
+    // Idempotent probe used to resolve the SAB API path before the addfile
+    // POST (see resolve_addfile_url); pin it to `/api`.
+    Mock::given(method("GET"))
+        .and(path("/api"))
+        .and(query_param("mode", "queue"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(load_fixture("sabnzbd/queue_empty.json")),
+        )
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path("/api"))
         .and(query_param("apikey", "test-api-key"))
@@ -2252,8 +2585,18 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
 
     assert_eq!(result.client_type, "sabnzbd");
     let requests = server.received_requests().await.unwrap();
-    let request_body = String::from_utf8_lossy(&requests[0].body);
-    let query_pairs = requests[0].url.query_pairs().collect::<Vec<_>>();
+    let addfile = requests
+        .iter()
+        .find(|request| {
+            request.method.as_str() == "POST"
+                && request
+                    .url
+                    .query_pairs()
+                    .any(|(key, value)| key == "mode" && value == "addfile")
+        })
+        .expect("an addfile POST should have been sent");
+    let request_body = String::from_utf8_lossy(&addfile.body);
+    let query_pairs = addfile.url.query_pairs().collect::<Vec<_>>();
     for (key, expected) in [
         ("mode", "addfile"),
         ("output", "json"),
@@ -2269,7 +2612,7 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
                 .count(),
             1,
             "sabnzbd upload should send query param {key}={expected} exactly once: {:?}",
-            requests[0].url.query()
+            addfile.url.query()
         );
     }
     assert!(
@@ -2277,7 +2620,7 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
             .iter()
             .any(|(key, value)| key == "apikey" && value == "test-api-key"),
         "sabnzbd upload should authenticate with the API key in the query string: {:?}",
-        requests[0].url.query()
+        addfile.url.query()
     );
     assert!(
         request_body.contains("filename=\"Staged.SAB.Release.nzb\""),
@@ -2297,10 +2640,12 @@ async fn sabnzbd_submit_download_uses_staged_cache_entry_without_refetch() {
             "sabnzbd upload should not duplicate {forbidden_field} in the multipart body: {request_body}"
         );
     }
+    // The staged entry must be reused without re-fetching the NZB from the
+    // indexer (path-resolution probes are permitted, an NZB refetch is not).
     assert_eq!(
         requests
             .iter()
-            .filter(|request| request.method.as_str() == "GET")
+            .filter(|request| request.url.path().contains("getnzb"))
             .count(),
         0
     );
@@ -2388,8 +2733,18 @@ async fn sabnzbd_submit_download_accepts_username_password_auth() {
     assert!(result.is_ok(), "submit should accept credential auth");
 
     let requests = server.received_requests().await.unwrap();
-    let request_body = String::from_utf8_lossy(&requests[0].body);
-    let query_pairs = requests[0].url.query_pairs().collect::<Vec<_>>();
+    let addfile = requests
+        .iter()
+        .find(|request| {
+            request.method.as_str() == "POST"
+                && request
+                    .url
+                    .query_pairs()
+                    .any(|(key, value)| key == "mode" && value == "addfile")
+        })
+        .expect("an addfile POST should have been sent");
+    let request_body = String::from_utf8_lossy(&addfile.body);
+    let query_pairs = addfile.url.query_pairs().collect::<Vec<_>>();
     for (key, expected) in [
         ("mode", "addfile"),
         ("output", "json"),
@@ -2406,7 +2761,7 @@ async fn sabnzbd_submit_download_accepts_username_password_auth() {
                 .count(),
             1,
             "credential-auth SAB upload should send query param {key}={expected} exactly once: {:?}",
-            requests[0].url.query()
+            addfile.url.query()
         );
     }
     assert!(
@@ -2414,19 +2769,19 @@ async fn sabnzbd_submit_download_accepts_username_password_auth() {
             .iter()
             .any(|(key, value)| key == "ma_username" && value == "test-user"),
         "credential-auth SAB upload should include ma_username in the query string: {:?}",
-        requests[0].url.query()
+        addfile.url.query()
     );
     assert!(
         query_pairs
             .iter()
             .any(|(key, value)| key == "ma_password" && value == "test-pass"),
         "credential-auth SAB upload should include ma_password in the query string: {:?}",
-        requests[0].url.query()
+        addfile.url.query()
     );
     assert!(
         query_pairs.iter().all(|(key, _)| key != "apikey"),
         "credential-auth SAB upload should not send an API key: {:?}",
-        requests[0].url.query()
+        addfile.url.query()
     );
     assert!(
         !request_body.contains("name=\"apikey\""),

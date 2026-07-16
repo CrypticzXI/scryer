@@ -3,9 +3,9 @@ use std::sync::Arc;
 use scryer_application::{
     ANIME_PATH_KEY, ANIME_ROOT_FOLDERS_KEY, AUDIO_PERSONA_MIGRATION_SENTINEL_KEY,
     AUTO_BACKUP_DAILY_TIME_LOCAL_KEY, AUTO_BACKUP_ENABLED_KEY, AUTO_BACKUP_KEY_KEY,
-    AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, BACKUP_PATH_KEY,
+    AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, BACKUP_PATH_KEY, CHOWN_GROUP_KEY,
     DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
-    FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY, FRUITLESS_WANTED_RESET_LAST_RUN_KEY,
+    FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,
     HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY,
     INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
     LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY,
@@ -20,15 +20,16 @@ use scryer_application::{
     RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
     RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_SERIES_GLOBAL_KEY,
     REQUEST_QUALITY_PROFILE_IDS_KEY, REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY,
-    SERIES_ROOT_FOLDERS_KEY, SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
-    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY as TLS_CERT_KEY,
-    TLS_KEY_PATH_KEY as TLS_KEY_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
-    default_quality_profile_1080p_for_search, default_quality_profile_for_search,
+    SERIES_ROOT_FOLDERS_KEY, SET_PERMISSIONS_LINUX_KEY, SETUP_COMPLETE_KEY,
+    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    TLS_CERT_PATH_KEY as TLS_CERT_KEY, TLS_KEY_PATH_KEY as TLS_KEY_KEY,
+    TOTP_REQUIRE_JELLYFIN_LOGIN_KEY, default_quality_profile_1080p_for_search,
+    default_quality_profile_for_search,
 };
 pub(crate) use scryer_application::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
 };
-use scryer_infrastructure::{QualityProfileStore, SettingsStore, SettingsValueRecord};
+use scryer_infrastructure::{QualityProfileStore, SettingsStore};
 use serde_json::{Value, json};
 
 use crate::{
@@ -156,9 +157,49 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_MEDIA,
             scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: "catalog.title_metadata_rehydration_017_state",
+            data_type: "string",
+            default_value_json: "\"none\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
             key_name: IMPORT_MODE_KEY,
             data_type: "string",
             default_value_json: "\"hardlink_or_copy\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: SET_PERMISSIONS_LINUX_KEY,
+            data_type: "boolean",
+            default_value_json: "false",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: FILE_CHMOD_KEY,
+            data_type: "string",
+            default_value_json: "null",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: FOLDER_CHMOD_KEY,
+            data_type: "string",
+            default_value_json: "\"755\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: CHOWN_GROUP_KEY,
+            data_type: "string",
+            default_value_json: "null",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -703,24 +744,32 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_ACQUISITION,
             scope: SETTINGS_SCOPE_SYSTEM,
-            key_name: "acquisition.sync_interval_seconds",
+            key_name: "acquisition.long_tail_backfill_max_scopes_per_cycle",
             data_type: "number",
-            default_value_json: "3600",
+            default_value_json: "500",
             is_sensitive: false,
         },
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_ACQUISITION,
             scope: SETTINGS_SCOPE_SYSTEM,
-            key_name: "acquisition.batch_size",
+            key_name: "acquisition.long_tail_reconverge_days",
             data_type: "number",
-            default_value_json: "50",
+            default_value_json: "0",
             is_sensitive: false,
         },
         ServiceSettingSeed {
             category: SETTINGS_CATEGORY_ACQUISITION,
             scope: SETTINGS_SCOPE_SYSTEM,
-            key_name: FRUITLESS_WANTED_RESET_LAST_RUN_KEY,
-            data_type: "string",
+            key_name: "acquisition.convergence_seeded_at",
+            data_type: "json",
+            default_value_json: "null",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_ACQUISITION,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: "acquisition.convergence_resume_after",
+            data_type: "json",
             default_value_json: "null",
             is_sensitive: false,
         },
@@ -1062,234 +1111,6 @@ pub(crate) async fn seed_service_settings_from_environment(
         .batch_upsert_settings_if_not_overridden(entries)
         .await
         .map_err(|error| format!("failed to batch persist env settings: {error}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use scryer_application::SettingsRepository;
-    use scryer_infrastructure::{MigrationMode, SqliteServices};
-
-    async fn bootstrap_settings_store() -> (tempfile::TempDir, Arc<SettingsStore>) {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let db_path = temp.path().join("scryer.db");
-        let services = SqliteServices::new_with_mode(
-            db_path.to_string_lossy().to_string(),
-            MigrationMode::Apply,
-        )
-        .await
-        .expect("sqlite services");
-        let store = Arc::new(SettingsStore::new(
-            services.datastore(),
-            services.encryption_key_state(),
-        ));
-        seed_service_setting_definitions(store.clone())
-            .await
-            .expect("seed setting definitions");
-        (temp, store)
-    }
-
-    #[test]
-    fn service_setting_seeds_include_audio_persona_migration_sentinel() {
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == AUDIO_PERSONA_MIGRATION_SENTINEL_KEY
-                && seed.data_type == "bool"
-        }));
-    }
-
-    #[test]
-    fn service_setting_seeds_include_scheduler_instance_id() {
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.category == SETTINGS_CATEGORY_SERVICE
-                && seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == "scheduler.instance_id"
-                && seed.data_type == "string"
-                && seed.default_value_json == "null"
-                && !seed.is_sensitive
-        }));
-    }
-
-    #[tokio::test]
-    async fn service_setting_definitions_allow_scheduler_instance_id_to_persist() {
-        let (_temp, store) = bootstrap_settings_store().await;
-
-        SettingsRepository::upsert_setting_json(
-            &*store,
-            SETTINGS_SCOPE_SYSTEM,
-            "scheduler.instance_id",
-            None,
-            "\"scheduler-seed\"".to_string(),
-            "system",
-            None,
-        )
-        .await
-        .expect("scheduler instance id should persist");
-
-        let stored = SettingsRepository::get_setting_json(
-            &*store,
-            SETTINGS_SCOPE_SYSTEM,
-            "scheduler.instance_id",
-            None,
-        )
-        .await
-        .expect("scheduler instance id should load");
-        assert_eq!(stored.as_deref(), Some("\"scheduler-seed\""));
-    }
-
-    #[test]
-    fn service_setting_seeds_include_title_image_artwork_url_refresh_state() {
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.category == SETTINGS_CATEGORY_MEDIA
-                && seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == TITLE_IMAGE_ARTWORK_URL_REFRESH_STATE_KEY
-                && seed.data_type == "string"
-                && seed.default_value_json == "\"none\""
-                && !seed.is_sensitive
-        }));
-    }
-
-    #[test]
-    fn service_setting_seeds_include_metadata_language() {
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == METADATA_LANGUAGE_KEY
-                && seed.data_type == "string"
-                && seed.default_value_json == "\"eng\""
-        }));
-    }
-
-    #[test]
-    fn service_setting_seeds_include_history_retention_defaults() {
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == HISTORY_KEEP_FOREVER_KEY
-                && seed.data_type == "boolean"
-                && seed.default_value_json == "false"
-        }));
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == HISTORY_RETENTION_DAYS_KEY
-                && seed.data_type == "number"
-                && seed.default_value_json == "180"
-        }));
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == scryer_application::PLUGIN_HTTP_CA_BUNDLE_PEM_KEY
-                && seed.data_type == "string"
-                && seed.default_value_json == "\"\""
-        }));
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == AUTO_BACKUP_ENABLED_KEY
-                && seed.data_type == "boolean"
-                && seed.default_value_json == "false"
-        }));
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == AUTO_BACKUP_DAILY_TIME_LOCAL_KEY
-                && seed.data_type == "string"
-                && seed.default_value_json
-                    == format!(
-                        "\"{}\"",
-                        scryer_application::DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL
-                    )
-        }));
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == AUTO_BACKUP_KEY_KEY
-                && seed.data_type == "string"
-                && seed.is_sensitive
-        }));
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == scryer_application::AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY
-                && seed.data_type == "boolean"
-                && seed.default_value_json == "false"
-                && !seed.is_sensitive
-        }));
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_MEDIA
-                && seed.key_name == RECYCLE_BIN_ENABLED_KEY
-                && seed.data_type == "boolean"
-                && seed.default_value_json == "true"
-        }));
-    }
-
-    #[test]
-    fn service_setting_seeds_include_legacy_download_client_keys() {
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == LEGACY_NZBGET_CATEGORY_SETTING_KEY
-                && seed.data_type == "string"
-                && seed.default_value_json == "\"\""
-        }));
-        assert!(service_setting_seeds().iter().any(|seed| {
-            seed.scope == SETTINGS_SCOPE_SYSTEM
-                && seed.key_name == LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY
-                && seed.data_type == "string"
-                && seed.default_value_json == "{}"
-        }));
-    }
-
-    #[test]
-    fn merge_default_quality_profiles_normalizes_exact_legacy_seeded_defaults() {
-        let existing_profiles = vec![
-            legacy_seeded_default_quality_profile_for_search(),
-            legacy_seeded_default_quality_profile_1080p_for_search(),
-        ];
-        let mut expected_profiles = vec![
-            default_quality_profile_for_search(),
-            default_quality_profile_1080p_for_search(),
-        ];
-        expected_profiles.sort_by(|a, b| a.id.cmp(&b.id));
-
-        let (profiles, changed) = merge_default_quality_profiles(
-            existing_profiles,
-            vec![
-                default_quality_profile_for_search(),
-                default_quality_profile_1080p_for_search(),
-            ],
-        );
-
-        assert!(changed);
-        assert_eq!(profiles, expected_profiles);
-    }
-
-    #[test]
-    fn merge_default_quality_profiles_preserves_nonseeded_existing_profiles() {
-        let mut customized_profile = default_quality_profile_for_search();
-        customized_profile.criteria.atmos_preferred = true;
-        customized_profile.criteria.prefer_remux = true;
-        customized_profile.criteria.allow_unknown_quality = true;
-
-        let (profiles, changed) = merge_default_quality_profiles(
-            vec![customized_profile.clone()],
-            vec![
-                default_quality_profile_for_search(),
-                default_quality_profile_1080p_for_search(),
-            ],
-        );
-
-        assert!(!changed);
-        assert_eq!(profiles, vec![customized_profile]);
-    }
-
-    #[test]
-    fn merge_default_quality_profiles_seeds_standard_defaults_when_empty() {
-        let (profiles, changed) = merge_default_quality_profiles(
-            Vec::new(),
-            vec![
-                default_quality_profile_for_search(),
-                default_quality_profile_1080p_for_search(),
-            ],
-        );
-
-        assert!(changed);
-        assert!(profiles.iter().any(|profile| profile.id == "4k"));
-        assert!(profiles.iter().any(|profile| profile.id == "1080p"));
-        assert!(!profiles.iter().any(|profile| profile.id == "8k"));
-    }
 }
 
 pub(crate) async fn migrate_legacy_download_client_routing_settings(
@@ -1814,130 +1635,6 @@ pub(crate) fn parse_quality_profile_id(raw_value: impl AsRef<str>) -> Option<Str
     }
 }
 
-pub(crate) async fn load_service_runtime_settings(
-    database: Arc<SettingsStore>,
-) -> Result<ServiceRuntimeSettings, String> {
-    let keys = vec![
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            "nzbget.url".to_string(),
-            None,
-        ),
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            "nzbget.username".to_string(),
-            None,
-        ),
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            "nzbget.password".to_string(),
-            None,
-        ),
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            "nzbget.dupe_mode".to_string(),
-            None,
-        ),
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            TLS_CERT_KEY.to_string(),
-            None,
-        ),
-        (
-            SETTINGS_SCOPE_SYSTEM.to_string(),
-            TLS_KEY_KEY.to_string(),
-            None,
-        ),
-    ];
-
-    let results = database
-        .batch_get_settings_with_defaults(keys)
-        .await
-        .map_err(|error| format!("failed to batch load runtime settings: {error}"))?;
-
-    let nzbget_url_record = results[0]
-        .as_ref()
-        .ok_or_else(|| "missing setting: system.nzbget.url".to_string())?;
-    let nzbget_username_record = results[1]
-        .as_ref()
-        .ok_or_else(|| "missing setting: system.nzbget.username".to_string())?;
-    let nzbget_password_record = results[2]
-        .as_ref()
-        .ok_or_else(|| "missing setting: system.nzbget.password".to_string())?;
-    let nzbget_dupe_mode_record = results[3]
-        .as_ref()
-        .ok_or_else(|| "missing setting: system.nzbget.dupe_mode".to_string())?;
-
-    let nzbget_url = setting_record_to_string(nzbget_url_record, "system.nzbget.url", false)?;
-    let nzbget_username = setting_record_to_optional_string(nzbget_username_record)?;
-    let nzbget_password = setting_record_to_optional_string(nzbget_password_record)?;
-    let nzbget_dupe_mode =
-        setting_record_to_string(nzbget_dupe_mode_record, "system.nzbget.dupe_mode", false)?;
-
-    let tls_cert_path = results[4]
-        .as_ref()
-        .and_then(|record| setting_record_to_optional_string(record).ok().flatten());
-    let tls_key_path = results[5]
-        .as_ref()
-        .and_then(|record| setting_record_to_optional_string(record).ok().flatten());
-
-    Ok(ServiceRuntimeSettings {
-        nzbget_url,
-        nzbget_username,
-        nzbget_password,
-        nzbget_dupe_mode,
-        tls_cert_path,
-        tls_key_path,
-    })
-}
-
-pub(crate) fn parse_json_setting_value(record: &SettingsValueRecord) -> Result<Value, String> {
-    serde_json::from_str(&record.effective_value_json).map_err(|error| {
-        format!(
-            "setting value for {}.{} is invalid JSON: {error}",
-            record.scope, record.key_name
-        )
-    })
-}
-
-pub(crate) fn setting_record_to_string(
-    record: &SettingsValueRecord,
-    path: &str,
-    allow_empty: bool,
-) -> Result<String, String> {
-    let value = parse_json_setting_value(record)?;
-    let value = match value {
-        Value::String(value) => value,
-        Value::Number(number) => number.to_string(),
-        Value::Bool(value) => value.to_string(),
-        Value::Null => return Err(format!("setting {path} must be set and cannot be null")),
-        _ => return Err(format!("setting {path} must be a string")),
-    };
-    if !allow_empty && value.trim().is_empty() {
-        return Err(format!("setting {path} cannot be empty"));
-    }
-    Ok(value)
-}
-
-pub(crate) fn setting_record_to_optional_string(
-    record: &SettingsValueRecord,
-) -> Result<Option<String>, String> {
-    let value = parse_json_setting_value(record)?;
-    match value {
-        Value::Null => Ok(None),
-        Value::String(value) => {
-            if value.trim().is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(value))
-            }
-        }
-        Value::Bool(value) => Ok(Some(value.to_string())),
-        Value::Number(value) => Ok(Some(value.to_string())),
-        other => Ok(Some(other.to_string())),
-    }
-}
-
 pub(crate) fn parse_migration_mode(raw: Option<String>) -> scryer_infrastructure::MigrationMode {
     match raw.as_deref() {
         Some(value) if value.eq_ignore_ascii_case("validate") => {
@@ -1975,14 +1672,275 @@ pub(crate) fn extract_pending_migration_ids(message: &str) -> Option<Vec<String>
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct ServiceRuntimeSettings {
-    pub(crate) nzbget_url: String,
-    pub(crate) nzbget_username: Option<String>,
-    pub(crate) nzbget_password: Option<String>,
-    pub(crate) nzbget_dupe_mode: String,
-    #[expect(dead_code)]
-    pub(crate) tls_cert_path: Option<String>,
-    #[expect(dead_code)]
-    pub(crate) tls_key_path: Option<String>,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use scryer_application::SettingsRepository;
+    use scryer_infrastructure::{MigrationMode, SqliteServices};
+
+    async fn bootstrap_settings_store() -> (tempfile::TempDir, Arc<SettingsStore>) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("scryer.db");
+        let services = SqliteServices::new_with_mode(
+            db_path.to_string_lossy().to_string(),
+            MigrationMode::Apply,
+        )
+        .await
+        .expect("sqlite services");
+        let store = Arc::new(SettingsStore::new(
+            services.datastore(),
+            services.encryption_key_state(),
+        ));
+        seed_service_setting_definitions(store.clone())
+            .await
+            .expect("seed setting definitions");
+        (temp, store)
+    }
+
+    #[test]
+    fn service_setting_seeds_include_audio_persona_migration_sentinel() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == AUDIO_PERSONA_MIGRATION_SENTINEL_KEY
+                && seed.data_type == "bool"
+        }));
+    }
+
+    #[test]
+    fn service_setting_seeds_include_scheduler_instance_id() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.category == SETTINGS_CATEGORY_SERVICE
+                && seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == "scheduler.instance_id"
+                && seed.data_type == "string"
+                && seed.default_value_json == "null"
+                && !seed.is_sensitive
+        }));
+    }
+
+    #[test]
+    fn service_setting_seeds_register_acquisition_convergence_keys() {
+        let seeds = service_setting_seeds();
+        for key in [
+            "acquisition.convergence_seeded_at",
+            "acquisition.convergence_resume_after",
+        ] {
+            let seed = seeds
+                .iter()
+                .find(|seed| seed.scope == SETTINGS_SCOPE_SYSTEM && seed.key_name == key)
+                .unwrap_or_else(|| panic!("missing convergence setting seed {key}"));
+            assert_eq!(seed.category, SETTINGS_CATEGORY_ACQUISITION);
+            assert_eq!(seed.data_type, "json");
+            assert_eq!(seed.default_value_json, "null");
+            assert!(!seed.is_sensitive);
+        }
+    }
+
+    #[tokio::test]
+    async fn service_setting_definitions_allow_title_metadata_rehydration_state_to_persist() {
+        const KEY: &str = "catalog.title_metadata_rehydration_017_state";
+
+        let seed = service_setting_seeds()
+            .iter()
+            .find(|seed| seed.scope == SETTINGS_SCOPE_SYSTEM && seed.key_name == KEY)
+            .expect("title metadata rehydration state definition should exist");
+        assert_eq!(seed.category, SETTINGS_CATEGORY_MEDIA);
+        assert_eq!(seed.data_type, "string");
+        assert_eq!(seed.default_value_json, "\"none\"");
+        assert!(!seed.is_sensitive);
+
+        let (_temp, store) = bootstrap_settings_store().await;
+        SettingsRepository::upsert_setting_json(
+            &*store,
+            SETTINGS_SCOPE_SYSTEM,
+            KEY,
+            None,
+            "\"pending\"".to_string(),
+            "system",
+            None,
+        )
+        .await
+        .expect("title metadata rehydration state should persist");
+    }
+
+    #[tokio::test]
+    async fn service_setting_definitions_allow_scheduler_instance_id_to_persist() {
+        let (_temp, store) = bootstrap_settings_store().await;
+
+        SettingsRepository::upsert_setting_json(
+            &*store,
+            SETTINGS_SCOPE_SYSTEM,
+            "scheduler.instance_id",
+            None,
+            "\"scheduler-seed\"".to_string(),
+            "system",
+            None,
+        )
+        .await
+        .expect("scheduler instance id should persist");
+
+        let stored = SettingsRepository::get_setting_json(
+            &*store,
+            SETTINGS_SCOPE_SYSTEM,
+            "scheduler.instance_id",
+            None,
+        )
+        .await
+        .expect("scheduler instance id should load");
+        assert_eq!(stored.as_deref(), Some("\"scheduler-seed\""));
+    }
+
+    #[test]
+    fn service_setting_seeds_include_title_image_artwork_url_refresh_state() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.category == SETTINGS_CATEGORY_MEDIA
+                && seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == TITLE_IMAGE_ARTWORK_URL_REFRESH_STATE_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "\"none\""
+                && !seed.is_sensitive
+        }));
+    }
+
+    #[test]
+    fn service_setting_seeds_include_metadata_language() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == METADATA_LANGUAGE_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "\"eng\""
+        }));
+    }
+
+    #[test]
+    fn service_setting_seeds_include_history_retention_defaults() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == HISTORY_KEEP_FOREVER_KEY
+                && seed.data_type == "boolean"
+                && seed.default_value_json == "false"
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == HISTORY_RETENTION_DAYS_KEY
+                && seed.data_type == "number"
+                && seed.default_value_json == "180"
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == scryer_application::PLUGIN_HTTP_CA_BUNDLE_PEM_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "\"\""
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == AUTO_BACKUP_ENABLED_KEY
+                && seed.data_type == "boolean"
+                && seed.default_value_json == "false"
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == AUTO_BACKUP_DAILY_TIME_LOCAL_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json
+                    == format!(
+                        "\"{}\"",
+                        scryer_application::DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL
+                    )
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == AUTO_BACKUP_KEY_KEY
+                && seed.data_type == "string"
+                && seed.is_sensitive
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == scryer_application::AUTO_BACKUP_DISABLED_MISSING_KEY_NOTICE_KEY
+                && seed.data_type == "boolean"
+                && seed.default_value_json == "false"
+                && !seed.is_sensitive
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_MEDIA
+                && seed.key_name == RECYCLE_BIN_ENABLED_KEY
+                && seed.data_type == "boolean"
+                && seed.default_value_json == "true"
+        }));
+    }
+
+    #[test]
+    fn service_setting_seeds_include_legacy_download_client_keys() {
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == LEGACY_NZBGET_CATEGORY_SETTING_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "\"\""
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY
+                && seed.data_type == "string"
+                && seed.default_value_json == "{}"
+        }));
+    }
+
+    #[test]
+    fn merge_default_quality_profiles_normalizes_exact_legacy_seeded_defaults() {
+        let existing_profiles = vec![
+            legacy_seeded_default_quality_profile_for_search(),
+            legacy_seeded_default_quality_profile_1080p_for_search(),
+        ];
+        let mut expected_profiles = vec![
+            default_quality_profile_for_search(),
+            default_quality_profile_1080p_for_search(),
+        ];
+        expected_profiles.sort_by(|a, b| a.id.cmp(&b.id));
+
+        let (profiles, changed) = merge_default_quality_profiles(
+            existing_profiles,
+            vec![
+                default_quality_profile_for_search(),
+                default_quality_profile_1080p_for_search(),
+            ],
+        );
+
+        assert!(changed);
+        assert_eq!(profiles, expected_profiles);
+    }
+
+    #[test]
+    fn merge_default_quality_profiles_preserves_nonseeded_existing_profiles() {
+        let mut customized_profile = default_quality_profile_for_search();
+        customized_profile.criteria.atmos_preferred = true;
+        customized_profile.criteria.prefer_remux = true;
+        customized_profile.criteria.allow_unknown_quality = true;
+
+        let (profiles, changed) = merge_default_quality_profiles(
+            vec![customized_profile.clone()],
+            vec![
+                default_quality_profile_for_search(),
+                default_quality_profile_1080p_for_search(),
+            ],
+        );
+
+        assert!(!changed);
+        assert_eq!(profiles, vec![customized_profile]);
+    }
+
+    #[test]
+    fn merge_default_quality_profiles_seeds_standard_defaults_when_empty() {
+        let (profiles, changed) = merge_default_quality_profiles(
+            Vec::new(),
+            vec![
+                default_quality_profile_for_search(),
+                default_quality_profile_1080p_for_search(),
+            ],
+        );
+
+        assert!(changed);
+        assert!(profiles.iter().any(|profile| profile.id == "4k"));
+        assert!(profiles.iter().any(|profile| profile.id == "1080p"));
+        assert!(!profiles.iter().any(|profile| profile.id == "8k"));
+    }
 }

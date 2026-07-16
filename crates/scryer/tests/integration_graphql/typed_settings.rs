@@ -16,7 +16,7 @@ async fn graphql_media_settings_rejects_invalid_folder_template_tokens() {
         "#,
         json!({
           "input": {
-            "scope": "movie",
+            "scope": "MOVIE",
             "folderTemplate": "{quality}"
           }
         }),
@@ -29,6 +29,37 @@ async fn graphql_media_settings_rejects_invalid_folder_template_tokens() {
     assert!(!errors.is_empty());
     let message = errors[0]["message"].as_str().unwrap_or_default();
     assert!(message.contains("unsupported folder template token"));
+}
+
+#[tokio::test]
+async fn graphql_media_settings_rejects_invalid_rename_template_tokens() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let body = gql(
+        &ctx,
+        r#"
+        mutation UpdateMediaSettings($input: UpdateMediaSettingsInput!) {
+          updateMediaSettings(input: $input) {
+            scope
+            renameTemplate
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "scope": "MOVIE",
+            "renameTemplate": "{title|truncate:0}.{ext}"
+          }
+        }),
+    )
+    .await;
+
+    let errors = body["errors"]
+        .as_array()
+        .expect("invalid rename template should return graphql errors");
+    assert!(!errors.is_empty());
+    let message = errors[0]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("unsupported rename template token"));
 }
 
 #[tokio::test]
@@ -61,19 +92,19 @@ async fn graphql_typed_media_settings_round_trip() {
         "#,
         json!({
           "input": {
-            "scope": "anime",
+            "scope": "ANIME",
             "rootFolders": [
               { "path": "/library/anime-main", "isDefault": true },
               { "path": "/library/anime-archive", "isDefault": false }
             ],
             "requiredAudioLanguages": ["eng", "jpn"],
-            "folderTemplate": "{title} ({year})",
+            "folderTemplate": "{title|truncate:64|space:_} ({year})",
             "renameEnabled": false,
-            "renameTemplate": "{title} [{quality}].{ext}",
-            "renameCollisionPolicy": "replace_if_better",
-            "renameMissingMetadataPolicy": "skip",
-            "fillerPolicy": "skip_filler",
-            "recapPolicy": "skip_recap",
+            "renameTemplate": "{title|truncate:64|space:_} [{quality}].{ext}",
+            "renameCollisionPolicy": "REPLACE_IF_BETTER",
+            "renameMissingMetadataPolicy": "SKIP",
+            "fillerPolicy": "SKIP_FILLER",
+            "recapPolicy": "SKIP_RECAP",
             "monitorSpecials": true,
             "interSeasonMovies": false,
             "monitorFillerMovies": true,
@@ -86,19 +117,25 @@ async fn graphql_typed_media_settings_round_trip() {
     assert_no_errors(&update);
 
     let updated = &update["data"]["updateMediaSettings"];
-    assert_eq!(updated["scope"], "anime");
+    assert_eq!(updated["scope"], "ANIME");
     assert_eq!(updated["libraryPath"], "/library/anime-main");
     assert_eq!(updated["rootFolders"][0]["path"], "/library/anime-main");
     assert_eq!(updated["rootFolders"][0]["isDefault"], true);
     assert_eq!(updated["requiredAudioLanguages"][0], "eng");
     assert_eq!(updated["requiredAudioLanguages"][1], "jpn");
-    assert_eq!(updated["folderTemplate"], "{title} ({year})");
+    assert_eq!(
+        updated["folderTemplate"],
+        "{title|truncate:64|space:_} ({year})"
+    );
     assert_eq!(updated["renameEnabled"], false);
-    assert_eq!(updated["renameTemplate"], "{title} [{quality}].{ext}");
-    assert_eq!(updated["renameCollisionPolicy"], "replace_if_better");
-    assert_eq!(updated["renameMissingMetadataPolicy"], "skip");
-    assert_eq!(updated["fillerPolicy"], "skip_filler");
-    assert_eq!(updated["recapPolicy"], "skip_recap");
+    assert_eq!(
+        updated["renameTemplate"],
+        "{title|truncate:64|space:_} [{quality}].{ext}"
+    );
+    assert_eq!(updated["renameCollisionPolicy"], "REPLACE_IF_BETTER");
+    assert_eq!(updated["renameMissingMetadataPolicy"], "SKIP");
+    assert_eq!(updated["fillerPolicy"], "SKIP_FILLER");
+    assert_eq!(updated["recapPolicy"], "SKIP_RECAP");
     assert_eq!(updated["monitorSpecials"], true);
     assert_eq!(updated["interSeasonMovies"], false);
     assert_eq!(updated["monitorFillerMovies"], true);
@@ -129,24 +166,30 @@ async fn graphql_typed_media_settings_round_trip() {
           }
         }
         "#,
-        json!({ "scope": "anime" }),
+        json!({ "scope": "ANIME" }),
     )
     .await;
     assert_no_errors(&read);
 
     let settings = &read["data"]["mediaSettings"];
-    assert_eq!(settings["scope"], "anime");
+    assert_eq!(settings["scope"], "ANIME");
     assert_eq!(settings["libraryPath"], "/library/anime-main");
     assert_eq!(settings["rootFolders"][1]["path"], "/library/anime-archive");
     assert_eq!(settings["requiredAudioLanguages"][0], "eng");
     assert_eq!(settings["requiredAudioLanguages"][1], "jpn");
-    assert_eq!(settings["folderTemplate"], "{title} ({year})");
+    assert_eq!(
+        settings["folderTemplate"],
+        "{title|truncate:64|space:_} ({year})"
+    );
     assert_eq!(settings["renameEnabled"], false);
-    assert_eq!(settings["renameTemplate"], "{title} [{quality}].{ext}");
-    assert_eq!(settings["renameCollisionPolicy"], "replace_if_better");
-    assert_eq!(settings["renameMissingMetadataPolicy"], "skip");
-    assert_eq!(settings["fillerPolicy"], "skip_filler");
-    assert_eq!(settings["recapPolicy"], "skip_recap");
+    assert_eq!(
+        settings["renameTemplate"],
+        "{title|truncate:64|space:_} [{quality}].{ext}"
+    );
+    assert_eq!(settings["renameCollisionPolicy"], "REPLACE_IF_BETTER");
+    assert_eq!(settings["renameMissingMetadataPolicy"], "SKIP");
+    assert_eq!(settings["fillerPolicy"], "SKIP_FILLER");
+    assert_eq!(settings["recapPolicy"], "SKIP_RECAP");
     assert_eq!(settings["monitorSpecials"], true);
     assert_eq!(settings["interSeasonMovies"], false);
     assert_eq!(settings["monitorFillerMovies"], true);
@@ -381,8 +424,8 @@ async fn graphql_typed_acquisition_settings_round_trip() {
             crossTierMinDelta
             forcedUpgradeDeltaBypass
             pollIntervalSeconds
-            syncIntervalSeconds
-            batchSize
+            longTailBackfillMaxScopesPerCycle
+            longTailReconvergeDays
           }
         }
         "#,
@@ -394,8 +437,8 @@ async fn graphql_typed_acquisition_settings_round_trip() {
             "crossTierMinDelta": 35,
             "forcedUpgradeDeltaBypass": 420,
             "pollIntervalSeconds": 45,
-            "syncIntervalSeconds": 1800,
-            "batchSize": 25
+            "longTailBackfillMaxScopesPerCycle": 750,
+            "longTailReconvergeDays": 30
           }
         }),
     )
@@ -413,8 +456,8 @@ async fn graphql_typed_acquisition_settings_round_trip() {
             crossTierMinDelta
             forcedUpgradeDeltaBypass
             pollIntervalSeconds
-            syncIntervalSeconds
-            batchSize
+            longTailBackfillMaxScopesPerCycle
+            longTailReconvergeDays
           }
         }
         "#,
@@ -430,8 +473,8 @@ async fn graphql_typed_acquisition_settings_round_trip() {
     assert_eq!(settings["crossTierMinDelta"], 35);
     assert_eq!(settings["forcedUpgradeDeltaBypass"], 420);
     assert_eq!(settings["pollIntervalSeconds"], 45);
-    assert_eq!(settings["syncIntervalSeconds"], 1800);
-    assert_eq!(settings["batchSize"], 25);
+    assert_eq!(settings["longTailBackfillMaxScopesPerCycle"], 750);
+    assert_eq!(settings["longTailReconvergeDays"], 30);
 }
 
 #[tokio::test]

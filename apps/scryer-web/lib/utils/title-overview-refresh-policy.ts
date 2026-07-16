@@ -1,0 +1,63 @@
+export const TITLE_OVERVIEW_BULK_REFRESH_DEBOUNCE_MS = 1500;
+export const TITLE_OVERVIEW_BULK_REFRESH_MAX_WAIT_MS = 10000;
+
+export const TITLE_OVERVIEW_HYDRATION_STARTED_KIND = "metadata_hydration_started";
+export const TITLE_OVERVIEW_HYDRATION_COMPLETED_KIND =
+  "metadata_hydration_completed";
+export const TITLE_OVERVIEW_HYDRATION_FAILED_KIND = "metadata_hydration_failed";
+export const TITLE_OVERVIEW_FILE_ANALYZED_KIND = "file_analyzed";
+export const TITLE_OVERVIEW_SUBTITLE_DOWNLOADED_KIND = "subtitle_downloaded";
+
+export type TitleOverviewReactiveRefreshPlan =
+  | { type: "none" }
+  | { type: "hydrationStarted" }
+  | { type: "hydrationCompleted" }
+  | { type: "hydrationFailed" }
+  | {
+      type: "refresh";
+      downloadFeedback: boolean;
+      mode: "immediate" | "bulk";
+    };
+
+export function shouldHandleTitleOverviewActivity(
+  currentTitleId?: string | null,
+  activityTitleId?: string | null,
+) {
+  return Boolean(
+    currentTitleId && activityTitleId && activityTitleId === currentTitleId,
+  );
+}
+
+export function titleOverviewReactiveRefreshKinds(importKinds: ReadonlySet<string>) {
+  return new Set([
+    ...importKinds,
+    TITLE_OVERVIEW_FILE_ANALYZED_KIND,
+    TITLE_OVERVIEW_SUBTITLE_DOWNLOADED_KIND,
+    TITLE_OVERVIEW_HYDRATION_STARTED_KIND,
+    TITLE_OVERVIEW_HYDRATION_COMPLETED_KIND,
+    TITLE_OVERVIEW_HYDRATION_FAILED_KIND,
+  ]);
+}
+
+export function titleOverviewReactiveRefreshPlan(
+  activityKind: string,
+  importKinds: ReadonlySet<string>,
+): TitleOverviewReactiveRefreshPlan {
+  switch (activityKind) {
+    case TITLE_OVERVIEW_HYDRATION_STARTED_KIND:
+      return { type: "hydrationStarted" };
+    case TITLE_OVERVIEW_HYDRATION_COMPLETED_KIND:
+      return { type: "hydrationCompleted" };
+    case TITLE_OVERVIEW_HYDRATION_FAILED_KIND:
+      return { type: "hydrationFailed" };
+    case TITLE_OVERVIEW_FILE_ANALYZED_KIND:
+      return { type: "refresh", downloadFeedback: false, mode: "bulk" };
+    case TITLE_OVERVIEW_SUBTITLE_DOWNLOADED_KIND:
+      return { type: "refresh", downloadFeedback: false, mode: "immediate" };
+    default:
+      if (importKinds.has(activityKind)) {
+        return { type: "refresh", downloadFeedback: true, mode: "immediate" };
+      }
+      return { type: "none" };
+  }
+}

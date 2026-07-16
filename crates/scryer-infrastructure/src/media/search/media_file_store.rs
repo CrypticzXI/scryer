@@ -1,9 +1,11 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, CutoffUnmetQualitySummary, EpisodeScopedMediaFile, InsertMediaFileInput,
-    MediaFileAnalysis, MediaFileRepository, TitleEpisodeProgressSummary, TitleMediaFile,
-    TitleMediaSizeSummary, TitleQualitySummary,
+    AppError, AppResult, CollectionEpisodeProgressSummary, CutoffUnmetQualitySummary,
+    EpisodeScopedMediaFile, InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository,
+    MissingEpisodeCandidate, MissingScopeCandidates, MissingSeriesMovieLinkCandidate,
+    MissingTitleCandidate, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
+    TitleMovieMediaSummary, TitleQualitySummary,
 };
 use scryer_domain::Id;
 use serde::de::DeserializeOwned;
@@ -165,6 +167,34 @@ impl MediaFileRepository for MediaFileStore {
         .await
     }
 
+    async fn list_media_files_for_titles(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMediaFile>> {
+        if title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let dialect = dialect_for_datastore(&self.datastore);
+        let placeholders = placeholders(title_ids.len());
+        let sql = format!(
+            "SELECT {}
+             FROM media_files mf
+             LEFT JOIN file_episode_map fem ON fem.file_id = mf.id
+             WHERE mf.title_id IN ({placeholders})
+               AND {}
+             ORDER BY mf.title_id, mf.created_at DESC",
+            media_file_select_columns(dialect, "fem.episode_id"),
+            live_media_file_predicate(dialect, "mf")
+        );
+        let args = title_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        fetch_media_files(self.datastore.read_exec(), &sql, &args).await
+    }
+
     async fn list_live_media_files_for_episode_ids(
         &self,
         title_id: &str,
@@ -280,6 +310,37 @@ impl MediaFileRepository for MediaFileStore {
             .collect()
     }
 
+    async fn collection_media_size_bytes(
+        &self,
+        title_id: &str,
+        ordered_path: &str,
+    ) -> AppResult<Option<i64>> {
+        let dialect = dialect_for_datastore(&self.datastore);
+        let total_size_expression = total_size_bytes_sum_expression(dialect, "mf.size_bytes");
+        let sql = format!(
+            "SELECT {total_size_expression} AS total_size_bytes
+               FROM media_files mf
+              WHERE mf.title_id = {{}}
+                AND mf.file_path = {{}}
+                AND mf.size_bytes > 0
+                AND {}",
+            live_media_file_predicate(dialect, "mf")
+        );
+        let total = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            &sql,
+            &[
+                SqlArg::Text(title_id.to_string()),
+                SqlArg::Text(ordered_path.to_string()),
+            ],
+        )
+        .await?
+        .map(|row| row.i64("total_size_bytes"))
+        .transpose()?
+        .unwrap_or_default();
+        Ok((total > 0).then_some(total))
+    }
+
     async fn list_title_quality_summaries(
         &self,
         title_ids: &[String],
@@ -325,6 +386,63 @@ impl MediaFileRepository for MediaFileStore {
                 Ok(TitleQualitySummary {
                     title_id: row.text("title_id")?,
                     quality_tier: row.text("quality_tier")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn list_title_movie_media_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<TitleMovieMediaSummary>> {
+        if title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let placeholders = placeholders(title_ids.len());
+        let dialect = dialect_for_datastore(&self.datastore);
+        let resolution_expression = normalized_quality_expression("media_files");
+        let audio_codec_expression = "COALESCE(NULLIF(TRIM(media_files.audio_codec_parsed), ''), NULLIF(TRIM(media_files.audio_codec), ''))";
+        let hdr_expression = "NULLIF(TRIM(media_files.video_hdr_format), '')";
+        let sql = format!(
+            "SELECT title_id, resolution, hdr_format, audio_codec
+             FROM (
+                SELECT media_files.title_id AS title_id,
+                       {resolution_expression} AS resolution,
+                       {hdr_expression} AS hdr_format,
+                       {audio_codec_expression} AS audio_codec,
+                       ROW_NUMBER() OVER (
+                          PARTITION BY media_files.title_id
+                          ORDER BY CASE WHEN media_files.size_bytes > 0 THEN media_files.size_bytes ELSE 0 END DESC,
+                                   media_files.created_at DESC,
+                                   media_files.id DESC
+                       ) AS media_row
+                  FROM media_files
+                  JOIN titles ON titles.id = media_files.title_id
+                 WHERE media_files.title_id IN ({placeholders})
+                   AND titles.facet = 'movie'
+                   AND {}
+                   AND media_files.role = 'primary'
+             ) ranked
+             WHERE media_row = 1",
+            live_media_file_predicate(dialect, "media_files")
+        );
+        let args = title_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(TitleMovieMediaSummary {
+                    title_id: row.text("title_id")?,
+                    resolution: row.opt_text("resolution")?,
+                    hdr_format: row
+                        .opt_text("hdr_format")?
+                        .filter(|value| !value.trim().is_empty()),
+                    audio_codec: row.opt_text("audio_codec")?,
                 })
             })
             .collect()
@@ -394,6 +512,130 @@ impl MediaFileRepository for MediaFileStore {
             .collect()
     }
 
+    async fn list_missing_scope_candidates(&self) -> AppResult<MissingScopeCandidates> {
+        let dialect = dialect_for_datastore(&self.datastore);
+        let live_file = live_media_file_predicate(dialect, "mf");
+
+        // Monitored episodes (inside monitored collections of monitored titles)
+        // with no live primary file. Episodes outside a collection are not
+        // acquisition units, matching collection-driven monitoring.
+        let episode_sql = format!(
+            "SELECT e.id AS episode_id, e.title_id, t.library_id, t.facet,
+                    e.collection_id, e.season_number, e.episode_number, e.air_date,
+                    t.created_at AS title_created_at
+               FROM episodes e
+              INNER JOIN titles t ON t.id = e.title_id
+              INNER JOIN collections c ON c.id = e.collection_id
+              WHERE {} AND {} AND {}
+                AND t.deleted_at IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM file_episode_map fem
+                     INNER JOIN media_files mf ON mf.id = fem.file_id
+                     WHERE fem.episode_id = e.id
+                       AND mf.role = 'primary'
+                       AND {live_file}
+                )
+              ORDER BY e.id",
+            bool_column_is_true(dialect, "t.monitored"),
+            bool_column_is_true(dialect, "e.monitored"),
+            bool_column_is_true(dialect, "c.monitored"),
+        );
+        let episodes = SqlRuntime::fetch_all(self.datastore.read_exec(), &episode_sql, &[])
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(MissingEpisodeCandidate {
+                    episode_id: row.text("episode_id")?,
+                    title_id: row.text("title_id")?,
+                    library_id: row.text("library_id")?,
+                    title_facet: row.text("facet")?,
+                    collection_id: row.opt_text("collection_id")?,
+                    season_number: row.opt_text("season_number")?,
+                    episode_number: row.opt_text("episode_number")?,
+                    air_date: row.opt_text("air_date")?,
+                    title_created_at: timestamp_text(row, "title_created_at")?,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+
+        // Monitored titles with no live primary file at all. Includes episodic
+        // titles — the application layer keeps only movie-shaped facets.
+        let title_sql = format!(
+            "SELECT t.id AS title_id, t.library_id, t.facet, t.min_availability,
+                    t.first_aired, t.digital_release_date, t.created_at
+               FROM titles t
+              WHERE {}
+                AND t.deleted_at IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM media_files mf
+                     WHERE mf.title_id = t.id
+                       AND mf.role = 'primary'
+                       AND {live_file}
+                )
+              ORDER BY t.id",
+            bool_column_is_true(dialect, "t.monitored"),
+        );
+        let titles = SqlRuntime::fetch_all(self.datastore.read_exec(), &title_sql, &[])
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(MissingTitleCandidate {
+                    title_id: row.text("title_id")?,
+                    library_id: row.text("library_id")?,
+                    title_facet: row.text("facet")?,
+                    min_availability: row.opt_text("min_availability")?,
+                    first_aired: row.opt_text("first_aired")?,
+                    digital_release_date: row.opt_text("digital_release_date")?,
+                    created_at: timestamp_text(row, "created_at")?,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+
+        // Monitored series-movie links with no linked live file (any role, matching
+        // list_series_movie_link_ids_with_files_for_title).
+        let link_sql = format!(
+            "SELECT sml.id AS series_movie_link_id, sml.series_title_id AS title_id,
+                    t.library_id, t.facet, sml.continuity_status,
+                    me.digital_release_date AS movie_digital_release_date,
+                    sml.created_at AS link_created_at
+               FROM series_movie_links sml
+              INNER JOIN titles t ON t.id = sml.series_title_id
+              INNER JOIN movie_entities me ON me.id = sml.movie_entity_id
+              WHERE {} AND {}
+                AND t.deleted_at IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM file_series_movie_link_map fsmlm
+                     INNER JOIN media_files mf ON mf.id = fsmlm.file_id
+                     WHERE fsmlm.series_movie_link_id = sml.id
+                       AND {live_file}
+                )
+              ORDER BY sml.id",
+            bool_column_is_true(dialect, "sml.monitored"),
+            bool_column_is_true(dialect, "t.monitored"),
+        );
+        let series_movie_links = SqlRuntime::fetch_all(self.datastore.read_exec(), &link_sql, &[])
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(MissingSeriesMovieLinkCandidate {
+                    series_movie_link_id: row.text("series_movie_link_id")?,
+                    title_id: row.text("title_id")?,
+                    library_id: row.text("library_id")?,
+                    title_facet: row.text("facet")?,
+                    continuity_status: row.opt_text("continuity_status")?,
+                    movie_digital_release_date: row.opt_text("movie_digital_release_date")?,
+                    link_created_at: timestamp_text(row, "link_created_at")?,
+                })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+
+        Ok(MissingScopeCandidates {
+            episodes,
+            titles,
+            series_movie_links,
+        })
+    }
+
     async fn list_title_episode_progress_summaries(
         &self,
         title_ids: &[String],
@@ -434,6 +676,52 @@ impl MediaFileRepository for MediaFileStore {
             .map(|row| {
                 Ok(TitleEpisodeProgressSummary {
                     title_id: row.text("title_id")?,
+                    owned_episodes: row.i64("owned_episodes")?,
+                    monitored_episodes: row.i64("monitored_episodes")?,
+                    total_episodes: row.i64("total_episodes")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn list_collection_episode_progress_summaries(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<CollectionEpisodeProgressSummary>> {
+        if title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let dialect = dialect_for_datastore(&self.datastore);
+        let placeholders = placeholders(title_ids.len());
+        let sql = format!(
+            "SELECT e.collection_id,
+                    COUNT(DISTINCT e.id) AS total_episodes,
+                    COUNT(DISTINCT CASE WHEN {} THEN e.id END) AS monitored_episodes,
+                    COUNT(DISTINCT CASE WHEN mf.id IS NOT NULL THEN e.id END) AS owned_episodes
+             FROM episodes e
+             LEFT JOIN file_episode_map fem ON fem.episode_id = e.id
+             LEFT JOIN media_files mf ON mf.id = fem.file_id AND {} AND mf.role = 'primary'
+             WHERE e.title_id IN ({placeholders})
+               AND e.collection_id IS NOT NULL
+               AND trim(COALESCE(e.title, '')) <> ''
+               AND upper(trim(e.title)) NOT IN ('TBA', 'TBD')
+               AND trim(COALESCE(e.air_date, '')) <> ''
+             GROUP BY e.collection_id",
+            bool_column_is_true(dialect, "e.monitored"),
+            live_media_file_predicate(dialect, "mf")
+        );
+        let args = title_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(CollectionEpisodeProgressSummary {
+                    collection_id: row.text("collection_id")?,
                     owned_episodes: row.i64("owned_episodes")?,
                     monitored_episodes: row.i64("monitored_episodes")?,
                     total_episodes: row.i64("total_episodes")?,
@@ -1091,7 +1379,9 @@ mod tests {
     use scryer_application::{
         AudioStreamDetail, MediaFileAnalysis, MediaFileRepository, ShowRepository, TitleRepository,
     };
-    use scryer_domain::{Collection, CollectionType, Episode, MediaFacet, Title};
+    use scryer_domain::{
+        Collection, CollectionType, Episode, MediaFacet, MovieEntity, SeriesMovieLink, Title,
+    };
 
     #[cfg(windows)]
     #[test]
@@ -1110,6 +1400,7 @@ mod tests {
             library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![],
             root_folder_id: scryer_domain::root_folder_id_for_path("/data/series"),
             created_by: None,
@@ -1121,10 +1412,11 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
-            genres: vec![],
+            popularity: None,
             content_status: None,
             language: None,
             first_aired: None,
@@ -1301,6 +1593,170 @@ mod tests {
         assert_eq!(episode_progress[0].total_episodes, 2);
         assert_eq!(episode_progress[0].monitored_episodes, 2);
         assert_eq!(episode_progress[0].owned_episodes, 1);
+
+        let collection_progress = media_files
+            .list_collection_episode_progress_summaries(std::slice::from_ref(&title.id))
+            .await
+            .expect("collection episode progress summaries should succeed");
+        assert_eq!(collection_progress.len(), 1);
+        assert_eq!(collection_progress[0].collection_id, collection.id);
+        assert_eq!(collection_progress[0].total_episodes, 2);
+        assert_eq!(collection_progress[0].monitored_episodes, 2);
+        assert_eq!(collection_progress[0].owned_episodes, 1);
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn missing_scope_candidates_include_monitored_titles_episodes_and_series_movies() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_missing_scope_candidates_{}.db",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("db should initialize");
+        let titles = title_store(&services);
+        let shows = show_store(&services);
+        let media_files = media_file_store(&services);
+
+        let title = make_test_series_title("title-missing-scope");
+        titles
+            .create(title.clone())
+            .await
+            .expect("title should insert");
+
+        let collection = Collection {
+            id: "collection-missing-scope".to_string(),
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("1".to_string()),
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        ShowRepository::create_collection(&shows, collection.clone())
+            .await
+            .expect("collection should insert");
+
+        let episode = Episode {
+            id: "episode-missing-scope".to_string(),
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some("1".to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some("S01E01".to_string()),
+            title: Some("Episode 1".to_string()),
+            air_date: Some("2026-04-01".to_string()),
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            image_url: None,
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        ShowRepository::create_episode(&shows, episode.clone())
+            .await
+            .expect("episode should insert");
+
+        let now = Utc::now();
+        let link = SeriesMovieLink {
+            id: "series-movie-link-missing-scope".to_string(),
+            series_title_id: title.id.clone(),
+            movie: MovieEntity {
+                id: "movie-entity-missing-scope".to_string(),
+                title: "Live Query Movie".to_string(),
+                sort_title: None,
+                slug: None,
+                year: Some(2026),
+                overview: None,
+                poster_url: None,
+                background_url: None,
+                language: None,
+                runtime_minutes: Some(90),
+                content_status: None,
+                studio: None,
+                digital_release_date: Some("2026-05-01".to_string()),
+                imdb_id: None,
+                tvdb_id: Some("999001".to_string()),
+                tmdb_id: None,
+                mal_id: None,
+                anidb_id: None,
+                created_at: now,
+                updated_at: now,
+            },
+            placement: Some("ordered".to_string()),
+            narrative_order: Some("1.5".to_string()),
+            after_season: Some(1),
+            before_season: None,
+            linked_episode_id: None,
+            association_confidence: Some("high".to_string()),
+            continuity_status: Some("canon".to_string()),
+            movie_form: Some("movie".to_string()),
+            confidence: Some("high".to_string()),
+            signal_summary: None,
+            source: Some("test".to_string()),
+            monitored: true,
+            legacy_collection_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+        ShowRepository::upsert_series_movie_link(&shows, link.clone())
+            .await
+            .expect("series movie link should insert");
+
+        let missing = media_files
+            .list_missing_scope_candidates()
+            .await
+            .expect("missing scope candidates should load");
+
+        let episode_candidate = missing
+            .episodes
+            .iter()
+            .find(|candidate| candidate.episode_id == episode.id)
+            .expect("missing episode candidate should be present");
+        assert_eq!(episode_candidate.title_id, title.id);
+        assert_eq!(
+            episode_candidate.collection_id.as_deref(),
+            Some(collection.id.as_str())
+        );
+        assert!(
+            !episode_candidate.title_created_at.is_empty(),
+            "episode title timestamp should be serialized"
+        );
+
+        let title_candidate = missing
+            .titles
+            .iter()
+            .find(|candidate| candidate.title_id == title.id)
+            .expect("missing title candidate should be present");
+        assert_eq!(title_candidate.library_id, title.library_id);
+        assert!(
+            !title_candidate.created_at.is_empty(),
+            "title timestamp should be serialized"
+        );
+
+        let link_candidate = missing
+            .series_movie_links
+            .iter()
+            .find(|candidate| candidate.series_movie_link_id == link.id)
+            .expect("missing series movie candidate should be present");
+        assert_eq!(link_candidate.title_id, title.id);
+        assert_eq!(link_candidate.continuity_status.as_deref(), Some("canon"));
+        assert!(
+            !link_candidate.link_created_at.is_empty(),
+            "series movie link timestamp should be serialized"
+        );
 
         let _ = std::fs::remove_file(db);
     }
@@ -1779,6 +2235,7 @@ mod tests {
                         profile: Some("DTS-HD MA + DTS:X IMAX".to_string()),
                         channels: Some(8),
                         language: Some("eng".to_string()),
+                        name: None,
                         bitrate_kbps: Some(4_000),
                     }],
                     subtitle_languages: vec![],

@@ -1,0 +1,9 @@
+mutation SubmitDiscoveryContextSnapshot($input: DiscoveryContextSnapshotSubmitInput!) {
+  submitDiscoveryContextSnapshot(input: $input) {
+    request_id
+    status
+    subject_count
+    retry_after_seconds
+    expires_at
+  }
+}

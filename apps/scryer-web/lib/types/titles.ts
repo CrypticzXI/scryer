@@ -1,11 +1,142 @@
+import type { CanonicalMediaTag } from "./canonical-tags";
 import type { DownloadClientRoutingEntry } from "./download-clients";
+import type { CatalogDiscoveryItem } from "./discovery";
 import type { ImportMode } from "./settings";
 
-export type Facet = "movie" | "series" | "anime";
+export type { CanonicalMediaTag };
+
+export type Facet = "MOVIE" | "SERIES" | "ANIME";
 
 export type ExternalId = {
   source: string;
   value: string;
+};
+
+export type TitleExternalRatingRecord = {
+  source: string;
+  value?: number | null;
+  score?: number | null;
+  normalized: number;
+  votes?: number | null;
+  url?: string | null;
+};
+
+export type TitleRatingRecord = {
+  rating?: number | null;
+  ratingSources: string[];
+  externalRatings: TitleExternalRatingRecord[];
+};
+
+export type TitleCollectionEpisodeRecord = {
+  id: string;
+  titleId: string;
+  collectionId?: string | null;
+  episodeType?: 'STANDARD' | 'SPECIAL' | 'OFFICIAL' | 'OVA' | 'ONA' | 'ALTERNATE' | null;
+  episodeNumber?: string | number | null;
+  seasonNumber?: string | number | null;
+  episodeLabel?: string | null;
+  title?: string | null;
+  overview?: string | null;
+  airDate?: string | null;
+  durationSeconds?: number | null;
+  hasMultiAudio?: boolean | null;
+  hasSubtitle?: boolean | null;
+  isFiller?: boolean | null;
+  isRecap?: boolean | null;
+  absoluteNumber?: string | number | null;
+  imageUrl?: string | null;
+  monitored?: boolean | null;
+  createdAt?: string | null;
+};
+
+export type TitleCollectionRecord = {
+  id: string;
+  titleId: string;
+  collectionType?: 'SEASON' | 'MOVIE' | 'ARC' | 'SPECIALS' | null;
+  collectionIndex?: string | number | null;
+  label?: string | null;
+  orderedPath?: string | null;
+  narrativeOrder?: string | number | null;
+  fileSizeBytes?: number | null;
+  firstEpisodeNumber?: string | number | null;
+  lastEpisodeNumber?: string | number | null;
+  monitored?: boolean | null;
+  episodesOwned?: number | null;
+  episodesMonitored?: number | null;
+  episodesTotal?: number | null;
+  episodes?: TitleCollectionEpisodeRecord[] | null;
+  createdAt?: string | null;
+};
+
+export type TitleMediaFileRecord = {
+  id: string;
+  titleId: string;
+  episodeId?: string | null;
+  seriesMovieLinkIds?: string[] | null;
+  role?: string | null;
+  filePath?: string | null;
+  sizeBytes?: number | null;
+  qualityLabel?: string | null;
+  scanStatus?: string | null;
+  createdAt?: string | null;
+  videoCodec?: string | null;
+  videoWidth?: number | null;
+  videoHeight?: number | null;
+  videoBitrateKbps?: number | null;
+  videoBitDepth?: number | null;
+  videoHdrFormat?: string | null;
+  videoFrameRate?: string | null;
+  videoProfile?: string | null;
+  audioCodec?: string | null;
+  audioChannels?: number | null;
+  audioBitrateKbps?: number | null;
+  audioLanguages?: string[] | null;
+  audioStreams?:
+    | {
+        codec: string | null;
+        channels: number | null;
+        language: string | null;
+        bitrateKbps: number | null;
+      }[]
+    | null;
+  subtitleLanguages?: string[] | null;
+  subtitleCodecs?: string[] | null;
+  subtitleStreams?:
+    | {
+        codec: string | null;
+        language: string | null;
+        name: string | null;
+        forced: boolean | null;
+        default: boolean | null;
+      }[]
+    | null;
+  hasMultiaudio?: boolean | null;
+  durationSeconds?: number | null;
+  numChapters?: number | null;
+  containerFormat?: string | null;
+  sceneName?: string | null;
+  releaseGroup?: string | null;
+  sourceType?: string | null;
+  resolution?: string | null;
+  videoCodecParsed?: string | null;
+  audioCodecParsed?: string | null;
+  acquisitionScore?: number | null;
+  scoringLog?: string | null;
+  indexerSource?: string | null;
+  grabbedReleaseTitle?: string | null;
+  grabbedAt?: string | null;
+  edition?: string | null;
+  originalFilePath?: string | null;
+  releaseHash?: string | null;
+};
+
+export type TitleReleaseBlocklistEntry = {
+  id: string;
+  sourceHint: string | null;
+  sourceTitle: string | null;
+  errorMessage: string | null;
+  attemptedAt: string;
+  episodeIds: string[];
 };
 
 export type TitleRecord = {
@@ -36,7 +167,12 @@ export type TitleRecord = {
   backgroundUrl?: string | null;
   backgroundSourceUrl?: string | null;
   runtimeMinutes?: number | null;
-  genres?: string[];
+  popularity?: number | null;
+  mediaResolution?: string | null;
+  mediaHdr?: string | null;
+  mediaAudioCodec?: string | null;
+  ratings?: TitleRatingRecord | null;
+  canonicalTags?: CanonicalMediaTag[];
   language?: string | null;
   firstAired?: string | null;
   network?: string | null;
@@ -53,14 +189,29 @@ export type TitleRecord = {
   useSeasonFolders?: boolean | null;
   monitorSpecials?: boolean | null;
   interSeasonMovies?: boolean | null;
-  fillerPolicy?: string | null;
-  recapPolicy?: string | null;
+  fillerPolicy?: 'DOWNLOAD_ALL' | 'SKIP_FILLER' | null;
+  recapPolicy?: 'DOWNLOAD_ALL' | 'SKIP_RECAP' | null;
+  collections?: TitleCollectionRecord[] | null;
+  mediaFiles?: TitleMediaFileRecord[] | null;
+  moreLikeThis?: CatalogDiscoveryItem[] | null;
 };
 
 export type RootFolderOption = {
   id?: string;
   path: string;
   isDefault: boolean;
+};
+
+export type TitleCatalogTagFilterOption = {
+  key: string;
+  name: string;
+};
+
+export type TitleCatalogFilterOptionsRecord = {
+  genres: TitleCatalogTagFilterOption[];
+  themes: TitleCatalogTagFilterOption[];
+  minimumYear: number | null;
+  maximumYear: number | null;
 };
 
 export type LibraryRootRecord = {
@@ -92,7 +243,7 @@ export type MediaRequestRecord = {
   id: string;
   libraryId: string;
   facet: Facet;
-  status: "pending" | "approved" | "rejected" | "canceled";
+  status: "PENDING" | "APPROVED" | "REJECTED" | "CANCELED";
   identityFingerprint: string;
   title: string;
   sortTitle?: string | null;
@@ -129,9 +280,9 @@ export type LibrarySettingsRecord = {
   scoringPersonaOverride: string | null;
   scoringPersona: string;
   fillerPolicyOverride: string | null;
-  fillerPolicy: string | null;
+  fillerPolicy: 'DOWNLOAD_ALL' | 'SKIP_FILLER' | null;
   recapPolicyOverride: string | null;
-  recapPolicy: string | null;
+  recapPolicy: 'DOWNLOAD_ALL' | 'SKIP_RECAP' | null;
   monitorSpecialsOverride: boolean | null;
   monitorSpecials: boolean | null;
   interSeasonMoviesOverride: boolean | null;
@@ -144,6 +295,14 @@ export type LibrarySettingsRecord = {
   plexmatchWriteOnImport: boolean | null;
   importModeOverride: ImportMode | null;
   importMode: ImportMode;
+  setPermissionsLinuxOverride: boolean | null;
+  setPermissionsLinux: boolean;
+  fileChmodOverride: string | null;
+  fileChmod: string | null;
+  folderChmodOverride: string | null;
+  folderChmod: string | null;
+  chownGroupOverride: string | null;
+  chownGroup: string | null;
   indexerRoutingOverride: unknown[] | null;
   downloadClientRoutingOverride: DownloadClientRoutingEntry[] | null;
 };
@@ -153,14 +312,18 @@ export type LibrarySettingsDraft = {
   qualityProfileId: string | null;
   requestQualityProfileIds: string[] | null;
   scoringPersona: string | null;
-  fillerPolicy: string | null;
-  recapPolicy: string | null;
+  fillerPolicy: 'DOWNLOAD_ALL' | 'SKIP_FILLER' | null;
+  recapPolicy: 'DOWNLOAD_ALL' | 'SKIP_RECAP' | null;
   monitorSpecials: boolean | null;
   interSeasonMovies: boolean | null;
   monitorFillerMovies: boolean | null;
   nfoWriteOnImport: boolean | null;
   plexmatchWriteOnImport: boolean | null;
   importMode: ImportMode | null;
+  setPermissionsLinux: boolean | null;
+  fileChmod: string | null;
+  folderChmod: string | null;
+  chownGroup: string | null;
   indexerRouting?: unknown[] | null;
   downloadClientRouting?: DownloadClientRoutingEntry[] | null;
 };

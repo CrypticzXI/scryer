@@ -1,6 +1,12 @@
 import * as React from "react";
-import { ArrowLeft, Loader2, LockKeyhole, RotateCcw, Upload } from "lucide-react";
+import { DatabaseBackup, Loader2, LockKeyhole, RotateCcw, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  SetupBackButton,
+  SetupPanel,
+  SetupPrimaryButton,
+  SetupStepHeader,
+} from "./setup-chrome";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -282,17 +288,20 @@ export function SetupRestoreView({
   }, [onBackendRestarting, password, summary, t, uploadId]);
 
   return (
-    <div className="w-full space-y-6">
-      <div className="text-center">
-        <h2 className="mb-2 text-xl font-semibold">{t("setup.restoreTitle")}</h2>
-        <p className="text-sm text-muted-foreground">{t("setup.restoreDescription")}</p>
-      </div>
+    <SetupPanel className="w-full space-y-6 bg-[linear-gradient(180deg,rgba(12,18,35,0.82),rgba(8,13,26,0.72))]">
+      <SetupStepHeader
+        icon={DatabaseBackup}
+        title={t("setup.restoreTitle")}
+        subtitle={t("setup.restoreDescription")}
+      />
 
       {!summary ? (
-        <Card>
-          <CardContent className="space-y-5 p-5">
-            <div className="space-y-2 text-sm">
-              <span className="font-medium">{t("setup.restoreSelectBundle")}</span>
+        <Card className="border-[var(--scry-border2)] bg-[rgba(10,17,32,0.55)] p-0 shadow-none">
+          <CardContent className="space-y-5 p-5 sm:p-6">
+            <div className="space-y-3 text-sm">
+              <span className="text-sm font-semibold text-[var(--scry-ink2)]">
+                {t("setup.restoreSelectBundle")}
+              </span>
               <input
                 id="setup-restore-file-input"
                 key={fileInputKey}
@@ -324,23 +333,28 @@ export function SetupRestoreView({
                   handleBundleSelected(event.dataTransfer.files?.[0] ?? null);
                 }}
                 className={cn(
-                  "rounded-2xl border border-dashed px-5 py-8 transition-colors",
+                  "rounded-[16px] border border-dashed px-5 py-8 transition-colors",
                   isDragActive
-                    ? "border-primary bg-primary/8"
-                    : "border-border/80 bg-muted/20 hover:border-primary/50 hover:bg-muted/30",
+                    ? "border-[var(--scry-accent-text)] bg-[rgba(var(--scry-accent-rgb),0.12)]"
+                    : "border-[rgba(var(--scry-accent-rgb),0.34)] bg-[rgba(var(--scry-accent-rgb),0.045)] hover:border-[var(--scry-baccent)] hover:bg-[rgba(var(--scry-accent-rgb),0.075)]",
                 )}
               >
                 <div className="mx-auto flex max-w-xl flex-col items-center gap-4 text-center">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-[14px] border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.12)] text-[var(--scry-accent-text)]">
                     <Upload className="h-5 w-5" />
                   </div>
                   <div className="space-y-1">
-                    <p className="break-all text-base font-medium text-foreground">
+                    <p
+                      className={cn(
+                        "break-all text-base font-semibold text-[var(--scry-ink2)]",
+                        selectedBundle ? "font-[var(--font-code)] text-sm" : null,
+                      )}
+                    >
                       {selectedBundle
                         ? selectedBundle.name
                         : t("setup.restoreDropTargetTitle")}
                     </p>
-                    <p className="text-sm text-muted-foreground">
+                    <p className="text-sm leading-relaxed text-[var(--scry-muted)]">
                       {selectedBundle
                         ? bundleLooksEncrypted
                           ? t("setup.restoreDropTargetEncryptedSelected")
@@ -349,27 +363,28 @@ export function SetupRestoreView({
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center justify-center gap-3">
-                    <Button
+                    <SetupPrimaryButton
                       id="setup-restore-select-file"
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={inspecting}
                     >
                       {t("setup.restoreSelectFile")}
-                    </Button>
+                    </SetupPrimaryButton>
                     {selectedBundle ? (
                       <Button
                         id="setup-restore-clear-file"
                         type="button"
-                        variant="destructive"
+                        variant="outline"
                         onClick={resetSelection}
                         disabled={inspecting}
+                        className="border-[var(--scry-danger-border)] text-[var(--scry-danger-text)] hover:bg-[var(--scry-danger-bg)] hover:text-[var(--scry-danger-text)]"
                       >
                         {t("setup.restoreClearFile")}
                       </Button>
                     ) : null}
                   </div>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-xs text-[var(--scry-faint)]">
                     {t("setup.restoreDropTargetFormats")}
                   </p>
                 </div>
@@ -378,7 +393,9 @@ export function SetupRestoreView({
 
             {requiresPassword ? (
               <label className="block space-y-2 text-sm">
-                <span className="font-medium">{t("settings.password")}</span>
+                <span className="font-semibold text-[var(--scry-ink2)]">
+                  {t("settings.password")}
+                </span>
                 <Input
                   id="setup-restore-password"
                   type="password"
@@ -389,13 +406,14 @@ export function SetupRestoreView({
                   }}
                   placeholder={t("settings.password")}
                   disabled={inspecting}
+                  className="border-[var(--scry-border2)] bg-[var(--scry-page2)]"
                 />
               </label>
             ) : null}
 
             {requiresPassword ? (
-              <div className="rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-                <div className="mb-1 flex items-center gap-2 text-foreground">
+              <div className="rounded-[12px] border border-[var(--scry-border2)] bg-[rgba(10,17,32,0.48)] p-3 text-xs text-[var(--scry-muted)]">
+                <div className="flex items-center gap-2 text-[var(--scry-ink2)]">
                   <LockKeyhole className="h-3.5 w-3.5" />
                   <span>{t("setup.restorePasswordHelp")}</span>
                 </div>
@@ -409,73 +427,93 @@ export function SetupRestoreView({
         </Card>
       ) : (
         <div className="space-y-4">
-          <Card>
-            <CardContent className="space-y-5 p-5">
+          <Card className="border-[var(--scry-border2)] bg-[rgba(10,17,32,0.55)] p-0 shadow-none">
+            <CardContent className="space-y-5 p-5 sm:p-6">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-full border border-border px-2 py-0.5 text-xs font-medium">
+                <span className="rounded-full border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.11)] px-2.5 py-1 text-xs font-semibold text-[var(--scry-accent-text)]">
                   {summary.encrypted
                     ? t("settings.backupsEncrypted")
                     : t("settings.backupsPlaintext")}
                 </span>
-                <span className="rounded-full border border-border px-2 py-0.5 text-xs font-medium">
+                <span className="rounded-full border border-[var(--scry-border2)] bg-[var(--scry-page2)] px-2.5 py-1 font-[var(--font-code)] text-xs font-medium text-[var(--scry-muted2)]">
                   {summary.formatVersion}
                 </span>
               </div>
 
               <div className="grid gap-3 text-sm sm:grid-cols-2">
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-page2)] p-3">
+                  <p className="text-xs uppercase tracking-wide text-[var(--scry-faint)]">
                     {t("setup.restoreCreatedAt")}
                   </p>
-                  <p>{formatDateTime(summary.createdAt)}</p>
+                  <p className="mt-1 text-[var(--scry-ink2)]">
+                    {formatDateTime(summary.createdAt)}
+                  </p>
                 </div>
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-page2)] p-3">
+                  <p className="text-xs uppercase tracking-wide text-[var(--scry-faint)]">
                     {t("setup.restoreSourceVersion")}
                   </p>
-                  <p>{summary.sourceScryerVersion}</p>
+                  <p className="mt-1 font-[var(--font-code)] text-sm text-[var(--scry-ink2)]">
+                    {summary.sourceScryerVersion}
+                  </p>
                 </div>
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-page2)] p-3">
+                  <p className="text-xs uppercase tracking-wide text-[var(--scry-faint)]">
                     {t("setup.restoreSourceEngine")}
                   </p>
-                  <p>{summary.sourceEngine}</p>
+                  <p className="mt-1 font-[var(--font-code)] text-sm text-[var(--scry-ink2)]">
+                    {summary.sourceEngine}
+                  </p>
                 </div>
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-page2)] p-3">
+                  <p className="text-xs uppercase tracking-wide text-[var(--scry-faint)]">
                     {t("setup.restoreMigrationKey")}
                   </p>
-                  <p>{summary.sourceMigrationKey ?? "-"}</p>
+                  <p className="mt-1 font-[var(--font-code)] text-sm text-[var(--scry-ink2)]">
+                    {summary.sourceMigrationKey ?? "-"}
+                  </p>
                 </div>
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-page2)] p-3">
+                  <p className="text-xs uppercase tracking-wide text-[var(--scry-faint)]">
                     {t("setup.restoreTotalRows")}
                   </p>
-                  <p>{Number(summary.totalRows).toLocaleString()}</p>
+                  <p className="mt-1 font-[var(--font-space-grotesk)] text-lg font-bold text-[var(--scry-ink2)]">
+                    {Number(summary.totalRows).toLocaleString()}
+                  </p>
                 </div>
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-page2)] p-3">
+                  <p className="text-xs uppercase tracking-wide text-[var(--scry-faint)]">
                     Tables
                   </p>
-                  <p>{rowCounts.length.toLocaleString()}</p>
+                  <p className="mt-1 font-[var(--font-space-grotesk)] text-lg font-bold text-[var(--scry-ink2)]">
+                    {rowCounts.length.toLocaleString()}
+                  </p>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <h3 className="text-sm font-semibold">{t("setup.restoreSummaryTitle")}</h3>
-                <div className="max-h-64 overflow-y-auto rounded-lg border border-border">
+                <h3 className="text-sm font-semibold text-[var(--scry-ink2)]">
+                  {t("setup.restoreSummaryTitle")}
+                </h3>
+                <div className="max-h-64 overflow-y-auto rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-page2)]">
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Table</TableHead>
-                        <TableHead className="text-right">Rows</TableHead>
+                        <TableHead className="text-[var(--scry-muted2)]">
+                          Table
+                        </TableHead>
+                        <TableHead className="text-right text-[var(--scry-muted2)]">
+                          Rows
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {rowCounts.map((entry) => (
                         <TableRow key={entry.table}>
-                          <TableCell className="font-mono text-xs">{entry.table}</TableCell>
-                          <TableCell className="text-right text-xs text-muted-foreground">
+                          <TableCell className="font-[var(--font-code)] text-xs text-[var(--scry-ink2)]">
+                            {entry.table}
+                          </TableCell>
+                          <TableCell className="text-right text-xs text-[var(--scry-muted)]">
                             {Number(entry.rowCount).toLocaleString()}
                           </TableCell>
                         </TableRow>
@@ -485,7 +523,7 @@ export function SetupRestoreView({
                 </div>
               </div>
 
-              <p className="text-sm text-muted-foreground">
+              <p className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-page2)] p-3 text-sm leading-relaxed text-[var(--scry-muted)]">
                 {t("setup.restoreConfirmDescription")}
               </p>
 
@@ -497,11 +535,14 @@ export function SetupRestoreView({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <Button id="setup-restore-back" variant="ghost" onClick={onBack} disabled={inspecting || applying}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--scry-border)] pt-2">
+        <SetupBackButton
+          id="setup-restore-back"
+          onClick={onBack}
+          disabled={inspecting || applying}
+        >
           {t("setup.back")}
-        </Button>
+        </SetupBackButton>
 
         <div className="flex flex-wrap items-center gap-2">
           {summary ? (
@@ -511,6 +552,7 @@ export function SetupRestoreView({
               variant="outline"
               onClick={resetSelection}
               disabled={applying}
+              className="border-[var(--scry-border2)] bg-[var(--scry-page2)]"
             >
               <RotateCcw className="h-4 w-4" />
               {t("setup.restoreChooseAnother")}
@@ -518,12 +560,21 @@ export function SetupRestoreView({
           ) : null}
 
           {summary ? (
-            <Button id="setup-restore-apply" type="button" onClick={() => void handleApply()} disabled={applying}>
-              {applying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+            <SetupPrimaryButton
+              id="setup-restore-apply"
+              type="button"
+              onClick={() => void handleApply()}
+              disabled={applying}
+            >
+              {applying ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Upload className="h-4 w-4" />
+              )}
               {t("setup.restoreApply")}
-            </Button>
+            </SetupPrimaryButton>
           ) : (
-            <Button
+            <SetupPrimaryButton
               id="setup-restore-inspect"
               type="button"
               onClick={() => void handleInspect()}
@@ -533,12 +584,16 @@ export function SetupRestoreView({
                 || (requiresPassword && password.length === 0)
               }
             >
-              {inspecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {inspecting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Upload className="h-4 w-4" />
+              )}
               {t("setup.restoreInspect")}
-            </Button>
+            </SetupPrimaryButton>
           )}
         </div>
       </div>
-    </div>
+    </SetupPanel>
   );
 }

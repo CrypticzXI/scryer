@@ -30,7 +30,7 @@ export default function SetupPage() {
 
   if (authLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
+      <div className="flex min-h-screen items-center justify-center bg-fixed text-[var(--scry-body)] [background-image:var(--scry-shell-bg)]">
         <Loader2 className="h-6 w-6 animate-spin text-emerald-700 dark:text-emerald-300" />
       </div>
     );
@@ -40,7 +40,7 @@ export default function SetupPage() {
 
   return (
     <ScryerGraphqlProvider language={uiLanguage}>
-      <div className="min-h-screen bg-background text-foreground">
+      <div className="min-h-screen bg-fixed text-[var(--scry-body)] [background-image:var(--scry-shell-bg)]">
         <SetupWizardContainer
           t={t}
           isReentry={isReentry}

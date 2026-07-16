@@ -131,7 +131,7 @@ services:
     command: >
       sh -c '
         set -eu
-        cargo run --locked -p scryer 
+        cargo run --locked -p scryer --no-default-features
       '
     volumes:
       - .:/workspace

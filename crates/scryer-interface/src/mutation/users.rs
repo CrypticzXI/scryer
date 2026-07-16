@@ -226,7 +226,7 @@ impl UserMutations {
         app.delete_user(&actor, &id_string)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteUserPayload { id, deleted: true })
+        Ok(DeleteUserPayload { id })
     }
 
     async fn reset_user_mfa(&self, ctx: &Context<'_>, id: ID) -> GqlResult<UserPayload> {
@@ -312,10 +312,7 @@ impl UserMutations {
         app.unlink_external_account(&actor, &linked_account_id_string)
             .await
             .map_err(to_gql_error)?;
-        Ok(UnlinkExternalAccountPayload {
-            linked_account_id,
-            unlinked: true,
-        })
+        Ok(UnlinkExternalAccountPayload { linked_account_id })
     }
 
     async fn login_with_plex(

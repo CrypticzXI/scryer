@@ -47,22 +47,22 @@ type ActivityTab = ActivitySection;
 type SortConfigByTab = Record<ActivityTab, SortConfig>;
 
 const IMPORT_STATUS_OPTIONS: DownloadImportStatus[] = [
-  "importing",
-  "pending",
-  "blocked",
-  "failed",
+  "IMPORTING",
+  "PENDING",
+  "BLOCKED",
+  "FAILED",
 ];
 const ACTIVITY_STATUS_OPTIONS: DownloadActivityStatus[] = [
-  "downloading",
-  "queued",
-  "paused",
-  "post_processing",
+  "DOWNLOADING",
+  "QUEUED",
+  "PAUSED",
+  "POST_PROCESSING",
 ];
-const HISTORY_STATUS_OPTIONS: DownloadHistoryStatus[] = ["success", "failed"];
+const HISTORY_STATUS_OPTIONS: DownloadHistoryStatus[] = ["SUCCESS", "FAILED"];
 const DEFAULT_SORT_CONFIG_BY_TAB: SortConfigByTab = {
-  import: { key: "status", direction: "asc" },
-  activity: { key: "status", direction: "asc" },
-  history: { key: "status", direction: "asc" },
+  import: { key: "STATUS", direction: "ASC" },
+  activity: { key: "STATUS", direction: "ASC" },
+  history: { key: "STATUS", direction: "ASC" },
 };
 
 function arraysEqual<T>(left: T[], right: T[]): boolean {
@@ -175,7 +175,7 @@ export const ActivityContainer = memo(function ActivityContainer({
     enabled: activityTabActive,
     includeAllActivity: !activityScryerSubmittedOnly,
     includeHistoryOnly: false,
-    activityFilter: "all",
+    activityFilter: "ALL",
   });
   const {
     importItems,
@@ -188,7 +188,7 @@ export const ActivityContainer = memo(function ActivityContainer({
     loadMoreImport,
   } = useDownloadImport({
     enabled: importTabActive,
-    filter: "all",
+    filter: "ALL",
   });
   const {
     historyItems,
@@ -406,7 +406,7 @@ export const ActivityContainer = memo(function ActivityContainer({
             return false;
           }
 
-          return item.deleteStatus !== "failed";
+          return item.deleteStatus !== "FAILED";
         }),
       );
 
@@ -425,7 +425,7 @@ export const ActivityContainer = memo(function ActivityContainer({
         return;
       }
 
-      if (item.facet === "series" || item.facet === "anime") {
+      if (item.facet === "SERIES" || item.facet === "ANIME") {
         setManualImportItem(item);
         return;
       }
@@ -728,7 +728,7 @@ export const ActivityContainer = memo(function ActivityContainer({
                   currentConfig.key === nextKey
                     ? {
                         key: nextKey,
-                        direction: currentConfig.direction === "asc" ? "desc" : "asc",
+                        direction: currentConfig.direction === "ASC" ? "desc" : "asc",
                       }
                     : DEFAULT_SORT_CONFIG_BY_TAB[tab].key === nextKey
                       ? DEFAULT_SORT_CONFIG_BY_TAB[tab]

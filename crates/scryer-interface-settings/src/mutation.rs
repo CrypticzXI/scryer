@@ -14,6 +14,7 @@ use scryer_application::{
     UpdateSubtitleSettings as AppUpdateSubtitleSettings,
 };
 
+use super::{from_ui_settings, ui_settings_update_from_input};
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, mfa_enrollment_actor_from_ctx,
     mfa_verification_from_ctx, require_config_app_permission, to_gql_error, to_login_gql_error,
@@ -32,15 +33,8 @@ pub struct SettingsMutations;
 const MEDIA_SERVER_LOGIN_REQUIRES_FORM_LOGIN: &str =
     "Enable form login before enabling media-server login.";
 
-fn parse_import_mode_input(raw: Option<String>) -> GqlResult<Option<scryer_domain::ImportMode>> {
-    raw.map(|value| {
-        scryer_domain::ImportMode::from_setting(&value).map_err(|message| {
-            to_gql_error(AppError::Validation(format!(
-                "invalid importMode: {message}"
-            )))
-        })
-    })
-    .transpose()
+fn parse_import_mode_input(raw: Option<ImportModeValue>) -> Option<scryer_domain::ImportMode> {
+    raw.map(Into::into)
 }
 
 fn parse_required_datetime(value: &str, field: &str) -> DateTime<Utc> {
@@ -98,8 +92,8 @@ fn from_acquisition_settings(
         cross_tier_min_delta: settings.cross_tier_min_delta,
         forced_upgrade_delta_bypass: settings.forced_upgrade_delta_bypass,
         poll_interval_seconds: settings.poll_interval_seconds,
-        sync_interval_seconds: settings.sync_interval_seconds,
-        batch_size: settings.batch_size,
+        long_tail_backfill_max_scopes_per_cycle: settings.long_tail_backfill_max_scopes_per_cycle,
+        long_tail_reconverge_days: settings.long_tail_reconverge_days,
     }
 }
 
@@ -292,7 +286,7 @@ fn from_webauthn_challenge_start(
 ) -> WebauthnChallengePayload {
     WebauthnChallengePayload {
         challenge_id: challenge.challenge_id.into(),
-        options_json: challenge.options_json,
+        options_json: scryer_interface_media::mappers::json_string_to_value(challenge.options_json),
     }
 }
 
@@ -604,6 +598,24 @@ fn parse_audio_codec_values(
 
 #[Object]
 impl SettingsMutations {
+    async fn set_my_ui_settings(
+        &self,
+        ctx: &Context<'_>,
+        input: SetMyUiSettingsInput,
+    ) -> GqlResult<UiSettingsPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let current = app.get_my_ui_settings(&actor).await.map_err(to_gql_error)?;
+        let settings = app
+            .set_my_ui_settings(
+                &actor,
+                ui_settings_update_from_input(input, current.date_time_format),
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_ui_settings(settings))
+    }
+
     async fn update_subtitle_settings(
         &self,
         ctx: &Context<'_>,
@@ -668,8 +680,9 @@ impl SettingsMutations {
                     cross_tier_min_delta: input.cross_tier_min_delta,
                     forced_upgrade_delta_bypass: input.forced_upgrade_delta_bypass,
                     poll_interval_seconds: input.poll_interval_seconds,
-                    sync_interval_seconds: input.sync_interval_seconds,
-                    batch_size: input.batch_size,
+                    long_tail_backfill_max_scopes_per_cycle: input
+                        .long_tail_backfill_max_scopes_per_cycle,
+                    long_tail_reconverge_days: input.long_tail_reconverge_days,
                 },
             )
             .await
@@ -711,11 +724,12 @@ impl SettingsMutations {
         let actor =
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
                 .await?;
-        let accepted = app
-            .clear_title_image_cache(&actor)
+        app.clear_title_image_cache(&actor)
             .await
             .map_err(to_gql_error)?;
-        Ok(ClearTitleImageCachePayload { accepted })
+        Ok(ClearTitleImageCachePayload {
+            requested_at: Utc::now(),
+        })
     }
 
     async fn update_recycle_bin_settings(
@@ -902,10 +916,7 @@ impl SettingsMutations {
         app.delete_media_server_connection(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteMediaServerConnectionPayload {
-            id: ID::from(id),
-            deleted: true,
-        })
+        Ok(DeleteMediaServerConnectionPayload { id: ID::from(id) })
     }
 
     async fn test_media_server_connection(
@@ -1012,7 +1023,7 @@ impl SettingsMutations {
             require_config_app_permission(ctx, scryer_domain::AppPermission::ManageCatalogSettings)
                 .await?;
         let scope = input.scope;
-        let import_mode = parse_import_mode_input(input.import_mode)?;
+        let import_mode = parse_import_mode_input(input.import_mode);
         app.update_media_settings(
             &actor,
             scope.into_media_facet(),
@@ -1031,16 +1042,28 @@ impl SettingsMutations {
                 folder_template: input.folder_template,
                 rename_enabled: input.rename_enabled,
                 rename_template: input.rename_template,
-                rename_collision_policy: input.rename_collision_policy,
-                rename_missing_metadata_policy: input.rename_missing_metadata_policy,
-                filler_policy: input.filler_policy,
-                recap_policy: input.recap_policy,
+                rename_collision_policy: input
+                    .rename_collision_policy
+                    .map(|policy| policy.as_app_str().to_string()),
+                rename_missing_metadata_policy: input
+                    .rename_missing_metadata_policy
+                    .map(|policy| policy.as_app_str().to_string()),
+                filler_policy: input
+                    .filler_policy
+                    .map(|policy| policy.as_app_str().to_string()),
+                recap_policy: input
+                    .recap_policy
+                    .map(|policy| policy.as_app_str().to_string()),
                 monitor_specials: input.monitor_specials,
                 inter_season_movies: input.inter_season_movies,
                 monitor_filler_movies: input.monitor_filler_movies,
                 nfo_write_on_import: input.nfo_write_on_import,
                 plexmatch_write_on_import: input.plexmatch_write_on_import,
                 import_mode,
+                set_permissions_linux: input.set_permissions_linux,
+                file_chmod: input.file_chmod,
+                folder_chmod: input.folder_chmod,
+                chown_group: input.chown_group,
             },
         )
         .await
@@ -1269,7 +1292,7 @@ impl SettingsMutations {
         app.webauthn_register_complete(
             &actor,
             input.challenge_id.as_ref(),
-            &input.response_json,
+            &serde_json::to_string(&input.response_json.0).unwrap_or_default(),
             input.friendly_name,
             auth_runtime.snapshot().effective_form_login_enabled,
         )
@@ -1416,7 +1439,7 @@ impl SettingsMutations {
         let user = match app
             .webauthn_authenticate_complete(
                 input.challenge_id.as_ref(),
-                &input.response_json,
+                &serde_json::to_string(&input.response_json.0).unwrap_or_default(),
                 form_login_enabled,
             )
             .await
@@ -1454,7 +1477,7 @@ impl SettingsMutations {
         )
         .await
         .map_err(to_gql_error)?;
-        Ok(DeleteMyPasskeyPayload { id, deleted: true })
+        Ok(DeleteMyPasskeyPayload { id })
     }
 
     async fn revoke_my_oauth_app(

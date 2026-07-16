@@ -426,10 +426,10 @@ async fn graphql_delay_profiles_round_trip() {
             "name": "Balanced Delay",
             "usenetDelayMinutes": 30,
             "torrentDelayMinutes": 90,
-            "preferredProtocol": "usenet",
+            "preferredProtocol": "USENET",
             "minAgeMinutes": 15,
             "bypassScoreThreshold": 320,
-            "appliesToFacets": ["movie", "series"],
+            "appliesToFacets": ["MOVIE", "SERIES"],
             "tags": ["4k", "hdr"],
             "priority": 5,
             "enabled": true
@@ -441,7 +441,7 @@ async fn graphql_delay_profiles_round_trip() {
     assert_eq!(upsert["data"]["upsertDelayProfile"]["id"], "balanced-delay");
     assert_eq!(
         upsert["data"]["upsertDelayProfile"]["appliesToFacets"][1],
-        "series"
+        "SERIES"
     );
 
     let read = gql(
@@ -472,11 +472,11 @@ async fn graphql_delay_profiles_round_trip() {
     assert_eq!(profile["name"], "Balanced Delay");
     assert_eq!(profile["usenetDelayMinutes"], 30);
     assert_eq!(profile["torrentDelayMinutes"], 90);
-    assert_eq!(profile["preferredProtocol"], "usenet");
+    assert_eq!(profile["preferredProtocol"], "USENET");
     assert_eq!(profile["minAgeMinutes"], 15);
     assert_eq!(profile["bypassScoreThreshold"], 320);
-    assert_eq!(profile["appliesToFacets"][0], "movie");
-    assert_eq!(profile["appliesToFacets"][1], "series");
+    assert_eq!(profile["appliesToFacets"][0], "MOVIE");
+    assert_eq!(profile["appliesToFacets"][1], "SERIES");
     assert_eq!(profile["tags"][0], "4k");
     assert_eq!(profile["priority"], 5);
     assert_eq!(profile["enabled"], true);

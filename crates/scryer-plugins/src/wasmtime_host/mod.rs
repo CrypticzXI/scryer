@@ -1,0 +1,21 @@
+//! Native wasmtime host for the archive-extractor plugin (RFC 123 §7.2, WP1).
+//!
+//! Replaces the Extism execution path for the archive kind: a process-wide
+//! engine with epoch cancellation and the full wasm feature surface
+//! ([`engine`]), a per-invocation WASI p1 sandbox with a memory cap
+//! ([`sandbox`]), the frozen zero-copy crypto/CRC host ABI ([`crypto_host`]),
+//! the stdin/stdout command protocol ([`invoke`]), and trap→`AppError` mapping
+//! ([`error`]). Everything else in the archive pipeline (path sandboxing,
+//! native PAR2, providers, SDK shapes) is owned above this layer.
+
+mod crypto_host;
+mod describe;
+pub(crate) mod engine;
+mod error;
+mod invoke;
+mod sandbox;
+
+pub(crate) use describe::command_model_describe;
+pub(crate) use invoke::{
+    ArchiveInvocation, SubtitleSyncInvocation, process_archive, process_subtitle_sync,
+};

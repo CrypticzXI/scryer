@@ -10,9 +10,10 @@ use std::time::{Duration, Instant};
 use common::TestContext;
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
-    BlocklistRepository, DownloadClientConfigRepository, DownloadSourceIdentity, ImportRepository,
-    LibraryRepository, LibraryRootDraft, MediaFileRepository, ReleaseAttemptRepository,
-    ShowRepository, TitleRepository, WantedItemRepository, import_completed_download,
+    AcquisitionScopeStateRepository, BlocklistRepository, DownloadClientConfigRepository,
+    DownloadSourceIdentity, ImportRepository, LibraryRepository, LibraryRootDraft,
+    MediaFileRepository, ReleaseAttemptRepository, ShowRepository, TitleRepository,
+    import_completed_download,
 };
 use scryer_domain::{
     Collection, CompletedDownload, DownloadClientConfig, DownloadClientStatus, Episode, Id,
@@ -35,7 +36,7 @@ fn app_with_real_imports(ctx: &TestContext) -> scryer_application::AppUseCase {
             .with_imports(workflow_store)
             .with_file_importer(Arc::new(FsFileImporter))
             .with_media_files(Arc::new(ctx.media_files.clone()))
-            .with_wanted_items(Arc::new(ctx.library_state.clone()))
+            .with_acquisition_scope_states(Arc::new(ctx.library_state.clone()))
     })
 }
 
@@ -101,6 +102,7 @@ async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &s
         library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         root_folder_id,
         created_by: None,
@@ -112,13 +114,14 @@ async fn add_movie_title(ctx: &TestContext, id: &str, name: &str, media_root: &s
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         // These integration fixtures use tiny synthetic videos; mark them as
         // short-form so runtime-sample validation does not preempt unrelated
         // import-path, rule, dedupe, or symlink assertions.
         runtime_minutes: Some(1),
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -164,6 +167,7 @@ async fn add_series_title_with_runtime(
         library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         root_folder_id,
         created_by: None,
@@ -175,10 +179,11 @@ async fn add_series_title_with_runtime(
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -235,6 +240,10 @@ async fn set_folder_template(ctx: &TestContext, facet: MediaFacet, template: &st
                 nfo_write_on_import: None,
                 plexmatch_write_on_import: None,
                 import_mode: None,
+                set_permissions_linux: None,
+                file_chmod: None,
+                folder_chmod: None,
+                chown_group: None,
             },
         )
         .await
@@ -259,10 +268,10 @@ fn copy_fixture(dest_dir: &Path, fixture_name: &str, dest_name: &str) -> PathBuf
 async fn seed_movie_wanted_item(
     ctx: &TestContext,
     title_id: &str,
-    status: scryer_application::WantedStatus,
+    status: scryer_application::AcquisitionScopeStatus,
     current_score: Option<i32>,
-) -> scryer_application::WantedItem {
-    let item = scryer_application::WantedItem {
+) -> scryer_application::AcquisitionScopeState {
+    let item = scryer_application::AcquisitionScopeState {
         id: Id::new().0,
         title_id: title_id.to_string(),
         title_name: Some("Test Title".to_string()),
@@ -277,11 +286,7 @@ async fn seed_movie_wanted_item(
         season_number: None,
         episode_number: None,
         media_type: "movie".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: None,
         last_search_at: None,
-        search_count: 0,
-        baseline_date: None,
         status,
         grabbed_release: None,
         current_score,
@@ -291,7 +296,7 @@ async fn seed_movie_wanted_item(
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
     ctx.library_state
-        .upsert_wanted_item(&item)
+        .upsert_acquisition_scope_state(&item)
         .await
         .expect("seed movie wanted");
     item
@@ -361,9 +366,9 @@ async fn seed_episode_wanted_item(
     ctx: &TestContext,
     title: &Title,
     episode: &Episode,
-    status: scryer_application::WantedStatus,
-) -> scryer_application::WantedItem {
-    let item = scryer_application::WantedItem {
+    status: scryer_application::AcquisitionScopeStatus,
+) -> scryer_application::AcquisitionScopeState {
+    let item = scryer_application::AcquisitionScopeState {
         id: Id::new().0,
         title_id: title.id.clone(),
         title_name: Some(title.name.clone()),
@@ -378,11 +383,7 @@ async fn seed_episode_wanted_item(
         season_number: Some("1".to_string()),
         episode_number: episode.episode_number.clone(),
         media_type: "series".to_string(),
-        search_phase: "initial".to_string(),
-        next_search_at: None,
         last_search_at: None,
-        search_count: 0,
-        baseline_date: None,
         status,
         grabbed_release: None,
         current_score: None,
@@ -392,7 +393,7 @@ async fn seed_episode_wanted_item(
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
     ctx.library_state
-        .upsert_wanted_item(&item)
+        .upsert_acquisition_scope_state(&item)
         .await
         .expect("seed episode wanted");
     item
@@ -1180,7 +1181,7 @@ async fn import_movie_rejected_by_post_download_rule_leaves_no_library_file_and_
     let wanted = seed_movie_wanted_item(
         &ctx,
         &title.id,
-        scryer_application::WantedStatus::Grabbed,
+        scryer_application::AcquisitionScopeStatus::Grabbed,
         None,
     )
     .await;
@@ -1238,14 +1239,14 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
 
     let updated_wanted = ctx
         .library_state
-        .get_wanted_item_for_title(&title.id, None)
+        .get_acquisition_scope_state_for_title(&title.id, None)
         .await
         .expect("get wanted")
         .expect("wanted item");
     assert_eq!(updated_wanted.id, wanted.id);
     assert_eq!(
         updated_wanted.status,
-        scryer_application::WantedStatus::Wanted
+        scryer_application::AcquisitionScopeStatus::Wanted
     );
 
     let failures =
@@ -1300,7 +1301,7 @@ async fn import_series_rejected_by_post_download_rule_resets_episode_wanted_item
         &ctx,
         &title,
         &episode,
-        scryer_application::WantedStatus::Grabbed,
+        scryer_application::AcquisitionScopeStatus::Grabbed,
     )
     .await;
 
@@ -1346,14 +1347,14 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
 
     let updated_wanted = ctx
         .library_state
-        .get_wanted_item_for_title(&title.id, Some(&episode.id))
+        .get_acquisition_scope_state_for_title(&title.id, Some(&episode.id))
         .await
         .expect("get wanted")
         .expect("wanted item");
     assert_eq!(updated_wanted.id, wanted.id);
     assert_eq!(
         updated_wanted.status,
-        scryer_application::WantedStatus::Wanted
+        scryer_application::AcquisitionScopeStatus::Wanted
     );
 }
 
@@ -1654,7 +1655,7 @@ async fn import_upgrade_rejected_by_post_download_rule_restores_prior_file() {
     let _wanted = seed_movie_wanted_item(
         &ctx,
         &title.id,
-        scryer_application::WantedStatus::Grabbed,
+        scryer_application::AcquisitionScopeStatus::Grabbed,
         Some(100),
     )
     .await;

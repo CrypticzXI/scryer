@@ -108,7 +108,7 @@ async fn graphql_scan_title_library() {
     );
 
     let activity_kinds = activity_kinds_for_title(&ctx, &title.id).await;
-    assert!(activity_kinds.iter().any(|kind| kind == "title_updated"));
+    assert!(activity_kinds.iter().any(|kind| kind == "TITLE_UPDATED"));
 }
 
 #[tokio::test]
@@ -694,8 +694,9 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
 
     let fixture = json!({
         "data": {
-            "s0": {
-                "series": {
+            "metadataBulk": {
+                "movies": [],
+                "series": [{
                     "tvdb_id": 345678,
                     "name": "Test Show Name",
                     "sort_name": "Test Show Name",
@@ -708,7 +709,20 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
                     "runtime_minutes": 45,
                     "poster_url": "https://artworks.thetvdb.com/banners/series/345678/posters/test.jpg",
                     "country": "usa",
-                    "genres": ["Drama", "Thriller"],
+                    "canonical_tags": [
+                        {
+                            "key": "canonical:genre:drama",
+                            "category": "genre",
+                            "name": "Drama",
+                            "confidence": 1.0
+                        },
+                        {
+                            "key": "canonical:genre:thriller",
+                            "category": "genre",
+                            "name": "Thriller",
+                            "confidence": 1.0
+                        }
+                    ],
                     "aliases": ["Testing Show", "QA Chronicles"],
                     "tagged_aliases": [],
                     "artworks": [],
@@ -736,7 +750,7 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
                     ],
                     "anime_mappings": [],
                     "anime_movies": []
-                }
+                }]
             }
         }
     })
@@ -809,9 +823,9 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
 
     let (wanted_items, total) = ctx
         .app
-        .list_wanted_items(
+        .list_acquisition_scope_states(
             &scryer_domain::User::new_admin("admin"),
-            scryer_application::WantedItemsQuery {
+            scryer_application::AcquisitionScopeStatesQuery {
                 statuses: Vec::new(),
                 media_types: Vec::new(),
                 title_id: Some(hydrated_title.id.clone()),
@@ -835,8 +849,9 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
 
     let fixture = json!({
         "data": {
-            "s0": {
-                "series": {
+            "metadataBulk": {
+                "movies": [],
+                "series": [{
                     "tvdb_id": 456789,
                     "name": "Hydrated Anime Title",
                     "sort_name": "Hydrated Anime Title",
@@ -849,7 +864,14 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
                     "runtime_minutes": 24,
                     "poster_url": "https://artworks.thetvdb.com/banners/series/456789/posters/test.jpg",
                     "country": "jpn",
-                    "genres": ["Animation"],
+                    "canonical_tags": [
+                        {
+                            "key": "canonical:genre:animation",
+                            "category": "genre",
+                            "name": "Animation",
+                            "confidence": 1.0
+                        }
+                    ],
                     "aliases": ["Hydrated Anime Alias"],
                     "tagged_aliases": [],
                     "artworks": [],
@@ -877,7 +899,7 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
                     ],
                     "anime_mappings": [],
                     "anime_movies": []
-                }
+                }]
             }
         }
     })
@@ -988,8 +1010,9 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_nightfall_fixture() 
 
     let fixture = json!({
         "data": {
-            "s0": {
-                "series": {
+            "metadataBulk": {
+                "movies": [],
+                "series": [{
                     "tvdb_id": 415677,
                     "name": "Nightfall!! Correct Match",
                     "sort_name": "Nightfall!! Correct Match",
@@ -1002,7 +1025,20 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_nightfall_fixture() 
                     "runtime_minutes": 24,
                     "poster_url": "https://artworks.thetvdb.com/banners/series/415677/posters/test.jpg",
                     "country": "jpn",
-                    "genres": ["Animation", "Fantasy"],
+                    "canonical_tags": [
+                        {
+                            "key": "canonical:genre:animation",
+                            "category": "genre",
+                            "name": "Animation",
+                            "confidence": 1.0
+                        },
+                        {
+                            "key": "canonical:genre:fantasy",
+                            "category": "genre",
+                            "name": "Fantasy",
+                            "confidence": 1.0
+                        }
+                    ],
                     "aliases": ["Nightfall!! Kage no Requiem"],
                     "tagged_aliases": [],
                     "artworks": [],
@@ -1030,7 +1066,7 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_nightfall_fixture() 
                     ],
                     "anime_mappings": [],
                     "anime_movies": []
-                }
+                }]
             }
         }
     })
@@ -1455,6 +1491,7 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
             library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
             monitored: false,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![ExternalId {
                 source: "tvdb".to_string(),
                 value: "345679".to_string(),
@@ -1469,10 +1506,11 @@ async fn library_series_scan_existing_unhydrated_title_without_episodes_complete
             background_url: None,
             background_source_url: None,
             sort_title: Some("Pending Series".to_string()),
+            catalog_sort_key: String::new(),
             slug: Some("pending-series".to_string()),
             imdb_id: None,
             runtime_minutes: None,
-            genres: vec![],
+            popularity: None,
             content_status: None,
             language: None,
             first_aired: None,
@@ -1907,7 +1945,7 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
 
-    let fixture = load_fixture("smg/get_movie.json");
+    let fixture = load_fixture("smg/metadata_bulk_movie.json");
     Mock::given(method("GET"))
         .and(path("/graphql"))
         .respond_with(ResponseTemplate::new(200).set_body_string(fixture.clone()))
@@ -2012,9 +2050,9 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
 
     let (wanted_items, total) = ctx
         .app
-        .list_wanted_items(
+        .list_acquisition_scope_states(
             &scryer_domain::User::new_admin("admin"),
-            scryer_application::WantedItemsQuery {
+            scryer_application::AcquisitionScopeStatesQuery {
                 statuses: Vec::new(),
                 media_types: Vec::new(),
                 title_id: Some(hydrated_title.id.clone()),

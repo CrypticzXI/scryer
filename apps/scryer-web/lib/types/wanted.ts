@@ -1,14 +1,16 @@
-export type WantedMediaType = "movie" | "episode" | "series_movie";
-export type WantedSearchPhase = "pre_air" | "pre_release" | "primary" | "secondary" | "long_tail";
-export type WantedStatus = "wanted" | "grabbed" | "paused" | "completed";
+export type WantedMediaType = "MOVIE" | "EPISODE" | "SERIES_MOVIE";
+export type WantedStatus = "WANTED" | "GRABBED" | "PAUSED" | "COMPLETED";
+export type ConvergenceState = "QUEUED" | "SEARCHING" | "CONVERGED" | "DEFERRED";
+export type RecencyLane = "HOT" | "COLD";
+export type WantedKind = "MISSING" | "CUTOFF_UPGRADE";
 export type PendingReleaseStatus =
-  | "waiting"
-  | "standby"
-  | "processing"
-  | "grabbed"
-  | "superseded"
-  | "expired"
-  | "dismissed";
+  | "WAITING"
+  | "STANDBY"
+  | "PROCESSING"
+  | "GRABBED"
+  | "SUPERSEDED"
+  | "EXPIRED"
+  | "DISMISSED";
 
 export type WantedItem = {
   id: string;
@@ -24,11 +26,7 @@ export type WantedItem = {
   seasonNumber: string | null;
   episodeNumber: string | null;
   mediaType: WantedMediaType;
-  searchPhase: WantedSearchPhase;
-  nextSearchAt: string | null;
   lastSearchAt: string | null;
-  searchCount: number;
-  baselineDate: string | null;
   status: WantedStatus;
   grabbedRelease: string | null;
   currentScore: number | null;
@@ -37,8 +35,26 @@ export type WantedItem = {
     createdAt: string;
   } | null;
   mismatchRecoveryEligible?: boolean;
+  convergenceState: ConvergenceState;
+  indexersCovered: number;
+  indexersRouted: number;
+  recencyLane: RecencyLane;
   createdAt: string;
   updatedAt: string;
+};
+
+// Progress snapshot of the server-side interactive acquisition-search job
+// (RFC 119 §7.3) — survives navigation/refresh, polled by id.
+export type AcquisitionSearchJob = {
+  id: string;
+  state: "RUNNING" | "COMPLETED" | "CANCELLED" | "FAILED";
+  total: number;
+  processed: number;
+  grabbedCount: number;
+  failedCount: number;
+  currentTitle: string | null;
+  startedAt: string;
+  finishedAt: string | null;
 };
 
 export type PendingReleaseItem = {
@@ -49,7 +65,7 @@ export type PendingReleaseItem = {
   releaseUrl: string | null;
   releaseSizeBytes: number | null;
   releaseScore: number;
-  scoringLogJson: string | null;
+  scoringLogJson: unknown;
   indexerSource: string | null;
   addedAt: string;
   delayUntil: string;
@@ -67,7 +83,7 @@ export type ReleaseDecisionItem = {
   candidateScore: number;
   currentScore: number | null;
   scoreDelta: number | null;
-  explanationJson: string | null;
+  explanationJson: unknown;
   createdAt: string;
 };
 

@@ -10,23 +10,29 @@ export type RenameTemplateSegment = {
   isToken: boolean;
 };
 
-type RenameTokenFilter = {
-  kind: "space";
-  replacement: string;
-};
+export type RenameTokenFilter =
+  | {
+      kind: "space";
+      replacement: string;
+    }
+  | {
+      kind: "truncate";
+      limit: number;
+    };
 
-type ParsedRenameTokenSpec = {
+export type ParsedRenameTokenSpec = {
   tokenName: string;
   lookupName: string;
   padWidth: number;
   filters: RenameTokenFilter[];
 };
 
-type RenameTokenParseResult =
+export type RenameTokenParseResult =
   | { ok: true; spec: ParsedRenameTokenSpec }
   | { ok: false; kind: "emptyToken" | "invalidFilter"; value: string };
 
 const SPACE_FILTER_PREFIX = "space:";
+const TRUNCATE_FILTER_PREFIX = "truncate:";
 const VALID_SPACE_REPLACEMENTS = new Set(["_", ".", "-", ""]);
 
 export function validateRenameTemplateSyntax(
@@ -120,7 +126,7 @@ export function applyRenameTemplatePreview(
       if (inner.includes("{")) return null;
       const parsed = parseRenameTemplateTokenSpec(inner);
       if (!parsed.ok || !validTokens.has(parsed.spec.lookupName)) return null;
-      let value = sampleValues[parsed.spec.lookupName] ?? parsed.spec.tokenName;
+      let value = sampleValues[parsed.spec.lookupName] ?? "";
       if (parsed.spec.padWidth > 0 && /^\d+$/.test(value)) {
         value = value.padStart(parsed.spec.padWidth, "0");
       }
@@ -197,7 +203,7 @@ export function splitRenameTemplateSegments(
   return segments;
 }
 
-function parseRenameTemplateTokenSpec(inner: string): RenameTokenParseResult {
+export function parseRenameTemplateTokenSpec(inner: string): RenameTokenParseResult {
   const parts = inner.split("|");
   const tokenCore = parts.shift()?.trim() ?? "";
   if (!tokenCore) {
@@ -218,14 +224,29 @@ function parseRenameTemplateTokenSpec(inner: string): RenameTokenParseResult {
 
   for (const rawFilter of parts) {
     const filter = rawFilter.trim();
-    if (!filter.startsWith(SPACE_FILTER_PREFIX)) {
-      return { ok: false, kind: "invalidFilter", value: filter };
+    if (filter.startsWith(SPACE_FILTER_PREFIX)) {
+      const replacement = filter.slice(SPACE_FILTER_PREFIX.length);
+      if (!VALID_SPACE_REPLACEMENTS.has(replacement)) {
+        return { ok: false, kind: "invalidFilter", value: filter };
+      }
+      filters.push({ kind: "space", replacement });
+      continue;
     }
-    const replacement = filter.slice(SPACE_FILTER_PREFIX.length);
-    if (!VALID_SPACE_REPLACEMENTS.has(replacement)) {
-      return { ok: false, kind: "invalidFilter", value: filter };
+
+    if (filter.startsWith(TRUNCATE_FILTER_PREFIX)) {
+      const rawLimit = filter.slice(TRUNCATE_FILTER_PREFIX.length);
+      if (!/^\d+$/.test(rawLimit)) {
+        return { ok: false, kind: "invalidFilter", value: filter };
+      }
+      const limit = Number.parseInt(rawLimit, 10);
+      if (limit <= 0) {
+        return { ok: false, kind: "invalidFilter", value: filter };
+      }
+      filters.push({ kind: "truncate", limit });
+      continue;
     }
-    filters.push({ kind: "space", replacement });
+
+    return { ok: false, kind: "invalidFilter", value: filter };
   }
 
   return {
@@ -239,11 +260,13 @@ function parseRenameTemplateTokenSpec(inner: string): RenameTokenParseResult {
   };
 }
 
-function applyRenameTokenFilters(value: string, filters: RenameTokenFilter[]): string {
+export function applyRenameTokenFilters(value: string, filters: RenameTokenFilter[]): string {
   return filters.reduce((current, filter) => {
     switch (filter.kind) {
       case "space":
         return current.replace(/\s/g, filter.replacement);
+      case "truncate":
+        return Array.from(current).slice(0, filter.limit).join("");
       default:
         return current;
     }

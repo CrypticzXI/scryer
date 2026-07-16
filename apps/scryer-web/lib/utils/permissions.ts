@@ -1,18 +1,32 @@
 export const APP_PERMISSIONS = {
-  manageUsers: "manageUsers",
-  managePermissions: "managePermissions",
-  manageSystemSettings: "manageSystemSettings",
-  manageCatalogSettings: "manageCatalogSettings",
+  manageUsers: "MANAGE_USERS",
+  managePermissions: "MANAGE_PERMISSIONS",
+  manageSystemSettings: "MANAGE_SYSTEM_SETTINGS",
+  manageCatalogSettings: "MANAGE_CATALOG_SETTINGS",
 } as const;
 
 export const LIBRARY_PERMISSIONS = {
-  view: "view",
-  manageTitles: "manageTitles",
-  resolveImports: "resolveImports",
-  manageLibrary: "manageLibrary",
-  request: "request",
-  autoApproveRequests: "autoApproveRequests",
+  view: "VIEW",
+  manageTitles: "MANAGE_TITLES",
+  resolveImports: "RESOLVE_IMPORTS",
+  manageLibrary: "MANAGE_LIBRARY",
+  request: "REQUEST",
+  autoApproveRequests: "AUTO_APPROVE_REQUESTS",
 } as const;
+
+/**
+ * Stable DOM-id tokens for permission values. Test hooks keep the historical
+ * camelCase tokens (the map keys) even though wire values are SCREAMING_SNAKE.
+ */
+export const PERMISSION_ID_TOKENS: Record<string, string> = Object.fromEntries(
+  [...Object.entries(APP_PERMISSIONS), ...Object.entries(LIBRARY_PERMISSIONS)].map(
+    ([key, value]) => [value, key],
+  ),
+);
+
+export function permissionIdToken(value: string): string {
+  return PERMISSION_ID_TOKENS[value] ?? value.toLowerCase();
+}
 
 export type AppPermission = (typeof APP_PERMISSIONS)[keyof typeof APP_PERMISSIONS];
 export type LibraryPermission = (typeof LIBRARY_PERMISSIONS)[keyof typeof LIBRARY_PERMISSIONS];
@@ -26,6 +40,99 @@ export type PermissionUser = {
   appPermissions: AppPermission[];
   libraryPermissions: LibraryPermissionGrant[];
 };
+
+type RawLibraryPermissionGrant = {
+  libraryId?: unknown;
+  permissions?: readonly unknown[] | null;
+};
+
+const APP_PERMISSION_VALUES = new Set<string>(Object.values(APP_PERMISSIONS));
+const LIBRARY_PERMISSION_VALUES = new Set<string>(Object.values(LIBRARY_PERMISSIONS));
+
+function normalizePermissionClaim(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toUpperCase();
+  return normalized || null;
+}
+
+function normalizePermissionList<T extends string>(
+  values: readonly unknown[] | null | undefined,
+  knownValues: ReadonlySet<string>,
+): T[] {
+  const permissions = new Set<T>();
+  for (const value of values ?? []) {
+    const normalized = normalizePermissionClaim(value);
+    if (normalized && knownValues.has(normalized)) {
+      permissions.add(normalized as T);
+    }
+  }
+  return Array.from(permissions);
+}
+
+export function normalizeJwtPermissionClaims(
+  appPermissions: readonly unknown[] | null | undefined,
+  libraryPermissions:
+    | ReadonlyArray<RawLibraryPermissionGrant | null>
+    | null
+    | undefined,
+): PermissionUser {
+  const grantsByLibrary = new Map<string, Set<LibraryPermission>>();
+
+  for (const grant of libraryPermissions ?? []) {
+    if (!grant || typeof grant.libraryId !== "string") {
+      continue;
+    }
+
+    const libraryId = grant.libraryId.trim();
+    if (!libraryId) {
+      continue;
+    }
+
+    const permissions = normalizePermissionList<LibraryPermission>(
+      grant.permissions,
+      LIBRARY_PERMISSION_VALUES,
+    );
+    const combined = grantsByLibrary.get(libraryId) ?? new Set<LibraryPermission>();
+    for (const permission of permissions) {
+      combined.add(permission);
+    }
+    grantsByLibrary.set(libraryId, combined);
+  }
+
+  return {
+    appPermissions: normalizePermissionList<AppPermission>(
+      appPermissions,
+      APP_PERMISSION_VALUES,
+    ),
+    libraryPermissions: Array.from(grantsByLibrary, ([libraryId, permissions]) => ({
+      libraryId,
+      permissions: Array.from(permissions),
+    })),
+  };
+}
+
+export function authorizationCacheSignature(
+  user: PermissionUser | null | undefined,
+): string {
+  const appPermissions = Array.from(new Set(user?.appPermissions ?? []))
+    .sort()
+    .join(",");
+  const libraryPermissions = (user?.libraryPermissions ?? [])
+    .map((grant) => {
+      const libraryId = grant.libraryId.trim();
+      const permissions = Array.from(new Set(grant.permissions)).sort().join(",");
+      return `${libraryId}:${permissions}`;
+    })
+    .sort()
+    .join("|");
+  return `app=${appPermissions};libraries=${libraryPermissions}`;
+}
 
 export function hasAppPermission(user: PermissionUser | null | undefined, permission: AppPermission): boolean {
   return user?.appPermissions.includes(permission) === true;

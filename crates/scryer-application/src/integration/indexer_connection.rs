@@ -10,6 +10,7 @@ impl AppUseCase {
         provider_type: &str,
         config_json: Option<&str>,
         indexer_id: Option<&str>,
+        indexer_proxy_config_id_override: Option<Option<&str>>,
     ) -> AppResult<()> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
@@ -79,6 +80,35 @@ impl AppUseCase {
             }
         }
 
+        let indexer_proxy_config_id = match indexer_proxy_config_id_override {
+            Some(Some(id)) => Some(id.to_string()),
+            Some(None) => None,
+            None => persisted_config
+                .as_ref()
+                .and_then(|config| config.indexer_proxy_config_id.clone()),
+        };
+        let indexer_proxy_config = if let Some(indexer_proxy_config_id) =
+            indexer_proxy_config_id.as_deref()
+        {
+            let proxy_config = self
+                .services
+                .integrations
+                .indexer_proxy_configs
+                .get_by_id(indexer_proxy_config_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::Validation("Indexer proxy configuration was not found.".to_string())
+                })?;
+            if !proxy_config.is_enabled {
+                return Err(AppError::Validation(
+                    "Indexer proxy is disabled for this indexer.".to_string(),
+                ));
+            }
+            Some(proxy_config)
+        } else {
+            None
+        };
+
         let temp_config = IndexerConfig {
             id: "test-connection".to_string(),
             name: "Test Connection".to_string(),
@@ -91,6 +121,7 @@ impl AppUseCase {
             enable_interactive_search: true,
             enable_auto_search: true,
             disabled_until: None,
+            indexer_proxy_config_id,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -128,11 +159,13 @@ impl AppUseCase {
             return Ok(());
         }
 
-        let client = provider.client_for_provider(&temp_config).ok_or_else(|| {
-            AppError::Validation(format!(
-                "no indexer provider available for provider type '{provider_type}'"
-            ))
-        })?;
+        let client = provider
+            .client_for_provider_with_proxy(&temp_config, indexer_proxy_config.as_ref())
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "no indexer provider available for provider type '{provider_type}'"
+                ))
+            })?;
         let capabilities = provider.capabilities_for_provider(provider_type);
         let (query, ids, facet) = build_connection_test_search_request(&capabilities);
 
@@ -151,9 +184,11 @@ impl AppUseCase {
                 None,
                 None,
                 vec![],
+                None,
+                tokio_util::sync::CancellationToken::new(),
             )
             .await
-            .map_err(|e| AppError::Repository(format!("indexer connection test failed: {e}")))?;
+            .map_err(map_indexer_connection_test_error)?;
 
         let _ = self
             .refresh_caps_snapshot_json_best_effort(&temp_config, None)
@@ -238,6 +273,7 @@ impl AppUseCase {
             enable_interactive_search: false,
             enable_auto_search: false,
             disabled_until: None,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -288,6 +324,142 @@ fn validate_indexer_connection_result(result: crate::IndexerValidationResult) ->
     Err(AppError::Repository(format!(
         "indexer connection test failed: {message}"
     )))
+}
+
+fn map_indexer_connection_test_error(error: AppError) -> AppError {
+    match error {
+        AppError::Validation(_) => error,
+        error => {
+            let message = error.to_string();
+            if let Some(user_message) = known_newznab_error_message(&message) {
+                AppError::Validation(user_message)
+            } else {
+                AppError::Repository(format!("indexer connection test failed: {message}"))
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NewznabApiError {
+    code: u16,
+    user_message: &'static str,
+}
+
+const KNOWN_NEWZNAB_API_ERRORS: &[NewznabApiError] = &[
+    NewznabApiError {
+        code: 100,
+        user_message: "Invalid API Key",
+    },
+    NewznabApiError {
+        code: 101,
+        user_message: "Account suspended",
+    },
+    NewznabApiError {
+        code: 102,
+        user_message: "Insufficient privileges",
+    },
+    NewznabApiError {
+        code: 103,
+        user_message: "Registration denied",
+    },
+    NewznabApiError {
+        code: 104,
+        user_message: "Registrations are closed",
+    },
+    NewznabApiError {
+        code: 105,
+        user_message: "Invalid registration",
+    },
+    NewznabApiError {
+        code: 106,
+        user_message: "Invalid registration email address",
+    },
+    NewznabApiError {
+        code: 107,
+        user_message: "Registration failed",
+    },
+    NewznabApiError {
+        code: 200,
+        user_message: "Missing parameter",
+    },
+    NewznabApiError {
+        code: 201,
+        user_message: "Incorrect parameter",
+    },
+    NewznabApiError {
+        code: 202,
+        user_message: "No such function",
+    },
+    NewznabApiError {
+        code: 203,
+        user_message: "Function not available",
+    },
+    NewznabApiError {
+        code: 300,
+        user_message: "No such item",
+    },
+    NewznabApiError {
+        code: 500,
+        user_message: "Request limit reached",
+    },
+    NewznabApiError {
+        code: 501,
+        user_message: "Download limit reached",
+    },
+    NewznabApiError {
+        code: 900,
+        user_message: "Unknown Newznab error",
+    },
+    NewznabApiError {
+        code: 910,
+        user_message: "Newznab API disabled",
+    },
+];
+
+fn known_newznab_error_message(message: &str) -> Option<String> {
+    let code = extract_newznab_error_code(message)?;
+    let known_error = KNOWN_NEWZNAB_API_ERRORS
+        .iter()
+        .find(|error| error.code == code)?;
+    let provider_message = extract_newznab_provider_message(message, code);
+
+    Some(match (known_error.code, provider_message) {
+        (100, Some(provider_message)) if mentions_api_key(&provider_message) => provider_message,
+        (_, Some(provider_message)) if !provider_message.is_empty() => provider_message,
+        _ => known_error.user_message.to_string(),
+    })
+}
+
+fn extract_newznab_error_code(message: &str) -> Option<u16> {
+    let lower = message.to_ascii_lowercase();
+    let marker = lower.find("newznab")?;
+    let after_marker = &message[marker..];
+    let lower_after_marker = &lower[marker..];
+    let error_marker = lower_after_marker.find("error")?;
+    let after_error = &after_marker[error_marker + "error".len()..];
+
+    after_error
+        .split(|c: char| !c.is_ascii_digit())
+        .find(|part| !part.is_empty())
+        .and_then(|part| part.parse::<u16>().ok())
+}
+
+fn extract_newznab_provider_message(message: &str, code: u16) -> Option<String> {
+    let code_text = code.to_string();
+    let code_index = message.find(&code_text)?;
+    message[code_index + code_text.len()..]
+        .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '-' | '.' | ')'))
+        .split(':')
+        .next()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn mentions_api_key(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("api key") || normalized.contains("apikey")
 }
 
 fn validate_test_flight_url(raw: &str) -> AppResult<url::Url> {
@@ -484,6 +656,29 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::Mutex;
 
+    #[test]
+    fn known_newznab_errors_use_catalog_messages() {
+        assert_eq!(
+            known_newznab_error_message(
+                "plugin scryer_indexer_search() failed: Newznab API error 101: Account suspended",
+            )
+            .as_deref(),
+            Some("Account suspended")
+        );
+        assert_eq!(
+            known_newznab_error_message("Newznab API error 203").as_deref(),
+            Some("Function not available")
+        );
+    }
+
+    #[test]
+    fn unknown_newznab_errors_are_not_user_facing() {
+        assert_eq!(
+            known_newznab_error_message("Newznab API error 777: Provider-specific oddity"),
+            None
+        );
+    }
+
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RecordedSearchCall {
         query: String,
@@ -493,14 +688,19 @@ mod tests {
 
     struct RecordingIndexerClient {
         calls: Arc<std::sync::Mutex<Vec<RecordedSearchCall>>>,
-        fail_search: bool,
+        search_error: Option<String>,
     }
 
     impl RecordingIndexerClient {
         fn new(fail_search: bool) -> Self {
+            let search_error = fail_search.then(|| "forced failure".to_string());
+            Self::with_search_error(search_error)
+        }
+
+        fn with_search_error(search_error: Option<String>) -> Self {
             Self {
                 calls: Arc::new(std::sync::Mutex::new(Vec::new())),
-                fail_search,
+                search_error,
             }
         }
     }
@@ -521,17 +721,20 @@ mod tests {
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
             _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            _learning_context: Option<crate::IndexerSearchLearningContext>,
+            _cancel_token: tokio_util::sync::CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             self.calls
                 .lock()
                 .unwrap()
                 .push(RecordedSearchCall { query, ids, facet });
 
-            if self.fail_search {
-                return Err(AppError::Repository("forced failure".into()));
+            if let Some(error) = &self.search_error {
+                return Err(AppError::Repository(error.clone()));
             }
 
             Ok(IndexerSearchResponse {
+                indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,
                 api_max: None,
@@ -1165,6 +1368,7 @@ mod tests {
                     is_enabled: true,
                     enable_interactive_search: true,
                     enable_auto_search: true,
+                    indexer_proxy_config_id: None,
                     config_json: Some(
                         r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#.to_string(),
                     ),
@@ -1206,6 +1410,7 @@ mod tests {
                 is_enabled: true,
                 enable_interactive_search: true,
                 enable_auto_search: true,
+                indexer_proxy_config_id: None,
                 config_json: Some(
                     r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#.to_string(),
                 ),
@@ -1250,6 +1455,7 @@ mod tests {
                     is_enabled: true,
                     enable_interactive_search: true,
                     enable_auto_search: true,
+                    indexer_proxy_config_id: None,
                     config_json: Some(
                         r#"{"base_url":"https://api.nzbgeek.info/","api_key":"bad-key"}"#
                             .to_string(),
@@ -1281,6 +1487,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -1325,6 +1532,7 @@ mod tests {
                     is_enabled: None,
                     enable_interactive_search: None,
                     enable_auto_search: None,
+                    indexer_proxy_config_id: None,
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
@@ -1368,6 +1576,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -1412,6 +1621,7 @@ mod tests {
                     is_enabled: None,
                     enable_interactive_search: None,
                     enable_auto_search: None,
+                    indexer_proxy_config_id: None,
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
@@ -1442,6 +1652,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -1484,6 +1695,7 @@ mod tests {
                 is_enabled: None,
                 enable_interactive_search: None,
                 enable_auto_search: None,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
@@ -1515,6 +1727,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -1548,7 +1761,7 @@ mod tests {
         );
         let mut receiver = app.runtime.events.indexers_changed_broadcast.subscribe();
 
-        app.test_indexer_connection(&test_admin(), "nzbgeek", None, Some("cfg-1"))
+        app.test_indexer_connection(&test_admin(), "nzbgeek", None, Some("cfg-1"), None)
             .await
             .expect("persisted config should be reused");
 
@@ -1578,6 +1791,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -1615,6 +1829,7 @@ mod tests {
                 "nzbgeek",
                 Some(r#"{"base_url":"https://mirror.nzbgeek.info","api_key":""}"#),
                 Some("cfg-1"),
+                None,
             )
             .await
             .expect_err("changed origin should require an explicit API key");
@@ -1646,6 +1861,7 @@ mod tests {
                     is_enabled: true,
                     enable_interactive_search: true,
                     enable_auto_search: true,
+                    indexer_proxy_config_id: None,
                     config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 },
             )
@@ -1685,6 +1901,7 @@ mod tests {
             is_enabled: false,
             enable_interactive_search: false,
             enable_auto_search: false,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -1717,6 +1934,7 @@ mod tests {
                     is_enabled: Some(true),
                     enable_interactive_search: None,
                     enable_auto_search: None,
+                    indexer_proxy_config_id: None,
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
@@ -1762,6 +1980,7 @@ mod tests {
             "torrent_rss",
             Some(r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1801,6 +2020,7 @@ mod tests {
             "newznab",
             Some(r#"{"base_url":"http://192.168.1.10:9696"}"#),
             None,
+            None,
         )
         .await
         .expect("operator LAN indexer URL should test successfully");
@@ -1834,6 +2054,7 @@ mod tests {
             "newznab",
             Some(r#"{"base_url":"  https://api.nzbgeek.info/  \n"}"#),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1866,6 +2087,7 @@ mod tests {
             &test_admin(),
             "newznab",
             Some(r#"{"base_url":"https://api.nzbgeek.info/"}"#),
+            None,
             None,
         )
         .await
@@ -1908,6 +2130,7 @@ mod tests {
             "id_only",
             Some(r#"{"base_url":"https://example.invalid"}"#),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1947,6 +2170,7 @@ mod tests {
                 "newznab",
                 Some(r#"{"base_url":"https://api.nzbgeek.info/"}"#),
                 None,
+                None,
             )
             .await
             .unwrap_err();
@@ -1955,6 +2179,42 @@ mod tests {
             error.to_string(),
             "repository: indexer connection test failed: repository: forced failure"
         );
+    }
+
+    #[tokio::test]
+    async fn test_indexer_connection_surfaces_invalid_api_key_search_failures() {
+        let client = Arc::new(RecordingIndexerClient::with_search_error(Some(
+            "plugin scryer_indexer_search() failed: Newznab API key error 100: Invalid API Key"
+                .to_string(),
+        )));
+        let provider = Arc::new(RecordingPluginProvider::new(
+            "newznab",
+            vec![string_field(
+                "base_url",
+                "Base URL",
+                Some(scryer_domain::ConfigFieldRole::ConnectionUrl),
+            )],
+            searchable_capabilities(),
+            client,
+        ));
+        let app = test_app(
+            Arc::new(RecordingIndexerConfigRepo::new()),
+            Some(provider),
+            Arc::new(NullSettingsRepository),
+        );
+
+        let error = app
+            .test_indexer_connection(
+                &test_admin(),
+                "newznab",
+                Some(r#"{"base_url":"https://api.nzbgeek.info/"}"#),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "validation: Invalid API Key");
     }
 
     #[tokio::test]
@@ -1970,6 +2230,7 @@ mod tests {
             &test_admin(),
             "torrent_rss",
             Some(r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#),
+            None,
             None,
         )
         .await
@@ -2059,6 +2320,7 @@ mod tests {
                     is_enabled: true,
                     enable_interactive_search: true,
                     enable_auto_search: true,
+                    indexer_proxy_config_id: None,
                     config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 },
             )
@@ -2103,6 +2365,7 @@ mod tests {
                     is_enabled: true,
                     enable_interactive_search: true,
                     enable_auto_search: true,
+                    indexer_proxy_config_id: None,
                     config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 },
             )
@@ -2138,6 +2401,7 @@ mod tests {
                     is_enabled: true,
                     enable_interactive_search: true,
                     enable_auto_search: true,
+                    indexer_proxy_config_id: None,
                     config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 },
             )
@@ -2183,6 +2447,7 @@ mod tests {
                 is_enabled: true,
                 enable_interactive_search: false,
                 enable_auto_search: false,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
@@ -2208,6 +2473,7 @@ mod tests {
                 is_enabled: true,
                 enable_interactive_search: true,
                 enable_auto_search: true,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: Some("parent".to_string()),
                 managed_child_key: Some("child".to_string()),
                 managed_metadata_json: None,
@@ -2265,6 +2531,7 @@ mod tests {
                 is_enabled: false,
                 enable_interactive_search: false,
                 enable_auto_search: false,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
@@ -2290,6 +2557,7 @@ mod tests {
                 is_enabled: false,
                 enable_interactive_search: false,
                 enable_auto_search: false,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: Some("parent".to_string()),
                 managed_child_key: Some("keep".to_string()),
                 managed_metadata_json: None,
@@ -2362,6 +2630,7 @@ mod tests {
                 is_enabled: true,
                 enable_interactive_search: false,
                 enable_auto_search: false,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
@@ -2420,6 +2689,7 @@ mod tests {
                 is_enabled: true,
                 enable_interactive_search: false,
                 enable_auto_search: false,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
@@ -2447,6 +2717,7 @@ mod tests {
                 is_enabled: false,
                 enable_interactive_search: false,
                 enable_auto_search: false,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
@@ -2502,6 +2773,7 @@ mod tests {
                 is_enabled: true,
                 enable_interactive_search: false,
                 enable_auto_search: false,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
@@ -2527,6 +2799,7 @@ mod tests {
                 is_enabled: true,
                 enable_interactive_search: false,
                 enable_auto_search: false,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
@@ -2583,6 +2856,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: false,
             enable_auto_search: false,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -2656,6 +2930,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -2678,6 +2953,7 @@ mod tests {
             is_enabled: false,
             enable_interactive_search: false,
             enable_auto_search: false,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: Some(parent.id.clone()),
             managed_child_key: Some("keep".to_string()),
             managed_metadata_json: Some(
@@ -2711,6 +2987,7 @@ mod tests {
             is_enabled: true,
             enable_interactive_search: true,
             enable_auto_search: true,
+            indexer_proxy_config_id: None,
             managed_parent_config_id: Some(parent.id.clone()),
             managed_child_key: Some("delete".to_string()),
             managed_metadata_json: None,
@@ -2905,6 +3182,7 @@ mod tests {
                 is_enabled: true,
                 enable_interactive_search: false,
                 enable_auto_search: false,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: None,
                 managed_child_key: None,
                 managed_metadata_json: None,
@@ -2965,6 +3243,7 @@ mod tests {
                 is_enabled: true,
                 enable_interactive_search: true,
                 enable_auto_search: true,
+                indexer_proxy_config_id: None,
                 managed_parent_config_id: Some("parent".to_string()),
                 managed_child_key: Some("child".to_string()),
                 managed_metadata_json: None,

@@ -1,4 +1,4 @@
-use crate::{FacetRegistry, WantedItem};
+use crate::{AcquisitionScopeState, FacetRegistry};
 use scryer_domain::{Episode, EpisodeType, ExternalId, Title};
 
 pub(crate) struct SearchQueryResult {
@@ -15,7 +15,7 @@ pub(crate) struct SearchQueryResult {
 
 pub(crate) fn build_search_queries(
     title: &Title,
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
     episode: Option<&Episode>,
     facet_registry: &FacetRegistry,
 ) -> SearchQueryResult {

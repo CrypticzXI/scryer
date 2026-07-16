@@ -45,12 +45,34 @@ export function titleOverviewRowId(titleId: string): string {
   return selectorId("title-overview-row", titleId);
 }
 
+export function wantedItemRowId(wantedItemId: string): string {
+  return selectorId("wanted-item-row", wantedItemId);
+}
+
+export function wantedItemSearchNowId(wantedItemId: string): string {
+  return selectorId("wanted-item-search-now", wantedItemId);
+}
+
 export function titleOverviewSearchButtonId(titleId: string): string {
   return selectorId("title-overview-search", titleId);
 }
 
+export function titleOverviewInteractiveSearchButtonId(
+  titleId: string,
+): string {
+  return selectorId("title-overview-interactive-search", titleId);
+}
+
+export function titleOverviewInteractiveSearchPanelId(titleId: string): string {
+  return selectorId("title-overview-interactive-search-panel", titleId);
+}
+
 export function titleOverviewOpenButtonId(titleId: string): string {
   return selectorId("title-overview-open", titleId);
+}
+
+export function titleOverviewDeleteButtonId(titleId: string): string {
+  return selectorId("title-overview-delete", titleId);
 }
 
 export function titleOverviewViewModeId(view: string, mode: string): string {
@@ -75,6 +97,17 @@ function normalizedEpisodeSelectorKey(
   }
 
   return selectorId(facet, "episode");
+}
+
+function normalizedSeasonSelectorKey(
+  seasonNumber: string | number | null | undefined,
+): string {
+  const season = Number.parseInt(String(seasonNumber ?? "").trim(), 10);
+  if (Number.isFinite(season) && season >= 0) {
+    return `s${String(season).padStart(2, "0")}`;
+  }
+
+  return selectorId("season", seasonNumber ?? "");
 }
 
 export function seriesOverviewEpisodeRowId(
@@ -127,6 +160,15 @@ export function seriesOverviewSeriesMovieAutoSearchId(seriesMovieLinkId: string)
 
 export function seriesOverviewSeasonMonitorId(collectionId: string): string {
   return selectorId("series-overview-season-monitor", collectionId);
+}
+
+export function seriesOverviewSeasonToggleId(
+  seasonNumber: string | number | null | undefined,
+): string {
+  return selectorId(
+    "series-overview-season-toggle",
+    normalizedSeasonSelectorKey(seasonNumber),
+  );
 }
 
 export function seriesOverviewSeasonSectionId(collectionId: string): string {

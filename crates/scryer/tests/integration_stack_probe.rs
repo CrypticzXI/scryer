@@ -349,7 +349,6 @@ fn build_iron_vale_metadata_fixture() -> String {
             "runtime_minutes": 90,
             "sort_title": "Iron Vale Movie 1",
             "imdb_id": "tt4200001",
-            "genres": ["Animation", "Sports"],
             "studio": "Skyline Animation",
             "digital_release_date": "2015-11-01",
             "association_confidence": "high",
@@ -375,7 +374,6 @@ fn build_iron_vale_metadata_fixture() -> String {
             "runtime_minutes": 92,
             "sort_title": "Iron Vale Movie 2",
             "imdb_id": "tt4200002",
-            "genres": ["Animation", "Sports"],
             "studio": "Skyline Animation",
             "digital_release_date": "2016-11-01",
             "association_confidence": "high",
@@ -401,7 +399,6 @@ fn build_iron_vale_metadata_fixture() -> String {
             "runtime_minutes": 94,
             "sort_title": "Iron Vale Movie 3",
             "imdb_id": "tt4200003",
-            "genres": ["Animation", "Sports"],
             "studio": "Skyline Animation",
             "digital_release_date": "2017-11-01",
             "association_confidence": "high",
@@ -466,8 +463,9 @@ fn build_iron_vale_metadata_fixture() -> String {
 
     json!({
         "data": {
-            "s0": {
-                "series": {
+            "metadataBulk": {
+                "movies": [],
+                "series": [{
                     "tvdb_id": IRON_VALE_TVDB_ID,
                     "name": "Iron Vale!!",
                     "sort_name": "Iron Vale!!",
@@ -480,7 +478,20 @@ fn build_iron_vale_metadata_fixture() -> String {
                     "runtime_minutes": 24,
                     "poster_url": "https://example.invalid/iron-vale-poster.jpg",
                     "country": "jpn",
-                    "genres": ["Animation", "Sports"],
+                    "canonical_tags": [
+                        {
+                            "key": "canonical:genre:animation",
+                            "category": "genre",
+                            "name": "Animation",
+                            "confidence": 1.0
+                        },
+                        {
+                            "key": "canonical:genre:sports",
+                            "category": "genre",
+                            "name": "Sports",
+                            "confidence": 1.0
+                        }
+                    ],
                     "aliases": ["Ironvale"],
                     "tagged_aliases": [],
                     "artworks": [],
@@ -488,7 +499,7 @@ fn build_iron_vale_metadata_fixture() -> String {
                     "episodes": episodes,
                     "anime_mappings": anime_mappings,
                     "anime_movies": anime_movies
-                }
+                }]
             }
         }
     })

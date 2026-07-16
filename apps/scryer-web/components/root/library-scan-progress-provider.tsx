@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useNavigate } from "react-router-dom";
 
 import { LibraryScanToast } from "@/components/root/library-scan-toast";
 import { Toaster, toast } from "@/components/ui/sonner";
@@ -6,31 +7,51 @@ import { LibraryScanProgressContext } from "@/lib/context/library-scan-progress-
 import { useTranslate } from "@/lib/context/translate-context";
 import { useLibraryScanEventStream } from "@/lib/hooks/use-library-scan-event-stream";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
-import type { LibraryScanStatus } from "@/lib/types";
+import type { Facet, LibraryScanStatus } from "@/lib/types";
+import type { ViewId } from "@/components/root/types";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
+import { facetById } from "@/lib/facets/registry";
+import { buildViewPath } from "@/lib/utils/routing";
 
-const TERMINAL_TOAST_DURATION_MS = 6_000;
-const MOBILE_TOAST_DURATION_MS = 3_000;
+const AUTO_DISMISS_DESKTOP_MS = 5_000;
+const AUTO_DISMISS_MOBILE_MS = 3_000;
+const MOBILE_HIDE_RUNNING_MS = 3_000;
 const TOAST_EXIT_GRACE_MS = 200;
 const LIBRARY_SCAN_TOASTER_ID = "library-scans";
 const MAX_VISIBLE_LIBRARY_SCAN_TOASTS = 3;
 const MAX_VISIBLE_GENERAL_TOASTS = 3;
 
+// Strip the default sonner container chrome so the toast's own glass card is the
+// only visible surface, and widen the stack to the design's 392px card.
+const LIBRARY_SCAN_TOASTER_STYLE = { "--width": "392px" } as React.CSSProperties;
+const LIBRARY_SCAN_TOAST_OPTIONS = {
+  className: "",
+  classNames: { toast: "!bg-transparent !border-0 !p-0 !shadow-none" },
+};
+
 function isTerminal(status: LibraryScanStatus): boolean {
   return (
-    status === "completed" ||
-    status === "canceled" ||
-    status === "warning" ||
-    status === "failed"
+    status === "COMPLETED" ||
+    status === "CANCELED" ||
+    status === "WARNING" ||
+    status === "FAILED"
   );
 }
 
 function LiveLibraryScanToast({
   sessionId,
+  autoDismissMs,
   onRunInBackground,
+  onDismiss,
+  onViewTitles,
+  onReviewUnmatched,
 }: {
   sessionId: string;
+  autoDismissMs: number;
   onRunInBackground?: () => void;
+  onDismiss?: () => void;
+  onViewTitles?: () => void;
+  onReviewUnmatched?: () => void;
 }) {
   const t = useTranslate();
   const value = React.useContext(LibraryScanProgressContext);
@@ -47,7 +68,11 @@ function LiveLibraryScanToast({
     <LibraryScanToast
       session={session}
       t={t}
+      autoDismissMs={autoDismissMs}
       onRunInBackground={onRunInBackground}
+      onDismiss={onDismiss}
+      onViewTitles={onViewTitles}
+      onReviewUnmatched={onReviewUnmatched}
     />
   );
 }
@@ -60,9 +85,7 @@ export function LibraryScanProgressProvider({
   const { sessions, getActiveSession, refreshSessions, dismissSession } =
     useLibraryScanEventStream();
   const isMobile = useIsMobile();
-  const dismissTimersRef = React.useRef<
-    Record<string, ReturnType<typeof setTimeout>>
-  >({});
+  const navigate = useNavigate();
   const mobileDismissTimersRef = React.useRef<
     Record<string, ReturnType<typeof setTimeout>>
   >({});
@@ -70,6 +93,14 @@ export function LibraryScanProgressProvider({
   const backgroundedSessionIdsRef = React.useRef<Set<string>>(new Set());
   const refreshedPendingImportSessionsRef = React.useRef<Set<string>>(new Set());
 
+  const getSessionById = React.useCallback(
+    (sessionId: string) =>
+      sessions.find((session) => session.sessionId === sessionId) ?? null,
+    [sessions],
+  );
+
+  // Backgrounding ("Run in background") only hides the toast — the scan keeps
+  // running and the session stays in state.
   const hideSessionToast = React.useCallback((sessionId: string) => {
     backgroundedSessionIdsRef.current.add(sessionId);
     const mobileTimer = mobileDismissTimersRef.current[sessionId];
@@ -80,10 +111,40 @@ export function LibraryScanProgressProvider({
     toast.dismiss(sessionId);
   }, []);
 
-  const getSessionById = React.useCallback(
-    (sessionId: string) =>
-      sessions.find((session) => session.sessionId === sessionId) ?? null,
-    [sessions],
+  // Dismissing a terminal toast removes it and drops the session from state.
+  const dismissSessionToast = React.useCallback(
+    (sessionId: string) => {
+      toast.dismiss(sessionId);
+      window.setTimeout(() => {
+        dismissSession(sessionId);
+        shownToastIdsRef.current.delete(sessionId);
+        backgroundedSessionIdsRef.current.delete(sessionId);
+        refreshedPendingImportSessionsRef.current.delete(sessionId);
+        const mobileTimer = mobileDismissTimersRef.current[sessionId];
+        if (mobileTimer) {
+          clearTimeout(mobileTimer);
+          delete mobileDismissTimersRef.current[sessionId];
+        }
+      }, TOAST_EXIT_GRACE_MS);
+    },
+    [dismissSession],
+  );
+
+  const dismissFacetReviewToasts = React.useCallback(
+    (facet: Facet) => {
+      for (const session of sessions) {
+        if (
+          session.facet !== facet ||
+          (session.summary?.unmatched ?? 0) === 0 ||
+          !shownToastIdsRef.current.has(session.sessionId) ||
+          backgroundedSessionIdsRef.current.has(session.sessionId)
+        ) {
+          continue;
+        }
+        dismissSessionToast(session.sessionId);
+      }
+    },
+    [dismissSessionToast, sessions],
   );
 
   React.useEffect(() => {
@@ -93,35 +154,25 @@ export function LibraryScanProgressProvider({
           dispatchNavigationBadgesRefresh();
           refreshedPendingImportSessionsRef.current.add(session.sessionId);
         }
-        const existingTimer = dismissTimersRef.current[session.sessionId];
-        if (!existingTimer) {
-          const dismissDelay = isMobile
-            ? MOBILE_TOAST_DURATION_MS
-            : TERMINAL_TOAST_DURATION_MS;
-          dismissTimersRef.current[session.sessionId] = setTimeout(() => {
-            toast.dismiss(session.sessionId);
-            dismissTimersRef.current[session.sessionId] = setTimeout(() => {
-              dismissSession(session.sessionId);
-              delete dismissTimersRef.current[session.sessionId];
-              delete mobileDismissTimersRef.current[session.sessionId];
-              shownToastIdsRef.current.delete(session.sessionId);
-              backgroundedSessionIdsRef.current.delete(session.sessionId);
-            }, TOAST_EXIT_GRACE_MS);
-          }, dismissDelay);
+        // Terminal toasts own their own lifecycle: success/canceled
+        // auto-dismiss (with countdown) inside the toast; issues/failed wait
+        // for the user. Clear any leftover running-scan mobile timer.
+        const mobileTimer = mobileDismissTimersRef.current[session.sessionId];
+        if (mobileTimer) {
+          clearTimeout(mobileTimer);
+          delete mobileDismissTimersRef.current[session.sessionId];
         }
       } else {
-        const existingTimer = dismissTimersRef.current[session.sessionId];
-        if (existingTimer) {
-          clearTimeout(existingTimer);
-          delete dismissTimersRef.current[session.sessionId];
-        }
         refreshedPendingImportSessionsRef.current.delete(session.sessionId);
 
-        if (isMobile && !backgroundedSessionIdsRef.current.has(session.sessionId)) {
+        if (
+          isMobile &&
+          !backgroundedSessionIdsRef.current.has(session.sessionId)
+        ) {
           if (!mobileDismissTimersRef.current[session.sessionId]) {
             mobileDismissTimersRef.current[session.sessionId] = setTimeout(() => {
               hideSessionToast(session.sessionId);
-            }, MOBILE_TOAST_DURATION_MS);
+            }, MOBILE_HIDE_RUNNING_MS);
           }
         } else if (!isMobile) {
           const mobileTimer = mobileDismissTimersRef.current[session.sessionId];
@@ -133,30 +184,54 @@ export function LibraryScanProgressProvider({
       }
 
       if (!shownToastIdsRef.current.has(session.sessionId)) {
+        const sessionId = session.sessionId;
+        const viewId = facetById(session.facet)?.viewId as ViewId | undefined;
         toast.custom(
           () => (
             <LiveLibraryScanToast
-              sessionId={session.sessionId}
-              onRunInBackground={() => hideSessionToast(session.sessionId)}
+              sessionId={sessionId}
+              autoDismissMs={
+                isMobile ? AUTO_DISMISS_MOBILE_MS : AUTO_DISMISS_DESKTOP_MS
+              }
+              onRunInBackground={() => hideSessionToast(sessionId)}
+              onDismiss={() => dismissSessionToast(sessionId)}
+              onViewTitles={
+                viewId
+                  ? () => {
+                      navigate(buildViewPath(viewId));
+                      dismissSessionToast(sessionId);
+                    }
+                  : undefined
+              }
+              onReviewUnmatched={
+                viewId
+                  ? () => {
+                      navigate(buildViewPath(viewId, undefined, "import"));
+                      dismissSessionToast(sessionId);
+                    }
+                  : undefined
+              }
             />
           ),
           {
-            id: session.sessionId,
+            id: sessionId,
             toasterId: LIBRARY_SCAN_TOASTER_ID,
-            className: "rounded-lg overflow-hidden p-0",
             duration: Infinity,
           },
         );
-        shownToastIdsRef.current.add(session.sessionId);
+        shownToastIdsRef.current.add(sessionId);
       }
     }
-  }, [dismissSession, hideSessionToast, isMobile, sessions]);
+  }, [
+    dismissSessionToast,
+    hideSessionToast,
+    isMobile,
+    navigate,
+    sessions,
+  ]);
 
   React.useEffect(
     () => () => {
-      for (const timer of Object.values(dismissTimersRef.current)) {
-        clearTimeout(timer);
-      }
       for (const timer of Object.values(mobileDismissTimersRef.current)) {
         clearTimeout(timer);
       }
@@ -172,9 +247,16 @@ export function LibraryScanProgressProvider({
       sessions: sessions.filter((session) => !isTerminal(session.status)),
       getActiveSession,
       getSessionById,
+      dismissFacetReviewToasts,
       refreshSessions,
     }),
-    [getActiveSession, getSessionById, refreshSessions, sessions],
+    [
+      dismissFacetReviewToasts,
+      getActiveSession,
+      getSessionById,
+      refreshSessions,
+      sessions,
+    ],
   );
 
   return (
@@ -184,12 +266,15 @@ export function LibraryScanProgressProvider({
         id={LIBRARY_SCAN_TOASTER_ID}
         position="top-right"
         duration={10000}
-        expand
+        expand={false}
         visibleToasts={MAX_VISIBLE_LIBRARY_SCAN_TOASTS}
+        style={LIBRARY_SCAN_TOASTER_STYLE}
+        toastOptions={LIBRARY_SCAN_TOAST_OPTIONS}
       />
       <Toaster
         position="bottom-right"
         duration={10000}
+        expand={false}
         visibleToasts={MAX_VISIBLE_GENERAL_TOASTS}
       />
     </LibraryScanProgressContext.Provider>

@@ -33,12 +33,22 @@ impl AppUseCase {
             return Ok(Vec::new());
         }
 
+        let library_by_title = self
+            .services
+            .catalog
+            .titles
+            .get_by_ids(title_ids)
+            .await?
+            .into_iter()
+            .map(|title| (title.id, title.library_id))
+            .collect::<HashMap<_, _>>();
+
         let mut visible = Vec::with_capacity(title_ids.len());
         for title_id in title_ids {
-            if let Some(title) = self.services.catalog.titles.get_by_id(title_id).await?
-                && allowed_library_ids.contains(&title.library_id)
+            if let Some(library_id) = library_by_title.get(title_id)
+                && allowed_library_ids.contains(library_id)
             {
-                visible.push(title.id);
+                visible.push(title_id.clone());
             }
         }
         Ok(visible)

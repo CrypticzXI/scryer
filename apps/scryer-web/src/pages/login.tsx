@@ -66,9 +66,36 @@ function graphQlErrorCode(error: unknown): string | null {
   return null;
 }
 
-function primaryLoginFailureMessage(t: (key: string) => string): string {
+function primaryLoginFailureMessage(
+  t: (key: string) => string,
+  error?: unknown,
+): string {
+  if (error !== undefined && graphQlErrorCode(error) === "RATE_LIMITED") {
+    return t("auth.signInRateLimited");
+  }
   return t("auth.signInFailedGeneric");
 }
+
+const AUTH_PAGE_CLASS =
+  "flex min-h-screen items-center justify-center bg-fixed p-4 text-[var(--scry-body)] [background-image:var(--scry-shell-bg)] sm:p-6";
+const AUTH_PANEL_CLASS =
+  "w-full max-w-sm space-y-5 rounded-[12px] border border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] p-7 shadow-[0_22px_70px_rgba(2,6,23,0.26)] max-sm:p-5";
+const AUTH_MFA_PANEL_CLASS =
+  "w-full max-w-md space-y-5 rounded-[12px] border border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] p-7 shadow-[0_22px_70px_rgba(2,6,23,0.26)] max-sm:p-5";
+const AUTH_HEADING_CLASS =
+  "text-center font-[var(--font-space-grotesk)] text-2xl font-semibold tracking-normal text-[var(--scry-ink)]";
+const AUTH_MUTED_TEXT_CLASS = "text-sm leading-6 text-[var(--scry-muted)]";
+const AUTH_LABEL_CLASS = "block text-sm font-medium text-[var(--scry-muted)]";
+const AUTH_INPUT_CLASS =
+  "h-10 rounded-[9px] border-[var(--scry-border3)] bg-[var(--scry-inset)] text-[var(--scry-ink2)] placeholder:text-[var(--scry-muted3)] focus-visible:border-[var(--scry-accent-ring)] focus-visible:ring-[rgba(var(--scry-accent-rgb),0.25)]";
+const AUTH_SELECT_CLASS =
+  "h-10 w-full rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 text-sm text-[var(--scry-ink2)] outline-none focus:border-[var(--scry-accent-ring)] focus:ring-2 focus:ring-[rgba(var(--scry-accent-rgb),0.25)]";
+const AUTH_PRIMARY_BUTTON_CLASS =
+  "flex h-10 w-full items-center justify-center gap-2 rounded-[9px] bg-primary px-4 text-sm font-semibold text-primary-foreground shadow-none transition-colors hover:bg-primary/90 disabled:opacity-50";
+const AUTH_SECONDARY_BUTTON_CLASS =
+  "flex h-10 w-full items-center justify-center gap-2 rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] px-4 text-sm font-semibold text-[var(--scry-ink2)] shadow-none transition-colors hover:bg-[var(--scry-hover)] disabled:opacity-50";
+const AUTH_ERROR_CLASS =
+  "rounded-[9px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] px-3 py-2 text-sm leading-6 text-[var(--scry-danger-text)]";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -110,16 +137,16 @@ export default function LoginPage() {
   const [plexSubmitting, setPlexSubmitting] = useState(false);
   const redirectTarget = resolveRedirectTarget(searchParams.get("redirect"));
   const jellyfinConnections =
-    externalAuthSettings?.loginProviders.includes("jellyfin")
+    externalAuthSettings?.loginProviders.includes("JELLYFIN")
       ? externalAuthSettings.connections.filter(
-          (connection) => connection.provider === "jellyfin" && connection.loginEnabled,
+          (connection) => connection.provider === "JELLYFIN" && connection.loginEnabled,
         )
       : [];
   const plexConnections =
-    isVisibleExternalAccountProvider("plex") &&
-    externalAuthSettings?.loginProviders.includes("plex")
+    isVisibleExternalAccountProvider("PLEX") &&
+    externalAuthSettings?.loginProviders.includes("PLEX")
       ? externalAuthSettings.connections.filter(
-          (connection) => connection.provider === "plex" && connection.loginEnabled,
+          (connection) => connection.provider === "PLEX" && connection.loginEnabled,
         )
       : [];
   const plexLoginAvailable = plexConnections.length > 0;
@@ -189,7 +216,7 @@ export default function LoginPage() {
         setExternalAuthSettings(settings);
         const firstJellyfinConnectionId =
           settings?.connections.find(
-            (connection) => connection.provider === "jellyfin" && connection.loginEnabled,
+            (connection) => connection.provider === "JELLYFIN" && connection.loginEnabled,
           )?.id ??
           "";
         if (firstJellyfinConnectionId) {
@@ -197,10 +224,10 @@ export default function LoginPage() {
             current || firstJellyfinConnectionId,
           );
         }
-        if (isVisibleExternalAccountProvider("plex")) {
+        if (isVisibleExternalAccountProvider("PLEX")) {
           const firstPlexConnectionId =
             settings?.connections.find(
-              (connection) => connection.provider === "plex" && connection.loginEnabled,
+              (connection) => connection.provider === "PLEX" && connection.loginEnabled,
             )?.id ??
             "";
           if (firstPlexConnectionId) {
@@ -232,12 +259,12 @@ export default function LoginPage() {
           } else if (err.code === "cancelled") {
             setError(t("auth.passkeyCancelled"));
           } else {
-            setError(primaryLoginFailureMessage(t));
+            setError(primaryLoginFailureMessage(t, err));
           }
           return;
         }
 
-        setError(primaryLoginFailureMessage(t));
+        setError(primaryLoginFailureMessage(t, err));
       } finally {
         setPasskeySubmitting(false);
       }
@@ -289,7 +316,7 @@ export default function LoginPage() {
           setLocalTotpCode("");
           setError(null);
         } else {
-          setError(primaryLoginFailureMessage(t));
+          setError(primaryLoginFailureMessage(t, err));
         }
       } finally {
         setSubmitting(false);
@@ -444,8 +471,8 @@ export default function LoginPage() {
         }
         adoptSession(data.loginWithPlex.token, data.loginWithPlex.user ?? null);
         navigate(redirectTarget, { replace: true });
-      } catch {
-        setError(primaryLoginFailureMessage(t));
+      } catch (err) {
+        setError(primaryLoginFailureMessage(t, err));
       } finally {
         setPlexSubmitting(false);
       }
@@ -459,36 +486,33 @@ export default function LoginPage() {
 
   if (authLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-card-foreground">
-        <Loader2 className="h-6 w-6 animate-spin text-emerald-700 dark:text-emerald-300" />
+      <div className={AUTH_PAGE_CLASS}>
+        <Loader2 className="h-6 w-6 animate-spin text-[var(--scry-accent-ring)]" />
       </div>
     );
   }
 
   if (jellyfinMfaSetupActive) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background p-4 text-foreground">
-        <div className="w-full max-w-md space-y-5 rounded-lg border border-border bg-card/70 p-8">
+      <div className={AUTH_PAGE_CLASS}>
+        <div className={AUTH_MFA_PANEL_CLASS}>
           <div className="space-y-2 text-center">
-            <h1 className="text-xl font-semibold tracking-tight">{t("auth.mfaSetupTitle")}</h1>
-            <p className="text-sm text-muted-foreground">{t("auth.mfaSetupDescription")}</p>
+            <h1 className={AUTH_HEADING_CLASS}>{t("auth.mfaSetupTitle")}</h1>
+            <p className={AUTH_MUTED_TEXT_CLASS}>{t("auth.mfaSetupDescription")}</p>
           </div>
 
           {error ? (
-            <div
-              id="login-error"
-              className="rounded-md bg-red-900/40 px-3 py-2 text-sm text-red-300"
-            >
+            <div id="login-error" className={AUTH_ERROR_CLASS}>
               {error}
             </div>
           ) : null}
 
           {jellyfinMfaRecoveryCodes.length > 0 ? (
             <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
+              <p className={AUTH_MUTED_TEXT_CLASS}>
                 {t("auth.mfaRecoveryCodesDescription")}
               </p>
-              <div className="grid grid-cols-2 gap-2 rounded-md border border-border bg-background/60 p-3 font-mono text-xs">
+              <div className="grid grid-cols-2 gap-2 rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-3 font-[var(--font-code)] text-xs text-[var(--scry-ink2)]">
                 {jellyfinMfaRecoveryCodes.map((code) => (
                   <code key={code}>{code}</code>
                 ))}
@@ -497,7 +521,7 @@ export default function LoginPage() {
                 id="jellyfin-mfa-enrollment-continue"
                 type="button"
                 onClick={continueAfterJellyfinMfaEnrollment}
-                className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500"
+                className={AUTH_PRIMARY_BUTTON_CLASS}
               >
                 {t("auth.continue")}
               </button>
@@ -511,16 +535,16 @@ export default function LoginPage() {
                 />
                 <a
                   id="jellyfin-mfa-enrollment-setup-link"
-                  className="break-all text-sm font-medium text-primary underline-offset-4 hover:underline"
+                  className="break-all text-sm font-medium text-[var(--scry-accent-text)] underline-offset-4 hover:underline"
                   href={jellyfinMfaEnrollment.otpauthUrl}
                 >
                   {t("profile.totpOpenSetupLink")}
                 </a>
                 <div className="w-full space-y-1">
-                  <div className="text-xs text-muted-foreground">{t("profile.totpSecret")}</div>
+                  <div className="text-xs text-[var(--scry-muted)]">{t("profile.totpSecret")}</div>
                   <code
                     id="jellyfin-mfa-enrollment-secret"
-                    className="block break-all rounded bg-background/70 px-2 py-1 font-mono text-xs"
+                    className="block break-all rounded-[7px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-2 py-1 font-[var(--font-code)] text-xs text-[var(--scry-ink2)]"
                   >
                     {jellyfinMfaEnrollment.secretBase32}
                   </code>
@@ -535,13 +559,14 @@ export default function LoginPage() {
                   value={jellyfinMfaEnrollmentCode}
                   onChange={(event) => setJellyfinMfaEnrollmentCode(sanitizeTotpCode(event.target.value))}
                   placeholder={t("auth.totpCode")}
+                  className={AUTH_INPUT_CLASS}
                 />
                 <button
                   id="jellyfin-mfa-enrollment-submit"
                   type="button"
                   onClick={completeJellyfinMfaEnrollment}
                   disabled={jellyfinMfaBusy || jellyfinMfaEnrollmentCode.length !== 6}
-                  className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
+                  className={AUTH_PRIMARY_BUTTON_CLASS}
                 >
                   {jellyfinMfaBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                   {t("profile.totpVerifyAndEnable")}
@@ -551,7 +576,7 @@ export default function LoginPage() {
                 type="button"
                 onClick={cancelJellyfinMfaEnrollment}
                 disabled={jellyfinMfaBusy}
-                className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                className={AUTH_SECONDARY_BUTTON_CLASS}
               >
                 {t("auth.mfaSetupCancel")}
               </button>
@@ -559,13 +584,13 @@ export default function LoginPage() {
           ) : (
             <div className="space-y-3">
               <div className="flex justify-center">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                <Loader2 className="h-5 w-5 animate-spin text-[var(--scry-muted)]" />
               </div>
               <button
                 type="button"
                 onClick={startJellyfinMfaEnrollment}
                 disabled={jellyfinMfaBusy}
-                className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                className={AUTH_SECONDARY_BUTTON_CLASS}
               >
                 {t("auth.mfaSetupRestart")}
               </button>
@@ -573,7 +598,7 @@ export default function LoginPage() {
                 type="button"
                 onClick={cancelJellyfinMfaEnrollment}
                 disabled={jellyfinMfaBusy}
-                className="w-full rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                className={AUTH_SECONDARY_BUTTON_CLASS}
               >
                 {t("auth.mfaSetupCancel")}
               </button>
@@ -585,12 +610,12 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4 text-foreground">
-      <div className="w-full max-w-sm space-y-5 rounded-lg border border-border bg-card/70 p-8">
-        <h1 className="text-center text-xl font-semibold tracking-tight">{t("auth.signIn")}</h1>
+    <div className={AUTH_PAGE_CLASS}>
+      <div className={AUTH_PANEL_CLASS}>
+        <h1 className={AUTH_HEADING_CLASS}>{t("auth.signIn")}</h1>
 
         {error && (
-          <div id="login-error" className="rounded-md bg-red-900/40 px-3 py-2 text-sm text-red-300">
+          <div id="login-error" className={AUTH_ERROR_CLASS}>
             {error}
           </div>
         )}
@@ -600,6 +625,7 @@ export default function LoginPage() {
             <>
               {showLoginMethodChooser ? (
                 <button
+                  id="login-password-method"
                   type="button"
                   onClick={() =>
                     setActiveMethod((current) =>
@@ -609,7 +635,7 @@ export default function LoginPage() {
                   disabled={anySubmitting}
                   aria-controls="login-form"
                   aria-expanded={activeMethod === "password"}
-                  className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                  className={AUTH_SECONDARY_BUTTON_CLASS}
                 >
                   <KeyRound className="h-4 w-4" aria-hidden="true" />
                   {t("auth.signInWithScryerPassword")}
@@ -639,7 +665,7 @@ export default function LoginPage() {
                     <div className="space-y-1.5">
                       <label
                         htmlFor="username"
-                        className="block text-sm font-medium text-muted-foreground"
+                        className={AUTH_LABEL_CLASS}
                       >
                         {t("auth.username")}
                       </label>
@@ -655,13 +681,14 @@ export default function LoginPage() {
                           resetLocalTotpChallenge();
                         }}
                         placeholder={t("auth.username")}
+                        className={AUTH_INPUT_CLASS}
                       />
                     </div>
 
                     <div className="space-y-1.5">
                       <label
                         htmlFor="password"
-                        className="block text-sm font-medium text-muted-foreground"
+                        className={AUTH_LABEL_CLASS}
                       >
                         {t("auth.password")}
                       </label>
@@ -676,6 +703,7 @@ export default function LoginPage() {
                           resetLocalTotpChallenge();
                         }}
                         placeholder={t("auth.password")}
+                        className={AUTH_INPUT_CLASS}
                       />
                     </div>
 
@@ -683,7 +711,7 @@ export default function LoginPage() {
                       id="login-submit"
                       type="submit"
                       disabled={anySubmitting}
-                      className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
+                      className={AUTH_PRIMARY_BUTTON_CLASS}
                     >
                       {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                       {submitting ? t("auth.signingIn") : t("auth.signIn")}
@@ -700,7 +728,7 @@ export default function LoginPage() {
               type="button"
               onClick={handlePasskeySignIn}
               disabled={anySubmitting}
-              className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+              className={AUTH_SECONDARY_BUTTON_CLASS}
             >
               {passkeySubmitting ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -725,7 +753,7 @@ export default function LoginPage() {
                   disabled={anySubmitting}
                   aria-controls="jellyfin-login-form"
                   aria-expanded={activeMethod === "jellyfin"}
-                  className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                  className={AUTH_SECONDARY_BUTTON_CLASS}
                 >
                   <img
                     src="/auth-providers/jellyfin.svg"
@@ -764,7 +792,7 @@ export default function LoginPage() {
                   {jellyfinConnections.length > 1 ? (
                     <select
                       id="login-jellyfin-connection"
-                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                      className={AUTH_SELECT_CLASS}
                       value={jellyfinConnectionId}
                       onChange={(event) => {
                         setJellyfinConnectionId(event.target.value);
@@ -775,7 +803,7 @@ export default function LoginPage() {
                         <option
                           id={selectorId(
                             "login-jellyfin-connection-option",
-                            connection.displayName,
+                            connection.id,
                           )}
                           key={connection.id}
                           value={connection.id}
@@ -795,6 +823,7 @@ export default function LoginPage() {
                       resetJellyfinTotpChallenge();
                     }}
                     placeholder={t("auth.username")}
+                    className={AUTH_INPUT_CLASS}
                   />
                   <Input
                     id="jellyfin-password"
@@ -806,6 +835,7 @@ export default function LoginPage() {
                       resetJellyfinTotpChallenge();
                     }}
                     placeholder={t("auth.password")}
+                    className={AUTH_INPUT_CLASS}
                   />
                   <button
                     id="jellyfin-login-submit"
@@ -818,7 +848,7 @@ export default function LoginPage() {
                       !jellyfinPassword ||
                       (jellyfinTotpPrompted && jellyfinTotpCode.length !== 6)
                     }
-                    className="flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-foreground hover:bg-emerald-500 disabled:opacity-50"
+                    className={AUTH_PRIMARY_BUTTON_CLASS}
                   >
                     {jellyfinSubmitting ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -834,12 +864,17 @@ export default function LoginPage() {
             <div className="space-y-3">
               {plexConnections.length > 1 ? (
                 <select
-                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+                  id="login-plex-connection"
+                  className={AUTH_SELECT_CLASS}
                   value={plexConnectionId}
                   onChange={(event) => setPlexConnectionId(event.target.value)}
                 >
                   {plexConnections.map((connection) => (
-                    <option key={connection.id} value={connection.id}>
+                    <option
+                      id={selectorId("login-plex-connection-option", connection.id)}
+                      key={connection.id}
+                      value={connection.id}
+                    >
                       {connectionOptionLabel(connection)}
                     </option>
                   ))}
@@ -850,7 +885,7 @@ export default function LoginPage() {
                 type="button"
                 onClick={handlePlexSignIn}
                 disabled={anySubmitting || !plexConnectionId}
-                className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-50"
+                className={AUTH_SECONDARY_BUTTON_CLASS}
                 title={plexSubmitting ? t("auth.plexPinFlowPending") : undefined}
               >
                 {plexSubmitting ? (

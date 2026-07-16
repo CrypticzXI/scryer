@@ -254,24 +254,19 @@ pub(super) struct TrackingDownloadSubmissionRepo {
 }
 
 #[derive(Default, Clone)]
-pub(super) struct TrackingWantedItemRepo {
-    pub(super) store: Arc<Mutex<Vec<WantedItem>>>,
+pub(super) struct TrackingAcquisitionScopeStateRepo {
+    pub(super) store: Arc<Mutex<Vec<AcquisitionScopeState>>>,
     pub(super) release_decisions: Arc<Mutex<Vec<ReleaseDecision>>>,
     pub(super) title_facets: Arc<Mutex<HashMap<String, MediaFacet>>>,
     pub(super) status_update_calls: Arc<Mutex<Vec<String>>>,
-    pub(super) upsert_calls: Arc<AtomicUsize>,
 }
 
-impl TrackingWantedItemRepo {
+impl TrackingAcquisitionScopeStateRepo {
     pub(super) async fn remember_title_facet(&self, title_id: &str, facet: MediaFacet) {
         self.title_facets
             .lock()
             .await
             .insert(title_id.to_string(), facet);
-    }
-
-    pub(super) fn upsert_call_count(&self) -> usize {
-        self.upsert_calls.load(Ordering::SeqCst)
     }
 
     pub(super) async fn status_update_call_count_for(&self, id: &str) -> usize {
@@ -288,13 +283,15 @@ impl TrackingWantedItemRepo {
 pub(super) struct TrackingAcquisitionStateRepo {
     pub(super) download_submissions: Arc<TrackingDownloadSubmissionRepo>,
     pub(super) pending_releases: Arc<TrackingPendingReleaseRepo>,
-    pub(super) wanted_items: Arc<TrackingWantedItemRepo>,
+    pub(super) acquisition_scope_states: Arc<TrackingAcquisitionScopeStateRepo>,
 }
 
 #[async_trait]
-impl WantedItemRepository for TrackingWantedItemRepo {
-    async fn upsert_wanted_item(&self, item: &WantedItem) -> AppResult<String> {
-        self.upsert_calls.fetch_add(1, Ordering::SeqCst);
+impl AcquisitionScopeStateRepository for TrackingAcquisitionScopeStateRepo {
+    async fn upsert_acquisition_scope_state(
+        &self,
+        item: &AcquisitionScopeState,
+    ) -> AppResult<String> {
         let mut store = self.store.lock().await;
         if let Some(existing) = store.iter_mut().find(|existing| existing.id == item.id) {
             *existing = item.clone();
@@ -304,47 +301,11 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         Ok(item.id.clone())
     }
 
-    async fn list_due_wanted_items(
-        &self,
-        now: &str,
-        batch_limit: i64,
-        excluded_facets: &[MediaFacet],
-    ) -> AppResult<Vec<WantedItem>> {
-        let now = chrono::DateTime::parse_from_rfc3339(now)
-            .map(|value| value.with_timezone(&Utc))
-            .map_err(|err| AppError::Repository(err.to_string()))?;
-        let title_facets = self.title_facets.lock().await.clone();
-        let mut items: Vec<WantedItem> = self
-            .store
-            .lock()
-            .await
-            .iter()
-            .filter(|item| {
-                item.status == WantedStatus::Wanted
-                    && title_facets
-                        .get(&item.title_id)
-                        .is_none_or(|facet| !excluded_facets.contains(facet))
-                    && item
-                        .next_search_at
-                        .as_deref()
-                        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-                        .map(|value| value.with_timezone(&Utc) <= now)
-                        .unwrap_or(false)
-            })
-            .cloned()
-            .collect();
-        items.sort_by(|left, right| left.created_at.cmp(&right.created_at));
-        items.truncate(batch_limit.max(0) as usize);
-        Ok(items)
-    }
-
-    async fn update_wanted_item_status(
+    async fn update_acquisition_scope_status(
         &self,
         id: &str,
         status: &str,
-        next_search_at: Option<&str>,
         last_search_at: Option<&str>,
-        search_count: i64,
         current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
@@ -353,11 +314,9 @@ impl WantedItemRepository for TrackingWantedItemRepo {
             .iter_mut()
             .find(|item| item.id == id)
             .ok_or_else(|| AppError::NotFound(format!("wanted item {id}")))?;
-        item.status = WantedStatus::parse(status)
+        item.status = AcquisitionScopeStatus::parse(status)
             .ok_or_else(|| AppError::Repository(format!("invalid wanted status {status}")))?;
-        item.next_search_at = next_search_at.map(str::to_string);
         item.last_search_at = last_search_at.map(str::to_string);
-        item.search_count = search_count;
         item.current_score = current_score;
         item.grabbed_release = grabbed_release.map(str::to_string);
         item.updated_at = Utc::now().to_rfc3339();
@@ -366,11 +325,26 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         Ok(())
     }
 
-    async fn get_wanted_item_for_title(
+    async fn record_acquisition_scope_search_attempt(
+        &self,
+        id: &str,
+        last_search_at: &str,
+    ) -> AppResult<()> {
+        let mut store = self.store.lock().await;
+        let item = store
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("wanted item {id}")))?;
+        item.last_search_at = Some(last_search_at.to_string());
+        item.updated_at = Utc::now().to_rfc3339();
+        Ok(())
+    }
+
+    async fn get_acquisition_scope_state_for_title(
         &self,
         title_id: &str,
         episode_id: Option<&str>,
-    ) -> AppResult<Option<WantedItem>> {
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         Ok(self
             .store
             .lock()
@@ -380,7 +354,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
             .cloned())
     }
 
-    async fn delete_wanted_items_for_title(&self, title_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_title(&self, title_id: &str) -> AppResult<()> {
         self.store
             .lock()
             .await
@@ -388,7 +362,10 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         Ok(())
     }
 
-    async fn delete_wanted_items_for_collection(&self, collection_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_collection(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<()> {
         self.store
             .lock()
             .await
@@ -396,7 +373,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         Ok(())
     }
 
-    async fn delete_wanted_items_for_series_movie_link(
+    async fn delete_acquisition_scope_states_for_series_movie_link(
         &self,
         series_movie_link_id: &str,
     ) -> AppResult<()> {
@@ -407,7 +384,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         Ok(())
     }
 
-    async fn delete_wanted_items_for_episode(&self, episode_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_episode(&self, episode_id: &str) -> AppResult<()> {
         self.store
             .lock()
             .await
@@ -415,16 +392,15 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         Ok(())
     }
 
-    async fn reset_fruitless_wanted_items(&self, _now: &str) -> AppResult<u64> {
-        Ok(0)
-    }
-
     async fn insert_release_decision(&self, decision: &ReleaseDecision) -> AppResult<String> {
         self.release_decisions.lock().await.push(decision.clone());
         Ok(decision.id.clone())
     }
 
-    async fn get_wanted_item_by_id(&self, id: &str) -> AppResult<Option<WantedItem>> {
+    async fn get_acquisition_scope_state_by_id(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         Ok(self
             .store
             .lock()
@@ -434,8 +410,11 @@ impl WantedItemRepository for TrackingWantedItemRepo {
             .cloned())
     }
 
-    async fn list_wanted_items(&self, query: WantedItemsQuery) -> AppResult<Vec<WantedItem>> {
-        let WantedItemsQuery {
+    async fn list_acquisition_scope_states(
+        &self,
+        query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        let AcquisitionScopeStatesQuery {
             statuses,
             media_types,
             title_id,
@@ -447,7 +426,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         } = query;
         let latest_decisions = self.release_decisions.lock().await.clone();
         let normalized_title_search = title_search.as_deref().map(str::to_lowercase);
-        let items: Vec<WantedItem> = self
+        let items: Vec<AcquisitionScopeState> = self
             .store
             .lock()
             .await
@@ -482,8 +461,11 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         Ok(items)
     }
 
-    async fn count_wanted_items(&self, query: WantedItemsQuery) -> AppResult<i64> {
-        let WantedItemsQuery {
+    async fn count_acquisition_scope_states(
+        &self,
+        query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<i64> {
+        let AcquisitionScopeStatesQuery {
             statuses,
             media_types,
             title_id,
@@ -528,6 +510,7 @@ impl WantedItemRepository for TrackingWantedItemRepo {
         &self,
         title_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         Ok(self
             .release_decisions
@@ -535,15 +518,17 @@ impl WantedItemRepository for TrackingWantedItemRepo {
             .await
             .iter()
             .filter(|decision| decision.title_id == title_id)
+            .skip(offset.max(0) as usize)
             .take(limit.max(0) as usize)
             .cloned()
             .collect())
     }
 
-    async fn list_release_decisions_for_wanted_item(
+    async fn list_release_decisions_for_acquisition_scope_state(
         &self,
         wanted_item_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         Ok(self
             .release_decisions
@@ -551,9 +536,32 @@ impl WantedItemRepository for TrackingWantedItemRepo {
             .await
             .iter()
             .filter(|decision| decision.wanted_item_id == wanted_item_id)
+            .skip(offset.max(0) as usize)
             .take(limit.max(0) as usize)
             .cloned()
             .collect())
+    }
+    async fn count_release_decisions_for_title(&self, title_id: &str) -> AppResult<i64> {
+        Ok(self
+            .release_decisions
+            .lock()
+            .await
+            .iter()
+            .filter(|decision| decision.title_id == title_id)
+            .count() as i64)
+    }
+
+    async fn count_release_decisions_for_acquisition_scope_state(
+        &self,
+        wanted_item_id: &str,
+    ) -> AppResult<i64> {
+        Ok(self
+            .release_decisions
+            .lock()
+            .await
+            .iter()
+            .filter(|decision| decision.wanted_item_id == wanted_item_id)
+            .count() as i64)
     }
 }
 
@@ -580,13 +588,11 @@ impl AcquisitionStateRepository for TrackingAcquisitionStateRepo {
         covered_wanted_item_ids.sort();
         covered_wanted_item_ids.dedup();
         for wanted_item_id in &covered_wanted_item_ids {
-            self.wanted_items
-                .update_wanted_item_status(
+            self.acquisition_scope_states
+                .update_acquisition_scope_status(
                     wanted_item_id,
-                    WantedStatus::Grabbed.as_str(),
-                    None,
+                    AcquisitionScopeStatus::Grabbed.as_str(),
                     commit.last_search_at.as_deref(),
-                    commit.search_count,
                     commit.current_score,
                     Some(&commit.grabbed_release),
                 )
@@ -1041,6 +1047,57 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
             .collect())
     }
 
+    async fn list_pending_releases_page(
+        &self,
+        query: PendingReleasesPageQuery,
+    ) -> AppResult<(Vec<PendingRelease>, i64)> {
+        let mut matched = self
+            .store
+            .lock()
+            .await
+            .iter()
+            .filter(|release| release.status == PendingReleaseStatus::Waiting)
+            .filter(|release| {
+                query
+                    .title_id
+                    .as_deref()
+                    .is_none_or(|title_id| release.title_id == title_id)
+            })
+            .filter(|release| {
+                query
+                    .wanted_item_id
+                    .as_deref()
+                    .is_none_or(|wanted_item_id| release.wanted_item_id == wanted_item_id)
+            })
+            .filter(|release| {
+                query.statuses.is_empty()
+                    || query
+                        .statuses
+                        .iter()
+                        .any(|status| status.as_str() == release.status.as_str())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        match query.sort {
+            PendingReleasePageSort::DelayUntilAsc => matched.sort_by(|a, b| {
+                a.delay_until
+                    .cmp(&b.delay_until)
+                    .then_with(|| a.id.cmp(&b.id))
+            }),
+            PendingReleasePageSort::ReleaseScoreDesc => matched.sort_by(|a, b| {
+                b.release_score
+                    .cmp(&a.release_score)
+                    .then_with(|| a.delay_until.cmp(&b.delay_until))
+                    .then_with(|| a.id.cmp(&b.id))
+            }),
+        }
+        let total = matched.len() as i64;
+        let offset = query.offset.max(0) as usize;
+        let limit = query.limit.max(0) as usize;
+        let page = matched.into_iter().skip(offset).take(limit).collect();
+        Ok((page, total))
+    }
+
     async fn update_pending_release_status(
         &self,
         id: &str,
@@ -1118,7 +1175,7 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
         Ok(true)
     }
 
-    async fn supersede_pending_releases_for_wanted_item(
+    async fn supersede_pending_releases_for_acquisition_scope_state(
         &self,
         wanted_item_id: &str,
         except_id: &str,
@@ -1168,10 +1225,6 @@ impl HousekeepingRepository for TrackingHousekeepingRepo {
     }
 
     async fn delete_release_attempts_older_than(&self, _days: i64) -> AppResult<u32> {
-        Ok(0)
-    }
-
-    async fn delete_dispatched_event_outboxes_older_than(&self, _days: i64) -> AppResult<u32> {
         Ok(0)
     }
 
@@ -1250,12 +1303,18 @@ impl HousekeepingRepository for TrackingHousekeepingRepo {
     async fn delete_media_files_by_ids(&self, _ids: &[String]) -> AppResult<u32> {
         Ok(0)
     }
+
+    async fn prune_unreferenced_title_image_blobs(&self, _limit: u32) -> AppResult<u32> {
+        Ok(0)
+    }
 }
 
 #[derive(Clone)]
 pub(super) enum StubSubmitError {
     SubmitUnavailable(String),
     Validation(String),
+    Rejected(String),
+    Ambiguous(String),
 }
 
 impl StubSubmitError {
@@ -1263,6 +1322,8 @@ impl StubSubmitError {
         match self {
             Self::SubmitUnavailable(message) => AppError::download_submit_unavailable(message),
             Self::Validation(message) => AppError::Validation(message),
+            Self::Rejected(message) => AppError::DownloadSubmitRejected(message),
+            Self::Ambiguous(message) => AppError::DownloadSubmitAmbiguous(message),
         }
     }
 }

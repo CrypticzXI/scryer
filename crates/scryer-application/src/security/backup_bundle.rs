@@ -428,6 +428,47 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Ignore,
     },
     BackupTableCatalogEntry {
+        table: "external_import_setup_secret_drafts",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "external_import_setup_instance_api_keys",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "external_import_setup_download_client_api_key_overrides",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "external_import_setup_download_client_password_overrides",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "external_import_setup_indexer_api_key_overrides",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "upstream_scheduler_states",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "upstream_destination_cooldowns",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
+        table: "upstream_scheduler_rss_cadence",
+        classification: BackupTableClassification::Ignore,
+    },
+    // RFC 119 convergence coverage ledger: operational state, sibling to the
+    // upstream_scheduler_* tables above. Ignored (not exported): carrying coverage
+    // across a restore into a possibly-different indexer environment could wrongly
+    // mark scopes converged and under-search; a restored DB re-converges from empty,
+    // bounded by the 112 scheduler + the cursor work-cap.
+    BackupTableCatalogEntry {
+        table: "scope_indexer_coverage",
+        classification: BackupTableClassification::Ignore,
+    },
+    BackupTableCatalogEntry {
         table: "settings_definitions",
         classification: BackupTableClassification::Export,
     },
@@ -449,6 +490,118 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "collections",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "title_metadata_tags",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "title_metadata_tag_sources",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "title_metadata_tag_source_keys",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "title_metadata_rating_summaries",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "title_metadata_rating_sources",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "title_metadata_external_ratings",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_metadata_tags",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_metadata_tag_sources",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_metadata_tag_source_keys",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_metadata_rating_summaries",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_metadata_rating_sources",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_metadata_external_ratings",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_facets",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_item_library_provenance",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_item_rank_components",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_item_subject_links",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_items",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_pending_context_changes",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_section_items",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_sections",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_submitted_subjects",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_sync_runs",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_sync_state",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_external_ids",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_source_tag_values",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_source_tags",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_title_terms",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "discovery_titles",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -488,10 +641,6 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
-        table: "event_outboxes",
-        classification: BackupTableClassification::Export,
-    },
-    BackupTableCatalogEntry {
         table: "event_subscriber_offsets",
         classification: BackupTableClassification::Export,
     },
@@ -520,7 +669,15 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "indexer_search_learning",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
         table: "indexer_system_backoffs",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "indexer_proxy_configs",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -708,11 +865,19 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
+        table: "title_image_blobs",
+        classification: BackupTableClassification::Rebuild,
+    },
+    BackupTableCatalogEntry {
         table: "title_image_variants",
         classification: BackupTableClassification::Rebuild,
     },
     BackupTableCatalogEntry {
         table: "title_images",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "title_more_like_this_items",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -745,6 +910,14 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "user_library_permission_masks",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "user_ui_settings",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "user_ui_table_columns",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -1620,6 +1793,41 @@ mod tests {
                 "{table} should be exported in logical backups"
             );
         }
+    }
+
+    #[test]
+    fn backup_table_catalog_exports_owner_scoped_metadata_tables() {
+        for table in [
+            "title_metadata_tags",
+            "title_metadata_tag_sources",
+            "title_metadata_tag_source_keys",
+            "title_metadata_rating_summaries",
+            "title_metadata_rating_sources",
+            "title_metadata_external_ratings",
+            "discovery_title_metadata_tags",
+            "discovery_title_metadata_tag_sources",
+            "discovery_title_metadata_tag_source_keys",
+            "discovery_title_metadata_rating_summaries",
+            "discovery_title_metadata_rating_sources",
+            "discovery_title_metadata_external_ratings",
+        ] {
+            let classification = BACKUP_TABLE_CATALOG
+                .iter()
+                .find(|entry| entry.table == table)
+                .map(|entry| entry.classification);
+
+            assert_eq!(
+                classification,
+                Some(BackupTableClassification::Export),
+                "{table} should be exported in logical backups"
+            );
+        }
+
+        assert!(
+            BACKUP_TABLE_CATALOG
+                .iter()
+                .all(|entry| !entry.table.starts_with("canonical_media_"))
+        );
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub use trash_guides::detect_blocked_title as detect_trash_guides_blocked_title;
 use parse::{AnalysisInputs, analyze_inputs};
 use sanitize::sanitize_input;
 
-const PARSER_VERSION: &str = "2026.04.23-metadata-parity";
+const PARSER_VERSION: &str = "2026.07.13-split-episode-daily-dates";
 
 /// Analyze a raw release name against one required target context.
 #[must_use]

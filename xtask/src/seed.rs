@@ -383,7 +383,7 @@ fn seed_settings(
                     "updateDownloadClientRouting",
                     "{ clientId }",
                     json!({
-                        "scope": scope_id,
+                        "scope": scope_id.to_ascii_uppercase(),
                         "entries": download_client_routing_entries(entry, aliases)?,
                     }),
                 );
@@ -398,7 +398,7 @@ fn seed_settings(
                     "updateIndexerRouting",
                     "{ indexerId }",
                     json!({
-                        "scope": scope_id,
+                        "scope": scope_id.to_ascii_uppercase(),
                         "entries": indexer_routing_entries(entry, aliases)?,
                     }),
                 );
@@ -466,7 +466,7 @@ fn build_title_input(entry: &Value, facet: &str) -> Result<Value> {
 
     Ok(json!({
         "name": required_string(entry, "name")?,
-        "facet": facet,
+        "facet": facet.to_ascii_uppercase(),
         "monitored": entry.get("monitored").cloned().unwrap_or(Value::Bool(false)),
         "tags": entry.get("tags").cloned().unwrap_or_else(|| json!([])),
         "options": present_or_null(entry, "options"),

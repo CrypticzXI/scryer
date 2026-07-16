@@ -4,7 +4,9 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
+  type CSSProperties,
 } from "react";
 import {
   ActivitySquare,
@@ -14,46 +16,50 @@ import {
   Download,
   ListChecks,
   Loader2,
-  MonitorCog,
+  Monitor,
   Settings,
   CircleFadingArrowUp,
+  Sparkles,
   WifiOff,
   X,
 } from "lucide-react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
+import { usePermissions } from "@/lib/hooks/use-permissions";
 import {
   APP_PERMISSIONS,
   LIBRARY_PERMISSIONS,
+  authorizationCacheSignature,
   hasAnyLibraryPermission,
   hasAppPermission,
 } from "@/lib/utils/permissions";
+import { useSmgNotices } from "@/lib/hooks/use-smg-notices";
+import { useNavigationBadges } from "@/lib/hooks/use-navigation-badges";
+import { useAutoBackupNotice } from "@/lib/hooks/use-auto-backup-notice";
+import { useConfigStepUp } from "@/lib/hooks/use-config-step-up";
 
 import { TranslateContext } from "@/lib/context/translate-context";
 import { GlobalStatusContext } from "@/lib/context/global-status-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { RootHeader } from "@/components/root/root-header";
+import { buildRouteCommands } from "@/components/root/route-commands";
 import { JobRunProvider } from "@/components/root/job-run-provider";
 import { LibraryScanProgressProvider } from "@/components/root/library-scan-progress-provider";
 import { ReactiveRefreshProvider } from "@/components/root/reactive-refresh-provider";
 import { RootSidebar } from "@/components/root/root-sidebar";
 import { ViewLoadingFallback } from "@/components/common/view-loading-fallback";
-import { buildRouteCommands } from "@/components/root/route-commands";
 import { GlobalSearchProvider } from "@/components/root/global-search-provider";
+import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 
 import { useGlobalStatusToast } from "@/lib/hooks/use-global-status-toast";
 import { useLanguage } from "@/lib/hooks/use-language";
 import { ScryerGraphqlProvider } from "@/lib/graphql/urql-provider";
-import {
-  backendClient,
-  MFA_STEP_UP_REQUIRED_EVENT,
-} from "@/lib/graphql/urql-client";
+import { backendClient } from "@/lib/graphql/urql-client";
 import { useOnlineStatus } from "@/lib/hooks/use-online-status";
 import { useInstallPrompt } from "@/lib/hooks/use-install-prompt";
 import { useBackendRestarting } from "@/lib/hooks/use-backend-restarting";
-import { useSettingsSubscription } from "@/lib/hooks/use-settings-subscription";
-import { useMediaRequestsSubscription } from "@/lib/hooks/use-media-requests-subscription";
 import { TotpCodeForm } from "@/components/auth/totp-code-form";
-import { toast } from "@/components/ui/sonner";
 import {
   Dialog,
   DialogContent,
@@ -66,6 +72,7 @@ import type {
   ViewId,
   SettingsSection,
   ContentSettingsSection,
+  LogsSection,
   OverviewTitleTarget,
   SmgScryerUpdateNotice,
   SmgVersionCompatibilityNotice,
@@ -73,6 +80,8 @@ import type {
   WantedSection,
 } from "@/components/root/types";
 import type { Facet } from "@/lib/types";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
+import { formatUiDate } from "@/lib/utils/date-format";
 import {
   URL_PARAM_CONTENT_SECTION_DEPRECATED,
   URL_PARAM_LANGUAGE,
@@ -85,14 +94,16 @@ import type { LocaleCode, LanguageOption } from "@/lib/i18n";
 import {
   buildOverviewDetailPath,
   buildViewPath,
-  parseActivitySectionFromPath,
-  parseContentSectionFromPath,
-  parseOverviewTargetFromPath,
-  parseSettingsSectionFromPath,
-  parseSystemSectionFromPath,
-  parseViewFromPath,
-  parseWantedSectionFromPath,
+  resolveAppRoute,
 } from "@/lib/utils/routing";
+import {
+  canAccessMediaSettingsSection,
+  canAccessSettingsSection,
+  canAccessSystemSection,
+  isMediaSettingsSection,
+  isProtectedSettingsRoute,
+} from "@/lib/utils/routes";
+import { cn } from "@/lib/utils";
 import {
   FACET_REGISTRY,
   isMediaView,
@@ -100,93 +111,20 @@ import {
 } from "@/lib/facets/registry";
 import { BackendRestartOverlay } from "@/components/common/backend-restart-overlay";
 import {
-  autoBackupSettingsQuery,
-  authRuntimeStateQuery,
-  navigationBadgeCountsQuery,
-  scryerVersionQuery,
-  smgScryerUpdateNoticeQuery,
-  smgVersionCompatibilityNoticeQuery,
-} from "@/lib/graphql/queries";
-import {
-  acknowledgeAutoBackupDisabledMissingKeyNoticeMutation,
-  mfaVerifyStepUpMutation,
-} from "@/lib/graphql/mutations";
-import { decodeJwtPayload, jwtDateClaimToMillis } from "@/lib/utils/jwt";
-import type { PendingImportCounts } from "@/lib/types";
-import { resolveTitleOverviewTargetBySlug } from "@/lib/title-overview-loader";
-import {
-  dispatchNavigationBadgesRefresh,
-  NAVIGATION_BADGES_REFRESH_EVENT,
-  type NavigationBadgesRefreshDetail,
-} from "@/lib/events/navigation-badges";
-const SMG_VERSION_COMPATIBILITY_NOTICE_KEY = "smg.version_compatibility_notice";
-const SMG_SCRYER_UPDATE_NOTICE_KEY = "smg.scryer_update_notice";
-const SMG_SCRYER_UPDATE_DISMISSED_KEY = "scryer.smgUpdate.dismissed";
-const SMG_NOTICE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
-const CONFIG_STEP_UP_EXPIRY_LEEWAY_MS = 1_000;
-const AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID =
-  "auto-backup-disabled-missing-key-notice";
-
-function scheduleAfterFirstPaint(callback: () => void) {
-  if (typeof window === "undefined") {
-    callback();
-    return () => {};
-  }
-
-  let cancelled = false;
-  let frameId = 0;
-  let idleId: number | null = null;
-  let timeoutId: number | null = null;
-  const idleWindow = window as Window & {
-    requestIdleCallback?: (
-      callback: IdleRequestCallback,
-      options?: IdleRequestOptions,
-    ) => number;
-    cancelIdleCallback?: (handle: number) => void;
-  };
-
-  const run = () => {
-    if (!cancelled) {
-      callback();
-    }
-  };
-
-  frameId = window.requestAnimationFrame(() => {
-    if (idleWindow.requestIdleCallback) {
-      idleId = idleWindow.requestIdleCallback(run, { timeout: 1_500 });
-      return;
-    }
-
-    timeoutId = window.setTimeout(run, 250);
-  });
-
-  return () => {
-    cancelled = true;
-    if (frameId !== 0) {
-      window.cancelAnimationFrame(frameId);
-    }
-    if (idleId != null) {
-      idleWindow.cancelIdleCallback?.(idleId);
-    }
-    if (timeoutId != null) {
-      window.clearTimeout(timeoutId);
-    }
-  };
-}
-
-const mediaContainers = () =>
-  import("@/components/containers/media-containers");
+  resolveTitleOverviewTargetById,
+  resolveTitleOverviewTargetBySlug,
+} from "@/lib/title-overview-loader";
 
 const MediaContentContainer = lazy(() =>
-  mediaContainers().then((m) => ({ default: m.MediaContentContainer })),
+  import("@/components/containers/media-content-container").then((m) => ({
+    default: m.MediaContentContainer,
+  })),
 );
 
-const MovieOverviewContainer = lazy(() =>
-  mediaContainers().then((m) => ({ default: m.MovieOverviewContainer })),
-);
-
-const SeriesOverviewContainer = lazy(() =>
-  mediaContainers().then((m) => ({ default: m.SeriesOverviewContainer })),
+const RequestsContainer = lazy(() =>
+  import("@/components/containers/requests-container").then((m) => ({
+    default: m.RequestsContainer,
+  })),
 );
 
 const SettingsContainer = lazy(() =>
@@ -194,6 +132,8 @@ const SettingsContainer = lazy(() =>
     default: m.SettingsContainer,
   })),
 );
+
+const NotFoundPage = lazy(() => import("@/src/pages/not-found"));
 
 const ActivityContainer = lazy(() =>
   import("@/components/containers/activity-container").then((m) => ({
@@ -213,15 +153,15 @@ const WantedContainer = lazy(() =>
   })),
 );
 
-const CalendarContainer = lazy(() =>
-  import("@/components/containers/calendar-container").then((m) => ({
-    default: m.CalendarContainer,
+const DiscoveryContainer = lazy(() =>
+  import("@/components/containers/discovery-container").then((m) => ({
+    default: m.DiscoveryContainer,
   })),
 );
 
-const WantedHistoryContainer = lazy(() =>
-  import("@/components/containers/title-history-container").then((m) => ({
-    default: m.TitleHistoryContainer,
+const CalendarContainer = lazy(() =>
+  import("@/components/containers/calendar-container").then((m) => ({
+    default: m.CalendarContainer,
   })),
 );
 
@@ -246,105 +186,45 @@ function normalizeSmgVersionCompatibilityStatus(
     : "blocked";
 }
 
-function isMediaSettingsSection(section: ContentSettingsSection): boolean {
-  return (
-    section === "library" ||
-    section === "general" ||
-    section === "quality" ||
-    section === "renaming" ||
-    section === "routing"
-  );
-}
-
-function isProtectedSettingsRoute(
-  view: ViewId,
-  settingsSection: SettingsSection,
-  contentSettingsSection: ContentSettingsSection,
-): boolean {
-  if (view === "settings") {
-    return settingsSection !== "profile";
-  }
-
-  return isMediaView(view) && isMediaSettingsSection(contentSettingsSection);
-}
-
-function configStepUpExpiresAt(token: string | null): number | null {
-  if (!token) {
-    return null;
-  }
-
-  return jwtDateClaimToMillis(decodeJwtPayload(token)?.mfaStepUpVerifiedUntil);
-}
-
-function hasFreshConfigStepUp(token: string | null, now: number): boolean {
-  const expiresAt = configStepUpExpiresAt(token);
-  return (
-    expiresAt !== null && expiresAt - CONFIG_STEP_UP_EXPIRY_LEEWAY_MS > now
-  );
-}
-
-function isManageConfigMediaSection(section: ContentSettingsSection): boolean {
-  return section === "import" || isMediaSettingsSection(section);
-}
-
-function canAccessMediaSettingsSection(
-  section: ContentSettingsSection,
-  canManageConfig: boolean,
-  canManageLibrarySettings: boolean,
-): boolean {
-  if (!isManageConfigMediaSection(section)) {
-    return true;
-  }
-
-  if (section === "library") {
-    return canManageConfig || canManageLibrarySettings;
-  }
-
-  return canManageConfig;
-}
-
 function fallbackMediaContentSettingsSection(
   section: ContentSettingsSection,
   canManageConfig: boolean,
   canManageLibrarySettings: boolean,
+  canResolveImports = false,
 ): ContentSettingsSection {
-  if (canManageLibrarySettings && !canManageConfig && isMediaSettingsSection(section)) {
+  if (
+    canManageLibrarySettings &&
+    !canManageConfig &&
+    isMediaSettingsSection(section)
+  ) {
     return "library";
+  }
+  if (canResolveImports) {
+    return "import";
   }
   return "overview";
 }
 
-function canAccessSettingsSection(
-  section: SettingsSection,
-  canManageUsers: boolean,
-  canManageConfig: boolean,
-  canAccessRecycleBin: boolean,
-): boolean {
-  if (section === "profile") {
-    return true;
-  }
-
-  if (section === "security" || section === "users") {
-    return canManageUsers;
-  }
-
-  if (section === "recycleBin") {
-    return canAccessRecycleBin;
-  }
-
-  return canManageConfig;
-}
-
 function defaultSettingsSection(
-  canManageUsers: boolean,
-  canManageConfig: boolean,
+  canManageSystemSettings: boolean,
+  canManageCatalogSettings: boolean,
+  canManageUserAccounts: boolean,
+  canManageUserAccess: boolean,
 ): SettingsSection {
-  if (canManageConfig) {
+  if (canManageSystemSettings) {
     return "general";
   }
 
-  if (canManageUsers) {
+  if (canManageCatalogSettings) {
+    return "qualityProfiles";
+  }
+
+  if (canManageUserAccounts) {
     return "security";
+  }
+
+  if (canManageUserAccess) {
+    return "users";
   }
 
   return "profile";
@@ -353,14 +233,19 @@ function defaultSettingsSection(
 function defaultAccessibleRoute(
   canViewCatalog: boolean,
   canRequestMedia: boolean,
-  canManageUsers: boolean,
-  canManageConfig: boolean,
+  canResolveImports: boolean,
+  canManageUserAccounts: boolean,
+  canManageUserAccess: boolean,
+  canManageSystemSettings: boolean,
+  canManageCatalogSettings: boolean,
   canManageLibrarySettings: boolean,
 ): {
   view: ViewId;
   settingsSection?: SettingsSection;
   contentSettingsSection?: ContentSettingsSection;
 } {
+  const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
+
   if (canViewCatalog) {
     return {
       view: "movies",
@@ -370,8 +255,14 @@ function defaultAccessibleRoute(
 
   if (canRequestMedia) {
     return {
+      view: "requests",
+    };
+  }
+
+  if (canResolveImports) {
+    return {
       view: "movies",
-      contentSettingsSection: "requests",
+      contentSettingsSection: "import",
     };
   }
 
@@ -384,21 +275,24 @@ function defaultAccessibleRoute(
 
   return {
     view: "settings",
-    settingsSection: defaultSettingsSection(canManageUsers, canManageConfig),
+    settingsSection: defaultSettingsSection(
+      canManageSystemSettings,
+      canManageCatalogSettings,
+      canManageUserAccounts,
+      canManageUserAccess,
+    ),
   };
 }
 
-function formatSmgUpgradeDeadline(value: string | null): string | null {
+function formatSmgUpgradeDeadline(
+  value: string | null,
+  dateTimeFormat: UiDateTimeFormat,
+): string | null {
   if (!value) {
     return null;
   }
 
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleDateString();
+  return formatUiDate(value, dateTimeFormat, { fallback: value });
 }
 
 function SmgUpgradeBanner({
@@ -408,10 +302,11 @@ function SmgUpgradeBanner({
   notice: SmgVersionCompatibilityNotice;
   t: TranslateFn;
 }) {
+  const dateTimeFormat = useUiDateTimeFormat();
   const status = normalizeSmgVersionCompatibilityStatus(notice.status);
   const isDeprecated = status === "deprecated";
   const Icon = isDeprecated ? AlertTriangle : AlertOctagon;
-  const deadline = formatSmgUpgradeDeadline(notice.upgradeDeadline);
+  const deadline = formatSmgUpgradeDeadline(notice.upgradeDeadline, dateTimeFormat);
   const minimumVersion = notice.minimumVersion.trim();
   const serverMessage = notice.message.trim();
   const details = [
@@ -423,30 +318,38 @@ function SmgUpgradeBanner({
 
   return (
     <div
-      className={
-        isDeprecated
-          ? "border-b border-amber-300 bg-amber-100 text-amber-950 dark:border-amber-900 dark:bg-amber-950/70 dark:text-amber-100"
-          : "border-b border-red-300 bg-red-100 text-red-950 dark:border-red-900 dark:bg-red-950/70 dark:text-red-100"
-      }
+      data-slot="root-shell-notice"
+      className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-surfA))] text-[var(--scry-body)] shadow-[0_8px_28px_rgba(2,6,23,0.14)] backdrop-blur"
     >
       <div className="mx-auto flex w-full max-w-[1480px] items-start gap-3 px-4 py-3">
-        <Icon className="mt-0.5 h-5 w-5 flex-none" aria-hidden="true" />
+        <span
+          className={cn(
+            "mt-0.5 flex h-8 w-8 flex-none items-center justify-center rounded-[10px] border shadow-[0_8px_20px_rgba(2,6,23,0.10)]",
+            isDeprecated
+              ? "border-[rgba(var(--scry-accent-rgb),0.28)] bg-[rgba(var(--scry-accent-rgb),0.14)] text-[var(--scry-accent-ring)]"
+              : "border-destructive/30 bg-destructive/10 text-destructive",
+          )}
+        >
+          <Icon className="h-4 w-4" aria-hidden="true" />
+        </span>
         <div className="min-w-0">
-          <div className="font-semibold">
+          <div className="font-semibold text-[var(--scry-ink2)]">
             {isDeprecated
               ? t("smgUpgrade.deprecatedTitle")
               : t("smgUpgrade.blockedTitle")}
           </div>
-          <div className="mt-0.5 text-sm">
+          <div className="mt-0.5 text-sm text-[var(--scry-muted)]">
             {isDeprecated
               ? t("smgUpgrade.deprecatedBody")
               : t("smgUpgrade.blockedBody")}
           </div>
           {serverMessage ? (
-            <div className="mt-1 text-sm opacity-90">{serverMessage}</div>
+            <div className="mt-1 text-sm text-[var(--scry-body)]">
+              {serverMessage}
+            </div>
           ) : null}
           {details.length > 0 ? (
-            <div className="mt-1 text-xs font-medium uppercase tracking-wide opacity-80">
+            <div className="mt-1 text-xs font-medium uppercase tracking-wide text-[var(--scry-muted2)]">
               {details.join(" • ")}
             </div>
           ) : null}
@@ -454,19 +357,6 @@ function SmgUpgradeBanner({
       </div>
     </div>
   );
-}
-
-function buildSmgScryerUpdateDismissalValue(
-  notice: SmgScryerUpdateNotice | null,
-): string | null {
-  if (!notice?.available) {
-    return null;
-  }
-  const latest = notice.latestTag.trim() || notice.latestVersion.trim();
-  if (!latest) {
-    return null;
-  }
-  return `${latest}:${notice.latestVersion.trim()}`;
 }
 
 function SmgScryerUpdateBanner({
@@ -483,15 +373,20 @@ function SmgScryerUpdateBanner({
   const releaseUrl = notice.releaseUrl?.trim() || null;
 
   return (
-    <div className="border-b border-sky-200/80 bg-sky-50/90 text-sky-950 dark:border-sky-900/70 dark:bg-sky-950/50 dark:text-sky-100">
+    <div
+      data-slot="root-shell-notice"
+      className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-surfA))] text-[var(--scry-body)] shadow-[0_8px_28px_rgba(var(--scry-accent-rgb),0.10)] backdrop-blur"
+    >
       <div className="mx-auto flex w-full max-w-[1480px] items-center gap-3 px-4 py-2 text-sm">
         <CircleFadingArrowUp
-          className="h-4 w-4 flex-none text-sky-600 dark:text-sky-300"
+          className="h-4 w-4 flex-none text-[var(--scry-accent-ring)]"
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1 truncate">
-          <span className="font-medium">{t("smgUpdate.title")}</span>
-          <span className="ml-2 text-sky-800/80 dark:text-sky-100/75">
+          <span className="font-medium text-[var(--scry-ink2)]">
+            {t("smgUpdate.title")}
+          </span>
+          <span className="ml-2 text-[var(--scry-muted)]">
             {t("smgUpdate.body", {
               current: currentVersion || t("label.unknown"),
               latest: latestVersion || t("label.unknown"),
@@ -503,49 +398,22 @@ function SmgScryerUpdateBanner({
             href={releaseUrl}
             target="_blank"
             rel="noreferrer"
-            className="flex-none rounded-md border border-sky-300/80 px-2.5 py-1 text-xs font-medium text-sky-800 transition hover:border-sky-400 hover:bg-sky-100 dark:border-sky-700 dark:text-sky-100 dark:hover:bg-sky-900"
+            className="flex-none rounded-[8px] border border-[var(--scry-border2)] bg-[rgba(var(--scry-accent-rgb),0.12)] px-2.5 py-1 text-xs font-medium text-[var(--scry-accent-text)] transition hover:border-[var(--scry-bhover2)] hover:bg-[rgba(var(--scry-accent-rgb),0.18)]"
           >
             {t("smgUpdate.releaseNotes")}
           </a>
         ) : null}
-        <button
+        <IconButton
           type="button"
           onClick={onDismiss}
-          className="flex-none rounded-md p-1 text-sky-700 transition hover:bg-sky-100 hover:text-sky-950 dark:text-sky-200 dark:hover:bg-sky-900 dark:hover:text-white"
-          aria-label={t("label.dismiss")}
+          label={t("label.dismiss")}
+          appearance="ghost"
+          className="h-7 w-7 flex-none rounded-[8px]"
         >
           <X className="h-4 w-4" />
-        </button>
+        </IconButton>
       </div>
     </div>
-  );
-}
-
-function OverviewContainerForView({
-  view,
-  initialEpisodeId,
-  onTitleResolved,
-  ...props
-}: {
-  view: ViewId;
-  titleId: string;
-  onBackToList: () => void;
-  onTitleNotFound: () => void;
-  onTitleResolved?: (title: OverviewTitleTarget) => void;
-  initialEpisodeId?: string | null;
-}) {
-  const facet = facetForView(view);
-  if (facet?.hasEpisodes) {
-    return (
-      <SeriesOverviewContainer
-        {...props}
-        initialEpisodeId={initialEpisodeId}
-        onTitleResolved={onTitleResolved}
-      />
-    );
-  }
-  return (
-    <MovieOverviewContainer {...props} onTitleResolved={onTitleResolved} />
   );
 }
 
@@ -586,17 +454,25 @@ function readOverviewTargetFromLocationState(
     typeof target.libraryId === "string" ? target.libraryId.trim() : "";
   const librarySlug =
     typeof target.librarySlug === "string" ? target.librarySlug.trim() : "";
+  const effectiveLibrarySlug =
+    librarySlug ||
+    (parsedOverviewLibrarySlug === view ? parsedOverviewLibrarySlug : "");
   if (
     !id ||
     !slug ||
-    !librarySlug ||
     slug !== parsedOverviewSlug ||
-    librarySlug !== parsedOverviewLibrarySlug
+    !effectiveLibrarySlug ||
+    effectiveLibrarySlug !== parsedOverviewLibrarySlug
   ) {
     return null;
   }
 
-  return { id, slug, libraryId: libraryId || null, librarySlug };
+  return {
+    id,
+    slug,
+    libraryId: libraryId || null,
+    librarySlug: effectiveLibrarySlug,
+  };
 }
 
 /**
@@ -605,26 +481,30 @@ function readOverviewTargetFromLocationState(
 function MainContent({
   view,
   overviewTitleId,
-  overviewLoading,
-  overviewEpisodeId,
+  overviewTitleRoutePending,
+  routeOverviewEpisodeId,
   handleBackToList,
-  handleTitleNotFound,
-  handleOverviewTitleResolved,
   settingsSection,
   userId,
   username,
   selectedLanguage,
   uiLanguage,
+  discoveryAuthorizationSignature,
   setLanguagePreferenceFromShell,
   contentSettingsSection,
   systemSection,
+  logsSection,
+  scryerVersion,
   activitySection,
   wantedSection,
   handleOpenOverview,
   handleImportRouteEmpty,
+  canViewCatalog,
   canAccessActivity,
-  canAccessRecycleBin,
+  canResolveImports,
   canManageTitle,
+  canRequestMedia,
+  canManageUserAccounts,
   canManageUsers,
   canManageSystemSettings,
   canManageCatalogSettings,
@@ -633,19 +513,20 @@ function MainContent({
 }: {
   view: ViewId;
   overviewTitleId: string | null;
-  overviewLoading: boolean;
-  overviewEpisodeId: string | null;
+  overviewTitleRoutePending: boolean;
+  routeOverviewEpisodeId: string | null;
   handleBackToList: () => void;
-  handleTitleNotFound: () => void;
-  handleOverviewTitleResolved: (title: OverviewTitleTarget) => void;
   settingsSection: SettingsSection;
   userId: string | undefined;
   username: string | undefined;
   selectedLanguage: LanguageOption;
   uiLanguage: LocaleCode;
+  discoveryAuthorizationSignature: string;
   setLanguagePreferenceFromShell: (code: string) => void;
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
+  logsSection: LogsSection;
+  scryerVersion: string | null;
   activitySection: ActivitySection;
   wantedSection: WantedSection;
   handleOpenOverview: (
@@ -654,9 +535,12 @@ function MainContent({
     episodeId?: string,
   ) => void;
   handleImportRouteEmpty: () => void;
+  canViewCatalog: boolean;
   canAccessActivity: boolean;
-  canAccessRecycleBin: boolean;
+  canResolveImports: boolean;
   canManageTitle: boolean;
+  canRequestMedia: boolean;
+  canManageUserAccounts: boolean;
   canManageUsers: boolean;
   canManageSystemSettings: boolean;
   canManageCatalogSettings: boolean;
@@ -676,54 +560,69 @@ function MainContent({
       <CalendarContainer key="calendar" onOpenOverview={handleOpenOverview} />
     );
   }
-  if (view === "wanted") {
-    if (wantedSection === "history") {
-      if (!canManageTitle) {
-        return (
-          <WantedContainer
-            key="wanted-wanted"
-            wantedSection="wanted"
-            onOpenOverview={handleOpenOverview}
-          />
-        );
-      }
-      return <WantedHistoryContainer key="wanted-history" />;
+  if (view === "discovery") {
+    return (
+      <DiscoveryContainer
+        key="discovery"
+        userId={userId}
+        uiLanguage={uiLanguage}
+        authorizationSignature={discoveryAuthorizationSignature}
+        canManageTitle={canManageTitle}
+        canRequestMedia={canRequestMedia}
+      />
+    );
+  }
+  if (view === "requests") {
+    if (!canManageTitle && !canRequestMedia) {
+      return <ViewLoadingFallback />;
     }
+    return <RequestsContainer key="requests" facet={null} />;
+  }
+  if (view === "wanted") {
+    const resolvedWantedSection =
+      wantedSection === "history" && !canManageTitle ? "wanted" : wantedSection;
     return (
       <WantedContainer
-        key={`wanted-${wantedSection}`}
-        wantedSection={wantedSection}
+        key={`wanted-${resolvedWantedSection}`}
+        wantedSection={resolvedWantedSection}
         onOpenOverview={handleOpenOverview}
       />
     );
   }
-  if (view === "history") {
-    if (!canManageTitle) {
-      return (
-        <WantedContainer
-          key="wanted-wanted"
-          wantedSection="wanted"
-          onOpenOverview={handleOpenOverview}
-        />
-      );
-    }
-    return <WantedHistoryContainer key="history" />;
-  }
   if (view === "system") {
-    if (!canManageConfig) {
+    if (
+      !canAccessSystemSection(
+        systemSection,
+        canManageSystemSettings,
+        canManageTitle,
+      )
+    ) {
       return <ViewLoadingFallback />;
     }
     return (
       <SystemContainer
         key={`system-${systemSection}`}
         systemSection={systemSection}
+        scryerVersion={scryerVersion}
+      />
+    );
+  }
+  if (view === "logs") {
+    if (!canManageSystemSettings) {
+      return <ViewLoadingFallback />;
+    }
+    return (
+      <SystemContainer
+        key={`logs-${logsSection}`}
+        systemSection={logsSection}
+        scryerVersion={scryerVersion}
       />
     );
   }
   if (
     isMediaView(view) &&
     contentSettingsSection === "import" &&
-    canManageConfig
+    canResolveImports
   ) {
     return (
       <PendingImportsContainer
@@ -736,38 +635,33 @@ function MainContent({
   if (
     isMediaView(view) &&
     contentSettingsSection === "overview" &&
-    overviewLoading
+    !canViewCatalog
   ) {
     return <ViewLoadingFallback />;
-  }
-  if (isMediaView(view) && overviewTitleId) {
-    return (
-      <OverviewContainerForView
-        key={`${view}-overview-${overviewTitleId}`}
-        view={view}
-        titleId={overviewTitleId}
-        initialEpisodeId={overviewEpisodeId}
-        onBackToList={handleBackToList}
-        onTitleNotFound={handleTitleNotFound}
-        onTitleResolved={handleOverviewTitleResolved}
-      />
-    );
   }
   if (view === "settings") {
     const resolvedSettingsSection = canAccessSettingsSection(
       settingsSection,
+      canManageUserAccounts,
       canManageUsers,
-      canManageConfig,
-      canAccessRecycleBin,
+      canManageSystemSettings,
+      canManageCatalogSettings,
     )
       ? settingsSection
-      : defaultSettingsSection(canManageUsers, canManageConfig);
+      : defaultSettingsSection(
+          canManageSystemSettings,
+          canManageCatalogSettings,
+          canManageUserAccounts,
+          canManageUsers,
+        );
     return (
       <SettingsContainer
         key="settings"
         settingsSection={resolvedSettingsSection}
         userId={userId}
         username={username}
+        canManageSystemSettings={canManageSystemSettings}
+        canManageCatalogSettings={canManageCatalogSettings}
         availableLanguages={AVAILABLE_LANGUAGES}
         selectedLanguage={selectedLanguage}
         uiLanguage={uiLanguage}
@@ -779,12 +673,14 @@ function MainContent({
     contentSettingsSection,
     canManageConfig,
     canManageLibrarySettings,
+    canResolveImports,
   )
     ? contentSettingsSection
     : fallbackMediaContentSettingsSection(
         contentSettingsSection,
         canManageConfig,
         canManageLibrarySettings,
+        canResolveImports,
       );
   return (
     <MediaContentContainer
@@ -795,7 +691,14 @@ function MainContent({
       canManageSystemSettings={canManageSystemSettings}
       canManageCatalogSettings={canManageCatalogSettings}
       canManageLibrarySettings={canManageLibrarySettings}
+      canManageTitle={canManageTitle}
+      canRequestMedia={canRequestMedia}
+      authorizationSignature={discoveryAuthorizationSignature}
       onOpenOverview={handleOpenOverview}
+      routeOverviewTitleId={overviewTitleId}
+      routeOverviewPending={overviewTitleRoutePending}
+      routeOverviewEpisodeId={routeOverviewEpisodeId}
+      onCloseOverview={handleBackToList}
     />
   );
 }
@@ -807,6 +710,7 @@ export default function HomePage() {
     user,
     loading: authLoading,
     effectiveFormLoginEnabled,
+    mfaRequireConfigStepUp,
     adoptSession,
   } = useAuth();
   const navigate = useNavigate();
@@ -860,8 +764,11 @@ export default function HomePage() {
 
   if (authLoading || (!setupChecked && user)) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
-        <Loader2 className="h-6 w-6 animate-spin text-emerald-700 dark:text-emerald-300" />
+      <div
+        data-slot="root-app-frame"
+        className="flex min-h-dvh items-center justify-center text-[var(--scry-body)]"
+      >
+        <Loader2 className="h-6 w-6 animate-spin text-[var(--scry-accent-ring)]" />
       </div>
     );
   }
@@ -869,8 +776,11 @@ export default function HomePage() {
   if (!user) {
     if (effectiveFormLoginEnabled !== true) {
       return (
-        <div className="flex min-h-screen items-center justify-center bg-background text-foreground">
-          <Loader2 className="h-6 w-6 animate-spin text-emerald-700 dark:text-emerald-300" />
+        <div
+          data-slot="root-app-frame"
+          className="flex min-h-dvh items-center justify-center text-[var(--scry-body)]"
+        >
+          <Loader2 className="h-6 w-6 animate-spin text-[var(--scry-accent-ring)]" />
         </div>
       );
     }
@@ -881,6 +791,7 @@ export default function HomePage() {
     <AuthenticatedHomePage
       authToken={token}
       authenticatedUser={user}
+      mfaRequireConfigStepUp={mfaRequireConfigStepUp}
       adoptSession={adoptSession}
       serviceRestarting={serviceRestarting}
     />
@@ -890,11 +801,13 @@ export default function HomePage() {
 function AuthenticatedHomePage({
   authToken,
   authenticatedUser,
+  mfaRequireConfigStepUp,
   adoptSession,
   serviceRestarting,
 }: {
   authToken: string | null;
   authenticatedUser: AuthUser;
+  mfaRequireConfigStepUp: boolean | null;
   adoptSession: (nextToken: string, nextUser: AuthUser | null) => void;
   serviceRestarting: boolean;
 }) {
@@ -907,61 +820,37 @@ function AuthenticatedHomePage({
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
 
+  const routeResolution = useMemo(
+    () => resolveAppRoute(pathname, location.search, location.hash),
+    [location.hash, location.search, pathname],
+  );
+  const resolvedRoute =
+    routeResolution.kind === "canonical"
+      ? routeResolution.route
+      : {
+          canonicalPath: pathname,
+          view: "movies" as ViewId,
+          settingsSection: "profile" as SettingsSection,
+          contentSettingsSection: "overview" as ContentSettingsSection,
+          systemSection: "overview" as SystemSection,
+          logsSection: "logs" as LogsSection,
+          activitySection: "activity" as ActivitySection,
+          wantedSection: "wanted" as WantedSection,
+          overviewLibrarySlug: null,
+          overviewTitleSlug: null,
+        };
   const {
-    parsedView: view,
-    parsedSettingsSection: settingsSection,
-    parsedContentSection: contentSettingsSection,
-    parsedSystemSection: systemSection,
-    parsedActivitySection: activitySection,
-    parsedWantedSection: wantedSection,
-    parsedOverviewLibrarySlug,
-    parsedOverviewSlug,
-  } = useMemo(() => {
-    const trimmed = pathname.replace(/^\/+|\/+$/g, "");
-    const segments = trimmed ? trimmed.split("/") : [];
-    const normalizedSegments = segments.map((segment) => segment.toLowerCase());
-    const parsedView = parseViewFromPath(normalizedSegments[0]);
-    const parsedSettingsSection: SettingsSection =
-      parsedView === "settings"
-        ? parseSettingsSectionFromPath(normalizedSegments[1] ?? null)
-        : "general";
-    const parsedContentSection: ContentSettingsSection = isMediaView(parsedView)
-      ? parseContentSectionFromPath(
-          normalizedSegments[1] ?? null,
-          normalizedSegments[2] ?? null,
-        )
-      : "overview";
-    const parsedSystemSection: SystemSection =
-      parsedView === "system"
-        ? parseSystemSectionFromPath(normalizedSegments[1] ?? null)
-        : "overview";
-    const parsedActivitySection: ActivitySection =
-      parsedView === "activity"
-        ? parseActivitySectionFromPath(normalizedSegments[1] ?? null)
-        : "activity";
-    const parsedWantedSection: WantedSection =
-      parsedView === "wanted"
-        ? parseWantedSectionFromPath(normalizedSegments[1] ?? null)
-        : "wanted";
-    const parsedOverviewTarget =
-      isMediaView(parsedView) && parsedContentSection === "overview"
-        ? parseOverviewTargetFromPath(
-            parsedView,
-            segments[1] ?? null,
-            segments[2] ?? null,
-          )
-        : { librarySlug: null, titleSlug: null };
-    return {
-      parsedView,
-      parsedSettingsSection,
-      parsedContentSection,
-      parsedSystemSection,
-      parsedActivitySection,
-      parsedWantedSection,
-      parsedOverviewLibrarySlug: parsedOverviewTarget.librarySlug,
-      parsedOverviewSlug: parsedOverviewTarget.titleSlug,
-    };
-  }, [pathname]);
+    view,
+    settingsSection,
+    contentSettingsSection,
+    systemSection,
+    logsSection,
+    activitySection,
+    wantedSection,
+    overviewLibrarySlug: parsedOverviewLibrarySlug,
+    overviewTitleSlug: parsedOverviewSlug,
+  } = resolvedRoute;
+  const routeIsCanonical = routeResolution.kind === "canonical";
 
   const legacyOverviewTitleId = useMemo(() => {
     if (
@@ -972,27 +861,6 @@ function AuthenticatedHomePage({
       return null;
     return searchParams.get("id")?.trim() || null;
   }, [view, contentSettingsSection, parsedOverviewSlug, searchParams]);
-
-  useEffect(() => {
-    if (view !== "history") {
-      return;
-    }
-
-    const nextPath = buildViewPath(
-      "wanted",
-      undefined,
-      undefined,
-      undefined,
-      "history",
-    );
-    const nextQuery = searchParams.toString();
-    const nextPathWithQuery = `${nextPath}${nextQuery ? `?${nextQuery}` : ""}`;
-    const currentPathWithQuery = `${pathname}${nextQuery ? `?${nextQuery}` : ""}`;
-
-    if (nextPathWithQuery !== currentPathWithQuery) {
-      navigate(nextPathWithQuery, { replace: true });
-    }
-  }, [navigate, pathname, searchParams, view]);
 
   const navigationOverviewTarget = useMemo(
     () =>
@@ -1020,40 +888,31 @@ function AuthenticatedHomePage({
 
   const [, setGlobalStatusRaw] = useState("");
   const setGlobalStatus = useGlobalStatusToast(setGlobalStatusRaw);
-  type NavigationBadgeCountsPayload = {
-    pendingImportCounts?: PendingImportCounts | null;
-    pendingMediaRequestCounts?: PendingImportCounts | null;
-    activityImportCount?: number | null;
-    pluginUpdateCount?: number | null;
-  };
-  const [pendingImportCounts, setPendingImportCounts] =
-    useState<PendingImportCounts | null>(null);
-  const [pendingMediaRequestCounts, setPendingMediaRequestCounts] =
-    useState<PendingImportCounts | null>(null);
-  const [manualImportRequiredCount, setManualImportRequiredCount] = useState(0);
-  const [pluginUpdateCount, setPluginUpdateCount] = useState(0);
-  const [scryerVersion, setScryerVersion] = useState<string | null>(null);
-  const [smgVersionCompatibilityNotice, setSmgVersionCompatibilityNotice] =
-    useState<SmgVersionCompatibilityNotice | null>(null);
-  const [smgScryerUpdateNotice, setSmgScryerUpdateNotice] =
-    useState<SmgScryerUpdateNotice | null>(null);
-  const [
-    autoBackupDisabledMissingKeyNotice,
-    setAutoBackupDisabledMissingKeyNotice,
-  ] = useState(false);
-  const [dismissedSmgScryerUpdate, setDismissedSmgScryerUpdate] = useState(
-    () => {
-      if (typeof window === "undefined") {
-        return "";
-      }
-      return (
-        window.localStorage.getItem(SMG_SCRYER_UPDATE_DISMISSED_KEY) ?? ""
-      );
-    },
+  const shellFrameRef = useRef<HTMLDivElement>(null);
+  const [shellTopOffset, setShellTopOffset] = useState(0);
+  const canSubscribeToLibraryEvents = hasAnyLibraryPermission(
+    authenticatedUser,
+    LIBRARY_PERMISSIONS.view,
   );
+  const canSubscribeToJobEvents = hasAppPermission(
+    authenticatedUser,
+    APP_PERMISSIONS.manageSystemSettings,
+  );
+  const {
+    smgVersionCompatibilityNotice,
+    smgScryerUpdateNotice,
+    showSmgScryerUpdateReminder,
+    dismissSmgScryerUpdateReminder,
+  } = useSmgNotices({
+    settingsSubscriptionEnabled: canSubscribeToLibraryEvents,
+  });
   const [resolvedOverviewTarget, setResolvedOverviewTarget] =
     useState<OverviewTitleTarget | null>(null);
   const [overviewSlugLoading, setOverviewSlugLoading] = useState(false);
+  const [legacyOverviewResolution, setLegacyOverviewResolution] = useState<{
+    requestedId: string;
+    resolvedId: string;
+  } | null>(null);
 
   const setLanguagePreferenceFromShell = useCallback(
     (code: string) => {
@@ -1074,98 +933,53 @@ function AuthenticatedHomePage({
   });
   const showInstallBanner =
     !isInstalled && !installBannerDismissed && (canPrompt || isIosSafari);
-  const [configStepUpPolicy, setConfigStepUpPolicy] = useState({
-    loading: true,
-    required: false,
-    error: false,
-  });
-  const [configStepUpNow, setConfigStepUpNow] = useState(() => Date.now());
-  const [settingsStepUpCode, setSettingsStepUpCode] = useState("");
-  const [settingsStepUpBusy, setSettingsStepUpBusy] = useState(false);
-  const [settingsStepUpError, setSettingsStepUpError] = useState<string | null>(
-    null,
-  );
-  const [settingsStepUpForced, setSettingsStepUpForced] = useState(false);
+  useEffect(() => {
+    const frame = shellFrameRef.current;
+    if (!frame || typeof window === "undefined") {
+      return;
+    }
 
-  const refreshConfigStepUpPolicy = useCallback(async () => {
-    setConfigStepUpPolicy((current) => ({
-      ...current,
-      loading: true,
-      error: false,
-    }));
-    try {
-      const { data, error } = await backendClient
-        .query<{
-          authRuntimeState?: {
-            mfaRequireConfigStepUp?: boolean | null;
-          } | null;
-        }>(authRuntimeStateQuery, {})
-        .toPromise();
-      if (error) {
-        throw error;
+    let animationFrame: number | null = null;
+    const updateShellOffset = () => {
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
       }
-
-      const runtimeState = data?.authRuntimeState;
-      setConfigStepUpPolicy({
-        loading: false,
-        required: runtimeState?.mfaRequireConfigStepUp === true,
-        error: false,
+      animationFrame = window.requestAnimationFrame(() => {
+        const topOffset = Math.round(
+          Math.max(0, frame.getBoundingClientRect().top),
+        );
+        setShellTopOffset((previousOffset) =>
+          previousOffset === topOffset ? previousOffset : topOffset,
+        );
+        animationFrame = null;
       });
-    } catch (error) {
-      console.warn("Failed to refresh MFA step-up policy", error);
-      setConfigStepUpPolicy({ loading: false, required: false, error: true });
-    }
-  }, []);
+    };
 
-  useEffect(() => {
-    return scheduleAfterFirstPaint(() => {
-      void refreshConfigStepUpPolicy();
-    });
-  }, [refreshConfigStepUpPolicy]);
-
-  useSettingsSubscription(
-    useCallback(
-      (changedKeys) => {
-        if (
-          changedKeys.includes("auth.mfa.require_config_step_up") ||
-          changedKeys.includes("auth.totp.require_config_step_up") ||
-          changedKeys.includes("auth.form_login_enabled") ||
-          changedKeys.includes("auth.form.enabled")
-        ) {
-          void refreshConfigStepUpPolicy();
-        }
-      },
-      [refreshConfigStepUpPolicy],
-    ),
-  );
-
-  useEffect(() => {
-    const expiresAt = configStepUpExpiresAt(authToken);
-    if (expiresAt === null || typeof window === "undefined") {
-      return;
+    updateShellOffset();
+    window.addEventListener("resize", updateShellOffset);
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updateShellOffset);
+    observer?.observe(frame);
+    if (frame.parentElement) {
+      observer?.observe(frame.parentElement);
     }
 
-    const delay = Math.max(
-      0,
-      expiresAt - Date.now() - CONFIG_STEP_UP_EXPIRY_LEEWAY_MS + 250,
-    );
-    const timeoutId = window.setTimeout(
-      () => setConfigStepUpNow(Date.now()),
-      delay,
-    );
-    return () => window.clearTimeout(timeoutId);
-  }, [authToken]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const refreshClock = () => setConfigStepUpNow(Date.now());
-    window.addEventListener("focus", refreshClock);
-    return () => window.removeEventListener("focus", refreshClock);
-  }, []);
-
+    return () => {
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      window.removeEventListener("resize", updateShellOffset);
+      observer?.disconnect();
+    };
+  }, [
+    isOnline,
+    showInstallBanner,
+    showSmgScryerUpdateReminder,
+    smgScryerUpdateNotice,
+    smgVersionCompatibilityNotice,
+  ]);
   useEffect(() => {
     if (!isInstalled || typeof window === "undefined") {
       return;
@@ -1182,204 +996,8 @@ function AuthenticatedHomePage({
     }
   }, []);
 
-  const refreshScryerVersion = useCallback(async () => {
-    try {
-      const { data, error } = await backendClient
-        .query<{ scryerVersion?: string | null }>(scryerVersionQuery, {})
-        .toPromise();
-      if (error) {
-        throw error;
-      }
-      setScryerVersion(data?.scryerVersion ?? null);
-    } catch (error) {
-      console.warn("Failed to refresh Scryer version", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!serviceRestarting) {
-      return scheduleAfterFirstPaint(() => {
-        void refreshScryerVersion();
-      });
-    }
-  }, [refreshScryerVersion, serviceRestarting]);
-
-  const refreshSmgVersionCompatibilityNotice = useCallback(async () => {
-    try {
-      const { data, error } = await backendClient
-        .query<{
-          smgVersionCompatibilityNotice?: SmgVersionCompatibilityNotice | null;
-        }>(smgVersionCompatibilityNoticeQuery, {})
-        .toPromise();
-      if (error) {
-        throw error;
-      }
-      setSmgVersionCompatibilityNotice(
-        data?.smgVersionCompatibilityNotice ?? null,
-      );
-    } catch (error) {
-      console.warn("Failed to refresh SMG version compatibility notice", error);
-    }
-  }, []);
-
-  const refreshSmgScryerUpdateNotice = useCallback(async () => {
-    try {
-      const { data, error } = await backendClient
-        .query<{
-          smgScryerUpdateNotice?: SmgScryerUpdateNotice | null;
-        }>(smgScryerUpdateNoticeQuery, {})
-        .toPromise();
-      if (error) {
-        throw error;
-      }
-      setSmgScryerUpdateNotice(data?.smgScryerUpdateNotice ?? null);
-    } catch (error) {
-      console.warn("Failed to refresh SMG Scryer update notice", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    return scheduleAfterFirstPaint(() => {
-      void refreshSmgVersionCompatibilityNotice();
-      void refreshSmgScryerUpdateNotice();
-    });
-  }, [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice]);
-
-  useSettingsSubscription(
-    useCallback(
-      (changedKeys) => {
-        if (
-          changedKeys.includes(SMG_VERSION_COMPATIBILITY_NOTICE_KEY) ||
-          changedKeys.includes(SMG_SCRYER_UPDATE_NOTICE_KEY)
-        ) {
-          void refreshSmgVersionCompatibilityNotice();
-          void refreshSmgScryerUpdateNotice();
-        }
-      },
-      [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice],
-    ),
-  );
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof document === "undefined") {
-      return;
-    }
-
-    const handleFocus = () => {
-      void refreshSmgVersionCompatibilityNotice();
-      void refreshSmgScryerUpdateNotice();
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        void refreshSmgVersionCompatibilityNotice();
-        void refreshSmgScryerUpdateNotice();
-      }
-    };
-
-    window.addEventListener("focus", handleFocus);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    const intervalId = window.setInterval(() => {
-      void refreshSmgVersionCompatibilityNotice();
-      void refreshSmgScryerUpdateNotice();
-    }, SMG_NOTICE_REFRESH_INTERVAL_MS);
-    return () => {
-      window.removeEventListener("focus", handleFocus);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.clearInterval(intervalId);
-    };
-  }, [refreshSmgScryerUpdateNotice, refreshSmgVersionCompatibilityNotice]);
-
-  const refreshNavigationBadges = useCallback(async () => {
-    try {
-      const badgeCountsResult = await backendClient
-        .query(navigationBadgeCountsQuery, {})
-        .toPromise();
-
-      if (badgeCountsResult.error) {
-        throw badgeCountsResult.error;
-      }
-
-      const badgeCounts = badgeCountsResult.data?.navigationBadgeCounts as
-        | NavigationBadgeCountsPayload
-        | undefined;
-      setPendingImportCounts(
-        badgeCounts?.pendingImportCounts ?? { movie: 0, series: 0, anime: 0 },
-      );
-      setPendingMediaRequestCounts(
-        badgeCounts?.pendingMediaRequestCounts ?? {
-          movie: 0,
-          series: 0,
-          anime: 0,
-        },
-      );
-      setManualImportRequiredCount(
-        Number(badgeCounts?.activityImportCount ?? 0),
-      );
-      setPluginUpdateCount(Number(badgeCounts?.pluginUpdateCount ?? 0));
-    } catch (error) {
-      console.warn("Failed to refresh navigation badges", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    return scheduleAfterFirstPaint(() => {
-      void refreshNavigationBadges();
-    });
-  }, [refreshNavigationBadges]);
-
-  useEffect(() => {
-    const refreshFromPulse = () => {
-      dispatchNavigationBadgesRefresh({ source: "poll" });
-    };
-    const refreshFromFocus = () => {
-      dispatchNavigationBadgesRefresh({ source: "focus" });
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        refreshFromFocus();
-      }
-    };
-    const handleNavigationBadgeRefresh = (event: Event) => {
-      const delta =
-        event instanceof CustomEvent &&
-        typeof (event as CustomEvent<NavigationBadgesRefreshDetail>).detail
-          ?.delta === "number"
-          ? Number(
-              (event as CustomEvent<NavigationBadgesRefreshDetail>).detail
-                ?.delta,
-            )
-          : 0;
-      if (delta !== 0) {
-        setManualImportRequiredCount((current) => Math.max(0, current + delta));
-        window.setTimeout(() => {
-          void refreshNavigationBadges();
-        }, 2_000);
-        return;
-      }
-      void refreshNavigationBadges();
-    };
-    window.addEventListener(
-      NAVIGATION_BADGES_REFRESH_EVENT,
-      handleNavigationBadgeRefresh,
-    );
-    window.addEventListener("focus", refreshFromFocus);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    const intervalId = window.setInterval(() => {
-      refreshFromPulse();
-    }, 30_000);
-    return () => {
-      window.removeEventListener(
-        NAVIGATION_BADGES_REFRESH_EVENT,
-        handleNavigationBadgeRefresh,
-      );
-      window.removeEventListener("focus", refreshFromFocus);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.clearInterval(intervalId);
-    };
-  }, [refreshNavigationBadges]);
-
   const activeFacet = useMemo<Facet>(
-    () => facetForView(view)?.id ?? "movie",
+    () => facetForView(view)?.id ?? "MOVIE",
     [view],
   );
   const queueFacet = activeFacet;
@@ -1392,6 +1010,7 @@ function AuthenticatedHomePage({
       nextSystemSection?: SystemSection,
       nextWantedSection?: WantedSection,
       nextActivitySection?: ActivitySection,
+      nextLogsSection?: LogsSection,
       nextOverviewTitleId?: string | null,
       nextEpisodeId?: string | null,
     ) => {
@@ -1403,6 +1022,7 @@ function AuthenticatedHomePage({
         nextView === "system" ? nextSystemSection : undefined,
         nextView === "wanted" ? nextWantedSection : undefined,
         nextView === "activity" ? nextActivitySection : undefined,
+        nextView === "logs" ? nextLogsSection : undefined,
       );
       const normalizedContentSection = isMedia
         ? (nextContentSection ?? "overview")
@@ -1543,11 +1163,13 @@ function AuthenticatedHomePage({
 
     setResolvedOverviewTarget(null);
     setOverviewSlugLoading(true);
+    const lookupLibrarySlug =
+      parsedOverviewLibrarySlug === view ? null : parsedOverviewLibrarySlug;
 
     void resolveTitleOverviewTargetBySlug(
       backendClient,
       facet,
-      parsedOverviewLibrarySlug,
+      lookupLibrarySlug,
       parsedOverviewSlug,
     )
       .then((target) => {
@@ -1603,13 +1225,105 @@ function AuthenticatedHomePage({
     view,
   ]);
 
+  useEffect(() => {
+    let cancelled = false;
+    let keepPendingForNavigation = false;
+
+    if (
+      !routeIsCanonical ||
+      !legacyOverviewTitleId ||
+      !isMediaView(view) ||
+      contentSettingsSection !== "overview"
+    ) {
+      setLegacyOverviewResolution(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const replaceWithOverviewList = () => {
+      const nextParams = new URLSearchParams(searchParams.toString());
+      nextParams.delete("id");
+      nextParams.delete("episodeId");
+      const nextQuery = nextParams.toString();
+      navigate(`${buildViewPath(view)}${nextQuery ? `?${nextQuery}` : ""}`, {
+        replace: true,
+      });
+    };
+
+    setLegacyOverviewResolution(null);
+    setOverviewSlugLoading(true);
+    void resolveTitleOverviewTargetById(backendClient, legacyOverviewTitleId)
+      .then((target) => {
+        if (cancelled) {
+          return;
+        }
+        if (!target) {
+          replaceWithOverviewList();
+          return;
+        }
+
+        const targetView = FACET_REGISTRY.find(
+          (definition) => definition.id === target.facet,
+        )?.viewId as ViewId | undefined;
+        if (!targetView) {
+          replaceWithOverviewList();
+          return;
+        }
+
+        if (target.slug && target.librarySlug) {
+          keepPendingForNavigation = true;
+          navigateToOverview(targetView, target, overviewEpisodeId, true);
+          return;
+        }
+
+        setLegacyOverviewResolution({
+          requestedId: legacyOverviewTitleId,
+          resolvedId: target.id,
+        });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.apiError"),
+        );
+        replaceWithOverviewList();
+      })
+      .finally(() => {
+        if (!cancelled && !keepPendingForNavigation) {
+          setOverviewSlugLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    contentSettingsSection,
+    legacyOverviewTitleId,
+    navigate,
+    navigateToOverview,
+    overviewEpisodeId,
+    routeIsCanonical,
+    searchParams,
+    setGlobalStatus,
+    t,
+    view,
+  ]);
+
   const overviewTitleId = parsedOverviewSlug
     ? (navigationOverviewTarget?.id ?? resolvedOverviewTarget?.id ?? null)
-    : legacyOverviewTitleId;
-  const overviewLoading =
-    Boolean(parsedOverviewSlug) &&
-    !navigationOverviewTarget &&
-    (overviewSlugLoading || overviewTitleId === null);
+    : legacyOverviewResolution?.requestedId === legacyOverviewTitleId
+      ? legacyOverviewResolution.resolvedId
+      : null;
+  const overviewTitleRoutePending = Boolean(
+    isMediaView(view) &&
+      overviewSlugLoading &&
+      !overviewTitleId &&
+      (parsedOverviewSlug || legacyOverviewTitleId),
+  );
 
   const handleOpenOverview = useCallback(
     (
@@ -1626,43 +1340,6 @@ function AuthenticatedHomePage({
     [navigateToOverview],
   );
 
-  const handleOverviewTitleResolved = useCallback(
-    (overviewTarget: OverviewTitleTarget) => {
-      if (!isMediaView(view) || contentSettingsSection !== "overview") {
-        return;
-      }
-
-      const normalizedSlug = overviewTarget.slug?.trim() || null;
-      const normalizedLibrarySlug = overviewTarget.librarySlug?.trim() || null;
-      if (!normalizedSlug || !normalizedLibrarySlug) {
-        return;
-      }
-
-      if (parsedOverviewSlug && parsedOverviewLibrarySlug) {
-        if (
-          normalizedSlug !== parsedOverviewSlug ||
-          normalizedLibrarySlug !== parsedOverviewLibrarySlug
-        ) {
-          navigateToOverview(view, overviewTarget, overviewEpisodeId, true);
-        }
-        return;
-      }
-
-      if (legacyOverviewTitleId) {
-        navigateToOverview(view, overviewTarget, overviewEpisodeId, true);
-      }
-    },
-    [
-      contentSettingsSection,
-      legacyOverviewTitleId,
-      navigateToOverview,
-      overviewEpisodeId,
-      parsedOverviewLibrarySlug,
-      parsedOverviewSlug,
-      view,
-    ],
-  );
-
   const topNav = useMemo(
     () => [
       ...FACET_REGISTRY.map((f) => ({
@@ -1670,6 +1347,11 @@ function AuthenticatedHomePage({
         label: t(f.navLabelKey),
         icon: f.icon,
       })),
+      {
+        id: "discovery" as ViewId,
+        label: t("nav.discovery"),
+        icon: Sparkles,
+      },
       {
         id: "activity" as ViewId,
         label: t("nav.activity"),
@@ -1681,201 +1363,69 @@ function AuthenticatedHomePage({
         icon: CalendarDays,
       },
       { id: "wanted" as ViewId, label: t("nav.wanted"), icon: ListChecks },
+      { id: "system" as ViewId, label: t("system.title"), icon: Monitor },
       { id: "settings" as ViewId, label: t("nav.settings"), icon: Settings },
-      { id: "system" as ViewId, label: t("nav.system"), icon: MonitorCog },
     ],
     [t],
   );
-  const canViewCatalog = hasAnyLibraryPermission(
-    authenticatedUser,
-    LIBRARY_PERMISSIONS.view,
+  const {
+    canViewCatalog,
+    canManageTitle,
+    canRequestMedia,
+    canResolveImports,
+    canAccessActivity,
+    canManageSystemSettings,
+    canManageCatalogSettings,
+    canManageUserAccounts,
+    canManageUsers,
+    canManageConfig,
+    canManageLibrarySettings,
+  } = usePermissions(authenticatedUser);
+  const discoveryAuthorizationSignature = useMemo(
+    () => authorizationCacheSignature(authenticatedUser),
+    [authenticatedUser],
   );
-  const canManageTitle = hasAnyLibraryPermission(
-    authenticatedUser,
-    LIBRARY_PERMISSIONS.manageTitles,
-  );
-  const canRequestMedia = hasAnyLibraryPermission(
-    authenticatedUser,
-    LIBRARY_PERMISSIONS.request,
-  );
-  const canResolveImports = hasAnyLibraryPermission(
-    authenticatedUser,
-    LIBRARY_PERMISSIONS.resolveImports,
-  );
-  const canAccessActivity = canResolveImports || canManageTitle;
-  const canManageUserAccounts = hasAppPermission(
-    authenticatedUser,
-    APP_PERMISSIONS.manageUsers,
-  );
-  const canManagePermissions = hasAppPermission(
-    authenticatedUser,
-    APP_PERMISSIONS.managePermissions,
-  );
-  const canManageSystemSettings = hasAppPermission(
-    authenticatedUser,
-    APP_PERMISSIONS.manageSystemSettings,
-  );
-  const canManageCatalogSettings = hasAppPermission(
-    authenticatedUser,
-    APP_PERMISSIONS.manageCatalogSettings,
-  );
-  const canManageUsers = canManageUserAccounts || canManagePermissions;
-  const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
-  const canManageLibrarySettings =
-    canManageConfig ||
-    hasAnyLibraryPermission(authenticatedUser, LIBRARY_PERMISSIONS.manageLibrary);
-  const canAccessRecycleBin = canManageSystemSettings || canManageTitle;
+  const {
+    pendingImportCounts,
+    pendingMediaRequestCounts,
+    manualImportRequiredCount,
+    pluginUpdateCount,
+    scryerVersion,
+  } = useNavigationBadges({
+    serviceRestarting,
+    canManageTitle,
+    canRequestMedia,
+  });
   const viewingBackupsSettings =
     view === "settings" && settingsSection === "backups";
-
-  useEffect(() => {
-    let cancelled = false;
-
-    if (!canManageSystemSettings || serviceRestarting) {
-      setAutoBackupDisabledMissingKeyNotice(false);
-      return;
-    }
-
-    const cancelScheduledQuery = scheduleAfterFirstPaint(() => {
-      void backendClient
-        .query<{
-          autoBackupSettings?: {
-            autoBackupDisabledMissingKeyNotice?: boolean | null;
-          } | null;
-        }>(autoBackupSettingsQuery, {})
-        .toPromise()
-        .then(({ data, error }) => {
-          if (cancelled || error) {
-            return;
-          }
-
-          setAutoBackupDisabledMissingKeyNotice(
-            data?.autoBackupSettings?.autoBackupDisabledMissingKeyNotice ===
-              true,
-          );
-        });
-    });
-
-    return () => {
-      cancelled = true;
-      cancelScheduledQuery();
-    };
-  }, [canManageSystemSettings, serviceRestarting]);
-
-  useEffect(() => {
-    if (
-      !autoBackupDisabledMissingKeyNotice ||
-      !canManageSystemSettings ||
-      viewingBackupsSettings
-    ) {
-      toast.dismiss(AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID);
-      return;
-    }
-
-    toast.warning(t("settings.autoBackupsDisabledMissingKeyToastTitle"), {
-      id: AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID,
-      description: t("settings.autoBackupsDisabledMissingKeyToastDescription"),
-      duration: Infinity,
-      action: {
-        label: t("settings.autoBackupsDisabledMissingKeyToastAction"),
-        onClick: () => {
-          navigateTo("settings", "backups");
-        },
-      },
-    });
-
-    return () => {
-      toast.dismiss(AUTO_BACKUP_DISABLED_NOTICE_TOAST_ID);
-    };
-  }, [
-    autoBackupDisabledMissingKeyNotice,
-    canManageSystemSettings,
-    navigateTo,
-    t,
-    viewingBackupsSettings,
-  ]);
-
-  useEffect(() => {
-    if (
-      !autoBackupDisabledMissingKeyNotice ||
-      !canManageSystemSettings ||
-      !viewingBackupsSettings
-    ) {
-      return;
-    }
-
-    let cancelled = false;
-    void backendClient
-      .mutation<{
-        acknowledgeAutoBackupDisabledMissingKeyNotice?: {
-          autoBackupDisabledMissingKeyNotice?: boolean | null;
-        } | null;
-      }>(acknowledgeAutoBackupDisabledMissingKeyNoticeMutation, {})
-      .toPromise()
-      .then(({ data, error }) => {
-        if (cancelled || error) {
-          return;
-        }
-
-        setAutoBackupDisabledMissingKeyNotice(
-          data?.acknowledgeAutoBackupDisabledMissingKeyNotice
-            ?.autoBackupDisabledMissingKeyNotice === true,
-        );
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    autoBackupDisabledMissingKeyNotice,
-    canManageSystemSettings,
-    viewingBackupsSettings,
-  ]);
-
-  useMediaRequestsSubscription(
-    () => {
-      void refreshNavigationBadges();
-    },
-    { pause: !canManageTitle && !canRequestMedia },
-  );
-
-  const routeCommandPalette = useMemo(
+  const globalSearchRouteCommands = useMemo(
     () =>
       buildRouteCommands({
         t,
-        pendingImportCounts,
         user: authenticatedUser,
         activityImportCount: manualImportRequiredCount,
         onNavigate: navigateTo,
       }),
-    [
-      authenticatedUser,
-      manualImportRequiredCount,
-      navigateTo,
-      pendingImportCounts,
-      t,
-    ],
+    [authenticatedUser, manualImportRequiredCount, navigateTo, t],
   );
 
-  const routeCommandPaletteConfig = useMemo(
-    () => ({
-      title: t("command.paletteTitle"),
-      description: t("command.paletteDescription"),
-      placeholder: t("command.palettePlaceholder"),
-      noResultsText: t("command.paletteNoResults"),
-      groupLabel: t("command.paletteGroup"),
-      items: routeCommandPalette,
-    }),
-    [routeCommandPalette, t],
-  );
+  useAutoBackupNotice({
+    canManageSystemSettings,
+    serviceRestarting,
+    viewingBackupsSettings,
+    navigateTo,
+    t,
+  });
 
   useEffect(() => {
     if (
+      !routeIsCanonical ||
       !isMediaView(view) ||
       canAccessMediaSettingsSection(
         contentSettingsSection,
         canManageConfig,
         canManageLibrarySettings,
+        canResolveImports,
       )
     ) {
       return;
@@ -1888,6 +1438,7 @@ function AuthenticatedHomePage({
         contentSettingsSection,
         canManageConfig,
         canManageLibrarySettings,
+        canResolveImports,
       ),
       undefined,
       undefined,
@@ -1895,8 +1446,10 @@ function AuthenticatedHomePage({
   }, [
     canManageConfig,
     canManageLibrarySettings,
+    canResolveImports,
     contentSettingsSection,
     navigateTo,
+    routeIsCanonical,
     view,
   ]);
 
@@ -1904,8 +1457,11 @@ function AuthenticatedHomePage({
     const fallback = defaultAccessibleRoute(
       canViewCatalog,
       canRequestMedia,
+      canResolveImports,
+      canManageUserAccounts,
       canManageUsers,
-      canManageConfig,
+      canManageSystemSettings,
+      canManageCatalogSettings,
       canManageLibrarySettings,
     );
     navigateTo(
@@ -1916,9 +1472,12 @@ function AuthenticatedHomePage({
       undefined,
     );
   }, [
-    canManageConfig,
+    canManageCatalogSettings,
     canManageLibrarySettings,
+    canManageSystemSettings,
+    canManageUserAccounts,
     canManageUsers,
+    canResolveImports,
     canRequestMedia,
     canViewCatalog,
     navigateTo,
@@ -1928,9 +1487,10 @@ function AuthenticatedHomePage({
     view === "settings"
       ? canAccessSettingsSection(
           settingsSection,
+          canManageUserAccounts,
           canManageUsers,
-          canManageConfig,
-          canAccessRecycleBin,
+          canManageSystemSettings,
+          canManageCatalogSettings,
         )
       : !(
           isMediaView(view) &&
@@ -1938,191 +1498,127 @@ function AuthenticatedHomePage({
             contentSettingsSection,
             canManageConfig,
             canManageLibrarySettings,
+            canResolveImports,
           )
         );
   const protectedSettingsRoute =
     routeCanAccessSettingsContent &&
-    isProtectedSettingsRoute(view, settingsSection, contentSettingsSection);
-  const configStepUpFresh = hasFreshConfigStepUp(authToken, configStepUpNow);
-  const settingsStepUpOpen =
-    protectedSettingsRoute &&
-    !configStepUpPolicy.loading &&
-    !configStepUpPolicy.error &&
-    configStepUpPolicy.required &&
-    (!configStepUpFresh || settingsStepUpForced);
-  const settingsStepUpPolicyLoadFailed =
-    protectedSettingsRoute && configStepUpPolicy.error;
-  const settingsStepUpBlocksContent =
-    protectedSettingsRoute &&
-    (configStepUpPolicy.loading ||
-      settingsStepUpPolicyLoadFailed ||
-      settingsStepUpOpen);
-  const smgScryerUpdateDismissalValue = useMemo(
-    () => buildSmgScryerUpdateDismissalValue(smgScryerUpdateNotice),
-    [smgScryerUpdateNotice],
-  );
-  const showSmgScryerUpdateReminder =
-    !smgVersionCompatibilityNotice &&
-    Boolean(smgScryerUpdateNotice?.available) &&
-    Boolean(smgScryerUpdateDismissalValue) &&
-    dismissedSmgScryerUpdate !== smgScryerUpdateDismissalValue;
-
-  const dismissSmgScryerUpdateReminder = useCallback(() => {
-    if (!smgScryerUpdateDismissalValue) {
-      return;
-    }
-    setDismissedSmgScryerUpdate(smgScryerUpdateDismissalValue);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(
-        SMG_SCRYER_UPDATE_DISMISSED_KEY,
-        smgScryerUpdateDismissalValue,
-      );
-    }
-  }, [smgScryerUpdateDismissalValue]);
-
-  const navigateToSettingsProfile = useCallback(() => {
-    navigateTo("settings", "profile", undefined, undefined, undefined);
-  }, [navigateTo]);
-
-  const handleCancelSettingsStepUp = useCallback(() => {
-    setSettingsStepUpCode("");
-    setSettingsStepUpError(null);
-    setSettingsStepUpForced(false);
-    navigateToSettingsProfile();
-  }, [navigateToSettingsProfile]);
-
-  const handleSettingsStepUpSubmit = useCallback(async () => {
-    if (settingsStepUpCode.length !== 6) {
-      return;
-    }
-
-    setSettingsStepUpBusy(true);
-    setSettingsStepUpError(null);
-    try {
-      const result = await backendClient
-        .mutation<
-          { mfaVerifyStepUp?: { token: string; user: AuthUser | null } | null },
-          { input: { code: string } }
-        >(mfaVerifyStepUpMutation, { input: { code: settingsStepUpCode } })
-        .toPromise();
-
-      if (result.error || !result.data?.mfaVerifyStepUp) {
-        const message = t("settings.mfaStepUpFailed");
-        setSettingsStepUpCode("");
-        setSettingsStepUpError(null);
-        setSettingsStepUpForced(false);
-        setGlobalStatus(message);
-        navigateToSettingsProfile();
-        return;
-      }
-
-      adoptSession(
-        result.data.mfaVerifyStepUp.token,
-        result.data.mfaVerifyStepUp.user,
-      );
-      setSettingsStepUpCode("");
-      setSettingsStepUpError(null);
-      setSettingsStepUpForced(false);
-      setConfigStepUpNow(Date.now());
-      setGlobalStatus(t("settings.mfaStepUpVerified"));
-    } catch {
-      const message = t("settings.mfaStepUpFailed");
-      setSettingsStepUpCode("");
-      setSettingsStepUpError(null);
-      setSettingsStepUpForced(false);
-      setGlobalStatus(message);
-      navigateToSettingsProfile();
-    } finally {
-      setSettingsStepUpBusy(false);
-    }
-  }, [
-    adoptSession,
-    navigateToSettingsProfile,
-    setGlobalStatus,
+    (isProtectedSettingsRoute(view, settingsSection, contentSettingsSection) ||
+      (view === "system" &&
+        systemSection === "recycleBin" &&
+        canManageSystemSettings));
+  const {
+    refreshConfigStepUpPolicy,
     settingsStepUpCode,
+    setSettingsStepUpCode,
+    settingsStepUpBusy,
+    settingsStepUpError,
+    settingsStepUpOpen,
+    settingsStepUpPolicyLoadFailed,
+    settingsStepUpBlocksContent,
+    handleCancelSettingsStepUp,
+    handleSettingsStepUpSubmit,
+  } = useConfigStepUp({
+    authToken,
+    initialMfaRequireConfigStepUp: mfaRequireConfigStepUp,
+    protectedSettingsRoute,
+    settingsSubscriptionEnabled: canSubscribeToLibraryEvents,
+    adoptSession,
+    setGlobalStatus,
+    navigateTo,
     t,
-  ]);
+  });
 
   useEffect(() => {
-    if (!configStepUpFresh) {
-      return;
-    }
-
-    setSettingsStepUpForced(false);
-  }, [configStepUpFresh]);
-
-  useEffect(() => {
-    if (settingsStepUpOpen) {
-      return;
-    }
-
-    setSettingsStepUpCode("");
-    setSettingsStepUpError(null);
-  }, [settingsStepUpOpen]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const handleMfaStepUpRequired = () => {
-      if (!protectedSettingsRoute || !configStepUpPolicy.required) {
-        return;
-      }
-
-      setSettingsStepUpForced(true);
-      setSettingsStepUpError(t("settings.mfaStepUpRequiredAgain"));
-      setGlobalStatus(t("settings.mfaStepUpRequiredAgain"));
-    };
-
-    window.addEventListener(
-      MFA_STEP_UP_REQUIRED_EVENT,
-      handleMfaStepUpRequired,
-    );
-    return () =>
-      window.removeEventListener(
-        MFA_STEP_UP_REQUIRED_EVENT,
-        handleMfaStepUpRequired,
-      );
-  }, [configStepUpPolicy.required, protectedSettingsRoute, setGlobalStatus, t]);
-
-  useEffect(() => {
-    if (view !== "activity" || canAccessActivity) {
+    if (!routeIsCanonical || view !== "activity" || canAccessActivity) {
       return;
     }
 
     navigateToAccessibleDefault();
-  }, [canAccessActivity, navigateToAccessibleDefault, view]);
-
-  useEffect(() => {
-    if (view !== "system" || canManageConfig) {
-      return;
-    }
-
-    navigateToAccessibleDefault();
-  }, [canManageConfig, navigateToAccessibleDefault, view]);
+  }, [canAccessActivity, navigateToAccessibleDefault, routeIsCanonical, view]);
 
   useEffect(() => {
     if (
-      isMediaView(view) &&
-      contentSettingsSection === "overview" &&
-      !canViewCatalog &&
-      canRequestMedia
+      !routeIsCanonical ||
+      (view !== "calendar" && view !== "wanted") ||
+      canViewCatalog
     ) {
-      navigateTo(view, undefined, "requests", undefined, undefined);
+      return;
     }
+
+    navigateToAccessibleDefault();
+  }, [canViewCatalog, navigateToAccessibleDefault, routeIsCanonical, view]);
+
+  useEffect(() => {
+    if (!routeIsCanonical || (view !== "system" && view !== "logs")) {
+      return;
+    }
+
+    const canAccess =
+      view === "logs"
+        ? canManageSystemSettings
+        : canAccessSystemSection(
+            systemSection,
+            canManageSystemSettings,
+            canManageTitle,
+          );
+    if (canAccess) {
+      return;
+    }
+
+    navigateToAccessibleDefault();
   }, [
-    canRequestMedia,
-    canViewCatalog,
-    contentSettingsSection,
-    navigateTo,
+    canManageTitle,
+    canManageSystemSettings,
+    navigateToAccessibleDefault,
+    routeIsCanonical,
+    systemSection,
     view,
   ]);
 
   useEffect(() => {
     if (
+      !routeIsCanonical ||
       !isMediaView(view) ||
-      contentSettingsSection !== "requests" ||
+      contentSettingsSection !== "overview" ||
+      canViewCatalog
+    ) {
+      return;
+    }
+
+    if (canRequestMedia) {
+      navigateTo("requests");
+      return;
+    }
+
+    if (canResolveImports) {
+      navigateTo(view, undefined, "import", undefined, undefined);
+      return;
+    }
+
+    if (canManageLibrarySettings && !canManageConfig) {
+      navigateTo(view, undefined, "library", undefined, undefined);
+      return;
+    }
+
+    navigateToAccessibleDefault();
+  }, [
+    canManageConfig,
+    canManageLibrarySettings,
+    canRequestMedia,
+    canResolveImports,
+    canViewCatalog,
+    contentSettingsSection,
+    navigateTo,
+    navigateToAccessibleDefault,
+    routeIsCanonical,
+    view,
+  ]);
+
+  useEffect(() => {
+    if (
+      !routeIsCanonical ||
+      view !== "requests" ||
       canManageTitle ||
       canRequestMedia
     ) {
@@ -2133,13 +1629,18 @@ function AuthenticatedHomePage({
   }, [
     canManageTitle,
     canRequestMedia,
-    contentSettingsSection,
     navigateToAccessibleDefault,
+    routeIsCanonical,
     view,
   ]);
 
   useEffect(() => {
-    if (view !== "wanted" || wantedSection !== "history" || canManageTitle) {
+    if (
+      !routeIsCanonical ||
+      view !== "wanted" ||
+      wantedSection !== "history" ||
+      canManageTitle
+    ) {
       return;
     }
 
@@ -2154,21 +1655,23 @@ function AuthenticatedHomePage({
     canViewCatalog,
     navigateTo,
     navigateToAccessibleDefault,
+    routeIsCanonical,
     view,
     wantedSection,
   ]);
 
   useEffect(() => {
-    if (view !== "settings") {
+    if (!routeIsCanonical || view !== "settings") {
       return;
     }
 
     if (
       canAccessSettingsSection(
         settingsSection,
+        canManageUserAccounts,
         canManageUsers,
-        canManageConfig,
-        canAccessRecycleBin,
+        canManageSystemSettings,
+        canManageCatalogSettings,
       )
     ) {
       return;
@@ -2176,13 +1679,20 @@ function AuthenticatedHomePage({
 
     navigateTo(
       "settings",
-      defaultSettingsSection(canManageUsers, canManageConfig),
+      defaultSettingsSection(
+        canManageSystemSettings,
+        canManageCatalogSettings,
+        canManageUserAccounts,
+        canManageUsers,
+      ),
     );
   }, [
-    canManageConfig,
+    canManageCatalogSettings,
+    canManageSystemSettings,
+    canManageUserAccounts,
     canManageUsers,
-    canAccessRecycleBin,
     navigateTo,
+    routeIsCanonical,
     settingsSection,
     view,
   ]);
@@ -2204,11 +1714,6 @@ function AuthenticatedHomePage({
       state: { restoreOverviewScroll: true },
     });
   }, [navigate, searchParams, view]);
-
-  const handleTitleNotFound = useCallback(
-    () => navigateTo(view, undefined, "overview", undefined, undefined),
-    [navigateTo, view],
-  );
 
   useEffect(() => {
     if (
@@ -2240,23 +1745,23 @@ function AuthenticatedHomePage({
     <ScryerGraphqlProvider language={uiLanguage}>
       <TranslateContext.Provider value={t}>
         <GlobalStatusContext.Provider value={setGlobalStatus}>
-          <div className="flex min-h-screen flex-col bg-background text-foreground">
+          <div
+            data-slot="root-app-frame"
+            className="flex min-h-dvh flex-col overflow-x-hidden text-[var(--scry-body)]"
+          >
             {serviceRestarting && <BackendRestartOverlay />}
             <Suspense fallback={<ViewLoadingFallback />}>
               <LibraryScanProgressProvider>
-                <JobRunProvider>
-                  <ReactiveRefreshProvider>
+                <JobRunProvider enabled={canSubscribeToJobEvents}>
+                  <ReactiveRefreshProvider
+                    enabled={canSubscribeToLibraryEvents}
+                  >
                     <GlobalSearchProvider
                       activeFacet={activeFacet}
                       authenticatedUser={authenticatedUser}
                       queueFacet={queueFacet}
                       uiLanguage={uiLanguage}
                     >
-                      <RootHeader
-                        onOpenOverview={handleOpenOverview}
-                        routeCommandPalette={routeCommandPaletteConfig}
-                      />
-
                       {smgVersionCompatibilityNotice ? (
                         <SmgUpgradeBanner
                           notice={smgVersionCompatibilityNotice}
@@ -2273,37 +1778,48 @@ function AuthenticatedHomePage({
                       ) : null}
 
                       {!isOnline ? (
-                        <div className="flex items-center justify-center gap-2 bg-amber-900/80 px-4 py-2 text-sm text-amber-100">
-                          <WifiOff className="h-4 w-4 flex-none" />
-                          <span>{t("pwa.offline")}</span>
+                        <div
+                          data-slot="root-shell-notice"
+                          className="flex items-center justify-center gap-2 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-surfA))] px-4 py-2 text-sm font-medium text-[var(--scry-body)] shadow-[0_8px_28px_rgba(2,6,23,0.14)] backdrop-blur"
+                        >
+                          <WifiOff className="h-4 w-4 flex-none text-[var(--scry-accent-ring)]" />
+                          <span className="text-[var(--scry-ink2)]">
+                            {t("pwa.offline")}
+                          </span>
                         </div>
                       ) : null}
 
                       {showInstallBanner ? (
-                        <div className="flex items-center justify-center gap-3 bg-emerald-100 dark:bg-emerald-900/60 px-4 py-2 text-sm text-emerald-800 dark:text-emerald-100">
-                          <Download className="h-4 w-4 flex-none" />
-                          <span>
+                        <div
+                          data-slot="root-shell-notice"
+                          className="flex items-center justify-center gap-3 border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-surfA))] px-4 py-2 text-sm text-[var(--scry-body)] shadow-[0_8px_28px_rgba(var(--scry-accent-rgb),0.10)] backdrop-blur"
+                        >
+                          <Download className="h-4 w-4 flex-none text-[var(--scry-accent-ring)]" />
+                          <span className="text-[var(--scry-muted)]">
                             {isIosSafari
                               ? t("pwa.iosInstallHint")
                               : t("pwa.installApp")}
                           </span>
                           {canPrompt ? (
-                            <button
+                            <Button
                               type="button"
                               onClick={() => void promptInstall()}
-                              className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-foreground hover:bg-emerald-500"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 rounded-[8px] px-3 text-xs font-semibold text-[var(--scry-accent-text)]"
                             >
                               {t("pwa.installApp")}
-                            </button>
+                            </Button>
                           ) : null}
-                          <button
+                          <IconButton
                             type="button"
                             onClick={dismissInstallBanner}
-                            className="ml-auto text-emerald-700 dark:text-emerald-300 hover:text-foreground"
-                            aria-label={t("label.dismiss")}
+                            label={t("label.dismiss")}
+                            appearance="ghost"
+                            className="ml-auto h-7 w-7 rounded-[8px]"
                           >
                             <X className="h-4 w-4" />
-                          </button>
+                          </IconButton>
                         </div>
                       ) : null}
 
@@ -2355,13 +1871,23 @@ function AuthenticatedHomePage({
                         </DialogContent>
                       </Dialog>
 
-                      <div className="mx-auto flex w-full max-w-[1480px] flex-1 min-h-0 px-3 pb-10 pt-4">
+                      <div
+                        ref={shellFrameRef}
+                        data-slot="root-shell-frame"
+                        className="flex min-h-0 w-full flex-1 min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:overflow-hidden"
+                        style={
+                          {
+                            "--root-shell-top-offset": `${shellTopOffset}px`,
+                          } as CSSProperties
+                        }
+                      >
                         <RootSidebar
                           topNav={topNav}
                           view={view}
                           settingsSection={settingsSection}
                           contentSettingsSection={contentSettingsSection}
                           systemSection={systemSection}
+                          logsSection={logsSection}
                           activitySection={activitySection}
                           wantedSection={wantedSection}
                           user={authenticatedUser}
@@ -2369,44 +1895,46 @@ function AuthenticatedHomePage({
                           pendingMediaRequestCounts={pendingMediaRequestCounts}
                           manualImportRequiredCount={manualImportRequiredCount}
                           pluginUpdateCount={pluginUpdateCount}
-                          scryerVersion={scryerVersion}
+                          header={
+                            <RootHeader
+                              onOpenOverview={handleOpenOverview}
+                              routeCommandItems={globalSearchRouteCommands}
+                            />
+                          }
                           onNavigate={navigateTo}
                         >
                           <main
-                            className={
-                              view === "wanted" ||
-                              view === "calendar" ||
-                              (isMediaView(view) &&
-                                contentSettingsSection === "requests")
-                                ? "flex min-h-0 flex-1 flex-col"
-                                : "min-h-[70vh]"
-                            }
+                            data-slot="root-main-scroll"
+                            className="flex min-h-[70vh] flex-1 flex-col min-[981px]:min-h-0 min-[981px]:overflow-y-auto"
                           >
                             <Suspense fallback={<ViewLoadingFallback />}>
-                              {settingsStepUpPolicyLoadFailed ? (
-                                <div className="mx-auto flex min-h-[360px] max-w-md flex-col items-center justify-center gap-3 text-center">
-                                  <AlertTriangle
-                                    className="h-8 w-8 text-amber-500"
-                                    aria-hidden="true"
-                                  />
-                                  <h2 className="text-lg font-semibold">
+                              {!routeIsCanonical ? (
+                                <NotFoundPage />
+                              ) : settingsStepUpPolicyLoadFailed ? (
+                                <div className="mx-auto flex min-h-[360px] w-full max-w-md flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+                                  <div className="flex h-12 w-12 items-center justify-center rounded-[14px] border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)] shadow-[0_12px_28px_rgba(2,6,23,0.12)]">
+                                    <AlertTriangle
+                                      className="h-6 w-6"
+                                      aria-hidden="true"
+                                    />
+                                  </div>
+                                  <h2 className="text-lg font-bold text-[var(--scry-ink2)]">
                                     {t("settings.mfaStepUpPolicyLoadFailed")}
                                   </h2>
-                                  <p className="text-sm text-muted-foreground">
+                                  <p className="text-sm leading-6 text-[var(--scry-muted3)]">
                                     {t(
                                       "settings.mfaStepUpPolicyLoadFailedDescription",
                                     )}
                                   </p>
-                                  <button
+                                  <Button
                                     id="settings-mfa-step-up-policy-retry"
                                     type="button"
-                                    className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
                                     onClick={() =>
                                       void refreshConfigStepUpPolicy()
                                     }
                                   >
                                     {t("settings.mfaStepUpPolicyRetry")}
-                                  </button>
+                                  </Button>
                                 </div>
                               ) : settingsStepUpBlocksContent ? (
                                 <ViewLoadingFallback />
@@ -2414,18 +1942,19 @@ function AuthenticatedHomePage({
                                 <MainContent
                                   view={view}
                                   overviewTitleId={overviewTitleId}
-                                  overviewLoading={overviewLoading}
-                                  overviewEpisodeId={overviewEpisodeId}
-                                  handleBackToList={handleBackToList}
-                                  handleTitleNotFound={handleTitleNotFound}
-                                  handleOverviewTitleResolved={
-                                    handleOverviewTitleResolved
+                                  overviewTitleRoutePending={
+                                    overviewTitleRoutePending
                                   }
+                                  routeOverviewEpisodeId={overviewEpisodeId}
+                                  handleBackToList={handleBackToList}
                                   settingsSection={settingsSection}
                                   userId={authenticatedUser.id}
                                   username={authenticatedUser.username}
                                   selectedLanguage={selectedLanguage}
                                   uiLanguage={uiLanguage}
+                                  discoveryAuthorizationSignature={
+                                    discoveryAuthorizationSignature
+                                  }
                                   setLanguagePreferenceFromShell={
                                     setLanguagePreferenceFromShell
                                   }
@@ -2433,13 +1962,18 @@ function AuthenticatedHomePage({
                                     contentSettingsSection
                                   }
                                   systemSection={systemSection}
+                                  logsSection={logsSection}
+                                  scryerVersion={scryerVersion}
                                   activitySection={activitySection}
                                   wantedSection={wantedSection}
                                   handleOpenOverview={handleOpenOverview}
                                   handleImportRouteEmpty={handleBackToList}
+                                  canViewCatalog={canViewCatalog}
                                   canAccessActivity={canAccessActivity}
-                                  canAccessRecycleBin={canAccessRecycleBin}
+                                  canResolveImports={canResolveImports}
                                   canManageTitle={canManageTitle}
+                                  canRequestMedia={canRequestMedia}
+                                  canManageUserAccounts={canManageUserAccounts}
                                   canManageUsers={canManageUsers}
                                   canManageSystemSettings={
                                     canManageSystemSettings

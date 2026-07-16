@@ -101,9 +101,20 @@ fn inferred_audio_language_for_country(country: &str) -> Option<&'static str> {
 
 fn is_anime_context(category: Option<&str>, title_tags: &[String]) -> bool {
     category.is_some_and(|value| value.eq_ignore_ascii_case("anime"))
-        || title_tags
-            .iter()
-            .any(|tag| tag.eq_ignore_ascii_case("anime"))
+        || title_tags.iter().any(|tag| tag_marks_anime(tag))
+}
+
+/// Whether a title tag marks the title as anime. Matches the bare `anime` tag
+/// as well as namespaced variants such as `anime-hd`. The search facet (and the
+/// `category` hint derived from it) collapses anime movies and series-movie
+/// links to `movie`, so tag-based detection is the fallback signal when the
+/// category alone no longer carries the anime origin.
+fn tag_marks_anime(tag: &str) -> bool {
+    let tag = tag.trim();
+    tag.eq_ignore_ascii_case("anime")
+        || tag
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("anime-"))
 }
 
 pub(crate) fn title_audio_language_context(
@@ -164,15 +175,17 @@ pub(crate) fn release_audio_language_hints_for_title(
     }
 
     if parsed.is_dual_audio && normalized.is_empty() {
-        if let Some(context) = title_language_context {
-            if context.is_anime {
-                push_language(&mut normalized, "eng");
-                push_language(&mut normalized, &context.inferred_original_audio_language);
-            }
-        } else {
-            push_language(&mut normalized, "eng");
-            push_language(&mut normalized, DEFAULT_ANIME_AUDIO_LANGUAGE);
-        }
+        // A "dual audio" release ships two audio tracks: English plus the
+        // title's original-language audio. Use the title's inferred original
+        // language for the second track (which defaults to Japanese for anime),
+        // and fall back to the canonical anime pairing when we have no context.
+        // This applies to non-anime titles too, so an unlabeled dual-audio
+        // release is not falsely treated as having zero audio languages.
+        push_language(&mut normalized, "eng");
+        let original_language = title_language_context
+            .map(|context| context.inferred_original_audio_language.as_str())
+            .unwrap_or(DEFAULT_ANIME_AUDIO_LANGUAGE);
+        push_language(&mut normalized, original_language);
     }
 
     if normalized.is_empty()
@@ -212,15 +225,152 @@ pub(crate) fn required_audio_languages_match(required: &[String], actual: &[Stri
     missing_required_audio_languages(required, actual).is_empty()
 }
 
+/// Resolve all canonical audio language codes named in a free-text audio track
+/// title such as "English 5.1", "Japanese + English", or "Eng+Jpn".
+///
+/// Only UNAMBIGUOUS signals are accepted: tokens of 3+ characters (full language
+/// names or ISO 639 codes), resolved with the strict (passthrough-free) resolver
+/// so codec/technical tokens (DTS, AAC, AC3) are not mistaken for languages.
+/// Short 2-letter tokens are deliberately ignored: they collide with obscure ISO
+/// two-letter codes and common English words (e.g. "VO", "is", "it", "no"), and
+/// would otherwise mis-resolve a descriptive title to the wrong language. The
+/// title is tokenized on non-alphanumeric boundaries (no whole-string subtag
+/// splitting, which would turn "no-audio" into Norwegian). Returns distinct
+/// languages in order; empty when nothing maps.
+#[cfg(any(test, feature = "runtime-media-analysis"))]
+pub(crate) fn resolve_audio_languages_from_track_title(title: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for token in title.split(|ch: char| !ch.is_ascii_alphanumeric()) {
+        if token.len() < 3 {
+            continue;
+        }
+        if let Some(code) = crate::normalize_known_audio_language_code(token)
+            && !found.contains(&code)
+        {
+            found.push(code);
+        }
+    }
+    found
+}
+
+/// The resolved language(s) of a single probed audio track: its ISO tag wins;
+/// otherwise its title is parsed; otherwise the track is unresolved (empty).
+///
+/// The tag is resolved with the STRICT resolver too, so a junk/non-ISO language
+/// tag (e.g. a codec string mis-stored in the language field) is treated as
+/// unresolved rather than a bogus "known" language that could flip an
+/// indeterminate result into a false rejection.
+#[cfg(any(test, feature = "runtime-media-analysis"))]
+fn resolved_track_languages(stream: &crate::AudioStreamDetail) -> Vec<String> {
+    if let Some(code) = stream
+        .language
+        .as_deref()
+        .and_then(crate::normalize_known_audio_language_code)
+    {
+        return vec![code];
+    }
+    stream
+        .name
+        .as_deref()
+        .map(resolve_audio_languages_from_track_title)
+        .unwrap_or_default()
+}
+
+/// Verdict for the post-download required-audio-language gate.
+#[cfg(any(test, feature = "runtime-media-analysis"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RequiredAudioVerdict {
+    /// Every required language is present.
+    Satisfied,
+    /// Required language(s) are provably absent: every audio track's language is
+    /// known (via tag or title) and none — nor the release hints — supply them.
+    Missing(Vec<String>),
+    /// Required language(s) can be neither confirmed present nor proven absent,
+    /// because one or more audio tracks carry no usable language signal.
+    Indeterminate(Vec<String>),
+}
+
+/// Classify whether a probed file satisfies the required audio languages.
+///
+/// Uses only strong signals — per-track ISO tags, per-track titles, and the
+/// release-name/indexer hints already computed for the title. Distinguishes a
+/// provable absence (`Missing` → reject) from an indeterminate result
+/// (`Indeterminate` → accept + flag) so a correctly-dubbed file whose tracks are
+/// untagged ("und") is not falsely rejected.
+#[cfg(any(test, feature = "runtime-media-analysis"))]
+pub(crate) fn classify_required_audio(
+    required: &[String],
+    audio_streams: &[crate::AudioStreamDetail],
+    release_hints: &[String],
+) -> RequiredAudioVerdict {
+    let required: Vec<String> = normalize_required_audio_languages(required.iter().cloned());
+    if required.is_empty() {
+        return RequiredAudioVerdict::Satisfied;
+    }
+
+    // A file with no audio tracks carries no usable per-track signal: never
+    // reject on it (avoid burying a release on a probe oddity); flag for review.
+    if audio_streams.is_empty() {
+        return RequiredAudioVerdict::Indeterminate(required);
+    }
+
+    let mut resolved: Vec<String> = Vec::new();
+    let mut has_unresolved_track = false;
+    for stream in audio_streams {
+        let langs = resolved_track_languages(stream);
+        if langs.is_empty() {
+            has_unresolved_track = true;
+        }
+        for code in langs {
+            if !resolved.contains(&code) {
+                resolved.push(code);
+            }
+        }
+    }
+
+    // Release-name / indexer hints are explicit claims about this release.
+    for hint in normalize_required_audio_languages(release_hints.iter().cloned()) {
+        if !resolved.contains(&hint) {
+            resolved.push(hint);
+        }
+    }
+
+    let missing: Vec<String> = required
+        .into_iter()
+        .filter(|lang| !resolved.contains(lang))
+        .collect();
+
+    if missing.is_empty() {
+        RequiredAudioVerdict::Satisfied
+    } else if has_unresolved_track {
+        RequiredAudioVerdict::Indeterminate(missing)
+    } else {
+        RequiredAudioVerdict::Missing(missing)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        missing_required_audio_languages, normalize_required_audio_languages,
-        normalize_title_country_code, release_audio_language_hints_for_title,
-        required_audio_languages_match, title_audio_language_context,
+        RequiredAudioVerdict, classify_required_audio, missing_required_audio_languages,
+        normalize_required_audio_languages, normalize_title_country_code,
+        release_audio_language_hints_for_title, required_audio_languages_match,
+        resolve_audio_languages_from_track_title, title_audio_language_context,
     };
+    use crate::AudioStreamDetail;
     use crate::normalize_detected_audio_language_code;
     use crate::release_parser::parse_release_metadata;
+
+    fn audio_stream(language: Option<&str>, name: Option<&str>) -> AudioStreamDetail {
+        AudioStreamDetail {
+            codec: None,
+            profile: None,
+            channels: None,
+            language: language.map(str::to_string),
+            name: name.map(str::to_string),
+            bitrate_kbps: None,
+        }
+    }
 
     #[test]
     fn dual_audio_without_explicit_languages_implies_english_and_japanese() {
@@ -391,13 +541,68 @@ mod tests {
     }
 
     #[test]
-    fn non_anime_dual_audio_does_not_invent_exact_languages() {
+    fn non_anime_dual_audio_infers_english_plus_origin_language() {
         let parsed = parse_release_metadata("[Group] Example Title DUAL AUDIO 1080p");
         let context = title_audio_language_context(None, Some("France"), Some("movie"), &[]);
 
         assert_eq!(
             release_audio_language_hints_for_title(&parsed, None, Some(&context), false),
-            Vec::<String>::new()
+            vec!["eng".to_string(), "fra".to_string()]
+        );
+    }
+
+    #[test]
+    fn non_anime_dual_audio_unknown_origin_implies_english() {
+        let parsed = parse_release_metadata("[Group] Example Title DUAL AUDIO 1080p");
+        let context = title_audio_language_context(None, None, Some("movie"), &[]);
+
+        assert_eq!(
+            release_audio_language_hints_for_title(&parsed, None, Some(&context), false),
+            vec!["eng".to_string()]
+        );
+    }
+
+    #[test]
+    fn dual_audio_without_title_context_defaults_to_english_and_japanese() {
+        let parsed = parse_release_metadata("[Group] Example Title DUAL AUDIO 1080p");
+
+        assert_eq!(
+            release_audio_language_hints_for_title(&parsed, None, None, false),
+            vec!["eng".to_string(), "jpn".to_string()]
+        );
+    }
+
+    #[test]
+    fn anime_tagged_movie_dual_audio_infers_english_and_japanese() {
+        let parsed = parse_release_metadata("[Group] Example Title DUAL AUDIO 1080p");
+        // Anime movies / series-movie links collapse to the "movie" search
+        // category but carry an anime-* tag; detection must still treat them as
+        // anime so dual-audio infers eng+jpn rather than just eng.
+        let context =
+            title_audio_language_context(None, None, Some("movie"), &["anime-hd".to_string()]);
+        assert!(context.is_anime);
+
+        assert_eq!(
+            release_audio_language_hints_for_title(&parsed, None, Some(&context), false),
+            vec!["eng".to_string(), "jpn".to_string()]
+        );
+    }
+
+    #[test]
+    fn anime_tag_variants_drive_anime_detection() {
+        assert!(
+            title_audio_language_context(None, None, Some("movie"), &["anime-hd".to_string()])
+                .is_anime
+        );
+        assert!(
+            title_audio_language_context(None, None, Some("movie"), &["Anime".to_string()])
+                .is_anime
+        );
+        // Substrings that merely start with "anime" but are not the anime marker
+        // must not be misdetected.
+        assert!(
+            !title_audio_language_context(None, None, Some("movie"), &["animation".to_string()])
+                .is_anime
         );
     }
 
@@ -456,5 +661,222 @@ mod tests {
             &["jpn".to_string()],
             &actual
         ));
+    }
+
+    #[test]
+    fn track_title_resolves_language_tokens_and_ignores_codecs() {
+        assert_eq!(
+            resolve_audio_languages_from_track_title("English 5.1"),
+            vec!["eng".to_string()]
+        );
+        assert_eq!(
+            resolve_audio_languages_from_track_title("Eng DTS-HD MA"),
+            vec!["eng".to_string()]
+        );
+        assert_eq!(
+            resolve_audio_languages_from_track_title("Eng+Jpn"),
+            vec!["eng".to_string(), "jpn".to_string()]
+        );
+        // Pure codec / non-language titles must not resolve to a language.
+        assert!(resolve_audio_languages_from_track_title("DTS-HD MA").is_empty());
+        assert!(resolve_audio_languages_from_track_title("Commentary").is_empty());
+        assert!(resolve_audio_languages_from_track_title("").is_empty());
+    }
+
+    #[test]
+    fn classify_tagged_track_satisfies_requirement() {
+        let verdict = classify_required_audio(
+            &["eng".to_string()],
+            &[audio_stream(Some("eng"), None)],
+            &[],
+        );
+        assert_eq!(verdict, RequiredAudioVerdict::Satisfied);
+    }
+
+    #[test]
+    fn classify_untagged_track_resolved_by_title_is_satisfied() {
+        // English track tagged "und" (so language=None after normalization) but
+        // titled "English" must satisfy a required-English profile.
+        let verdict = classify_required_audio(
+            &["eng".to_string()],
+            &[audio_stream(None, Some("English"))],
+            &[],
+        );
+        assert_eq!(verdict, RequiredAudioVerdict::Satisfied);
+    }
+
+    #[test]
+    fn classify_all_tracks_known_but_missing_is_provable_absence() {
+        // Every track is tagged and none is English → provably absent → reject.
+        let verdict = classify_required_audio(
+            &["eng".to_string()],
+            &[audio_stream(Some("jpn"), None)],
+            &[],
+        );
+        assert_eq!(
+            verdict,
+            RequiredAudioVerdict::Missing(vec!["eng".to_string()])
+        );
+    }
+
+    #[test]
+    fn classify_untagged_track_is_indeterminate_not_rejected() {
+        // One jpn track plus one untagged track: English can be neither confirmed
+        // nor proven absent → accept + flag, never a hard reject.
+        let verdict = classify_required_audio(
+            &["eng".to_string()],
+            &[audio_stream(Some("jpn"), None), audio_stream(None, None)],
+            &[],
+        );
+        assert_eq!(
+            verdict,
+            RequiredAudioVerdict::Indeterminate(vec!["eng".to_string()])
+        );
+    }
+
+    #[test]
+    fn classify_release_hints_resolve_untagged_tracks() {
+        // A DUAL release whose file is {jpn-tagged, untagged} satisfies required
+        // English via the release hint (the release claims eng).
+        let verdict = classify_required_audio(
+            &["eng".to_string()],
+            &[audio_stream(Some("jpn"), None), audio_stream(None, None)],
+            &["eng".to_string()],
+        );
+        assert_eq!(verdict, RequiredAudioVerdict::Satisfied);
+    }
+
+    #[test]
+    fn classify_zero_audio_streams_is_indeterminate() {
+        let verdict = classify_required_audio(&["eng".to_string()], &[], &[]);
+        assert_eq!(
+            verdict,
+            RequiredAudioVerdict::Indeterminate(vec!["eng".to_string()])
+        );
+    }
+
+    #[test]
+    fn classify_empty_required_is_satisfied() {
+        let verdict = classify_required_audio(&[], &[audio_stream(Some("jpn"), None)], &[]);
+        assert_eq!(verdict, RequiredAudioVerdict::Satisfied);
+    }
+
+    #[test]
+    fn track_title_ignores_short_ambiguous_tokens_and_subtags() {
+        // 2-letter markers/words must NOT resolve to obscure ISO languages
+        // (previously "VO"->vol, "is"->isl, "it"->ita, "no"->nor).
+        assert!(resolve_audio_languages_from_track_title("VO 5.1").is_empty());
+        assert!(resolve_audio_languages_from_track_title("VO").is_empty());
+        assert_eq!(
+            resolve_audio_languages_from_track_title("This is the English mix"),
+            vec!["eng".to_string()]
+        );
+        // Hyphenated descriptive names must not subtag-split into a language
+        // (previously "no-audio"->nor, "to-be-confirmed"->ton).
+        assert!(resolve_audio_languages_from_track_title("no-audio").is_empty());
+        assert!(resolve_audio_languages_from_track_title("to-be-confirmed").is_empty());
+    }
+
+    #[test]
+    fn track_title_lat_resolves_to_spanish_not_latin() {
+        assert_eq!(
+            resolve_audio_languages_from_track_title("LAT"),
+            vec!["spa".to_string()]
+        );
+    }
+
+    #[test]
+    fn classify_junk_tag_is_treated_as_unresolved() {
+        // A non-ISO junk tag (e.g. a codec mis-stored in the language field) is
+        // unresolved -> Indeterminate, not a bogus known language -> Missing.
+        assert_eq!(
+            classify_required_audio(
+                &["eng".to_string()],
+                &[audio_stream(Some("dts"), None)],
+                &[],
+            ),
+            RequiredAudioVerdict::Indeterminate(vec!["eng".to_string()])
+        );
+    }
+
+    #[test]
+    fn classify_two_letter_iso_tag_still_resolves() {
+        // A legitimate 2-letter ISO tag resolves via the strict resolver.
+        assert_eq!(
+            classify_required_audio(&["eng".to_string()], &[audio_stream(Some("en"), None)], &[],),
+            RequiredAudioVerdict::Satisfied
+        );
+    }
+
+    #[test]
+    fn classify_tag_beats_conflicting_title() {
+        // A jpn-tagged track titled "English" resolves to jpn (tag wins).
+        assert_eq!(
+            classify_required_audio(
+                &["jpn".to_string()],
+                &[audio_stream(Some("jpn"), Some("English"))],
+                &[],
+            ),
+            RequiredAudioVerdict::Satisfied
+        );
+        assert_eq!(
+            classify_required_audio(
+                &["eng".to_string()],
+                &[audio_stream(Some("jpn"), Some("English"))],
+                &[],
+            ),
+            RequiredAudioVerdict::Missing(vec!["eng".to_string()])
+        );
+    }
+
+    #[test]
+    fn classify_multiple_required_languages_partial_coverage() {
+        assert_eq!(
+            classify_required_audio(
+                &["eng".to_string(), "jpn".to_string()],
+                &[
+                    audio_stream(Some("eng"), None),
+                    audio_stream(Some("jpn"), None)
+                ],
+                &[],
+            ),
+            RequiredAudioVerdict::Satisfied
+        );
+        assert_eq!(
+            classify_required_audio(
+                &["eng".to_string(), "jpn".to_string()],
+                &[audio_stream(Some("eng"), None)],
+                &[],
+            ),
+            RequiredAudioVerdict::Missing(vec!["jpn".to_string()])
+        );
+    }
+
+    #[test]
+    fn classify_untagged_with_unhelpful_hint_is_indeterminate() {
+        // An unresolved track plus a hint that does NOT cover the requirement
+        // stays Indeterminate (never Missing), because the track is unprovable.
+        assert_eq!(
+            classify_required_audio(
+                &["eng".to_string()],
+                &[audio_stream(None, None)],
+                &["jpn".to_string()],
+            ),
+            RequiredAudioVerdict::Indeterminate(vec!["eng".to_string()])
+        );
+    }
+
+    #[test]
+    fn classify_unnormalizable_required_collapses_to_satisfied() {
+        // A required code that does not normalize (e.g. "und") is dropped; an
+        // all-unnormalizable requirement collapses to no requirement -> Satisfied.
+        assert_eq!(
+            classify_required_audio(
+                &["und".to_string()],
+                &[audio_stream(Some("jpn"), None)],
+                &[],
+            ),
+            RequiredAudioVerdict::Satisfied
+        );
     }
 }

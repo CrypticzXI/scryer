@@ -1,19 +1,21 @@
 use super::*;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, CollectionUpdate, DomainEventRepository, DownloadClientConfigRepository,
-    DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate,
+    AcquisitionScopeState, AcquisitionScopeStateRepository, AcquisitionScopeStatesQuery,
+    AcquisitionScopeStatus, AppError, AppResult, CollectionUpdate, DomainEventRepository,
+    DownloadClientConfigRepository, DownloadQueueCommandRepository, DownloadSourceIdentity,
+    DownloadSubmission, DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate,
     HousekeepingRepository, ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
     MediaFileRole, NotificationChannelRepository, NotificationSubscriptionRepository,
     OAuthRepository, PendingImportStatus, PendingReleaseRepository, PluginInstallationRepository,
     ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
-    SettingsRepository, ShowRepository, SubmissionScope, SubtitleDownloadRepository,
+    SettingsRepository, ShowRepository, SortDirection, SubmissionScope, SubtitleDownloadRepository,
     SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate,
-    TitleImageBlob, TitleImageKind, TitleImageRepository, TitleImageSourceResult,
-    TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository, UserRepository, WantedItem,
-    WantedItemRepository, WantedItemsQuery, WantedStatus,
+    TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey, TitleExternalIdLookup,
+    TitleExternalRating, TitleImageBlob, TitleImageKind, TitleImageRepository,
+    TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate, TitleRatingSummary,
+    TitleRepository, UserRepository,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -28,18 +30,21 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
+mod external_import_setup_secret_drafts;
 mod imports_download_submissions;
 mod library_scan_unmatched;
 mod migrations;
 mod oauth;
 mod permissions_users_shows;
 mod plugins;
+mod scope_indexer_coverage;
 mod settings_and_writer;
 mod stores_migrations_regressions;
 mod title_images;
 mod titles_metadata;
 mod tracked_download_identity;
 mod wanted_items_and_search;
+mod workflow_operation;
 
 fn test_descriptor_json(
     plugin_id: &str,
@@ -327,6 +332,7 @@ fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
         library_id: scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
         monitored: true,
         tags: vec![],
+        canonical_tags: vec![],
         external_ids: vec![],
         root_folder_id: scryer_domain::root_folder_id_for_path("/data/movies"),
         created_by: None,
@@ -338,10 +344,11 @@ fn make_test_title(id: &str, poster_url: Option<&str>) -> Title {
         background_url: None,
         background_source_url: None,
         sort_title: None,
+        catalog_sort_key: String::new(),
         slug: None,
         imdb_id: None,
         runtime_minutes: None,
-        genres: vec![],
+        popularity: None,
         content_status: None,
         language: None,
         first_aired: None,
@@ -526,6 +533,7 @@ fn test_title_image_source_result_with_variants(
 ) -> TitleImageSourceResult {
     TitleImageSourceResult {
         kind,
+        requested_source_url: source_url.to_string(),
         source_url: source_url.to_string(),
         source_etag: None,
         source_last_modified: None,
@@ -540,16 +548,25 @@ fn test_title_image_variant_record(
     variant_key: &str,
     width: i32,
     height: i32,
-    digest: &str,
+    seed: &str,
 ) -> TitleImageVariantRecord {
+    let bytes = seed.as_bytes().to_vec();
     TitleImageVariantRecord {
         variant_key: variant_key.to_string(),
         format: "avif".to_string(),
         width,
         height,
-        bytes: vec![4, 5, 6],
-        digest: digest.to_string(),
+        digest: format!("blake3:{}", blake3::hash(&bytes).to_hex()),
+        bytes,
     }
+}
+
+fn test_title_image_version(seed: &str) -> String {
+    blake3::hash(seed.as_bytes())
+        .to_hex()
+        .chars()
+        .take(16)
+        .collect()
 }
 
 fn assert_variant_target(
@@ -563,120 +580,4 @@ fn assert_variant_target(
             .iter()
             .any(|variant| variant.variant_key == variant_key)
     );
-}
-
-async fn seed_due_wanted_episode_order_fixture(
-    catalog: &TitleStore,
-    shows: &ShowStore,
-    workflow: &WantedStore,
-    prefix: &str,
-) -> Vec<String> {
-    let now = "2024-01-01T00:00:00Z".to_string();
-    let mut title = make_test_title(&format!("{prefix}-title"), None);
-    title.name = "Bluey".to_string();
-    title.sort_title = Some("Bluey".to_string());
-    title.facet = MediaFacet::Series;
-    TitleRepository::create(catalog, title.clone())
-        .await
-        .expect("title should insert");
-
-    let collection = ShowRepository::create_collection(
-        shows,
-        Collection {
-            id: format!("{prefix}-season-1"),
-            title_id: title.id.clone(),
-            collection_type: CollectionType::Season,
-            collection_index: "1".to_string(),
-            label: Some("Season 1".to_string()),
-            ordered_path: None,
-            narrative_order: Some("1".to_string()),
-            first_episode_number: Some("1".to_string()),
-            last_episode_number: Some("10".to_string()),
-            monitored: true,
-            created_at: Utc::now(),
-        },
-    )
-    .await
-    .expect("collection should insert");
-
-    let episodes = [
-        ("e10", Some("1"), Some("10")),
-        ("e2", Some("1"), Some("2")),
-        ("e1", Some("1"), Some("1")),
-        ("ealpha", Some("1"), Some("OVA")),
-        ("emissing", Some("1"), None),
-        ("s2e1", Some("2"), Some("1")),
-    ];
-
-    for (suffix, season_number, episode_number) in episodes {
-        let episode_id = format!("{prefix}-{suffix}");
-        ShowRepository::create_episode(
-            shows,
-            Episode {
-                id: episode_id.clone(),
-                title_id: title.id.clone(),
-                collection_id: Some(collection.id.clone()),
-                episode_type: scryer_domain::EpisodeType::Standard,
-                episode_number: episode_number.map(str::to_string),
-                season_number: season_number.map(str::to_string),
-                episode_label: None,
-                title: None,
-                air_date: Some("2024-01-01".to_string()),
-                duration_seconds: Some(1_800),
-                has_multi_audio: false,
-                has_subtitle: false,
-                is_filler: false,
-                is_recap: false,
-                absolute_number: None,
-                overview: None,
-                tvdb_id: None,
-                image_url: None,
-                monitored: true,
-                created_at: Utc::now(),
-            },
-        )
-        .await
-        .expect("episode should insert");
-
-        workflow
-            .upsert_wanted_item(&WantedItem {
-                id: format!("wanted-{episode_id}"),
-                title_id: title.id.clone(),
-                title_name: Some(title.name.clone()),
-                title_slug: None,
-                title_facet: None,
-                library_id: None,
-                library_name: None,
-                library_slug: None,
-                episode_id: Some(episode_id.clone()),
-                collection_id: None,
-                series_movie_link_id: None,
-                season_number: season_number.map(str::to_string),
-                episode_number: None,
-                media_type: "episode".to_string(),
-                search_phase: "initial".to_string(),
-                next_search_at: Some(now.clone()),
-                last_search_at: None,
-                search_count: 0,
-                baseline_date: Some("2024-01-01".to_string()),
-                status: WantedStatus::Wanted,
-                grabbed_release: None,
-                current_score: None,
-                latest_release_decision: None,
-                mismatch_recovery_eligible: false,
-                created_at: now.clone(),
-                updated_at: now.clone(),
-            })
-            .await
-            .expect("wanted item should insert");
-    }
-
-    vec![
-        format!("wanted-{prefix}-e1"),
-        format!("wanted-{prefix}-e2"),
-        format!("wanted-{prefix}-e10"),
-        format!("wanted-{prefix}-ealpha"),
-        format!("wanted-{prefix}-emissing"),
-        format!("wanted-{prefix}-s2e1"),
-    ]
 }

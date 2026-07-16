@@ -14,7 +14,8 @@ use futures_util::StreamExt;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use scryer_application::{
-    AppError, AppResult, DownloadClientAddRequest, StagedNzbRef, StagedNzbStore,
+    AppError, AppResult, DownloadClientAddRequest, RateLimitCooldownAction, StagedNzbRef,
+    StagedNzbStore,
 };
 use scryer_outbound_http::{OutboundHttpClient, OutboundHttpError, RequestPolicy};
 use serde_json::{Value, json};
@@ -547,20 +548,7 @@ pub(crate) async fn stage_nzb_from_url(
             || client.client().get(url).header("User-Agent", "scryer/0.1"),
         )
         .await
-        .map_err(|error| match error {
-            OutboundHttpError::RateLimited(rate_limited) => AppError::Repository(
-                match rate_limited.retry_after.filter(|delay| !delay.is_zero()) {
-                    Some(delay) => format!(
-                        "nzb download request was rate limited; retry after {}s",
-                        delay.as_secs()
-                    ),
-                    None => "nzb download request was rate limited".to_string(),
-                },
-            ),
-            OutboundHttpError::Transport { source, .. } => {
-                AppError::Repository(format!("nzb download request failed: {source}"))
-            }
-        })?;
+        .map_err(map_nzb_download_outbound_error)?;
 
     let status = response.status();
     if !status.is_success() {
@@ -669,6 +657,77 @@ pub(crate) async fn stage_nzb_from_url(
     })
 }
 
+pub(crate) async fn stage_nzb_from_bytes(
+    store: &Arc<dyn StagedNzbStore>,
+    pipeline_limit: &Arc<Semaphore>,
+    source_label: &str,
+    title_id: Option<&str>,
+    bytes: Vec<u8>,
+) -> AppResult<StagedNzbLease> {
+    if bytes.is_empty() {
+        return Err(AppError::Repository(
+            "resolved NZB download artifact was empty".into(),
+        ));
+    }
+    if bytes.len() as u64 > MAX_NZB_BYTES {
+        return Err(AppError::Repository(format!(
+            "resolved NZB download artifact exceeded {} bytes",
+            MAX_NZB_BYTES
+        )));
+    }
+
+    let permit = pipeline_limit
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to acquire nzb pipeline permit: {error}"))
+        })?;
+    let pending = store
+        .create_pending_staged_nzb(source_label, title_id)
+        .await?;
+    let partial_path = pending.partial_path.clone();
+    let raw_size_bytes = bytes.len() as u64;
+    let stage_result = async {
+        let (validator_tx, validator_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let validator_path = partial_path.clone();
+        let validator_task = tokio::task::spawn_blocking(move || {
+            stream_validate_and_compress_nzb(validator_rx, &validator_path)
+        });
+        validator_tx.send(bytes).await.map_err(|_| {
+            AppError::Repository("nzb validation task stopped before artifact was staged".into())
+        })?;
+        drop(validator_tx);
+        validator_task.await.map_err(|error| {
+            AppError::Repository(format!("nzb validation task failed to join: {error}"))
+        })??;
+        store
+            .finalize_pending_staged_nzb(pending, raw_size_bytes)
+            .await
+    }
+    .await;
+
+    if let Err(error) = tokio::fs::remove_file(&partial_path).await
+        && error.kind() != std::io::ErrorKind::NotFound
+        && stage_result.is_err()
+    {
+        tracing::warn!(
+            path = %partial_path.display(),
+            error = %error,
+            "failed to remove partial staged nzb artifact"
+        );
+    }
+
+    let staged_nzb = stage_result?;
+    store.mark_artifact_active(&staged_nzb.compressed_path)?;
+    Ok(StagedNzbLease {
+        staged_nzb,
+        self_staged: false,
+        store: Arc::clone(store),
+        _permit: Some(permit),
+    })
+}
+
 pub(crate) async fn resolve_staged_nzb_for_request(
     client: &OutboundHttpClient,
     store: &Arc<dyn StagedNzbStore>,
@@ -698,6 +757,28 @@ pub(crate) async fn resolve_staged_nzb_for_request(
     Ok(staged)
 }
 
+fn map_nzb_download_outbound_error(error: OutboundHttpError) -> AppError {
+    match error {
+        OutboundHttpError::RateLimited(rate_limited) => {
+            let retry_after = rate_limited.retry_after.filter(|delay| !delay.is_zero());
+            AppError::rate_limited_temporary_unavailable(
+                match retry_after {
+                    Some(delay) => format!(
+                        "nzb download request was rate limited; retry after {}s",
+                        delay.as_secs()
+                    ),
+                    None => "nzb download request was rate limited".to_string(),
+                },
+                retry_after,
+                RateLimitCooldownAction::AlreadyRecorded,
+            )
+        }
+        OutboundHttpError::Transport { source, .. } => {
+            AppError::Repository(format!("nzb download request failed: {source}"))
+        }
+    }
+}
+
 fn nzb_download_scope(url: &str) -> String {
     match reqwest::Url::parse(url)
         .ok()
@@ -711,13 +792,42 @@ fn nzb_download_scope(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::time::Duration;
 
-    use scryer_application::StagedNzbStore;
+    use scryer_application::{AppError, StagedNzbStore};
+    use scryer_outbound_http::OutboundHttpError;
     use tempfile::TempDir;
 
     use crate::FileSystemStagedNzbStore;
 
-    use super::{MAX_NZB_BYTES, stream_validate_and_compress_nzb, validate_nzb_xml};
+    use super::{
+        MAX_NZB_BYTES, map_nzb_download_outbound_error, stream_validate_and_compress_nzb,
+        validate_nzb_xml,
+    };
+
+    #[test]
+    fn nzb_download_outbound_rate_limit_preserves_retry_after() {
+        let error = OutboundHttpError::RateLimited(scryer_outbound_http::RateLimitedError {
+            scope: scryer_outbound_http::RateLimitScopeKey::from("nzb-download"),
+            retry_after: Some(Duration::from_secs(50)),
+            attempts: 1,
+            retry_after_source: scryer_outbound_http::RetryAfterSource::Seconds,
+            request_label: std::borrow::Cow::Borrowed("nzb download"),
+        });
+        let error = map_nzb_download_outbound_error(error);
+
+        match error {
+            AppError::TemporaryUnavailable {
+                message,
+                retry_after,
+                ..
+            } => {
+                assert!(message.contains("retry after 50s"));
+                assert_eq!(retry_after, Some(Duration::from_secs(50)));
+            }
+            other => panic!("expected temporary unavailable error, got {other:?}"),
+        }
+    }
 
     fn load_real_nzb_fixture_bytes() -> Vec<u8> {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");

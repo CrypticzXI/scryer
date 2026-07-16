@@ -1,98 +1,98 @@
 import type { ReleaseQueueScope } from "./releases";
 
 export type DownloadQueueState =
-  | "queued"
-  | "downloading"
-  | "verifying"
-  | "repairing"
-  | "extracting"
-  | "paused"
-  | "completed"
-  | "import_pending"
-  | "failed";
+  | "QUEUED"
+  | "DOWNLOADING"
+  | "VERIFYING"
+  | "REPAIRING"
+  | "EXTRACTING"
+  | "PAUSED"
+  | "COMPLETED"
+  | "IMPORT_PENDING"
+  | "FAILED";
 
 export type ImportStatus =
-  | "pending"
-  | "running"
-  | "processing"
-  | "completed"
-  | "failed"
-  | "skipped";
+  | "PENDING"
+  | "RUNNING"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "FAILED"
+  | "SKIPPED";
 
 export type ImportErrorCode =
-  | "file_not_found"
-  | "episode_not_found"
-  | "episode_lookup_failed"
-  | "source_job_failed"
-  | "policy_mismatch"
-  | "io_failed"
-  | "permission_denied"
-  | "disk_full"
-  | "unknown";
+  | "FILE_NOT_FOUND"
+  | "EPISODE_NOT_FOUND"
+  | "EPISODE_LOOKUP_FAILED"
+  | "SOURCE_JOB_FAILED"
+  | "POLICY_MISMATCH"
+  | "IO_FAILED"
+  | "PERMISSION_DENIED"
+  | "DISK_FULL"
+  | "UNKNOWN";
 
 export type DownloadQueueDeleteStatus =
-  | "queued"
-  | "running"
-  | "completed"
-  | "failed";
+  | "QUEUED"
+  | "RUNNING"
+  | "COMPLETED"
+  | "FAILED";
 
 export type TrackedDownloadState =
-  | "downloading"
-  | "import_pending"
-  | "importing"
-  | "imported"
-  | "import_blocked"
-  | "failed_pending"
-  | "failed"
-  | "ignored";
+  | "DOWNLOADING"
+  | "IMPORT_PENDING"
+  | "IMPORTING"
+  | "IMPORTED"
+  | "IMPORT_BLOCKED"
+  | "FAILED_PENDING"
+  | "FAILED"
+  | "IGNORED";
 
-export type TrackedDownloadStatus = "ok" | "warning" | "error";
+export type TrackedDownloadStatus = "OK" | "WARNING" | "ERROR";
 
 export type DownloadDisplayState =
-  | "queued"
-  | "downloading"
-  | "paused"
-  | "post_processing"
-  | "completed"
-  | "failed"
-  | "importing"
-  | "import_pending"
-  | "import_blocked"
-  | "import_failed"
-  | "removing"
-  | "remove_failed";
+  | "QUEUED"
+  | "DOWNLOADING"
+  | "PAUSED"
+  | "POST_PROCESSING"
+  | "COMPLETED"
+  | "FAILED"
+  | "IMPORTING"
+  | "IMPORT_PENDING"
+  | "IMPORT_BLOCKED"
+  | "IMPORT_FAILED"
+  | "REMOVING"
+  | "REMOVE_FAILED";
 
 export type DownloadActivityFilter =
-  | "all"
-  | "downloading"
-  | "queued"
-  | "paused"
-  | "post_processing";
+  | "ALL"
+  | "DOWNLOADING"
+  | "QUEUED"
+  | "PAUSED"
+  | "POST_PROCESSING";
 
 export type DownloadImportFilter =
-  | "all"
-  | "importing"
-  | "pending"
-  | "blocked"
-  | "failed";
+  | "ALL"
+  | "IMPORTING"
+  | "PENDING"
+  | "BLOCKED"
+  | "FAILED";
 
-export type DownloadHistoryFilter = "all" | "success" | "failed";
-export type DownloadActivityStatus = Exclude<DownloadActivityFilter, "all">;
-export type DownloadImportStatus = Exclude<DownloadImportFilter, "all">;
-export type DownloadHistoryStatus = Exclude<DownloadHistoryFilter, "all">;
-export type ActivitySortKey = "title" | "client" | "status" | "progress" | "size";
-export type SortDirection = "asc" | "desc";
+export type DownloadHistoryFilter = "ALL" | "SUCCESS" | "FAILED";
+export type DownloadActivityStatus = Exclude<DownloadActivityFilter, "ALL">;
+export type DownloadImportStatus = Exclude<DownloadImportFilter, "ALL">;
+export type DownloadHistoryStatus = Exclude<DownloadHistoryFilter, "ALL">;
+export type ActivitySortKey = "TITLE" | "CLIENT" | "STATUS" | "PROGRESS" | "SIZE";
+export type SortDirection = "ASC" | "DESC";
 export type SortConfig = {
   key: ActivitySortKey;
   direction: SortDirection;
 };
 
 export type TitleMatchType =
-  | "submission"
-  | "client_parameter"
-  | "title_parse"
-  | "id_only"
-  | "unmatched";
+  | "SUBMISSION"
+  | "CLIENT_PARAMETER"
+  | "TITLE_PARSE"
+  | "ID_ONLY"
+  | "UNMATCHED";
 
 export type DownloadQueueItem = {
   id: string;
@@ -107,7 +107,7 @@ export type DownloadQueueItem = {
   state: DownloadQueueState;
   displayState: DownloadDisplayState;
   progressPercent: number;
-  importTransferPhase: "copying" | "finalizing" | null;
+  importTransferPhase: "COPYING" | "FINALIZING" | null;
   importTransferBytes: number | null;
   importTransferTotalBytes: number | null;
   importTransferStartedAt: string | null;

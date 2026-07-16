@@ -50,7 +50,23 @@ pub fn external_plugin_installation_is_supported_shape(
     wasm_digest: Option<&str>,
     descriptor_present: bool,
 ) -> bool {
-    wasm_bytes.is_some()
+    external_plugin_installation_shape_is_supported(
+        wasm_bytes.is_some(),
+        wasm_encoding,
+        wasm_digest_algo,
+        wasm_digest,
+        descriptor_present,
+    )
+}
+
+pub fn external_plugin_installation_shape_is_supported(
+    wasm_bytes_present: bool,
+    wasm_encoding: &str,
+    wasm_digest_algo: Option<&str>,
+    wasm_digest: Option<&str>,
+    descriptor_present: bool,
+) -> bool {
+    wasm_bytes_present
         && matches!(wasm_encoding, "zstd" | "brotli")
         && matches!(
             wasm_digest_algo.map(|value| value.trim().to_ascii_lowercase()),
@@ -193,6 +209,7 @@ mod tests {
             facet: MediaFacet::Movie,
             monitored: true,
             tags: vec!["tag".to_string()],
+            canonical_tags: vec![],
             external_ids: vec![ExternalId {
                 source: "tvdb".to_string(),
                 value: "123".to_string(),
@@ -206,10 +223,11 @@ mod tests {
             background_url: Some("https://example.com/background.jpg".to_string()),
             background_source_url: None,
             sort_title: Some("Example".to_string()),
+            catalog_sort_key: String::new(),
             slug: Some("example".to_string()),
             imdb_id: Some("tt123".to_string()),
             runtime_minutes: Some(120),
-            genres: vec!["Drama".to_string()],
+            popularity: None,
             content_status: Some("released".to_string()),
             language: Some("en".to_string()),
             first_aired: Some("2026-01-01".to_string()),

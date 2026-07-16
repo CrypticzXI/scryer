@@ -1,6 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useClient } from "urql";
-import { Card, CardContent } from "@/components/ui/card";
 import { calendarEpisodesQuery, librariesQuery } from "@/lib/graphql/queries";
 import { FACETS_BY_ID } from "@/lib/facets/registry";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
@@ -26,6 +25,10 @@ type CalendarContainerProps = {
   ) => void;
 };
 
+function sameStringArray(left: string[], right: string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export const CalendarContainer = memo(function CalendarContainer({
   onOpenOverview,
 }: CalendarContainerProps) {
@@ -46,7 +49,7 @@ export const CalendarContainer = memo(function CalendarContainer({
     void client
       .query(
         librariesQuery,
-        { facet: null, permission: "view" },
+        { facet: null, permission: "VIEW" },
         { requestPolicy: "network-only" },
       )
       .toPromise()
@@ -59,9 +62,10 @@ export const CalendarContainer = memo(function CalendarContainer({
         }
         const nextLibraries = (data?.libraries ?? []) as LibraryRecord[];
         setLibraries(nextLibraries);
-        setSelectedLibraryIds((current) =>
-          normalizeLibraryFilterSelection(current, nextLibraries),
-        );
+        setSelectedLibraryIds((current) => {
+          const normalized = normalizeLibraryFilterSelection(current, nextLibraries);
+          return sameStringArray(current, normalized) ? current : normalized;
+        });
       })
       .catch((error) => {
         if (!cancelled) {
@@ -133,27 +137,27 @@ export const CalendarContainer = memo(function CalendarContainer({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <Suspense
-        fallback={
-          <Card>
-            <CardContent className="p-8 text-center text-muted-foreground">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-transparent">
+      <div className="mx-auto flex min-h-0 w-full max-w-none flex-1 flex-col px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]">
+        <Suspense
+          fallback={
+            <div className="py-6 text-sm text-[var(--scry-muted3)]">
               {t("label.loading")}
-            </CardContent>
-          </Card>
-        }
-      >
-        <CalendarView
-          episodes={calendarEpisodes}
-          loading={calendarLoading}
-          libraries={libraries}
-          librariesLoading={librariesLoading}
-          selectedLibraryIds={selectedLibraryIds}
-          onSelectedLibraryIdsChange={setSelectedLibraryIds}
-          onDateRangeChange={refreshCalendar}
-          onEpisodeClick={handleCalendarEpisodeClick}
-        />
-      </Suspense>
+            </div>
+          }
+        >
+          <CalendarView
+            episodes={calendarEpisodes}
+            loading={calendarLoading}
+            libraries={libraries}
+            librariesLoading={librariesLoading}
+            selectedLibraryIds={selectedLibraryIds}
+            onSelectedLibraryIdsChange={setSelectedLibraryIds}
+            onDateRangeChange={refreshCalendar}
+            onEpisodeClick={handleCalendarEpisodeClick}
+          />
+        </Suspense>
+      </div>
     </div>
   );
 });

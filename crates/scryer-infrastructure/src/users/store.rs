@@ -1,5 +1,10 @@
 use async_trait::async_trait;
-use scryer_application::{AppError, AppResult, UserExternalAccountRepository, UserRepository};
+use chrono::Utc;
+use scryer_application::{
+    AppError, AppResult, UiDateTimeFormat, UiDefaultLandingView, UiDensity, UiSettings,
+    UiSettingsFacet, UiSettingsUpdate, UiSidebarMode, UiTableColumnSetting, UiTableViewMode,
+    UiTheme, UserExternalAccountRepository, UserRepository, UserUiSettingsRepository,
+};
 use scryer_domain::{
     AppPermissionMask, ExternalAccountProvider, ExternalAccountStatus, LibraryGrant, User,
     UserAccountKind, UserExternalAccount,
@@ -98,6 +103,29 @@ impl UserRepository for UserStore {
                     return Err(AppError::NotFound(format!("user {id}")));
                 }
                 Ok(())
+            })
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl UserUiSettingsRepository for UserStore {
+    async fn get_by_user_id(&self, user_id: &str) -> AppResult<Option<UiSettings>> {
+        load_ui_settings_by_user_id(&self.datastore, user_id).await
+    }
+
+    async fn upsert(&self, user_id: &str, settings: UiSettingsUpdate) -> AppResult<UiSettings> {
+        let user_id = user_id.to_string();
+        SqlRuntime::run_in_transaction(&self.datastore, "upsert_user_ui_settings", move |tx| {
+            let user_id = user_id.clone();
+            let settings = settings.clone();
+            Box::pin(async move {
+                upsert_ui_settings_tx(tx, &user_id, &settings).await?;
+                replace_ui_table_columns_tx(tx, &user_id, &settings.table_columns).await?;
+                load_ui_settings_by_user_id_tx(tx, &user_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound(format!("UI settings for user {user_id}")))
             })
         })
         .await
@@ -388,6 +416,224 @@ fn row_to_user(row: &SqlRow) -> AppResult<User> {
     })
 }
 
+async fn load_ui_settings_by_user_id(
+    datastore: &StoreDatastore,
+    user_id: &str,
+) -> AppResult<Option<UiSettings>> {
+    let row = SqlRuntime::fetch_optional(
+        datastore.read_exec(),
+        "SELECT user_id, theme, date_time_format, highlight_color, secondary_color, high_contrast_mode,
+                reduce_motion, hide_sponsor_button, density, sidebar_mode, default_landing_view, created_at, updated_at
+           FROM user_ui_settings
+          WHERE user_id = {}",
+        &[SqlArg::Text(user_id.to_string())],
+    )
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let mut settings = row_to_ui_settings(&row)?;
+    settings.table_columns = load_ui_table_columns(datastore, user_id).await?;
+    Ok(Some(settings))
+}
+
+async fn load_ui_settings_by_user_id_tx(
+    tx: &mut SqlTx<'_>,
+    user_id: &str,
+) -> AppResult<Option<UiSettings>> {
+    let row = SqlRuntime::fetch_optional(
+        SqlExec::Tx(tx),
+        "SELECT user_id, theme, date_time_format, highlight_color, secondary_color, high_contrast_mode,
+                reduce_motion, hide_sponsor_button, density, sidebar_mode, default_landing_view, created_at, updated_at
+           FROM user_ui_settings
+          WHERE user_id = {}",
+        &[SqlArg::Text(user_id.to_string())],
+    )
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let mut settings = row_to_ui_settings(&row)?;
+    settings.table_columns = load_ui_table_columns_tx(tx, user_id).await?;
+    Ok(Some(settings))
+}
+
+async fn upsert_ui_settings_tx(
+    tx: &mut SqlTx<'_>,
+    user_id: &str,
+    settings: &UiSettingsUpdate,
+) -> AppResult<()> {
+    let now = Utc::now();
+    tx.execute(
+        "INSERT INTO user_ui_settings (
+             user_id, theme, date_time_format, highlight_color, secondary_color, high_contrast_mode, reduce_motion,
+             hide_sponsor_button, density, sidebar_mode, default_landing_view, created_at, updated_at
+         )
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+         ON CONFLICT(user_id) DO UPDATE SET
+             theme = excluded.theme,
+             date_time_format = excluded.date_time_format,
+             highlight_color = excluded.highlight_color,
+             secondary_color = excluded.secondary_color,
+             high_contrast_mode = excluded.high_contrast_mode,
+             reduce_motion = excluded.reduce_motion,
+             hide_sponsor_button = excluded.hide_sponsor_button,
+             density = excluded.density,
+             sidebar_mode = excluded.sidebar_mode,
+             default_landing_view = excluded.default_landing_view,
+             updated_at = excluded.updated_at",
+        &[
+            SqlArg::Text(user_id.to_string()),
+            SqlArg::Text(settings.theme.as_str().to_string()),
+            SqlArg::Text(settings.date_time_format.as_str().to_string()),
+            SqlArg::OptText(settings.highlight_color.clone()),
+            SqlArg::OptText(settings.secondary_color.clone()),
+            SqlArg::Bool(settings.high_contrast_mode),
+            SqlArg::Bool(settings.reduce_motion),
+            SqlArg::Bool(settings.hide_sponsor_button),
+            SqlArg::Text(settings.density.as_str().to_string()),
+            SqlArg::Text(settings.sidebar_mode.as_str().to_string()),
+            SqlArg::Text(settings.default_landing_view.as_str().to_string()),
+            SqlArg::Timestamp(now),
+            SqlArg::Timestamp(now),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn replace_ui_table_columns_tx(
+    tx: &mut SqlTx<'_>,
+    user_id: &str,
+    columns: &[UiTableColumnSetting],
+) -> AppResult<()> {
+    tx.execute(
+        "DELETE FROM user_ui_table_columns WHERE user_id = {}",
+        &[SqlArg::Text(user_id.to_string())],
+    )
+    .await?;
+
+    let now = Utc::now();
+    for column in columns {
+        tx.execute(
+            "INSERT INTO user_ui_table_columns (
+                 user_id, facet, table_view_mode, column_id, column_order, visible,
+                 created_at, updated_at
+             )
+             VALUES ({}, {}, {}, {}, {}, {}, {}, {})",
+            &[
+                SqlArg::Text(user_id.to_string()),
+                SqlArg::Text(column.facet.as_str().to_string()),
+                SqlArg::Text(column.table_view_mode.as_str().to_string()),
+                SqlArg::Text(column.column_id.clone()),
+                SqlArg::I64(column.column_order as i64),
+                SqlArg::Bool(column.visible),
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+fn row_to_ui_settings(row: &SqlRow) -> AppResult<UiSettings> {
+    Ok(UiSettings {
+        user_id: row.text("user_id")?,
+        theme: parse_ui_theme(row.text("theme")?)?,
+        date_time_format: parse_ui_date_time_format(row.text("date_time_format")?)?,
+        highlight_color: row.opt_text("highlight_color")?,
+        secondary_color: row.opt_text("secondary_color")?,
+        high_contrast_mode: row.bool("high_contrast_mode")?,
+        reduce_motion: row.bool("reduce_motion")?,
+        hide_sponsor_button: row.bool("hide_sponsor_button")?,
+        density: parse_ui_density(row.text("density")?)?,
+        sidebar_mode: parse_ui_sidebar_mode(row.text("sidebar_mode")?)?,
+        default_landing_view: parse_ui_default_landing_view(row.text("default_landing_view")?)?,
+        table_columns: Vec::new(),
+        created_at: Some(row.timestamp("created_at")?),
+        updated_at: Some(row.timestamp("updated_at")?),
+    })
+}
+
+async fn load_ui_table_columns_tx(
+    tx: &mut SqlTx<'_>,
+    user_id: &str,
+) -> AppResult<Vec<UiTableColumnSetting>> {
+    let rows = SqlRuntime::fetch_all(
+        SqlExec::Tx(tx),
+        "SELECT facet, table_view_mode, column_id, column_order, visible
+           FROM user_ui_table_columns
+          WHERE user_id = {}
+          ORDER BY facet, table_view_mode, column_order, column_id",
+        &[SqlArg::Text(user_id.to_string())],
+    )
+    .await?;
+    rows.iter().map(row_to_ui_table_column).collect()
+}
+
+async fn load_ui_table_columns(
+    datastore: &StoreDatastore,
+    user_id: &str,
+) -> AppResult<Vec<UiTableColumnSetting>> {
+    let rows = SqlRuntime::fetch_all(
+        datastore.read_exec(),
+        "SELECT facet, table_view_mode, column_id, column_order, visible
+           FROM user_ui_table_columns
+          WHERE user_id = {}
+          ORDER BY facet, table_view_mode, column_order, column_id",
+        &[SqlArg::Text(user_id.to_string())],
+    )
+    .await?;
+    rows.iter().map(row_to_ui_table_column).collect()
+}
+
+fn row_to_ui_table_column(row: &SqlRow) -> AppResult<UiTableColumnSetting> {
+    Ok(UiTableColumnSetting {
+        facet: parse_ui_settings_facet(row.text("facet")?)?,
+        table_view_mode: parse_ui_table_view_mode(row.text("table_view_mode")?)?,
+        column_id: row.text("column_id")?,
+        column_order: row.i32("column_order")?,
+        visible: row.bool("visible")?,
+    })
+}
+
+fn parse_ui_theme(value: String) -> AppResult<UiTheme> {
+    UiTheme::parse(&value)
+        .ok_or_else(|| AppError::Repository(format!("invalid UI theme {value:?}")))
+}
+
+fn parse_ui_date_time_format(value: String) -> AppResult<UiDateTimeFormat> {
+    UiDateTimeFormat::parse(&value)
+        .ok_or_else(|| AppError::Repository(format!("invalid UI date time format {value:?}")))
+}
+
+fn parse_ui_density(value: String) -> AppResult<UiDensity> {
+    UiDensity::parse(&value)
+        .ok_or_else(|| AppError::Repository(format!("invalid UI density {value:?}")))
+}
+
+fn parse_ui_sidebar_mode(value: String) -> AppResult<UiSidebarMode> {
+    UiSidebarMode::parse(&value)
+        .ok_or_else(|| AppError::Repository(format!("invalid UI sidebar mode {value:?}")))
+}
+
+fn parse_ui_default_landing_view(value: String) -> AppResult<UiDefaultLandingView> {
+    UiDefaultLandingView::parse(&value)
+        .ok_or_else(|| AppError::Repository(format!("invalid UI default landing view {value:?}")))
+}
+
+fn parse_ui_settings_facet(value: String) -> AppResult<UiSettingsFacet> {
+    UiSettingsFacet::parse(&value)
+        .ok_or_else(|| AppError::Repository(format!("invalid UI settings facet {value:?}")))
+}
+
+fn parse_ui_table_view_mode(value: String) -> AppResult<UiTableViewMode> {
+    UiTableViewMode::parse(&value)
+        .ok_or_else(|| AppError::Repository(format!("invalid UI table view mode {value:?}")))
+}
+
 async fn load_external_account_by_id(
     exec: SqlExec<'_, '_>,
     id: &str,
@@ -469,7 +715,9 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::Utc;
-    use scryer_application::{UserExternalAccountRepository, UserRepository};
+    use scryer_application::{
+        UserExternalAccountRepository, UserRepository, UserUiSettingsRepository,
+    };
     use scryer_domain::{AppPermissionMask, LibraryPermissionMask, UserAuthorization};
     use sqlx::sqlite::SqlitePoolOptions;
     use tokio::sync::Mutex;
@@ -518,6 +766,42 @@ mod tests {
         .execute(&pool)
         .await
         .expect("create user_external_accounts table");
+        sqlx::query(
+            "CREATE TABLE user_ui_settings (
+                user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                theme TEXT NOT NULL DEFAULT 'dark',
+                date_time_format TEXT NOT NULL DEFAULT 'locale',
+                highlight_color TEXT,
+                secondary_color TEXT,
+                high_contrast_mode INTEGER NOT NULL DEFAULT 0,
+                reduce_motion INTEGER NOT NULL DEFAULT 0,
+                hide_sponsor_button INTEGER NOT NULL DEFAULT 0,
+                density TEXT NOT NULL DEFAULT 'comfortable',
+                sidebar_mode TEXT NOT NULL DEFAULT 'expanded',
+                default_landing_view TEXT NOT NULL DEFAULT 'movies',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create user_ui_settings table");
+        sqlx::query(
+            "CREATE TABLE user_ui_table_columns (
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                facet TEXT NOT NULL,
+                table_view_mode TEXT NOT NULL,
+                column_id TEXT NOT NULL,
+                column_order INTEGER NOT NULL,
+                visible INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, facet, table_view_mode, column_id)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create user_ui_table_columns table");
         sqlx::query(
             "CREATE UNIQUE INDEX idx_user_external_accounts_provider_identity
                ON user_external_accounts(provider, connection_id, external_user_id)",
@@ -586,6 +870,101 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    #[tokio::test]
+    async fn ui_settings_defaults_upsert_replace_and_cascade() {
+        let store = test_store().await;
+        let user = UserRepository::create(&store, test_user("ui_user"))
+            .await
+            .expect("create user");
+
+        let missing = UserUiSettingsRepository::get_by_user_id(&store, &user.id)
+            .await
+            .expect("load missing UI settings");
+        assert!(missing.is_none());
+
+        let stored = UserUiSettingsRepository::upsert(
+            &store,
+            &user.id,
+            UiSettingsUpdate {
+                theme: UiTheme::Pride,
+                date_time_format: UiDateTimeFormat::Iso24h,
+                highlight_color: Some("#ff3366".to_string()),
+                secondary_color: Some("#2277aa".to_string()),
+                high_contrast_mode: true,
+                reduce_motion: true,
+                hide_sponsor_button: true,
+                density: UiDensity::Compact,
+                sidebar_mode: UiSidebarMode::Collapsed,
+                default_landing_view: UiDefaultLandingView::Calendar,
+                table_columns: vec![
+                    UiTableColumnSetting {
+                        facet: UiSettingsFacet::Movies,
+                        table_view_mode: UiTableViewMode::Compact,
+                        column_id: "name".to_string(),
+                        column_order: 0,
+                        visible: true,
+                    },
+                    UiTableColumnSetting {
+                        facet: UiSettingsFacet::Series,
+                        table_view_mode: UiTableViewMode::PosterTable,
+                        column_id: "episodes".to_string(),
+                        column_order: 1,
+                        visible: false,
+                    },
+                ],
+            },
+        )
+        .await
+        .expect("upsert UI settings");
+        assert_eq!(stored.user_id, user.id);
+        assert_eq!(stored.theme, UiTheme::Pride);
+        assert_eq!(stored.date_time_format, UiDateTimeFormat::Iso24h);
+        assert!(stored.hide_sponsor_button);
+        assert_eq!(stored.table_columns.len(), 2);
+        assert_eq!(stored.table_columns[0].column_id, "name");
+        assert_eq!(stored.table_columns[1].column_id, "episodes");
+
+        let replaced = UserUiSettingsRepository::upsert(
+            &store,
+            &user.id,
+            UiSettingsUpdate {
+                theme: UiTheme::System,
+                date_time_format: UiDateTimeFormat::Locale,
+                highlight_color: None,
+                secondary_color: None,
+                high_contrast_mode: false,
+                reduce_motion: false,
+                hide_sponsor_button: false,
+                density: UiDensity::Comfortable,
+                sidebar_mode: UiSidebarMode::Expanded,
+                default_landing_view: UiDefaultLandingView::Movies,
+                table_columns: vec![UiTableColumnSetting {
+                    facet: UiSettingsFacet::Anime,
+                    table_view_mode: UiTableViewMode::Compact,
+                    column_id: "status".to_string(),
+                    column_order: 0,
+                    visible: true,
+                }],
+            },
+        )
+        .await
+        .expect("replace UI settings");
+        assert_eq!(replaced.theme, UiTheme::System);
+        assert_eq!(replaced.date_time_format, UiDateTimeFormat::Locale);
+        assert!(!replaced.hide_sponsor_button);
+        assert_eq!(replaced.table_columns.len(), 1);
+        assert_eq!(replaced.table_columns[0].facet, UiSettingsFacet::Anime);
+        assert_eq!(replaced.table_columns[0].column_id, "status");
+
+        UserRepository::delete(&store, &user.id)
+            .await
+            .expect("delete user");
+        let after_delete = UserUiSettingsRepository::get_by_user_id(&store, &user.id)
+            .await
+            .expect("load UI settings after cascade");
+        assert!(after_delete.is_none());
     }
 
     #[tokio::test]

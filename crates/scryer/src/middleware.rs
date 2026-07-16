@@ -6,13 +6,14 @@ use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
-use axum::http::{HeaderMap, Method, Request, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use scryer_application::{
     AppError, AppResult, AppUseCase, AuthenticatedTokenClaims, OAuthAuthorizationSource,
 };
 use scryer_domain::{ActorCapabilityMask, AppPermissionMask, Id};
+use scryer_interface::RequestLoaders;
 use scryer_interface::context::{
     AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification, OAuthActorSession,
 };
@@ -408,7 +409,19 @@ pub(crate) async fn authless_web_client_proof_handler(
     )
     .await
     {
-        warn!("Rejecting authless web client proof request: {reason}");
+        // A rejected proof is a routine access-control outcome, not an error:
+        // the logged-out web client probes for authless (public) access on its
+        // GraphQL requests and the server declines per policy; the client
+        // handles the 403 gracefully. `AuthRequired` fires on every
+        // unauthenticated request to a form-login instance, so keep it at debug
+        // to avoid flooding logs. Rarer reasons (cross-site, missing/malformed
+        // forwarding, non-local peer) stay at warn — they can signal a proxy
+        // misconfiguration or cross-site probing worth noticing.
+        if matches!(reason, AuthlessAccessRejectReason::AuthRequired) {
+            tracing::debug!("Authless web client proof unavailable: {reason}");
+        } else {
+            warn!("Rejecting authless web client proof request: {reason}");
+        }
         let mut response = (
             StatusCode::FORBIDDEN,
             Json(ErrorResponse::new(
@@ -1100,9 +1113,17 @@ pub(crate) async fn graphql_handler(
     touch_oauth_grant_last_used(&state.app, actor.as_ref()).await;
     let batch = if let Some(actor) = actor {
         let oauth_session = actor.oauth_session();
+        // Request-scoped dataloaders: the batch cache lives for exactly this
+        // HTTP request (shared across a batched request's entries — same actor,
+        // same snapshot). The WebSocket path intentionally gets none; resolvers
+        // fall back to direct application calls when loaders are absent.
+        let loaders = RequestLoaders::new(state.app.clone(), actor.user.clone());
         match batch {
             async_graphql::BatchRequest::Single(req) => {
-                let mut req = req.data(actor.mfa_verification()).data(actor.user);
+                let mut req = req
+                    .data(actor.mfa_verification())
+                    .data(actor.user)
+                    .data(loaders);
                 if let Some(oauth_session) = oauth_session {
                     req = req.data(oauth_session);
                 }
@@ -1111,7 +1132,10 @@ pub(crate) async fn graphql_handler(
             async_graphql::BatchRequest::Batch(reqs) => async_graphql::BatchRequest::Batch(
                 reqs.into_iter()
                     .map(|req| {
-                        let mut req = req.data(actor.mfa_verification()).data(actor.user.clone());
+                        let mut req = req
+                            .data(actor.mfa_verification())
+                            .data(actor.user.clone())
+                            .data(loaders.clone());
                         if let Some(oauth_session) = actor.oauth_session() {
                             req = req.data(oauth_session);
                         }
@@ -2044,8 +2068,31 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         AppError::DownloadSubmitAmbiguous(message) => {
             (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
         }
+        AppError::DownloadSubmitRejected(message) => {
+            (StatusCode::BAD_REQUEST, Json(ErrorResponse::new(message))).into_response()
+        }
         AppError::DownloadSubmitUnavailable(message) => {
             (StatusCode::BAD_GATEWAY, Json(ErrorResponse::new(message))).into_response()
+        }
+        AppError::ArchiveExtractionPluginRequired { message, .. } => {
+            (StatusCode::CONFLICT, Json(ErrorResponse::new(message))).into_response()
+        }
+        AppError::TemporaryUnavailable {
+            message,
+            retry_after,
+            ..
+        } => {
+            let mut response = (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse::new(message)),
+            )
+                .into_response();
+            if let Some(delay) = retry_after
+                && let Ok(value) = HeaderValue::from_str(&delay.as_secs().to_string())
+            {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+            response
         }
         AppError::MfaStepUpRequired(message)
         | AppError::TotpEnrollmentRequired(message)
@@ -2054,6 +2101,11 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
         | AppError::TotpRecoveryCodeUsed(message) => {
             (StatusCode::UNAUTHORIZED, Json(ErrorResponse::new(message))).into_response()
         }
+        AppError::Canceled(message) => (
+            StatusCode::REQUEST_TIMEOUT,
+            Json(ErrorResponse::new(message)),
+        )
+            .into_response(),
         AppError::Repository(message) => {
             let error_id = Id::new().0;
             tracing::error!(
@@ -2406,6 +2458,27 @@ mod tests {
         let body: Value = serde_json::from_slice(&body).expect("response body is json");
 
         assert_eq!(body["error"], "bad request");
+        assert!(body.get("error_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn temporary_unavailable_response_preserves_retry_after() {
+        let response = map_app_error(AppError::temporary_unavailable(
+            "subtitle provider is temporarily deferred",
+            Some(Duration::from_secs(120)),
+        ));
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get(header::RETRY_AFTER),
+            Some(&HeaderValue::from_static("120"))
+        );
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let body: Value = serde_json::from_slice(&body).expect("response body is json");
+        assert_eq!(body["error"], "subtitle provider is temporarily deferred");
         assert!(body.get("error_id").is_none());
     }
 

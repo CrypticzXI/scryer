@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef } from "react";
 
 import { useReactiveRefresh } from "@/lib/context/reactive-refresh-context";
+import type { TitleCatalogTitleProjection } from "@/lib/graphql/queries";
 import { useActivityEventStream } from "@/lib/hooks/use-activity-event-stream";
 import type { TitleRecord } from "@/lib/types";
+import { TITLE_OVERVIEW_REFRESH_KINDS } from "@/lib/utils/title-overview-refresh-kinds";
 
 type UseTitleListReactiveRefreshOptions = {
   facet?: string | null;
   pause?: boolean;
+  projection?: TitleCatalogTitleProjection;
   onTitleRefreshed: (
     titleId: string,
     title: TitleRecord | null,
@@ -22,10 +25,11 @@ const TITLE_ACTIVITY_KINDS = [
 ] as const;
 
 // Canonical reactive bridge for catalog tables. Title-list consumers should
-// react to semantic title lifecycle events instead of workflow-specific signals.
+// react to title lifecycle events plus media-file changes that affect list rows.
 export function useTitleListReactiveRefresh({
   facet,
   pause = false,
+  projection,
   onTitleRefreshed,
 }: UseTitleListReactiveRefreshOptions) {
   const { queueCatalogTitleRefresh } = useReactiveRefresh();
@@ -35,7 +39,14 @@ export function useTitleListReactiveRefresh({
     onTitleRefreshedRef.current = onTitleRefreshed;
   });
 
-  const kinds = useMemo(() => new Set<string>(TITLE_ACTIVITY_KINDS), []);
+  const kinds = useMemo(
+    () =>
+      new Set<string>([
+        ...TITLE_ACTIVITY_KINDS,
+        ...Array.from(TITLE_OVERVIEW_REFRESH_KINDS),
+      ]),
+    [],
+  );
 
   useActivityEventStream({
     kinds,
@@ -49,6 +60,7 @@ export function useTitleListReactiveRefresh({
 
       queueCatalogTitleRefresh({
         titleId,
+        projection,
         apply(title, requestEpoch) {
           onTitleRefreshedRef.current(titleId, title, requestEpoch);
         },

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use scryer_domain::ImportFileResult;
 use scryer_domain::{
     AppPermissionMask, DomainEvent, DomainEventFilter, DomainEventType, ImportRecord, ImportStatus,
@@ -11,43 +11,497 @@ use scryer_domain::{
 
 use scryer_domain::RuleSet;
 
+use crate::ports::{
+    DiscoveryHomeCandidate, DiscoveryHomeFilterOptions, DiscoveryHomeFilters,
+    DiscoveryHomeSectionCandidatesRecord,
+};
 use crate::types::{PendingImportStatus, PendingReleaseStatus};
 use crate::{
-    AcquisitionStateRepository, InsertMediaFileInput, JellyfinServerUser,
-    MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
-    MediaServerConnectionRepository, PlexServerDiscovery, PlexServerUser, SuccessfulGrabCommit,
-    WantedItemsQuery,
+    AcquisitionScopeStatesQuery, AcquisitionStateRepository, InsertMediaFileInput,
+    JellyfinServerUser, MediaRequestResolutionResult, MediaRequestSubmissionResult,
+    MediaRequestUpdateResult, MediaServerConnectionRepository, PlexServerDiscovery, PlexServerUser,
+    SuccessfulGrabCommit,
 };
 use scryer_domain::{PersistedPluginWasmPayload, PluginInstallation};
 
 use scryer_domain::BlocklistEntry;
 
 use crate::{
-    AppError, AppResult, BlocklistRepository, BuiltinDownloadClientConnectionTester,
-    CutoffUnmetQualitySummary, DomainEventRepository, DownloadQueueCommandRecord,
-    DownloadQueueCommandRepository, DownloadSourceIdentity, DownloadSubmission,
-    DownloadSubmissionRepository, ExternalIdentityVerifier,
-    ExternalImportMonitorSnapshotRepository, FileImporter, HousekeepingRepository, ImportArtifact,
-    ImportArtifactRepository, ImportRepository, IndexerQueryStats, IndexerStatsTracker, JobKey,
-    JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
-    LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
+    AcquisitionScopeState, AcquisitionScopeStateRepository, AppError, AppResult,
+    BlocklistRepository, BuiltinDownloadClientConnectionTester, CollectionEpisodeProgressSummary,
+    CutoffUnmetQualitySummary, DiscoveryContextIncrementalCommit, DiscoveryContextSnapshotCommit,
+    DiscoveryFacetRecord, DiscoveryItemRecord, DiscoveryItemsPageRecord,
+    DiscoveryItemsStorageQuery, DiscoveryPendingContextChangeRecord, DiscoveryPruneReport,
+    DiscoveryPublicFeedCommit, DiscoveryRepository, DiscoverySectionRecord,
+    DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord, DiscoverySyncStateRecord,
+    DomainEventRepository, DownloadQueueCommandRecord, DownloadQueueCommandRepository,
+    DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionRepository,
+    ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,
+    ExternalImportSetupSecretDraft, ExternalImportSetupSecretDraftInput,
+    ExternalImportSetupSecretDraftRepository, ExternalImportSetupSecretDraftSaveResult,
+    ExternalImportSetupSecretDraftStatus, FileImporter, HousekeepingRepository, ImportArtifact,
+    ImportArtifactRepository, ImportRepository, IndexerProxyConfigRepository, IndexerQueryStats,
+    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
+    IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository, LibraryProbeRepository,
+    LibraryProbeSignature, LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestCounts, MediaRequestQuery,
     MediaRequestRepository, MediaRequestResolution, NewBlocklistEntry, NewMediaRequest,
     NotificationChannelRepository, NotificationSubscriptionRepository,
     OAuthAuthorizationCodeRecord, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
     OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, OAuthRepository, PendingRelease,
-    PendingReleaseRepository, PendingStagedNzb, PluginDescriptorLoader,
+    PendingReleaseRepository, PendingReleasesPageQuery, PendingStagedNzb, PluginDescriptorLoader,
     PluginInstallationRepository, PostProcessingScriptRepository, ReleaseDecision,
-    RuleSetRepository, SettingsRepository, StagedNzbRef, StagedNzbStore, SystemInfoProvider,
-    TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind, TitleImageProcessor,
-    TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask, TitleImageVariantSpec,
-    TitleMediaFile, TitleMediaSizeSummary, TitleQualitySummary, UserExternalAccountRepository,
-    VerifiedExternalIdentity, WantedItem, WantedItemRepository, WebauthnChallengeRecord,
-    WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
-    WorkflowOperationRepository, ports::DatastoreInfo, ports::LogicalBackupExporter,
-    ports::TotpRepository, types::TotpCredentialRecord, types::TotpEnrollmentChallengeRecord,
-    types::TotpFailedAttemptRecord, types::TotpRecoveryCodeRecord,
+    RuleSetRepository, SchedulerAdmission, SchedulerBatchDecision, SchedulerBatchRequest,
+    SchedulerFeedback, SchedulerLease, SchedulerSnapshot, SchedulerSnapshotFilter,
+    ScopeIndexerCoverageRepository, SettingsRepository, StagedNzbRef, StagedNzbStore,
+    SystemInfoProvider, TitleEpisodeProgressSummary, TitleImageBlob, TitleImageKind,
+    TitleImageProcessor, TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask,
+    TitleImageVariantSpec, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
+    TitleQualitySummary, UiSettings, UiSettingsUpdate, UpstreamScheduler,
+    UserExternalAccountRepository, UserUiSettingsRepository, VerifiedExternalIdentity,
+    WebauthnChallengeRecord, WebauthnCredentialRecord, WebauthnRepository, WorkflowOperationInfo,
+    WorkflowOperationRepository, ports::CatalogDiscoveryCandidatesRecord, ports::DatastoreInfo,
+    ports::LogicalBackupExporter, ports::TotpRepository, types::TotpCredentialRecord,
+    types::TotpEnrollmentChallengeRecord, types::TotpFailedAttemptRecord,
+    types::TotpRecoveryCodeRecord,
 };
+
+#[derive(Default)]
+pub struct NullIndexerProxyConfigRepository;
+
+#[async_trait]
+impl IndexerProxyConfigRepository for NullIndexerProxyConfigRepository {
+    async fn list(
+        &self,
+        _provider_type: Option<scryer_domain::IndexerProxyProviderType>,
+    ) -> AppResult<Vec<scryer_domain::IndexerProxyConfig>> {
+        Ok(Vec::new())
+    }
+
+    async fn get_by_id(&self, _id: &str) -> AppResult<Option<scryer_domain::IndexerProxyConfig>> {
+        Ok(None)
+    }
+
+    async fn create(
+        &self,
+        config: scryer_domain::IndexerProxyConfig,
+    ) -> AppResult<scryer_domain::IndexerProxyConfig> {
+        Ok(config)
+    }
+
+    async fn update(
+        &self,
+        config: scryer_domain::IndexerProxyConfig,
+    ) -> AppResult<scryer_domain::IndexerProxyConfig> {
+        Ok(config)
+    }
+
+    async fn delete(&self, _id: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn record_health(
+        &self,
+        _id: &str,
+        _status: scryer_domain::IndexerProxyHealthStatus,
+        _error_message: Option<String>,
+        _error_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct NullScopeIndexerCoverageRepository;
+
+#[async_trait]
+impl ScopeIndexerCoverageRepository for NullScopeIndexerCoverageRepository {
+    async fn record_coverage(
+        &self,
+        _scope_key: &str,
+        _facet: &str,
+        _indexer_id: &str,
+        _fingerprint: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn covered_indexers(
+        &self,
+        _scope_key: &str,
+        _facet: &str,
+        _fingerprint: &str,
+        _stale_before: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_coverage_for_scope_keys(
+        &self,
+        _scope_keys: &[String],
+    ) -> AppResult<Vec<crate::ScopeCoverageRow>> {
+        Ok(Vec::new())
+    }
+
+    async fn prune_scope(&self, _scope_key: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn prune_orphaned_coverage(&self) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct NullDiscoveryRepository;
+
+#[async_trait]
+impl DiscoveryRepository for NullDiscoveryRepository {
+    async fn get_discovery_sync_state(
+        &self,
+        _scope_key: &str,
+    ) -> AppResult<Option<DiscoverySyncStateRecord>> {
+        Ok(None)
+    }
+
+    async fn upsert_discovery_sync_state(
+        &self,
+        _state: &DiscoverySyncStateRecord,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn try_acquire_discovery_sync_lease(
+        &self,
+        _scope_key: &str,
+        _owner_id: &str,
+        _lease_expires_at: DateTime<Utc>,
+        _now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        Ok(true)
+    }
+
+    async fn renew_discovery_sync_lease(
+        &self,
+        _scope_key: &str,
+        _owner_id: &str,
+        _lease_expires_at: DateTime<Utc>,
+        _now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        Ok(true)
+    }
+
+    async fn release_discovery_sync_lease(
+        &self,
+        _scope_key: &str,
+        _owner_id: &str,
+        _now: DateTime<Utc>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn get_discovery_sync_run(&self, _id: &str) -> AppResult<Option<DiscoverySyncRunRecord>> {
+        Ok(None)
+    }
+
+    async fn list_recent_discovery_sync_runs(
+        &self,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoverySyncRunRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_unacked_discovery_context_snapshot_runs(
+        &self,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoverySyncRunRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn upsert_discovery_sync_run(&self, _run: &DiscoverySyncRunRecord) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn commit_discovery_context_snapshot(
+        &self,
+        _commit: &DiscoveryContextSnapshotCommit,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn commit_discovery_context_incremental(
+        &self,
+        _commit: &DiscoveryContextIncrementalCommit,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn commit_discovery_public_feed(
+        &self,
+        _commit: &DiscoveryPublicFeedCommit,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn replace_discovery_submitted_subjects(
+        &self,
+        _run_id: &str,
+        _subjects: &[DiscoverySubmittedSubjectRecord],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_discovery_submitted_subjects(
+        &self,
+        _run_id: &str,
+    ) -> AppResult<Vec<DiscoverySubmittedSubjectRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn upsert_pending_discovery_context_change(
+        &self,
+        _change: &DiscoveryPendingContextChangeRecord,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn get_pending_discovery_context_change(
+        &self,
+        _id: &str,
+    ) -> AppResult<Option<DiscoveryPendingContextChangeRecord>> {
+        Ok(None)
+    }
+
+    async fn delete_pending_discovery_context_change(&self, _id: &str) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn list_all_pending_discovery_context_changes(
+        &self,
+        _scope_key: &str,
+    ) -> AppResult<Vec<DiscoveryPendingContextChangeRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_pending_discovery_context_changes(
+        &self,
+        _scope_key: &str,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoveryPendingContextChangeRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn count_pending_discovery_context_changes(&self, _scope_key: &str) -> AppResult<i64> {
+        Ok(0)
+    }
+
+    async fn clear_pending_discovery_context_changes_through_sequence(
+        &self,
+        _scope_key: &str,
+        _last_seen_sequence: i64,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+
+    async fn replace_discovery_sections(
+        &self,
+        _run_id: &str,
+        _sections: &[DiscoverySectionRecord],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn replace_discovery_items(
+        &self,
+        _run_id: &str,
+        _items: &[DiscoveryItemRecord],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn replace_discovery_facets(
+        &self,
+        _run_id: &str,
+        _facets: &[DiscoveryFacetRecord],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_discovery_sections(
+        &self,
+        _run_id: &str,
+        _surface: Option<&str>,
+    ) -> AppResult<Vec<DiscoverySectionRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_public_discovery_section_items(
+        &self,
+        _run_id: &str,
+        _allowed_media_kinds: &[String],
+        _include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
+        _limit_per_section: i64,
+    ) -> AppResult<Vec<DiscoveryHomeSectionCandidatesRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_personalized_discovery_home_items(
+        &self,
+        _run_id: &str,
+        _readable_library_ids: &[String],
+        _allowed_media_kinds: &[String],
+        _include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_personalized_complete_collection_items(
+        &self,
+        _run_id: &str,
+        _readable_library_ids: &[String],
+        _allowed_media_kinds: &[String],
+        _include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_personalized_discovery_facets(
+        &self,
+        _run_id: &str,
+        _readable_library_ids: &[String],
+        _allowed_media_kinds: &[String],
+        _include_unresolved: bool,
+    ) -> AppResult<Vec<DiscoveryFacetRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_discovery_home_top_rated_items(
+        &self,
+        _public_run_id: Option<&str>,
+        _context_run_id: Option<&str>,
+        _readable_library_ids: &[String],
+        _allowed_media_kinds: &[String],
+        _owned_library_ids: &[String],
+        _excluded_identity_keys: &[String],
+        _include_unresolved: bool,
+        _filters: &DiscoveryHomeFilters,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoveryHomeCandidate>> {
+        Ok(Vec::new())
+    }
+
+    async fn hydrate_discovery_home_candidates(
+        &self,
+        _candidates: &mut [DiscoveryHomeCandidate],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn hydrate_discovery_home_hero(
+        &self,
+        _candidate: &mut DiscoveryHomeCandidate,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_discovery_home_filter_options(
+        &self,
+        _public_run_id: Option<&str>,
+        _context_run_id: Option<&str>,
+        _readable_library_ids: &[String],
+        _allowed_media_kinds: &[String],
+        _include_unresolved: bool,
+    ) -> AppResult<DiscoveryHomeFilterOptions> {
+        Ok(DiscoveryHomeFilterOptions::default())
+    }
+
+    async fn list_catalog_public_discovery_items(
+        &self,
+        _run_id: &str,
+        _owned_library_ids: &[String],
+        _excluded_identity_keys: &[String],
+        _media_kind: &str,
+        _include_unresolved: bool,
+        _limit: i64,
+    ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+        Ok(CatalogDiscoveryCandidatesRecord::default())
+    }
+
+    async fn list_catalog_public_discovery_sections(
+        &self,
+        _run_id: &str,
+        _owned_library_ids: &[String],
+        _excluded_identity_keys: &[String],
+        _media_kind: &str,
+        _include_unresolved: bool,
+        _limit_per_section: i64,
+    ) -> AppResult<Vec<crate::ports::CatalogDiscoverySectionCandidatesRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_catalog_personalized_discovery_items(
+        &self,
+        _run_id: &str,
+        _readable_library_ids: &[String],
+        _media_kind: &str,
+        _include_unresolved: bool,
+        _limit: i64,
+    ) -> AppResult<CatalogDiscoveryCandidatesRecord> {
+        Ok(CatalogDiscoveryCandidatesRecord::default())
+    }
+
+    async fn query_discovery_items(
+        &self,
+        _query: &DiscoveryItemsStorageQuery,
+    ) -> AppResult<DiscoveryItemsPageRecord> {
+        Ok(DiscoveryItemsPageRecord {
+            items: Vec::new(),
+            total_count: 0,
+        })
+    }
+
+    async fn replace_title_more_like_this_items(
+        &self,
+        _title_id: &str,
+        _language: &str,
+        _items: &[DiscoveryItemRecord],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_title_more_like_this_items(
+        &self,
+        _title_id: &str,
+        _limit: i64,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_discovery_items_for_generation(
+        &self,
+        _base_generation_id: &str,
+    ) -> AppResult<Vec<DiscoveryItemRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_discovery_facets(&self, _run_id: &str) -> AppResult<Vec<DiscoveryFacetRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn prune_discovery_history(
+        &self,
+        _scope_key: &str,
+        _retain_successful_per_kind: usize,
+        _diagnostic_cutoff: DateTime<Utc>,
+    ) -> AppResult<DiscoveryPruneReport> {
+        Ok(DiscoveryPruneReport::default())
+    }
+}
 
 #[derive(Default)]
 pub struct NullImportRepository;
@@ -128,6 +582,7 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
+        _: &str,
         _: crate::MediaFacet,
         _: crate::ExternalImportMonitorSnapshotEntryKind,
         _: Option<i32>,
@@ -138,9 +593,57 @@ impl ExternalImportMonitorSnapshotRepository for NullExternalImportMonitorSnapsh
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
+        _: &str,
         _: crate::MediaFacet,
     ) -> AppResult<()> {
         Ok(())
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks_for_session_prefix(
+        &self,
+        _: &str,
+        _: MediaFacet,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks_except_session_prefix(
+        &self,
+        _: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct NullExternalImportSetupSecretDraftRepository;
+
+#[async_trait]
+impl ExternalImportSetupSecretDraftRepository for NullExternalImportSetupSecretDraftRepository {
+    async fn get_for_owner(&self, _: &str) -> AppResult<Option<ExternalImportSetupSecretDraft>> {
+        Ok(None)
+    }
+
+    async fn status_for_actor(&self, _: &str) -> AppResult<ExternalImportSetupSecretDraftStatus> {
+        Ok(ExternalImportSetupSecretDraftStatus {
+            has_draft: false,
+            owned_by_current_user: false,
+            updated_at: None,
+        })
+    }
+
+    async fn save_for_owner(
+        &self,
+        _: &str,
+        _: ExternalImportSetupSecretDraftInput,
+    ) -> AppResult<ExternalImportSetupSecretDraftSaveResult> {
+        Err(AppError::Repository(
+            "external import setup secret draft repository is not configured".to_string(),
+        ))
+    }
+
+    async fn clear_for_owner(&self, _: &str) -> AppResult<bool> {
+        Ok(false)
     }
 }
 
@@ -271,10 +774,25 @@ impl MediaFileRepository for NullMediaFileRepository {
         Ok(Vec::new())
     }
 
+    async fn collection_media_size_bytes(
+        &self,
+        _title_id: &str,
+        _ordered_path: &str,
+    ) -> AppResult<Option<i64>> {
+        Ok(None)
+    }
+
     async fn list_title_quality_summaries(
         &self,
         _title_ids: &[String],
     ) -> AppResult<Vec<TitleQualitySummary>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_title_movie_media_summaries(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<TitleMovieMediaSummary>> {
         Ok(Vec::new())
     }
 
@@ -289,6 +807,13 @@ impl MediaFileRepository for NullMediaFileRepository {
         &self,
         _title_ids: &[String],
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_collection_episode_progress_summaries(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<CollectionEpisodeProgressSummary>> {
         Ok(Vec::new())
     }
 
@@ -445,30 +970,23 @@ impl TitleImageProcessor for NullTitleImageProcessor {
 }
 
 #[derive(Default)]
-pub struct NullWantedItemRepository;
+pub struct NullAcquisitionScopeStateRepository;
 
 #[async_trait]
-impl WantedItemRepository for NullWantedItemRepository {
-    async fn upsert_wanted_item(&self, _item: &WantedItem) -> AppResult<String> {
+impl AcquisitionScopeStateRepository for NullAcquisitionScopeStateRepository {
+    async fn upsert_acquisition_scope_state(
+        &self,
+        _item: &AcquisitionScopeState,
+    ) -> AppResult<String> {
         Err(AppError::Repository(
             "wanted item repository is not configured".to_string(),
         ))
     }
-    async fn list_due_wanted_items(
-        &self,
-        _now: &str,
-        _batch_limit: i64,
-        _excluded_facets: &[MediaFacet],
-    ) -> AppResult<Vec<WantedItem>> {
-        Ok(vec![])
-    }
-    async fn update_wanted_item_status(
+    async fn update_acquisition_scope_status(
         &self,
         _id: &str,
         _status: &str,
-        _next_search_at: Option<&str>,
         _last_search_at: Option<&str>,
-        _search_count: i64,
         _current_score: Option<i32>,
         _grabbed_release: Option<&str>,
     ) -> AppResult<()> {
@@ -476,58 +994,88 @@ impl WantedItemRepository for NullWantedItemRepository {
             "wanted item repository is not configured".to_string(),
         ))
     }
-    async fn get_wanted_item_for_title(
+    async fn record_acquisition_scope_search_attempt(
+        &self,
+        _id: &str,
+        _last_search_at: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+    async fn get_acquisition_scope_state_for_title(
         &self,
         _title_id: &str,
         _episode_id: Option<&str>,
-    ) -> AppResult<Option<WantedItem>> {
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         Ok(None)
     }
-    async fn delete_wanted_items_for_title(&self, _title_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_title(&self, _title_id: &str) -> AppResult<()> {
         Ok(())
     }
-    async fn delete_wanted_items_for_collection(&self, _collection_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_collection(
+        &self,
+        _collection_id: &str,
+    ) -> AppResult<()> {
         Ok(())
     }
-    async fn delete_wanted_items_for_series_movie_link(
+    async fn delete_acquisition_scope_states_for_series_movie_link(
         &self,
         _series_movie_link_id: &str,
     ) -> AppResult<()> {
         Ok(())
     }
-    async fn delete_wanted_items_for_episode(&self, _episode_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_episode(
+        &self,
+        _episode_id: &str,
+    ) -> AppResult<()> {
         Ok(())
-    }
-    async fn reset_fruitless_wanted_items(&self, _now: &str) -> AppResult<u64> {
-        Ok(0)
     }
     async fn insert_release_decision(&self, _decision: &ReleaseDecision) -> AppResult<String> {
         Err(AppError::Repository(
             "wanted item repository is not configured".to_string(),
         ))
     }
-    async fn get_wanted_item_by_id(&self, _id: &str) -> AppResult<Option<WantedItem>> {
+    async fn get_acquisition_scope_state_by_id(
+        &self,
+        _id: &str,
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         Ok(None)
     }
-    async fn list_wanted_items(&self, _query: WantedItemsQuery) -> AppResult<Vec<WantedItem>> {
+    async fn list_acquisition_scope_states(
+        &self,
+        _query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
         Ok(vec![])
     }
-    async fn count_wanted_items(&self, _query: WantedItemsQuery) -> AppResult<i64> {
+    async fn count_acquisition_scope_states(
+        &self,
+        _query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<i64> {
         Ok(0)
     }
     async fn list_release_decisions_for_title(
         &self,
         _title_id: &str,
         _limit: i64,
+        _offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         Ok(vec![])
     }
-    async fn list_release_decisions_for_wanted_item(
+    async fn list_release_decisions_for_acquisition_scope_state(
         &self,
         _wanted_item_id: &str,
         _limit: i64,
+        _offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         Ok(vec![])
+    }
+    async fn count_release_decisions_for_title(&self, _title_id: &str) -> AppResult<i64> {
+        Ok(0)
+    }
+    async fn count_release_decisions_for_acquisition_scope_state(
+        &self,
+        _wanted_item_id: &str,
+    ) -> AppResult<i64> {
+        Ok(0)
     }
 }
 
@@ -823,6 +1371,97 @@ impl IndexerStatsTracker for NullIndexerStatsTracker {
 }
 
 #[derive(Default)]
+pub struct NullUpstreamScheduler;
+
+#[async_trait]
+impl UpstreamScheduler for NullUpstreamScheduler {
+    async fn admit_batch(
+        &self,
+        request: SchedulerBatchRequest,
+    ) -> AppResult<SchedulerBatchDecision> {
+        let decisions = request
+            .candidates
+            .into_iter()
+            .map(|candidate| SchedulerAdmission::Admit {
+                candidate_id: candidate.candidate_id.clone(),
+                lease: SchedulerLease {
+                    lease_id: candidate.candidate_id.to_string(),
+                    candidate_id: candidate.candidate_id,
+                    host_key: candidate.host_key,
+                    destination_key: candidate.destination_key,
+                    account_quota_key: candidate.account_quota_key,
+                    rss_request_key: candidate.rss_request_key,
+                    operation: candidate.operation,
+                    intent: candidate.intent,
+                    issued_at: request.now,
+                },
+                reason: crate::AdmissionReason::BackgroundValue,
+            })
+            .collect();
+        Ok(SchedulerBatchDecision {
+            batch_id: request.batch_id,
+            decisions,
+        })
+    }
+
+    async fn record_feedback(&self, _feedback: SchedulerFeedback) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn snapshot(&self, _filter: SchedulerSnapshotFilter) -> AppResult<SchedulerSnapshot> {
+        Ok(SchedulerSnapshot::default())
+    }
+}
+
+#[derive(Default)]
+pub struct NullIndexerSearchLearningRepository;
+
+#[async_trait]
+impl IndexerSearchLearningRepository for NullIndexerSearchLearningRepository {
+    async fn list_for_title(
+        &self,
+        _indexer_id: &str,
+        _title_id: &str,
+        _facet: &str,
+    ) -> AppResult<Vec<IndexerSearchLearningRecord>> {
+        Ok(vec![])
+    }
+
+    async fn record_outcome(
+        &self,
+        key: &IndexerSearchLearningKey,
+        usable_hits: u32,
+    ) -> AppResult<IndexerSearchLearningRecord> {
+        Ok(IndexerSearchLearningRecord {
+            key: key.clone(),
+            attempts: 1,
+            empty_successes: u32::from(usable_hits == 0),
+            usable_successes: u32::from(usable_hits > 0),
+            last_attempt_at: None,
+            last_usable_at: None,
+            suppressed: false,
+            updated_at: None,
+        })
+    }
+
+    async fn set_suppressed(
+        &self,
+        _key: &IndexerSearchLearningKey,
+        _suppressed: bool,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn try_claim_suppressed_reprobe(
+        &self,
+        _key: &IndexerSearchLearningKey,
+        _stale_before: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
+}
+
+#[derive(Default)]
 pub struct NullNotificationChannelRepository;
 
 #[async_trait]
@@ -978,9 +1617,6 @@ impl HousekeepingRepository for NullHousekeepingRepository {
     async fn delete_release_attempts_older_than(&self, _days: i64) -> AppResult<u32> {
         Ok(0)
     }
-    async fn delete_dispatched_event_outboxes_older_than(&self, _days: i64) -> AppResult<u32> {
-        Ok(0)
-    }
     async fn delete_history_events_older_than(&self, _days: i64) -> AppResult<u32> {
         Ok(0)
     }
@@ -1032,6 +1668,9 @@ impl HousekeepingRepository for NullHousekeepingRepository {
     }
 
     async fn delete_media_files_by_ids(&self, _ids: &[String]) -> AppResult<u32> {
+        Ok(0)
+    }
+    async fn prune_unreferenced_title_image_blobs(&self, _limit: u32) -> AppResult<u32> {
         Ok(0)
     }
 }
@@ -1184,6 +1823,12 @@ impl PendingReleaseRepository for NullPendingReleaseRepository {
     async fn list_pending_releases_for_title(&self, _: &str) -> AppResult<Vec<PendingRelease>> {
         Ok(vec![])
     }
+    async fn list_pending_releases_page(
+        &self,
+        _: PendingReleasesPageQuery,
+    ) -> AppResult<(Vec<PendingRelease>, i64)> {
+        Ok((vec![], 0))
+    }
     async fn update_pending_release_status(
         &self,
         _: &str,
@@ -1213,7 +1858,11 @@ impl PendingReleaseRepository for NullPendingReleaseRepository {
     ) -> AppResult<bool> {
         Ok(false)
     }
-    async fn supersede_pending_releases_for_wanted_item(&self, _: &str, _: &str) -> AppResult<()> {
+    async fn supersede_pending_releases_for_acquisition_scope_state(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> AppResult<()> {
         Ok(())
     }
     async fn delete_pending_releases_for_title(&self, _: &str) -> AppResult<()> {
@@ -1391,6 +2040,10 @@ impl JobRunRepository for NullJobRunRepository {
 
     async fn list_active_job_runs(&self) -> AppResult<Vec<JobRunRecord>> {
         Ok(Vec::new())
+    }
+
+    async fn reconcile_interrupted_job_runs(&self) -> AppResult<u64> {
+        Ok(0)
     }
 }
 
@@ -1946,6 +2599,32 @@ impl UserExternalAccountRepository for NullUserExternalAccountRepository {
 }
 
 #[derive(Default)]
+pub struct NullUserUiSettingsRepository;
+
+#[async_trait]
+impl UserUiSettingsRepository for NullUserUiSettingsRepository {
+    async fn get_by_user_id(&self, user_id: &str) -> AppResult<Option<UiSettings>> {
+        Ok(Some(UiSettings::defaults_for_user(user_id.to_string())))
+    }
+
+    async fn upsert(&self, user_id: &str, settings: UiSettingsUpdate) -> AppResult<UiSettings> {
+        let mut current = UiSettings::defaults_for_user(user_id.to_string());
+        current.theme = settings.theme;
+        current.date_time_format = settings.date_time_format;
+        current.highlight_color = settings.highlight_color;
+        current.secondary_color = settings.secondary_color;
+        current.high_contrast_mode = settings.high_contrast_mode;
+        current.reduce_motion = settings.reduce_motion;
+        current.hide_sponsor_button = settings.hide_sponsor_button;
+        current.density = settings.density;
+        current.sidebar_mode = settings.sidebar_mode;
+        current.default_landing_view = settings.default_landing_view;
+        current.table_columns = settings.table_columns;
+        Ok(current)
+    }
+}
+
+#[derive(Default)]
 pub struct NullMediaServerConnectionRepository;
 
 #[async_trait]
@@ -2145,12 +2824,6 @@ pub mod test_nulls {
         ) -> AppResult<Vec<PendingTitleHydration>> {
             Ok(vec![])
         }
-        async fn list_anime_title_ids_missing_anibridge_scoped_external_ids(
-            &self,
-            _: usize,
-        ) -> AppResult<Vec<String>> {
-            Ok(vec![])
-        }
         async fn mark_title_metadata_hydration_due_now(&self, _: &str) -> AppResult<()> {
             Ok(())
         }
@@ -2216,6 +2889,13 @@ pub mod test_nulls {
             &self,
             _: &str,
         ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>> {
+            Ok(vec![])
+        }
+        async fn list_series_movie_external_id_lookup_matches(
+            &self,
+            _: &[String],
+            _: &[crate::TitleExternalIdLookup],
+        ) -> AppResult<Vec<crate::SeriesMovieExternalIdLookupMatch>> {
             Ok(vec![])
         }
         async fn get_series_movie_link_by_id(
@@ -2387,8 +3067,11 @@ pub mod test_nulls {
             _: Option<u32>,
             _: Option<u32>,
             _: Vec<scryer_domain::TaggedAlias>,
+            _: Option<crate::IndexerSearchLearningContext>,
+            _: tokio_util::sync::CancellationToken,
         ) -> AppResult<IndexerSearchResponse> {
             Ok(IndexerSearchResponse {
+                indexer_outcomes: Vec::new(),
                 results: vec![],
                 api_current: None,
                 api_max: None,

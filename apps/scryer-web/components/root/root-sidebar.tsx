@@ -1,10 +1,10 @@
-
 import * as React from "react";
-import { useIsMobile } from "@/lib/hooks/use-mobile";
 import type { LucideIcon } from "lucide-react";
+import { useClient } from "urql";
 import type {
   ActivitySection,
   ContentSettingsSection,
+  LogsSection,
   SettingsSection,
   SystemSection,
   Translate,
@@ -18,6 +18,8 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
   SidebarMenu,
   SidebarMenuBadge,
   SidebarMenuButton,
@@ -27,21 +29,57 @@ import {
   SidebarMenuSubItem,
   SidebarInset,
   SidebarProvider,
-  SidebarSeparator,
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { ChevronRight, Monitor, Moon, Rainbow, Sun } from "lucide-react";
+import {
+  Archive,
+  Bell,
+  Captions,
+  Database,
+  Download,
+  FileText,
+  FolderCog,
+  Heart,
+  Inbox,
+  Monitor,
+  Moon,
+  Puzzle,
+  Rss,
+  Server,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sun,
+  TextSearch,
+  Timer,
+  Recycle,
+  User,
+  Users,
+} from "lucide-react";
 import { useTheme } from "next-themes";
-import { getNextTheme, getThemeLabel } from "@/lib/theme";
+import { fromUiThemeValue, getNextTheme, toUiThemeValue } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import type { PendingImportCounts } from "@/lib/types";
-import { hasImportItemsForView, pendingImportCountForView } from "@/lib/types";
+import { pendingImportCountForView } from "@/lib/types";
+import { setMyUiSettingsMutation } from "@/lib/graphql/mutations";
+import { useGlobalStatus } from "@/lib/context/global-status-context";
+import {
+  useUiSettings,
+  uiSettingsInputFromSettings,
+} from "@/lib/context/ui-settings-context";
 import type { AuthUser } from "@/lib/hooks/use-auth";
-import { APP_PERMISSIONS, LIBRARY_PERMISSIONS, hasAnyAppPermission, hasAnyLibraryPermission } from "@/lib/utils/permissions";
+import type { UiSettings } from "@/lib/types/settings";
+import {
+  APP_PERMISSIONS,
+  LIBRARY_PERMISSIONS,
+  hasAnyAppPermission,
+  hasAnyLibraryPermission,
+} from "@/lib/utils/permissions";
 import type { AppPermission, LibraryPermission } from "@/lib/utils/permissions";
+import { canAccessSystemSection } from "@/lib/utils/routes";
 import { selectorId } from "@/lib/utils/dom-ids";
+import ScryerLogo from "@/components/scryer-logo";
 
 type NavItem = {
   id: ViewId;
@@ -49,12 +87,157 @@ type NavItem = {
   icon: LucideIcon;
 };
 
+type TopNavGroupDefinition = {
+  id: string;
+  labelKey: string;
+  label?: string;
+  items: TopNavGroupItemDefinition[];
+};
+
+type TopNavGroup = {
+  id: string;
+  label: string;
+  items: TopNavGroupItem[];
+};
+
+type TopNavGroupItemDefinition =
+  | { kind: "view"; id: ViewId }
+  | { kind: "requests"; icon: LucideIcon }
+  | { kind: "logs"; id: LogsSection; labelKey: string; icon: LucideIcon }
+  | { kind: "system"; id: SystemSection; labelKey: string; icon: LucideIcon }
+  | {
+      kind: "settings";
+      id: SettingsSection;
+      labelKey?: string;
+      icon: LucideIcon;
+    };
+
+type TopNavGroupItem =
+  | (NavItem & { kind: "view" })
+  | {
+      kind: "requests";
+      id: "requests";
+      label: string;
+      icon: LucideIcon;
+    }
+  | {
+      kind: "logs";
+      id: LogsSection;
+      label: string;
+      icon: LucideIcon;
+    }
+  | {
+      kind: "system";
+      id: SystemSection;
+      label: string;
+      icon: LucideIcon;
+    }
+  | {
+      kind: "settings";
+      id: SettingsSection;
+      label: string;
+      icon: LucideIcon;
+    };
+
+type HeaderWithMobileNavigationProps = {
+  mobileNavigation?: React.ReactNode;
+};
+
+const TOP_NAV_GROUPS: TopNavGroupDefinition[] = [
+  {
+    id: "catalogs",
+    labelKey: "nav.group.catalogs",
+    items: [
+      { kind: "view", id: "movies" },
+      { kind: "view", id: "series" },
+      { kind: "view", id: "anime" },
+    ],
+  },
+  {
+    id: "discover",
+    label: "Discover",
+    labelKey: "nav.group.discover",
+    items: [
+      { kind: "view", id: "discovery" },
+      { kind: "requests", icon: Inbox },
+    ],
+  },
+  {
+    id: "automation",
+    labelKey: "nav.group.automation",
+    items: [
+      { kind: "view", id: "wanted" },
+      { kind: "view", id: "calendar" },
+      { kind: "view", id: "activity" },
+      { kind: "settings", id: "subtitles", icon: Captions },
+      { kind: "settings", id: "rules", icon: SlidersHorizontal },
+      { kind: "settings", id: "post-processing", icon: FolderCog },
+    ],
+  },
+  {
+    id: "integrations",
+    labelKey: "nav.group.integrations",
+    items: [
+      { kind: "settings", id: "indexers", icon: Database },
+      { kind: "settings", id: "downloadClients", icon: Download },
+      { kind: "settings", id: "mediaServers", icon: Server },
+      { kind: "settings", id: "notifications", icon: Bell },
+    ],
+  },
+  {
+    id: "system",
+    labelKey: "nav.group.system",
+    items: [
+      {
+        kind: "settings",
+        id: "users",
+        labelKey: "nav.usersAccess",
+        icon: Users,
+      },
+      { kind: "settings", id: "security", icon: ShieldCheck },
+      { kind: "view", id: "system" },
+      { kind: "system", id: "jobs", labelKey: "system.jobsTitle", icon: Timer },
+      {
+        kind: "system",
+        id: "recycleBin",
+        labelKey: "settings.recycleBin",
+        icon: Recycle,
+      },
+      { kind: "settings", id: "backups", icon: Archive },
+      { kind: "view", id: "settings" },
+    ],
+  },
+  {
+    id: "logs",
+    labelKey: "nav.logs",
+    items: [
+      { kind: "logs", id: "logs", labelKey: "nav.serviceLogs", icon: FileText },
+      { kind: "logs", id: "audit", labelKey: "nav.auditLogs", icon: TextSearch },
+    ],
+  },
+];
+
+const PROMOTED_SETTINGS_SHORTCUT_IDS = new Set<SettingsSection>(
+  TOP_NAV_GROUPS.flatMap((group) =>
+    group.items.flatMap((item) => (item.kind === "settings" ? [item.id] : [])),
+  ),
+);
+const DEFAULT_SETTINGS_SECTION_ORDER: SettingsSection[] = [
+  "general",
+  "profile",
+  "qualityProfiles",
+  "delayProfiles",
+  "plugins",
+];
+const MEDIA_NAV_VIEW_IDS: ViewId[] = ["movies", "series", "anime"];
+
 type RootSidebarProps = {
   topNav: NavItem[];
   view: ViewId;
   settingsSection: SettingsSection;
   contentSettingsSection: ContentSettingsSection;
   systemSection: SystemSection;
+  logsSection: LogsSection;
   activitySection: ActivitySection;
   wantedSection: WantedSection;
   user: AuthUser;
@@ -62,7 +245,7 @@ type RootSidebarProps = {
   pendingMediaRequestCounts: PendingImportCounts | null;
   manualImportRequiredCount: number;
   pluginUpdateCount: number;
-  scryerVersion: string | null;
+  header?: React.ReactNode;
   children?: React.ReactNode;
   onNavigate: (
     nextView: ViewId,
@@ -71,22 +254,26 @@ type RootSidebarProps = {
     nextSystemSection?: SystemSection,
     nextWantedSection?: WantedSection,
     nextActivitySection?: ActivitySection,
+    nextLogsSection?: LogsSection,
   ) => void;
 };
 
 const settingsEntries: Array<{
   id: SettingsSection;
   label: (t: Translate) => string;
+  icon?: LucideIcon;
   requiredAnyAppPermission?: AppPermission[];
   requiredAnyLibraryPermission?: LibraryPermission[];
 }> = [
   {
     id: "profile",
     label: (t) => t("settings.profile"),
+    icon: User,
   },
   {
     id: "general",
     label: (t) => t("settings.general"),
+    icon: Settings2,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
@@ -97,12 +284,16 @@ const settingsEntries: Array<{
   {
     id: "security",
     label: (t) => t("settings.security"),
+    icon: ShieldCheck,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageUsers],
   },
   {
     id: "users",
     label: (t) => t("settings.users"),
-    requiredAnyAppPermission: [APP_PERMISSIONS.manageUsers, APP_PERMISSIONS.managePermissions],
+    requiredAnyAppPermission: [
+      APP_PERMISSIONS.manageUsers,
+      APP_PERMISSIONS.managePermissions,
+    ],
   },
   {
     id: "mediaServers",
@@ -112,16 +303,24 @@ const settingsEntries: Array<{
   {
     id: "qualityProfiles",
     label: (t) => t("settings.qualityProfiles"),
+    icon: SlidersHorizontal,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
     id: "delayProfiles",
     label: (t) => t("settings.delayProfiles"),
+    icon: Timer,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
   },
   {
     id: "downloadClients",
     label: (t) => t("settings.downloadClients"),
+    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
+  },
+  {
+    id: "acquisition",
+    label: (t) => t("settings.acquisition"),
+    icon: Rss,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
@@ -137,6 +336,7 @@ const settingsEntries: Array<{
   {
     id: "plugins",
     label: (t) => t("settings.plugins"),
+    icon: Puzzle,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
   },
   {
@@ -152,17 +352,33 @@ const settingsEntries: Array<{
   {
     id: "subtitles",
     label: (t) => t("settings.subtitles"),
+    icon: Captions,
     requiredAnyAppPermission: [APP_PERMISSIONS.manageCatalogSettings],
-  },
-  {
-    id: "recycleBin",
-    label: (t) => t("settings.recycleBin"),
-    requiredAnyAppPermission: [APP_PERMISSIONS.manageSystemSettings],
-    requiredAnyLibraryPermission: [LIBRARY_PERMISSIONS.manageTitles],
   },
 ];
 
-const MEDIA_SETTINGS_SUB_PAGES: Array<{ id: ContentSettingsSection; labelKey: string }> = [
+const SETTINGS_NAV_GROUPS: Array<{
+  id: string;
+  labelKey: string;
+  itemIds: SettingsSection[];
+}> = [
+  {
+    id: "settings",
+    labelKey: "nav.settings",
+    itemIds: [
+      "profile",
+      "general",
+      "qualityProfiles",
+      "delayProfiles",
+      "plugins",
+    ],
+  },
+];
+
+const MEDIA_SETTINGS_SUB_PAGES: Array<{
+  id: ContentSettingsSection;
+  labelKey: string;
+}> = [
   { id: "library", labelKey: "nav.library" },
   { id: "general", labelKey: "facetSettings.general" },
   { id: "quality", labelKey: "facetSettings.quality" },
@@ -172,8 +388,11 @@ const MEDIA_SETTINGS_SUB_PAGES: Array<{ id: ContentSettingsSection; labelKey: st
 
 const SYSTEM_SUB_PAGES: Array<{ id: SystemSection; labelKey: string }> = [
   { id: "overview", labelKey: "system.title" },
-  { id: "jobs", labelKey: "system.jobsTitle" },
-  { id: "audit", labelKey: "system.auditTitle" },
+];
+
+const LOGS_SUB_PAGES: Array<{ id: LogsSection; labelKey: string }> = [
+  { id: "logs", labelKey: "nav.serviceLogs" },
+  { id: "audit", labelKey: "nav.auditLogs" },
 ];
 
 const ACTIVITY_SUB_PAGES: Array<{ id: ActivitySection; labelKey: string }> = [
@@ -192,6 +411,15 @@ const WANTED_SUB_PAGES: Array<{ id: WantedSection; labelKey: string }> = [
 const LEAF_NAV_BADGE_BASE_CLASS =
   "ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-md px-1 text-[10px] font-medium leading-none tabular-nums";
 
+const TOP_NAV_BUTTON_CLASS =
+  "h-9 rounded-[10px] px-2.5 text-[13px] font-medium transition-colors hover:!bg-[var(--scry-hover)] hover:text-sidebar-accent-foreground data-[active=true]:bg-[linear-gradient(90deg,rgba(var(--scry-accent-rgb),0.30),rgba(var(--scry-accent-rgb),0.10))] data-[active=true]:font-semibold data-[active=true]:text-foreground data-[active=true]:shadow-[inset_2px_0_0_rgb(var(--scry-accent-rgb)),0_8px_18px_rgba(var(--scry-accent-rgb),0.16)] data-[active=true]:hover:!bg-[linear-gradient(90deg,rgba(var(--scry-accent-rgb),0.30),rgba(var(--scry-accent-rgb),0.10))] data-[active=true]:[&>svg]:text-primary";
+
+const SUB_NAV_BUTTON_CLASS =
+  "min-h-[30px] rounded-[8px] px-[11px] text-[12.5px] font-medium !text-[var(--scry-muted)] transition-colors hover:!bg-[var(--scry-hover)] hover:!text-[var(--scry-body)] data-[active=true]:!bg-[var(--scry-hover)] data-[active=true]:!bg-none data-[active=true]:font-semibold data-[active=true]:!text-[var(--scry-text2)]";
+
+const SUB_NAV_MENU_CLASS =
+  "mx-0 mb-0.5 ml-[17px] mt-0.5 gap-0.5 border-[var(--scry-border2)] px-0 py-0 pl-[11px]";
+
 const TOP_NAV_BADGE_GROUP_CLASS =
   "pointer-events-none absolute right-1 flex items-center gap-1 select-none peer-data-[size=sm]/menu-button:top-1 peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 group-data-[collapsible=icon]:hidden";
 
@@ -203,40 +431,25 @@ type NavBadgeTone = "cta" | "danger" | "request";
 function navBadgeToneClass(tone: NavBadgeTone) {
   switch (tone) {
     case "danger":
-      return "bg-red-600 text-white dark:bg-red-500 dark:text-white";
+      return "bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]";
     case "request":
-      return "bg-emerald-600 text-white dark:bg-emerald-500 dark:text-white";
+      return "bg-primary text-primary-foreground";
     case "cta":
     default:
       return "bg-primary text-primary-foreground";
   }
 }
 
-function FacetNavBadges({
-  importCount,
-  requestCount,
-}: {
-  importCount: number;
-  requestCount: number;
-}) {
-  if (importCount <= 0 && requestCount <= 0) {
+function FacetNavBadges({ importCount }: { importCount: number }) {
+  if (importCount <= 0) {
     return null;
   }
 
   return (
     <div className={TOP_NAV_BADGE_GROUP_CLASS}>
-      {importCount > 0 ? (
-        <span className={cn(TOP_NAV_BADGE_BASE_CLASS, navBadgeToneClass("cta"))}>
-          {importCount}
-        </span>
-      ) : null}
-      {requestCount > 0 ? (
-        <span
-          className={cn(TOP_NAV_BADGE_BASE_CLASS, navBadgeToneClass("request"))}
-        >
-          {requestCount}
-        </span>
-      ) : null}
+      <span className={cn(TOP_NAV_BADGE_BASE_CLASS, navBadgeToneClass("cta"))}>
+        {importCount}
+      </span>
     </div>
   );
 }
@@ -249,27 +462,41 @@ function LeafNavBadge({
   tone?: NavBadgeTone;
 }) {
   return (
-    <span
-      className={cn(
-        LEAF_NAV_BADGE_BASE_CLASS,
-        navBadgeToneClass(tone),
-      )}
-    >
+    <span className={cn(LEAF_NAV_BADGE_BASE_CLASS, navBadgeToneClass(tone))}>
       {count}
     </span>
   );
 }
 
 function isSettingsSubPage(section: ContentSettingsSection): boolean {
-  return section === "library" || section === "general" || section === "quality" || section === "renaming" || section === "routing";
+  return (
+    section === "library" ||
+    section === "general" ||
+    section === "quality" ||
+    section === "renaming" ||
+    section === "routing"
+  );
 }
 
 function getMediaOverviewLabel(_viewId: ViewId, t: Translate): string {
-  return t("nav.library");
+  return t("nav.catalog");
 }
 
 function getMediaSettingsLabel(_viewId: ViewId, t: Translate): string {
   return t("nav.settings");
+}
+
+function getThemeLabel(theme: string | undefined, t: Translate): string {
+  switch (theme) {
+    case "light":
+      return t("theme.light");
+    case "dark":
+      return t("theme.dark");
+    case "pride":
+      return t("theme.dark");
+    default:
+      return t("theme.system");
+  }
 }
 
 function RootSidebarContent({
@@ -278,6 +505,7 @@ function RootSidebarContent({
   settingsSection,
   contentSettingsSection,
   systemSection,
+  logsSection,
   activitySection,
   wantedSection,
   user,
@@ -285,35 +513,113 @@ function RootSidebarContent({
   pendingMediaRequestCounts,
   manualImportRequiredCount,
   pluginUpdateCount,
-  scryerVersion,
+  header,
   children,
   onNavigate,
 }: RootSidebarProps) {
+  const client = useClient();
   const t = useTranslate();
-  const isMobile = useIsMobile();
-  const { setOpenMobile } = useSidebar();
+  const setGlobalStatus = useGlobalStatus();
+  const { isMobile, setOpenMobile } = useSidebar();
   const { theme, setTheme } = useTheme();
+  const {
+    uiSettings,
+    uiSettingsLoaded,
+    uiSettingsLoading,
+    setUiSettings,
+  } = useUiSettings();
+  const themeSaveSequenceRef = React.useRef(0);
   const [themeMounted, setThemeMounted] = React.useState(false);
   React.useEffect(() => setThemeMounted(true), []);
   const cycleTheme = React.useCallback(() => {
-    setTheme(getNextTheme(theme));
-  }, [theme, setTheme]);
-  const canManageSystemSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageSystemSettings]);
-  const canManageCatalogSettings = hasAnyAppPermission(user, [APP_PERMISSIONS.manageCatalogSettings]);
+    const nextTheme = getNextTheme(theme);
+    setTheme(nextTheme);
+
+    if (
+      !uiSettingsLoaded ||
+      uiSettingsLoading ||
+      uiSettings.theme === toUiThemeValue(nextTheme)
+    ) {
+      return;
+    }
+
+    const requestId = themeSaveSequenceRef.current + 1;
+    themeSaveSequenceRef.current = requestId;
+    const previous = uiSettings;
+    const next: UiSettings = { ...uiSettings, theme: toUiThemeValue(nextTheme) };
+    setUiSettings(next);
+    void client
+      .mutation<{ setMyUiSettings?: UiSettings }, { input: UiSettings }>(
+        setMyUiSettingsMutation,
+        { input: uiSettingsInputFromSettings(next) },
+      )
+      .toPromise()
+      .then((result) => {
+        if (themeSaveSequenceRef.current !== requestId) return;
+        if (result.error || !result.data?.setMyUiSettings) {
+          setUiSettings(previous);
+          setTheme(fromUiThemeValue(previous.theme));
+          setGlobalStatus(result.error?.message ?? t("status.failedToUpdate"));
+          return;
+        }
+        setUiSettings(result.data.setMyUiSettings);
+      })
+      .catch((error) => {
+        if (themeSaveSequenceRef.current !== requestId) return;
+        setUiSettings(previous);
+        setTheme(fromUiThemeValue(previous.theme));
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.failedToUpdate"),
+        );
+      });
+  }, [
+    client,
+    setGlobalStatus,
+    setTheme,
+    setUiSettings,
+    t,
+    theme,
+    uiSettings,
+    uiSettingsLoaded,
+    uiSettingsLoading,
+  ]);
+  const displayTheme = theme === "pride" ? "dark" : theme;
+  const themeLabel = getThemeLabel(displayTheme, t);
+  const canManageSystemSettings = hasAnyAppPermission(user, [
+    APP_PERMISSIONS.manageSystemSettings,
+  ]);
+  const canManageCatalogSettings = hasAnyAppPermission(user, [
+    APP_PERMISSIONS.manageCatalogSettings,
+  ]);
   const canManageConfig = canManageSystemSettings || canManageCatalogSettings;
   const canManageLibrarySettings =
-    canManageConfig || hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageLibrary);
-  const canViewCatalog = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.view);
-  const canManageTitle = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageTitles);
-  const canRequestMedia = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.request);
-  const canResolveImports = hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.resolveImports);
+    canManageConfig ||
+    hasAnyLibraryPermission(user, LIBRARY_PERMISSIONS.manageLibrary);
+  const canViewCatalog = hasAnyLibraryPermission(
+    user,
+    LIBRARY_PERMISSIONS.view,
+  );
+  const canManageTitle = hasAnyLibraryPermission(
+    user,
+    LIBRARY_PERMISSIONS.manageTitles,
+  );
+  const canRequestMedia = hasAnyLibraryPermission(
+    user,
+    LIBRARY_PERMISSIONS.request,
+  );
+  const canResolveImports = hasAnyLibraryPermission(
+    user,
+    LIBRARY_PERMISSIONS.resolveImports,
+  );
   const canAccessFacetImport = canResolveImports;
   const visibleMediaSettingsSubPages = React.useMemo(
     () =>
       canManageConfig
         ? MEDIA_SETTINGS_SUB_PAGES
         : canManageLibrarySettings
-          ? MEDIA_SETTINGS_SUB_PAGES.filter((subPage) => subPage.id === "library")
+          ? MEDIA_SETTINGS_SUB_PAGES.filter(
+              (subPage) => subPage.id === "library",
+            )
           : [],
     [canManageConfig, canManageLibrarySettings],
   );
@@ -323,42 +629,180 @@ function RootSidebarContent({
     () =>
       settingsEntries.filter(
         (entry) =>
-          (!entry.requiredAnyAppPermission ||
-            hasAnyAppPermission(user, entry.requiredAnyAppPermission)) ||
+          !entry.requiredAnyAppPermission ||
+          hasAnyAppPermission(user, entry.requiredAnyAppPermission) ||
           entry.requiredAnyLibraryPermission?.some((permission) =>
             hasAnyLibraryPermission(user, permission),
           ),
       ),
     [user],
   );
+  const groupedSettingsEntries = React.useMemo(() => {
+    const entriesById = new Map(
+      visibleSettingsEntries.map((entry) => [entry.id, entry]),
+    );
+    return SETTINGS_NAV_GROUPS.map((group) => ({
+      ...group,
+      entries: group.itemIds.flatMap((id) => {
+        const entry = entriesById.get(id);
+        return entry ? [entry] : [];
+      }),
+    })).filter((group) => group.entries.length > 0);
+  }, [visibleSettingsEntries]);
+  const canAccessMediaTopNav =
+    canViewCatalog || canResolveImports || canManageLibrarySettings;
+  const defaultMediaContentSection: ContentSettingsSection = canViewCatalog
+    ? "overview"
+    : canResolveImports
+      ? "import"
+      : "library";
   const visibleTopNav = React.useMemo(
     () =>
       topNav.filter(
         (item) =>
-          (!isMobile || item.id !== "calendar") &&
+          (!MEDIA_NAV_VIEW_IDS.includes(item.id) || canAccessMediaTopNav) &&
+          (item.id !== "calendar" || canViewCatalog) &&
+          (item.id !== "wanted" || canViewCatalog) &&
           (item.id !== "system" || canManageSystemSettings) &&
           (item.id !== "activity" || canResolveImports || canManageTitle),
       ),
-    [canManageSystemSettings, canManageTitle, canResolveImports, isMobile, topNav],
+    [
+      canAccessMediaTopNav,
+      canManageSystemSettings,
+      canManageTitle,
+      canResolveImports,
+      canViewCatalog,
+      topNav,
+    ],
   );
+  const groupedTopNav = React.useMemo<TopNavGroup[]>(() => {
+    const itemsById = new Map(visibleTopNav.map((item) => [item.id, item]));
+    const settingsEntriesById = new Map(
+      visibleSettingsEntries.map((entry) => [entry.id, entry]),
+    );
+    const groupedIds = new Set<ViewId>();
+    const groups = TOP_NAV_GROUPS.map((group) => {
+      const items = group.items.flatMap<TopNavGroupItem>((definition) => {
+        if (definition.kind === "settings") {
+          const entry = settingsEntriesById.get(definition.id);
+          if (!entry) {
+            return [];
+          }
+          return [
+            {
+              kind: "settings",
+              id: definition.id,
+              label: definition.labelKey
+                ? t(definition.labelKey)
+                : entry.label(t),
+              icon: definition.icon,
+            },
+          ];
+        }
+        if (definition.kind === "requests") {
+          if (!canManageTitle && !canRequestMedia) {
+            return [];
+          }
+          return [
+            {
+              kind: "requests",
+              id: "requests",
+              label: t("nav.requests"),
+              icon: definition.icon,
+            },
+          ];
+        }
+        if (definition.kind === "logs") {
+          if (!canManageSystemSettings) {
+            return [];
+          }
+          return [
+            {
+              kind: "logs",
+              id: definition.id,
+              label: t(definition.labelKey),
+              icon: definition.icon,
+            },
+          ];
+        }
+        if (definition.kind === "system") {
+          const canAccess = canAccessSystemSection(
+            definition.id,
+            canManageSystemSettings,
+            canManageTitle,
+          );
+          if (!canAccess) {
+            return [];
+          }
+          return [
+            {
+              kind: "system",
+              id: definition.id,
+              label: t(definition.labelKey),
+              icon: definition.icon,
+            },
+          ];
+        }
 
-  const hasImportsForView = React.useCallback(
-    (viewId: ViewId) => hasImportItemsForView(pendingImportCounts, viewId),
-    [pendingImportCounts],
-  );
+        const item = itemsById.get(definition.id);
+        if (!item) {
+          return [];
+        }
+        groupedIds.add(definition.id);
+        return [{ kind: "view", ...item }];
+      });
+      return { id: group.id, label: group.label ?? t(group.labelKey), items };
+    }).filter((group) => group.items.length > 0);
+    const ungroupedItems = visibleTopNav
+      .filter((item) => !groupedIds.has(item.id))
+      .map<TopNavGroupItem>((item) => ({ kind: "view", ...item }));
+
+    return ungroupedItems.length > 0
+      ? [
+          ...groups,
+          { id: "more", label: t("nav.group.more"), items: ungroupedItems },
+        ]
+      : groups;
+  }, [
+    canManageSystemSettings,
+    canManageTitle,
+    canRequestMedia,
+    t,
+    visibleSettingsEntries,
+    visibleTopNav,
+  ]);
+  const defaultSettingsSectionForTopNav = React.useMemo<SettingsSection>(() => {
+    const visibleIds = new Set(visibleSettingsEntries.map((entry) => entry.id));
+    return (
+      DEFAULT_SETTINGS_SECTION_ORDER.find((section) =>
+        visibleIds.has(section),
+      ) ??
+      visibleSettingsEntries[0]?.id ??
+      "profile"
+    );
+  }, [visibleSettingsEntries]);
 
   const pendingImportCountForNavView = React.useCallback(
     (viewId: ViewId) => pendingImportCountForView(pendingImportCounts, viewId),
     [pendingImportCounts],
   );
   const pendingMediaRequestCountForNavView = React.useCallback(
-    (viewId: ViewId) => pendingImportCountForView(pendingMediaRequestCounts, viewId),
+    (viewId: ViewId) =>
+      pendingImportCountForView(pendingMediaRequestCounts, viewId),
     [pendingMediaRequestCounts],
   );
+  const pendingMediaRequestCount = MEDIA_NAV_VIEW_IDS.reduce(
+    (total, viewId) => total + pendingMediaRequestCountForNavView(viewId),
+    0,
+  );
+  const isRequestsSection = view === "requests";
   const activityImportBadgeCount = Math.max(0, manualImportRequiredCount);
   const hasActivityImportBadge = activityImportBadgeCount > 0;
   const visibleActivitySubPages = React.useMemo(
-    () => ACTIVITY_SUB_PAGES.filter((entry) => entry.id !== "import" || hasActivityImportBadge),
+    () =>
+      ACTIVITY_SUB_PAGES.filter(
+        (entry) => entry.id !== "import" || hasActivityImportBadge,
+      ),
     [hasActivityImportBadge],
   );
   const hasVisibleActivitySubnav = React.useMemo(
@@ -366,7 +810,10 @@ function RootSidebarContent({
     [visibleActivitySubPages],
   );
   const visibleWantedSubPages = React.useMemo(
-    () => WANTED_SUB_PAGES.filter((entry) => entry.id !== "history" || canManageTitle),
+    () =>
+      WANTED_SUB_PAGES.filter(
+        (entry) => entry.id !== "history" || canManageTitle,
+      ),
     [canManageTitle],
   );
 
@@ -379,6 +826,7 @@ function RootSidebarContent({
       nextSystemSection?: SystemSection,
       nextWantedSection?: WantedSection,
       nextActivitySection?: ActivitySection,
+      nextLogsSection?: LogsSection,
     ) => {
       event.preventDefault();
       onNavigate(
@@ -388,6 +836,7 @@ function RootSidebarContent({
         nextSystemSection,
         nextWantedSection,
         nextActivitySection,
+        nextLogsSection,
       );
       if (isMobile) {
         setOpenMobile(false);
@@ -396,17 +845,28 @@ function RootSidebarContent({
     [isMobile, onNavigate, setOpenMobile],
   );
 
-  const currentTopLevelLabel = React.useMemo(
-    () =>
+  const currentTopLevelLabel = React.useMemo(() => {
+    if (isRequestsSection) {
+      return t("nav.requests");
+    }
+    if (view === "logs") {
+      return t("nav.logs");
+    }
+
+    return (
       visibleTopNav.find((item) => item.id === view)?.label ??
       topNav.find((item) => item.id === view)?.label ??
-      t("nav.library"),
-    [topNav, t, view, visibleTopNav],
-  );
+      t("nav.library")
+    );
+  }, [isRequestsSection, topNav, t, view, visibleTopNav]);
 
   const currentSubsectionLabel = React.useMemo(() => {
     if (view === "settings") {
-      return visibleSettingsEntries.find((entry) => entry.id === settingsSection)?.label(t) ?? null;
+      return (
+        visibleSettingsEntries
+          .find((entry) => entry.id === settingsSection)
+          ?.label(t) ?? null
+      );
     }
 
     if (view === "movies" || view === "series" || view === "anime") {
@@ -415,11 +875,9 @@ function RootSidebarContent({
       }
 
       if (contentSettingsSection === "import") {
-        return canAccessFacetImport ? t("nav.import") : getMediaOverviewLabel(view, t);
-      }
-
-      if (contentSettingsSection === "requests") {
-        return canManageTitle || canRequestMedia ? t("nav.requests") : getMediaOverviewLabel(view, t);
+        return canAccessFacetImport
+          ? t("nav.import")
+          : getMediaOverviewLabel(view, t);
       }
 
       if (isSettingsSubPage(contentSettingsSection)) {
@@ -429,25 +887,47 @@ function RootSidebarContent({
         const mediaSettingsLabel = visibleMediaSettingsSubPages.find(
           (subPage) => subPage.id === contentSettingsSection,
         )?.labelKey;
-        return mediaSettingsLabel ? t(mediaSettingsLabel) : getMediaOverviewLabel(view, t);
+        return mediaSettingsLabel
+          ? t(mediaSettingsLabel)
+          : getMediaOverviewLabel(view, t);
       }
     }
 
     if (view === "system") {
-      return SYSTEM_SUB_PAGES.find((entry) => entry.id === systemSection)?.labelKey
-        ? t(SYSTEM_SUB_PAGES.find((entry) => entry.id === systemSection)!.labelKey)
+      return SYSTEM_SUB_PAGES.find((entry) => entry.id === systemSection)
+        ?.labelKey
+        ? t(
+            SYSTEM_SUB_PAGES.find((entry) => entry.id === systemSection)!
+              .labelKey,
+          )
+        : null;
+    }
+
+    if (view === "logs") {
+      return LOGS_SUB_PAGES.find((entry) => entry.id === logsSection)?.labelKey
+        ? t(LOGS_SUB_PAGES.find((entry) => entry.id === logsSection)!.labelKey)
         : null;
     }
 
     if (view === "activity") {
-      return visibleActivitySubPages.find((entry) => entry.id === activitySection)?.labelKey
-        ? t(visibleActivitySubPages.find((entry) => entry.id === activitySection)!.labelKey)
+      return visibleActivitySubPages.find(
+        (entry) => entry.id === activitySection,
+      )?.labelKey
+        ? t(
+            visibleActivitySubPages.find(
+              (entry) => entry.id === activitySection,
+            )!.labelKey,
+          )
         : null;
     }
 
     if (view === "wanted") {
-      return visibleWantedSubPages.find((entry) => entry.id === wantedSection)?.labelKey
-        ? t(visibleWantedSubPages.find((entry) => entry.id === wantedSection)!.labelKey)
+      return visibleWantedSubPages.find((entry) => entry.id === wantedSection)
+        ?.labelKey
+        ? t(
+            visibleWantedSubPages.find((entry) => entry.id === wantedSection)!
+              .labelKey,
+          )
         : null;
     }
 
@@ -456,13 +936,12 @@ function RootSidebarContent({
     contentSettingsSection,
     settingsSection,
     systemSection,
+    logsSection,
     activitySection,
     t,
     view,
     canAccessFacetImport,
     canAccessMediaSettings,
-    canManageTitle,
-    canRequestMedia,
     visibleMediaSettingsSubPages,
     visibleActivitySubPages,
     visibleSettingsEntries,
@@ -470,85 +949,270 @@ function RootSidebarContent({
     wantedSection,
   ]);
 
+  const mobileNavigationTrigger = (
+    <SidebarTrigger
+      id="root-sidebar-mobile-trigger"
+      aria-label={t("nav.mobileTrigger")}
+      className="size-10 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[var(--scry-muted2)] shadow-none transition hover:border-[var(--scry-bhover2)] hover:bg-[var(--scry-hover)] hover:text-foreground focus-visible:ring-primary/25 min-[981px]:hidden"
+    />
+  );
+  const canInjectMobileNavigation =
+    React.isValidElement<HeaderWithMobileNavigationProps>(header) &&
+    typeof header.type !== "string";
+  const headerWithMobileNavigation = canInjectMobileNavigation
+    ? React.cloneElement(header, { mobileNavigation: mobileNavigationTrigger })
+    : header;
+
   return (
     <>
       <Sidebar
-        variant="floating"
+        variant="sidebar"
         collapsible={isMobile ? "offcanvas" : "none"}
-        className="overflow-hidden rounded-xl border border-border md:-ml-4 md:sticky md:self-start md:top-[calc(var(--root-header-height,0px)+1rem)] md:max-h-[calc(100svh-var(--root-header-height,0px)-2rem)]"
+        mobileTitle={t("nav.mobileTitle")}
+        mobileDescription={t("nav.mobileDescription")}
+        className="overflow-hidden border-r border-[var(--scry-border3)] bg-[var(--scry-bg)] shadow-[12px_0_40px_rgba(2,6,23,0.22)] min-[981px]:sticky min-[981px]:top-[var(--root-shell-top-offset,0px)] min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:self-start"
       >
-        <SidebarContent className="overflow-y-auto rounded-lg bg-background">
-          <SidebarGroup>
-            <SidebarMenu className="space-y-1">
-              {visibleTopNav.map((item, index) => {
-                const Icon = item.icon;
-                const isMediaSection = ["movies", "series", "anime"].includes(item.id);
-                const isSettingsTop = item.id === "settings";
-                const isSystemTop = item.id === "system";
-                const isActivityTop = item.id === "activity";
-                const isWantedTop = item.id === "wanted";
-                const isActiveMediaSection = isMediaSection && view === item.id;
-                const isActiveSettingsSection = isSettingsTop && view === "settings";
-                const isActiveSystemSection = isSystemTop && view === "system";
-                const isActiveActivitySection = isActivityTop && view === "activity";
-                const isActiveWantedSection = isWantedTop && view === "wanted";
-                const mediaFacetImportBadgeCount = isMediaSection
-                  ? pendingImportCountForNavView(item.id)
-                  : 0;
-                const mediaFacetRequestBadgeCount = isMediaSection
-                  ? pendingMediaRequestCountForNavView(item.id)
-                  : 0;
-                const shouldShowChildren =
-                  isActiveMediaSection ||
-                  isActiveSettingsSection ||
-                  isActiveSystemSection ||
-                  (isActiveActivitySection && hasVisibleActivitySubnav) ||
-                  isActiveWantedSection;
-                const showSeparator = index < visibleTopNav.length - 1;
-                if (!isMediaSection && !isSettingsTop && !isSystemTop && !isActivityTop && !isWantedTop) {
+        <SidebarHeader className="px-5 pb-3 pt-5">
+          <div className="flex -translate-y-2 items-center gap-3.5">
+            <ScryerLogo className="h-[55px]! w-[55px]! dark:drop-shadow-[0_12px_22px_rgba(var(--scry-accent-rgb),0.32)]" />
+            <span
+              data-slot="brand-wordmark"
+              className="text-[24px] font-bold leading-none text-[var(--scry-ink2)]"
+              style={{
+                fontFamily:
+                  "var(--font-space-grotesk), var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif",
+              }}
+            >
+              Scryer
+            </span>
+          </div>
+        </SidebarHeader>
+        <SidebarContent className="overflow-y-auto px-3 pb-3 [scrollbar-color:var(--scry-border2)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-[3px] [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-[var(--scry-border2)] [&::-webkit-scrollbar-thumb]:bg-clip-content">
+          {groupedTopNav.map((group) => (
+            <SidebarGroup key={group.id} className="px-0 py-1 first:pt-0">
+              <SidebarGroupLabel className="h-6 px-2 text-[10.5px] font-bold uppercase tracking-[0.13em] text-[var(--scry-faint3)]">
+                {group.label}
+              </SidebarGroupLabel>
+              <SidebarMenu className="space-y-0.5">
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  if (item.kind === "requests") {
+                    return (
+                      <React.Fragment key="requests">
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            id={selectorId("root-sidebar-nav", "requests")}
+                            isActive={isRequestsSection}
+                            className={TOP_NAV_BUTTON_CLASS}
+                            onClick={(event) => {
+                              handleNavigate(event, "requests");
+                            }}
+                          >
+                            <Icon className="h-4 w-4" />
+                            {item.label}
+                          </SidebarMenuButton>
+                          {pendingMediaRequestCount > 0 ? (
+                            <SidebarMenuBadge
+                              className={navBadgeToneClass("request")}
+                            >
+                              {pendingMediaRequestCount}
+                            </SidebarMenuBadge>
+                          ) : null}
+                        </SidebarMenuItem>
+                      </React.Fragment>
+                    );
+                  }
+                  if (item.kind === "settings") {
+                    return (
+                      <React.Fragment key={`settings-${item.id}`}>
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            id={selectorId(
+                              "root-sidebar-settings-shortcut",
+                              item.id,
+                            )}
+                            isActive={
+                              view === "settings" && settingsSection === item.id
+                            }
+                            className={TOP_NAV_BUTTON_CLASS}
+                            onClick={(event) => {
+                              handleNavigate(event, "settings", item.id);
+                            }}
+                          >
+                            <Icon className="h-4 w-4" />
+                            {item.label}
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      </React.Fragment>
+                    );
+                  }
+                  if (item.kind === "system") {
+                    return (
+                      <React.Fragment key={`system-${item.id}`}>
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            id={selectorId(
+                              "root-sidebar-system-shortcut",
+                              item.id,
+                            )}
+                            isActive={
+                              view === "system" && systemSection === item.id
+                            }
+                            className={TOP_NAV_BUTTON_CLASS}
+                            onClick={(event) => {
+                              handleNavigate(
+                                event,
+                                "system",
+                                undefined,
+                                undefined,
+                                item.id,
+                              );
+                            }}
+                          >
+                            <Icon className="h-4 w-4" />
+                            {item.label}
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      </React.Fragment>
+                    );
+                  }
+                  if (item.kind === "logs") {
+                    return (
+                      <React.Fragment key={`logs-${item.id}`}>
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            id={selectorId(
+                              "root-sidebar-logs-shortcut",
+                              item.id,
+                            )}
+                            isActive={view === "logs" && logsSection === item.id}
+                            className={TOP_NAV_BUTTON_CLASS}
+                            onClick={(event) => {
+                              handleNavigate(
+                                event,
+                                "logs",
+                                undefined,
+                                undefined,
+                                undefined,
+                                undefined,
+                                undefined,
+                                item.id,
+                              );
+                            }}
+                          >
+                            <Icon className="h-4 w-4" />
+                            {item.label}
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      </React.Fragment>
+                    );
+                  }
+
+                  const isMediaSection = ["movies", "series", "anime"].includes(
+                    item.id,
+                  );
+                  const isSettingsTop = item.id === "settings";
+                  const isSystemTop = item.id === "system";
+                  const isActivityTop = item.id === "activity";
+                  const isActiveMediaSection =
+                    isMediaSection && view === item.id && !isRequestsSection;
+                  const isPromotedSettingsSection =
+                    view === "settings" &&
+                    PROMOTED_SETTINGS_SHORTCUT_IDS.has(settingsSection);
+                  const isActiveSettingsSection =
+                    isSettingsTop &&
+                    view === "settings" &&
+                    !isPromotedSettingsSection;
+                  const isActiveSystemSection =
+                    isSystemTop &&
+                    view === "system" &&
+                    systemSection === "overview";
+                  const isActiveActivitySection =
+                    isActivityTop && view === "activity";
+                  const mediaFacetImportBadgeCount = isMediaSection
+                    ? pendingImportCountForNavView(item.id)
+                    : 0;
+                  const hasVisibleSystemSubnav = SYSTEM_SUB_PAGES.length > 1;
+                  const shouldShowChildren =
+                    isActiveMediaSection ||
+                    (isActiveSystemSection && hasVisibleSystemSubnav) ||
+                    (isActiveActivitySection && hasVisibleActivitySubnav);
+                  const hasExpandableChildren =
+                    isMediaSection ||
+                    (isSystemTop && hasVisibleSystemSubnav) ||
+                    (isActivityTop && hasVisibleActivitySubnav);
+                  if (
+                    !isMediaSection &&
+                    !isSettingsTop &&
+                    !isSystemTop &&
+                    !isActivityTop
+                  ) {
+                    return (
+                      <React.Fragment key={item.id}>
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            id={selectorId("root-sidebar-nav", item.id)}
+                            isActive={view === item.id}
+                            className={TOP_NAV_BUTTON_CLASS}
+                            onClick={(event) => {
+                              handleNavigate(event, item.id);
+                            }}
+                          >
+                            <Icon className="h-4 w-4" />
+                            {item.label}
+                          </SidebarMenuButton>
+                          {item.id === "activity" && hasActivityImportBadge ? (
+                            <SidebarMenuBadge className="bg-primary text-primary-foreground">
+                              {activityImportBadgeCount}
+                            </SidebarMenuBadge>
+                          ) : null}
+                          {item.id === "settings" && pluginUpdateCount > 0 ? (
+                            <SidebarMenuBadge className="bg-[var(--scry-danger-solid)] text-[var(--scry-danger-on-solid)]">
+                              {pluginUpdateCount}
+                            </SidebarMenuBadge>
+                          ) : null}
+                        </SidebarMenuItem>
+                      </React.Fragment>
+                    );
+                  }
+
                   return (
                     <React.Fragment key={item.id}>
                       <SidebarMenuItem>
                         <SidebarMenuButton
                           id={selectorId("root-sidebar-nav", item.id)}
-                          isActive={view === item.id}
-                          onClick={(event) => {
-                            handleNavigate(event, item.id);
-                          }}
-                        >
-                          <Icon className="h-4 w-4" />
-                          {item.label}
-                        </SidebarMenuButton>
-                        {item.id === "activity" && hasActivityImportBadge ? (
-                          <SidebarMenuBadge className="bg-primary text-primary-foreground">
-                            {activityImportBadgeCount}
-                          </SidebarMenuBadge>
-                        ) : null}
-                        {item.id === "settings" && pluginUpdateCount > 0 ? (
-                          <SidebarMenuBadge className="bg-red-600 text-white dark:bg-red-500 dark:text-white">
-                            {pluginUpdateCount}
-                          </SidebarMenuBadge>
-                        ) : null}
-                      </SidebarMenuItem>
-
-                      {showSeparator ? <SidebarSeparator /> : null}
-                    </React.Fragment>
-                  );
-                }
-
-                return (
-                    <React.Fragment key={item.id}>
-                      <SidebarMenuItem>
-                        <SidebarMenuButton
-                          id={selectorId("root-sidebar-nav", item.id)}
-                          isActive={view === item.id}
+                          isActive={
+                            isSettingsTop
+                              ? isActiveSettingsSection
+                              : isSystemTop
+                                ? isActiveSystemSection
+                                : isMediaSection
+                                  ? isActiveMediaSection
+                                  : view === item.id
+                          }
+                          className={TOP_NAV_BUTTON_CLASS}
+                          aria-expanded={
+                            hasExpandableChildren
+                              ? shouldShowChildren
+                              : undefined
+                          }
                           onClick={(event) => {
                             if (isSettingsTop) {
-                              handleNavigate(event, "settings", settingsSection);
+                              handleNavigate(
+                                event,
+                                "settings",
+                                defaultSettingsSectionForTopNav,
+                              );
                               return;
                             }
                             if (isSystemTop) {
-                              handleNavigate(event, "system", undefined, undefined, systemSection);
+                              handleNavigate(
+                                event,
+                                "system",
+                                undefined,
+                                undefined,
+                                "overview",
+                              );
                               return;
                             }
                             if (isActivityTop) {
@@ -559,20 +1223,11 @@ function RootSidebarContent({
                                 undefined,
                                 undefined,
                                 undefined,
-                                visibleActivitySubPages.some((entry) => entry.id === activitySection)
+                                visibleActivitySubPages.some(
+                                  (entry) => entry.id === activitySection,
+                                )
                                   ? activitySection
                                   : "activity",
-                              );
-                              return;
-                            }
-                            if (isWantedTop) {
-                              handleNavigate(
-                                event,
-                                "wanted",
-                                undefined,
-                                undefined,
-                                undefined,
-                                canManageTitle || wantedSection !== "history" ? wantedSection : "wanted",
                               );
                               return;
                             }
@@ -580,16 +1235,14 @@ function RootSidebarContent({
                               event,
                               item.id,
                               undefined,
-                              canViewCatalog
-                                ? "overview"
-                                : canAccessMediaSettings
-                                  ? "library"
-                                  : "requests",
+                              defaultMediaContentSection,
                             );
                           }}
                         >
                           <Icon className="h-4 w-4" />
-                          {item.label}
+                          <span className="min-w-0 flex-1 truncate">
+                            {item.label}
+                          </span>
                         </SidebarMenuButton>
                         {item.id === "activity" && hasActivityImportBadge ? (
                           <SidebarMenuBadge className="bg-primary text-primary-foreground">
@@ -599,39 +1252,76 @@ function RootSidebarContent({
                         {isMediaSection ? (
                           <FacetNavBadges
                             importCount={mediaFacetImportBadgeCount}
-                            requestCount={mediaFacetRequestBadgeCount}
                           />
                         ) : null}
                       </SidebarMenuItem>
 
-                    {shouldShowChildren ? (
-                      <SidebarGroupContent>
-                        <SidebarMenuSub>
-                          {isSettingsTop
-                            ? visibleSettingsEntries.map((entry) => (
-                              <SidebarMenuSubItem key={entry.id}>
-                                  <SidebarMenuSubButton
-                                    id={selectorId("root-sidebar-settings", entry.id)}
-                                    isActive={settingsSection === entry.id}
-                                    onClick={(event) => {
-                                      handleNavigate(event, "settings", entry.id);
-                                    }}
-                                  >
-                                    {entry.label(t)}
-                                    {entry.id === "plugins" && pluginUpdateCount > 0 ? (
-                                      <LeafNavBadge count={pluginUpdateCount} tone="danger" />
-                                    ) : null}
-                                  </SidebarMenuSubButton>
-                                </SidebarMenuSubItem>
+                      {shouldShowChildren ? (
+                        <SidebarGroupContent>
+                          <SidebarMenuSub className={SUB_NAV_MENU_CLASS}>
+                            {isSettingsTop ? (
+                              groupedSettingsEntries.map((group) => (
+                                <React.Fragment key={group.id}>
+                                  {groupedSettingsEntries.length > 1 ? (
+                                    <SidebarMenuSubItem>
+                                      <div className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.13em] text-sidebar-foreground/40">
+                                        {t(group.labelKey)}
+                                      </div>
+                                    </SidebarMenuSubItem>
+                                  ) : null}
+                                  {group.entries.map((entry) => (
+                                    <SidebarMenuSubItem key={entry.id}>
+                                      <SidebarMenuSubButton
+                                        id={selectorId(
+                                          "root-sidebar-settings",
+                                          entry.id,
+                                        )}
+                                        isActive={settingsSection === entry.id}
+                                        className={SUB_NAV_BUTTON_CLASS}
+                                        onClick={(event) => {
+                                          handleNavigate(
+                                            event,
+                                            "settings",
+                                            entry.id,
+                                          );
+                                        }}
+                                      >
+                                        {entry.icon ? (
+                                          <entry.icon className="h-3.5 w-3.5 shrink-0" />
+                                        ) : null}
+                                        <span className="min-w-0 flex-1 truncate">
+                                          {entry.label(t)}
+                                        </span>
+                                        {entry.id === "plugins" &&
+                                        pluginUpdateCount > 0 ? (
+                                          <LeafNavBadge
+                                            count={pluginUpdateCount}
+                                            tone="danger"
+                                          />
+                                        ) : null}
+                                      </SidebarMenuSubButton>
+                                    </SidebarMenuSubItem>
+                                  ))}
+                                </React.Fragment>
                               ))
-                            : isSystemTop ? (
+                            ) : isSystemTop ? (
                               SYSTEM_SUB_PAGES.map((entry) => (
                                 <SidebarMenuSubItem key={entry.id}>
                                   <SidebarMenuSubButton
-                                    id={selectorId("root-sidebar-system", entry.id)}
+                                    id={selectorId(
+                                      "root-sidebar-system",
+                                      entry.id,
+                                    )}
                                     isActive={systemSection === entry.id}
+                                    className={SUB_NAV_BUTTON_CLASS}
                                     onClick={(event) => {
-                                      handleNavigate(event, "system", undefined, undefined, entry.id);
+                                      handleNavigate(
+                                        event,
+                                        "system",
+                                        undefined,
+                                        undefined,
+                                        entry.id,
+                                      );
                                     }}
                                   >
                                     {t(entry.labelKey)}
@@ -642,8 +1332,12 @@ function RootSidebarContent({
                               visibleActivitySubPages.map((entry) => (
                                 <SidebarMenuSubItem key={entry.id}>
                                   <SidebarMenuSubButton
-                                    id={selectorId("root-sidebar-activity", entry.id)}
+                                    id={selectorId(
+                                      "root-sidebar-activity",
+                                      entry.id,
+                                    )}
                                     isActive={activitySection === entry.id}
+                                    className={SUB_NAV_BUTTON_CLASS}
                                     onClick={(event) => {
                                       handleNavigate(
                                         event,
@@ -657,30 +1351,12 @@ function RootSidebarContent({
                                     }}
                                   >
                                     {t(entry.labelKey)}
-                                    {entry.id === "import" && hasActivityImportBadge ? (
-                                      <LeafNavBadge count={activityImportBadgeCount} />
+                                    {entry.id === "import" &&
+                                    hasActivityImportBadge ? (
+                                      <LeafNavBadge
+                                        count={activityImportBadgeCount}
+                                      />
                                     ) : null}
-                                  </SidebarMenuSubButton>
-                                </SidebarMenuSubItem>
-                              ))
-                            ) : isWantedTop ? (
-                              visibleWantedSubPages.map((entry) => (
-                                <SidebarMenuSubItem key={entry.id}>
-                                  <SidebarMenuSubButton
-                                    id={selectorId("root-sidebar-wanted", entry.id)}
-                                    isActive={wantedSection === entry.id}
-                                    onClick={(event) => {
-                                      handleNavigate(
-                                        event,
-                                        "wanted",
-                                        undefined,
-                                        undefined,
-                                        undefined,
-                                        entry.id,
-                                      );
-                                    }}
-                                  >
-                                    {t(entry.labelKey)}
                                   </SidebarMenuSubButton>
                                 </SidebarMenuSubItem>
                               ))
@@ -689,156 +1365,176 @@ function RootSidebarContent({
                                 {canViewCatalog ? (
                                   <SidebarMenuSubItem>
                                     <SidebarMenuSubButton
-                                      id={selectorId("root-sidebar-media", item.id, "overview")}
-                                      isActive={contentSettingsSection === "overview"}
+                                      id={selectorId(
+                                        "root-sidebar-media",
+                                        item.id,
+                                        "overview",
+                                      )}
+                                      isActive={
+                                        contentSettingsSection === "overview"
+                                      }
+                                      className={SUB_NAV_BUTTON_CLASS}
                                       onClick={(event) => {
-                                        handleNavigate(event, item.id, undefined, "overview");
+                                        handleNavigate(
+                                          event,
+                                          item.id,
+                                          undefined,
+                                          "overview",
+                                        );
                                       }}
                                     >
                                       {getMediaOverviewLabel(item.id, t)}
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}
-                                {canAccessFacetImport && hasImportsForView(item.id) ? (
+                                {canAccessFacetImport &&
+                                mediaFacetImportBadgeCount > 0 ? (
                                   <SidebarMenuSubItem>
                                     <SidebarMenuSubButton
-                                      id={selectorId("root-sidebar-media", item.id, "import")}
-                                      isActive={contentSettingsSection === "import"}
+                                      id={selectorId(
+                                        "root-sidebar-media",
+                                        item.id,
+                                        "import",
+                                      )}
+                                      isActive={
+                                        contentSettingsSection === "import"
+                                      }
+                                      className={SUB_NAV_BUTTON_CLASS}
                                       onClick={(event) => {
-                                        handleNavigate(event, item.id, undefined, "import");
+                                        handleNavigate(
+                                          event,
+                                          item.id,
+                                          undefined,
+                                          "import",
+                                        );
                                       }}
                                     >
                                       {t("nav.import")}
-                                      {pendingImportCountForNavView(item.id) > 0 ? (
-                                        <LeafNavBadge count={pendingImportCountForNavView(item.id)} />
-                                      ) : null}
-                                    </SidebarMenuSubButton>
-                                  </SidebarMenuSubItem>
-                                ) : null}
-                                {canManageTitle || canRequestMedia ? (
-                                  <SidebarMenuSubItem>
-                                    <SidebarMenuSubButton
-                                      id={selectorId("root-sidebar-media", item.id, "requests")}
-                                      isActive={contentSettingsSection === "requests"}
-                                      onClick={(event) => {
-                                        handleNavigate(event, item.id, undefined, "requests");
-                                      }}
-                                    >
-                                      {t("nav.requests")}
-                                      {pendingMediaRequestCountForNavView(item.id) > 0 ? (
-                                        <LeafNavBadge
-                                          count={pendingMediaRequestCountForNavView(item.id)}
-                                          tone="request"
-                                        />
-                                      ) : null}
+                                      <LeafNavBadge
+                                        count={mediaFacetImportBadgeCount}
+                                      />
                                     </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}
                                 {canAccessMediaSettings ? (
                                   <SidebarMenuSubItem>
-                                    <Collapsible open={isSettingsSubPage(contentSettingsSection)}>
-                                      <SidebarMenuSubButton
-                                        id={selectorId("root-sidebar-media", item.id, "settings")}
-                                        isActive={isSettingsSubPage(contentSettingsSection)}
-                                        onClick={(event) => {
-                                          handleNavigate(event, item.id, undefined, "library");
-                                        }}
-                                      >
-                                        {getMediaSettingsLabel(item.id, t)}
-                                        <ChevronRight className={`ml-auto h-3 w-3 transition-transform ${isSettingsSubPage(contentSettingsSection) ? "rotate-90" : ""}`} />
-                                      </SidebarMenuSubButton>
-                                      <CollapsibleContent>
-                                        <SidebarMenuSub>
-                                          {visibleMediaSettingsSubPages.map((subPage) => (
-                                            <SidebarMenuSubItem key={subPage.id}>
-                                              <SidebarMenuSubButton
-                                                id={selectorId("root-sidebar-media", item.id, subPage.id)}
-                                                isActive={contentSettingsSection === subPage.id}
-                                                onClick={(event) => {
-                                                  handleNavigate(event, item.id, undefined, subPage.id);
-                                                }}
-                                              >
-                                                {t(subPage.labelKey)}
-                                              </SidebarMenuSubButton>
-                                            </SidebarMenuSubItem>
-                                          ))}
-                                        </SidebarMenuSub>
-                                      </CollapsibleContent>
-                                    </Collapsible>
+                                    <SidebarMenuSubButton
+                                      id={selectorId(
+                                        "root-sidebar-media",
+                                        item.id,
+                                        "settings",
+                                      )}
+                                      isActive={isSettingsSubPage(
+                                        contentSettingsSection,
+                                      )}
+                                      className={SUB_NAV_BUTTON_CLASS}
+                                      onClick={(event) => {
+                                        handleNavigate(
+                                          event,
+                                          item.id,
+                                          undefined,
+                                          "library",
+                                        );
+                                      }}
+                                    >
+                                      {getMediaSettingsLabel(item.id, t)}
+                                    </SidebarMenuSubButton>
                                   </SidebarMenuSubItem>
                                 ) : null}
                               </>
                             )}
-                        </SidebarMenuSub>
-                      </SidebarGroupContent>
-                    ) : null}
-
-                    {showSeparator ? <SidebarSeparator /> : null}
-                  </React.Fragment>
-                );
-              })}
-            </SidebarMenu>
-          </SidebarGroup>
+                          </SidebarMenuSub>
+                        </SidebarGroupContent>
+                      ) : null}
+                    </React.Fragment>
+                  );
+                })}
+              </SidebarMenu>
+            </SidebarGroup>
+          ))}
         </SidebarContent>
-        <SidebarFooter className="px-2 py-1.5">
-          <div className="flex items-center justify-between gap-2">
-            {themeMounted ? (
-              <button
-                id="root-sidebar-theme-toggle"
-                type="button"
-                onClick={cycleTheme}
-                aria-label={`Switch theme (current: ${getThemeLabel(theme)})`}
+        <SidebarFooter className="space-y-1.5 border-t border-[var(--scry-border3)] px-3.5 py-2.5">
+          <div
+            className={cn(
+              "grid gap-1.5 group-data-[collapsible=icon]:flex group-data-[collapsible=icon]:justify-center",
+              uiSettings.hideSponsorButton
+                ? "grid-cols-1"
+                : "grid-cols-2 group-data-[collapsible=icon]:grid-cols-1",
+            )}
+          >
+            {!uiSettings.hideSponsorButton ? (
+              <a
+                id="root-sidebar-sponsor-link"
+                href="https://www.scryer.media/scryer/donate/"
+                target="_blank"
+                rel="noreferrer"
                 className={cn(
-                  "flex w-fit items-center gap-2 rounded-md px-2 py-1.5 text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                  theme === "pride" && "text-pink-200 hover:text-pink-100",
+                  "flex min-w-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--scry-border2)] bg-[var(--scry-card2)] px-2 py-1 text-xs font-semibold text-[var(--scry-ink2)] transition hover:border-[var(--scry-accent)] hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25 group-data-[collapsible=icon]:hidden",
                 )}
               >
-                {theme === "light" ? (
-                  <Sun className="h-4 w-4" />
-                ) : theme === "dark" ? (
-                  <Moon className="h-4 w-4" />
-                ) : theme === "pride" ? (
-                  <Rainbow className="h-4 w-4" />
-                ) : (
-                  <Monitor className="h-4 w-4" />
-                )}
-                Theme
-              </button>
+                <Heart className="h-3.5 w-3.5 text-[var(--scry-danger-text-soft)]" />
+                <span className="truncate">Sponsor</span>
+              </a>
             ) : null}
-            {scryerVersion ? (
-              <span className="shrink-0 text-[11px] text-sidebar-foreground/45 group-data-[collapsible=icon]:hidden">
-                v{scryerVersion}
-              </span>
-            ) : null}
+              {themeMounted ? (
+                <button
+                  id="root-sidebar-theme-toggle"
+                  type="button"
+                  onClick={cycleTheme}
+                  aria-label={t("theme.switchLabel", { theme: themeLabel })}
+                  className={cn(
+                    "flex min-w-0 items-center justify-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2 py-1 text-xs font-medium text-[var(--scry-muted)] transition hover:border-[var(--scry-border2)] hover:bg-[var(--scry-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25",
+                  )}
+                >
+                  {displayTheme === "light" ? (
+                    <Sun className="h-4 w-4" />
+                  ) : displayTheme === "dark" ? (
+                    <Moon className="h-4 w-4" />
+                  ) : (
+                    <Monitor className="h-4 w-4" />
+                  )}
+                  <span className="truncate">{themeLabel}</span>
+                </button>
+              ) : null}
           </div>
         </SidebarFooter>
       </Sidebar>
-      <SidebarInset className="relative bg-background md:ml-4">
-        <div className="mb-3 flex items-center gap-3 rounded-xl border border-border bg-card/80 px-3 py-2 md:hidden">
-          <SidebarTrigger
-            id="root-sidebar-mobile-trigger"
-            className="size-9 rounded-lg border border-border bg-background text-foreground shadow-none"
-          />
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-foreground">{currentTopLevelLabel}</p>
-            {currentSubsectionLabel && currentSubsectionLabel !== currentTopLevelLabel ? (
-              <p className="truncate text-xs text-muted-foreground">{currentSubsectionLabel}</p>
-            ) : null}
+      <SidebarInset
+        data-slot="root-content-panel"
+        className="relative min-w-0 min-[981px]:h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:max-h-[calc(100dvh-var(--root-shell-top-offset,0px))] min-[981px]:overflow-hidden"
+      >
+        {headerWithMobileNavigation}
+        {canInjectMobileNavigation ? null : (
+          <div className="mx-3 mb-3 mt-3 flex items-center gap-3 rounded-xl border border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] px-3 py-2 shadow-[0_12px_28px_rgba(2,6,23,0.16)] min-[981px]:hidden">
+            {mobileNavigationTrigger}
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-foreground">
+                {currentTopLevelLabel}
+              </p>
+              {currentSubsectionLabel &&
+              currentSubsectionLabel !== currentTopLevelLabel ? (
+                <p className="truncate text-xs text-muted-foreground">
+                  {currentSubsectionLabel}
+                </p>
+              ) : null}
+            </div>
           </div>
-        </div>
+        )}
         {children}
       </SidebarInset>
     </>
   );
 }
 
-export const RootSidebar = React.memo(function RootSidebar(props: RootSidebarProps) {
+export const RootSidebar = React.memo(function RootSidebar(
+  props: RootSidebarProps,
+) {
   return (
     <SidebarProvider
       className="h-full"
       style={
         {
-          "--sidebar-width": "clamp(14rem, 18vw, 16rem)",
+          "--sidebar-width": "224px",
         } as React.CSSProperties
       }
     >

@@ -62,7 +62,6 @@ export function SettingsSecurityContainer() {
   const [adminPasswordRequiredOpen, setAdminPasswordRequiredOpen] = React.useState(false);
   const [confirmBusy, setConfirmBusy] = React.useState(false);
   const [saveBusy, setSaveBusy] = React.useState(false);
-  const [confirmUsername, setConfirmUsername] = React.useState("");
   const [confirmPassword, setConfirmPassword] = React.useState("");
   const [confirmError, setConfirmError] = React.useState<string | null>(null);
   const [passwordMinLengthDraft, setPasswordMinLengthDraft] = React.useState(
@@ -94,7 +93,6 @@ export function SettingsSecurityContainer() {
 
   const openAdminPasswordRequiredDialog = React.useCallback(() => {
     setEnableConfirmOpen(false);
-    setConfirmUsername("");
     setConfirmPassword("");
     setConfirmError(null);
     setAdminPasswordRequiredOpen(true);
@@ -243,6 +241,7 @@ export function SettingsSecurityContainer() {
       }
 
       setConfirmError(null);
+      setConfirmPassword("");
       setEnableConfirmOpen(true);
       return;
     }
@@ -264,8 +263,15 @@ export function SettingsSecurityContainer() {
     setConfirmError(null);
 
     let verifiedSession: Awaited<ReturnType<typeof login>>;
+    const currentUsername = user?.username.trim();
+    if (!currentUsername) {
+      setConfirmError(t("settings.securityCredentialsInvalid"));
+      setConfirmBusy(false);
+      return;
+    }
+
     try {
-      verifiedSession = await login(confirmUsername, confirmPassword, {
+      verifiedSession = await login(currentUsername, confirmPassword, {
         persistSession: false,
       });
     } catch {
@@ -305,7 +311,6 @@ export function SettingsSecurityContainer() {
       }
 
       setEnableConfirmOpen(false);
-      setConfirmUsername("");
       setConfirmPassword("");
       setConfirmError(null);
     } catch (error) {
@@ -324,7 +329,6 @@ export function SettingsSecurityContainer() {
     adoptSession,
     applySecuritySettings,
     confirmPassword,
-    confirmUsername,
     login,
     openAdminPasswordRequiredDialog,
     settings.effectiveFormLoginEnabled,
@@ -336,6 +340,7 @@ export function SettingsSecurityContainer() {
     settings.totpRequireJellyfinLogin,
     t,
     effectivePasswordMinLength,
+    user?.username,
   ]);
 
   const handleCancelEnable = React.useCallback(() => {
@@ -344,7 +349,6 @@ export function SettingsSecurityContainer() {
     }
 
     setEnableConfirmOpen(false);
-    setConfirmUsername("");
     setConfirmPassword("");
     setConfirmError(null);
   }, [confirmBusy]);
@@ -591,13 +595,11 @@ export function SettingsSecurityContainer() {
       disableConfirmOpen={disableConfirmOpen}
       adminPasswordRequiredOpen={adminPasswordRequiredOpen}
       confirmBusy={confirmBusy}
-      confirmUsername={confirmUsername}
       confirmPassword={confirmPassword}
       confirmError={confirmError}
       passwordMinLengthDraft={passwordMinLengthDraft}
       minPasswordLength={MIN_PASSWORD_LENGTH}
       onToggle={handleToggle}
-      onConfirmUsernameChange={setConfirmUsername}
       onConfirmPasswordChange={setConfirmPassword}
       onConfirmEnable={handleConfirmEnable}
       onCancelEnable={handleCancelEnable}
@@ -612,7 +614,9 @@ export function SettingsSecurityContainer() {
       onMfaPasswordLoginChange={handleMfaPasswordLoginChange}
       onTotpJellyfinLoginChange={handleTotpJellyfinLoginChange}
       externalAccountInvitesPanel={
-        canManageExternalInvites ? <ExternalAccountInvitesContainer /> : null
+        canManageExternalInvites ? (
+          <ExternalAccountInvitesContainer showMediaServersLink />
+        ) : null
       }
     />
   );

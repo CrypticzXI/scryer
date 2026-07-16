@@ -359,6 +359,29 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    async fn validate_enabled_indexer_proxy_config_id(&self, raw_id: &str) -> AppResult<String> {
+        let id = raw_id.trim();
+        if id.is_empty() {
+            return Err(AppError::Validation(
+                "indexer proxy config id cannot be empty".into(),
+            ));
+        }
+        let config = self
+            .services
+            .integrations
+            .indexer_proxy_configs
+            .get_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::Validation("Indexer proxy configuration was not found.".into()))?;
+        if !config.is_enabled {
+            return Err(AppError::Validation(
+                "Indexer proxy is disabled for this indexer.".into(),
+            ));
+        }
+        Ok(config.id)
+    }
+}
+impl AppUseCase {
     pub async fn get_indexer_config(
         &self,
         actor: &User,
@@ -399,8 +422,18 @@ impl AppUseCase {
             normalize_indexer_config_json(&fields, input.config_json.as_deref(), None)?;
         let base_url =
             derive_indexer_base_url_from_config_fields(&fields, Some(&normalized_config_json))?;
-        self.test_indexer_connection(actor, &provider_type, Some(&normalized_config_json), None)
-            .await?;
+        let indexer_proxy_config_id = match input.indexer_proxy_config_id {
+            Some(id) => Some(self.validate_enabled_indexer_proxy_config_id(&id).await?),
+            None => None,
+        };
+        self.test_indexer_connection(
+            actor,
+            &provider_type,
+            Some(&normalized_config_json),
+            None,
+            Some(indexer_proxy_config_id.as_deref()),
+        )
+        .await?;
 
         let mut config = IndexerConfig {
             id: Id::new().0,
@@ -422,6 +455,7 @@ impl AppUseCase {
             } else {
                 input.enable_auto_search
             },
+            indexer_proxy_config_id,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -520,8 +554,23 @@ impl AppUseCase {
             };
         let management_capabilities =
             self.indexer_management_capabilities_for_provider_type(&effective_provider);
+        let normalized_indexer_proxy_config_id = match update.indexer_proxy_config_id.clone() {
+            Some(Some(id)) => {
+                if existing.managed_parent_config_id.is_some() {
+                    return Err(AppError::Validation(
+                        "managed indexers cannot use an indexer proxy; the managing application owns challenge solving".into(),
+                    ));
+                }
+                Some(Some(
+                    self.validate_enabled_indexer_proxy_config_id(&id).await?,
+                ))
+            }
+            Some(None) => Some(None),
+            None => None,
+        };
         let should_validate_connection = normalized_provider.is_some()
             || normalized_config_json.is_some()
+            || normalized_indexer_proxy_config_id.is_some()
             || matches!(update.is_enabled, Some(true)) && !existing.is_enabled;
         let should_sync_managed_children = management_capabilities.supports_managed_children_sync
             && updated_managed_parent_requires_sync(
@@ -529,14 +578,24 @@ impl AppUseCase {
                 update.is_enabled,
                 normalized_provider.is_some(),
                 normalized_config_json.is_some(),
+                normalized_indexer_proxy_config_id.is_some(),
             );
 
         if should_validate_connection {
             let validation_config_json = normalized_config_json
                 .as_deref()
                 .or(existing.config_json.as_deref());
-            self.test_indexer_connection(actor, &effective_provider, validation_config_json, None)
-                .await?;
+            let proxy_override = normalized_indexer_proxy_config_id
+                .as_ref()
+                .map(|value| value.as_deref());
+            self.test_indexer_connection(
+                actor,
+                &effective_provider,
+                validation_config_json,
+                None,
+                proxy_override,
+            )
+            .await?;
         }
 
         let preview_config = IndexerConfig {
@@ -569,6 +628,9 @@ impl AppUseCase {
                     .enable_auto_search
                     .unwrap_or(existing.enable_auto_search)
             },
+            indexer_proxy_config_id: normalized_indexer_proxy_config_id
+                .clone()
+                .unwrap_or_else(|| existing.indexer_proxy_config_id.clone()),
             managed_parent_config_id: update
                 .managed_parent_config_id
                 .clone()
@@ -620,6 +682,7 @@ impl AppUseCase {
                 } else {
                     update.enable_auto_search
                 },
+                indexer_proxy_config_id: normalized_indexer_proxy_config_id,
                 managed_parent_config_id: update.managed_parent_config_id,
                 managed_child_key: update.managed_child_key,
                 managed_metadata_json: update.managed_metadata_json,
@@ -838,6 +901,7 @@ impl AppUseCase {
                             is_enabled: Some(desired.is_enabled),
                             enable_interactive_search: Some(desired.enable_interactive_search),
                             enable_auto_search: Some(desired.enable_auto_search),
+                            indexer_proxy_config_id: Some(parent.indexer_proxy_config_id.clone()),
                             managed_parent_config_id: Some(Some(parent.id.clone())),
                             managed_child_key: Some(Some(desired.child_key.clone())),
                             managed_metadata_json: Some(managed_metadata_json),
@@ -870,6 +934,7 @@ impl AppUseCase {
                             is_enabled: desired.is_enabled,
                             enable_interactive_search: desired.enable_interactive_search,
                             enable_auto_search: desired.enable_auto_search,
+                            indexer_proxy_config_id: parent.indexer_proxy_config_id.clone(),
                             managed_parent_config_id: Some(parent.id.clone()),
                             managed_child_key: Some(desired.child_key.clone()),
                             managed_metadata_json: desired.managed_metadata_json.clone(),
@@ -983,6 +1048,7 @@ fn updated_managed_parent_requires_sync(
     updated_enabled_state: Option<bool>,
     provider_changed: bool,
     config_changed: bool,
+    proxy_changed: bool,
 ) -> bool {
     if !existing.is_enabled && !matches!(updated_enabled_state, Some(true)) {
         return false;
@@ -990,6 +1056,7 @@ fn updated_managed_parent_requires_sync(
 
     provider_changed
         || config_changed
+        || proxy_changed
         || (matches!(updated_enabled_state, Some(true)) && !existing.is_enabled)
         || (matches!(updated_enabled_state, Some(false)) && existing.is_enabled)
 }

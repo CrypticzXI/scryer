@@ -113,6 +113,23 @@ impl AppUseCase {
                         AppError::Repository(format!("failed to upsert subtitle plugin: {e}"))
                     })?;
             }
+            "archive_extractor" => {
+                let provider = self
+                    .services
+                    .integrations
+                    .archive_extractor_plugin_provider
+                    .available()
+                    .ok_or_else(|| {
+                        AppError::Repository(
+                            "archive extractor plugin provider unavailable".to_string(),
+                        )
+                    })?;
+                provider.upsert_runtime_plugin(runtime_plugin).map_err(|e| {
+                    AppError::Repository(format!(
+                        "failed to upsert archive extractor plugin: {e}"
+                    ))
+                })?;
+            }
             other => {
                 return Err(AppError::Validation(format!(
                     "unsupported plugin_type '{}' for runtime upsert",

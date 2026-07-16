@@ -146,7 +146,7 @@ impl JobRunRepository for WorkflowOperationStore {
         let limit = limit as i64;
         let (sql, args) = if let Some(job_key) = job_key {
             (
-                "SELECT * FROM workflow_operations WHERE job_key = {} ORDER BY COALESCE(started_at, created_at) DESC LIMIT {}",
+                "SELECT * FROM workflow_operations WHERE job_key = {} ORDER BY started_at DESC LIMIT {}",
                 vec![
                     SqlArg::Text(job_key.as_str().to_string()),
                     SqlArg::I64(limit),
@@ -154,7 +154,7 @@ impl JobRunRepository for WorkflowOperationStore {
             )
         } else {
             (
-                "SELECT * FROM workflow_operations WHERE job_key IS NOT NULL ORDER BY COALESCE(started_at, created_at) DESC LIMIT {}",
+                "SELECT * FROM workflow_operations WHERE job_key IS NOT NULL ORDER BY started_at DESC LIMIT {}",
                 vec![SqlArg::I64(limit)],
             )
         };
@@ -174,7 +174,7 @@ impl JobRunRepository for WorkflowOperationStore {
         let limit = limit as i64;
         let (sql, args) = if let Some(job_key) = job_key {
             (
-                "SELECT * FROM workflow_operations WHERE job_key = {} AND actor_user_id = {} ORDER BY COALESCE(started_at, created_at) DESC LIMIT {}",
+                "SELECT * FROM workflow_operations WHERE job_key = {} AND actor_user_id = {} ORDER BY started_at DESC LIMIT {}",
                 vec![
                     SqlArg::Text(job_key.as_str().to_string()),
                     SqlArg::Text(actor_user_id.to_string()),
@@ -183,7 +183,7 @@ impl JobRunRepository for WorkflowOperationStore {
             )
         } else {
             (
-                "SELECT * FROM workflow_operations WHERE job_key IS NOT NULL AND actor_user_id = {} ORDER BY COALESCE(started_at, created_at) DESC LIMIT {}",
+                "SELECT * FROM workflow_operations WHERE job_key IS NOT NULL AND actor_user_id = {} ORDER BY started_at DESC LIMIT {}",
                 vec![SqlArg::Text(actor_user_id.to_string()), SqlArg::I64(limit)],
             )
         };
@@ -200,12 +200,16 @@ impl JobRunRepository for WorkflowOperationStore {
             "SELECT * FROM workflow_operations
              WHERE job_key IS NOT NULL
                AND status IN ('queued', 'running', 'discovering')
-             ORDER BY COALESCE(started_at, created_at) ASC",
+             ORDER BY started_at ASC",
             &[],
         )
         .await?
         .into_iter()
         .map(|row| workflow_operation_from_row(&row).and_then(job_run_record_from_workflow))
         .collect()
+    }
+
+    async fn reconcile_interrupted_job_runs(&self) -> AppResult<u64> {
+        reconcile_interrupted_job_runs(&self.datastore).await
     }
 }

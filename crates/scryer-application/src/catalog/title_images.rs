@@ -1,6 +1,4 @@
 use super::*;
-use crate::domain_events::{new_title_domain_event, title_context_snapshot};
-use scryer_domain::{DomainEventPayload, TitleUpdatedEventData};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -50,14 +48,6 @@ fn image_task_label(task: &TitleImageSyncTask) -> String {
     format!("{}:{variants}", task.kind.as_str())
 }
 
-fn should_append_title_update_event(task: &TitleImageSyncTask) -> bool {
-    task.kind == TitleImageKind::Poster
-        && task
-            .variants
-            .iter()
-            .any(|variant| variant.variant_key == "w250")
-}
-
 async fn process_image_refresh_chunk(
     app: &AppUseCase,
     chunk: &[TitleImageSyncTask],
@@ -99,7 +89,6 @@ async fn process_image_refresh_chunk(
                 .await
             {
                 Ok(result) => {
-                    let should_emit_title_update = should_append_title_update_event(&task);
                     match app
                         .services
                         .library
@@ -137,51 +126,6 @@ async fn process_image_refresh_chunk(
                         target = %label,
                         "image loop: cached"
                     );
-                    if should_emit_title_update {
-                        match app
-                            .services
-                            .catalog
-                            .titles
-                            .get_by_id(&task.title_id)
-                            .await
-                        {
-                            Ok(Some(title)) => {
-                                let event = new_title_domain_event(
-                                    None,
-                                    &title,
-                                    DomainEventPayload::TitleUpdated(TitleUpdatedEventData {
-                                        title: title_context_snapshot(&title),
-                                    }),
-                                );
-                                if let Err(error) = app.append_domain_event(event).await {
-                                    warn!(
-                                        error = %error,
-                                        elapsed_ms = started_at.elapsed().as_millis(),
-                                        title_id = %task.title_id,
-                                        target = %label,
-                                        "image loop: failed to append cached image refresh event"
-                                    );
-                                }
-                            }
-                            Ok(None) => {
-                                warn!(
-                                    elapsed_ms = started_at.elapsed().as_millis(),
-                                    title_id = %task.title_id,
-                                    target = %label,
-                                    "image loop: cached image for missing title"
-                                );
-                            }
-                            Err(error) => {
-                                warn!(
-                                    error = %error,
-                                    elapsed_ms = started_at.elapsed().as_millis(),
-                                    title_id = %task.title_id,
-                                    target = %label,
-                                    "image loop: failed to load title for cached image refresh event"
-                                );
-                            }
-                        }
-                    }
                     (task, true)
                 }
                 Err(error) => {

@@ -12,13 +12,16 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
+import { AddNewButton } from "@/components/common/add-new-button";
 import { LocalRemotePathMappingsField } from "@/components/common/local-remote-path-mappings-field";
 import {
   PermissionDropdowns,
   type LibraryPermissionDrafts,
 } from "@/components/common/permission-checkboxes";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -47,11 +50,7 @@ import type {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { selectorId } from "@/lib/utils/dom-ids";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 import { buildViewPath } from "@/lib/utils/routing";
 
@@ -83,20 +82,20 @@ type SettingsMediaServersSectionProps = {
 };
 
 const PROVIDERS: Array<{ value: VisibleMediaServerProvider; label: string }> = [
-  { value: "jellyfin", label: "Jellyfin" },
-  { value: "plex", label: "Plex" },
+  { value: "JELLYFIN", label: "Jellyfin" },
+  { value: "PLEX", label: "Plex" },
 ];
 
 const DEFAULT_BASE_URL_BY_PROVIDER: Record<MediaServerProvider, string> = {
-  jellyfin: "",
-  plex: "https://plex.tv",
-  emby: "",
+  JELLYFIN: "",
+  PLEX: "https://plex.tv",
+  EMBY: "",
 };
 
 const DEFAULT_NAME_BY_PROVIDER: Record<MediaServerProvider, string> = {
-  jellyfin: "Jellyfin",
-  plex: "Plex",
-  emby: "Emby",
+  JELLYFIN: "Jellyfin",
+  PLEX: "Plex",
+  EMBY: "Emby",
 };
 
 function providerLabel(provider: MediaServerProvider): string {
@@ -104,7 +103,7 @@ function providerLabel(provider: MediaServerProvider): string {
 }
 
 function providerSupportsAuth(provider: MediaServerProvider): boolean {
-  return provider === "jellyfin" || provider === "plex";
+  return provider === "JELLYFIN" || provider === "PLEX";
 }
 
 function updateLibraryGrant(
@@ -119,42 +118,29 @@ function updateLibraryGrant(
     : filtered;
 }
 
+type CapabilityBadgeTone = "neutral" | "positive" | "info";
+
 function capabilityBadges(
   connection: MediaServerConnection,
   effectiveFormLoginEnabled: boolean,
-): Array<{ label: string; tone: string }> {
-  const badges: Array<{ label: string; tone: string }> = [];
-  if (connection.provider === "emby") {
-    badges.push({
-      label: "Notifications",
-      tone: "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300",
-    });
+): Array<{ label: string; tone: CapabilityBadgeTone }> {
+  const badges: Array<{ label: string; tone: CapabilityBadgeTone }> = [];
+  if (connection.provider === "EMBY") {
+    badges.push({ label: "Notifications", tone: "info" });
     return badges;
   }
   if (effectiveFormLoginEnabled && connection.loginEnabled) {
-    badges.push({
-      label: "Login",
-      tone: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    });
+    badges.push({ label: "Login", tone: "positive" });
   }
   if (connection.linkingEnabled) {
-    badges.push({
-      label: "Linking",
-      tone: "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300",
-    });
+    badges.push({ label: "Linking", tone: "info" });
   }
   if (connection.autoAddEnabled) {
-    badges.push({
-      label: "Auto-add",
-      tone: "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300",
-    });
+    badges.push({ label: "Auto-add", tone: "info" });
   }
   return badges.length > 0
     ? badges
-    : [{
-        label: "Connection only",
-        tone: "border-border bg-background text-muted-foreground",
-      }];
+    : [{ label: "Connection only", tone: "neutral" }];
 }
 
 function MediaServerActionButton({
@@ -163,26 +149,14 @@ function MediaServerActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<BoxedActionButtonTone, "edit" | "enabled" | "disabled" | "delete" | "neutral">;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={label}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
-      {...props}
-    >
+    <IconButton label={label} tone={tone} className={className} {...props}>
       {children}
-    </Button>
+    </IconButton>
   );
 }
 
@@ -245,12 +219,12 @@ export function SettingsMediaServersSection({
           defaultLibraryGrants: providerSupportsAuth(provider)
             ? previous.defaultLibraryGrants
             : [],
-          machineIdPresent: provider === "plex" ? previous.machineIdPresent : false,
-          plexServerId: provider === "plex" ? previous.plexServerId : "",
+          machineIdPresent: provider === "PLEX" ? previous.machineIdPresent : false,
+          plexServerId: provider === "PLEX" ? previous.plexServerId : "",
           jellyfinCredentialMode:
-            provider === "jellyfin" ? "adminLogin" : previous.jellyfinCredentialMode,
-          apiKey: provider === "jellyfin" ? "" : previous.apiKey,
-          clearApiKey: provider === "jellyfin" ? false : previous.clearApiKey,
+            provider === "JELLYFIN" ? "adminLogin" : previous.jellyfinCredentialMode,
+          apiKey: provider === "JELLYFIN" ? "" : previous.apiKey,
+          clearApiKey: provider === "JELLYFIN" ? false : previous.clearApiKey,
         };
       });
     },
@@ -259,11 +233,6 @@ export function SettingsMediaServersSection({
 
   return (
     <div id="settings-media-servers-section" className="space-y-4 text-sm">
-      <CardTitle className="flex items-center gap-2 text-base">
-        <Server className="h-4 w-4" />
-        {t("settings.mediaServersSection")}
-      </CardTitle>
-
       <div id="settings-media-servers-table-card" className="rounded border border-border">
         <div className="overflow-x-auto">
           <Table id="settings-media-servers-table">
@@ -296,19 +265,16 @@ export function SettingsMediaServersSection({
                   <TableCell>
                     <div className="flex flex-wrap gap-1.5">
                       {capabilityBadges(connection, effectiveFormLoginEnabled).map((badge) => (
-                        <span
-                          key={badge.label}
-                          className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${badge.tone}`}
-                        >
+                        <Badge key={badge.label} tone={badge.tone} className="rounded-full">
                           {badge.label}
-                        </span>
+                        </Badge>
                       ))}
                     </div>
                   </TableCell>
                   <TableCell>
-                    {connection.provider === "plex" ? (
+                    {connection.provider === "PLEX" ? (
                       connection.machineIdPresent ? (
-                        <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300">
+                        <span className="inline-flex items-center gap-1 text-[var(--scry-success-text)]">
                           <CheckCircle2 className="h-3.5 w-3.5" />
                           {t("settings.plexServerSelected")}
                         </span>
@@ -316,7 +282,7 @@ export function SettingsMediaServersSection({
                         <span className="text-muted-foreground">{t("settings.plexServerMissing")}</span>
                       )
                     ) : connection.apiKeyPresent ? (
-                      <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300">
+                      <span className="inline-flex items-center gap-1 text-[var(--scry-success-text)]">
                         <KeyRound className="h-3.5 w-3.5" />
                         {t("settings.apiKeyConfigured")}
                       </span>
@@ -460,9 +426,9 @@ export function SettingsMediaServersSection({
                           baseUrl: event.target.value,
                         }))
                       }
-                      required={draft.provider !== "plex"}
+                      required={draft.provider !== "PLEX"}
                       placeholder={
-                        draft.provider === "plex"
+                        draft.provider === "PLEX"
                           ? "https://plex.tv"
                           : `https://${draft.provider}.example.test`
                       }
@@ -486,7 +452,7 @@ export function SettingsMediaServersSection({
                   </label>
                 </div>
 
-                {draft.provider === "plex" ? (
+                {draft.provider === "PLEX" ? (
                   <div className="space-y-3 rounded border border-border bg-background/40 p-3">
                     <div className="flex flex-wrap items-center gap-3">
                       <Button
@@ -504,7 +470,7 @@ export function SettingsMediaServersSection({
                         {t("settings.discoverPlexServers")}
                       </Button>
                       {draft.machineIdPresent && !draft.plexServerId ? (
-                        <span className="inline-flex items-center gap-1 text-sm text-emerald-700 dark:text-emerald-300">
+                        <span className="inline-flex items-center gap-1 text-sm text-[var(--scry-success-text)]">
                           <CheckCircle2 className="h-3.5 w-3.5" />
                           {t("settings.plexServerSelected")}
                         </span>
@@ -544,9 +510,9 @@ export function SettingsMediaServersSection({
                   </div>
                 ) : null}
 
-                {draft.provider === "jellyfin" || draft.provider === "emby" ? (
+                {draft.provider === "JELLYFIN" || draft.provider === "EMBY" ? (
                   <div className="space-y-3">
-                    {draft.provider === "jellyfin" ? (
+                    {draft.provider === "JELLYFIN" ? (
                       <div className="inline-flex rounded-md border border-border p-1">
                         <Button
                           id="settings-media-server-credential-admin-login"
@@ -583,7 +549,7 @@ export function SettingsMediaServersSection({
                       </div>
                     ) : null}
                     <div className="grid gap-3 md:grid-cols-2">
-                      {draft.provider === "emby" || draft.jellyfinCredentialMode === "apiKey" ? (
+                      {draft.provider === "EMBY" || draft.jellyfinCredentialMode === "apiKey" ? (
                         <>
                           <label>
                             <Label className="mb-2 block" htmlFor="settings-media-server-api-key">
@@ -814,32 +780,24 @@ export function SettingsMediaServersSection({
           </Card>
           {isEditing ? (
             <div className="flex justify-center">
-              <Button
+              <AddNewButton
                 id="settings-media-server-create"
-                type="button"
-                size="lg"
+                icon={Plus}
+                label={t("settings.mediaServerCreateNew")}
                 onClick={startCreateConnection}
                 disabled={mutatingConnectionId !== null}
-                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-              >
-                <Plus className="h-5 w-5" />
-                {t("settings.mediaServerCreateNew")}
-              </Button>
+              />
             </div>
           ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-media-server-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("settings.mediaServerCreateNew")}
             onClick={startCreateConnection}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("settings.mediaServerCreateNew")}
-          </Button>
+          />
         </div>
       )}
     </div>

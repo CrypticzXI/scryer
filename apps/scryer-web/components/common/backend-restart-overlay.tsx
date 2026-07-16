@@ -1,17 +1,20 @@
 export function BackendRestartOverlay() {
   return (
-    <div className="fixed inset-0 z-[9999] grid place-items-center bg-[#070b18]">
+    <div
+      id="backend-restart-overlay"
+      className="fixed inset-0 z-[9999] grid place-items-center bg-background"
+    >
       <div className="text-center">
         <h1
-          className="mb-8 text-3xl font-bold tracking-tight text-[#dbe5ff]"
+          className="mb-8 text-3xl font-bold tracking-tight text-foreground"
           style={{ fontFamily: "'Space Grotesk Variable', 'Inter Variable', ui-sans-serif, system-ui, sans-serif" }}
         >
           scryer
         </h1>
         <div
-          className="mx-auto mb-6 size-7 animate-spin rounded-full border-[3px] border-[#273255] border-t-[#5b64ff]"
+          className="mx-auto mb-6 size-7 animate-spin rounded-full border-[3px] border-muted border-t-primary"
         />
-        <p className="text-sm text-[#8b96b9]">Service is restarting&hellip;</p>
+        <p id="backend-restart-status" className="text-sm text-muted-foreground">Service is restarting&hellip;</p>
       </div>
     </div>
   );

@@ -18,7 +18,35 @@ const LIBRARY_PROBE_SIGNATURE_DIRECTORY_SCHEME: &str = "immediate_children_v1";
 const LIBRARY_PROBE_SIGNATURE_FILE_SCHEME: &str = "file_snapshot_v1";
 pub(crate) const LIBRARY_SCAN_MAX_RECURSIVE_DEPTH: usize = 3;
 
-const LIBRARY_IGNORED_DIR_NAMES: &[&str] = &["@eadir", ".@__thumb", "plex versions"];
+// Aligned with Sonarr/Radarr special-folder and root-folder exclusion behavior.
+const LIBRARY_IGNORED_DIR_NAMES: &[&str] = &[
+    "@eadir",
+    ".@__thumb",
+    "plex versions",
+    "$recycle.bin",
+    "#recycle",
+    "recycler",
+    "trash",
+    ".trashes",
+    "system volume information",
+    "lost+found",
+    "boot",
+    "bootmgr",
+    "cache",
+    "caches",
+    "cachedmessages",
+    "msocache",
+    "recovery",
+    "temporary internet files",
+    "windows",
+    ".fseventd",
+    ".spotlight",
+    ".vol",
+    ".appledb",
+    ".appledesktop",
+    ".appledouble",
+    ".grab",
+];
 const LIBRARY_IGNORED_MEDIA_SUBDIR_NAMES: &[&str] = &[
     "extras",
     "extrafanart",
@@ -304,10 +332,23 @@ pub(crate) async fn stream_movie_top_level_entries_batched(
 }
 
 pub(crate) fn is_ignored_library_dir_name(name: &str) -> bool {
-    let normalized = name.trim().to_ascii_lowercase();
+    let trimmed = name.trim();
+    let normalized = trimmed.to_ascii_lowercase();
     normalized.starts_with('.')
         || normalized.ends_with(".trickplay")
+        || is_mangled_short_dir_name(trimmed)
         || LIBRARY_IGNORED_DIR_NAMES.contains(&normalized.as_str())
+}
+
+fn is_mangled_short_dir_name(name: &str) -> bool {
+    let Some((stem, suffix)) = name.split_once('~') else {
+        return false;
+    };
+    stem.len() == 6
+        && !suffix.is_empty()
+        && suffix.len() <= 6
+        && stem.chars().all(|ch| ch.is_ascii_alphanumeric())
+        && suffix.chars().all(|ch| ch.is_ascii_digit())
 }
 
 pub(crate) fn is_ignored_library_file_name(name: &str) -> bool {
@@ -748,12 +789,35 @@ mod tests {
         assert_eq!(walk.tvdb_id.as_deref(), Some("366972"));
     }
 
+    #[test]
+    fn ignored_library_dir_name_skips_mangled_short_names() {
+        for name in ["D061DC~9", "ABC123~1", "abcdef~12"] {
+            assert!(
+                is_ignored_library_dir_name(name),
+                "{name} should be ignored as a mangled short name"
+            );
+        }
+
+        for name in ["Canonical Show", "Season 01", "Show~Archive", "ABCDEF"] {
+            assert!(
+                !is_ignored_library_dir_name(name),
+                "{name} should remain a valid library directory"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn list_child_directories_skips_library_junk_directories() {
         let dir = tempfile::tempdir().expect("tempdir");
         tokio::fs::create_dir_all(dir.path().join("Show A"))
             .await
             .expect("show a");
+        tokio::fs::create_dir_all(dir.path().join("Canonical Show"))
+            .await
+            .expect("canonical show dir");
+        tokio::fs::create_dir_all(dir.path().join("D061DC~9"))
+            .await
+            .expect("mangled short name dir");
         tokio::fs::create_dir_all(dir.path().join("@eaDir"))
             .await
             .expect("@eaDir");
@@ -768,7 +832,10 @@ mod tests {
             .await
             .expect("child dirs");
 
-        assert_eq!(child_dirs, vec![dir.path().join("Show A")]);
+        assert_eq!(
+            child_dirs,
+            vec![dir.path().join("Canonical Show"), dir.path().join("Show A"),]
+        );
     }
 
     #[tokio::test]
@@ -902,8 +969,10 @@ mod tests {
             Path::new("/library/Movie Title/samples/foo.mkv"),
             Path::new("/library/Movie Title/short/foo.mkv"),
             Path::new("/library/Movie Title/shorts/foo.mkv"),
+            Path::new("/library/Movie Title/theme.music/foo.mkv"),
             Path::new("/library/Movie Title/theme music/foo.mkv"),
             Path::new("/library/Movie Title/theme-music/foo.mkv"),
+            Path::new("/library/Movie Title/theme_music/foo.mkv"),
             Path::new("/library/Movie Title/Trailers/foo.mkv"),
             Path::new("/library/Movie Title/Movie Trailers/foo.mkv"),
             Path::new("/library/Movie Title/12 Years a Slave (Trailers)/foo.mkv"),
@@ -925,6 +994,8 @@ mod tests {
             Path::new("/library/Anime Show/Featurettes/foo.mkv"),
             Path::new("/library/Anime Show/Movie Trailers/foo.mkv"),
             Path::new("/library/Anime Show/12 Years a Slave (Trailers)/foo.mkv"),
+            Path::new("/library/Anime Show/theme.music/foo.mkv"),
+            Path::new("/library/Anime Show/theme-music/foo.mkv"),
             Path::new("/library/Anime Show/theme_music/foo.mkv"),
         ] {
             assert!(
@@ -980,6 +1051,43 @@ mod tests {
         assert!(should_skip_library_subpath(root, path, true));
     }
 
+    #[test]
+    fn should_skip_arr_special_and_recycle_directories() {
+        for path in [
+            Path::new("/library/$RECYCLE.BIN"),
+            Path::new("/library/#recycle"),
+            Path::new("/library/recycler"),
+            Path::new("/library/trash"),
+            Path::new("/library/.Trashes"),
+            Path::new("/library/System Volume Information"),
+            Path::new("/library/lost+found"),
+            Path::new("/library/Windows"),
+            Path::new("/library/Cache"),
+            Path::new("/library/.grab"),
+            Path::new("/library/.AppleDouble"),
+        ] {
+            assert!(
+                should_skip_library_top_level_entry(path, true),
+                "expected special folder to be skipped: {}",
+                path.display()
+            );
+        }
+
+        let root = Path::new("/library");
+        for path in [
+            Path::new("/library/Movie Title/$RECYCLE.BIN/foo.mkv"),
+            Path::new("/library/Movie Title/#recycle/foo.mkv"),
+            Path::new("/library/Movie Title/lost+found/foo.mkv"),
+            Path::new("/library/Movie Title/trash/foo.mkv"),
+        ] {
+            assert!(
+                should_skip_movie_library_subpath(root, path, false),
+                "expected nested special folder to be skipped: {}",
+                path.display()
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn should_not_skip_non_utf8_top_level_entries() {
@@ -1001,6 +1109,7 @@ mod tests {
             root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![],
             created_by: None,
             created_at: Utc::now(),
@@ -1011,10 +1120,11 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
-            genres: vec![],
+            popularity: None,
             content_status: None,
             language: None,
             first_aired: None,

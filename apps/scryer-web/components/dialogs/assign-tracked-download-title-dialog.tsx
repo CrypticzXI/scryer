@@ -137,7 +137,7 @@ export function AssignTrackedDownloadTitleDialog({
       />
       <CommandList id="activity-assign-title-list">
         {error ? (
-          <div id="activity-assign-title-error" className="px-4 py-3 text-sm text-rose-400">
+          <div id="activity-assign-title-error" className="px-4 py-3 text-sm text-[var(--scry-danger-text-soft)]">
             {error}
           </div>
         ) : null}

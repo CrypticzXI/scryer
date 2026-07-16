@@ -3,6 +3,8 @@ import { useClient } from "urql";
 import { Search, ArrowDownToLine, Loader2, Hash, CircleAlert } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -28,12 +30,14 @@ import {
 } from "@/lib/graphql/queries";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { SubtitleLanguagePicker } from "@/components/common/subtitle-language-picker";
 import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
 import type {
   ExternalSubtitleBlocklistEntryRecord,
   ExternalSubtitleRecord,
 } from "@/lib/types/subtitles";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 import { selectorId } from "@/lib/utils/dom-ids";
 
 type Props = {
@@ -54,6 +58,7 @@ export function SubtitleSearchModal({
   onChanged,
 }: Props) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const setGlobalStatus = useGlobalStatus();
   const client = useClient();
   const [language, setLanguage] = React.useState("eng");
@@ -260,7 +265,7 @@ export function SubtitleSearchModal({
               <Search className="h-4 w-4" />
               {t("subtitle.manualSearch")}
             </DialogTitle>
-            <p className="truncate font-mono text-xs text-muted-foreground">
+            <p className="truncate font-[var(--font-code)] text-xs text-muted-foreground">
               {filePath}
             </p>
           </DialogHeader>
@@ -269,14 +274,14 @@ export function SubtitleSearchModal({
             {hasEnabledProviders === false ? (
               <div
                 role="alert"
-                className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+                className="flex items-start gap-3 rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-3 py-2 text-sm text-[var(--scry-warning-text)]"
               >
-                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--scry-warning-text)]" />
                 <div className="space-y-1">
                   <p className="font-medium">
                     {t("subtitle.providersRequiredTitle")}
                   </p>
-                  <p className="text-xs text-amber-950/80 dark:text-amber-100/80">
+                  <p className="text-xs text-[var(--scry-warning-text)] opacity-80">
                     {t("subtitle.providersRequiredBody")}
                   </p>
                   <Button
@@ -284,7 +289,7 @@ export function SubtitleSearchModal({
                     asChild
                     size="sm"
                     variant="outline"
-                    className="border-amber-500/30 bg-background/80"
+                    className="border-[var(--scry-warning-border)] bg-background/80"
                   >
                     <Link
                       to="/settings/subtitles"
@@ -299,14 +304,14 @@ export function SubtitleSearchModal({
               hasOpenSubtitlesApiKey === false ? (
               <div
                 role="alert"
-                className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-950 dark:text-amber-100"
+                className="flex items-start gap-3 rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-3 py-2 text-sm text-[var(--scry-warning-text)]"
               >
-                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--scry-warning-text)]" />
                 <div className="space-y-1">
                   <p className="font-medium">
                     {t("subtitle.apiKeyRequiredTitle")}
                   </p>
-                  <p className="text-xs text-amber-950/80 dark:text-amber-100/80">
+                  <p className="text-xs text-[var(--scry-warning-text)] opacity-80">
                     {t("subtitle.apiKeyRequiredBody")}
                   </p>
                 </div>
@@ -363,17 +368,17 @@ export function SubtitleSearchModal({
                         className="rounded-lg border border-border/60 bg-background/50 px-3 py-2"
                       >
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                          <Badge tone="info" className="px-1.5 text-[10px] uppercase tracking-wide">
                             {entry.language}
-                          </span>
+                          </Badge>
                           <span className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                             {entry.provider}
                           </span>
                           <span className="text-[11px] text-muted-foreground">
-                            {new Date(entry.createdAt).toLocaleString()}
+                            {formatUiDateTime(entry.createdAt, dateTimeFormat)}
                           </span>
                         </div>
-                        <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                        <p className="mt-1 break-all font-[var(--font-code)] text-[11px] text-muted-foreground">
                           {entry.providerFileId}
                         </p>
                         {entry.reason ? (
@@ -411,7 +416,12 @@ export function SubtitleSearchModal({
                 </TableHeader>
                 <TableBody>
                   {results.map((r) => (
-                    <TableRow key={r.providerFileId}>
+                    <TableRow
+                      key={r.providerFileId}
+                      id={selectorId("subtitle-search-result-row", r.providerFileId)}
+                      data-ui="subtitle-search-result-row"
+                      data-subtitle-release-info={r.releaseInfo}
+                    >
                       <TableCell className="min-w-0">
                         <span className="block break-words text-xs leading-relaxed">
                           {r.releaseInfo || "—"}
@@ -424,33 +434,33 @@ export function SubtitleSearchModal({
                       </TableCell>
                       <TableCell className="text-center">
                         <span className="inline-flex items-center gap-1 text-xs font-medium">
-                          {r.score}
+                          {r.scorePercent}%
                           {r.hashMatched ? (
-                            <Hash className="h-3 w-3 text-emerald-400" />
+                            <Hash className="h-3 w-3 text-[var(--scry-success-text-soft)]" />
                           ) : null}
                         </span>
                       </TableCell>
                       <TableCell className="text-center">
                         <div className="flex justify-center gap-1">
                           {r.hearingImpaired ? (
-                            <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
+                            <Badge tone="warning" className="px-1.5 text-[10px]">
                               {t("subtitle.hearingImpaired")}
-                            </span>
+                            </Badge>
                           ) : null}
                           {r.forced ? (
-                            <span className="rounded bg-purple-500/20 px-1.5 py-0.5 text-[10px] text-purple-300">
+                            <Badge tone="info" className="px-1.5 text-[10px]">
                               {t("subtitle.forced")}
-                            </span>
+                            </Badge>
                           ) : null}
                           {r.aiTranslated ? (
-                            <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] text-red-300">
+                            <Badge tone="negative" className="px-1.5 text-[10px]">
                               {t("subtitle.aiTranslated")}
-                            </span>
+                            </Badge>
                           ) : null}
                           {r.machineTranslated ? (
-                            <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] text-red-300">
+                            <Badge tone="negative" className="px-1.5 text-[10px]">
                               {t("subtitle.machineTranslated")}
-                            </span>
+                            </Badge>
                           ) : null}
                         </div>
                       </TableCell>
@@ -458,21 +468,19 @@ export function SubtitleSearchModal({
                         {r.provider}
                       </TableCell>
                       <TableCell className="whitespace-nowrap text-right">
-                        <Button
+                        <IconButton
                           id={selectorId("subtitle-search-download", r.providerFileId)}
-                          size="icon-sm"
-                          variant="default"
+                          label={downloadingId === r.providerFileId ? t("subtitle.downloading") : t("subtitle.download")}
+                          tone="install"
                           disabled={downloadingId === r.providerFileId}
                           onClick={() => void handleDownload(r)}
-                          title={downloadingId === r.providerFileId ? t("subtitle.downloading") : t("subtitle.download")}
-                          aria-label={downloadingId === r.providerFileId ? t("subtitle.downloading") : t("subtitle.download")}
                         >
                           {downloadingId === r.providerFileId ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
                             <ArrowDownToLine className="h-4 w-4" />
                           )}
-                        </Button>
+                        </IconButton>
                       </TableCell>
                     </TableRow>
                   ))}

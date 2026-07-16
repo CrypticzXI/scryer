@@ -156,6 +156,14 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
                     "failed to clear generated title image variants: {error}"
                 ))
             })?;
+        sqlx::query("DELETE FROM title_image_blobs")
+            .execute(&mut *conn)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to clear generated title image blobs: {error}"
+                ))
+            })?;
 
         for table in export_tables.iter().rev() {
             let sql = format!("DELETE FROM {}", quote_identifier(table));
@@ -320,6 +328,9 @@ async fn ordered_export_tables(pool: &sqlx::SqlitePool) -> AppResult<Vec<String>
                 ))
             })?;
             if !export_tables.contains(&referenced) {
+                continue;
+            }
+            if referenced == *table {
                 continue;
             }
             if outgoing

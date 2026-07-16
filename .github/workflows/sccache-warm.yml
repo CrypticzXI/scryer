@@ -1,18 +1,7 @@
 name: sccache-warm
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - ".cargo/**"
-      - ".github/workflows/sccache-warm.yml"
-      - ".github/workflows/scryer.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "apps/scryer-web/**"
-      - "crates/**"
-      - "rust-toolchain.toml"
+  workflow_dispatch:
 
 concurrency:
   group: sccache-warm-${{ github.ref }}

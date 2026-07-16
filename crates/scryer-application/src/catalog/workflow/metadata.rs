@@ -98,6 +98,52 @@ impl AppUseCase {
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| "eng".to_string())
     }
+
+    /// RFC 121 SW5: discovery region seam. Mirrors `metadata_language` so a
+    /// future preferences UI only has to write `DISCOVERY_REGION_KEY`. Defaults
+    /// to "US" (the previous hardcoded value) so behavior is unchanged until set.
+    pub(crate) async fn discovery_region(&self) -> String {
+        self.read_setting_string_value_for_scope(SETTINGS_SCOPE_SYSTEM, DISCOVERY_REGION_KEY, None)
+            .await
+            .ok()
+            .flatten()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| "US".to_string())
+    }
+
+    pub async fn title_ratings(
+        &self,
+        actor: &User,
+        title_id: &str,
+    ) -> AppResult<TitleRatingSummary> {
+        self.get_title(actor, title_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("title {title_id}")))?;
+        self.services
+            .catalog
+            .titles
+            .get_title_ratings(title_id)
+            .await
+    }
+
+    pub async fn list_title_ratings(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+    ) -> AppResult<Vec<(String, TitleRatingSummary)>> {
+        let title_ids = self
+            .filter_title_ids_for_permission(
+                actor,
+                title_ids,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        self.services
+            .catalog
+            .titles
+            .list_title_ratings(&title_ids)
+            .await
+    }
 }
 impl AppUseCase {
     pub(crate) async fn apply_title_metadata_update(
@@ -114,8 +160,7 @@ impl AppUseCase {
             .titles
             .update_metadata(id, name, facet, tags, None)
             .await?;
-        self.emit_title_updated_activity(actor, &title)
-            .await;
+        self.emit_title_updated_activity(actor, &title).await;
         Ok(title)
     }
 }
@@ -224,10 +269,8 @@ impl AppUseCase {
             .find(|file| file.id == file_id)
             .ok_or_else(|| AppError::NotFound(format!("media file {file_id}")))?;
         if title.facet != MediaFacet::Movie {
-            let series_movie_link_id = selected_file
-                .series_movie_link_ids
-                .first()
-                .ok_or_else(|| {
+            let series_movie_link_id =
+                selected_file.series_movie_link_ids.first().ok_or_else(|| {
                     AppError::Validation(
                         "primary movie file can only be set for movie titles or series movie files"
                             .to_string(),
@@ -249,8 +292,7 @@ impl AppUseCase {
                 .media_files
                 .set_media_file_roles_for_title(&title.id, &selected_file.id, &additional_file_ids)
                 .await?;
-            self.emit_title_updated_activity(actor, &title)
-                .await;
+            self.emit_title_updated_activity(actor, &title).await;
             return Ok(title);
         }
         let movie_scope =
@@ -259,7 +301,9 @@ impl AppUseCase {
                 &selected_file.file_path,
             )
             .ok_or_else(|| {
-                AppError::Validation("movie title does not have a canonical folder path".to_string())
+                AppError::Validation(
+                    "movie title does not have a canonical folder path".to_string(),
+                )
             })?;
         if !movie_scope.file_is_inside_canonical_folder(&selected_file.file_path) {
             return Err(AppError::Validation(
@@ -279,8 +323,7 @@ impl AppUseCase {
             .media_files
             .set_media_file_roles_for_title(&title.id, &selected_file.id, &additional_file_ids)
             .await?;
-        self.emit_title_updated_activity(actor, &title)
-            .await;
+        self.emit_title_updated_activity(actor, &title).await;
         Ok(title)
     }
 }
@@ -317,7 +360,12 @@ impl AppUseCase {
             .services
             .catalog
             .titles
-            .find_by_external_id_in_facet(existing_title.facet.clone(), "tvdb", target_tvdb_id)
+            .find_by_external_id_in_library_and_facet(
+                &existing_title.library_id,
+                existing_title.facet.clone(),
+                "tvdb",
+                target_tvdb_id,
+            )
             .await?
             .filter(|title| title.id != existing_title.id);
         if let Some(duplicate) = duplicate {
@@ -341,8 +389,8 @@ impl AppUseCase {
                 .await?;
             self.services
                 .workflow
-                .wanted_items
-                .delete_wanted_items_for_title(&existing_title.id)
+                .acquisition_scope_states
+                .delete_acquisition_scope_states_for_title(&existing_title.id)
                 .await?;
 
             self.services
@@ -366,16 +414,23 @@ impl AppUseCase {
         let replacement_tags =
             strip_derived_match_tags(&existing_title.tags, REMATCH_DERIVED_TAG_PREFIXES);
 
-        let mut reset_title = self
-            .services
-            .catalog
-            .titles
-            .replace_match_state(
-                &existing_title.id,
-                replacement_external_ids,
-                replacement_tags,
-            )
-            .await?;
+        let mut reset_title = {
+            let _title_image_maintenance_guard = self
+                .runtime
+                .catalog
+                .title_image_maintenance_lock
+                .write()
+                .await;
+            self.services
+                .catalog
+                .titles
+                .replace_match_state(
+                    &existing_title.id,
+                    replacement_external_ids,
+                    replacement_tags,
+                )
+                .await?
+        };
 
         if has_episodes
             && reset_title
@@ -500,45 +555,6 @@ impl AppUseCase {
             library_scan,
             warnings,
         })
-    }
-}
-impl AppUseCase {
-    /// Re-fetch metadata from SMG for all monitored series/anime titles.
-    /// This updates episode air dates (TBA → actual), adds newly announced
-    /// episodes, and refreshes other metadata fields.
-    pub(crate) async fn run_metadata_refresh_job(&self) -> AppResult<u32> {
-        let titles = match self.services.catalog.titles.list(None, None).await {
-            Ok(t) => t,
-            Err(err) => {
-                warn!(error = %err, "metadata refresh: failed to list titles");
-                return Err(err);
-            }
-        };
-
-        let targets = titles
-            .into_iter()
-            .filter(|title| title.monitored)
-            .filter(|title| {
-                self.facet_registry
-                    .get(&title.facet)
-                    .is_some_and(|handler| handler.has_episodes())
-            })
-            .map(|title| HydrationTarget {
-                title,
-                requested_tvdb_id: None,
-                sync_wanted_after_completion: false,
-                source: HydrationSource::Maintenance,
-            })
-            .collect::<Vec<_>>();
-
-        let refreshed = targets.len() as u32;
-        let _ = self.hydrate_titles_bulk(targets).await?;
-
-        if refreshed > 0 {
-            info!(count = refreshed, "periodic metadata refresh completed");
-        }
-
-        Ok(refreshed)
     }
 }
 /// Extract a boolean from a `scryer:{prefix}:true/false` tag.

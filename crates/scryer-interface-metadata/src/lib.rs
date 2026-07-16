@@ -122,7 +122,6 @@ impl MetadataQueries {
             runtime_minutes: movie.runtime_minutes,
             sort_title: movie.sort_title,
             imdb_id: movie.imdb_id,
-            genres: movie.genres,
             studio: movie.studio,
             tmdb_release_date: parse_iso_date(movie.tmdb_release_date),
         })
@@ -179,7 +178,6 @@ impl MetadataQueries {
             runtime_minutes: series.runtime_minutes,
             poster_url: series.poster_url,
             country: series.country,
-            genres: series.genres,
             aliases: series.aliases,
             seasons: series
                 .seasons

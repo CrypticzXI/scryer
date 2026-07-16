@@ -1,6 +1,4 @@
-use std::fmt::Display;
-use std::future::Future;
-use std::time::Duration;
+use std::{fmt::Display, future::Future, time::Duration};
 
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -27,14 +25,24 @@ impl PollingWorker {
         }
     }
 
-    pub(crate) async fn wait_for_wake_or_timeout(&self, wake: &Notify, timeout: Duration) -> bool {
+    pub(crate) async fn wait_for_sleep(&self, duration: Duration) -> bool {
+        tokio::select! {
+            _ = self.token.cancelled() => {
+                self.log_shutdown();
+                false
+            }
+            _ = tokio::time::sleep(duration) => true,
+        }
+    }
+
+    pub(crate) async fn wait_for_wake_or_timeout(&self, wake: &Notify, duration: Duration) -> bool {
         tokio::select! {
             _ = self.token.cancelled() => {
                 self.log_shutdown();
                 false
             }
             _ = wake.notified() => true,
-            _ = tokio::time::sleep(timeout) => true,
+            _ = tokio::time::sleep(duration) => true,
         }
     }
 
@@ -42,28 +50,19 @@ impl PollingWorker {
         &self,
         wake: &Notify,
         future: F,
-        timeout: Duration,
+        duration: Duration,
     ) -> bool
     where
         F: Future<Output = ()>,
     {
+        tokio::pin!(future);
         tokio::select! {
             _ = self.token.cancelled() => {
                 self.log_shutdown();
                 false
             }
             _ = wake.notified() => true,
-            _ = future => true,
-            _ = tokio::time::sleep(timeout) => true,
-        }
-    }
-
-    pub(crate) async fn wait_for_sleep(&self, duration: Duration) -> bool {
-        tokio::select! {
-            _ = self.token.cancelled() => {
-                self.log_shutdown();
-                false
-            }
+            _ = &mut future => true,
             _ = tokio::time::sleep(duration) => true,
         }
     }

@@ -1,14 +1,22 @@
 import type * as React from "react";
-import { Link } from "react-router-dom";
 import { InfoHelp } from "@/components/common/info-help";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { CheckboxField } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { SecuritySettings } from "@/lib/types/settings";
+
+const SECURITY_PANEL_CLASS =
+  "overflow-hidden rounded-[14px] border border-[var(--scry-border)] bg-[var(--scry-surf)] shadow-[0_10px_24px_rgba(0,0,0,0.16)]";
+const SECURITY_PANEL_HEADER_CLASS =
+  "border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0))] px-4 py-3";
+const SECURITY_PANEL_TITLE_CLASS =
+  "text-[15px] font-semibold text-[var(--scry-ink2)]";
+const SECURITY_INSET_CLASS =
+  "rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)]";
 
 type SettingsSecuritySectionProps = {
   settings: SecuritySettings;
@@ -17,13 +25,11 @@ type SettingsSecuritySectionProps = {
   disableConfirmOpen: boolean;
   adminPasswordRequiredOpen: boolean;
   confirmBusy: boolean;
-  confirmUsername: string;
   confirmPassword: string;
   confirmError: string | null;
   passwordMinLengthDraft: string;
   minPasswordLength: number;
   onToggle: (enabled: boolean) => void;
-  onConfirmUsernameChange: (value: string) => void;
   onConfirmPasswordChange: (value: string) => void;
   onConfirmEnable: () => Promise<void> | void;
   onCancelEnable: () => void;
@@ -47,13 +53,11 @@ export function SettingsSecuritySection({
   disableConfirmOpen,
   adminPasswordRequiredOpen,
   confirmBusy,
-  confirmUsername,
   confirmPassword,
   confirmError,
   passwordMinLengthDraft,
   minPasswordLength,
   onToggle,
-  onConfirmUsernameChange,
   onConfirmPasswordChange,
   onConfirmEnable,
   onCancelEnable,
@@ -71,32 +75,28 @@ export function SettingsSecuritySection({
 }: SettingsSecuritySectionProps) {
   const t = useTranslate();
   const busy = loading || confirmBusy;
-  const confirmDisabled =
-    confirmUsername.trim().length === 0 || confirmPassword.trim().length === 0;
+  const confirmDisabled = confirmPassword.trim().length === 0;
 
   return (
     <>
-      <div id="settings-security-section" className="space-y-6 text-sm">
-        <div className="space-y-2">
-          <h3 className="text-base font-medium">{t("settings.security")}</h3>
-          <p className="max-w-2xl text-muted-foreground">
-            {t("settings.securityDescription")}
-          </p>
-        </div>
-
-        <div className="rounded-lg border border-border bg-card/50 p-4">
-          <div className="space-y-4">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <Label className="text-sm font-medium">
+      <div id="settings-security-section" className="space-y-4 text-sm">
+        <div className={SECURITY_PANEL_CLASS}>
+          <div className={SECURITY_PANEL_HEADER_CLASS}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <h3 className={SECURITY_PANEL_TITLE_CLASS}>
                   {t("settings.securityEnableFormLogin")}
-                </Label>
-                {busy ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+                </h3>
+                <p className="text-xs text-[var(--scry-muted3)]">
+                  {t("settings.securityEnableFormLoginHelp")}
+                </p>
               </div>
-              <p className="text-xs text-muted-foreground">
-                {t("settings.securityEnableFormLoginHelp")}
-              </p>
+              {busy ? (
+                <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-[var(--scry-muted3)]" />
+              ) : null}
             </div>
+          </div>
+          <div className="space-y-4 p-4">
             <div className="max-w-xs space-y-1.5">
               <Label className="text-sm font-medium" htmlFor="security-password-min-length">
                 {t("settings.securityPasswordMinLength")}
@@ -120,7 +120,7 @@ export function SettingsSecuritySection({
                   }
                 }}
               />
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-[var(--scry-muted3)]">
                 {t("settings.securityPasswordMinLengthHelp", {
                   min: minPasswordLength,
                 })}
@@ -138,125 +138,86 @@ export function SettingsSecuritySection({
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {settings.formLoginEnabled ? t("label.disable") : t("label.enable")}
               </Button>
-              <div className="flex w-fit max-w-full items-center gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
-                <Checkbox
-                  checked={settings.skipLoginForLocalIps}
-                  disabled={busy}
-                  id="security-skip-local-ips"
-                  onCheckedChange={(checked) => onSkipLocalIpsChange(checked === true)}
-                />
-                <div className="flex items-center gap-2">
-                  <Label
-                    className="cursor-pointer text-sm font-medium"
-                    htmlFor="security-skip-local-ips"
-                  >
-                    {t("settings.securitySkipLocalIps")}
-                  </Label>
+              <CheckboxField
+                id="security-skip-local-ips"
+                checked={settings.skipLoginForLocalIps}
+                disabled={busy}
+                onCheckedChange={(checked) =>
+                  onSkipLocalIpsChange(checked === true)
+                }
+                label={t("settings.securitySkipLocalIps")}
+                labelAccessory={
                   <InfoHelp
                     ariaLabel={t("settings.securitySkipLocalIps")}
                     text={t("settings.securitySkipLocalIpsHelp")}
                   />
-                </div>
-              </div>
+                }
+                className={`${SECURITY_INSET_CLASS} w-fit max-w-full items-center px-3 py-2`}
+                checkboxClassName="mt-0"
+              />
               <div className="grid gap-3 md:grid-cols-3">
-                <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
-                  <Checkbox
-                    checked={settings.mfaRequireConfigStepUp}
-                    disabled={busy}
-                    id="security-mfa-config-step-up"
-                    onCheckedChange={(checked) => onMfaConfigStepUpChange(checked === true)}
-                  />
-                  <div className="grid gap-1">
-                    <div className="flex items-center gap-2">
-                      <Label
-                        className="cursor-pointer text-sm font-medium"
-                        htmlFor="security-mfa-config-step-up"
-                      >
-                        {t("settings.securityMfaConfigStepUp")}
-                      </Label>
-                      <InfoHelp
-                        ariaLabel={t("settings.securityMfaConfigStepUp")}
-                        text={t("settings.securityMfaConfigStepUpHelp")}
-                      />
-                    </div>
-                  </div>
-                </div>
-                <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
-                  <Checkbox
-                    checked={settings.mfaRequirePasswordLogin}
-                    disabled={busy}
-                    id="security-mfa-password-login"
-                    onCheckedChange={(checked) => onMfaPasswordLoginChange(checked === true)}
-                  />
-                  <div className="grid gap-1">
-                    <div className="flex items-center gap-2">
-                      <Label
-                        className="cursor-pointer text-sm font-medium"
-                        htmlFor="security-mfa-password-login"
-                      >
-                        {t("settings.securityMfaPasswordLogin")}
-                      </Label>
-                      <InfoHelp
-                        ariaLabel={t("settings.securityMfaPasswordLogin")}
-                        text={t("settings.securityMfaPasswordLoginHelp")}
-                      />
-                    </div>
-                  </div>
-                </div>
-                <div className="flex max-w-full items-start gap-3 rounded-md border border-border/70 bg-background/40 px-3 py-2">
-                  <Checkbox
-                    checked={settings.totpRequireJellyfinLogin}
-                    disabled={busy}
-                    id="security-totp-jellyfin-login"
-                    onCheckedChange={(checked) => onTotpJellyfinLoginChange(checked === true)}
-                  />
-                  <div className="grid gap-1">
-                    <div className="flex items-center gap-2">
-                      <Label
-                        className="cursor-pointer text-sm font-medium"
-                        htmlFor="security-totp-jellyfin-login"
-                      >
-                        {t("settings.securityTotpJellyfinLogin")}
-                      </Label>
-                      <InfoHelp
-                        ariaLabel={t("settings.securityTotpJellyfinLogin")}
-                        text={t("settings.securityTotpJellyfinLoginHelp")}
-                      />
-                    </div>
-                  </div>
-                </div>
+                <CheckboxField
+                  id="security-mfa-config-step-up"
+                  checked={settings.mfaRequireConfigStepUp}
+                  disabled={busy}
+                  onCheckedChange={(checked) =>
+                    onMfaConfigStepUpChange(checked === true)
+                  }
+                  label={t("settings.securityMfaConfigStepUp")}
+                  labelAccessory={
+                    <InfoHelp
+                      ariaLabel={t("settings.securityMfaConfigStepUp")}
+                      text={t("settings.securityMfaConfigStepUpHelp")}
+                    />
+                  }
+                  className={`${SECURITY_INSET_CLASS} max-w-full px-3 py-2`}
+                />
+                <CheckboxField
+                  id="security-mfa-password-login"
+                  checked={settings.mfaRequirePasswordLogin}
+                  disabled={busy}
+                  onCheckedChange={(checked) =>
+                    onMfaPasswordLoginChange(checked === true)
+                  }
+                  label={t("settings.securityMfaPasswordLogin")}
+                  labelAccessory={
+                    <InfoHelp
+                      ariaLabel={t("settings.securityMfaPasswordLogin")}
+                      text={t("settings.securityMfaPasswordLoginHelp")}
+                    />
+                  }
+                  className={`${SECURITY_INSET_CLASS} max-w-full px-3 py-2`}
+                />
+                <CheckboxField
+                  id="security-totp-jellyfin-login"
+                  checked={settings.totpRequireJellyfinLogin}
+                  disabled={busy}
+                  onCheckedChange={(checked) =>
+                    onTotpJellyfinLoginChange(checked === true)
+                  }
+                  label={t("settings.securityTotpJellyfinLogin")}
+                  labelAccessory={
+                    <InfoHelp
+                      ariaLabel={t("settings.securityTotpJellyfinLogin")}
+                      text={t("settings.securityTotpJellyfinLoginHelp")}
+                    />
+                  }
+                  className={`${SECURITY_INSET_CLASS} max-w-full px-3 py-2`}
+                />
               </div>
             </div>
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-border bg-card/50 p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="space-y-1">
-              <h4 className="text-sm font-medium">
-                {t("settings.manageMediaServerLogins")}
-              </h4>
-              <p className="max-w-2xl text-xs text-muted-foreground">
-                {t("settings.manageMediaServerLoginsDescription")}
-              </p>
-            </div>
-            <Button asChild variant="outline" className="w-fit shrink-0">
-              <Link to="/settings/media-servers">
-                {t("settings.openMediaServers")}
-              </Link>
-            </Button>
           </div>
         </div>
 
         {settings.envOverrideActive ? (
-          <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+          <div className="space-y-3 rounded-[14px] border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] p-4 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
             <div className="space-y-1">
-              <h4 className="text-sm font-medium">{t("settings.securityOverrideTitle")}</h4>
-              <p className="text-xs text-muted-foreground">
+              <h4 className="text-sm font-medium text-[var(--scry-ink2)]">{t("settings.securityOverrideTitle")}</h4>
+              <p className="text-xs text-[var(--scry-muted3)]">
                 {t("settings.securityOverrideDescription")}
               </p>
               {settings.envOverrideDescription ? (
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-[var(--scry-muted3)]">
                   {t("settings.securityOverrideReason", {
                     override: settings.envOverrideDescription,
                   })}
@@ -264,21 +225,21 @@ export function SettingsSecuritySection({
               ) : null}
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-md border border-border/70 bg-background/40 p-3">
-                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+              <div className={`${SECURITY_INSET_CLASS} p-3`}>
+                <div className="text-xs uppercase tracking-wide text-[var(--scry-muted3)]">
                   {t("settings.securitySavedPreference")}
                 </div>
-                <div className="mt-1 font-medium">
+                <div className="mt-1 font-medium text-[var(--scry-ink2)]">
                   {settings.formLoginEnabled
                     ? t("settings.securityModeEnabled")
                     : t("settings.securityModeDisabled")}
                 </div>
               </div>
-              <div className="rounded-md border border-border/70 bg-background/40 p-3">
-                <div className="text-xs uppercase tracking-wide text-muted-foreground">
+              <div className={`${SECURITY_INSET_CLASS} p-3`}>
+                <div className="text-xs uppercase tracking-wide text-[var(--scry-muted3)]">
                   {t("settings.securityEffectiveMode")}
                 </div>
-                <div className="mt-1 font-medium">
+                <div className="mt-1 font-medium text-[var(--scry-ink2)]">
                   {settings.effectiveFormLoginEnabled
                     ? t("settings.securityModeEnabled")
                     : t("settings.securityModeDisabled")}
@@ -288,9 +249,8 @@ export function SettingsSecuritySection({
           </div>
         ) : null}
 
+        {externalAccountInvitesPanel}
       </div>
-
-      {externalAccountInvitesPanel}
 
       <ConfirmDialog
         open={adminPasswordRequiredOpen}
@@ -316,24 +276,13 @@ export function SettingsSecuritySection({
         confirmButtonId="settings-security-enable-confirm"
         cancelButtonId="settings-security-enable-cancel"
         confirmButtonVariant="default"
-        confirmButtonClassName="bg-emerald-600 text-white hover:bg-emerald-700 focus-visible:ring-emerald-600 dark:bg-emerald-500 dark:text-emerald-950 dark:hover:bg-emerald-400"
+        confirmButtonClassName="bg-[var(--scry-success-solid)] text-[var(--scry-success-on-solid)] hover:bg-[var(--scry-success-solid-hover)] focus-visible:ring-[var(--scry-success-border-strong)]"
         isBusy={confirmBusy}
         confirmDisabled={confirmDisabled}
         onConfirm={onConfirmEnable}
         onCancel={onCancelEnable}
       >
         <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="security-confirm-username">
-              {t("settings.securityConfirmUsername")}
-            </Label>
-            <Input
-              id="security-confirm-username"
-              autoComplete="username"
-              value={confirmUsername}
-              onChange={(event) => onConfirmUsernameChange(event.target.value)}
-            />
-          </div>
           <div className="space-y-1.5">
             <Label htmlFor="security-confirm-password">
               {t("settings.securityConfirmPassword")}

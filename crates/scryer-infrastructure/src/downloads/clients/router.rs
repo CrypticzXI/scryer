@@ -1,19 +1,26 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use scryer_application::challenge_solver as solver;
 use scryer_application::{
     AppError, AppResult, DOWNLOAD_FEEDBACK_TIMEOUT_MESSAGE, DownloadClient,
     DownloadClientAddRequest, DownloadClientConfigRepository, DownloadClientPluginProvider,
     DownloadClientRemotePathMapping, DownloadClientStatus, DownloadGrabResult, DownloadSourceKind,
-    SettingsRepository, StagedNzbRef, StagedNzbStore, accepted_inputs_for_client,
-    apply_remote_path_mappings_to_completed_download, apply_remote_path_mappings_to_status,
-    parse_download_client_remote_path_mappings,
+    IndexerConfigRepository, IndexerProxyConfigRepository, RateLimitCooldownAction,
+    ResolvedDownloadArtifact, SettingsRepository, StagedNzbRef, StagedNzbStore,
+    accepted_inputs_for_client, apply_remote_path_mappings_to_completed_download,
+    apply_remote_path_mappings_to_status, parse_download_client_remote_path_mappings,
 };
-use scryer_domain::{DownloadClientConfig, DownloadQueueItem, MediaFacet};
-use scryer_outbound_http::{OutboundHttpClient, RateLimitRegistry, generic_reqwest_client};
+use scryer_domain::{DownloadClientConfig, DownloadQueueItem, IndexerProxyConfig, MediaFacet};
+use scryer_outbound_http::{
+    OutboundHttpClient, RateLimitRegistry, generic_reqwest_client, prepare_plugin_http_target,
+    send_reqwest_request,
+};
+use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{debug, warn};
@@ -23,12 +30,203 @@ use super::sabnzbd::SabnzbdDownloadClient;
 use super::weaver::WeaverDownloadClient;
 use super::{
     parse_download_client_config_json, read_config_string, request_source_hint_for_nzb,
-    resolve_download_client_base_url, stage_nzb_from_url,
+    resolve_download_client_base_url, stage_nzb_from_bytes, stage_nzb_from_url,
 };
 
 const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
 const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
 const DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS: u64 = 10;
+const PROXIED_TORRENT_FILE_MAX_BYTES: usize = 32 * 1024 * 1024;
+const BYPARR_RESPONSE_MAX_BYTES: usize = PROXIED_TORRENT_FILE_MAX_BYTES * 2;
+
+#[derive(Debug)]
+enum BoundedResponseBodyError {
+    Read(reqwest::Error),
+    TooLarge,
+}
+
+async fn read_response_body_bounded(
+    mut response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, BoundedResponseBodyError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(BoundedResponseBodyError::TooLarge);
+    }
+
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or_default()
+        .min(max_bytes);
+    let mut body = Vec::with_capacity(capacity);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(BoundedResponseBodyError::Read)?
+    {
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(BoundedResponseBodyError::TooLarge)?;
+        if next_len > max_bytes {
+            return Err(BoundedResponseBodyError::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn content_disposition_filename(headers: Option<&serde_json::Value>) -> Option<String> {
+    let value = solver::solution_header_string(headers, "content-disposition")?;
+    value.split(';').find_map(|part| {
+        let part = part.trim();
+        let filename = part.strip_prefix("filename=")?;
+        let filename = filename.trim_matches('"').trim();
+        let safe = filename
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | ' '))
+            .collect::<String>();
+        (!safe.trim().is_empty()).then_some(safe)
+    })
+}
+
+fn looks_like_torrent_metainfo(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.len() > PROXIED_TORRENT_FILE_MAX_BYTES {
+        return false;
+    }
+    matches!(
+        parse_bencode_dict(bytes, 0, 0),
+        Ok((consumed, true)) if consumed == bytes.len()
+    )
+}
+
+fn parse_bencode_value(bytes: &[u8], offset: usize, depth: usize) -> Result<usize, ()> {
+    if depth > 64 || offset >= bytes.len() {
+        return Err(());
+    }
+    match bytes[offset] {
+        b'i' => {
+            let end = bytes[offset + 1..]
+                .iter()
+                .position(|byte| *byte == b'e')
+                .map(|position| offset + 1 + position)
+                .ok_or(())?;
+            if end == offset + 1 {
+                return Err(());
+            }
+            Ok(end + 1)
+        }
+        b'l' => {
+            let mut cursor = offset + 1;
+            while cursor < bytes.len() && bytes[cursor] != b'e' {
+                cursor = parse_bencode_value(bytes, cursor, depth + 1)?;
+            }
+            if cursor >= bytes.len() {
+                return Err(());
+            }
+            Ok(cursor + 1)
+        }
+        b'd' => parse_bencode_dict(bytes, offset, depth + 1).map(|(cursor, _)| cursor),
+        b'0'..=b'9' => parse_bencode_string(bytes, offset).map(|(cursor, _, _)| cursor),
+        _ => Err(()),
+    }
+}
+
+fn parse_bencode_dict(bytes: &[u8], offset: usize, depth: usize) -> Result<(usize, bool), ()> {
+    if depth > 64 || bytes.get(offset) != Some(&b'd') {
+        return Err(());
+    }
+    let mut cursor = offset + 1;
+    let mut has_info_dict = false;
+    while cursor < bytes.len() && bytes[cursor] != b'e' {
+        let (after_key, key_start, key_end) = parse_bencode_string(bytes, cursor)?;
+        let is_top_level_info = depth == 0 && &bytes[key_start..key_end] == b"info";
+        if is_top_level_info && bytes.get(after_key) != Some(&b'd') {
+            return Err(());
+        }
+        cursor = parse_bencode_value(bytes, after_key, depth + 1)?;
+        has_info_dict |= is_top_level_info;
+    }
+    if cursor >= bytes.len() {
+        return Err(());
+    }
+    Ok((cursor + 1, has_info_dict))
+}
+
+fn parse_bencode_string(bytes: &[u8], offset: usize) -> Result<(usize, usize, usize), ()> {
+    let colon = bytes[offset..]
+        .iter()
+        .position(|byte| *byte == b':')
+        .map(|position| offset + position)
+        .ok_or(())?;
+    if colon == offset {
+        return Err(());
+    }
+    let length = std::str::from_utf8(&bytes[offset..colon])
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .ok_or(())?;
+    let start = colon + 1;
+    let end = start.checked_add(length).ok_or(())?;
+    if end > bytes.len() {
+        return Err(());
+    }
+    Ok((end, start, end))
+}
+
+fn looks_like_nzb(bytes: &[u8]) -> bool {
+    let preview = &bytes[..bytes.len().min(4096)];
+    let Ok(text) = std::str::from_utf8(preview) else {
+        return false;
+    };
+    let text = text.trim_start().to_ascii_lowercase();
+    text.starts_with("<?xml") && text.contains("<nzb")
+        || text.starts_with("<nzb")
+        || text.contains("<!doctype nzb")
+}
+
+fn looks_like_rejected_download_document(bytes: &[u8]) -> bool {
+    let preview = &bytes[..bytes.len().min(256 * 1024)];
+    let Ok(text) = std::str::from_utf8(preview) else {
+        return false;
+    };
+    let lower = text.trim_start().to_ascii_lowercase();
+    lower.starts_with("<!doctype html")
+        || lower.starts_with("<html")
+        || lower.contains("cf-chl")
+        || lower.contains("checking your browser")
+        || lower.contains("just a moment")
+        || lower.contains("captcha")
+        || lower.contains("<form") && lower.contains("login")
+        || lower.starts_with("<error")
+        || lower.contains("<error ")
+}
+
+fn magnet_info_hash_hint(uri: &str) -> Option<String> {
+    uri.split(['?', '&'])
+        .find_map(|part| part.strip_prefix("xt=urn:btih:"))
+        .map(str::to_string)
+        .and_then(|value| scryer_application::normalize_torrent_info_hash(Some(&value)))
+}
+
+fn target_rate_limit_error(headers: Option<&serde_json::Value>) -> AppError {
+    let retry_after = solver::retry_after_from_solution_headers(headers);
+    AppError::TemporaryUnavailable {
+        message: solver::rate_limit_message_with_retry_after(retry_after),
+        retry_after,
+        rate_limit_cooldown: RateLimitCooldownAction::RecordFallback,
+    }
+}
+
+struct FetchedDownloadArtifact {
+    bytes: Vec<u8>,
+    headers: Option<serde_json::Value>,
+    final_url: Option<String>,
+}
+
 const DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_INITIAL_SECS: u64 = 15;
 const DOWNLOAD_CLIENT_FEEDBACK_BACKOFF_MAX_SECS: u64 = 120;
 
@@ -65,11 +263,45 @@ fn download_client_remote_path_mappings(
     }
 }
 
+fn normalize_completed_download_import_dir(item: &mut scryer_domain::CompletedDownload) {
+    let reported_dir = Path::new(item.dest_dir.trim());
+    if !reported_dir.is_dir() {
+        return;
+    }
+
+    let name = item.name.trim();
+    if name.is_empty() || name.contains(['/', '\\']) {
+        return;
+    }
+    let mut components = Path::new(name).components();
+    let Some(Component::Normal(child_name)) = components.next() else {
+        return;
+    };
+    if components.next().is_some() || reported_dir.file_name() == Some(child_name) {
+        return;
+    }
+
+    let release_dir = reported_dir.join(child_name);
+    if !release_dir.is_dir() {
+        return;
+    }
+
+    tracing::debug!(
+        client_id = %item.client_id,
+        client_type = %item.client_type,
+        reported_dir = %reported_dir.display(),
+        release_dir = %release_dir.display(),
+        "resolved completed download release directory from client-reported parent"
+    );
+    item.dest_dir = release_dir.to_string_lossy().into_owned();
+}
+
 #[derive(Clone)]
 pub struct PrioritizedDownloadClientRouter {
     download_client_configs: Arc<dyn DownloadClientConfigRepository>,
+    indexer_configs: Option<Arc<dyn IndexerConfigRepository>>,
+    indexer_proxy_configs: Option<Arc<dyn IndexerProxyConfigRepository>>,
     settings: Arc<dyn SettingsRepository>,
-    fallback_client: Arc<dyn DownloadClient>,
     staged_nzb_store: Arc<dyn StagedNzbStore>,
     staged_nzb_pipeline_limit: Arc<Semaphore>,
     plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
@@ -325,6 +557,13 @@ impl FeedbackReadSummary {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DownloadArtifactKind {
+    NzbBytes,
+    MagnetUri,
+    TorrentBytes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DownloadClientRoutingScope {
     Library,
     Facet,
@@ -354,7 +593,6 @@ impl PrioritizedDownloadClientRouter {
     pub fn new(
         download_client_configs: Arc<dyn DownloadClientConfigRepository>,
         settings: Arc<dyn SettingsRepository>,
-        fallback_client: Arc<dyn DownloadClient>,
         staged_nzb_store: Arc<dyn StagedNzbStore>,
         staged_nzb_pipeline_limit: Arc<Semaphore>,
         plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
@@ -362,7 +600,6 @@ impl PrioritizedDownloadClientRouter {
         Self::with_feedback_read_timeout(
             download_client_configs,
             settings,
-            fallback_client,
             staged_nzb_store,
             staged_nzb_pipeline_limit,
             plugin_provider,
@@ -373,7 +610,6 @@ impl PrioritizedDownloadClientRouter {
     fn with_feedback_read_timeout(
         download_client_configs: Arc<dyn DownloadClientConfigRepository>,
         settings: Arc<dyn SettingsRepository>,
-        fallback_client: Arc<dyn DownloadClient>,
         staged_nzb_store: Arc<dyn StagedNzbStore>,
         staged_nzb_pipeline_limit: Arc<Semaphore>,
         plugin_provider: Option<Arc<dyn DownloadClientPluginProvider>>,
@@ -382,8 +618,9 @@ impl PrioritizedDownloadClientRouter {
         let http_client = generic_reqwest_client();
         Self {
             download_client_configs,
+            indexer_configs: None,
+            indexer_proxy_configs: None,
             settings,
-            fallback_client: Self::wrap_feedback_client(fallback_client, feedback_read_timeout),
             staged_nzb_store,
             staged_nzb_pipeline_limit,
             plugin_provider,
@@ -391,6 +628,16 @@ impl PrioritizedDownloadClientRouter {
             feedback_read_timeout,
             feedback_read_backoff: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn with_indexer_config_repositories(
+        mut self,
+        indexer_configs: Arc<dyn IndexerConfigRepository>,
+        indexer_proxy_configs: Arc<dyn IndexerProxyConfigRepository>,
+    ) -> Self {
+        self.indexer_configs = Some(indexer_configs);
+        self.indexer_proxy_configs = Some(indexer_proxy_configs);
+        self
     }
 
     fn wrap_feedback_client(
@@ -550,6 +797,560 @@ impl PrioritizedDownloadClientRouter {
                 _ => accepted_kind == source_kind,
             }
         })
+    }
+
+    fn request_artifact_kind(request: &DownloadClientAddRequest) -> Option<DownloadArtifactKind> {
+        match request.resolved_download_artifact.as_ref()? {
+            ResolvedDownloadArtifact::Nzb { .. } => Some(DownloadArtifactKind::NzbBytes),
+            ResolvedDownloadArtifact::Magnet { .. } => Some(DownloadArtifactKind::MagnetUri),
+            ResolvedDownloadArtifact::TorrentFile { .. } => {
+                Some(DownloadArtifactKind::TorrentBytes)
+            }
+        }
+    }
+
+    fn artifact_kind_label(kind: DownloadArtifactKind) -> &'static str {
+        match kind {
+            DownloadArtifactKind::NzbBytes => "NZB payload",
+            DownloadArtifactKind::MagnetUri => "magnet URI",
+            DownloadArtifactKind::TorrentBytes => "torrent file",
+        }
+    }
+
+    fn config_accepts_artifact_kind(
+        config: &DownloadClientConfig,
+        artifact_kind: DownloadArtifactKind,
+        plugin_provider: Option<&Arc<dyn DownloadClientPluginProvider>>,
+    ) -> bool {
+        if Self::is_native_nzb_client_type(&config.client_type) {
+            return artifact_kind == DownloadArtifactKind::NzbBytes;
+        }
+        let Some(provider) = plugin_provider else {
+            return false;
+        };
+        let accepted_inputs = provider.accepted_inputs_for_provider(&config.client_type);
+        accepted_inputs.iter().any(|input| {
+            let input = input.trim().to_ascii_lowercase();
+            match artifact_kind {
+                DownloadArtifactKind::NzbBytes => matches!(input.as_str(), "nzb" | "nzb_file"),
+                DownloadArtifactKind::MagnetUri => {
+                    matches!(input.as_str(), "magnet" | "magnet_uri")
+                }
+                DownloadArtifactKind::TorrentBytes => {
+                    matches!(input.as_str(), "torrent_bytes" | "torrent_file")
+                }
+            }
+        })
+    }
+
+    fn download_url_matches_indexer_origin(
+        indexer: &scryer_domain::IndexerConfig,
+        raw: &str,
+    ) -> bool {
+        let Ok(download_url) = url::Url::parse(raw) else {
+            return false;
+        };
+        if !matches!(download_url.scheme(), "http" | "https") {
+            return false;
+        }
+        let Ok(base_url) = url::Url::parse(&indexer.base_url) else {
+            return false;
+        };
+        if !matches!(base_url.scheme(), "http" | "https")
+            || download_url.scheme() != base_url.scheme()
+            || download_url.port_or_known_default() != base_url.port_or_known_default()
+        {
+            return false;
+        }
+        download_url.host_str().is_some_and(|host| {
+            base_url
+                .host_str()
+                .is_some_and(|base_host| host.eq_ignore_ascii_case(base_host))
+        })
+    }
+
+    async fn prepare_proxied_download_request(
+        &self,
+        request: &DownloadClientAddRequest,
+    ) -> AppResult<DownloadClientAddRequest> {
+        let Some(indexer_id) = request.indexer_id.as_deref() else {
+            return Ok(request.clone());
+        };
+        let (Some(indexer_configs), Some(indexer_proxy_configs)) =
+            (&self.indexer_configs, &self.indexer_proxy_configs)
+        else {
+            return Ok(request.clone());
+        };
+        let indexer = indexer_configs
+            .get_by_id(indexer_id)
+            .await?
+            .ok_or_else(|| AppError::Validation("Indexer configuration was not found.".into()))?;
+        let Some(proxy_config_id) = indexer.indexer_proxy_config_id.as_deref() else {
+            return Ok(request.clone());
+        };
+        let proxy_config = indexer_proxy_configs
+            .get_by_id(proxy_config_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation("Indexer proxy configuration was not found.".into())
+            })?;
+        if !proxy_config.is_enabled {
+            return Err(AppError::Validation(
+                "Indexer proxy is disabled for this indexer.".into(),
+            ));
+        }
+        let download_url = request
+            .source_hint
+            .as_deref()
+            .ok_or_else(|| AppError::Validation("Proxied download is missing a URL.".into()))?;
+        if download_url.trim_start().starts_with("magnet:?") {
+            let uri = download_url.trim().to_string();
+            let mut prepared = request.clone();
+            prepared.resolved_download_artifact = Some(ResolvedDownloadArtifact::Magnet {
+                info_hash_hint: request
+                    .info_hash_hint
+                    .clone()
+                    .or_else(|| magnet_info_hash_hint(&uri)),
+                uri: uri.clone(),
+            });
+            prepared.source_kind = Some(DownloadSourceKind::MagnetUri);
+            prepared.source_hint = Some(uri);
+            return Ok(prepared);
+        }
+        if !Self::download_url_matches_indexer_origin(&indexer, download_url) {
+            return Err(AppError::Validation(
+                "Proxied download URL does not match the assigned indexer origin.".into(),
+            ));
+        }
+        let artifact_result = self
+            .resolve_download_artifact_via_byparr(
+                &proxy_config,
+                download_url,
+                request.info_hash_hint.clone(),
+            )
+            .await;
+        if let Some(repo) = self.indexer_proxy_configs.as_ref() {
+            solver::flush_solver_health(repo.as_ref()).await;
+        }
+        let artifact = artifact_result?;
+
+        let mut prepared = request.clone();
+        prepared.resolved_download_artifact = Some(artifact.clone());
+        match artifact {
+            ResolvedDownloadArtifact::Nzb { .. } => {
+                prepared.source_kind = Some(DownloadSourceKind::NzbFile);
+                prepared.source_hint = None;
+            }
+            ResolvedDownloadArtifact::Magnet {
+                uri,
+                info_hash_hint,
+            } => {
+                prepared.source_kind = Some(DownloadSourceKind::MagnetUri);
+                prepared.source_hint = Some(uri);
+                prepared.info_hash_hint = info_hash_hint.or(prepared.info_hash_hint);
+            }
+            ResolvedDownloadArtifact::TorrentFile { info_hash_hint, .. } => {
+                prepared.source_kind = Some(DownloadSourceKind::TorrentFile);
+                prepared.source_hint = None;
+                prepared.info_hash_hint = info_hash_hint.or(prepared.info_hash_hint);
+            }
+        }
+        Ok(prepared)
+    }
+
+    async fn resolve_download_artifact_via_byparr(
+        &self,
+        proxy_config: &IndexerProxyConfig,
+        download_url: &str,
+        info_hash_hint: Option<String>,
+    ) -> AppResult<ResolvedDownloadArtifact> {
+        if proxy_config.provider_type != scryer_domain::IndexerProxyProviderType::Byparr {
+            return Err(AppError::Validation(
+                "Unsupported indexer proxy provider for download resolution.".into(),
+            ));
+        }
+
+        // Validate before delegating to Byparr as well as before any direct
+        // retry. Otherwise the solver itself becomes a deputy for blocked
+        // link-local or cloud-metadata destinations.
+        drop(
+            prepare_plugin_http_target(download_url, "indexer download artifact")
+                .await
+                .map_err(|error| {
+                    warn!(error = %error, "blocked unsafe indexer download artifact URL");
+                    AppError::DownloadSubmitUnavailable(
+                        "Scryer refused an unsafe download artifact destination.".into(),
+                    )
+                })?,
+        );
+
+        // A previously solved clearance session lets the artifact fetch skip
+        // the solver entirely. Direct rate limits still propagate; every other
+        // failure invalidates the session and falls back to a full solve.
+        let session_headers =
+            solver::SolvedSessionCache::shared().session_headers(&proxy_config.id, download_url);
+        if !session_headers.is_empty() {
+            match self
+                .fetch_download_artifact_direct(
+                    download_url,
+                    &session_headers,
+                    proxy_config.request_timeout_seconds,
+                )
+                .await
+            {
+                Ok(fetched) => {
+                    match Self::classify_resolved_download_artifact(
+                        fetched.final_url.as_deref(),
+                        fetched.headers.as_ref(),
+                        fetched.bytes,
+                        info_hash_hint.clone(),
+                    ) {
+                        Ok(artifact) => return Ok(artifact),
+                        Err(error) => {
+                            debug!(
+                                proxy_config_id = proxy_config.id.as_str(),
+                                error = %error,
+                                "solved session artifact fetch not usable; falling back to solver"
+                            );
+                            solver::SolvedSessionCache::shared()
+                                .invalidate(&proxy_config.id, download_url);
+                        }
+                    }
+                }
+                Err(error @ AppError::TemporaryUnavailable { .. }) => return Err(error),
+                Err(error) => {
+                    debug!(
+                        proxy_config_id = proxy_config.id.as_str(),
+                        error = %error,
+                        "solved session artifact fetch failed; falling back to solver"
+                    );
+                    solver::SolvedSessionCache::shared().invalidate(&proxy_config.id, download_url);
+                }
+            }
+        }
+
+        let endpoint = solver::byparr_solve_endpoint(&proxy_config.base_url);
+        let response = generic_reqwest_client()
+            .post(endpoint)
+            .timeout(Duration::from_secs(
+                proxy_config.request_timeout_seconds as u64 + 5,
+            ))
+            .json(&solver::byparr_solve_request(
+                download_url,
+                proxy_config.request_timeout_seconds,
+            ))
+            .send()
+            .await
+            .map_err(|error| {
+                let message = if error.is_timeout() {
+                    solver::BYPARR_TIMEOUT_MESSAGE
+                } else {
+                    solver::BYPARR_UNREACHABLE_MESSAGE
+                };
+                solver::SolverHealthLedger::shared().record_failure(&proxy_config.id, message);
+                AppError::DownloadSubmitUnavailable(message.into())
+            })?;
+        let byparr_status = response.status();
+        if byparr_status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            solver::SolverHealthLedger::shared()
+                .record_failure(&proxy_config.id, solver::BYPARR_UNAVAILABLE_MESSAGE);
+            return Err(AppError::DownloadSubmitUnavailable(
+                solver::BYPARR_UNAVAILABLE_MESSAGE.into(),
+            ));
+        }
+        let body = match read_response_body_bounded(response, BYPARR_RESPONSE_MAX_BYTES).await {
+            Ok(body) => body,
+            Err(BoundedResponseBodyError::Read(error)) => {
+                debug!(
+                    proxy_config_id = proxy_config.id.as_str(),
+                    is_timeout = error.is_timeout(),
+                    is_body = error.is_body(),
+                    is_decode = error.is_decode(),
+                    "failed to read Byparr response body"
+                );
+                solver::SolverHealthLedger::shared()
+                    .record_failure(&proxy_config.id, solver::BYPARR_UNREADABLE_MESSAGE);
+                return Err(AppError::DownloadSubmitUnavailable(
+                    solver::BYPARR_UNREADABLE_MESSAGE.into(),
+                ));
+            }
+            Err(BoundedResponseBodyError::TooLarge) => {
+                const MESSAGE: &str =
+                    "Byparr returned a response larger than Scryer's download artifact limit.";
+                solver::SolverHealthLedger::shared().record_failure(&proxy_config.id, MESSAGE);
+                return Err(AppError::DownloadSubmitUnavailable(MESSAGE.into()));
+            }
+        };
+        let solution = solver::parse_byparr_solution(&body).map_err(|error| {
+            if error == solver::ByparrParseError::Malformed {
+                solver::SolverHealthLedger::shared()
+                    .record_failure(&proxy_config.id, solver::BYPARR_MALFORMED_MESSAGE);
+            }
+            AppError::DownloadSubmitUnavailable(error.message().into())
+        })?;
+        solver::SolverHealthLedger::shared().record_success(&proxy_config.id);
+        let solution_status = solution.status.unwrap_or_else(|| byparr_status.as_u16());
+        if solution_status == reqwest::StatusCode::TOO_MANY_REQUESTS.as_u16() {
+            return Err(target_rate_limit_error(solution.headers.as_ref()));
+        }
+        if !(200..300).contains(&solution_status) {
+            return Err(AppError::DownloadSubmitUnavailable(format!(
+                "Byparr target request returned HTTP {solution_status}."
+            )));
+        }
+        let solution_body = solution.response.as_deref().unwrap_or_default();
+        if solution_body.len() > PROXIED_TORRENT_FILE_MAX_BYTES {
+            return Err(AppError::DownloadSubmitUnavailable(format!(
+                "The resolved download artifact exceeded Scryer's {} MiB limit.",
+                PROXIED_TORRENT_FILE_MAX_BYTES / (1024 * 1024)
+            )));
+        }
+        if solver::solved_body_looks_rate_limited(solution_body.as_bytes()) {
+            return Err(target_rate_limit_error(solution.headers.as_ref()));
+        }
+        solver::SolvedSessionCache::shared().store_solution(
+            &proxy_config.id,
+            download_url,
+            &solution,
+        );
+        if Self::should_refetch_binary_download_artifact(
+            download_url,
+            solution.url.as_deref(),
+            solution.headers.as_ref(),
+        ) {
+            let retry_headers = solver::solution_retry_headers(&solution);
+            if !retry_headers.is_empty() {
+                let fetched = self
+                    .fetch_download_artifact_direct(
+                        download_url,
+                        &retry_headers,
+                        proxy_config.request_timeout_seconds,
+                    )
+                    .await?;
+                return Self::classify_resolved_download_artifact(
+                    fetched.final_url.as_deref(),
+                    fetched.headers.as_ref(),
+                    fetched.bytes,
+                    info_hash_hint,
+                );
+            }
+        }
+        let bytes = solution.response.unwrap_or_default().into_bytes();
+        Self::classify_resolved_download_artifact(
+            solution.url.as_deref(),
+            solution.headers.as_ref(),
+            bytes,
+            info_hash_hint,
+        )
+    }
+
+    fn should_refetch_binary_download_artifact(
+        original_url: &str,
+        final_url: Option<&str>,
+        headers: Option<&serde_json::Value>,
+    ) -> bool {
+        let content_type = solver::solution_header_string(headers, "content-type")
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        if content_type.contains("application/x-bittorrent")
+            || content_type.contains("application/octet-stream")
+        {
+            return true;
+        }
+        [Some(original_url), final_url]
+            .into_iter()
+            .flatten()
+            .any(|raw| {
+                url::Url::parse(raw)
+                    .ok()
+                    .is_some_and(|url| url.path().to_ascii_lowercase().ends_with(".torrent"))
+            })
+    }
+
+    async fn fetch_download_artifact_direct(
+        &self,
+        download_url: &str,
+        session_headers: &[(String, String)],
+        request_timeout_seconds: u32,
+    ) -> AppResult<FetchedDownloadArtifact> {
+        let target = prepare_plugin_http_target(download_url, "indexer download artifact")
+            .await
+            .map_err(|error| {
+                warn!(error = %error, "blocked unsafe indexer download artifact URL");
+                AppError::DownloadSubmitUnavailable(
+                    "Scryer refused an unsafe download artifact destination.".into(),
+                )
+            })?;
+        let mut builder = target
+            .client()
+            .get(target.url().clone())
+            .timeout(Duration::from_secs(u64::from(
+                request_timeout_seconds.saturating_add(5),
+            )));
+        for (name, value) in session_headers {
+            builder = builder.header(name, value);
+        }
+        let response = send_reqwest_request(builder).await.map_err(|error| {
+            if error.is_timeout() {
+                AppError::DownloadSubmitUnavailable(
+                    "Byparr resolved the challenge, but the artifact fetch timed out.".into(),
+                )
+            } else {
+                AppError::DownloadSubmitUnavailable(
+                    "Byparr resolved the challenge, but Scryer could not fetch the download artifact."
+                        .into(),
+                )
+            }
+        })?;
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| {
+                    scryer_outbound_http::parse_retry_after(value).map(|(delay, _)| delay)
+                });
+            return Err(AppError::TemporaryUnavailable {
+                message: solver::rate_limit_message_with_retry_after(retry_after),
+                retry_after,
+                rate_limit_cooldown: RateLimitCooldownAction::AlreadyRecorded,
+            });
+        }
+        if !response.status().is_success() {
+            return Err(AppError::DownloadSubmitUnavailable(format!(
+                "Byparr resolved the challenge, but the artifact fetch returned HTTP {}.",
+                response.status().as_u16()
+            )));
+        }
+        let final_url = Some(response.url().to_string());
+        let mut header_map = serde_json::Map::new();
+        for name in ["content-type", "content-disposition"] {
+            if let Some(value) = response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+            {
+                header_map.insert(name.to_string(), serde_json::Value::from(value));
+            }
+        }
+        let headers = (!header_map.is_empty()).then_some(serde_json::Value::Object(header_map));
+        let bytes = match read_response_body_bounded(response, PROXIED_TORRENT_FILE_MAX_BYTES).await
+        {
+            Ok(bytes) => bytes,
+            Err(BoundedResponseBodyError::Read(error)) => {
+                debug!(
+                    is_timeout = error.is_timeout(),
+                    is_body = error.is_body(),
+                    is_decode = error.is_decode(),
+                    "failed to read proxied download artifact body"
+                );
+                return Err(AppError::DownloadSubmitUnavailable(
+                    "Byparr resolved the challenge, but Scryer could not read the download artifact."
+                        .into(),
+                ));
+            }
+            Err(BoundedResponseBodyError::TooLarge) => {
+                return Err(AppError::DownloadSubmitUnavailable(format!(
+                    "The resolved download artifact exceeded Scryer's {} MiB limit.",
+                    PROXIED_TORRENT_FILE_MAX_BYTES / (1024 * 1024)
+                )));
+            }
+        };
+        Ok(FetchedDownloadArtifact {
+            bytes,
+            headers,
+            final_url,
+        })
+    }
+
+    fn classify_resolved_download_artifact(
+        final_url: Option<&str>,
+        headers: Option<&serde_json::Value>,
+        bytes: Vec<u8>,
+        info_hash_hint: Option<String>,
+    ) -> AppResult<ResolvedDownloadArtifact> {
+        if final_url.is_some_and(|url| url.starts_with("magnet:")) {
+            let uri = final_url.unwrap().trim().to_string();
+            return Ok(ResolvedDownloadArtifact::Magnet {
+                info_hash_hint: info_hash_hint.or_else(|| magnet_info_hash_hint(&uri)),
+                uri,
+            });
+        }
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            let trimmed = text.trim();
+            if trimmed.starts_with("magnet:?") {
+                let uri = trimmed.to_string();
+                return Ok(ResolvedDownloadArtifact::Magnet {
+                    info_hash_hint: info_hash_hint.or_else(|| magnet_info_hash_hint(&uri)),
+                    uri,
+                });
+            }
+        }
+
+        let content_type = solver::solution_header_string(headers, "content-type");
+        let file_name = content_disposition_filename(headers);
+        let final_path = final_url
+            .and_then(|value| url::Url::parse(value).ok())
+            .map(|url| url.path().to_ascii_lowercase());
+        let file_name_lower = file_name.as_ref().map(|value| value.to_ascii_lowercase());
+        if looks_like_rejected_download_document(&bytes) {
+            return Err(AppError::Validation(
+                "Indexer proxy did not resolve download artifact.".into(),
+            ));
+        }
+
+        if content_type.as_deref().is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("application/x-bittorrent")
+                || value.contains("application/octet-stream") && looks_like_torrent_metainfo(&bytes)
+        }) || final_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with(".torrent"))
+            || file_name_lower
+                .as_deref()
+                .is_some_and(|name| name.ends_with(".torrent"))
+        {
+            if !looks_like_torrent_metainfo(&bytes) {
+                return Err(AppError::Validation(
+                    "Byparr resolved invalid torrent file bytes.".into(),
+                ));
+            }
+            if bytes.len() > PROXIED_TORRENT_FILE_MAX_BYTES {
+                return Err(AppError::Validation(
+                    "Byparr resolved torrent file is too large.".into(),
+                ));
+            }
+            return Ok(ResolvedDownloadArtifact::TorrentFile {
+                bytes,
+                file_name,
+                content_type,
+                info_hash_hint,
+            });
+        }
+
+        if content_type.as_deref().is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().split(';').next().unwrap_or(""),
+                "application/x-nzb"
+            )
+        }) || looks_like_nzb(&bytes)
+        {
+            if !looks_like_nzb(&bytes) {
+                return Err(AppError::Validation(
+                    "Byparr resolved invalid NZB bytes.".into(),
+                ));
+            }
+            return Ok(ResolvedDownloadArtifact::Nzb {
+                bytes,
+                file_name,
+                content_type,
+            });
+        }
+
+        Err(AppError::Validation(
+            "Byparr resolved the download URL, but the result was not an NZB, magnet URI, or torrent file."
+                .into(),
+        ))
     }
 
     fn read_trimmed_string(raw_value: Option<&serde_json::Value>) -> Option<String> {
@@ -853,7 +1654,7 @@ impl PrioritizedDownloadClientRouter {
             return Ok(Self::wrap_feedback_client(client, feedback_read_timeout));
         }
 
-        match config.client_type.as_str() {
+        let client = match config.client_type.as_str() {
             "nzbget" => {
                 let parsed_config = parse_download_client_config_json(&config.config_json)?;
                 let base_url =
@@ -875,10 +1676,7 @@ impl PrioritizedDownloadClientRouter {
                     staged_nzb_store,
                     staged_nzb_pipeline_limit,
                 );
-                Ok(Self::wrap_feedback_client(
-                    Arc::new(client),
-                    feedback_read_timeout,
-                ))
+                Self::wrap_feedback_client(Arc::new(client), feedback_read_timeout)
             }
             "sabnzbd" => {
                 let parsed_config = parse_download_client_config_json(&config.config_json)?;
@@ -906,10 +1704,7 @@ impl PrioritizedDownloadClientRouter {
                     staged_nzb_store,
                     staged_nzb_pipeline_limit,
                 );
-                Ok(Self::wrap_feedback_client(
-                    Arc::new(client),
-                    feedback_read_timeout,
-                ))
+                Self::wrap_feedback_client(Arc::new(client), feedback_read_timeout)
             }
             "weaver" => {
                 let client = WeaverDownloadClient::from_config_with_staged_nzb_store(
@@ -917,16 +1712,17 @@ impl PrioritizedDownloadClientRouter {
                     staged_nzb_store,
                     staged_nzb_pipeline_limit,
                 )?;
-                Ok(Self::wrap_feedback_client(
-                    Arc::new(client),
-                    feedback_read_timeout,
-                ))
+                Self::wrap_feedback_client(Arc::new(client), feedback_read_timeout)
             }
-            _ => Err(AppError::Validation(format!(
-                "unsupported download client type '{}' for config {}",
-                config.client_type, config.id
-            ))),
-        }
+            _ => {
+                return Err(AppError::Validation(format!(
+                    "unsupported download client type '{}' for config {}",
+                    config.client_type, config.id
+                )));
+            }
+        };
+
+        Ok(client)
     }
 
     async fn resolve_client_for_queue_action(
@@ -1068,6 +1864,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         &self,
         request: &DownloadClientAddRequest,
     ) -> AppResult<DownloadGrabResult> {
+        let request = self.prepare_proxied_download_request(request).await?;
+        let request = &request;
+        let resolved_artifact_kind = Self::request_artifact_kind(request);
         let selection = match self.list_clients_for_title(&request.title).await {
             Ok(configs) => configs,
             Err(error) => {
@@ -1075,9 +1874,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     error = %error,
                     title = request.title.name.as_str(),
                     facet = ?request.title.facet,
-                    "failed to load prioritized download clients; falling back to default client"
+                    "failed to load prioritized download clients"
                 );
-                return self.fallback_client.submit_download(request).await;
+                return Err(error.into_download_submit_unavailable());
             }
         };
 
@@ -1097,10 +1896,37 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         let mut clients = selection.clients;
 
         if clients.is_empty() {
-            return self.fallback_client.submit_download(request).await;
+            return Err(AppError::download_submit_unavailable(
+                "no enabled download clients configured",
+            ));
         }
 
-        if let Some(source_kind) = Self::request_source_kind(request) {
+        if let Some(artifact_kind) = resolved_artifact_kind {
+            clients.retain(|config| {
+                let compatible = Self::config_accepts_artifact_kind(
+                    config,
+                    artifact_kind,
+                    self.plugin_provider.as_ref(),
+                );
+                if !compatible {
+                    warn!(
+                        client_id = config.id.as_str(),
+                        client_name = config.name.as_str(),
+                        client_type = config.client_type.as_str(),
+                        artifact_kind = Self::artifact_kind_label(artifact_kind),
+                        "download client skipped because it cannot accept the resolved artifact"
+                    );
+                }
+                compatible
+            });
+
+            if clients.is_empty() {
+                return Err(AppError::Validation(format!(
+                    "no enabled download client can accept the resolved {}",
+                    Self::artifact_kind_label(artifact_kind)
+                )));
+            }
+        } else if let Some(source_kind) = Self::request_source_kind(request) {
             clients.retain(|config| {
                 let compatible = Self::config_accepts_source_kind(
                     config,
@@ -1171,17 +1997,37 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         && Self::request_uses_nzb_payload(&effective_request)
                     {
                         if staged_nzb.is_none() {
-                            let source_hint = request_source_hint_for_nzb(&effective_request)?;
-                            staged_nzb = Some(
-                                stage_nzb_from_url(
-                                    &self.outbound_http,
-                                    &self.staged_nzb_store,
-                                    &self.staged_nzb_pipeline_limit,
-                                    &source_hint,
-                                    Some(&request.title.id),
-                                )
-                                .await?,
-                            );
+                            if let Some(ResolvedDownloadArtifact::Nzb { bytes, .. }) =
+                                effective_request.resolved_download_artifact.clone()
+                            {
+                                let source_label = effective_request
+                                    .download_id
+                                    .as_deref()
+                                    .or(effective_request.source_title.as_deref())
+                                    .unwrap_or("proxied-nzb");
+                                staged_nzb = Some(
+                                    stage_nzb_from_bytes(
+                                        &self.staged_nzb_store,
+                                        &self.staged_nzb_pipeline_limit,
+                                        source_label,
+                                        Some(&request.title.id),
+                                        bytes,
+                                    )
+                                    .await?,
+                                );
+                            } else {
+                                let source_hint = request_source_hint_for_nzb(&effective_request)?;
+                                staged_nzb = Some(
+                                    stage_nzb_from_url(
+                                        &self.outbound_http,
+                                        &self.staged_nzb_store,
+                                        &self.staged_nzb_pipeline_limit,
+                                        &source_hint,
+                                        Some(&request.title.id),
+                                    )
+                                    .await?,
+                                );
+                            }
                         }
                         effective_request.staged_nzb =
                             staged_nzb.as_ref().map(|lease| lease.staged_nzb.clone());
@@ -1269,11 +2115,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             .list_enabled_clients_by_priority_excluding(excluded_client_types)
             .await?;
         if clients.is_empty() {
-            return if excluded_client_types.is_empty() {
-                self.fallback_client.list_queue().await
-            } else {
-                Ok(Vec::new())
-            };
+            return Ok(Vec::new());
         }
         let mut all_items = Vec::new();
         let mut read_summary = FeedbackReadSummary::default();
@@ -1327,7 +2169,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     async fn list_queue_for_title(&self, title_id: &str) -> AppResult<Vec<DownloadQueueItem>> {
         let clients = self.list_enabled_clients_by_priority().await?;
         if clients.is_empty() {
-            return self.fallback_client.list_queue_for_title(title_id).await;
+            return Ok(Vec::new());
         }
         let mut all_items = Vec::new();
         let mut read_summary = FeedbackReadSummary::default();
@@ -1377,7 +2219,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
         let clients = self.list_enabled_clients_by_priority().await?;
         if clients.is_empty() {
-            return self.fallback_client.list_history().await;
+            return Ok(Vec::new());
         }
         let mut all_items = Vec::new();
         let mut read_summary = FeedbackReadSummary::default();
@@ -1452,11 +2294,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             .list_enabled_clients_by_priority_excluding(excluded_client_types)
             .await?;
         if clients.is_empty() {
-            return if excluded_client_types.is_empty() {
-                self.fallback_client.list_recent_activity(limit).await
-            } else {
-                Ok(Vec::new())
-            };
+            return Ok(Vec::new());
         }
 
         let mut all_items = Vec::new();
@@ -1533,10 +2371,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let clients = self.list_enabled_clients_by_priority().await?;
         if clients.is_empty() {
-            return self
-                .fallback_client
-                .list_recent_activity_for_title(title_id, limit)
-                .await;
+            return Ok(Vec::new());
         }
 
         let mut all_items = Vec::new();
@@ -1603,7 +2438,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let clients = self.list_enabled_clients_by_priority().await?;
         if clients.is_empty() {
-            return self.fallback_client.list_history_page(offset, limit).await;
+            return Ok(Vec::new());
         }
 
         let fetch_limit = offset.saturating_add(limit);
@@ -1671,7 +2506,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     async fn list_completed_downloads(&self) -> AppResult<Vec<scryer_domain::CompletedDownload>> {
         let clients = self.list_enabled_clients_by_priority().await?;
         if clients.is_empty() {
-            return self.fallback_client.list_completed_downloads().await;
+            return Ok(Vec::new());
         }
         let mut all_items = Vec::new();
         for config in clients {
@@ -1703,6 +2538,16 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     continue;
                 }
             };
+            let mappings = download_client_remote_path_mappings(&config);
+            let accepts_torrents = Self::config_accepts_source_kind(
+                &config,
+                DownloadSourceKind::TorrentFile,
+                self.plugin_provider.as_ref(),
+            ) || Self::config_accepts_source_kind(
+                &config,
+                DownloadSourceKind::MagnetUri,
+                self.plugin_provider.as_ref(),
+            );
             match client.list_completed_downloads().await {
                 Ok(mut items) => {
                     tracing::debug!(
@@ -1711,14 +2556,18 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         count = items.len(),
                         "completed downloads from client"
                     );
-                    let mappings = download_client_remote_path_mappings(&config);
+                    let mut accepted_items = Vec::with_capacity(items.len());
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         if let Some(mappings) = mappings.as_deref() {
                             apply_remote_path_mappings_to_completed_download(item, mappings);
                         }
+                        if accepts_torrents {
+                            normalize_completed_download_import_dir(item);
+                        }
+                        accepted_items.push(item.clone());
                     }
-                    all_items.extend(items);
+                    all_items.extend(accepted_items);
                 }
                 Err(error) => {
                     tracing::warn!(client_id = %config.id, client = %config.name, error = %error, "failed to list completed downloads");
@@ -1765,18 +2614,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             .list_enabled_clients_by_priority_excluding(excluded_client_types)
             .await?;
         if clients.is_empty() {
-            return if excluded_client_types.is_empty() {
-                self.fallback_client
-                    .list_recent_completed_downloads_for_client_scope(
-                        limit,
-                        client_ids,
-                        client_types,
-                        excluded_client_types,
-                    )
-                    .await
-            } else {
-                Ok(Vec::new())
-            };
+            return Ok(Vec::new());
         }
 
         let scoped_client_ids = client_ids
@@ -1831,6 +2669,16 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     continue;
                 }
             };
+            let mappings = download_client_remote_path_mappings(&config);
+            let accepts_torrents = Self::config_accepts_source_kind(
+                &config,
+                DownloadSourceKind::TorrentFile,
+                self.plugin_provider.as_ref(),
+            ) || Self::config_accepts_source_kind(
+                &config,
+                DownloadSourceKind::MagnetUri,
+                self.plugin_provider.as_ref(),
+            );
             match client.list_recent_completed_downloads(limit).await {
                 Ok(mut items) => {
                     self.record_feedback_read_success(
@@ -1844,14 +2692,18 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         count = items.len(),
                         "recent completed downloads from client"
                     );
-                    let mappings = download_client_remote_path_mappings(&config);
+                    let mut accepted_items = Vec::with_capacity(items.len());
                     for item in &mut items {
                         item.client_id = config.id.clone();
                         if let Some(mappings) = mappings.as_deref() {
                             apply_remote_path_mappings_to_completed_download(item, mappings);
                         }
+                        if accepts_torrents {
+                            normalize_completed_download_import_dir(item);
+                        }
+                        accepted_items.push(item.clone());
                     }
-                    all_items.extend(items);
+                    all_items.extend(accepted_items);
                 }
                 Err(error) => {
                     self.record_feedback_read_failure(
@@ -1872,7 +2724,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         if let Some(client) = self.resolve_client_for_queue_action(id, false).await? {
             return client.pause_queue_item(id).await;
         }
-        self.fallback_client.pause_queue_item(id).await
+        Err(AppError::Validation(format!(
+            "download client item not found: {id}"
+        )))
     }
 
     async fn pause_queue_item_for_client(&self, client_id: &str, id: &str) -> AppResult<()> {
@@ -1888,7 +2742,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         if let Some(client) = self.resolve_client_for_queue_action(id, false).await? {
             return client.resume_queue_item(id).await;
         }
-        self.fallback_client.resume_queue_item(id).await
+        Err(AppError::Validation(format!(
+            "download client item not found: {id}"
+        )))
     }
 
     async fn resume_queue_item_for_client(&self, client_id: &str, id: &str) -> AppResult<()> {
@@ -1904,7 +2760,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         if let Some(client) = self.resolve_client_for_queue_action(id, is_history).await? {
             return client.delete_queue_item(id, is_history).await;
         }
-        self.fallback_client.delete_queue_item(id, is_history).await
+        Err(AppError::Validation(format!(
+            "download client item not found: {id}"
+        )))
     }
 
     async fn delete_queue_item_for_client_id(
@@ -1930,9 +2788,9 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         if let Some(client) = self.resolve_client_for_type(client_type).await? {
             return client.delete_queue_item(id, is_history).await;
         }
-        self.fallback_client
-            .delete_queue_item_for_client(client_type, id, is_history)
-            .await
+        Err(AppError::Validation(format!(
+            "download client not found for type: {client_type}"
+        )))
     }
 
     async fn get_client_status_for_client_id(
@@ -2019,6 +2877,170 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use tokio::io::AsyncWriteExt;
+
+    fn test_indexer_config(base_url: &str) -> scryer_domain::IndexerConfig {
+        let now = Utc::now();
+        scryer_domain::IndexerConfig {
+            id: "indexer-1".to_string(),
+            name: "Indexer".to_string(),
+            provider_type: "torznab".to_string(),
+            base_url: base_url.to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            indexer_proxy_config_id: None,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_at: None,
+            config_json: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn torrent_metainfo_detection_requires_valid_bencoded_info_dict() {
+        assert!(looks_like_torrent_metainfo(b"d4:infod4:name4:testee"));
+        assert!(!looks_like_torrent_metainfo(b"not a torrent"));
+        assert!(!looks_like_torrent_metainfo(b"d4:name4:testee"));
+    }
+
+    #[test]
+    fn classifier_rejects_invalid_torrent_bytes_before_submission() {
+        let headers = serde_json::json!({
+            "content-type": "application/x-bittorrent",
+        });
+
+        let error = PrioritizedDownloadClientRouter::classify_resolved_download_artifact(
+            Some("https://indexer.example/download/thing.torrent"),
+            Some(&headers),
+            b"not a torrent".to_vec(),
+            None,
+        )
+        .expect_err("invalid torrent bytes must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "validation: Byparr resolved invalid torrent file bytes.",
+        );
+    }
+
+    #[test]
+    fn proxied_download_url_requires_the_full_indexer_origin() {
+        let indexer = test_indexer_config("https://indexer.example/api");
+
+        assert!(
+            PrioritizedDownloadClientRouter::download_url_matches_indexer_origin(
+                &indexer,
+                "https://INDEXER.example/download/release.torrent",
+            )
+        );
+        assert!(
+            !PrioritizedDownloadClientRouter::download_url_matches_indexer_origin(
+                &indexer,
+                "http://indexer.example/download/release.torrent",
+            )
+        );
+        assert!(
+            !PrioritizedDownloadClientRouter::download_url_matches_indexer_origin(
+                &indexer,
+                "https://indexer.example:8443/download/release.torrent",
+            )
+        );
+
+        let default_port_indexer = test_indexer_config("http://indexer.example:80/api");
+        assert!(
+            PrioritizedDownloadClientRouter::download_url_matches_indexer_origin(
+                &default_port_indexer,
+                "http://indexer.example/download/release.torrent",
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_resolution_blocks_metadata_destinations_before_network_or_solver() {
+        let router = no_client_router();
+        let now = Utc::now();
+        let proxy = IndexerProxyConfig {
+            id: "byparr-1".to_string(),
+            name: "Byparr".to_string(),
+            provider_type: scryer_domain::IndexerProxyProviderType::Byparr,
+            protocol: scryer_domain::ChallengeSolverProtocol::RequestSolutionV1,
+            base_url: "http://127.0.0.1:1".to_string(),
+            request_timeout_seconds: 1,
+            is_enabled: true,
+            last_health_status: None,
+            last_error_message: None,
+            last_error_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        for target in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::ffff:169.254.169.254]/latest/meta-data/",
+            "http://100.100.100.200/latest/meta-data/",
+        ] {
+            let error = match router.fetch_download_artifact_direct(target, &[], 1).await {
+                Ok(_) => panic!("metadata destination must be rejected before fetch"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(&error, AppError::DownloadSubmitUnavailable(message)
+                    if message.contains("unsafe download artifact destination")),
+                "unexpected error for {target}: {error}"
+            );
+
+            let error = match router
+                .resolve_download_artifact_via_byparr(&proxy, target, None)
+                .await
+            {
+                Ok(_) => panic!("metadata destination must not be delegated to Byparr"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(&error, AppError::DownloadSubmitUnavailable(message)
+                    if message.contains("unsafe download artifact destination")),
+                "unexpected solver error for {target}: {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_response_reader_rejects_chunked_body_over_limit() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n",
+                )
+                .await
+                .expect("write response");
+        });
+
+        let response = generic_reqwest_client()
+            .get(format!("http://{address}/artifact"))
+            .send()
+            .await
+            .expect("fetch test response");
+        let error = read_response_body_bounded(response, 4)
+            .await
+            .expect_err("five-byte chunked response must exceed four-byte limit");
+
+        assert!(matches!(error, BoundedResponseBodyError::TooLarge));
+        server.await.expect("test server task");
+    }
 
     struct MockDownloadClientConfigRepository {
         configs: Vec<DownloadClientConfig>,
@@ -2124,6 +3146,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum MockSubmitError {
         Ambiguous,
+        Rejected,
         Repository,
         SubmitUnavailable,
     }
@@ -2139,6 +3162,11 @@ mod tests {
                 Some(MockSubmitError::Ambiguous) => {
                     return Err(AppError::DownloadSubmitAmbiguous(
                         "submit result is ambiguous".to_string(),
+                    ));
+                }
+                Some(MockSubmitError::Rejected) => {
+                    return Err(AppError::DownloadSubmitRejected(
+                        "submit was rejected".to_string(),
                     ));
                 }
                 Some(MockSubmitError::Repository) => {
@@ -2381,6 +3409,7 @@ mod tests {
             facet,
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![],
             root_folder_id,
             created_by: None,
@@ -2392,10 +3421,11 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
-            genres: vec![],
+            popularity: None,
             content_status: None,
             language: None,
             first_aired: None,
@@ -2492,6 +3522,104 @@ mod tests {
         }
     }
 
+    fn no_client_router() -> PrioritizedDownloadClientRouter {
+        PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository { configs: vec![] }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn no_configured_clients_return_empty_feedback_reads() {
+        let router = no_client_router();
+
+        assert!(router.list_queue().await.unwrap().is_empty());
+        assert!(
+            router
+                .list_queue_excluding_client_types(&["weaver"])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            router
+                .list_queue_for_title("title-1")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(router.list_history().await.unwrap().is_empty());
+        assert!(router.list_history_page(0, 10).await.unwrap().is_empty());
+        assert!(router.list_recent_activity(10).await.unwrap().is_empty());
+        assert!(
+            router
+                .list_recent_activity_for_title("title-1", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(router.list_completed_downloads().await.unwrap().is_empty());
+        assert!(
+            router
+                .list_recent_completed_downloads_for_client_scope(10, &[], &[], &[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn no_configured_clients_do_not_submit_or_route_queue_actions() {
+        let router = no_client_router();
+
+        let submit_error = router
+            .submit_download(&DownloadClientAddRequest {
+                title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
+                download_id: None,
+                source_hint: Some("https://example.invalid/release.nzb".to_string()),
+                staged_nzb: None,
+                resolved_download_artifact: None,
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Test Release".to_string()),
+                source_password: None,
+                category: None,
+                queue_priority: None,
+                download_directory: None,
+                release_title: None,
+                indexer_name: None,
+                indexer_id: None,
+                info_hash_hint: None,
+                seed_goal_ratio: None,
+                seed_goal_seconds: None,
+                is_recent: None,
+                season_pack: None,
+            })
+            .await
+            .expect_err("no configured clients should make submit unavailable");
+
+        assert!(matches!(
+            submit_error,
+            AppError::DownloadSubmitUnavailable(message)
+                if message.contains("no enabled download clients configured")
+        ));
+        assert!(matches!(
+            router.pause_queue_item("job-1").await,
+            Err(AppError::Validation(message)) if message.contains("download client item not found")
+        ));
+        assert!(matches!(
+            router.resume_queue_item("job-1").await,
+            Err(AppError::Validation(message)) if message.contains("download client item not found")
+        ));
+        assert!(matches!(
+            router.delete_queue_item("job-1", false).await,
+            Err(AppError::Validation(message)) if message.contains("download client item not found")
+        ));
+    }
+
     #[tokio::test]
     async fn submit_download_skips_incompatible_clients_by_source_kind() {
         let torrent_client = Arc::new(MockDownloadClient::default());
@@ -2508,7 +3636,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -2521,6 +3648,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::TorrentFile),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -2529,6 +3657,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2563,7 +3692,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -2576,6 +3704,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::TorrentFile),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -2584,6 +3713,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2594,6 +3724,63 @@ mod tests {
             .expect_err("ambiguous submit errors should stop router failover");
 
         assert!(matches!(error, AppError::DownloadSubmitAmbiguous(_)));
+        assert_eq!(primary.submissions.lock().unwrap().len(), 1);
+        assert_eq!(secondary.submissions.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn submit_download_does_not_failover_rejected_submit_errors() {
+        let primary = Arc::new(MockDownloadClient::default());
+        *primary.submit_error.lock().unwrap() = Some(MockSubmitError::Rejected);
+        let secondary = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string()],
+                clients: vec![
+                    ("primary".to_string(), primary.clone()),
+                    ("secondary".to_string(), secondary.clone()),
+                ],
+            });
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("primary", "Primary", "qbittorrent", 0),
+                    test_config("secondary", "Secondary", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let error = router
+            .submit_download(&DownloadClientAddRequest {
+                title: test_title(),
+                purpose: scryer_application::DownloadSubmissionPurpose::Standard,
+                download_id: None,
+                source_hint: Some("https://tracker.example/file.torrent".to_string()),
+                staged_nzb: None,
+                resolved_download_artifact: None,
+                source_kind: Some(DownloadSourceKind::TorrentFile),
+                source_title: Some("Test Release".to_string()),
+                source_password: None,
+                category: None,
+                queue_priority: None,
+                download_directory: None,
+                release_title: None,
+                indexer_name: None,
+                indexer_id: None,
+                info_hash_hint: None,
+                seed_goal_ratio: None,
+                seed_goal_seconds: None,
+                is_recent: None,
+                season_pack: None,
+            })
+            .await
+            .expect_err("rejected submit errors should stop router failover");
+
+        assert!(matches!(error, AppError::DownloadSubmitRejected(_)));
         assert_eq!(primary.submissions.lock().unwrap().len(), 1);
         assert_eq!(secondary.submissions.lock().unwrap().len(), 0);
     }
@@ -2620,7 +3807,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -2633,6 +3819,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::TorrentFile),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -2641,6 +3828,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2662,7 +3850,6 @@ mod tests {
                 configs: vec![test_config("nzb", "NZBGet", "nzbget", 0)],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             None,
@@ -2675,6 +3862,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("magnet:?xt=urn:btih:abcdef".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::MagnetUri),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -2683,6 +3871,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2729,7 +3918,6 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -2742,6 +3930,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -2750,6 +3939,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2803,7 +3993,6 @@ mod tests {
                     ),
                 ]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -2816,6 +4005,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://example.invalid/movie.nzb".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Movie Release".to_string()),
                 source_password: None,
@@ -2824,6 +4014,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2840,6 +4031,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://example.invalid/anime.nzb".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Anime Release".to_string()),
                 source_password: None,
@@ -2848,6 +4040,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2886,7 +4079,6 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -2899,6 +4091,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -2907,6 +4100,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -2945,7 +4139,6 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -2958,6 +4151,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -2966,6 +4160,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3005,7 +4200,6 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3018,6 +4212,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -3026,6 +4221,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3042,7 +4238,7 @@ mod tests {
 
     #[tokio::test]
     async fn submit_download_fails_when_all_clients_disabled_for_facet() {
-        let fallback = Arc::new(MockDownloadClient::default());
+        let primary = Arc::new(MockDownloadClient::default());
         let router = PrioritizedDownloadClientRouter::new(
             Arc::new(MockDownloadClientConfigRepository {
                 configs: vec![test_config("primary", "Primary", "qbittorrent", 0)],
@@ -3056,15 +4252,11 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            fallback.clone(),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(Arc::new(MockDownloadClientPluginProvider {
                 accepted_inputs: vec!["nzb_url".to_string()],
-                clients: vec![(
-                    "primary".to_string(),
-                    Arc::new(MockDownloadClient::default()),
-                )],
+                clients: vec![("primary".to_string(), primary.clone())],
             })),
         );
 
@@ -3075,6 +4267,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -3083,6 +4276,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3099,7 +4293,7 @@ mod tests {
             other => panic!("expected validation error, got {other:?}"),
         }
 
-        assert!(fallback.submissions.lock().unwrap().is_empty());
+        assert!(primary.submissions.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -3141,7 +4335,6 @@ mod tests {
                     ),
                 ]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3154,6 +4347,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -3162,6 +4356,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3214,7 +4409,6 @@ mod tests {
                     ),
                 ]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3227,6 +4421,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -3235,6 +4430,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3275,7 +4471,6 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3288,6 +4483,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -3296,6 +4492,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3314,6 +4511,7 @@ mod tests {
     #[tokio::test]
     async fn submit_download_fails_when_all_clients_disabled_for_library_override() {
         let title = test_title();
+        let primary = Arc::new(MockDownloadClient::default());
         let router = PrioritizedDownloadClientRouter::new(
             Arc::new(MockDownloadClientConfigRepository {
                 configs: vec![test_config("primary", "Primary", "qbittorrent", 0)],
@@ -3327,15 +4525,11 @@ mod tests {
                     .to_string(),
                 )]),
             }),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(Arc::new(MockDownloadClientPluginProvider {
                 accepted_inputs: vec!["nzb_url".to_string()],
-                clients: vec![(
-                    "primary".to_string(),
-                    Arc::new(MockDownloadClient::default()),
-                )],
+                clients: vec![("primary".to_string(), primary.clone())],
             })),
         );
 
@@ -3346,6 +4540,7 @@ mod tests {
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
                 staged_nzb: None,
+                resolved_download_artifact: None,
                 source_kind: Some(DownloadSourceKind::NzbUrl),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -3354,6 +4549,7 @@ mod tests {
                 download_directory: None,
                 release_title: None,
                 indexer_name: None,
+                indexer_id: None,
                 info_hash_hint: None,
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -3369,6 +4565,7 @@ mod tests {
             }
             other => panic!("expected validation error, got {other:?}"),
         }
+        assert!(primary.submissions.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -3404,7 +4601,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3455,7 +4651,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3507,7 +4702,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3559,7 +4753,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3600,7 +4793,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3620,30 +4812,11 @@ mod tests {
 
     #[tokio::test]
     async fn list_recent_completed_excluding_only_weaver_does_not_use_fallback_client() {
-        let fallback = Arc::new(MockDownloadClient::default());
-        fallback
-            .completed_downloads
-            .lock()
-            .unwrap()
-            .push(scryer_domain::CompletedDownload {
-                client_type: "fallback".to_string(),
-                client_id: String::new(),
-                download_client_item_id: "fallback-1".to_string(),
-                download_id: None,
-                name: "Fallback".to_string(),
-                dest_dir: "/downloads/fallback".to_string(),
-                category: None,
-                size_bytes: None,
-                completed_at: Some(Utc::now()),
-                parameters: Vec::new(),
-            });
-
         let router = PrioritizedDownloadClientRouter::new(
             Arc::new(MockDownloadClientConfigRepository {
                 configs: vec![test_config("weaver-client", "Weaver", "weaver", 0)],
             }),
             Arc::new(MockSettingsRepository::default()),
-            fallback,
             null_staged_nzb_store(),
             test_pipeline_limit(),
             None,
@@ -3732,7 +4905,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3788,7 +4960,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3848,7 +5019,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3884,7 +5054,6 @@ mod tests {
                 configs: vec![test_config("nzbget-client", "NZBGet", "nzbget", 0)],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3902,6 +5071,103 @@ mod tests {
         assert!(first.is_empty());
         assert!(second.is_empty());
         assert_eq!(failing_client.recent_completed_call_count(), 1);
+    }
+
+    #[test]
+    fn completed_download_parent_resolves_archive_suffixed_release_directory() {
+        for release_name in ["Paperman.2012.7z", "Paperman.2012.zip", "Paperman.2012.rar"] {
+            let root = tempfile::tempdir().unwrap();
+            let release_dir = root.path().join(release_name);
+            std::fs::create_dir(&release_dir).unwrap();
+            let mut item = scryer_domain::CompletedDownload {
+                client_type: "any-torrent-client".to_string(),
+                client_id: "client-a".to_string(),
+                download_client_item_id: "archive-1".to_string(),
+                download_id: None,
+                name: release_name.to_string(),
+                dest_dir: root.path().to_string_lossy().into_owned(),
+                category: None,
+                size_bytes: None,
+                completed_at: None,
+                parameters: Vec::new(),
+            };
+
+            normalize_completed_download_import_dir(&mut item);
+
+            assert_eq!(item.dest_dir, release_dir.to_string_lossy());
+        }
+    }
+
+    #[test]
+    fn completed_download_parent_does_not_follow_unsafe_or_missing_child_names() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [
+            "../escape",
+            "nested/release",
+            "nested\\release",
+            "missing.7z",
+        ] {
+            let mut item = scryer_domain::CompletedDownload {
+                client_type: "any-torrent-client".to_string(),
+                client_id: "client-a".to_string(),
+                download_client_item_id: "archive-1".to_string(),
+                download_id: None,
+                name: name.to_string(),
+                dest_dir: root.path().to_string_lossy().into_owned(),
+                category: None,
+                size_bytes: None,
+                completed_at: None,
+                parameters: Vec::new(),
+            };
+
+            normalize_completed_download_import_dir(&mut item);
+
+            assert_eq!(item.dest_dir, root.path().to_string_lossy());
+        }
+    }
+
+    #[tokio::test]
+    async fn torrent_client_completed_parent_is_resolved_before_import() {
+        let root = tempfile::tempdir().unwrap();
+        let release_name = "Paperman.2012.7z";
+        let release_dir = root.path().join(release_name);
+        std::fs::create_dir(&release_dir).unwrap();
+
+        let client = Arc::new(MockDownloadClient::default());
+        client
+            .completed_downloads
+            .lock()
+            .unwrap()
+            .push(scryer_domain::CompletedDownload {
+                client_type: "torrent-client".to_string(),
+                client_id: String::new(),
+                download_client_item_id: "archive-1".to_string(),
+                download_id: None,
+                name: release_name.to_string(),
+                dest_dir: root.path().to_string_lossy().into_owned(),
+                category: None,
+                size_bytes: None,
+                completed_at: None,
+                parameters: Vec::new(),
+            });
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_file".to_string()],
+                clients: vec![("client-a".to_string(), client)],
+            });
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("client-a", "Client A", "torrent-client", 0)],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let items = router.list_completed_downloads().await.unwrap();
+
+        assert_eq!(items[0].dest_dir, release_dir.to_string_lossy());
     }
 
     #[tokio::test]
@@ -3940,7 +5206,6 @@ mod tests {
                 }],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -3979,7 +5244,6 @@ mod tests {
                 }],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4069,7 +5333,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4116,7 +5379,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4162,7 +5424,6 @@ mod tests {
                 ],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),
@@ -4199,7 +5460,6 @@ mod tests {
                 configs: vec![test_config("failing", "Failing", "qbittorrent", 0)],
             }),
             Arc::new(MockSettingsRepository::default()),
-            Arc::new(MockDownloadClient::default()),
             null_staged_nzb_store(),
             test_pipeline_limit(),
             Some(plugin_provider),

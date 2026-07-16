@@ -23,7 +23,11 @@ const WANTED_HISTORY_ACTIVITY_KINDS = new Set([
   "import_rejected",
 ]);
 
-export function TitleHistoryContainer() {
+export function TitleHistoryContainer({
+  showRetryActions = true,
+}: {
+  showRetryActions?: boolean;
+}) {
   const client = useClient();
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -51,7 +55,9 @@ export function TitleHistoryContainer() {
       const result = await client
         .query<{ titleHistory: TitleHistoryPage }>(titleHistoryQuery, {
           filter: {
-            eventTypes: selectedEventTypes,
+            // Chips use the lowercase display keys; TitleHistoryEventTypeValue
+            // members are their exact uppercase.
+            eventTypes: selectedEventTypes.map((value) => value.toUpperCase()),
             titleIds: selectedTitle ? [selectedTitle.id] : null,
             libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
             groupByEvent: true,
@@ -65,7 +71,7 @@ export function TitleHistoryContainer() {
         throw result.error;
       }
 
-      setEvents(result.data?.titleHistory.records ?? []);
+      setEvents(result.data?.titleHistory.items ?? []);
       setTotalCount(result.data?.titleHistory.totalCount ?? 0);
     } catch (fetchError) {
       setError(
@@ -84,7 +90,7 @@ export function TitleHistoryContainer() {
     void client
       .query(
         librariesQuery,
-        { facet: null, permission: "view" },
+        { facet: null, permission: "VIEW" },
         { requestPolicy: "network-only" },
       )
       .toPromise()
@@ -205,7 +211,7 @@ export function TitleHistoryContainer() {
       onClearFilters={clearFilters}
       onPreviousPage={handlePreviousPage}
       onNextPage={handleNextPage}
-      onRetry={handleRetry}
+      onRetry={showRetryActions ? handleRetry : undefined}
       hasPreviousPage={page > 0}
       hasNextPage={offset + events.length < totalCount}
     />

@@ -1,12 +1,14 @@
-use scryer_application::{AppError, AppResult, ReleaseDecision, WantedItem, WantedItemsQuery};
+use scryer_application::{
+    AcquisitionScopeState, AcquisitionScopeStatesQuery, AppError, AppResult, ReleaseDecision,
+};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
 pub(crate) async fn list_wanted_items_query(
     pool: &SqlitePool,
-    query: &WantedItemsQuery,
-) -> AppResult<Vec<WantedItem>> {
-    let WantedItemsQuery {
+    query: &AcquisitionScopeStatesQuery,
+) -> AppResult<Vec<AcquisitionScopeState>> {
+    let AcquisitionScopeStatesQuery {
         statuses,
         media_types,
         title_id,
@@ -29,8 +31,8 @@ pub(crate) async fn list_wanted_items_query(
                 t.facet AS title_facet, t.library_id AS library_id,
                 libraries.name AS library_name, libraries.slug AS library_slug,
                 w.episode_id, w.collection_id, w.series_movie_link_id,
-                e.season_number, e.episode_number, w.media_type, w.search_phase, w.next_search_at,
-                w.last_search_at, w.search_count, w.baseline_date, w.status,
+                e.season_number, e.episode_number, w.media_type,
+                w.last_search_at, w.status,
                 w.grabbed_release, w.current_score,
                 latest_decision.id AS latest_decision_id,
                 latest_decision.wanted_item_id AS latest_decision_wanted_item_id,
@@ -146,9 +148,9 @@ pub(crate) async fn list_wanted_items_query(
 
 pub(crate) async fn count_wanted_items_query(
     pool: &SqlitePool,
-    query: &WantedItemsQuery,
+    query: &AcquisitionScopeStatesQuery,
 ) -> AppResult<i64> {
-    let WantedItemsQuery {
+    let AcquisitionScopeStatesQuery {
         statuses,
         media_types,
         title_id,
@@ -242,7 +244,7 @@ pub(crate) async fn count_wanted_items_query(
     Ok(count)
 }
 
-fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
+fn row_to_wanted_item(row: &SqliteRow) -> AppResult<AcquisitionScopeState> {
     let latest_release_decision = match row.try_get::<Option<String>, _>("latest_decision_id") {
         Ok(Some(id)) => Some(ReleaseDecision {
             id,
@@ -277,7 +279,7 @@ fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
         _ => None,
     };
 
-    Ok(WantedItem {
+    Ok(AcquisitionScopeState {
         id: row
             .try_get("id")
             .map_err(|e| AppError::Repository(e.to_string()))?,
@@ -298,20 +300,12 @@ fn row_to_wanted_item(row: &SqliteRow) -> AppResult<WantedItem> {
         media_type: row
             .try_get("media_type")
             .map_err(|e| AppError::Repository(e.to_string()))?,
-        search_phase: row
-            .try_get("search_phase")
-            .map_err(|e| AppError::Repository(e.to_string()))?,
-        next_search_at: row.try_get("next_search_at").unwrap_or(None),
         last_search_at: row.try_get("last_search_at").unwrap_or(None),
-        search_count: row
-            .try_get("search_count")
-            .map_err(|e| AppError::Repository(e.to_string()))?,
-        baseline_date: row.try_get("baseline_date").unwrap_or(None),
         status: {
             let s: String = row
                 .try_get("status")
                 .map_err(|e| AppError::Repository(e.to_string()))?;
-            scryer_application::WantedStatus::parse(&s).unwrap_or_default()
+            scryer_application::AcquisitionScopeStatus::parse(&s).unwrap_or_default()
         },
         grabbed_release: row.try_get("grabbed_release").unwrap_or(None),
         current_score: row.try_get("current_score").unwrap_or(None),

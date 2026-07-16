@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-use extism::{Function, Manifest, PluginBuilder, UserData, ValType, Wasm, host_fn};
 use schemars::{JsonSchema, schema_for};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize, Serializer};
@@ -33,8 +31,7 @@ pub use notification::{
     PluginNotificationTargetResult, coalesce_media_updates, rich_embed_from_request,
     to_script_environment, to_webhook_json,
 };
-
-pub const SDK_VERSION: &str = "3.0.0";
+pub const SDK_VERSION: &str = "3.6.0";
 
 pub fn current_sdk_constraint() -> String {
     legacy_sdk_constraint(SDK_VERSION)
@@ -220,6 +217,21 @@ pub fn validate_plugin_descriptor_host_permissions(
     Ok(())
 }
 
+/// Returns true when the descriptor self-declares the notification host-process
+/// capability (`capabilities.requires_host_process`).
+///
+/// This capability lets a plugin spawn real host processes, so it is reserved for
+/// first-party / verified plugins. Callers must gate installation and runtime
+/// wiring on the plugin's resolved support tier — never on this self-declared
+/// flag alone.
+pub fn plugin_descriptor_requires_host_process(descriptor: &PluginDescriptor) -> bool {
+    matches!(
+        &descriptor.provider,
+        ProviderDescriptor::Notification(notification)
+            if notification.capabilities.requires_host_process
+    )
+}
+
 fn legacy_sdk_constraint(version: &str) -> String {
     let parsed = Version::parse(version.trim()).ok();
     let Some(version) = parsed else {
@@ -303,6 +315,7 @@ pub const EXPORT_SUBTITLE_SEARCH: &str = "scryer_subtitle_search";
 pub const EXPORT_SUBTITLE_DOWNLOAD: &str = "scryer_subtitle_download";
 pub const EXPORT_SUBTITLE_GENERATE: &str = "scryer_subtitle_generate";
 pub const EXPORT_SUBSYNC_ALIGN: &str = "scryer_subsync_align";
+pub const EXPORT_ARCHIVE_PROCESS: &str = "scryer_archive_process";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -311,6 +324,7 @@ pub enum PluginKind {
     DownloadClient,
     Notification,
     SubtitleProvider,
+    ArchiveExtractor,
 }
 
 impl PluginKind {
@@ -320,6 +334,7 @@ impl PluginKind {
             Self::DownloadClient => "download_client",
             Self::Notification => "notification",
             Self::SubtitleProvider => "subtitle_provider",
+            Self::ArchiveExtractor => "archive_extractor",
         }
     }
 }
@@ -363,6 +378,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(_) => PluginKind::DownloadClient,
             ProviderDescriptor::Notification(_) => PluginKind::Notification,
             ProviderDescriptor::Subtitle(_) => PluginKind::SubtitleProvider,
+            ProviderDescriptor::ArchiveExtractor(_) => PluginKind::ArchiveExtractor,
         }
     }
 
@@ -372,6 +388,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(_) => PluginKind::DownloadClient.as_str(),
             ProviderDescriptor::Notification(_) => PluginKind::Notification.as_str(),
             ProviderDescriptor::Subtitle(_) => PluginKind::SubtitleProvider.as_str(),
+            ProviderDescriptor::ArchiveExtractor(_) => PluginKind::ArchiveExtractor.as_str(),
         }
     }
 
@@ -381,6 +398,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.provider_type.as_str(),
             ProviderDescriptor::Notification(provider) => provider.provider_type.as_str(),
             ProviderDescriptor::Subtitle(provider) => provider.provider_type.as_str(),
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.provider_type.as_str(),
         }
     }
 
@@ -390,6 +408,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.provider_aliases.as_slice(),
             ProviderDescriptor::Notification(provider) => provider.provider_aliases.as_slice(),
             ProviderDescriptor::Subtitle(provider) => provider.provider_aliases.as_slice(),
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.provider_aliases.as_slice(),
         }
     }
 
@@ -399,6 +418,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.config_fields.as_slice(),
             ProviderDescriptor::Notification(provider) => provider.config_fields.as_slice(),
             ProviderDescriptor::Subtitle(provider) => provider.config_fields.as_slice(),
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.config_fields.as_slice(),
         }
     }
 
@@ -408,6 +428,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => &mut provider.config_fields,
             ProviderDescriptor::Notification(provider) => &mut provider.config_fields,
             ProviderDescriptor::Subtitle(provider) => &mut provider.config_fields,
+            ProviderDescriptor::ArchiveExtractor(provider) => &mut provider.config_fields,
         }
     }
 
@@ -417,6 +438,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.allowed_hosts.as_slice(),
             ProviderDescriptor::Notification(provider) => provider.allowed_hosts.as_slice(),
             ProviderDescriptor::Subtitle(provider) => provider.allowed_hosts.as_slice(),
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.allowed_hosts.as_slice(),
         }
     }
 
@@ -430,6 +452,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.default_base_url.as_deref(),
             ProviderDescriptor::Notification(provider) => provider.default_base_url.as_deref(),
             ProviderDescriptor::Subtitle(provider) => provider.default_base_url.as_deref(),
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.default_base_url.as_deref(),
         }
     }
 
@@ -447,6 +470,7 @@ impl PluginDescriptor {
             ProviderDescriptor::DownloadClient(provider) => provider.default_base_url = value,
             ProviderDescriptor::Notification(provider) => provider.default_base_url = value,
             ProviderDescriptor::Subtitle(provider) => provider.default_base_url = value,
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.default_base_url = value,
         }
     }
 
@@ -477,184 +501,13 @@ impl PluginDescriptor {
             _ => None,
         }
     }
-}
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'static str> {
-    let mut exports = vec![EXPORT_DESCRIBE];
-    match &descriptor.provider {
-        ProviderDescriptor::Indexer(_) => {
-            exports.push(EXPORT_INDEXER_SEARCH);
-        }
-        ProviderDescriptor::DownloadClient(_) => exports.extend([
-            EXPORT_DOWNLOAD_ADD,
-            EXPORT_DOWNLOAD_LIST_QUEUE,
-            EXPORT_DOWNLOAD_LIST_HISTORY,
-            EXPORT_DOWNLOAD_LIST_COMPLETED,
-            EXPORT_DOWNLOAD_CONTROL,
-            EXPORT_DOWNLOAD_MARK_IMPORTED,
-            EXPORT_DOWNLOAD_STATUS,
-            EXPORT_DOWNLOAD_TEST_CONNECTION,
-        ]),
-        ProviderDescriptor::Notification(_) => exports.push(EXPORT_NOTIFICATION_SEND),
-        ProviderDescriptor::Subtitle(subtitle) => {
-            exports.push(EXPORT_VALIDATE_CONFIG);
-            match subtitle.capabilities.mode {
-                SubtitleProviderMode::Catalog => {
-                    exports.extend([EXPORT_SUBTITLE_SEARCH, EXPORT_SUBTITLE_DOWNLOAD]);
-                }
-                SubtitleProviderMode::Generator => exports.push(EXPORT_SUBTITLE_GENERATE),
-            }
+    pub fn archive_extractor(&self) -> Option<&ArchiveExtractorDescriptor> {
+        match &self.provider {
+            ProviderDescriptor::ArchiveExtractor(provider) => Some(provider),
+            _ => None,
         }
     }
-    exports
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-const SOCKET_HOST_NAMESPACE: &str = "extism:host/user";
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-#[derive(Clone)]
-struct DisabledDescriptorSocketHost {
-    state: UserData<()>,
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-impl DisabledDescriptorSocketHost {
-    fn new() -> Self {
-        Self {
-            state: UserData::new(()),
-        }
-    }
-
-    fn functions(&self) -> Vec<Function> {
-        let params = || [ValType::I64];
-        let results = || [ValType::I64];
-
-        vec![
-            Function::new(
-                "scryer_socket_open",
-                params(),
-                results(),
-                self.state.clone(),
-                descriptor_socket_open,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_read",
-                params(),
-                results(),
-                self.state.clone(),
-                descriptor_socket_read,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_write",
-                params(),
-                results(),
-                self.state.clone(),
-                descriptor_socket_write,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_starttls",
-                params(),
-                results(),
-                self.state.clone(),
-                descriptor_socket_starttls,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-            Function::new(
-                "scryer_socket_close",
-                params(),
-                results(),
-                self.state.clone(),
-                descriptor_socket_close,
-            )
-            .with_namespace(SOCKET_HOST_NAMESPACE),
-        ]
-    }
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-fn disabled_descriptor_socket_response() -> String {
-    serde_json::to_string(&SocketResponse::<()>::error(
-        SocketErrorCode::Unsupported,
-        "socket host functions are unavailable while loading plugin descriptors",
-    ))
-    .unwrap_or_else(|_| "{\"ok\":false}".to_string())
-}
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-host_fn!(descriptor_socket_open(state: (); _input: String) -> String {
-    let _ = state.get()?;
-    Ok(disabled_descriptor_socket_response())
-});
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-host_fn!(descriptor_socket_read(state: (); _input: String) -> String {
-    let _ = state.get()?;
-    Ok(disabled_descriptor_socket_response())
-});
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-host_fn!(descriptor_socket_write(state: (); _input: String) -> String {
-    let _ = state.get()?;
-    Ok(disabled_descriptor_socket_response())
-});
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-host_fn!(descriptor_socket_starttls(state: (); _input: String) -> String {
-    let _ = state.get()?;
-    Ok(disabled_descriptor_socket_response())
-});
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-host_fn!(descriptor_socket_close(state: (); _input: String) -> String {
-    let _ = state.get()?;
-    Ok(disabled_descriptor_socket_response())
-});
-
-#[cfg(all(not(target_arch = "wasm32"), feature = "host-runtime"))]
-pub fn load_plugin_descriptor_from_wasm_bytes(
-    wasm_bytes: &[u8],
-) -> Result<PluginDescriptor, String> {
-    let manifest = Manifest::new([Wasm::data(wasm_bytes.to_vec())])
-        .with_timeout(std::time::Duration::from_secs(10));
-    let socket_host = DisabledDescriptorSocketHost::new();
-    let mut plugin = PluginBuilder::new(manifest)
-        .with_wasi(true)
-        .with_http_response_headers(true)
-        .with_functions(socket_host.functions())
-        .build()
-        .map_err(|error| format!("failed to instantiate WASM: {error}"))?;
-
-    if !plugin.function_exists(EXPORT_DESCRIBE) {
-        return Err(format!(
-            "plugin is missing required export {EXPORT_DESCRIBE}"
-        ));
-    }
-
-    let output: String = plugin
-        .call::<&str, String>(EXPORT_DESCRIBE, "")
-        .map_err(|error| format!("{EXPORT_DESCRIBE}() failed: {error}"))?;
-    let descriptor: PluginDescriptor = serde_json::from_str(&output)
-        .map_err(|error| format!("describe() returned invalid JSON: {error}"))?;
-
-    let missing = required_exports_for_descriptor(&descriptor)
-        .into_iter()
-        .filter(|export| !plugin.function_exists(export))
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return Err(format!(
-            "{} ({}) is missing required export(s): {}",
-            descriptor.id,
-            descriptor.plugin_type(),
-            missing.join(", ")
-        ));
-    }
-
-    Ok(descriptor)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -664,6 +517,7 @@ pub enum ProviderDescriptor {
     DownloadClient(DownloadClientDescriptor),
     Notification(NotificationDescriptor),
     Subtitle(SubtitleDescriptor),
+    ArchiveExtractor(ArchiveExtractorDescriptor),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -735,6 +589,36 @@ pub struct SubtitleDescriptor {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArchiveExtractorDescriptor {
+    pub provider_type: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_fields: Vec<ConfigFieldDef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub capabilities: ArchiveExtractorCapabilities,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ArchiveExtractorCapabilities {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formats: Vec<ArchivePluginFormat>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchivePluginFormat {
+    Rar,
+    Zip,
+    #[serde(rename = "7z")]
+    SevenZip,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginScoringPolicy {
     pub name: String,
     pub rego_source: String,
@@ -772,6 +656,8 @@ pub struct IndexerCapabilities {
     pub episode_param: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_param: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_query_facets: Vec<String>,
     #[serde(default)]
     pub search: bool,
     #[serde(default)]
@@ -807,6 +693,7 @@ impl Default for IndexerCapabilities {
             season_param: None,
             episode_param: None,
             query_param: None,
+            supported_query_facets: Vec::new(),
             search: false,
             imdb_search: false,
             tvdb_search: false,
@@ -943,6 +830,7 @@ pub enum SubtitleProviderMode {
     #[default]
     Catalog,
     Generator,
+    Sync,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -964,6 +852,48 @@ pub struct SubtitleCapabilities {
     pub supports_machine_translated: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supported_languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SubtitleSyncCapabilities>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(default)]
+    pub decode_status: SubtitleSyncDecodeStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_codecs: Vec<SubtitleSyncAudioCodec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decoded_codecs: Vec<SubtitleSyncAudioCodec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_codecs: Vec<SubtitleSyncAudioCodec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_sample_format: Option<String>,
+    #[serde(default)]
+    pub supports_mono_mixdown: bool,
+    #[serde(default)]
+    pub command_model: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<SubtitleSyncOperation>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleSyncDecodeStatus {
+    #[default]
+    Unknown,
+    Complete,
+    Partial,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleSyncOperation {
+    Align,
+    Probe,
+    DecodeWindow,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -977,6 +907,8 @@ pub enum ConfigFieldType {
     Bool,
     Select,
     Number,
+    Path,
+    Tag,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1061,6 +993,64 @@ pub struct PluginError {
 pub enum PluginResult<T> {
     Ok(T),
     Err(PluginError),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArchivePluginProcessRequest {
+    pub operation: ArchivePluginOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ArchivePluginOperation {
+    Inspect {
+        source_dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        archive_path: Option<String>,
+    },
+    ExtractArchive {
+        archive_path: String,
+        output_dir: String,
+        format: ArchivePluginFormat,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArchivePluginProcessResponse {
+    pub status: ArchivePluginStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ArchivePluginExtractedFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expanded_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copied_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchivePluginStatus {
+    Ok,
+    UnsupportedFormat,
+    PasswordRequired,
+    PasswordInvalid,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArchivePluginExtractedFile {
+    pub relative_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -1523,6 +1513,260 @@ pub struct SubtitleSyncAlignResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncPluginProcessRequest {
+    pub operation: SubtitleSyncPluginOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncPluginProcessResponse {
+    pub response: SubtitleSyncPluginResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubtitleSyncPluginOperation {
+    Align {
+        request: Box<SubtitleSyncCommandAlignRequest>,
+    },
+    Probe {
+        request: SubtitleSyncProbeRequest,
+    },
+    DecodeWindow {
+        request: SubtitleSyncDecodeWindowRequest,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubtitleSyncPluginResponse {
+    Align {
+        response: Box<SubtitleSyncCommandAlignResponse>,
+    },
+    Probe {
+        response: SubtitleSyncProbeResponse,
+    },
+    DecodeWindow {
+        response: SubtitleSyncDecodeWindowResponse,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandAlignRequest {
+    pub input: SubtitleSyncCommandInputFile,
+    pub subtitle: SubtitleSyncCommandSubtitleFile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_subtitle: Option<SubtitleSyncCommandSubtitleFile>,
+    pub output: SubtitleSyncCommandOutputTarget,
+    pub scratch_dir: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_metadata: Option<SubtitleSyncMediaMetadataSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_spans: Vec<SubtitleTimingSpan>,
+    pub max_offset_seconds: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_options: Option<SubtitleSyncOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<AudioStreamSelector>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_codec: Option<SubtitleSyncAudioCodec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandInputFile {
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandSubtitleFile {
+    pub path: PathBuf,
+    pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandOutputTarget {
+    pub path: PathBuf,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandAlignResponse {
+    pub applied: bool,
+    pub offset_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewritten_subtitle: Option<SubtitleSyncCommandOutputSubtitle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_framerate_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consistency_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nosplit_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<SubtitleSyncAlignSkipReason>,
+    pub backend: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncCommandOutputSubtitle {
+    pub path: PathBuf,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncProbeRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<SubtitleSyncAudioCodec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet_base64: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncProbeResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<SubtitleSyncAudioCodec>,
+    pub supported: bool,
+    pub backend: String,
+    pub confidence: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_hz: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncDecodeWindowRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<SubtitleSyncAudioCodec>,
+    pub packets: Vec<SubtitleSyncAudioPacket>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_sample_rate_hz: Option<u32>,
+    #[serde(default)]
+    pub mixdown_mono: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncAudioPacket {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pts_ms: Option<i64>,
+    pub data_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncDecodeWindowResponse {
+    pub status: SubtitleSyncDecodeWindowStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<SubtitleSyncAudioCodec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_hz: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u16>,
+    pub samples_decoded: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pcm_f32le_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleSyncDecodeWindowStatus {
+    Decoded,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncMediaMetadataSnapshot {
+    pub analysis_source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_width: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_height: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_bitrate_kbps: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_bit_depth: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_hdr_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_frame_rate: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_channels: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_bitrate_kbps: Option<i32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_streams: Vec<SubtitleSyncAudioStreamMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_languages: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_codecs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subtitle_streams: Vec<SubtitleSyncSubtitleStreamMetadata>,
+    #[serde(default)]
+    pub has_multiaudio: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_chapters: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncAudioStreamMetadata {
+    pub index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate_kbps: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubtitleSyncSubtitleStreamMetadata {
+    pub index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub forced: bool,
+    #[serde(default)]
+    pub default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PluginDownloadClientAddRequest {
     pub source: PluginDownloadSource,
     pub release: PluginDownloadRelease,
@@ -1630,6 +1874,14 @@ pub struct PluginDownloadTitle {
     pub title_id: Option<String>,
     pub title_name: String,
     pub media_facet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 }
@@ -1866,8 +2118,6 @@ pub struct PluginNotificationTitle {
     pub background_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poster_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub genres: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2332,6 +2582,8 @@ struct PluginSdkSchemaDocument {
     subtitle_generate_result: PluginResult<SubtitlePluginGenerateResponse>,
     subtitle_sync_align_request: SubtitleSyncAlignRequest,
     subtitle_sync_align_result: PluginResult<SubtitleSyncAlignResponse>,
+    subtitle_sync_process_request: SubtitleSyncPluginProcessRequest,
+    subtitle_sync_process_response: SubtitleSyncPluginProcessResponse,
     download_add_request: PluginDownloadClientAddRequest,
     download_add_result: PluginResult<PluginDownloadClientAddResponse>,
     download_queue_result: PluginResult<Vec<PluginDownloadItem>>,
@@ -2343,6 +2595,8 @@ struct PluginSdkSchemaDocument {
     download_mark_imported_request: PluginDownloadClientMarkImportedRequest,
     download_mark_imported_result: PluginResult<()>,
     download_status_result: PluginResult<PluginDownloadClientStatus>,
+    archive_process_request: ArchivePluginProcessRequest,
+    archive_process_result: PluginResult<ArchivePluginProcessResponse>,
     notification_request: PluginNotificationRequest,
     notification_result: PluginResult<PluginNotificationResponse>,
 }
@@ -2362,8 +2616,16 @@ mod tests {
     };
 
     #[test]
-    fn current_sdk_constraint_uses_current_v3_major_floor() {
-        assert_eq!(current_sdk_constraint(), ">=3.0.0, <4.0.0");
+    fn current_sdk_constraint_uses_current_v3_minor_floor() {
+        assert_eq!(current_sdk_constraint(), ">=3.6.0, <4.0.0");
+    }
+
+    #[test]
+    fn seven_zip_archive_format_uses_7z_wire_value() {
+        let json = serde_json::to_string(&ArchivePluginFormat::SevenZip).unwrap();
+        assert_eq!(json, "\"7z\"");
+        let parsed: ArchivePluginFormat = serde_json::from_str("\"7z\"").unwrap();
+        assert_eq!(parsed, ArchivePluginFormat::SevenZip);
     }
 
     #[test]
@@ -2390,14 +2652,14 @@ mod tests {
     fn validate_sdk_contract_rejects_legacy_minor_line_plugin_on_sdk3_host() {
         let err = validate_sdk_contract("legacy-plugin", "1.5.0", ">=1.5.0, <1.6.0", SDK_VERSION)
             .expect_err("legacy minor-line plugin should not load across SDK 3 boundary");
-        assert!(err.contains("host sdk_version 3.0.0"));
+        assert!(err.contains(&format!("host sdk_version {SDK_VERSION}")));
     }
 
     #[test]
     fn validate_sdk_contract_rejects_sdk2_plugin_on_sdk3_host() {
         let err = validate_sdk_contract("sdk2-plugin", "2.3.0", ">=2.3.0, <3.0.0", SDK_VERSION)
             .expect_err("SDK 2 plugin should not load on SDK 3 host");
-        assert!(err.contains("host sdk_version 3.0.0"));
+        assert!(err.contains(&format!("host sdk_version {SDK_VERSION}")));
     }
 
     #[test]
@@ -2426,6 +2688,132 @@ mod tests {
         assert_eq!(parsed.id, "newznab");
         assert_eq!(parsed.provider_type(), "newznab");
         assert_eq!(parsed.plugin_type(), "usenet_indexer");
+    }
+
+    #[test]
+    fn subtitle_sync_mode_and_capabilities_round_trip() {
+        let descriptor = PluginDescriptor {
+            id: "enhanced-subtitle-sync".into(),
+            name: "Enhanced Subtitle Sync".into(),
+            version: "1.0.0".into(),
+            sdk_version: SDK_VERSION.into(),
+            sdk_constraint: current_sdk_constraint(),
+            socket_permissions: vec![],
+            provider: ProviderDescriptor::Subtitle(SubtitleDescriptor {
+                provider_type: "enhanced-subtitle-sync".into(),
+                provider_aliases: vec![],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                capabilities: SubtitleCapabilities {
+                    mode: SubtitleProviderMode::Sync,
+                    sync: Some(SubtitleSyncCapabilities {
+                        backend: Some("vendored-ffmpeg-wasm".into()),
+                        decode_status: SubtitleSyncDecodeStatus::Complete,
+                        supported_codecs: vec![
+                            SubtitleSyncAudioCodec::Ac3,
+                            SubtitleSyncAudioCodec::Eac3,
+                        ],
+                        decoded_codecs: vec![SubtitleSyncAudioCodec::Ac3],
+                        pending_codecs: vec![SubtitleSyncAudioCodec::Eac3],
+                        output_sample_format: Some("f32le".into()),
+                        supports_mono_mixdown: true,
+                        command_model: true,
+                        operations: vec![
+                            SubtitleSyncOperation::Align,
+                            SubtitleSyncOperation::Probe,
+                            SubtitleSyncOperation::DecodeWindow,
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            }),
+        };
+
+        let json = serde_json::to_string(&descriptor).unwrap();
+        assert!(json.contains(r#""mode":"sync""#));
+        assert!(json.contains(r#""command_model":true"#));
+        let parsed: PluginDescriptor = serde_json::from_str(&json).unwrap();
+        let subtitle = parsed.subtitle().unwrap();
+        assert_eq!(subtitle.capabilities.mode, SubtitleProviderMode::Sync);
+        assert_eq!(
+            subtitle.capabilities.sync.as_ref().unwrap().operations,
+            vec![
+                SubtitleSyncOperation::Align,
+                SubtitleSyncOperation::Probe,
+                SubtitleSyncOperation::DecodeWindow,
+            ]
+        );
+    }
+
+    #[test]
+    fn subtitle_sync_command_operation_round_trips() {
+        let request = SubtitleSyncPluginProcessRequest {
+            operation: SubtitleSyncPluginOperation::Align {
+                request: Box::new(SubtitleSyncCommandAlignRequest {
+                    input: SubtitleSyncCommandInputFile {
+                        path: "/input/video.mkv".into(),
+                    },
+                    subtitle: SubtitleSyncCommandSubtitleFile {
+                        path: "/subtitle/subtitle.srt".into(),
+                        format: "srt".into(),
+                        file_name: Some("subtitle.srt".into()),
+                        encoding_hint: Some("utf-8".into()),
+                    },
+                    reference_subtitle: None,
+                    output: SubtitleSyncCommandOutputTarget {
+                        path: "/output/rewritten.srt".into(),
+                        format: "srt".into(),
+                    },
+                    scratch_dir: "/scratch".into(),
+                    media_metadata: Some(SubtitleSyncMediaMetadataSnapshot {
+                        analysis_source: "scryer_import".into(),
+                        container_format: Some("matroska".into()),
+                        duration_seconds: Some(120),
+                        video_codec: Some("h264".into()),
+                        video_width: Some(1920),
+                        video_height: Some(1080),
+                        video_bitrate_kbps: None,
+                        video_bit_depth: None,
+                        video_hdr_format: None,
+                        video_frame_rate: Some("23.976".into()),
+                        video_profile: None,
+                        audio_codec: Some("eac3".into()),
+                        audio_profile: None,
+                        audio_channels: Some(6),
+                        audio_bitrate_kbps: None,
+                        audio_languages: vec!["eng".into()],
+                        audio_streams: vec![SubtitleSyncAudioStreamMetadata {
+                            index: 0,
+                            codec: Some("eac3".into()),
+                            profile: None,
+                            channels: Some(6),
+                            language: Some("eng".into()),
+                            name: Some("English".into()),
+                            bitrate_kbps: None,
+                        }],
+                        subtitle_languages: vec![],
+                        subtitle_codecs: vec![],
+                        subtitle_streams: vec![],
+                        has_multiaudio: false,
+                        num_chapters: None,
+                    }),
+                    subtitle_spans: vec![],
+                    max_offset_seconds: 60,
+                    sync_options: Some(SubtitleSyncOptions::default()),
+                    selector: Some(AudioStreamSelector::Default),
+                    expected_codec: Some(SubtitleSyncAudioCodec::Eac3),
+                }),
+            },
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains(r#""kind":"align""#));
+        let parsed: SubtitleSyncPluginProcessRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            parsed.operation,
+            SubtitleSyncPluginOperation::Align { .. }
+        ));
     }
 
     #[test]
@@ -2658,6 +3046,10 @@ mod tests {
                 title_id: Some("title-1".to_string()),
                 title_name: "Example".to_string(),
                 media_facet: "series".to_string(),
+                title_slug: None,
+                year: None,
+                language: None,
+                network: None,
                 tags: Vec::new(),
             },
             routing: PluginDownloadRouting::default(),
@@ -2714,6 +3106,10 @@ mod tests {
                 title_id: Some("title-1".to_string()),
                 title_name: "Example".to_string(),
                 media_facet: "series".to_string(),
+                title_slug: None,
+                year: None,
+                language: None,
+                network: None,
                 tags: Vec::new(),
             },
             routing: PluginDownloadRouting::default(),
@@ -2756,6 +3152,10 @@ mod tests {
                 title_id: Some("title-1".to_string()),
                 title_name: "Example".to_string(),
                 media_facet: "series".to_string(),
+                title_slug: None,
+                year: None,
+                language: None,
+                network: None,
                 tags: Vec::new(),
             },
             routing: PluginDownloadRouting::default(),
@@ -2793,6 +3193,10 @@ mod tests {
                 title_id: Some("title-1".to_string()),
                 title_name: "Example".to_string(),
                 media_facet: "series".to_string(),
+                title_slug: None,
+                year: None,
+                language: None,
+                network: None,
                 tags: Vec::new(),
             },
             routing: PluginDownloadRouting::default(),
@@ -2835,6 +3239,24 @@ mod tests {
             assert!(!provider.capabilities.feed_modes.is_empty());
             assert!(!provider.capabilities.search_inputs.is_empty());
         }
+    }
+
+    #[test]
+    fn indexer_capabilities_round_trip_supported_query_facets() {
+        let capabilities = IndexerCapabilities {
+            query_param: Some("q".to_string()),
+            supported_query_facets: vec!["movie".to_string(), "anime".to_string()],
+            ..IndexerCapabilities::default()
+        };
+
+        let json = serde_json::to_string(&capabilities).unwrap();
+        assert!(json.contains("supported_query_facets"));
+
+        let parsed: IndexerCapabilities = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed.supported_query_facets,
+            vec!["movie".to_string(), "anime".to_string()]
+        );
     }
 
     #[test]
@@ -3383,7 +3805,6 @@ mod tests {
                 sort_title: Some("Example Show".to_string()),
                 background_url: None,
                 poster_url: Some("https://example.invalid/poster.jpg".to_string()),
-                genres: vec!["Drama".to_string()],
                 tags: vec!["tag-1".to_string()],
                 aliases: vec!["Example Alias".to_string()],
                 original_language: Some("ja".to_string()),

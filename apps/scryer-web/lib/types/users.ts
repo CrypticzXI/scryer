@@ -1,4 +1,4 @@
-export type UserAccountKind = "local" | "external_auto_provisioned";
+export type UserAccountKind = "LOCAL" | "EXTERNAL_AUTO_PROVISIONED";
 
 export type UserRecord = {
   id: string;

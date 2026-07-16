@@ -1,7 +1,8 @@
 use crate::types::*;
 use scryer_application::{
-    ActivityChannel as AppActivityChannel, ActivityKind as AppActivityKind,
-    ActivitySeverity as AppActivitySeverity, DownloadHistorySortKey as AppDownloadHistorySortKey,
+    AcquisitionScopeStatus as AppWantedStatus, ActivityChannel as AppActivityChannel,
+    ActivityKind as AppActivityKind, ActivitySeverity as AppActivitySeverity,
+    DownloadHistorySortKey as AppDownloadHistorySortKey,
     DownloadSourceKind as AppDownloadSourceKind,
     DownloadSubmissionPurpose as AppDownloadSubmissionPurpose, JobCategory as AppJobCategory,
     JobKey as AppJobKey, JobRunStatus as AppJobRunStatus, JobScheduleKind as AppJobScheduleKind,
@@ -10,7 +11,6 @@ use scryer_application::{
     PendingImportStatus as AppPendingImportStatus, PendingReleaseStatus as AppPendingReleaseStatus,
     ScoringOverrides as AppScoringOverrides, ScoringPersona as AppScoringPersona,
     SortDirection as AppSortDirection, SubmissionScope as AppSubmissionScope,
-    WantedStatus as AppWantedStatus,
 };
 
 pub trait FromApplication<T> {
@@ -292,17 +292,17 @@ impl IntoApplication<AppJobKey> for JobKeyValue {
             Self::BackgroundLibraryRefreshAnime => AppJobKey::BackgroundLibraryRefreshAnime,
             Self::RssSync => AppJobKey::RssSync,
             Self::SubtitleSearch => AppJobKey::SubtitleSearch,
-            Self::MetadataRefresh => AppJobKey::MetadataRefresh,
             Self::PluginRegistryRefresh => AppJobKey::PluginRegistryRefresh,
             Self::Housekeeping => AppJobKey::Housekeeping,
             Self::HealthChecks => AppJobKey::HealthChecks,
             Self::AutoBackup => AppJobKey::AutoBackup,
             Self::ProwlarrSync => AppJobKey::ProwlarrSync,
-            Self::WantedSync => AppJobKey::WantedSync,
             Self::PendingReleaseProcessing => AppJobKey::PendingReleaseProcessing,
             Self::StagedNzbPrune => AppJobKey::StagedNzbPrune,
+            Self::DiscoverySync => AppJobKey::DiscoverySync,
             Self::TitleImageCacheRefresh => AppJobKey::TitleImageCacheRefresh,
             Self::TitleDeletion => AppJobKey::TitleDeletion,
+            Self::AcquisitionSearch => AppJobKey::AcquisitionSearch,
         }
     }
 }
@@ -318,17 +318,17 @@ impl FromApplication<AppJobKey> for JobKeyValue {
             AppJobKey::BackgroundLibraryRefreshAnime => Self::BackgroundLibraryRefreshAnime,
             AppJobKey::RssSync => Self::RssSync,
             AppJobKey::SubtitleSearch => Self::SubtitleSearch,
-            AppJobKey::MetadataRefresh => Self::MetadataRefresh,
             AppJobKey::PluginRegistryRefresh => Self::PluginRegistryRefresh,
             AppJobKey::Housekeeping => Self::Housekeeping,
             AppJobKey::HealthChecks => Self::HealthChecks,
             AppJobKey::AutoBackup => Self::AutoBackup,
             AppJobKey::ProwlarrSync => Self::ProwlarrSync,
-            AppJobKey::WantedSync => Self::WantedSync,
             AppJobKey::PendingReleaseProcessing => Self::PendingReleaseProcessing,
             AppJobKey::StagedNzbPrune => Self::StagedNzbPrune,
+            AppJobKey::DiscoverySync => Self::DiscoverySync,
             AppJobKey::TitleImageCacheRefresh => Self::TitleImageCacheRefresh,
             AppJobKey::TitleDeletion => Self::TitleDeletion,
+            AppJobKey::AcquisitionSearch => Self::AcquisitionSearch,
         }
     }
 }

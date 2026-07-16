@@ -5,7 +5,10 @@ use crate::library_filename_parser::{
     LibraryFilenameExistingRecord, LibraryFilenameFallbackPolicy, LibraryFilenameParseInput,
     LibraryFilenameParseMode, parse_library_filename,
 };
-use crate::library_scan_unmatched::build_title_bound_unmatched_scan_item;
+use crate::library_scan_unmatched::{
+    IgnoredLibraryScanItemArgs, LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE,
+    build_title_bound_unmatched_scan_item, persist_ignored_library_scan_item,
+};
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 
 fn hydration_source_for_scan_mode(
@@ -50,6 +53,33 @@ pub(super) async fn title_requires_scan_hydration(
         .list_episodes_for_title(&title.id)
         .await?;
     Ok(episodes.is_empty())
+}
+
+async fn discover_episodic_title_files_for_progress(
+    app: &AppUseCase,
+    title: &Title,
+) -> AppResult<Vec<LibraryFile>> {
+    let import_paths = crate::import_workflow::resolve_import_paths(app, title).await?;
+    let title_dir = crate::effective_title_folder_path(
+        &import_paths.media_root,
+        title,
+        &import_paths.folder_template,
+        None,
+    );
+    if tokio::fs::metadata(&title_dir).await.is_err() {
+        tokio::fs::create_dir_all(&title_dir).await.map_err(|err| {
+            AppError::Repository(format!(
+                "failed to recreate title directory {}: {err}",
+                title_dir.display()
+            ))
+        })?;
+    }
+    let scan_result = scan_episodic_title_directory_for_progress_metrics(
+        app.services.library.library_scanner.clone(),
+        &title_dir,
+    )
+    .await?;
+    Ok(scan_result.files)
 }
 
 async fn discover_movie_title_files(
@@ -311,6 +341,7 @@ fn parsed_release_for_movie_media_file(file: &TitleMediaFile) -> crate::ParsedRe
         analysis: Some(media_analysis_from_title_media_file(file)),
         scan_error: None,
         rule_file_doc: None,
+        audio_language_warning: None,
     };
     crate::post_download_gate::rescore_from_mediainfo(&parsed, &acceptance).0
 }
@@ -760,244 +791,1057 @@ async fn cleanup_missing_movie_title_records(
     title_updated
 }
 
-async fn hydrate_library_scan_workset(
-    app: &AppUseCase,
-    coordinator: &LibraryScanCoordinator,
-    workset: &mut HashMap<String, LibraryScanTitleWork>,
-    hydration_targets: Vec<crate::catalog_workflow::HydrationTarget>,
-    track_metadata_progress: bool,
-    cancel_token: Option<&CancellationToken>,
-) -> AppResult<()> {
-    for chunk in hydration_targets.chunks(crate::catalog_workflow::HYDRATION_BULK_BATCH_SIZE) {
-        if library_scan_cancel_requested(cancel_token) {
-            break;
-        }
-        let hydration_outcome = app
-            .hydrate_titles_bulk_cancellable(chunk.to_vec(), cancel_token)
-            .await?;
-
-        for (title_id, hydrated) in hydration_outcome.hydrated_titles {
-            if let Some(work) = workset.get_mut(&title_id) {
-                work.title = hydrated;
-            }
-            if track_metadata_progress {
-                coordinator.mark_metadata_completed(1).await;
-            }
-        }
-
-        for (title_id, reason) in hydration_outcome.failed_titles {
-            if let Some(work) = workset.remove(&title_id) {
-                warn!(
-                    title_id = %title_id,
-                    reason = %reason,
-                    "library scan title hydration failed"
-                );
-                if track_metadata_progress {
-                    coordinator.mark_metadata_failed(1).await;
-                }
-                coordinator
-                    .mark_file_failed(work.discovered_file_count())
-                    .await;
-            }
-        }
-
-        if track_metadata_progress {
-            coordinator.publish_progress().await;
-        }
-    }
-
-    Ok(())
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LibraryScanFileTotalMode {
+    /// One-off title scans: the walk itself publishes and latches the total.
+    MarkKnownAfterThisWalk,
+    /// Background refresh scans: the pool aggregates totals per accepted work and
+    /// latches `file_total_known` once its input is closed and drained.
+    BackgroundRefreshAggregate,
+    /// Streaming full scans: the pool aggregates totals per accepted work,
+    /// but the pipeline coordinator owns the `file_total_known` latch.
+    FullScanAggregate,
 }
 
-impl AppUseCase {
-    pub(crate) async fn execute_library_scan_workset(
-        &self,
-        actor: &User,
-        session_id: &str,
-        mut workset: HashMap<String, LibraryScanTitleWork>,
-        cancel_token: Option<CancellationToken>,
-    ) -> AppResult<LibraryScanSummary> {
-        if library_scan_cancel_requested(cancel_token.as_ref()) {
-            return Ok(LibraryScanSummary::default());
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LibraryScanTitleWorkSummaryMode {
+    FullScan,
+    OneOff,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct LibraryScanMediaAnalysisProfile {
+    pub title_group_concurrency: usize,
+    pub file_analysis_concurrency_per_title: usize,
+}
+
+impl LibraryScanMediaAnalysisProfile {
+    fn for_facet(facet: &MediaFacet) -> Self {
+        match facet {
+            MediaFacet::Movie => Self {
+                title_group_concurrency: crate::LIBRARY_SCAN_MOVIE_TITLE_ANALYSIS_GROUP_CONCURRENCY,
+                file_analysis_concurrency_per_title:
+                    crate::LIBRARY_SCAN_MOVIE_FILE_ANALYSIS_CONCURRENCY_PER_WALK,
+            },
+            MediaFacet::Series | MediaFacet::Anime => Self {
+                title_group_concurrency:
+                    crate::LIBRARY_SCAN_EPISODIC_TITLE_ANALYSIS_GROUP_CONCURRENCY,
+                file_analysis_concurrency_per_title:
+                    crate::LIBRARY_SCAN_EPISODIC_FILE_ANALYSIS_CONCURRENCY_PER_WALK,
+            },
         }
-
-        let coordinator = LibraryScanCoordinator::new(self.clone(), session_id.to_string());
-        let metadata_language = self.metadata_language().await;
-        let file_total = workset
-            .values()
-            .map(LibraryScanTitleWork::discovered_file_count)
-            .sum::<usize>();
-        coordinator.add_file_total(file_total).await;
-        coordinator.mark_file_total_known().await;
-
-        let hydration_source = self
-            .runtime
-            .library
-            .library_scan_tracker
-            .get_session(session_id)
-            .await
-            .map(|session| hydration_source_for_scan_mode(session.mode))
-            .unwrap_or(crate::catalog_workflow::HydrationSource::LibraryScanFull);
-
-        let mut hydration_targets = Vec::new();
-        for work in workset.values() {
-            let needs_hydration =
-                title_requires_scan_hydration(self, &work.title, &metadata_language).await?;
-            if needs_hydration {
-                hydration_targets.push(crate::catalog_workflow::HydrationTarget {
-                    title: work.title.clone(),
-                    requested_tvdb_id: None,
-                    sync_wanted_after_completion: false,
-                    source: hydration_source,
-                });
-            }
-        }
-
-        let track_hydration_metadata_progress = self
-            .runtime
-            .library
-            .library_scan_tracker
-            .get_session(session_id)
-            .await
-            .is_none_or(|session| session.metadata_progress.total == 0);
-
-        if track_hydration_metadata_progress {
-            coordinator
-                .add_metadata_total(hydration_targets.len())
-                .await;
-            coordinator.mark_metadata_total_known().await;
-            coordinator.publish_progress().await;
-        }
-        if !hydration_targets.is_empty() {
-            hydrate_library_scan_workset(
-                self,
-                &coordinator,
-                &mut workset,
-                hydration_targets,
-                track_hydration_metadata_progress,
-                cancel_token.as_ref(),
-            )
-            .await?;
-        }
-
-        self.run_library_scan_title_work_pool(actor, session_id, workset, cancel_token)
-            .await
     }
 
-    async fn run_library_scan_title_work_pool(
-        &self,
-        actor: &User,
-        session_id: &str,
-        workset: HashMap<String, LibraryScanTitleWork>,
-        cancel_token: Option<CancellationToken>,
-    ) -> AppResult<LibraryScanSummary> {
-        let coordinator = LibraryScanCoordinator::new(self.clone(), session_id.to_string());
-        let mut summary = LibraryScanSummary::default();
-        let mut pending = workset.into_values();
-        let mut work_set = tokio::task::JoinSet::new();
+    fn one_off() -> Self {
+        Self {
+            title_group_concurrency: 1,
+            file_analysis_concurrency_per_title:
+                crate::LIBRARY_SCAN_EPISODIC_FILE_ANALYSIS_CONCURRENCY_PER_WALK,
+        }
+    }
+}
 
-        for _ in 0..LIBRARY_SCAN_TITLE_WALK_CONCURRENCY {
-            if library_scan_cancel_requested(cancel_token.as_ref()) {
-                break;
-            }
-            let Some(work) = pending.next() else {
-                break;
-            };
-            let app = self.clone();
-            let actor = actor.clone();
-            let session_id = session_id.to_string();
-            let title_id = work.title.id.clone();
-            let discovered_file_count = work.discovered_file_count();
-            let absorb_walk_summary =
-                matches!(work.facet_plan, LibraryScanTitleFacetPlan::Movie(_));
-            let created_in_scan = work.created_in_scan;
-            let walk_cancel_token = cancel_token.clone();
-            work_set.spawn(async move {
-                let result = app
-                    .walk_library_title(
-                        &actor,
-                        LibraryScanTitleWalkRequest {
-                            work,
-                            session_id: Some(session_id),
-                            cancel_token: walk_cancel_token,
-                        },
-                    )
-                    .await;
-                (
-                    title_id,
-                    discovered_file_count,
-                    absorb_walk_summary,
-                    created_in_scan,
-                    result,
-                )
-            });
+#[derive(Clone, Debug, Default)]
+struct LibraryScanWorkCoverage {
+    full_folder: bool,
+    scoped_paths: HashSet<String>,
+}
+
+impl LibraryScanWorkCoverage {
+    fn from_work(work: &LibraryScanTitleWork) -> Self {
+        match &work.scope {
+            LibraryScanTitleWorkScope::FullFolder => Self {
+                full_folder: true,
+                scoped_paths: HashSet::new(),
+            },
+            LibraryScanTitleWorkScope::PreEnumeratedFullFolder(files) => Self {
+                full_folder: true,
+                scoped_paths: files.iter().map(|file| file.path.clone()).collect(),
+            },
+            LibraryScanTitleWorkScope::ScopedFiles(files) => Self {
+                full_folder: false,
+                scoped_paths: files.iter().map(|file| file.path.clone()).collect(),
+            },
+        }
+    }
+
+    fn absorb(&mut self, other: Self) {
+        self.full_folder |= other.full_folder;
+        self.scoped_paths.extend(other.scoped_paths);
+    }
+}
+
+fn analysis_ready_scoped_path_already_covered(
+    ready: &std::collections::VecDeque<QueuedLibraryScanTitleAnalysisWork>,
+    title_id: &str,
+    path: &str,
+) -> bool {
+    ready
+        .iter()
+        .filter(|queued| queued.work.title.id == title_id)
+        .filter_map(|queued| queued.work.discovered_files())
+        .any(|files| files.iter().any(|file| file.path == path))
+}
+
+fn analysis_ready_full_folder_already_covered(
+    ready: &std::collections::VecDeque<QueuedLibraryScanTitleAnalysisWork>,
+    title_id: &str,
+) -> bool {
+    ready
+        .iter()
+        .any(|queued| queued.work.title.id == title_id && queued.coverage.full_folder)
+}
+
+struct LibraryScanTitleWalkTaskOutput {
+    title_id: String,
+    discovered_file_count: usize,
+    coverage: LibraryScanWorkCoverage,
+    absorb_walk_summary: bool,
+    created_in_scan: bool,
+    result: AppResult<LibraryTitleWalkResult>,
+}
+
+struct QueuedLibraryScanTitleAnalysisWork {
+    work: LibraryScanTitleWork,
+    coverage: LibraryScanWorkCoverage,
+}
+
+pub(super) struct LibraryScanMediaWorkReservation {
+    pub(super) work: LibraryScanTitleWork,
+    coverage: LibraryScanWorkCoverage,
+    pub(super) file_count: usize,
+}
+
+impl LibraryScanMediaWorkReservation {
+    pub(super) fn file_count(&self) -> usize {
+        self.file_count
+    }
+}
+
+/// Media-analysis worker pool: the walk/analyze stage of the scan pipeline.
+///
+/// Full scans feed it matched title work whose file list already rendezvoused
+/// with the candidate inventory upstream; refresh and one-off scans may
+/// enqueue deferred work, in which case the walk task discovers the folder
+/// inline. Per-title hydration runs inside the walk task so it stays off the
+/// candidate-to-match critical path (the streaming pipeline pre-hydrates in
+/// bulk, making the per-title check a no-op there).
+pub(super) struct LibraryScanMediaAnalysisPool {
+    app: AppUseCase,
+    actor: User,
+    session_id: Option<String>,
+    coordinator: Option<LibraryScanCoordinator>,
+    cancel_token: Option<CancellationToken>,
+    metadata_language: String,
+    hydration_source: crate::catalog_workflow::HydrationSource,
+    file_total_mode: LibraryScanFileTotalMode,
+    summary_mode: LibraryScanTitleWorkSummaryMode,
+    analysis_profile: LibraryScanMediaAnalysisProfile,
+    input_closed: bool,
+    reserved: HashMap<String, LibraryScanWorkCoverage>,
+    pending_full: HashMap<String, LibraryScanTitleWork>,
+    pending_scoped: HashMap<String, LibraryScanTitleWork>,
+    analysis_ready: std::collections::VecDeque<QueuedLibraryScanTitleAnalysisWork>,
+    in_flight: HashMap<String, LibraryScanWorkCoverage>,
+    completed: HashMap<String, LibraryScanWorkCoverage>,
+    work_set: tokio::task::JoinSet<LibraryScanTitleWalkTaskOutput>,
+    file_total_known_marked: bool,
+    summary: LibraryScanSummary,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LibraryScanMediaAnalysisPoolDiagnostics {
+    pub input_closed: bool,
+    pub reserved: usize,
+    pub pending_full: usize,
+    pub pending_scoped: usize,
+    pub analysis_ready: usize,
+    pub in_flight: usize,
+    pub completed: usize,
+    pub walk_tasks: usize,
+    pub file_total_known_marked: bool,
+}
+
+pub(super) struct LibraryScanMediaAnalysisPolicy {
+    session_id: Option<String>,
+    coordinator: Option<LibraryScanCoordinator>,
+    cancel_token: Option<CancellationToken>,
+    hydration_source: crate::catalog_workflow::HydrationSource,
+    file_total_mode: LibraryScanFileTotalMode,
+    summary_mode: LibraryScanTitleWorkSummaryMode,
+    analysis_profile: LibraryScanMediaAnalysisProfile,
+}
+
+impl LibraryScanMediaAnalysisPolicy {
+    fn from_scan_session(
+        app: &AppUseCase,
+        session_id: &str,
+        cancel_token: Option<CancellationToken>,
+        hydration_source: crate::catalog_workflow::HydrationSource,
+        file_total_mode: LibraryScanFileTotalMode,
+        analysis_profile: LibraryScanMediaAnalysisProfile,
+    ) -> Self {
+        Self {
+            session_id: Some(session_id.to_string()),
+            coordinator: Some(LibraryScanCoordinator::new(
+                app.clone(),
+                session_id.to_string(),
+            )),
+            cancel_token,
+            hydration_source,
+            file_total_mode,
+            summary_mode: LibraryScanTitleWorkSummaryMode::FullScan,
+            analysis_profile,
+        }
+    }
+
+    pub(super) async fn full_scan_pipeline(
+        app: &AppUseCase,
+        session_id: &str,
+        facet: &MediaFacet,
+        cancel_token: Option<CancellationToken>,
+    ) -> Self {
+        let session = app
+            .runtime
+            .library
+            .library_scan_tracker
+            .get_session(session_id)
+            .await;
+        let hydration_source = session
+            .map(|session| hydration_source_for_scan_mode(session.mode))
+            .unwrap_or(crate::catalog_workflow::HydrationSource::LibraryScanFull);
+        Self::from_scan_session(
+            app,
+            session_id,
+            cancel_token,
+            hydration_source,
+            LibraryScanFileTotalMode::FullScanAggregate,
+            LibraryScanMediaAnalysisProfile::for_facet(facet),
+        )
+    }
+
+    pub(super) async fn background_refresh(
+        app: &AppUseCase,
+        session_id: &str,
+        cancel_token: Option<CancellationToken>,
+    ) -> Self {
+        let session = app
+            .runtime
+            .library
+            .library_scan_tracker
+            .get_session(session_id)
+            .await;
+        let analysis_profile = session
+            .as_ref()
+            .map(|session| LibraryScanMediaAnalysisProfile::for_facet(&session.facet))
+            .unwrap_or_else(LibraryScanMediaAnalysisProfile::one_off);
+        let hydration_source = session
+            .map(|session| hydration_source_for_scan_mode(session.mode))
+            .unwrap_or(crate::catalog_workflow::HydrationSource::LibraryScanFull);
+        Self::from_scan_session(
+            app,
+            session_id,
+            cancel_token,
+            hydration_source,
+            LibraryScanFileTotalMode::BackgroundRefreshAggregate,
+            analysis_profile,
+        )
+    }
+
+    fn one_off() -> Self {
+        Self {
+            session_id: None,
+            coordinator: None,
+            cancel_token: None,
+            hydration_source: crate::catalog_workflow::HydrationSource::Interactive,
+            file_total_mode: LibraryScanFileTotalMode::MarkKnownAfterThisWalk,
+            summary_mode: LibraryScanTitleWorkSummaryMode::OneOff,
+            analysis_profile: LibraryScanMediaAnalysisProfile::one_off(),
+        }
+    }
+
+    pub(super) fn user_title_refresh() -> Self {
+        Self::one_off()
+    }
+
+    pub(super) fn scoped_media_scan() -> Self {
+        Self::one_off()
+    }
+}
+
+struct LibraryScanTitleWalkOptions<'a> {
+    session_id: Option<&'a str>,
+    pre_scanned_files: Option<Vec<LibraryFile>>,
+    mode: LibraryScanTitleWalkMode,
+    cancel_token: Option<CancellationToken>,
+    file_total_mode: LibraryScanFileTotalMode,
+    full_folder_scan: bool,
+    file_analysis_concurrency: usize,
+}
+
+impl LibraryScanMediaAnalysisPool {
+    pub(super) async fn for_policy(
+        app: &AppUseCase,
+        actor: &User,
+        policy: LibraryScanMediaAnalysisPolicy,
+    ) -> AppResult<Self> {
+        Ok(Self {
+            app: app.clone(),
+            actor: actor.clone(),
+            session_id: policy.session_id,
+            coordinator: policy.coordinator,
+            cancel_token: policy.cancel_token,
+            metadata_language: app.metadata_language().await,
+            hydration_source: policy.hydration_source,
+            file_total_mode: policy.file_total_mode,
+            summary_mode: policy.summary_mode,
+            analysis_profile: policy.analysis_profile,
+            input_closed: false,
+            reserved: HashMap::new(),
+            pending_full: HashMap::new(),
+            pending_scoped: HashMap::new(),
+            analysis_ready: std::collections::VecDeque::new(),
+            in_flight: HashMap::new(),
+            completed: HashMap::new(),
+            work_set: tokio::task::JoinSet::new(),
+            file_total_known_marked: false,
+            summary: LibraryScanSummary::default(),
+        })
+    }
+
+    pub(super) fn analysis_profile(&self) -> LibraryScanMediaAnalysisProfile {
+        self.analysis_profile
+    }
+
+    pub(super) fn diagnostics(&self) -> LibraryScanMediaAnalysisPoolDiagnostics {
+        LibraryScanMediaAnalysisPoolDiagnostics {
+            input_closed: self.input_closed,
+            reserved: self.reserved.len(),
+            pending_full: self.pending_full.len(),
+            pending_scoped: self.pending_scoped.len(),
+            analysis_ready: self.analysis_ready.len(),
+            in_flight: self.in_flight.len(),
+            completed: self.completed.len(),
+            walk_tasks: self.work_set.len(),
+            file_total_known_marked: self.file_total_known_marked,
+        }
+    }
+
+    fn trim_uncovered_work(&self, work: &mut LibraryScanTitleWork) -> bool {
+        let title_id = work.title.id.clone();
+        if work.has_full_folder_coverage() && self.full_folder_already_covered(&title_id) {
+            return false;
         }
 
-        while let Some(result) = work_set.join_next().await {
-            let (
+        let has_full_folder_coverage = work.has_full_folder_coverage();
+        if let Some(files) = work.discovered_files_mut() {
+            files.retain(|file| !self.scoped_path_already_covered(&title_id, &file.path));
+            if files.is_empty() && !has_full_folder_coverage {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn enqueue_work(&mut self, mut work: LibraryScanTitleWork) -> bool {
+        if self.input_closed {
+            return false;
+        }
+
+        if !self.trim_uncovered_work(&mut work) {
+            return false;
+        }
+
+        if work.requires_folder_enumeration() {
+            merge_library_scan_title_work(&mut self.pending_full, work)
+        } else {
+            merge_library_scan_title_work(&mut self.pending_scoped, work)
+        }
+    }
+
+    pub(super) fn reserve_work(
+        &mut self,
+        mut work: LibraryScanTitleWork,
+    ) -> Option<LibraryScanMediaWorkReservation> {
+        if self.input_closed {
+            return None;
+        }
+
+        if !self.trim_uncovered_work(&mut work) {
+            return None;
+        }
+
+        let title_id = work.title.id.clone();
+        let coverage = LibraryScanWorkCoverage::from_work(&work);
+        let file_count = work.discovered_file_count();
+        self.reserved
+            .entry(title_id)
+            .or_default()
+            .absorb(coverage.clone());
+        Some(LibraryScanMediaWorkReservation {
+            work,
+            coverage,
+            file_count,
+        })
+    }
+
+    pub(super) fn commit_reserved(&mut self, reservation: LibraryScanMediaWorkReservation) {
+        let LibraryScanMediaWorkReservation { work, coverage, .. } = reservation;
+        self.analysis_ready
+            .push_back(QueuedLibraryScanTitleAnalysisWork { work, coverage });
+    }
+
+    pub(super) async fn fail_reserved(
+        &mut self,
+        reservation: LibraryScanMediaWorkReservation,
+        reason: &str,
+    ) {
+        warn!(
+            title_id = %reservation.work.title.id,
+            title_name = %reservation.work.title.name,
+            files = reservation.file_count,
+            reason = %reason,
+            "library scan reserved media work failed before analysis"
+        );
+        if reservation.file_count > 0
+            && let Some(coordinator) = self.coordinator.as_ref()
+        {
+            coordinator.mark_file_failed(reservation.file_count).await;
+            coordinator.publish_progress().await;
+        }
+    }
+
+    pub(super) async fn pump(&mut self) -> AppResult<()> {
+        self.reap_completed_ready().await?;
+        if library_scan_cancel_requested(self.cancel_token.as_ref()) {
+            return Ok(());
+        }
+        self.promote_pending().await;
+        self.launch_analysis().await?;
+        self.mark_file_total_known_if_ready().await
+    }
+
+    pub(super) fn close_input(&mut self) {
+        self.input_closed = true;
+    }
+
+    pub(super) async fn finish(&mut self) -> AppResult<LibraryScanSummary> {
+        self.input_closed = true;
+        loop {
+            self.reap_completed_ready().await?;
+            if library_scan_cancel_requested(self.cancel_token.as_ref()) {
+                self.drain_cancelled_walks().await?;
+                break;
+            }
+
+            self.promote_pending().await;
+            self.launch_analysis().await?;
+            self.mark_file_total_known_if_ready().await?;
+
+            if self.pending_full.is_empty()
+                && self.pending_scoped.is_empty()
+                && self.analysis_ready.is_empty()
+                && self.work_set.is_empty()
+            {
+                break;
+            }
+
+            if !self.work_set.is_empty() {
+                self.reap_next_completed_or_cancelled().await?;
+            } else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        Ok(self.summary.clone())
+    }
+
+    /// Stop queued work, abort unfinished walks, and absorb any walk output
+    /// that completed before the abort landed. Used when the scan fails
+    /// terminally (for example root discovery failure) and no success progress
+    /// latch may be published.
+    pub(super) async fn drain_for_failure(&mut self) -> AppResult<()> {
+        self.input_closed = true;
+        self.drain_cancelled_walks().await
+    }
+
+    async fn drain_cancelled_walks(&mut self) -> AppResult<()> {
+        self.pending_full.clear();
+        self.pending_scoped.clear();
+        self.reserved.clear();
+        self.analysis_ready.clear();
+        self.work_set.abort_all();
+        while let Some(result) = self.work_set.join_next().await {
+            match result {
+                Ok(output) => self.handle_walk_task_result(Ok(output)).await?,
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => return Err(AppError::Repository(error.to_string())),
+            }
+        }
+        self.in_flight.clear();
+        Ok(())
+    }
+
+    fn scoped_path_already_covered(&self, title_id: &str, path: &str) -> bool {
+        self.completed
+            .get(title_id)
+            .is_some_and(|coverage| coverage.scoped_paths.contains(path))
+            || self
+                .in_flight
+                .get(title_id)
+                .is_some_and(|coverage| coverage.scoped_paths.contains(path))
+            || analysis_ready_scoped_path_already_covered(&self.analysis_ready, title_id, path)
+            || self
+                .reserved
+                .get(title_id)
+                .is_some_and(|coverage| coverage.scoped_paths.contains(path))
+            || self
+                .pending_scoped
+                .get(title_id)
+                .and_then(LibraryScanTitleWork::discovered_files)
+                .is_some_and(|files| files.iter().any(|file| file.path == path))
+    }
+
+    fn full_folder_already_covered(&self, title_id: &str) -> bool {
+        self.completed
+            .get(title_id)
+            .is_some_and(|coverage| coverage.full_folder)
+            || self
+                .in_flight
+                .get(title_id)
+                .is_some_and(|coverage| coverage.full_folder)
+            || analysis_ready_full_folder_already_covered(&self.analysis_ready, title_id)
+            || self
+                .reserved
+                .get(title_id)
+                .is_some_and(|coverage| coverage.full_folder)
+            || self
+                .pending_scoped
+                .get(title_id)
+                .is_some_and(LibraryScanTitleWork::has_full_folder_coverage)
+            || self.pending_full.contains_key(title_id)
+    }
+
+    /// Move merged pending work into the analysis queue, publishing file
+    /// totals for work that already knows its file list.
+    async fn promote_pending(&mut self) {
+        let mut works = Vec::new();
+        for (_, work) in self.pending_full.drain() {
+            works.push(work);
+        }
+        for (_, work) in self.pending_scoped.drain() {
+            works.push(work);
+        }
+        works.sort_by(|left, right| left.title.id.cmp(&right.title.id));
+
+        for work in works {
+            let coverage = LibraryScanWorkCoverage::from_work(&work);
+            let discovered_file_count = work.discovered_file_count();
+            if discovered_file_count > 0
+                && !self.file_total_known_marked
+                && self.file_total_mode == LibraryScanFileTotalMode::BackgroundRefreshAggregate
+                && let Some(coordinator) = self.coordinator.as_ref()
+            {
+                coordinator.add_file_total(discovered_file_count).await;
+                coordinator.publish_progress().await;
+            }
+            self.analysis_ready
+                .push_back(QueuedLibraryScanTitleAnalysisWork { work, coverage });
+        }
+    }
+
+    fn pop_analysis_ready_work(&mut self) -> Option<QueuedLibraryScanTitleAnalysisWork> {
+        let len = self.analysis_ready.len();
+        for _ in 0..len {
+            let queued = self.analysis_ready.pop_front()?;
+            if self.in_flight.contains_key(&queued.work.title.id) {
+                self.analysis_ready.push_back(queued);
+            } else {
+                return Some(queued);
+            }
+        }
+        None
+    }
+
+    async fn launch_analysis(&mut self) -> AppResult<()> {
+        while !library_scan_cancel_requested(self.cancel_token.as_ref()) {
+            if self.in_flight.len() >= self.analysis_profile.title_group_concurrency {
+                debug!(
+                    analysis_ready = self.analysis_ready.len(),
+                    in_flight = self.in_flight.len(),
+                    walk_tasks = self.work_set.len(),
+                    title_group_concurrency = self.analysis_profile.title_group_concurrency,
+                    "library scan media analysis launch waiting for local profile cap"
+                );
+                break;
+            }
+            let Some(queued) = self.pop_analysis_ready_work() else {
+                break;
+            };
+            self.spawn_walk(queued).await?;
+        }
+        Ok(())
+    }
+
+    async fn spawn_walk(&mut self, queued: QueuedLibraryScanTitleAnalysisWork) -> AppResult<()> {
+        let QueuedLibraryScanTitleAnalysisWork { work, coverage } = queued;
+        let title_id = work.title.id.clone();
+        self.in_flight.insert(title_id.clone(), coverage.clone());
+        let absorb_walk_summary = self.summary_mode == LibraryScanTitleWorkSummaryMode::OneOff
+            || matches!(work.facet_plan, LibraryScanTitleFacetPlan::Movie(_));
+        let full_folder_scan = coverage.full_folder;
+        let created_in_scan = work.created_in_scan;
+        debug!(
+            in_flight = self.in_flight.len(),
+            analysis_ready = self.analysis_ready.len(),
+            walk_tasks = self.work_set.len(),
+            full_folder_scan,
+            scoped_files = coverage.scoped_paths.len(),
+            "library scan media analysis walk launched"
+        );
+        let app = self.app.clone();
+        let actor = self.actor.clone();
+        let session_id = self.session_id.clone();
+        let coordinator = self.coordinator.clone();
+        let cancel_token = self.cancel_token.clone();
+        let file_total_mode = self.file_total_mode;
+        let metadata_language = self.metadata_language.clone();
+        let hydration_source = self.hydration_source;
+        let file_analysis_concurrency = self.analysis_profile.file_analysis_concurrency_per_title;
+        self.work_set.spawn(async move {
+            let (discovered_file_count, result) = hydrate_enumerate_and_walk_title_work(
+                &app,
+                &actor,
+                work,
+                LibraryScanTitleWalkTaskContext {
+                    session_id,
+                    coordinator,
+                    cancel_token,
+                    file_total_mode,
+                    full_folder_scan,
+                    metadata_language,
+                    hydration_source,
+                    file_analysis_concurrency,
+                },
+            )
+            .await;
+            LibraryScanTitleWalkTaskOutput {
                 title_id,
                 discovered_file_count,
+                coverage,
                 absorb_walk_summary,
                 created_in_scan,
-                walk_result,
-            ) = result.map_err(|error| AppError::Repository(error.to_string()))?;
+                result,
+            }
+        });
+        Ok(())
+    }
 
-            match walk_result {
-                Ok(walk_result) => {
-                    if absorb_walk_summary {
-                        let mut delta = walk_result.summary;
-                        if created_in_scan {
-                            delta.imported = delta.imported.saturating_sub(1);
-                        }
-                        summary.absorb(&delta);
+    async fn reap_completed_ready(&mut self) -> AppResult<()> {
+        while let Some(result) = self.work_set.try_join_next() {
+            debug!(
+                in_flight = self.in_flight.len(),
+                analysis_ready = self.analysis_ready.len(),
+                walk_tasks = self.work_set.len(),
+                "library scan media analysis walk completed"
+            );
+            self.handle_walk_task_result(result).await?;
+        }
+        Ok(())
+    }
+
+    async fn reap_next_completed_or_cancelled(&mut self) -> AppResult<()> {
+        if self.work_set.is_empty() {
+            return Ok(());
+        }
+
+        if let Some(cancel_token) = self.cancel_token.as_ref() {
+            tokio::select! {
+                biased;
+                _ = cancel_token.cancelled() => {}
+                result = self.work_set.join_next() => {
+                    if let Some(result) = result {
+                        self.handle_walk_task_result(result).await?;
                     }
                 }
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        title_id = %title_id,
-                        "library scan title walk failed"
-                    );
-                    coordinator.mark_file_failed(discovered_file_count).await;
+            }
+            return Ok(());
+        }
+
+        if let Some(result) = self.work_set.join_next().await {
+            self.handle_walk_task_result(result).await?;
+        }
+        Ok(())
+    }
+
+    async fn mark_file_total_known_if_ready(&mut self) -> AppResult<()> {
+        if self.file_total_mode != LibraryScanFileTotalMode::BackgroundRefreshAggregate
+            || self.file_total_known_marked
+            || !self.input_closed
+            || library_scan_cancel_requested(self.cancel_token.as_ref())
+            || !self.pending_full.is_empty()
+            || !self.pending_scoped.is_empty()
+            || !self.analysis_ready.is_empty()
+            || !self.work_set.is_empty()
+        {
+            return Ok(());
+        }
+
+        if let Some(coordinator) = self.coordinator.as_ref() {
+            coordinator.mark_file_total_known().await;
+            coordinator.publish_progress().await;
+        }
+        self.file_total_known_marked = true;
+        Ok(())
+    }
+
+    async fn handle_walk_task_result(
+        &mut self,
+        result: Result<LibraryScanTitleWalkTaskOutput, tokio::task::JoinError>,
+    ) -> AppResult<()> {
+        let output = result.map_err(|error| AppError::Repository(error.to_string()))?;
+        self.in_flight.remove(&output.title_id);
+        match output.result {
+            Ok(walk_result) => {
+                self.completed
+                    .entry(output.title_id)
+                    .or_default()
+                    .absorb(output.coverage);
+                if output.absorb_walk_summary {
+                    let mut summary = walk_result.summary;
+                    if output.created_in_scan {
+                        summary.imported = summary.imported.saturating_sub(1);
+                    }
+                    self.summary.absorb(&summary);
+                }
+            }
+            Err(error) => {
+                if self.summary_mode == LibraryScanTitleWorkSummaryMode::OneOff {
+                    return Err(error);
+                }
+                warn!(
+                    error = %error,
+                    title_id = %output.title_id,
+                    "library scan title walk failed"
+                );
+                if output.discovered_file_count > 0
+                    && let Some(coordinator) = self.coordinator.as_ref()
+                {
+                    coordinator
+                        .mark_file_failed(output.discovered_file_count)
+                        .await;
                     coordinator.publish_progress().await;
                 }
             }
+        }
+        Ok(())
+    }
+}
 
-            if !library_scan_cancel_requested(cancel_token.as_ref())
-                && let Some(work) = pending.next()
+impl LibraryScanTitleWorkQueue for LibraryScanMediaAnalysisPool {
+    fn enqueue(&mut self, work: LibraryScanTitleWork) -> bool {
+        self.enqueue_work(work)
+    }
+}
+
+struct LibraryScanTitleWalkTaskContext {
+    session_id: Option<String>,
+    coordinator: Option<LibraryScanCoordinator>,
+    cancel_token: Option<CancellationToken>,
+    file_total_mode: LibraryScanFileTotalMode,
+    full_folder_scan: bool,
+    metadata_language: String,
+    hydration_source: crate::catalog_workflow::HydrationSource,
+    file_analysis_concurrency: usize,
+}
+
+/// One media-analysis task: per-title hydration guard, inline folder
+/// discovery for deferred work, then the title walk. Returns the file count
+/// known at the point of failure so failed work can be accounted against the
+/// published file totals.
+async fn hydrate_enumerate_and_walk_title_work(
+    app: &AppUseCase,
+    actor: &User,
+    mut work: LibraryScanTitleWork,
+    ctx: LibraryScanTitleWalkTaskContext,
+) -> (usize, AppResult<LibraryTitleWalkResult>) {
+    let mut known_file_count = work.discovered_file_count();
+
+    match title_requires_scan_hydration(app, &work.title, &ctx.metadata_language).await {
+        Ok(true) => {
+            let target = crate::catalog_workflow::HydrationTarget {
+                title: work.title.clone(),
+                requested_tvdb_id: None,
+                sync_wanted_after_completion: false,
+                source: ctx.hydration_source,
+            };
+            match app
+                .hydrate_titles_bulk_cancellable(vec![target], ctx.cancel_token.as_ref())
+                .await
             {
-                let app = self.clone();
-                let actor = actor.clone();
-                let session_id = session_id.to_string();
-                let title_id = work.title.id.clone();
-                let discovered_file_count = work.discovered_file_count();
-                let absorb_walk_summary =
-                    matches!(work.facet_plan, LibraryScanTitleFacetPlan::Movie(_));
-                let created_in_scan = work.created_in_scan;
-                let walk_cancel_token = cancel_token.clone();
-                work_set.spawn(async move {
-                    let result = app
-                        .walk_library_title(
-                            &actor,
-                            LibraryScanTitleWalkRequest {
-                                work,
-                                session_id: Some(session_id),
-                                cancel_token: walk_cancel_token,
-                            },
-                        )
-                        .await;
-                    (
-                        title_id,
-                        discovered_file_count,
-                        absorb_walk_summary,
-                        created_in_scan,
-                        result,
-                    )
-                });
+                Ok(outcome) => {
+                    if let Some((_, reason)) = outcome
+                        .failed_titles
+                        .into_iter()
+                        .find(|(title_id, _)| title_id == &work.title.id)
+                    {
+                        return (known_file_count, Err(AppError::Repository(reason)));
+                    }
+                    if let Some((_, hydrated)) = outcome
+                        .hydrated_titles
+                        .into_iter()
+                        .find(|(title_id, _)| title_id == &work.title.id)
+                    {
+                        work.title = hydrated;
+                    }
+                }
+                Err(error) => return (known_file_count, Err(error)),
             }
         }
+        Ok(false) => {}
+        Err(error) => return (known_file_count, Err(error)),
+    }
 
-        Ok(summary)
+    if work.requires_folder_enumeration() {
+        match enumerate_library_scan_title_work(app, work, ctx.cancel_token.clone()).await {
+            Ok(enumerated) => {
+                work = enumerated;
+                known_file_count = work.discovered_file_count();
+                if known_file_count > 0
+                    && ctx.file_total_mode == LibraryScanFileTotalMode::BackgroundRefreshAggregate
+                    && let Some(coordinator) = ctx.coordinator.as_ref()
+                {
+                    coordinator.add_file_total(known_file_count).await;
+                    coordinator.publish_progress().await;
+                }
+            }
+            Err(error) => return (known_file_count, Err(error)),
+        }
+    }
+
+    let result = app
+        .walk_library_title(
+            actor,
+            LibraryScanTitleWalkRequest {
+                work,
+                session_id: ctx.session_id,
+                cancel_token: ctx.cancel_token,
+                file_total_mode: ctx.file_total_mode,
+                full_folder_scan: ctx.full_folder_scan,
+                file_analysis_concurrency: ctx.file_analysis_concurrency,
+            },
+        )
+        .await;
+    (known_file_count, result)
+}
+
+async fn enumerate_library_scan_title_work(
+    app: &AppUseCase,
+    mut work: LibraryScanTitleWork,
+    cancel_token: Option<CancellationToken>,
+) -> AppResult<LibraryScanTitleWork> {
+    if !work.requires_folder_enumeration() {
+        return Ok(work);
+    }
+    if library_scan_cancel_requested(cancel_token.as_ref()) {
+        return Err(AppError::Canceled("library scan canceled".into()));
+    }
+
+    let files = match &work.facet_plan {
+        LibraryScanTitleFacetPlan::Movie(_) => discover_movie_title_files(app, &work.title).await?,
+        LibraryScanTitleFacetPlan::Episodic => {
+            discover_episodic_title_files_for_progress(app, &work.title).await?
+        }
+    };
+    work.scope = LibraryScanTitleWorkScope::PreEnumeratedFullFolder(files);
+    Ok(work)
+}
+
+type TitleScanAnalysisTaskResult =
+    AppResult<(PlannedTitleScanFile, MediaAnalysisOutcome, Duration)>;
+
+fn launch_pending_title_scan_analysis_tasks(
+    analysis_set: &mut tokio::task::JoinSet<TitleScanAnalysisTaskResult>,
+    pending_analysis_plans: &mut std::collections::VecDeque<PlannedTitleScanFile>,
+    analyzer: std::sync::Arc<dyn MediaAnalyzer>,
+    analysis_limit: std::sync::Arc<tokio::sync::Semaphore>,
+    file_analysis_concurrency: usize,
+    cancel_token: Option<&CancellationToken>,
+) {
+    while !library_scan_cancel_requested(cancel_token)
+        && analysis_set.len() < file_analysis_concurrency
+    {
+        let Some(plan) = pending_analysis_plans.pop_front() else {
+            break;
+        };
+        let analyzer = analyzer.clone();
+        let analysis_limit = analysis_limit.clone();
+        let file_path = plan.file.path.clone();
+        analysis_set.spawn(async move {
+            tracing::debug!(file_path = %file_path, "title scan analysis task: start");
+            let _permit = analysis_limit
+                .acquire_owned()
+                .await
+                .map_err(|error| AppError::Repository(error.to_string()))?;
+            let analysis_started = Instant::now();
+            let outcome = analyzer
+                .analyze_file(stored_path_to_path_buf(&file_path))
+                .await?;
+            tracing::debug!(file_path = %file_path, "title scan analysis task: complete");
+            Ok::<(PlannedTitleScanFile, MediaAnalysisOutcome, Duration), AppError>((
+                plan,
+                outcome,
+                analysis_started.elapsed(),
+            ))
+        });
+    }
+}
+
+struct TitleScanAnalysisFinalizeContext<'a> {
+    app: &'a AppUseCase,
+    title: &'a Title,
+    scan_mode: &'a LibraryScanMode,
+    episode_links: &'a mut HashSet<(String, String)>,
+    summary: &'a mut LibraryScanSummary,
+    db_elapsed: &'a mut Duration,
+    external_subtitle_cache: &'a mut crate::subtitles::ExternalSubtitleDirectoryCache,
+    pending_progress: &'a mut TitleScanProgressDelta,
+    session_id: Option<&'a str>,
+    title_updated_since_emit: &'a mut bool,
+    cancel_token: Option<&'a CancellationToken>,
+}
+
+async fn finalize_title_scan_analysis_task_result(
+    ctx: TitleScanAnalysisFinalizeContext<'_>,
+    result: Result<TitleScanAnalysisTaskResult, tokio::task::JoinError>,
+) -> AppResult<Duration> {
+    let (plan, analysis_outcome, analysis_duration) =
+        result.map_err(|error| AppError::Repository(error.to_string()))??;
+    if library_scan_cancel_requested(ctx.cancel_token) {
+        return Ok(analysis_duration);
+    }
+
+    let file_path = plan.file.path.clone();
+    debug!(
+        title_id = %ctx.title.id,
+        title_name = %ctx.title.name,
+        file_path = %file_path,
+        "title scan stage: finalize file begin"
+    );
+    let outcome = finalize_title_scan_file(
+        ctx.app,
+        ctx.title,
+        plan,
+        Some(analysis_outcome),
+        ctx.scan_mode.clone(),
+        ctx.episode_links,
+        ctx.summary,
+        ctx.db_elapsed,
+        ctx.external_subtitle_cache,
+    )
+    .await;
+    if outcome.progress.failed == 0
+        && let Err(error) = clear_library_scan_unmatched_item(
+            ctx.app,
+            &ctx.title.facet,
+            &ctx.title.library_id,
+            &file_path,
+        )
+        .await
+    {
+        warn!(
+            error = %error,
+            title_id = %ctx.title.id,
+            file_path = %file_path,
+            "failed to clear unmatched title scan item"
+        );
+    }
+    ctx.pending_progress.absorb(outcome.progress);
+    *ctx.title_updated_since_emit |= outcome.title_updated;
+    flush_title_scan_progress_batch(ctx.app, ctx.session_id, ctx.pending_progress).await;
+    debug!(
+        title_id = %ctx.title.id,
+        title_name = %ctx.title.name,
+        file_path = %file_path,
+        "title scan stage: finalize file complete"
+    );
+
+    Ok(analysis_duration)
+}
+
+fn title_scan_facet_plan(title: &Title) -> LibraryScanTitleFacetPlan {
+    match title.facet {
+        MediaFacet::Movie => {
+            LibraryScanTitleFacetPlan::Movie(LibraryScanMovieCleanupContext::default())
+        }
+        MediaFacet::Series | MediaFacet::Anime => LibraryScanTitleFacetPlan::Episodic,
+    }
+}
+
+impl AppUseCase {
+    async fn execute_title_scan_work_with_policy(
+        &self,
+        actor: &User,
+        work: LibraryScanTitleWork,
+        policy: LibraryScanMediaAnalysisPolicy,
+    ) -> AppResult<LibraryScanSummary> {
+        let mut executor = LibraryScanMediaAnalysisPool::for_policy(self, actor, policy).await?;
+        executor.enqueue(work);
+        executor.close_input();
+        executor.finish().await
+    }
+
+    async fn execute_user_title_refresh_work(
+        &self,
+        actor: &User,
+        mut work: LibraryScanTitleWork,
+    ) -> AppResult<LibraryScanSummary> {
+        self.refresh_title_metadata_for_user_scan(&mut work.title)
+            .await?;
+        self.execute_title_scan_work_with_policy(
+            actor,
+            work,
+            LibraryScanMediaAnalysisPolicy::user_title_refresh(),
+        )
+        .await
+    }
+
+    async fn refresh_title_metadata_for_user_scan(&self, title: &mut Title) -> AppResult<()> {
+        let library_ids = vec![title.library_id.clone()];
+        let forced_ids = self
+            .services
+            .catalog
+            .titles
+            .list_title_ids_with_metadata_hydration_due(Some(title.facet.clone()), &library_ids)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let mut titles = vec![title.clone()];
+        super::scan_metadata_refresh::refresh_titles_metadata_for_scan_policy(
+            self,
+            &mut titles,
+            &forced_ids,
+            super::scan_metadata_refresh::LibraryScanMetadataRefreshMode::UserInitiatedTitleRefresh,
+        )
+        .await?;
+        if let Some(refreshed) = titles.pop() {
+            *title = refreshed;
+        }
+        Ok(())
+    }
+
+    async fn execute_scoped_media_scan_work(
+        &self,
+        actor: &User,
+        work: LibraryScanTitleWork,
+    ) -> AppResult<LibraryScanSummary> {
+        self.execute_title_scan_work_with_policy(
+            actor,
+            work,
+            LibraryScanMediaAnalysisPolicy::scoped_media_scan(),
+        )
+        .await
     }
 
     pub async fn scan_title_library(
@@ -1015,52 +1859,15 @@ impl AppUseCase {
         self.require_library_management_permission(actor, &title.library_id)
             .await?;
 
-        let facet_plan = match title.facet {
-            MediaFacet::Movie => {
-                LibraryScanTitleFacetPlan::Movie(LibraryScanMovieCleanupContext::default())
-            }
-            MediaFacet::Series | MediaFacet::Anime => LibraryScanTitleFacetPlan::Episodic,
-        };
         let work = LibraryScanTitleWork {
+            facet_plan: title_scan_facet_plan(&title),
             title,
-            facet_plan,
-            discovered_files: None,
+            scope: LibraryScanTitleWorkScope::FullFolder,
             mode: LibraryScanTitleWalkMode::OneOff,
             created_in_scan: false,
         };
 
-        let metadata_language = self.metadata_language().await;
-        let mut request = LibraryScanTitleWalkRequest {
-            work,
-            session_id: None,
-            cancel_token: None,
-        };
-
-        if title_requires_scan_hydration(self, &request.work.title, &metadata_language).await? {
-            let mut hydration_outcome = self
-                .hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
-                    title: request.work.title.clone(),
-                    requested_tvdb_id: None,
-                    sync_wanted_after_completion: false,
-                    source: crate::catalog_workflow::HydrationSource::Interactive,
-                }])
-                .await?;
-            request.work.title = hydration_outcome
-                .hydrated_titles
-                .remove(title_id)
-                .ok_or_else(|| {
-                    AppError::Repository(
-                        hydration_outcome
-                            .failed_titles
-                            .remove(title_id)
-                            .unwrap_or_else(|| {
-                                "title metadata hydration failed before title scan".to_string()
-                            }),
-                    )
-                })?;
-        }
-
-        Ok(self.walk_library_title(actor, request).await?.summary)
+        self.execute_user_title_refresh_work(actor, work).await
     }
 
     pub(crate) async fn scan_title_library_with_discovered_files(
@@ -1086,51 +1893,14 @@ impl AppUseCase {
             }
         }
 
-        let facet_plan = match title.facet {
-            MediaFacet::Movie => {
-                LibraryScanTitleFacetPlan::Movie(LibraryScanMovieCleanupContext::default())
-            }
-            MediaFacet::Series | MediaFacet::Anime => LibraryScanTitleFacetPlan::Episodic,
+        let work = LibraryScanTitleWork {
+            facet_plan: title_scan_facet_plan(&title),
+            title,
+            scope: LibraryScanTitleWorkScope::ScopedFiles(discovered_files),
+            mode: LibraryScanTitleWalkMode::OneOff,
+            created_in_scan: false,
         };
-        let mut request = LibraryScanTitleWalkRequest {
-            work: LibraryScanTitleWork {
-                title,
-                facet_plan,
-                discovered_files: Some(discovered_files),
-                mode: LibraryScanTitleWalkMode::OneOff,
-                created_in_scan: false,
-            },
-            session_id: None,
-            cancel_token: None,
-        };
-
-        let metadata_language = self.metadata_language().await;
-        if title_requires_scan_hydration(self, &request.work.title, &metadata_language).await? {
-            let title_id = request.work.title.id.clone();
-            let mut hydration_outcome = self
-                .hydrate_titles_bulk(vec![crate::catalog_workflow::HydrationTarget {
-                    title: request.work.title.clone(),
-                    requested_tvdb_id: None,
-                    sync_wanted_after_completion: false,
-                    source: crate::catalog_workflow::HydrationSource::Interactive,
-                }])
-                .await?;
-            request.work.title = hydration_outcome
-                .hydrated_titles
-                .remove(&title_id)
-                .ok_or_else(|| {
-                    AppError::Repository(
-                        hydration_outcome
-                            .failed_titles
-                            .remove(&title_id)
-                            .unwrap_or_else(|| {
-                                "title metadata hydration failed before title scan".to_string()
-                            }),
-                    )
-                })?;
-        }
-
-        Ok(self.walk_library_title(actor, request).await?.summary)
+        self.execute_scoped_media_scan_work(actor, work).await
     }
 
     pub(crate) async fn walk_library_title(
@@ -1142,29 +1912,44 @@ impl AppUseCase {
             work,
             session_id,
             cancel_token,
+            file_total_mode,
+            full_folder_scan,
+            file_analysis_concurrency,
         } = request;
-        match work.facet_plan {
+        let session_id = session_id.as_deref();
+        let LibraryScanTitleWork {
+            title,
+            facet_plan,
+            scope,
+            mode,
+            created_in_scan: _,
+        } = work;
+        let pre_scanned_files = scope.into_discovered_files();
+        match facet_plan {
             LibraryScanTitleFacetPlan::Movie(cleanup) => {
-                self.walk_movie_library_title(
-                    work.title,
-                    session_id.as_deref(),
-                    work.discovered_files,
-                    cleanup,
-                    work.mode,
+                let options = LibraryScanTitleWalkOptions {
+                    session_id,
+                    pre_scanned_files,
+                    mode,
                     cancel_token,
-                )
-                .await
+                    file_total_mode,
+                    full_folder_scan,
+                    file_analysis_concurrency,
+                };
+                self.walk_movie_library_title(title, cleanup, options).await
             }
             LibraryScanTitleFacetPlan::Episodic => {
-                self.walk_episodic_library_title(
-                    actor,
-                    work.title,
-                    session_id.as_deref(),
-                    work.discovered_files,
-                    work.mode,
+                let options = LibraryScanTitleWalkOptions {
+                    session_id,
+                    pre_scanned_files,
+                    mode,
                     cancel_token,
-                )
-                .await
+                    file_total_mode,
+                    full_folder_scan,
+                    file_analysis_concurrency,
+                };
+                self.walk_episodic_library_title(actor, title, options)
+                    .await
             }
         }
     }
@@ -1172,12 +1957,18 @@ impl AppUseCase {
     async fn walk_movie_library_title(
         &self,
         title: Title,
-        session_id: Option<&str>,
-        pre_scanned_files: Option<Vec<LibraryFile>>,
         cleanup: LibraryScanMovieCleanupContext,
-        mode: LibraryScanTitleWalkMode,
-        cancel_token: Option<CancellationToken>,
+        options: LibraryScanTitleWalkOptions<'_>,
     ) -> AppResult<LibraryTitleWalkResult> {
+        let LibraryScanTitleWalkOptions {
+            session_id,
+            pre_scanned_files,
+            mode,
+            cancel_token,
+            file_total_mode,
+            full_folder_scan: _,
+            file_analysis_concurrency: _,
+        } = options;
         let started_at = Instant::now();
         let session_coordinator =
             session_id.map(|value| LibraryScanCoordinator::new(self.clone(), value.to_string()));
@@ -1186,7 +1977,9 @@ impl AppUseCase {
             Some(files) => files,
             None => {
                 let files = discover_movie_title_files(self, &title).await?;
-                if let Some(coordinator) = session_coordinator.as_ref() {
+                if file_total_mode == LibraryScanFileTotalMode::MarkKnownAfterThisWalk
+                    && let Some(coordinator) = session_coordinator.as_ref()
+                {
                     coordinator.add_file_total(files.len()).await;
                     coordinator.mark_file_total_known().await;
                 }
@@ -1209,11 +2002,26 @@ impl AppUseCase {
             "movie title scan stage: start"
         );
 
+        let title_scan_root = cleanup
+            .scan_folder_path
+            .as_deref()
+            .or(title.folder_path.as_deref())
+            .unwrap_or_default();
+
         for file in &discovered_files {
             if library_scan_cancel_requested(cancel_token.as_ref()) {
                 break;
             }
-            finalize_movie_scan_file(self, &title, file, &mut summary, cancel_token.as_ref()).await;
+            finalize_movie_scan_file(
+                self,
+                &title,
+                file,
+                &mut summary,
+                session_id,
+                title_scan_root,
+                cancel_token.as_ref(),
+            )
+            .await;
             if let Some(coordinator) = session_coordinator.as_ref() {
                 coordinator.mark_file_completed(1).await;
             }
@@ -1238,7 +2046,7 @@ impl AppUseCase {
             }
         }
 
-        info!(
+        debug!(
             title_id = %title.id,
             title_name = %title.name,
             files = discovered_file_count,
@@ -1258,15 +2066,21 @@ impl AppUseCase {
         &self,
         actor: &User,
         title: Title,
-        session_id: Option<&str>,
-        pre_scanned_files: Option<Vec<LibraryFile>>,
-        mode: LibraryScanTitleWalkMode,
-        cancel_token: Option<CancellationToken>,
+        options: LibraryScanTitleWalkOptions<'_>,
     ) -> AppResult<LibraryTitleWalkResult> {
+        let LibraryScanTitleWalkOptions {
+            session_id,
+            pre_scanned_files,
+            mode,
+            cancel_token,
+            file_total_mode,
+            full_folder_scan,
+            file_analysis_concurrency,
+        } = options;
         let started_at = Instant::now();
         let session_coordinator =
             session_id.map(|value| LibraryScanCoordinator::new(self.clone(), value.to_string()));
-        let scoped_discovered_files = pre_scanned_files.is_some();
+        let scoped_discovered_files = pre_scanned_files.is_some() && !full_folder_scan;
         let pre_scanned_file_count = pre_scanned_files.as_ref().map(Vec::len);
         let scan_mode = mode.as_file_finalize_mode();
 
@@ -1322,7 +2136,9 @@ impl AppUseCase {
                     walk_elapsed.saturating_add(Duration::from_millis(scan_result.walk_ms));
                 stat_elapsed =
                     stat_elapsed.saturating_add(Duration::from_millis(scan_result.stat_ms));
-                if let Some(coordinator) = session_coordinator.as_ref() {
+                if file_total_mode == LibraryScanFileTotalMode::MarkKnownAfterThisWalk
+                    && let Some(coordinator) = session_coordinator.as_ref()
+                {
                     coordinator.add_file_total(scan_result.files.len()).await;
                     coordinator.mark_file_total_known().await;
                 }
@@ -1402,16 +2218,17 @@ impl AppUseCase {
         let mut external_subtitle_cache =
             crate::subtitles::ExternalSubtitleDirectoryCache::default();
         let actor_event = DomainEventActor::from(actor);
+        let analyzer = self.services.library.media_analyzer.clone();
+        let mut analysis_set = tokio::task::JoinSet::new();
+        let mut pending_analysis_plans = std::collections::VecDeque::new();
+        let mut title_updated_since_emit = false;
 
         'file_chunks: for file_chunk in discovered_files.chunks(TITLE_SCAN_FILE_BATCH_SIZE) {
             if library_scan_cancel_requested(cancel_token.as_ref()) {
                 break;
             }
-            let files = file_chunk.to_vec();
-            let mut planned_files = Vec::new();
-            let mut title_updated_in_batch = false;
 
-            for file in files {
+            for file in file_chunk.iter().cloned() {
                 if library_scan_cancel_requested(cancel_token.as_ref()) {
                     break;
                 }
@@ -1427,16 +2244,52 @@ impl AppUseCase {
                     snapshot
                 } else {
                     let stat_started = Instant::now();
-                    let metadata = match tokio::fs::metadata(&source_path).await {
-                        Ok(metadata) => metadata,
+                    match file_source_snapshot_from_path(&source_path).await {
+                        Ok(snapshot) => {
+                            stat_elapsed = stat_elapsed.saturating_add(stat_started.elapsed());
+                            snapshot
+                        }
                         Err(error) => {
                             stat_elapsed = stat_elapsed.saturating_add(stat_started.elapsed());
                             warn!(
                                 error = %error,
                                 title_id = %title.id,
                                 file_path = %file.path,
-                                "failed to read file metadata during title scan"
+                                "failed to read file source signature during title scan"
                             );
+                            let display_name = file.display_name.trim().to_string();
+                            let display_name = if display_name.is_empty() {
+                                source_path
+                                    .file_name()
+                                    .map(|value| value.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| file.path.clone())
+                            } else {
+                                display_name
+                            };
+                            if let Err(persist_error) = persist_ignored_library_scan_item(
+                                self,
+                                &title.facet,
+                                &title.library_id,
+                                IgnoredLibraryScanItemArgs {
+                                    title_id: Some(&title.id),
+                                    session_id,
+                                    library_path: &title_dir_str,
+                                    item_path: &file.path,
+                                    display_name: &display_name,
+                                    query: &display_name,
+                                    year_hint: title.year.and_then(|year| u32::try_from(year).ok()),
+                                    reason_code: LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE,
+                                    error_message: Some(error.to_string()),
+                                },
+                            )
+                            .await
+                            {
+                                warn!(
+                                    path = %file.path,
+                                    error = %persist_error,
+                                    "failed to persist ignored library scan file"
+                                );
+                            }
                             summary.skipped += 1;
                             pending_progress.absorb(TitleScanProgressDelta::completed(1));
                             flush_title_scan_progress_batch(
@@ -1447,12 +2300,6 @@ impl AppUseCase {
                             .await;
                             continue;
                         }
-                    };
-                    stat_elapsed = stat_elapsed.saturating_add(stat_started.elapsed());
-
-                    FileSourceSnapshot {
-                        size_bytes: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
-                        signature: file_source_signature_from_metadata(&metadata),
                     }
                 };
 
@@ -1561,35 +2408,15 @@ impl AppUseCase {
                     PlannedTitleScanRecord::New
                 };
 
-                planned_files.push(PlannedTitleScanFile {
+                let plan = PlannedTitleScanFile {
                     file,
                     parsed: filename_parse.parsed_release,
                     target_episodes,
                     series_movie_link_id,
                     snapshot,
                     record,
-                });
-            }
+                };
 
-            planned_files.sort_by(|left, right| left.file.path.cmp(&right.file.path));
-            debug!(
-                title_id = %title.id,
-                title_name = %title.name,
-                chunk_files = planned_files.len(),
-                "title scan stage: chunk planned"
-            );
-            debug!(
-                title_id = %title.id,
-                title_name = %title.name,
-                "title scan stage: analysis phase begin"
-            );
-
-            let mut analysis_set = tokio::task::JoinSet::new();
-            let mut pending_analysis_plans = std::collections::VecDeque::new();
-            for plan in planned_files {
-                if library_scan_cancel_requested(cancel_token.as_ref()) {
-                    break;
-                }
                 let should_analyze = match &plan.record {
                     PlannedTitleScanRecord::Existing {
                         should_skip_analysis,
@@ -1630,124 +2457,101 @@ impl AppUseCase {
                         );
                     }
                     pending_progress.absorb(outcome.progress);
-                    title_updated_in_batch |= outcome.title_updated;
+                    title_updated_since_emit |= outcome.title_updated;
                     flush_title_scan_progress_batch(self, session_id, &mut pending_progress).await;
-                    continue;
+                } else {
+                    analyzed_files += 1;
+                    pending_analysis_plans.push_back(plan);
                 }
 
-                analyzed_files += 1;
-                pending_analysis_plans.push_back(plan);
-            }
-            debug!(
-                title_id = %title.id,
-                title_name = %title.name,
-                pending_analysis = pending_analysis_plans.len(),
-                "title scan stage: analysis tasks queued"
-            );
-
-            while !pending_analysis_plans.is_empty() || !analysis_set.is_empty() {
-                while !library_scan_cancel_requested(cancel_token.as_ref())
-                    && analysis_set.len() < GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY
-                {
-                    let Some(plan) = pending_analysis_plans.pop_front() else {
-                        break;
-                    };
-                    let analyzer = self.services.library.media_analyzer.clone();
-                    let analysis_limit = analysis_limit.clone();
-                    let file_path = plan.file.path.clone();
-                    analysis_set.spawn(async move {
-                        tracing::debug!(file_path = %file_path, "title scan analysis task: start");
-                        let _permit = analysis_limit
-                            .acquire_owned()
-                            .await
-                            .map_err(|error| AppError::Repository(error.to_string()))?;
-                        let analysis_started = Instant::now();
-                        let outcome =
-                            analyzer.analyze_file(stored_path_to_path_buf(&file_path)).await?;
-                        tracing::debug!(file_path = %file_path, "title scan analysis task: complete");
-                        Ok::<(PlannedTitleScanFile, MediaAnalysisOutcome, Duration), AppError>((
-                            plan,
-                            outcome,
-                            analysis_started.elapsed(),
-                        ))
-                    });
-                }
-
-                if library_scan_cancel_requested(cancel_token.as_ref()) {
-                    pending_analysis_plans.clear();
-                    analysis_set.abort_all();
-                    break;
-                }
-
-                let Some(result) =
-                    await_cancellable(cancel_token.as_ref(), analysis_set.join_next())
-                        .await
-                        .flatten()
-                else {
-                    pending_analysis_plans.clear();
-                    analysis_set.abort_all();
-                    break;
-                };
-
-                let (plan, analysis_outcome, analysis_duration) =
-                    result.map_err(|error| AppError::Repository(error.to_string()))??;
-                analyze_elapsed = analyze_elapsed.saturating_add(analysis_duration);
-                if library_scan_cancel_requested(cancel_token.as_ref()) {
-                    continue;
-                }
-                let file_path = plan.file.path.clone();
-                debug!(
-                    title_id = %title.id,
-                    title_name = %title.name,
-                    file_path = %file_path,
-                    "title scan stage: finalize file begin"
+                launch_pending_title_scan_analysis_tasks(
+                    &mut analysis_set,
+                    &mut pending_analysis_plans,
+                    analyzer.clone(),
+                    analysis_limit.clone(),
+                    file_analysis_concurrency,
+                    cancel_token.as_ref(),
                 );
-                let outcome = finalize_title_scan_file(
-                    self,
-                    &title,
-                    plan,
-                    Some(analysis_outcome),
-                    scan_mode.clone(),
-                    &mut episode_links,
-                    &mut summary,
-                    &mut db_elapsed,
-                    &mut external_subtitle_cache,
-                )
-                .await;
-                if outcome.progress.failed == 0
-                    && let Err(error) = clear_library_scan_unmatched_item(
-                        self,
-                        &title.facet,
-                        &title.library_id,
-                        &file_path,
+                while let Some(result) = analysis_set.try_join_next() {
+                    let analysis_duration = finalize_title_scan_analysis_task_result(
+                        TitleScanAnalysisFinalizeContext {
+                            app: self,
+                            title: &title,
+                            scan_mode: &scan_mode,
+                            episode_links: &mut episode_links,
+                            summary: &mut summary,
+                            db_elapsed: &mut db_elapsed,
+                            external_subtitle_cache: &mut external_subtitle_cache,
+                            pending_progress: &mut pending_progress,
+                            session_id,
+                            title_updated_since_emit: &mut title_updated_since_emit,
+                            cancel_token: cancel_token.as_ref(),
+                        },
+                        result,
                     )
-                    .await
-                {
-                    warn!(
-                        error = %error,
-                        title_id = %title.id,
-                        file_path = %file_path,
-                        "failed to clear unmatched title scan item"
-                    );
+                    .await?;
+                    analyze_elapsed = analyze_elapsed.saturating_add(analysis_duration);
                 }
-                pending_progress.absorb(outcome.progress);
-                title_updated_in_batch |= outcome.title_updated;
-                flush_title_scan_progress_batch(self, session_id, &mut pending_progress).await;
-                debug!(
-                    title_id = %title.id,
-                    title_name = %title.name,
-                    file_path = %file_path,
-                    "title scan stage: finalize file complete"
-                );
             }
 
-            if title_updated_in_batch {
+            if title_updated_since_emit {
                 self.emit_title_updated_activity(actor_event.clone(), &title)
                     .await;
+                title_updated_since_emit = false;
             }
 
             if library_scan_cancel_requested(cancel_token.as_ref()) {
                 break 'file_chunks;
+            }
+        }
+
+        while !pending_analysis_plans.is_empty() || !analysis_set.is_empty() {
+            launch_pending_title_scan_analysis_tasks(
+                &mut analysis_set,
+                &mut pending_analysis_plans,
+                analyzer.clone(),
+                analysis_limit.clone(),
+                file_analysis_concurrency,
+                cancel_token.as_ref(),
+            );
+
+            if library_scan_cancel_requested(cancel_token.as_ref()) {
+                pending_analysis_plans.clear();
+                analysis_set.abort_all();
+                break;
+            }
+
+            let Some(result) = await_cancellable(cancel_token.as_ref(), analysis_set.join_next())
+                .await
+                .flatten()
+            else {
+                pending_analysis_plans.clear();
+                analysis_set.abort_all();
+                break;
+            };
+            let analysis_duration = finalize_title_scan_analysis_task_result(
+                TitleScanAnalysisFinalizeContext {
+                    app: self,
+                    title: &title,
+                    scan_mode: &scan_mode,
+                    episode_links: &mut episode_links,
+                    summary: &mut summary,
+                    db_elapsed: &mut db_elapsed,
+                    external_subtitle_cache: &mut external_subtitle_cache,
+                    pending_progress: &mut pending_progress,
+                    session_id,
+                    title_updated_since_emit: &mut title_updated_since_emit,
+                    cancel_token: cancel_token.as_ref(),
+                },
+                result,
+            )
+            .await?;
+            analyze_elapsed = analyze_elapsed.saturating_add(analysis_duration);
+
+            if title_updated_since_emit {
+                self.emit_title_updated_activity(actor_event.clone(), &title)
+                    .await;
+                title_updated_since_emit = false;
             }
         }
 
@@ -1846,7 +2650,7 @@ impl AppUseCase {
             analyzed_files,
             unchanged_file_skips,
             batch_size = TITLE_SCAN_FILE_BATCH_SIZE,
-            worker_concurrency = GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY,
+            worker_concurrency = file_analysis_concurrency,
             elapsed_ms = elapsed_ms_u64(started_at),
             "title library scan completed"
         );
@@ -1860,6 +2664,9 @@ pub(crate) struct LibraryScanTitleWalkRequest {
     pub(crate) work: LibraryScanTitleWork,
     pub(crate) session_id: Option<String>,
     pub(crate) cancel_token: Option<CancellationToken>,
+    pub(crate) file_total_mode: LibraryScanFileTotalMode,
+    pub(crate) full_folder_scan: bool,
+    pub(crate) file_analysis_concurrency: usize,
 }
 
 #[cfg(test)]
@@ -1878,6 +2685,7 @@ mod tests {
             root_folder_id: scryer_domain::root_folder_id_for_path("/data/test"),
             monitored: true,
             tags: vec![],
+            canonical_tags: vec![],
             external_ids: vec![ExternalId {
                 source: "tvdb".into(),
                 value: "131313".into(),
@@ -1891,10 +2699,11 @@ mod tests {
             background_url: None,
             background_source_url: None,
             sort_title: None,
+            catalog_sort_key: String::new(),
             slug: None,
             imdb_id: None,
             runtime_minutes: None,
-            genres: vec![],
+            popularity: None,
             content_status: None,
             language: None,
             first_aired: None,
@@ -1934,6 +2743,132 @@ mod tests {
             monitored: true,
             created_at: Utc::now(),
         }
+    }
+
+    fn ready_queue_test_file(path: &str) -> LibraryFile {
+        LibraryFile {
+            path: path.into(),
+            display_name: path.into(),
+            nfo_path: None,
+            size_bytes: None,
+            source_signature_scheme: None,
+            source_signature_value: None,
+        }
+    }
+
+    fn ready_queue_test_work(
+        title_id: &str,
+        discovered_files: Option<Vec<LibraryFile>>,
+    ) -> QueuedLibraryScanTitleAnalysisWork {
+        let mut title = numeric_series_title();
+        title.id = title_id.into();
+        let scope = match discovered_files {
+            Some(files) => LibraryScanTitleWorkScope::ScopedFiles(files),
+            None => LibraryScanTitleWorkScope::FullFolder,
+        };
+        let work = LibraryScanTitleWork {
+            title,
+            facet_plan: LibraryScanTitleFacetPlan::Episodic,
+            scope,
+            mode: LibraryScanTitleWalkMode::Full,
+            created_in_scan: false,
+        };
+        let coverage = LibraryScanWorkCoverage::from_work(&work);
+        QueuedLibraryScanTitleAnalysisWork { work, coverage }
+    }
+
+    #[test]
+    fn analysis_ready_full_folder_counts_as_existing_full_coverage() {
+        let mut ready = std::collections::VecDeque::new();
+        ready.push_back(ready_queue_test_work("title-ready", None));
+        ready.push_back(ready_queue_test_work(
+            "title-other",
+            Some(vec![ready_queue_test_file("/library/other.mkv")]),
+        ));
+
+        assert!(analysis_ready_full_folder_already_covered(
+            &ready,
+            "title-ready"
+        ));
+        assert!(!analysis_ready_full_folder_already_covered(
+            &ready,
+            "title-other"
+        ));
+        assert!(!analysis_ready_full_folder_already_covered(
+            &ready,
+            "title-missing"
+        ));
+    }
+
+    #[test]
+    fn analysis_ready_scoped_file_counts_as_existing_scoped_coverage() {
+        let mut ready = std::collections::VecDeque::new();
+        ready.push_back(ready_queue_test_work(
+            "title-ready",
+            Some(vec![
+                ready_queue_test_file("/library/show/s01e01.mkv"),
+                ready_queue_test_file("/library/show/s01e02.mkv"),
+            ]),
+        ));
+
+        assert!(analysis_ready_scoped_path_already_covered(
+            &ready,
+            "title-ready",
+            "/library/show/s01e01.mkv"
+        ));
+        assert!(!analysis_ready_scoped_path_already_covered(
+            &ready,
+            "title-ready",
+            "/library/show/s01e03.mkv"
+        ));
+        assert!(!analysis_ready_scoped_path_already_covered(
+            &ready,
+            "title-other",
+            "/library/show/s01e01.mkv"
+        ));
+    }
+
+    #[test]
+    fn pre_enumerated_empty_full_folder_counts_as_full_coverage() {
+        let mut title = numeric_series_title();
+        title.id = "title-empty".into();
+        let work = LibraryScanTitleWork {
+            title,
+            facet_plan: LibraryScanTitleFacetPlan::Episodic,
+            scope: LibraryScanTitleWorkScope::PreEnumeratedFullFolder(Vec::new()),
+            mode: LibraryScanTitleWalkMode::Full,
+            created_in_scan: false,
+        };
+
+        let coverage = LibraryScanWorkCoverage::from_work(&work);
+
+        assert!(coverage.full_folder);
+        assert!(coverage.scoped_paths.is_empty());
+        assert_eq!(work.discovered_file_count(), 0);
+    }
+
+    #[test]
+    fn scope_merge_preserves_scoped_paths_when_full_inventory_arrives() {
+        let mut scope = LibraryScanTitleWorkScope::ScopedFiles(vec![ready_queue_test_file(
+            "/library/show/loose.mkv",
+        )]);
+        scope.merge(LibraryScanTitleWorkScope::PreEnumeratedFullFolder(vec![
+            ready_queue_test_file("/library/show/s01e01.mkv"),
+        ]));
+
+        assert!(scope.has_full_folder_coverage());
+        let files = scope.discovered_files().expect("merged files");
+        assert_eq!(files.len(), 2);
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path == "/library/show/loose.mkv")
+        );
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path == "/library/show/s01e01.mkv")
+        );
     }
 
     #[tokio::test]

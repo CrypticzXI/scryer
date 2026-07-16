@@ -137,7 +137,7 @@ export function SettingsUsersContainer() {
   const refreshLibraries = useCallback(async () => {
     try {
       const { data, error } = await client
-        .query(librariesQuery, { facet: null, permission: "view" })
+        .query(librariesQuery, { facet: null, permission: "VIEW" })
         .toPromise();
       if (error) throw error;
       setLibraries((data?.libraries ?? []) as LibraryRecord[]);
@@ -153,14 +153,15 @@ export function SettingsUsersContainer() {
 
   const createUser = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!newUsername.trim() || !newPassword.trim()) {
+    const createdUsername = newUsername.trim();
+    if (!createdUsername || !newPassword.trim()) {
       setGlobalStatus(t("status.userRequired"));
       return;
     }
     try {
       const { error } = await client.mutation(createUserMutation, {
         input: {
-          username: newUsername.trim(),
+          username: createdUsername,
           password: newPassword,
           appPermissions: canManagePermissions ? newAppPermissions : [],
           libraryPermissions: canManagePermissions
@@ -178,7 +179,7 @@ export function SettingsUsersContainer() {
       setNewPassword("");
       setNewAppPermissions([]);
       setNewLibraryPermissionDrafts({});
-      setGlobalStatus(t("user.created"));
+      setGlobalStatus(t("user.created", { name: createdUsername }));
       await refreshUsers();
       notifyExternalAccountInviteSourcesChanged();
     } catch (error) {

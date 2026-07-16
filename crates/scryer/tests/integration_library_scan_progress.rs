@@ -188,7 +188,7 @@ async fn active_library_scans_query_returns_progress_snapshot() {
         .as_str()
         .expect("scanLibrary should return a session id")
         .to_string();
-    assert_eq!(start["data"]["scanLibrary"]["facet"], "series");
+    assert_eq!(start["data"]["scanLibrary"]["facet"], "SERIES");
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let scan = loop {
@@ -222,11 +222,11 @@ async fn active_library_scans_query_returns_progress_snapshot() {
     };
 
     assert_eq!(scan["sessionId"], session_id);
-    assert_eq!(scan["facet"], "series");
+    assert_eq!(scan["facet"], "SERIES");
     assert!(
         matches!(
             scan["status"].as_str(),
-            Some("discovering") | Some("running")
+            Some("DISCOVERING") | Some("RUNNING")
         ),
         "expected active scan status, got {scan}"
     );
@@ -245,6 +245,127 @@ async fn active_library_scans_query_returns_progress_snapshot() {
             .is_some()
     );
     assert!(scan["mediaAnalysisProgress"]["failed"].as_u64().is_some());
+}
+
+#[tokio::test]
+async fn graphql_allows_concurrent_scans_for_distinct_libraries_in_same_facet() {
+    let ctx = TestContext::new().await;
+    seed_media_path_settings(&ctx).await;
+    let admin = ctx
+        .app
+        .find_or_create_default_user()
+        .await
+        .expect("create default admin");
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let first_root = tempdir.path().join("first-movies");
+    let second_root = tempdir.path().join("second-movies");
+    std::fs::create_dir_all(first_root.join("First Unknown Movie (2025)"))
+        .expect("create first movie folder");
+    std::fs::create_dir_all(second_root.join("Second Unknown Movie (2026)"))
+        .expect("create second movie folder");
+    let first_library = ctx
+        .app
+        .create_library(
+            &admin,
+            MediaFacet::Movie,
+            "First Movies".to_string(),
+            vec![LibraryRootDraft {
+                path: first_root.to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create first movie library");
+    let second_library = ctx
+        .app
+        .create_library(
+            &admin,
+            MediaFacet::Movie,
+            "Second Movies".to_string(),
+            vec![LibraryRootDraft {
+                path: second_root.to_string_lossy().to_string(),
+                is_default: true,
+            }],
+            None,
+        )
+        .await
+        .expect("create second movie library");
+
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(2))
+                .set_body_json(json!({
+                    "data": {
+                        "searchTvdbBatch": []
+                    }
+                })),
+        )
+        .with_priority(1)
+        .mount(&ctx.smg_server)
+        .await;
+
+    let mutation = r#"mutation ScanLibrary($input: ScanLibraryInput!) {
+        scanLibrary(input: $input) { sessionId libraryId facet status }
+    }"#;
+    let first = gql(
+        &ctx,
+        mutation,
+        json!({ "input": { "libraryId": first_library.id } }),
+    )
+    .await;
+    assert_no_errors(&first);
+    let second = gql(
+        &ctx,
+        mutation,
+        json!({ "input": { "libraryId": second_library.id } }),
+    )
+    .await;
+    assert_no_errors(&second);
+
+    let first_session_id = first["data"]["scanLibrary"]["sessionId"]
+        .as_str()
+        .expect("first session id")
+        .to_string();
+    let second_session_id = second["data"]["scanLibrary"]["sessionId"]
+        .as_str()
+        .expect("second session id")
+        .to_string();
+    let active = gql(
+        &ctx,
+        r#"query { activeLibraryScans { sessionId libraryId facet status } }"#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&active);
+    let active_scans = active["data"]["activeLibraryScans"]
+        .as_array()
+        .expect("active scan array");
+    assert!(active_scans.iter().any(|scan| {
+        scan["sessionId"] == first_session_id && scan["libraryId"] == first_library.id
+    }));
+    assert!(active_scans.iter().any(|scan| {
+        scan["sessionId"] == second_session_id && scan["libraryId"] == second_library.id
+    }));
+
+    let duplicate = gql(
+        &ctx,
+        mutation,
+        json!({ "input": { "libraryId": first_library.id } }),
+    )
+    .await;
+    assert!(duplicate.get("errors").is_some());
+
+    ctx.app
+        .cancel_library_scan(&admin, &first_session_id)
+        .await
+        .expect("cancel first concurrent scan");
+    ctx.app
+        .cancel_library_scan(&admin, &second_session_id)
+        .await
+        .expect("cancel second concurrent scan");
 }
 
 #[tokio::test]
@@ -280,9 +401,9 @@ async fn scan_library_mutation_returns_ok_status_and_started_session() {
             .as_str()
             .is_some_and(|value| !value.is_empty())
     );
-    assert_eq!(session["facet"], "movie");
-    assert_eq!(session["mode"], "full");
-    assert_eq!(session["status"], "discovering");
+    assert_eq!(session["facet"], "MOVIE");
+    assert_eq!(session["mode"], "FULL");
+    assert_eq!(session["status"], "DISCOVERING");
 }
 
 #[tokio::test]
@@ -335,34 +456,6 @@ async fn scan_library_mutation_marks_nonexistent_library_path_failed() {
         wait_for_scan_status(&mut progress_rx, &session_id, LibraryScanStatus::Failed).await;
     assert_eq!(failed_session.facet, MediaFacet::Anime);
     assert_eq!(failed_session.status, LibraryScanStatus::Failed);
-
-    let projected = gql(
-        &ctx,
-        r#"query LibraryScanSession($sessionId: ID!) {
-            libraryScanSession(sessionId: $sessionId) {
-                sessionId
-                facet
-                mode
-                status
-                summary {
-                    scanned
-                    matched
-                    imported
-                    skipped
-                    unmatched
-                }
-            }
-        }"#,
-        json!({ "sessionId": session_id }),
-    )
-    .await;
-    assert_no_errors(&projected);
-    let session = &projected["data"]["libraryScanSession"];
-    assert_eq!(session["sessionId"], session_id);
-    assert_eq!(session["facet"], "anime");
-    assert_eq!(session["mode"], "full");
-    assert_eq!(session["status"], "failed");
-    assert!(session["summary"].is_null());
 }
 
 #[tokio::test]

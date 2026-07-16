@@ -1,5 +1,5 @@
 use super::*;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 // ── is_video_file ─────────────────────────────────────────────────────────
 
@@ -151,6 +151,54 @@ fn catalog_settings_permission_does_not_include_system_settings() {
     );
 }
 
+#[test]
+fn explicit_query_facets_gate_text_search() {
+    let caps = IndexerProviderCapabilities {
+        query_param: Some("q".to_string()),
+        supported_query_facets: vec!["movie".to_string(), "anime".to_string()],
+        ..IndexerProviderCapabilities::default()
+    };
+
+    assert!(caps.supports_query_for_facet("movie"));
+    assert!(caps.supports_query_for_facet("ANIME"));
+    assert!(!caps.supports_query_for_facet("series"));
+}
+
+#[test]
+fn legacy_supported_id_facets_imply_text_search() {
+    let caps = IndexerProviderCapabilities {
+        query_param: Some("q".to_string()),
+        supported_ids: HashMap::from([("anime".to_string(), vec!["anidb_id".to_string()])]),
+        ..IndexerProviderCapabilities::default()
+    };
+
+    assert!(caps.supports_query_for_facet("anime"));
+    assert!(!caps.supports_query_for_facet("movie"));
+}
+
+#[test]
+fn legacy_query_only_caps_accept_current_facets() {
+    let caps = IndexerProviderCapabilities {
+        query_param: Some("q".to_string()),
+        ..IndexerProviderCapabilities::default()
+    };
+
+    assert!(caps.supports_query_for_facet("movie"));
+    assert!(caps.supports_query_for_facet("series"));
+    assert!(caps.supports_query_for_facet("anime"));
+    assert!(!caps.supports_query_for_facet("music"));
+}
+
+#[test]
+fn missing_query_param_disables_query_facets() {
+    let caps = IndexerProviderCapabilities {
+        supported_query_facets: vec!["movie".to_string()],
+        ..IndexerProviderCapabilities::default()
+    };
+
+    assert!(!caps.supports_query_for_facet("movie"));
+}
+
 // ── match_fuzzy ───────────────────────────────────────────────────────────
 
 #[test]
@@ -254,6 +302,10 @@ fn config_field_type_supports_multiline() {
         Some(ConfigFieldType::Multiline)
     );
     assert_eq!(ConfigFieldType::Multiline.as_str(), "multiline");
+    assert_eq!(ConfigFieldType::parse("path"), Some(ConfigFieldType::Path));
+    assert_eq!(ConfigFieldType::Path.as_str(), "path");
+    assert_eq!(ConfigFieldType::parse("tag"), Some(ConfigFieldType::Tag));
+    assert_eq!(ConfigFieldType::Tag.as_str(), "tag");
 }
 
 #[test]

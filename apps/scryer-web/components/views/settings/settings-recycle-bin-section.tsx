@@ -2,6 +2,7 @@ import { Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Label } from "@/components/ui/label";
 import {
   Table,
@@ -12,13 +13,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useTranslate } from "@/lib/context/translate-context";
-import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
+import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { selectorId } from "@/lib/utils/dom-ids";
 import type { LibraryRecord } from "@/lib/types";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
+import { formatUiDateTime } from "@/lib/utils/date-format";
 
 export type RecycledItem = {
   id: string;
@@ -60,26 +59,16 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return iso;
-  }
+function formatDate(iso: string, dateTimeFormat: UiDateTimeFormat): string {
+  return formatUiDateTime(iso, dateTimeFormat, { fallback: iso });
 }
 
 const REASON_LABELS: Record<string, { label: string; className: string }> = {
-  upgrade_replaced: { label: "Upgrade", className: "bg-blue-900/40 text-blue-300" },
-  file_deleted: { label: "Deleted", className: "bg-red-900/40 text-red-300" },
-  invalid_file: { label: "Invalid", className: "bg-yellow-900/40 text-yellow-300" },
-  language_mismatch: { label: "Language", className: "bg-orange-900/40 text-orange-300" },
-  post_download_rule_blocked: { label: "Rule blocked", className: "bg-purple-900/40 text-purple-300" },
+  upgrade_replaced: { label: "Upgrade", className: "bg-[var(--scry-info-bg-strong)] text-[var(--scry-info-text)]" },
+  file_deleted: { label: "Deleted", className: "bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]" },
+  invalid_file: { label: "Invalid", className: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]" },
+  language_mismatch: { label: "Language", className: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]" },
+  post_download_rule_blocked: { label: "Rule blocked", className: "bg-[rgba(var(--scry-accent-rgb),0.2)] text-[var(--scry-accent-text)]" },
 };
 
 function ReasonBadge({ reason }: { reason: string }) {
@@ -111,6 +100,7 @@ export function SettingsRecycleBinSection({
   onEmptyAll,
 }: Props) {
   const t = useTranslate();
+  const dateTimeFormat = useUiDateTimeFormat();
   const isBusy = settingsSaving || mutatingId !== null;
 
   if (settingsLoading) {
@@ -176,7 +166,7 @@ export function SettingsRecycleBinSection({
               size="sm"
               disabled={totalCount === 0 || isBusy || librariesLoading}
               onClick={onEmptyAll}
-              className="text-red-400 hover:text-red-300"
+              className="text-[var(--scry-danger-text-soft)] hover:text-[var(--scry-danger-text)]"
             >
               <Trash2 className="mr-2 h-4 w-4" />
               {t("settings.recycleBinEmptyAll")}
@@ -215,7 +205,7 @@ export function SettingsRecycleBinSection({
                       <TableCell>
                         <div>
                           <div className="font-medium">{item.fileName}</div>
-                          <div className="max-w-[300px] truncate text-xs text-muted-foreground" title={item.originalPath}>
+                          <div className="max-w-[300px] truncate font-[var(--font-code)] text-xs text-muted-foreground" title={item.originalPath}>
                             {item.originalPath}
                           </div>
                         </div>
@@ -226,46 +216,32 @@ export function SettingsRecycleBinSection({
                       <TableCell>
                         <ReasonBadge reason={item.reason} />
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                      <TableCell className="whitespace-nowrap font-[var(--font-code)] text-sm text-muted-foreground">
                         {formatSize(item.sizeBytes)}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                        {formatDate(item.recycledAt)}
+                        {formatDate(item.recycledAt, dateTimeFormat)}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <Button
+                          <IconButton
                             id={selectorId("settings-recycle-bin-restore", item.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("settings.recycleBinRestore")}
-                            aria-label={t("settings.recycleBinRestore")}
+                            label={t("settings.recycleBinRestore")}
+                            tone="enabled"
                             disabled={rowBusy}
                             onClick={() => onRestore(item)}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.enabled,
-                            )}
                           >
                             <RotateCcw className="h-4 w-4" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             id={selectorId("settings-recycle-bin-delete", item.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("settings.recycleBinDelete")}
-                            aria-label={t("settings.recycleBinDelete")}
+                            label={t("settings.recycleBinDelete")}
+                            tone="delete"
                             disabled={rowBusy}
                             onClick={() => onDelete(item)}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.delete,
-                            )}
                           >
                             <Trash2 className="h-4 w-4" />
-                          </Button>
+                          </IconButton>
                         </div>
                       </TableCell>
                     </TableRow>

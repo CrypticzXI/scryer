@@ -1,0 +1,177 @@
+query MetadataBulk(
+  $movieTvdbIds: [Int!]!
+  $seriesTvdbIds: [Int!]!
+  $language: String!
+  $includeEpisodes: Boolean = true
+) {
+  metadataBulk(
+    movieTvdbIds: $movieTvdbIds
+    seriesTvdbIds: $seriesTvdbIds
+    language: $language
+    includeEpisodes: $includeEpisodes
+  ) {
+    movies {
+      ...MovieFields
+    }
+    series {
+      ...SeriesFields
+    }
+    missing_movie_tvdb_ids
+    missing_series_tvdb_ids
+  }
+}
+
+fragment MovieFields on TvdbMovie {
+  tvdb_id
+  name
+  slug
+  year
+  status
+  overview
+  poster_url
+  language
+  runtime_minutes
+  sort_title
+  imdb_id
+  tmdb_id
+  anidb_id
+  canonical_tags {
+    key
+    category
+    name
+    confidence
+    sources
+    source_tag_keys
+    is_adult
+    is_spoiler
+  }
+  studio
+  tmdb_release_date
+  rating
+  rating_sources
+  external_ratings {
+    source
+    value
+    score
+    normalized
+    votes
+    url
+  }
+  artworks {
+    kind
+    url
+  }
+}
+
+fragment SeriesFields on TvdbSeries {
+  tvdb_id
+  name
+  sort_name
+  slug
+  status
+  year
+  first_aired
+  overview
+  network
+  runtime_minutes
+  poster_url
+  country
+  canonical_tags {
+    key
+    category
+    name
+    confidence
+    sources
+    source_tag_keys
+    is_adult
+    is_spoiler
+  }
+  rating
+  rating_sources
+  external_ratings {
+    source
+    value
+    score
+    normalized
+    votes
+    url
+  }
+  aliases
+  tagged_aliases {
+    name
+    language
+  }
+  artworks {
+    kind
+    url
+  }
+  seasons {
+    tvdb_id
+    number
+    label
+    episode_type
+  }
+  episodes {
+    tvdb_id
+    episode_number
+    season_number
+    name
+    aired
+    runtime_minutes
+    is_filler
+    is_recap
+    overview
+    absolute_number
+    image_url
+  }
+  anime_mappings {
+    mal_id
+    mal_dub_id
+    anilist_id
+    anidb_id
+    kitsu_id
+    simkl_id
+    thetvdb_id
+    themoviedb_id
+    imdb_id
+    trakt_id
+    alt_tvdb_id
+    thetvdb_season
+    thetvdb_part
+    score
+    anime_media_type
+    global_media_type
+    status
+    mapping_type
+    episode_mappings {
+      tvdb_season
+      episode_start
+      episode_end
+    }
+  }
+  anime_movies {
+    movie_tvdb_id
+    movie_tmdb_id
+    movie_imdb_id
+    movie_mal_id
+    movie_anidb_id
+    name
+    slug
+    year
+    content_status
+    overview
+    poster_url
+    language
+    runtime_minutes
+    sort_title
+    imdb_id
+    studio
+    digital_release_date
+    association_confidence
+    continuity_status
+    movie_form
+    placement
+    confidence
+    signal_summary
+  }
+}

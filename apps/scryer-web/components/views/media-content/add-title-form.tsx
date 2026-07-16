@@ -20,7 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type Facet = "movie" | "series" | "anime";
+type Facet = "MOVIE" | "SERIES" | "ANIME";
 type TvdbSearchItem = MetadataTvdbSearchItem;
 
 type AddTitleFormProps = {
@@ -116,9 +116,9 @@ export function AddTitleForm({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="movie">{t("search.facetMovie")}</SelectItem>
-                  <SelectItem value="series">{t("search.facetSeries")}</SelectItem>
-                  <SelectItem value="anime">{t("search.facetAnime")}</SelectItem>
+                  <SelectItem value="MOVIE">{t("search.facetMovie")}</SelectItem>
+                  <SelectItem value="SERIES">{t("search.facetSeries")}</SelectItem>
+                  <SelectItem value="ANIME">{t("search.facetAnime")}</SelectItem>
                 </SelectContent>
               </Select>
             </label>
@@ -131,7 +131,7 @@ export function AddTitleForm({
               />
               <span className="text-sm">{t("title.monitored")}</span>
             </label>
-            {queueFacet === "movie" && (
+            {queueFacet === "MOVIE" && (
               <label>
                 <Label className="mb-2 block">{t("settings.minAvailabilityLabel")}</Label>
                 <Select value={minAvailabilityForQueue} onValueChange={setMinAvailabilityForQueue}>
@@ -146,7 +146,7 @@ export function AddTitleForm({
                 </Select>
               </label>
             )}
-            {queueFacet !== "movie" && (
+            {queueFacet !== "MOVIE" && (
               <label className="flex items-start gap-2 pt-0 sm:items-center sm:pt-7">
                 <Checkbox
                   checked={seasonFoldersForQueue}
@@ -247,11 +247,11 @@ export function AddTitleForm({
           {isMobile ? (
             <div className="space-y-2">
               {monitoredTitles.map((item) => {
-                const overviewTargetView = item.facet === "movie"
+                const overviewTargetView = item.facet === "MOVIE"
                   ? "movies"
-                  : item.facet === "series"
+                  : item.facet === "SERIES"
                     ? "series"
-                    : item.facet === "anime"
+                    : item.facet === "ANIME"
                       ? "anime"
                       : null;
                 return (
@@ -299,11 +299,11 @@ export function AddTitleForm({
               </TableHeader>
               <TableBody>
                 {monitoredTitles.map((item) => {
-                  const overviewTargetView = item.facet === "movie"
+                  const overviewTargetView = item.facet === "MOVIE"
                     ? "movies"
-                    : item.facet === "series"
+                    : item.facet === "SERIES"
                       ? "series"
-                      : item.facet === "anime"
+                      : item.facet === "ANIME"
                         ? "anime"
                         : null;
                   return (

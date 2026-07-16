@@ -1,4 +1,5 @@
 import type { JsonValue, ViewCategoryId } from "./quality-profiles";
+import type { ConfigFieldDef } from "./indexers";
 import type { ProviderConfigValue } from "@/lib/utils/provider-config";
 
 export type DownloadClientRecord = {
@@ -27,12 +28,15 @@ export type DownloadClientDraft = {
   username: string;
   password: string;
   remotePathMappings: string;
+  configValues: Record<string, string>;
   isEnabled: boolean;
 };
 
 export type DownloadClientTypeOption = {
   value: string;
   label: string;
+  configFields?: ConfigFieldDef[];
+  defaultBaseUrl?: string | null;
 };
 
 export type DownloadClientConfigPayloadRecord = Record<string, JsonValue>;

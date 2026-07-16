@@ -64,15 +64,15 @@ function ActionButton({
         "h-[84px] rounded-none border-0 bg-card/85 px-3 py-3 text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground",
         "flex flex-col items-center justify-center gap-2",
         active && "bg-accent/45 text-foreground",
-        destructive && "hover:bg-destructive/10 hover:text-destructive",
+        destructive && "text-destructive hover:bg-destructive/10 hover:text-destructive",
       )}
       disabled={disabled || loading}
       onClick={onClick}
     >
       {loading ? (
-        <Loader2 className="size-8 animate-spin" />
+        <Loader2 className="size-6 animate-spin" />
       ) : (
-        <Icon className="size-8" />
+        <Icon className="size-6" />
       )}
       <span className="text-center text-[11px] font-semibold uppercase tracking-[0.14em]">
         {label}

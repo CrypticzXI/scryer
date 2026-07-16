@@ -877,6 +877,7 @@ impl AppUseCase {
             title_id: title_id.to_string(),
             scope_kind: scope_kind.to_string(),
             scope_id,
+            indexer_id: selection.indexer_id.clone(),
             source_hint: source_hint.to_string(),
             source_kind: selection.source_kind,
             source_title: source_title.to_string(),
@@ -1076,6 +1077,7 @@ impl AppUseCase {
 
         Ok((
             QueuedReleaseSelection {
+                indexer_id: claims.indexer_id,
                 source_hint: Some(claims.source_hint),
                 source_kind: claims.source_kind,
                 source_title: Some(claims.source_title),

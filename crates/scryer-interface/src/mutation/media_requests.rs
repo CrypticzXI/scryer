@@ -55,7 +55,7 @@ impl MediaRequestMutations {
             .map_err(to_gql_error)?;
 
         Ok(SubmitMediaRequestPayload {
-            accepted: outcome.accepted,
+            request_id: ID::from(outcome.request_id),
         })
     }
 
@@ -80,7 +80,6 @@ impl MediaRequestMutations {
             .map_err(to_gql_error)?;
 
         Ok(ApproveMediaRequestPayload {
-            accepted: outcome.accepted,
             title_id: outcome.title_id.into(),
             wanted_search: outcome
                 .wanted_search
@@ -101,7 +100,9 @@ impl MediaRequestMutations {
             .await
             .map_err(to_gql_error)?;
 
-        Ok(MediaRequestActionPayload { accepted: true })
+        Ok(MediaRequestActionPayload {
+            request_id: ID::from(request_id),
+        })
     }
 
     async fn update_my_media_request(
@@ -140,6 +141,8 @@ impl MediaRequestMutations {
             .await
             .map_err(to_gql_error)?;
 
-        Ok(MediaRequestActionPayload { accepted: true })
+        Ok(MediaRequestActionPayload {
+            request_id: ID::from(request_id),
+        })
     }
 }

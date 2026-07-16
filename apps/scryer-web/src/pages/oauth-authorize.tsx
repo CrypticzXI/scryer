@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Loader2, LogIn, ShieldCheck, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { authRuntimeStateQuery } from "@/lib/graphql/queries";
 import { backendClient } from "@/lib/graphql/urql-client";
@@ -11,6 +12,26 @@ const CLIENT_NAMES: Record<string, string> = {
   "generic-native": "Generic native integration",
   e2e: "Scryer E2E OAuth client",
 };
+
+const OAUTH_PAGE_CLASS =
+  "flex min-h-screen items-center justify-center bg-fixed p-4 text-[var(--scry-body)] [background-image:var(--scry-shell-bg)] sm:p-6";
+const OAUTH_PANEL_CLASS =
+  "grid w-full max-w-xl gap-5 rounded-[12px] border border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] p-7 shadow-[0_22px_70px_rgba(2,6,23,0.26)] max-sm:p-5";
+const OAUTH_COMPACT_PANEL_CLASS =
+  "grid w-full max-w-lg gap-5 rounded-[12px] border border-[var(--scry-border2)] bg-[linear-gradient(180deg,var(--scry-soft),var(--scry-bg))] p-7 shadow-[0_22px_70px_rgba(2,6,23,0.26)] max-sm:p-5";
+const OAUTH_ICON_CLASS =
+  "flex h-11 w-11 items-center justify-center rounded-[10px] border border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.14)] text-[var(--scry-accent-text)]";
+const OAUTH_HEADING_CLASS =
+  "font-[var(--font-space-grotesk)] text-2xl font-semibold tracking-normal text-[var(--scry-ink)]";
+const OAUTH_MUTED_TEXT_CLASS = "text-sm leading-6 text-[var(--scry-muted)]";
+const OAUTH_URI_CLASS =
+  "break-all rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] px-3 py-2 font-[var(--font-code)] text-xs leading-5 text-[var(--scry-muted)]";
+const OAUTH_ERROR_CLASS =
+  "rounded-[9px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] px-3 py-2 text-sm leading-6 text-[var(--scry-danger-text)]";
+const OAUTH_PRIMARY_BUTTON_CLASS =
+  "h-10 rounded-[9px] bg-primary px-4 text-sm font-semibold text-primary-foreground shadow-none hover:bg-primary/90";
+const OAUTH_SECONDARY_BUTTON_CLASS =
+  "h-10 rounded-[9px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] px-4 text-sm font-semibold text-[var(--scry-ink2)] shadow-none hover:bg-[var(--scry-hover)]";
 
 function loginUrl() {
   const basePath = getRuntimeBasePath();
@@ -112,16 +133,27 @@ export default function OAuthAuthorizePage() {
 
   if (!authlessAuthorization && !token) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
-        <div className="grid w-full max-w-lg gap-4 rounded-md border border-border bg-card p-6 shadow-sm">
-          <h1 id={selectorId("oauth-authorize-heading")} className="text-xl font-semibold">
-            Authorize {clientName || "integration"}
-          </h1>
-          <p className="text-sm text-muted-foreground">Sign in to continue OAuth authorization.</p>
+      <main className={OAUTH_PAGE_CLASS}>
+        <div className={OAUTH_COMPACT_PANEL_CLASS}>
+          <div className="flex items-start gap-4">
+            <span className={OAUTH_ICON_CLASS} aria-hidden="true">
+              <LogIn className="h-5 w-5" />
+            </span>
+            <div className="min-w-0 space-y-1">
+              <h1 id={selectorId("oauth-authorize-heading")} className={OAUTH_HEADING_CLASS}>
+                Authorize {clientName || "integration"}
+              </h1>
+              <p className={OAUTH_MUTED_TEXT_CLASS}>
+                Sign in to continue OAuth authorization.
+              </p>
+            </div>
+          </div>
           <Button
             id={selectorId("oauth-authorize-sign-in")}
+            className={OAUTH_PRIMARY_BUTTON_CLASS}
             onClick={() => window.location.assign(loginUrl())}
           >
+            <LogIn className="h-4 w-4" aria-hidden="true" />
             Sign in
           </Button>
         </div>
@@ -130,36 +162,47 @@ export default function OAuthAuthorizePage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
-      <div className="grid w-full max-w-xl gap-5 rounded-md border border-border bg-card p-6 shadow-sm">
-        <div className="space-y-1">
-          <h1 id={selectorId("oauth-authorize-heading")} className="text-xl font-semibold">
-            Authorize {clientName}
-          </h1>
-          <p className="break-all text-sm text-muted-foreground">{redirectUri}</p>
+    <main className={OAUTH_PAGE_CLASS}>
+      <div className={OAUTH_PANEL_CLASS}>
+        <div className="flex items-start gap-4">
+          <span className={OAUTH_ICON_CLASS} aria-hidden="true">
+            <ShieldCheck className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 space-y-2">
+            <h1 id={selectorId("oauth-authorize-heading")} className={OAUTH_HEADING_CLASS}>
+              Authorize {clientName}
+            </h1>
+            <p className={OAUTH_URI_CLASS}>{redirectUri}</p>
+          </div>
         </div>
-        <div className="grid gap-2 text-sm">
+        <div className="grid gap-2 rounded-[9px] border border-[var(--scry-border3)] bg-[var(--scry-inset)] p-4 text-sm leading-6 text-[var(--scry-ink2)]">
           <p>
             Can access Scryer as {authlessAuthorization ? "Anonymous" : "you"}, limited to library
             permissions.
           </p>
-          <p>Cannot manage users, settings, backups, security, or app configuration.</p>
+          <p className="text-[var(--scry-muted)]">
+            Cannot manage users, settings, backups, security, or app configuration.
+          </p>
         </div>
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+        {error ? <p className={OAUTH_ERROR_CLASS}>{error}</p> : null}
         <div className="flex flex-wrap gap-2">
           <Button
             id={selectorId("oauth-authorize-approve")}
             disabled={busy}
+            className={OAUTH_PRIMARY_BUTTON_CLASS}
             onClick={() => decide(true)}
           >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {authlessAuthorization ? "Authorize as Anonymous" : "Authorize"}
           </Button>
           <Button
             id={selectorId("oauth-authorize-deny")}
             variant="outline"
             disabled={busy}
+            className={OAUTH_SECONDARY_BUTTON_CLASS}
             onClick={() => decide(false)}
           >
+            <X className="h-4 w-4" aria-hidden="true" />
             Deny
           </Button>
         </div>

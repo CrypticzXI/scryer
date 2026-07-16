@@ -9,13 +9,17 @@ export function sectionLabelForFacet(t: Translate, facetId: Facet): string {
   return def ? t(def.searchLabelKey) : facetId;
 }
 
+export function viewAllLabelForFacet(t: Translate, facetId: Facet): string {
+  return t(`search.viewAll.${facetId}`);
+}
+
 export function viewFromFacet(facetId: Facet): ViewId {
   const def = facetById(facetId);
   return (def?.viewId ?? "movies") as ViewId;
 }
 
 export function defaultMonitorTypeForFacet(facetId: Facet): MetadataCatalogMonitorType {
-  return facetById(facetId)?.defaultMonitorType ?? "monitored";
+  return facetById(facetId)?.defaultMonitorType ?? "MONITORED";
 }
 
 export function facetFromView(viewId: string): Facet | undefined {

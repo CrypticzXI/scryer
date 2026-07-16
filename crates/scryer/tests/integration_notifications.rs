@@ -413,7 +413,6 @@ fn jellyfin_title_payload(
         sort_title: None,
         poster_url: None,
         background_url: None,
-        genres: Vec::new(),
         tags: Vec::new(),
         aliases: Vec::new(),
         original_language: None,
@@ -1180,7 +1179,7 @@ async fn notification_provider_types_query_exposes_jellyfin_multiline_field() {
             .iter()
             .any(|field| {
                 field["key"] == "path_mappings"
-                    && field["fieldType"] == "multiline"
+                    && field["fieldType"] == "MULTILINE"
                     && field["required"] == false
             }),
         "expected path_mappings multiline field in {jellyfin}"

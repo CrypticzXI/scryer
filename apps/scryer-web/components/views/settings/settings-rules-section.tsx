@@ -3,13 +3,13 @@ import {
   BookOpen,
   ChevronDown,
   Edit,
-  FileCode2,
   Library,
   Plus,
   Power,
   Trash2,
 } from "lucide-react";
 import { useClient } from "urql";
+import { AddNewButton } from "@/components/common/add-new-button";
 import {
   RULE_TEMPLATES,
   RULE_TEMPLATE_CATEGORIES,
@@ -19,20 +19,22 @@ import {
   rulePackRegistryQuery,
   rulePackTemplatesQuery,
 } from "@/lib/graphql/queries";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Input,
   integerInputProps,
   sanitizeDigits,
 } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { LazyRegoEditor } from "@/components/common/lazy-rego-editor";
+import {
+  LazyRegoEditor,
+  type RegoEditorDiagnostic,
+} from "@/components/common/lazy-rego-editor";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import {
   Table,
@@ -88,6 +90,102 @@ type RefField = { field: string; type: string; descKey: string };
 
 type RefSectionDef = { titleKey: string; path: string; fields: RefField[] };
 const REF_SECTIONS = ruleInputContract.sections as RefSectionDef[];
+// The validator prepends one hidden import line before compiling user-authored Rego.
+const RULE_VALIDATION_HIDDEN_LINE_OFFSET = 1;
+
+function toVisibleRuleLine(line: number): number {
+  return Math.max(1, line - RULE_VALIDATION_HIDDEN_LINE_OFFSET);
+}
+
+function adjustRuleValidationLocations(text: string): string {
+  return text.replace(/(\S+\.rego:)(\d+)(:\d+)/g, (_, prefix: string, lineText: string, suffix: string) => {
+    const line = Number.parseInt(lineText, 10);
+    return Number.isFinite(line)
+      ? `${prefix}${toVisibleRuleLine(line)}${suffix}`
+      : `${prefix}${lineText}${suffix}`;
+  });
+}
+
+function formatRuleValidationError(error: string): string {
+  const normalized = error.replace(/\r\n/g, "\n").trim();
+  if (normalized.includes("\n")) {
+    return adjustRuleValidationLocations(normalized).replace(
+      /^(\s*)(\d+)(\s+\|)/gm,
+      (match, prefix: string, lineText: string, suffix: string) => {
+        const line = Number.parseInt(lineText, 10);
+        return Number.isFinite(line)
+          ? `${prefix}${toVisibleRuleLine(line)}${suffix}`
+          : match;
+      },
+    );
+  }
+
+  const parts = normalized.split(/\s+\|\s+/);
+  if (parts.length < 4) {
+    return normalized;
+  }
+
+  const [location, lineNumber, source, ...hintParts] = parts;
+  const rawLine = Number.parseInt(lineNumber, 10);
+  const visibleLineNumber = Number.isFinite(rawLine)
+    ? String(toVisibleRuleLine(rawLine))
+    : lineNumber;
+  const gutterWidth = Math.max(visibleLineNumber.length, 1);
+  const columnMatch = location.match(/:(\d+):(\d+)(?:\D*$|$)/);
+  const column = columnMatch ? Number.parseInt(columnMatch[2] ?? "", 10) : null;
+  const hint = hintParts.join(" | ").trim();
+  const visibleLocation = adjustRuleValidationLocations(location.trim());
+  const locationMatch = visibleLocation.match(/^(.*?:)\s*(-->\s+.+)$/);
+  const locationLines = locationMatch
+    ? [locationMatch[1], locationMatch[2]]
+    : [visibleLocation];
+  const pointerErrorMatch = hint.match(/^(\^+)\s+((?:error|warning|note):\s*.+)$/);
+  const pointerMarker = pointerErrorMatch?.[1] ?? hint;
+  const trailingDiagnostic = pointerErrorMatch?.[2];
+  const pointer =
+    column && Number.isFinite(column) && pointerMarker.startsWith("^")
+      ? `${" ".repeat(Math.max(0, column - 1))}${pointerMarker}`
+      : pointerMarker;
+
+  return [
+    ...locationLines,
+    `${" ".repeat(gutterWidth)} |`,
+    `${visibleLineNumber.padStart(gutterWidth)} | ${source.trim()}`,
+    `${" ".repeat(gutterWidth)} | ${pointer}`,
+    trailingDiagnostic,
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function parseRuleValidationDiagnostic(error: string): RegoEditorDiagnostic | null {
+  const match = error.match(/\S+\.rego:(\d+):(\d+)/);
+  if (!match) {
+    return null;
+  }
+
+  const rawLine = Number.parseInt(match[1] ?? "", 10);
+  const column = Number.parseInt(match[2] ?? "", 10);
+  if (!Number.isFinite(rawLine) || rawLine < 1) {
+    return null;
+  }
+
+  return {
+    line: toVisibleRuleLine(rawLine),
+    column: Number.isFinite(column) && column > 0 ? column : null,
+    message: formatRuleValidationError(error),
+  };
+}
+
+function getRuleValidationDiagnostics(
+  validationResult: RuleValidationResult | null,
+): RegoEditorDiagnostic[] {
+  if (!validationResult || validationResult.valid) {
+    return [];
+  }
+
+  return validationResult.errors
+    .map(parseRuleValidationDiagnostic)
+    .filter((diagnostic): diagnostic is RegoEditorDiagnostic => Boolean(diagnostic));
+}
 
 function RefFieldTable({ section }: { section: RefSectionDef }) {
   const t = useTranslate();
@@ -342,29 +440,26 @@ function managedRuleLabel(key: string): string {
 
 function ManagedBadge({ managedKey }: { managedKey: string }) {
   return (
-    <span className="ml-2 inline-flex items-center rounded-full bg-teal-900/40 px-2 py-0.5 text-[10px] font-medium text-teal-300">
+    <Badge tone="info" className="ml-2 rounded-full text-[10px]">
       {managedRuleLabel(managedKey)}
-    </span>
+    </Badge>
   );
 }
 
 function FacetBadges({ facets }: { facets: string[] }) {
   if (facets.length === 0) {
     return (
-      <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-xs text-blue-300">
+      <Badge tone="info" className="capitalize">
         Global
-      </span>
+      </Badge>
     );
   }
   return (
     <div className="flex gap-1">
       {facets.map((f) => (
-        <span
-          key={f}
-          className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground capitalize"
-        >
+        <Badge key={f} tone="neutral" className="capitalize">
           {f}
-        </span>
+        </Badge>
       ))}
     </div>
   );
@@ -576,7 +671,7 @@ function RuleLibrary({
               )}
             </div>
           ) : (
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-2 @[420px]:grid-cols-2 @[640px]:grid-cols-3">
               {communityPacks.length === 0 && communityPacksLoaded ? (
                 <p className="col-span-full text-sm text-muted-foreground">
                   {t("settings.ruleLibraryCommunityEmpty")}
@@ -597,9 +692,9 @@ function RuleLibrary({
                     {pack.description}
                   </p>
                   <div className="mt-2 flex items-center gap-2">
-                    <span className="rounded bg-teal-500/15 px-1.5 py-0.5 text-[10px] text-teal-700 dark:text-teal-300">
+                    <Badge tone="info" className="text-[10px]">
                       {pack.author}
-                    </span>
+                    </Badge>
                     <span className="text-[10px] text-muted-foreground">
                       v{pack.version}
                     </span>
@@ -622,7 +717,7 @@ function TemplateGrid({
   onApply: (template: RuleTemplate) => void;
 }) {
   return (
-    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid grid-cols-1 gap-2 @[420px]:grid-cols-2 @[640px]:grid-cols-3">
       {templates.map((tpl) => (
         <button
           id={selectorId("settings-rules-library-template", tpl.id)}
@@ -638,18 +733,15 @@ function TemplateGrid({
             {tpl.description}
           </p>
           <div className="mt-2 flex items-center gap-2">
-            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            <Badge tone="neutral" className="text-[10px]">
               {tpl.category}
-            </span>
+            </Badge>
             {tpl.appliedFacets
               ?.filter((f) => f.toLowerCase() !== tpl.category.toLowerCase())
               .map((f) => (
-                <span
-                  key={f}
-                  className="rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] text-blue-700 dark:text-blue-300"
-                >
+                <Badge key={f} tone="info" className="text-[10px]">
                   {f}
-                </span>
+                </Badge>
               ))}
           </div>
         </button>
@@ -678,13 +770,16 @@ export function SettingsRulesSection({
   applyTemplate,
 }: SettingsRulesSectionProps) {
   const t = useTranslate();
+  const validationDiagnostics = React.useMemo(
+    () => getRuleValidationDiagnostics(validationResult),
+    [validationResult],
+  );
+
   return (
     <div id="settings-rules-section" className="space-y-4 text-sm">
-      <CardTitle className="flex items-center gap-2 text-base">
-        <FileCode2 className="h-4 w-4" />
-        {t("settings.rulesSection")}
-      </CardTitle>
-
+      <div className="mx-auto flex w-full max-w-[2176px] flex-col gap-4 xl:flex-row xl:items-start">
+        <div className="min-w-0 flex-1">
+          <div className="mx-auto w-full max-w-[1280px] space-y-4">
       <div className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
           <CardTitle className="text-base">
@@ -716,7 +811,9 @@ export function SettingsRulesSection({
                   id={selectorId("settings-rule-row", record.id)}
                 >
                   <TableCell className="font-medium">
-                    {record.name}
+                    <span id={selectorId("settings-rule-name", record.name)}>
+                      {record.name}
+                    </span>
                     {record.isManaged && record.managedKey ? (
                       <ManagedBadge managedKey={record.managedKey} />
                     ) : null}
@@ -738,65 +835,38 @@ export function SettingsRulesSection({
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
-                      <Button
+                      <IconButton
                         id={selectorId("settings-rule-toggle", record.id)}
-                        type="button"
-                        size="icon-sm"
-                        variant="secondary"
-                        title={
+                        label={
                           record.enabled
                             ? t("label.disable")
                             : t("label.enable")
                         }
-                        aria-label={
-                          record.enabled
-                            ? t("label.disable")
-                            : t("label.enable")
-                        }
+                        tone={record.enabled ? "disabled" : "enabled"}
                         onClick={() => void toggleRuleSetEnabled(record)}
                         disabled={mutatingRuleSetId === record.id}
-                        className={cn(
-                          boxedActionButtonBaseClass,
-                          boxedActionButtonToneClass[
-                            record.enabled ? "disabled" : "enabled"
-                          ],
-                        )}
                       >
                         <Power className="h-4 w-4" />
-                      </Button>
+                      </IconButton>
                       {!record.isManaged ? (
                         <>
-                          <Button
+                          <IconButton
                             id={selectorId("settings-rule-edit", record.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("label.edit")}
-                            aria-label={t("label.edit")}
+                            label={t("label.edit")}
+                            tone="edit"
                             onClick={() => editRuleSet(record)}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.edit,
-                            )}
                           >
                             <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             id={selectorId("settings-rule-delete", record.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("label.delete")}
-                            aria-label={t("label.delete")}
+                            label={t("label.delete")}
+                            tone="delete"
                             onClick={() => void deleteRuleSet(record)}
                             disabled={mutatingRuleSetId === record.id}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.delete,
-                            )}
                           >
                             <Trash2 className="h-4 w-4" />
-                          </Button>
+                          </IconButton>
                         </>
                       ) : null}
                     </div>
@@ -814,11 +884,6 @@ export function SettingsRulesSection({
           </Table>
         </div>
       </div>
-
-      <RuleLibrary
-        defaultOpen={ruleSetRecords.length === 0}
-        onApply={applyTemplate}
-      />
 
       {isEditorOpen ? (
         <>
@@ -895,8 +960,9 @@ export function SettingsRulesSection({
                         regoSource: value,
                       }))
                     }
-                    minLines={20}
-                    maxLines={50}
+                    diagnostics={validationDiagnostics}
+                    minLines={10}
+                    maxLines={35}
                   />
                 </div>
 
@@ -913,23 +979,22 @@ export function SettingsRulesSection({
                         key={opt.value}
                         className="flex items-center gap-2"
                       >
-                        <input
+                        <Checkbox
                           id={selectorId("settings-rule-facet", opt.value)}
-                          type="checkbox"
                           checked={ruleSetDraft.appliedFacets.includes(
                             opt.value,
                           )}
-                          onChange={(e) => {
+                          onCheckedChange={(value) => {
                             setRuleSetDraft((prev) => {
-                              const next = e.target.checked
-                                ? [...prev.appliedFacets, opt.value]
-                                : prev.appliedFacets.filter(
-                                    (f) => f !== opt.value,
-                                  );
+                              const next =
+                                value === true
+                                  ? [...prev.appliedFacets, opt.value]
+                                  : prev.appliedFacets.filter(
+                                      (f) => f !== opt.value,
+                                    );
                               return { ...prev, appliedFacets: next };
                             });
                           }}
-                          className="accent-primary"
                         />
                         <span className="text-sm">{opt.label}</span>
                       </label>
@@ -938,17 +1003,15 @@ export function SettingsRulesSection({
                 </div>
 
                 <label className="flex items-center gap-2">
-                  <input
+                  <Checkbox
                     id="settings-rule-enabled"
-                    type="checkbox"
                     checked={ruleSetDraft.enabled}
-                    onChange={(e) =>
+                    onCheckedChange={(value) =>
                       setRuleSetDraft((prev) => ({
                         ...prev,
-                        enabled: e.target.checked,
+                        enabled: value === true,
                       }))
                     }
-                    className="accent-primary"
                   />
                   <span className="text-sm">{t("label.enabled")}</span>
                 </label>
@@ -957,18 +1020,23 @@ export function SettingsRulesSection({
                   <div
                     className={`rounded border px-3 py-2 text-sm ${
                       validationResult.valid
-                        ? "border-emerald-700/50 bg-emerald-900/30 text-emerald-300"
-                        : "border-red-700/50 bg-red-900/30 text-red-300"
+                        ? "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
+                        : "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]"
                     }`}
                   >
                     {validationResult.valid ? (
                       t("settings.ruleValid")
                     ) : (
-                      <ul className="list-inside list-disc space-y-1">
+                      <div className="space-y-2">
                         {validationResult.errors.map((err, i) => (
-                          <li key={i}>{err}</li>
+                          <pre
+                            key={i}
+                            className="overflow-x-auto whitespace-pre rounded-[9px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] p-3 font-mono font-[var(--font-code)] text-[12px] leading-5 text-[var(--scry-danger-text)]"
+                          >
+                            {formatRuleValidationError(err)}
+                          </pre>
                         ))}
-                      </ul>
+                      </div>
                     )}
                   </div>
                 ) : null}
@@ -1006,37 +1074,37 @@ export function SettingsRulesSection({
           </Card>
           {editorMode === "edit" ? (
             <div className="flex justify-center">
-              <Button
+              <AddNewButton
                 id="settings-rule-create-new"
-                type="button"
-                size="lg"
+                icon={Plus}
+                label={t("settings.ruleCreateNew")}
                 onClick={startCreateRuleSet}
                 disabled={mutatingRuleSetId !== null}
-                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-              >
-                <Plus className="h-5 w-5" />
-                {t("settings.ruleCreateNew")}
-              </Button>
+              />
             </div>
           ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-rule-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("settings.ruleCreateNew")}
             onClick={startCreateRuleSet}
             disabled={mutatingRuleSetId !== null}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("settings.ruleCreateNew")}
-          </Button>
+          />
         </div>
       )}
-
-      <RulesContextReference />
+          </div>
+        </div>
+        <div className="@container w-full space-y-4 xl:w-[44%] xl:max-w-[880px] xl:shrink-0">
+          <RuleLibrary
+            defaultOpen={ruleSetRecords.length === 0}
+            onApply={applyTemplate}
+          />
+          <RulesContextReference />
+        </div>
+      </div>
     </div>
   );
 }

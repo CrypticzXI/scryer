@@ -47,7 +47,7 @@ ENV SCRYER_SMG_REGISTRATION_SECRET=${SCRYER_SMG_REGISTRATION_SECRET}
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git/db,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git/checkouts,sharing=locked \
-    cargo build -p scryer --release --locked \
+    cargo build -p scryer --release --locked --no-default-features \
  && install -Dm755 /workspace/target/release/scryer /tmp/scryer
 
 FROM debian:bookworm-slim AS runtime

@@ -2,36 +2,37 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 
-use extism::Manifest;
 use scryer_application::{
-    AppError, AppResult, DownloadClient, DownloadClientPluginProvider, ExternalPluginWasm,
-    IndexerClient, IndexerPluginProvider, NotificationClient, NotificationPluginProvider,
-    PluginDescriptorLoader, RuntimePluginLoad, SubtitlePluginProvider, SubtitleProviderClient,
-    SubtitleSyncClient,
+    AppError, AppResult, ArchiveExtractorClient, ArchiveExtractorPluginProvider, DownloadClient,
+    DownloadClientPluginProvider, ExternalPluginWasm, IndexerClient, IndexerPluginProvider,
+    NotificationClient, NotificationPluginProvider, PluginDescriptorLoader, RuntimePluginLoad,
+    SubtitlePluginProvider, SubtitleProviderClient, SubtitleSyncClient,
 };
 use scryer_domain::{
-    DownloadClientConfig, IndexerConfig, NotificationChannelConfig, PluginHostBindingId,
-    SubtitleProviderConfig,
+    DownloadClientConfig, IndexerConfig, IndexerProxyConfig, NotificationChannelConfig,
+    PluginHostBindingId, SubtitleProviderConfig,
 };
 use tracing::{debug, info, warn};
 
+use crate::archive_adapter::WasmArchiveExtractorClient;
 use crate::download_client_adapter::WasmDownloadClient;
 use crate::indexer_adapter::WasmIndexerClient;
+use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec};
 use crate::notification_adapter::WasmNotificationClient;
-use crate::plugin_http_host;
 use crate::process_host::ProcessHost;
+use crate::runtime_backing::PluginRuntimeBacking;
 use crate::socket_host::SocketHost;
 use crate::subtitle_adapter::WasmSubtitleClient;
 use crate::subtitle_sync_adapter::WasmSubtitleSyncClient;
 use crate::types::{
-    ConfigFieldRole, ConfigFieldValueSource, EXPORT_DESCRIBE, EXPORT_DOWNLOAD_ADD,
-    EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED, EXPORT_DOWNLOAD_LIST_HISTORY,
-    EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED, EXPORT_DOWNLOAD_STATUS,
-    EXPORT_DOWNLOAD_TEST_CONNECTION, EXPORT_INDEXER_SEARCH, EXPORT_NOTIFICATION_SEND,
-    EXPORT_SUBSYNC_ALIGN, EXPORT_SUBTITLE_DOWNLOAD, EXPORT_SUBTITLE_GENERATE,
-    EXPORT_SUBTITLE_SEARCH, EXPORT_VALIDATE_CONFIG, PluginDescriptor,
+    ArchivePluginFormat, ConfigFieldRole, ConfigFieldValueSource, EXPORT_DESCRIBE,
+    EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED,
+    EXPORT_DOWNLOAD_LIST_HISTORY, EXPORT_DOWNLOAD_LIST_QUEUE, EXPORT_DOWNLOAD_MARK_IMPORTED,
+    EXPORT_DOWNLOAD_STATUS, EXPORT_DOWNLOAD_TEST_CONNECTION, EXPORT_INDEXER_SEARCH,
+    EXPORT_NOTIFICATION_SEND, EXPORT_SUBSYNC_ALIGN, EXPORT_SUBTITLE_DOWNLOAD,
+    EXPORT_SUBTITLE_GENERATE, EXPORT_SUBTITLE_SEARCH, EXPORT_VALIDATE_CONFIG, PluginDescriptor,
     PluginHostBindingId as SdkHostBinding, PluginKind, ProviderDescriptor, SDK_VERSION,
     SubtitleProviderMode, config_fields_to_domain, indexer_capabilities_to_domain,
     plugin_descriptor_sdk_constraint, validate_plugin_descriptor_sdk_contract,
@@ -39,7 +40,7 @@ use crate::types::{
 
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
 
-type IndexerClientCacheKey = (String, String, String);
+type IndexerClientCacheKey = (String, String, String, String, String);
 type IndexerClientCache = std::sync::Mutex<HashMap<IndexerClientCacheKey, Arc<dyn IndexerClient>>>;
 type DownloadClientCacheKey = (String, String, String);
 type DownloadClientCache =
@@ -50,6 +51,8 @@ type NotificationClientCache =
 type SubtitleClientCacheKey = (String, String, String, String, String);
 type SubtitleClientCache =
     std::sync::Mutex<HashMap<SubtitleClientCacheKey, Arc<dyn SubtitleProviderClient>>>;
+type ArchiveExtractorClientCache =
+    std::sync::Mutex<HashMap<String, Arc<dyn ArchiveExtractorClient>>>;
 
 fn log_stale_plugin_cache_eviction(
     plugin_family: &'static str,
@@ -176,9 +179,6 @@ fn insert_subtitle_client_cache(
         |key| key.0.as_str() == provider_type.as_str() && key.1.as_str() == config_id.as_str(),
     )
 }
-
-static WASMTIME_PLUGIN_BUILD_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PluginLoadSource {
     Builtin,
@@ -199,6 +199,9 @@ enum LoadedPluginBacking {
 struct LoadedPlugin {
     wasm: LoadedPluginBacking,
     descriptor: PluginDescriptor,
+    /// Trust provenance of this plugin. Drives host-capability gating (e.g. the
+    /// host-process capability) via `can_use_first_party_host_bindings`.
+    load_source: PluginLoadSource,
 }
 
 impl LoadedPlugin {
@@ -206,6 +209,9 @@ impl LoadedPlugin {
         Self {
             wasm: LoadedPluginBacking::Owned(wasm_bytes),
             descriptor,
+            // Default to the least-privileged provenance; callers that know the
+            // plugin is first-party override via `with_load_source`.
+            load_source: PluginLoadSource::External { first_party: false },
         }
     }
 
@@ -216,7 +222,13 @@ impl LoadedPlugin {
         Self {
             wasm: LoadedPluginBacking::Builtin(asset),
             descriptor,
+            load_source: PluginLoadSource::Builtin,
         }
+    }
+
+    fn with_load_source(mut self, load_source: PluginLoadSource) -> Self {
+        self.load_source = load_source;
+        self
     }
 
     fn materialize_wasm(&self) -> Result<Vec<u8>, String> {
@@ -674,6 +686,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
                 season_param: Some("season".into()),
                 episode_param: Some("ep".into()),
                 query_param: Some("q".into()),
+                supported_query_facets: vec!["movie".into(), "series".into(), "anime".into()],
                 search: true,
                 imdb_search: true,
                 tvdb_search: true,
@@ -683,6 +696,14 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
     }
 
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
+        self.client_for_provider_with_proxy(config, None)
+    }
+
+    fn client_for_provider_with_proxy(
+        &self,
+        config: &IndexerConfig,
+        indexer_proxy_config: Option<&IndexerProxyConfig>,
+    ) -> Option<Arc<dyn IndexerClient>> {
         let provider = config.provider_type.trim().to_ascii_lowercase();
         let loaded = self.get_loaded(&provider)?;
 
@@ -704,6 +725,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
             loaded.descriptor.clone(),
             config.name.clone(),
             config.clone(),
+            indexer_proxy_config.cloned(),
         ) {
             Ok(client) => Some(Arc::new(client)),
             Err(e) => {
@@ -744,7 +766,7 @@ impl DynamicPluginProvider {
             return;
         }
         if let Ok(mut cache) = self.client_cache.lock() {
-            cache.retain(|(provider_type, _, _), _| !provider_keys.contains(provider_type));
+            cache.retain(|(provider_type, _, _, _, _), _| !provider_keys.contains(provider_type));
         }
     }
 
@@ -765,11 +787,24 @@ impl DynamicPluginProvider {
 
 impl IndexerPluginProvider for DynamicPluginProvider {
     fn client_for_provider(&self, config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
+        self.client_for_provider_with_proxy(config, None)
+    }
+
+    fn client_for_provider_with_proxy(
+        &self,
+        config: &IndexerConfig,
+        indexer_proxy_config: Option<&IndexerProxyConfig>,
+    ) -> Option<Arc<dyn IndexerClient>> {
         let provider_key = config.provider_type.trim().to_ascii_lowercase();
+        let (proxy_id, proxy_revision) = indexer_proxy_config
+            .map(|config| (config.id.clone(), config.updated_at.to_rfc3339()))
+            .unwrap_or_else(|| (String::new(), String::new()));
         let cache_key = (
             provider_key.clone(),
             config.id.clone(),
             config.updated_at.to_rfc3339(),
+            proxy_id,
+            proxy_revision,
         );
 
         // Fast path: check cache first
@@ -784,7 +819,7 @@ impl IndexerPluginProvider for DynamicPluginProvider {
             .inner
             .read()
             .expect("DynamicPluginProvider lock poisoned");
-        let client = guard.client_for_provider(config)?;
+        let client = guard.client_for_provider_with_proxy(config, indexer_proxy_config)?;
 
         if let Ok(mut cache) = self.client_cache.lock() {
             return Some(insert_indexer_client_cache(
@@ -1098,24 +1133,24 @@ impl WasmDownloadClientPluginProvider {
             }
         };
 
-        let mut manifest = Manifest::new([extism::Wasm::data(wasm_bytes)]);
         let computed_base_url = compute_base_url_from_config_json(&config.config_json);
-        manifest = apply_allowed_hosts(
-            manifest,
+        let mut spec = LegacyPluginSpec::new(wasm_bytes, loaded.descriptor.id.clone());
+        spec.allowed_hosts = allowed_hosts_for_descriptor(
             &loaded.descriptor,
             computed_base_url.as_deref(),
             Some(&config.config_json),
         );
-        manifest = manifest.with_timeout(std::time::Duration::from_secs(30));
+        spec.timeout = std::time::Duration::from_secs(30);
 
         if let Some(ref base_url) = computed_base_url {
-            manifest = manifest.with_config_key("base_url", base_url);
+            spec.config
+                .insert("base_url".to_string(), base_url.to_string());
         }
 
         match parse_config_json_entries(&config.config_json) {
             Ok(map) => {
-                for (k, v) in &map {
-                    manifest = manifest.with_config_key(k, v);
+                for (k, v) in map {
+                    spec.config.insert(k, v);
                 }
             }
             Err(error) => {
@@ -1127,7 +1162,7 @@ impl WasmDownloadClientPluginProvider {
             }
         }
 
-        match build_plugin(manifest) {
+        match LegacyPlugin::instantiate(spec) {
             Ok(plugin) => {
                 let client = WasmDownloadClient::new(
                     plugin,
@@ -1473,6 +1508,10 @@ fn validate_descriptor_for_type(
                 PluginKind::SubtitleProvider,
                 ProviderDescriptor::Subtitle(_)
             )
+            | (
+                PluginKind::ArchiveExtractor,
+                ProviderDescriptor::ArchiveExtractor(_)
+            )
     );
     if !provider_matches_kind {
         warn!(
@@ -1545,6 +1584,29 @@ fn validate_indexer_descriptor(
 }
 
 fn validate_indexer_config_contract(descriptor: &PluginDescriptor) -> bool {
+    if let Some(indexer) = descriptor.indexer() {
+        let invalid_facets = indexer
+            .capabilities
+            .supported_query_facets
+            .iter()
+            .filter(|facet| {
+                !scryer_domain::IndexerProviderCapabilities::QUERY_FACETS
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(facet.trim()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !invalid_facets.is_empty() {
+            warn!(
+                plugin = descriptor.id.as_str(),
+                provider_type = descriptor.provider_type(),
+                facets = ?invalid_facets,
+                "indexer descriptor rejected: unsupported query facet"
+            );
+            return false;
+        }
+    }
+
     let connection_url_count = descriptor
         .config_fields()
         .iter()
@@ -1600,6 +1662,37 @@ fn binding_allowed_for_plugin(
                     .provider_type()
                     .eq_ignore_ascii_case("opensubtitles")
         }
+    }
+}
+
+/// Wire the host-process host for a notification plugin.
+///
+/// The host-process capability lets a plugin spawn real OS processes on the host
+/// and is therefore reserved for Scryer's own first-party plugins. Any plugin
+/// that is not first-party (including community and operator-supplied notifiers)
+/// receives a disabled host with an empty allowlist, so `scryer_process_exec`
+/// always returns PermissionDenied regardless of a self-declared
+/// `requires_host_process`. This reuses the same first-party trust gate as
+/// first-party host bindings (`can_use_first_party_host_bindings`).
+fn process_host_for_notification(loaded: &LoadedPlugin, config_json: &str) -> ProcessHost {
+    if loaded.load_source.can_use_first_party_host_bindings() {
+        ProcessHost::from_descriptor(&loaded.descriptor, Some(config_json))
+    } else {
+        ProcessHost::disabled()
+    }
+}
+
+/// Wire raw socket permissions for first-party notification plugins.
+///
+/// SMTP-style notification providers need local/LAN sockets, but the grant must
+/// come from Scryer's first-party descriptor plus the channel config. Community
+/// and operator-supplied plugins receive a disabled host even if they
+/// self-declare socket permissions.
+fn socket_host_for_notification(loaded: &LoadedPlugin, config_json: &str) -> SocketHost {
+    if loaded.load_source.can_use_first_party_host_bindings() {
+        SocketHost::from_descriptor(&loaded.descriptor, Some(config_json))
+    } else {
+        SocketHost::disabled()
     }
 }
 
@@ -1871,9 +1964,16 @@ impl WasmSubtitlePluginProvider {
         loaded: &LoadedPlugin,
     ) -> Option<Arc<dyn SubtitleSyncClient>> {
         let wasm_bytes = loaded.materialize_wasm().ok()?;
-        let manifest = Manifest::new([extism::Wasm::data(wasm_bytes.clone())])
-            .with_timeout(std::time::Duration::from_secs(10));
-        let plugin = build_plugin(manifest).ok()?;
+        if PluginRuntimeBacking::for_descriptor(&loaded.descriptor)
+            == PluginRuntimeBacking::WasmtimeSubtitleSync
+        {
+            let client = WasmSubtitleSyncClient::new(wasm_bytes, loaded.descriptor.clone());
+            return Some(Arc::new(client));
+        }
+
+        let mut spec = LegacyPluginSpec::new(wasm_bytes.clone(), loaded.descriptor.id.clone());
+        spec.timeout = std::time::Duration::from_secs(10);
+        let mut plugin = LegacyPlugin::instantiate(spec).ok()?;
         if !plugin.function_exists(EXPORT_SUBSYNC_ALIGN) {
             return None;
         }
@@ -2234,6 +2334,254 @@ fn host_binding_cache_key(host_bindings: &HashMap<PluginHostBindingId, String>) 
     )
 }
 
+// ── Archive extractor plugin provider ────────────────────────────────
+
+pub struct WasmArchiveExtractorPluginProvider {
+    plugins: HashMap<String, LoadedPlugin>,
+    aliases: HashMap<String, String>,
+}
+
+impl WasmArchiveExtractorPluginProvider {
+    pub fn empty() -> Self {
+        Self {
+            plugins: HashMap::new(),
+            aliases: HashMap::new(),
+        }
+    }
+
+    fn prepare_external_plugin_record(
+        plugin: ExternalPluginWasm<'_>,
+    ) -> Result<LoadedPluginRecord, String> {
+        let (descriptor, wasm_bytes) = load_from_bytes(plugin.bytes)?;
+        if !validate_descriptor_for_type(
+            &descriptor,
+            Some("archive_extractor"),
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("archive extractor descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
+            descriptor, wasm_bytes,
+        )))
+    }
+
+    fn prepare_runtime_plugin_record(
+        plugin: RuntimePluginLoad,
+    ) -> Result<LoadedPluginRecord, String> {
+        if !validate_descriptor_for_type(
+            &plugin.descriptor,
+            Some("archive_extractor"),
+            PluginLoadSource::External {
+                first_party: plugin.first_party,
+            },
+        ) {
+            return Err("archive extractor descriptor rejected".to_string());
+        }
+        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
+            plugin.descriptor,
+            plugin.wasm_bytes,
+        )))
+    }
+
+    fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
+        match Self::prepare_external_plugin_record(plugin) {
+            Ok(record) => {
+                info!(
+                    plugin = record.loaded.descriptor.name.as_str(),
+                    version = record.loaded.descriptor.version.as_str(),
+                    provider_type = record.primary_key.as_str(),
+                    "registered external archive extractor plugin"
+                );
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
+            }
+            Err(error) => {
+                warn!(error = %error, "failed to load external archive extractor plugin");
+            }
+        }
+        self
+    }
+
+    fn with_runtime_plugin(mut self, plugin: RuntimePluginLoad) -> Self {
+        match Self::prepare_runtime_plugin_record(plugin) {
+            Ok(record) => {
+                let _ =
+                    insert_loaded_plugin(&mut self.plugins, &mut self.aliases, record, true, true);
+            }
+            Err(error) => {
+                warn!(error = %error, "failed to load runtime archive extractor plugin");
+            }
+        }
+        self
+    }
+
+    pub fn without_provider_type(mut self, provider_type: &str) -> Self {
+        let _ = remove_loaded_plugin(&mut self.plugins, &mut self.aliases, provider_type);
+        self
+    }
+
+    fn provider_supports_format(loaded: &LoadedPlugin, format: ArchivePluginFormat) -> bool {
+        loaded
+            .descriptor
+            .archive_extractor()
+            .map(|descriptor| descriptor.capabilities.formats.contains(&format))
+            .unwrap_or(false)
+    }
+
+    fn provider_for_format(&self, format: ArchivePluginFormat) -> Option<&LoadedPlugin> {
+        self.plugins
+            .values()
+            .find(|loaded| Self::provider_supports_format(loaded, format))
+    }
+}
+
+impl ArchiveExtractorPluginProvider for WasmArchiveExtractorPluginProvider {
+    fn client_for_format(
+        &self,
+        format: ArchivePluginFormat,
+    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
+        let loaded = self.provider_for_format(format)?;
+        let wasm_bytes = match loaded.materialize_wasm() {
+            Ok(wasm_bytes) => wasm_bytes,
+            Err(error) => {
+                warn!(
+                    format = ?format,
+                    error = %error,
+                    "failed to materialize WASM archive extractor bytes"
+                );
+                return None;
+            }
+        };
+        match WasmArchiveExtractorClient::new(wasm_bytes, loaded.descriptor.clone()) {
+            Ok(client) => Some(Arc::new(client)),
+            Err(error) => {
+                warn!(
+                    format = ?format,
+                    error = %error,
+                    "failed to instantiate WASM archive extractor plugin"
+                );
+                None
+            }
+        }
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        let mut keys = self.plugins.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    fn reload_runtime_plugins(
+        &self,
+        _runtime_plugins: &[RuntimePluginLoad],
+        _disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        Err("use DynamicArchiveExtractorPluginProvider for reload".to_string())
+    }
+}
+
+pub struct DynamicArchiveExtractorPluginProvider {
+    inner: std::sync::RwLock<WasmArchiveExtractorPluginProvider>,
+    client_cache: ArchiveExtractorClientCache,
+}
+
+impl DynamicArchiveExtractorPluginProvider {
+    pub fn new(provider: WasmArchiveExtractorPluginProvider) -> Self {
+        Self {
+            inner: std::sync::RwLock::new(provider),
+            client_cache: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn reload(&self, new_provider: WasmArchiveExtractorPluginProvider) {
+        let mut guard = self
+            .inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = new_provider;
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.clear();
+        }
+    }
+}
+
+impl ArchiveExtractorPluginProvider for DynamicArchiveExtractorPluginProvider {
+    fn client_for_format(
+        &self,
+        format: ArchivePluginFormat,
+    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
+        let cache_key = format!("extract:{format:?}");
+        if let Ok(cache) = self.client_cache.lock()
+            && let Some(client) = cache.get(&cache_key)
+        {
+            return Some(Arc::clone(client));
+        }
+
+        let client = {
+            let guard = self
+                .inner
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.client_for_format(format)?
+        };
+
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.insert(cache_key, Arc::clone(&client));
+        }
+        Some(client)
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        let guard = self
+            .inner
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.available_provider_types()
+    }
+
+    fn upsert_runtime_plugin(&self, plugin: RuntimePluginLoad) -> Result<(), String> {
+        let mut guard = self
+            .inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let current = std::mem::replace(&mut *guard, WasmArchiveExtractorPluginProvider::empty());
+        *guard = current.with_runtime_plugin(plugin);
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.clear();
+        }
+        Ok(())
+    }
+
+    fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let mut guard = self
+            .inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let current = std::mem::replace(&mut *guard, WasmArchiveExtractorPluginProvider::empty());
+        *guard = current.without_provider_type(provider_type);
+        if let Ok(mut cache) = self.client_cache.lock() {
+            cache.clear();
+        }
+        Ok(())
+    }
+
+    fn reload_runtime_plugins(
+        &self,
+        runtime_plugins: &[RuntimePluginLoad],
+        disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload(
+            build_archive_extractor_plugin_provider_from_runtime_plugins(
+                runtime_plugins,
+                disabled_builtins,
+            ),
+        );
+        Ok(())
+    }
+}
+
 fn cache_fingerprint(value: &str) -> String {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
@@ -2273,6 +2621,40 @@ pub fn build_subtitle_plugin_provider_from_runtime_plugins(
 
     for asset in crate::builtins::SUBTITLE_BUILTINS {
         provider = provider.with_builtin_asset(*asset);
+    }
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
+}
+
+pub fn build_archive_extractor_plugin_provider(
+    external_wasm_bytes: &[ExternalPluginWasm<'_>],
+    disabled_builtins: &[String],
+) -> WasmArchiveExtractorPluginProvider {
+    let mut provider = WasmArchiveExtractorPluginProvider::empty();
+
+    for plugin in external_wasm_bytes {
+        provider = provider.with_external_plugin(*plugin);
+    }
+
+    for provider_type in disabled_builtins {
+        provider = provider.without_provider_type(provider_type);
+    }
+
+    provider
+}
+
+pub fn build_archive_extractor_plugin_provider_from_runtime_plugins(
+    runtime_plugins: &[RuntimePluginLoad],
+    disabled_builtins: &[String],
+) -> WasmArchiveExtractorPluginProvider {
+    let mut provider = WasmArchiveExtractorPluginProvider::empty();
+
+    for plugin in runtime_plugins.iter().cloned() {
+        provider = provider.with_runtime_plugin(plugin);
     }
 
     for provider_type in disabled_builtins {
@@ -2434,12 +2816,11 @@ fn compute_base_url_from_config_json(json_str: &str) -> Option<String> {
 /// 3. Hostnames from `config_json` values that parse as URLs (notification plugins).
 ///
 /// If the resulting set is empty, no hosts are allowed (plugin has no network access).
-pub(crate) fn apply_allowed_hosts(
-    mut manifest: Manifest,
+pub(crate) fn allowed_hosts_for_descriptor(
     descriptor: &PluginDescriptor,
     base_url: Option<&str>,
     config_json: Option<&str>,
-) -> Manifest {
+) -> Vec<String> {
     let mut hosts: Vec<String> = descriptor.allowed_hosts().to_vec();
 
     // Add hostname from base_url (indexer plugins)
@@ -2460,10 +2841,7 @@ pub(crate) fn apply_allowed_hosts(
         }
     }
 
-    for host in &hosts {
-        manifest = manifest.with_allowed_host(host);
-    }
-    manifest
+    hosts
 }
 
 fn host_from_url(url: &str) -> Option<String> {
@@ -2475,33 +2853,6 @@ fn host_from_url(url: &str) -> Option<String> {
     url::Url::parse(trimmed)
         .ok()
         .and_then(|parsed| parsed.host_str().map(ToOwned::to_owned))
-}
-
-pub(crate) fn build_plugin(manifest: Manifest) -> Result<extism::Plugin, extism::Error> {
-    build_plugin_with_hosts(manifest, &SocketHost::disabled(), &ProcessHost::disabled())
-}
-
-fn build_plugin_with_hosts(
-    manifest: Manifest,
-    socket_host: &SocketHost,
-    process_host: &ProcessHost,
-) -> Result<extism::Plugin, extism::Error> {
-    // Wasmtime's filesystem cache is not race-free when multiple identical
-    // modules compile concurrently in the same process. Serialize the build
-    // step so parallel provider/client loading does not emit cache rename
-    // warnings for a benign same-artifact race.
-    let _build_guard = WASMTIME_PLUGIN_BUILD_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut functions = socket_host.functions();
-    functions.extend(process_host.functions());
-    functions.extend(plugin_http_host::host_functions(&manifest));
-
-    extism::PluginBuilder::new(manifest)
-        .with_wasi(true)
-        .with_http_response_headers(true)
-        .with_functions(functions)
-        .build()
 }
 
 fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'static str> {
@@ -2525,6 +2876,7 @@ fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'stati
         ProviderDescriptor::Notification(_) => {
             exports.push(EXPORT_NOTIFICATION_SEND);
         }
+        ProviderDescriptor::ArchiveExtractor(_) => {}
         ProviderDescriptor::Subtitle(subtitle) => {
             exports.push(EXPORT_VALIDATE_CONFIG);
             match subtitle.capabilities.mode {
@@ -2534,6 +2886,7 @@ fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'stati
                 SubtitleProviderMode::Generator => {
                     exports.push(EXPORT_SUBTITLE_GENERATE);
                 }
+                SubtitleProviderMode::Sync => {}
             }
         }
     }
@@ -2541,7 +2894,7 @@ fn required_exports_for_descriptor(descriptor: &PluginDescriptor) -> Vec<&'stati
 }
 
 fn validate_required_exports(
-    plugin: &extism::Plugin,
+    plugin: &mut LegacyPlugin,
     descriptor: &PluginDescriptor,
 ) -> Result<(), String> {
     let missing = required_exports_for_descriptor(descriptor)
@@ -2563,21 +2916,40 @@ fn validate_required_exports(
 
 fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), String> {
     let bytes = wasm_bytes.to_vec();
-    // No allowed hosts needed — describe() is a pure function that returns JSON.
-    let manifest = Manifest::new([extism::Wasm::data(bytes.clone())])
-        .with_timeout(std::time::Duration::from_secs(10));
 
+    // Command-model artifacts (wasip1 command: `_start` + `memory`, no
+    // `scryer_describe` export) self-describe via argv ["describe"] on the
+    // wasmtime backing.
+    // For these the required-export contract is `_start` + `memory` (checked in
+    // the classifier), not legacy reactor exports. Legacy fleet plugins fall
+    // through to the unchanged describe path below.
+    if let Some(result) = crate::wasmtime_host::command_model_describe(&bytes) {
+        return result.map(|descriptor| (descriptor, bytes));
+    }
+
+    // Descriptor extraction for legacy fleet plugins still calls the
+    // Extism-PDK reactor export, but the host is now Scryer's native Wasmtime
+    // compatibility runner instead of the Extism crate.
+    let mut spec = LegacyPluginSpec::new(bytes.clone(), "descriptor");
+    spec.timeout = std::time::Duration::from_secs(10);
     let mut plugin =
-        build_plugin(manifest).map_err(|e| format!("failed to instantiate WASM: {e}"))?;
+        LegacyPlugin::instantiate(spec).map_err(|e| format!("failed to instantiate WASM: {e}"))?;
 
-    let output: String = plugin
-        .call::<&str, String>(EXPORT_DESCRIBE, "")
+    let output = plugin
+        .call_string(EXPORT_DESCRIBE, "")
         .map_err(|e| format!("{EXPORT_DESCRIBE}() failed: {e}"))?;
 
     let descriptor: PluginDescriptor = serde_json::from_str(&output)
         .map_err(|e| format!("describe() returned invalid JSON: {e}"))?;
 
-    validate_required_exports(&plugin, &descriptor)?;
+    if matches!(descriptor.provider, ProviderDescriptor::ArchiveExtractor(_)) {
+        return Err(format!(
+            "{} (archive_extractor) must use the wasip1 command-model archive ABI",
+            descriptor.id
+        ));
+    }
+
+    validate_required_exports(&mut plugin, &descriptor)?;
 
     Ok((descriptor, bytes))
 }
@@ -2619,36 +2991,30 @@ impl WasmNotificationPluginProvider {
         plugin: ExternalPluginWasm<'_>,
     ) -> Result<LoadedPluginRecord, String> {
         let (descriptor, wasm_bytes) = load_from_bytes(plugin.bytes)?;
-        if !validate_descriptor_for_type(
-            &descriptor,
-            Some("notification"),
-            PluginLoadSource::External {
-                first_party: plugin.first_party,
-            },
-        ) {
+        let load_source = PluginLoadSource::External {
+            first_party: plugin.first_party,
+        };
+        if !validate_descriptor_for_type(&descriptor, Some("notification"), load_source) {
             return Err("notification descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
-            descriptor, wasm_bytes,
-        )))
+        Ok(LoadedPluginRecord::new(
+            LoadedPlugin::from_owned(descriptor, wasm_bytes).with_load_source(load_source),
+        ))
     }
 
     fn prepare_runtime_plugin_record(
         plugin: RuntimePluginLoad,
     ) -> Result<LoadedPluginRecord, String> {
-        if !validate_descriptor_for_type(
-            &plugin.descriptor,
-            Some("notification"),
-            PluginLoadSource::External {
-                first_party: plugin.first_party,
-            },
-        ) {
+        let load_source = PluginLoadSource::External {
+            first_party: plugin.first_party,
+        };
+        if !validate_descriptor_for_type(&plugin.descriptor, Some("notification"), load_source) {
             return Err("notification descriptor rejected".to_string());
         }
-        Ok(LoadedPluginRecord::new(LoadedPlugin::from_owned(
-            plugin.descriptor,
-            plugin.wasm_bytes,
-        )))
+        Ok(LoadedPluginRecord::new(
+            LoadedPlugin::from_owned(plugin.descriptor, plugin.wasm_bytes)
+                .with_load_source(load_source),
+        ))
     }
 
     fn with_external_plugin(mut self, plugin: ExternalPluginWasm<'_>) -> Self {
@@ -2726,24 +3092,20 @@ impl WasmNotificationPluginProvider {
             }
         };
 
-        let mut manifest = Manifest::new([extism::Wasm::data(wasm_bytes)]);
-        manifest = apply_allowed_hosts(
-            manifest,
-            &loaded.descriptor,
-            None,
-            Some(&config.config_json),
-        );
-        manifest = manifest.with_timeout(std::time::Duration::from_secs(30));
-        let socket_host =
-            SocketHost::from_descriptor(&loaded.descriptor, Some(&config.config_json));
-        let process_host =
-            ProcessHost::from_descriptor(&loaded.descriptor, Some(&config.config_json));
+        let mut spec = LegacyPluginSpec::new(wasm_bytes, loaded.descriptor.id.clone());
+        spec.allowed_hosts =
+            allowed_hosts_for_descriptor(&loaded.descriptor, None, Some(&config.config_json));
+        spec.timeout = std::time::Duration::from_secs(30);
+        let socket_host = socket_host_for_notification(loaded, &config.config_json);
+        let process_host = process_host_for_notification(loaded, &config.config_json);
+        spec.socket_host = socket_host.clone();
+        spec.process_host = process_host;
 
         // Inject config_json key-value pairs
         match parse_config_json_entries(&config.config_json) {
             Ok(map) => {
-                for (k, v) in &map {
-                    manifest = manifest.with_config_key(k, v);
+                for (k, v) in map {
+                    spec.config.insert(k, v);
                 }
             }
             Err(error) => {
@@ -2755,7 +3117,7 @@ impl WasmNotificationPluginProvider {
             }
         }
 
-        match build_plugin_with_hosts(manifest, &socket_host, &process_host) {
+        match LegacyPlugin::instantiate(spec) {
             Ok(plugin) => {
                 let client = WasmNotificationClient::new(
                     plugin,
@@ -3118,6 +3480,7 @@ mod tests {
     use super::*;
     use crate::builtins::{NEWZNAB, TORZNAB};
     use crate::types::{
+        ArchiveExtractorCapabilities, ArchiveExtractorDescriptor, ArchivePluginFormat,
         ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, DownloadClientCapabilities,
         DownloadClientDescriptor, IndexerDescriptor, IndexerSourceKind, NotificationCapabilities,
         NotificationDescriptor, PluginHostBindingId, SubtitleCapabilities, SubtitleDescriptor,
@@ -3141,9 +3504,25 @@ mod tests {
             _episode: Option<u32>,
             _absolute_episode: Option<u32>,
             _tagged_aliases: Vec<scryer_domain::TaggedAlias>,
+            _learning_context: Option<scryer_application::IndexerSearchLearningContext>,
+            _cancel_token: tokio_util::sync::CancellationToken,
         ) -> scryer_application::AppResult<scryer_application::IndexerSearchResponse> {
             unreachable!("dummy indexer client should not be called")
         }
+    }
+
+    fn indexer_cache_key(
+        provider_type: &str,
+        config_id: &str,
+        revision: &str,
+    ) -> IndexerClientCacheKey {
+        (
+            provider_type.to_string(),
+            config_id.to_string(),
+            revision.to_string(),
+            String::new(),
+            String::new(),
+        )
     }
 
     struct DummyDownloadClient;
@@ -3274,6 +3653,22 @@ mod tests {
                 allowed_hosts: vec![],
                 capabilities: SubtitleCapabilities::default(),
             }),
+            "archive_extractor" => {
+                ProviderDescriptor::ArchiveExtractor(ArchiveExtractorDescriptor {
+                    provider_type: "test".to_string(),
+                    provider_aliases: vec![],
+                    config_fields: vec![],
+                    default_base_url: None,
+                    allowed_hosts: vec![],
+                    capabilities: ArchiveExtractorCapabilities {
+                        formats: vec![
+                            ArchivePluginFormat::Rar,
+                            ArchivePluginFormat::SevenZip,
+                            ArchivePluginFormat::Zip,
+                        ],
+                    },
+                })
+            }
             other => panic!("unsupported test plugin type: {other}"),
         };
 
@@ -3302,6 +3697,9 @@ mod tests {
             ProviderDescriptor::Subtitle(provider) => {
                 provider.provider_type = provider_type.to_string()
             }
+            ProviderDescriptor::ArchiveExtractor(provider) => {
+                provider.provider_type = provider_type.to_string()
+            }
         }
     }
 
@@ -3311,6 +3709,7 @@ mod tests {
             ProviderDescriptor::Notification(provider) => provider.provider_aliases = aliases,
             ProviderDescriptor::DownloadClient(provider) => provider.provider_aliases = aliases,
             ProviderDescriptor::Subtitle(provider) => provider.provider_aliases = aliases,
+            ProviderDescriptor::ArchiveExtractor(provider) => provider.provider_aliases = aliases,
         }
     }
 
@@ -3320,6 +3719,9 @@ mod tests {
             ProviderDescriptor::Notification(provider) => provider.allowed_hosts = allowed_hosts,
             ProviderDescriptor::DownloadClient(provider) => provider.allowed_hosts = allowed_hosts,
             ProviderDescriptor::Subtitle(provider) => provider.allowed_hosts = allowed_hosts,
+            ProviderDescriptor::ArchiveExtractor(provider) => {
+                provider.allowed_hosts = allowed_hosts
+            }
         }
     }
 
@@ -3344,6 +3746,34 @@ mod tests {
             wasm_bytes: provider_type.as_bytes().to_vec(),
             first_party: true,
         }
+    }
+
+    #[test]
+    fn notification_process_host_gated_to_first_party() {
+        let mut descriptor = descriptor("notification");
+        if let ProviderDescriptor::Notification(provider) = &mut descriptor.provider {
+            provider.capabilities.requires_host_process = true;
+        }
+        let config_json = r#"{"path":"/usr/bin/env"}"#;
+
+        let first_party = LoadedPlugin::from_owned(descriptor.clone(), Vec::new())
+            .with_load_source(PluginLoadSource::External { first_party: true });
+        let builtin = LoadedPlugin::from_owned(descriptor.clone(), Vec::new())
+            .with_load_source(PluginLoadSource::Builtin);
+        let untrusted = LoadedPlugin::from_owned(descriptor, Vec::new())
+            .with_load_source(PluginLoadSource::External { first_party: false });
+
+        // First-party and builtin notifiers keep a working, non-empty allowlist.
+        assert!(
+            process_host_for_notification(&first_party, config_json).allowed_command_count() > 0
+        );
+        assert!(process_host_for_notification(&builtin, config_json).allowed_command_count() > 0);
+        // Operator-supplied (Unverified) notifiers get a disabled host even though
+        // the descriptor self-declares `requires_host_process`.
+        assert_eq!(
+            process_host_for_notification(&untrusted, config_json).allowed_command_count(),
+            0
+        );
     }
 
     #[test]
@@ -3403,6 +3833,22 @@ mod tests {
         ));
         assert!(validate_indexer_descriptor(
             &descriptor("torrent_indexer"),
+            PluginLoadSource::External { first_party: false }
+        ));
+    }
+
+    #[test]
+    fn indexer_query_facets_must_be_known_search_facets() {
+        let mut descriptor = descriptor("indexer");
+        if let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider {
+            indexer.capabilities.supported_query_facets =
+                vec!["movie".to_string(), "music".to_string()];
+        } else {
+            unreachable!("test descriptor should be an indexer");
+        }
+
+        assert!(!validate_indexer_descriptor(
+            &descriptor,
             PluginLoadSource::External { first_party: false }
         ));
     }
@@ -3666,11 +4112,7 @@ mod tests {
     #[test]
     fn dynamic_client_cache_insert_returns_existing_for_duplicate_key() {
         let mut cache = HashMap::new();
-        let cache_key = (
-            "newznab".to_string(),
-            "idx-1".to_string(),
-            "revision-1".to_string(),
-        );
+        let cache_key = indexer_cache_key("newznab", "idx-1", "revision-1");
 
         let first = insert_indexer_client_cache(
             &mut cache,
@@ -3689,29 +4131,17 @@ mod tests {
         let mut indexer_cache = HashMap::new();
         let first_indexer = insert_indexer_client_cache(
             &mut indexer_cache,
-            (
-                "newznab".to_string(),
-                "idx-1".to_string(),
-                "revision-1".to_string(),
-            ),
+            indexer_cache_key("newznab", "idx-1", "revision-1"),
             Arc::new(DummyIndexerClient),
         );
         let second_indexer = insert_indexer_client_cache(
             &mut indexer_cache,
-            (
-                "newznab".to_string(),
-                "idx-1".to_string(),
-                "revision-2".to_string(),
-            ),
+            indexer_cache_key("newznab", "idx-1", "revision-2"),
             Arc::new(DummyIndexerClient),
         );
         assert!(!Arc::ptr_eq(&first_indexer, &second_indexer));
         assert_eq!(indexer_cache.len(), 1);
-        assert!(indexer_cache.contains_key(&(
-            "newznab".to_string(),
-            "idx-1".to_string(),
-            "revision-2".to_string()
-        )));
+        assert!(indexer_cache.contains_key(&indexer_cache_key("newznab", "idx-1", "revision-2")));
 
         let mut download_cache = HashMap::new();
         let first_download = insert_download_client_cache(
@@ -3802,6 +4232,74 @@ mod tests {
     }
 
     #[test]
+    fn archive_extractor_descriptor_is_not_extism_archive_process_contract() {
+        let descriptor = descriptor("archive_extractor");
+        let exports = required_exports_for_descriptor(&descriptor);
+
+        assert!(exports.contains(&EXPORT_DESCRIBE));
+        assert!(!exports.contains(&"scryer_archive_process"));
+        assert!(!exports.contains(&"host_crc32"));
+    }
+
+    #[test]
+    fn archive_extractor_provider_routes_by_declared_format_capability() {
+        let provider = WasmArchiveExtractorPluginProvider::empty().with_runtime_plugin(
+            runtime_plugin_load("archive_extractor", "archive-tools", &[]),
+        );
+
+        assert_eq!(provider.available_provider_types(), vec!["archive-tools"]);
+        assert!(
+            provider
+                .provider_for_format(ArchivePluginFormat::Rar)
+                .is_some()
+        );
+        assert!(
+            provider
+                .provider_for_format(ArchivePluginFormat::Zip)
+                .is_some()
+        );
+        assert!(
+            provider
+                .provider_for_format(ArchivePluginFormat::SevenZip)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn archive_extractor_runtime_mutation_updates_dynamic_provider() {
+        let provider =
+            DynamicArchiveExtractorPluginProvider::new(WasmArchiveExtractorPluginProvider::empty());
+        provider
+            .upsert_runtime_plugin(runtime_plugin_load(
+                "archive_extractor",
+                "archive-tools",
+                &[],
+            ))
+            .expect("upsert archive extractor");
+        provider
+            .upsert_runtime_plugin(runtime_plugin_load(
+                "archive_extractor",
+                "archive-tools-two",
+                &[],
+            ))
+            .expect("upsert second archive extractor");
+
+        assert_eq!(
+            provider.available_provider_types(),
+            vec!["archive-tools", "archive-tools-two"]
+        );
+
+        provider
+            .remove_runtime_plugin("archive-tools")
+            .expect("remove archive extractor");
+
+        assert_eq!(
+            provider.available_provider_types(),
+            vec!["archive-tools-two"]
+        );
+    }
+
+    #[test]
     fn indexer_runtime_mutation_invalidates_only_changed_provider_cache_entries() {
         let provider = DynamicPluginProvider::new(build_indexer_plugin_provider(&[], &[]));
         provider
@@ -3818,23 +4316,15 @@ mod tests {
         {
             let mut cache = provider.client_cache.lock().expect("indexer cache lock");
             cache.insert(
-                (
-                    "example_indexer".to_string(),
-                    "cfg-a".to_string(),
-                    "1".to_string(),
-                ),
+                indexer_cache_key("example_indexer", "cfg-a", "1"),
                 Arc::new(DummyIndexerClient),
             );
             cache.insert(
-                (
-                    "example-indexer-alias".to_string(),
-                    "cfg-b".to_string(),
-                    "1".to_string(),
-                ),
+                indexer_cache_key("example-indexer-alias", "cfg-b", "1"),
                 Arc::new(DummyIndexerClient),
             );
             cache.insert(
-                ("newznab".to_string(), "cfg-c".to_string(), "1".to_string()),
+                indexer_cache_key("newznab", "cfg-c", "1"),
                 Arc::new(DummyIndexerClient),
             );
         }
@@ -3848,7 +4338,7 @@ mod tests {
         assert!(
             cache
                 .keys()
-                .all(|(provider_type, _, _)| provider_type == "newznab")
+                .all(|(provider_type, _, _, _, _)| provider_type == "newznab")
         );
         let providers = provider.available_provider_types();
         assert!(

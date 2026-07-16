@@ -194,6 +194,7 @@ pub async fn load_runtime_plugin_from_persisted_installation_payload(
         &installation.provider_type,
         &installation_runtime_release(installation),
         &descriptor,
+        installation.support_tier,
         false,
     )?;
     Ok(runtime_plugin_load_from_validated(
@@ -223,17 +224,55 @@ fn installation_sdk_contract_is_host_compatible(installation: &PluginInstallatio
         }
     }
 }
+/// Support tiers permitted to run the host-process capability.
+///
+/// The host-process host lets a plugin spawn real OS processes on the Scryer
+/// host. It is reserved for Scryer's own first-party plugins (`Official`).
+/// Community plugins, including `VerifiedCommunity`, must not be installable
+/// with this capability because runtime host bindings are only enabled for
+/// first-party artifacts.
+fn support_tier_permits_host_process(tier: PluginSupportTier) -> bool {
+    matches!(tier, PluginSupportTier::Official)
+}
+
+/// Hard-fail validation of a plugin that declares the host-process capability
+/// unless its resolved support tier is first-party. Applied on every
+/// install path and when loading a persisted installation, so an untrusted
+/// notifier can never turn an allowlisted interpreter into arbitrary host code.
+fn ensure_host_process_capability_allowed(
+    descriptor: &PluginDescriptor,
+    support_tier: PluginSupportTier,
+) -> AppResult<()> {
+    if plugin_descriptor_requires_host_process(descriptor)
+        && !support_tier_permits_host_process(support_tier)
+    {
+        warn!(
+            plugin = descriptor.id.as_str(),
+            provider_type = descriptor.provider_type(),
+            support_tier = ?support_tier,
+            "rejecting plugin: host-process capability is reserved for official plugins"
+        );
+        return Err(AppError::Validation(format!(
+            "plugin '{}' requests the host-process capability, which is reserved for official plugins",
+            descriptor.id
+        )));
+    }
+    Ok(())
+}
+
 fn validate_downloaded_plugin_descriptor(
     plugin_id: &str,
     expected_plugin_type: &str,
     expected_provider_type: &str,
     release: &DownloadedPluginReleaseContract,
     descriptor: &PluginDescriptor,
+    support_tier: PluginSupportTier,
     enforce_release_host_compatibility: bool,
 ) -> AppResult<ValidatedDownloadedPlugin> {
     validate_plugin_descriptor_sdk_contract(descriptor, SDK_VERSION)
         .map_err(AppError::Validation)?;
     validate_plugin_descriptor_host_permissions(descriptor).map_err(AppError::Validation)?;
+    ensure_host_process_capability_allowed(descriptor, support_tier)?;
 
     if descriptor.id != plugin_id {
         return Err(AppError::Validation(format!(

@@ -9,12 +9,14 @@ use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, DownloadClient, DownloadClientAddRequest,
     DownloadClientMarkImportedRequest, DownloadClientStatus, DownloadGrabResult,
-    DownloadSourceKind, StagedNzbRef,
+    DownloadSourceKind, ResolvedDownloadArtifact, StagedNzbRef,
 };
 use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
 use scryer_plugin_sdk::torrent::normalize_info_hash_pair;
 use tracing::debug;
 
+use crate::blocking::run_blocking_plugin_call;
+use crate::legacy_runtime::LegacyPlugin;
 use crate::types::{
     DownloadControlAction, DownloadInputKind, DownloadIsolationMode, DownloadItemState,
     EXPORT_DOWNLOAD_ADD, EXPORT_DOWNLOAD_CONTROL, EXPORT_DOWNLOAD_LIST_COMPLETED,
@@ -28,29 +30,68 @@ use crate::types::{
     PluginTorrentQueuePlacement, decode_plugin_result,
 };
 
+const DOWNLOAD_CLIENT_PLUGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const TORRENT_PREFETCH_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+async fn read_torrent_body_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > TORRENT_PREFETCH_MAX_BYTES as u64)
+    {
+        return Err(format!(
+            "torrent body exceeds the {} MiB limit",
+            TORRENT_PREFETCH_MAX_BYTES / (1024 * 1024)
+        ));
+    }
+
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or_default()
+        .min(TORRENT_PREFETCH_MAX_BYTES);
+    let mut body = Vec::with_capacity(capacity);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("torrent body read failed: {error}"))?
+    {
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| "torrent body length overflowed".to_string())?;
+        if next_len > TORRENT_PREFETCH_MAX_BYTES {
+            return Err(format!(
+                "torrent body exceeds the {} MiB limit",
+                TORRENT_PREFETCH_MAX_BYTES / (1024 * 1024)
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 pub struct WasmDownloadClient {
-    plugin: Arc<Mutex<extism::Plugin>>,
+    plugin: Arc<Mutex<LegacyPlugin>>,
     descriptor: PluginDescriptor,
     client_name: String,
     client_id: String,
-    http: reqwest::Client,
-    no_redirect_http: reqwest::Client,
 }
 
 impl WasmDownloadClient {
     pub fn new(
-        plugin: extism::Plugin,
+        plugin: LegacyPlugin,
         descriptor: PluginDescriptor,
         client_id: String,
         client_name: String,
     ) -> Self {
+        // No client is held here on purpose: the plugin-controlled download URL
+        // is fetched through the guarded plugin egress facility, which builds a
+        // per-request DNS-pinned client and re-validates every redirect hop.
         Self {
             plugin: Arc::new(Mutex::new(plugin)),
             descriptor,
             client_name,
             client_id,
-            http: scryer_outbound_http::plugin_reqwest_client(),
-            no_redirect_http: scryer_outbound_http::no_redirect_reqwest_client(),
         }
     }
 }
@@ -293,15 +334,8 @@ fn map_history_item_from_completed(
     }
 }
 
-fn plugin_call_error(operation: &str, error: extism::Error) -> AppError {
-    let root_cause = error.root_cause().to_string();
-    let detail = if root_cause.trim().is_empty() || root_cause == error.to_string() {
-        error.to_string()
-    } else {
-        root_cause
-    };
-
-    AppError::Repository(format!("plugin {operation} failed: {detail}"))
+fn plugin_call_error(operation: &str, error: AppError) -> AppError {
+    AppError::Repository(format!("plugin {operation} failed: {error}"))
 }
 
 fn build_isolation_entries(value: Option<&str>) -> Vec<PluginDownloadIsolation> {
@@ -396,6 +430,58 @@ fn select_plugin_input_kind(
     }
 }
 
+fn resolved_artifact_source(
+    artifact: &ResolvedDownloadArtifact,
+) -> (DownloadSourceKind, ResolvedTorrentSource) {
+    match artifact {
+        ResolvedDownloadArtifact::Nzb {
+            bytes,
+            file_name,
+            content_type,
+        } => (
+            DownloadSourceKind::NzbFile,
+            ResolvedTorrentSource {
+                download_url: None,
+                nzb_bytes_base64: Some(BASE64.encode(bytes)),
+                nzb_file_name: file_name.clone(),
+                nzb_content_type: content_type
+                    .clone()
+                    .or_else(|| Some("application/x-nzb".to_string())),
+                ..ResolvedTorrentSource::default()
+            },
+        ),
+        ResolvedDownloadArtifact::Magnet {
+            uri,
+            info_hash_hint: _,
+        } => (
+            DownloadSourceKind::MagnetUri,
+            ResolvedTorrentSource {
+                download_url: None,
+                magnet_uri: Some(uri.clone()),
+                ..ResolvedTorrentSource::default()
+            },
+        ),
+        ResolvedDownloadArtifact::TorrentFile {
+            bytes,
+            file_name,
+            content_type,
+            info_hash_hint: _,
+        } => (
+            DownloadSourceKind::TorrentFile,
+            ResolvedTorrentSource {
+                download_url: None,
+                torrent_url: None,
+                torrent_bytes_base64: Some(BASE64.encode(bytes)),
+                torrent_file_name: file_name.clone(),
+                torrent_content_type: content_type
+                    .clone()
+                    .or_else(|| Some("application/x-bittorrent".to_string())),
+                ..ResolvedTorrentSource::default()
+            },
+        ),
+    }
+}
+
 fn build_plugin_add_request(
     request: &DownloadClientAddRequest,
     source_kind: DownloadSourceKind,
@@ -467,6 +553,10 @@ fn build_plugin_add_request(
             title_id: Some(request.title.id.clone()),
             title_name: request.title.name.clone(),
             media_facet: request.title.facet.as_str().to_string(),
+            title_slug: request.title.slug.clone(),
+            year: request.title.year,
+            language: request.title.language.clone(),
+            network: request.title.network.clone(),
             tags: request.title.tags.clone(),
         },
         routing: PluginDownloadRouting {
@@ -511,22 +601,52 @@ impl DownloadClient for WasmDownloadClient {
             .source_kind
             .or_else(|| DownloadSourceKind::infer_from_hint(source_hint.as_deref()))
             .unwrap_or(DownloadSourceKind::TorrentFile);
+        let resolved_artifact = request
+            .resolved_download_artifact
+            .as_ref()
+            .map(resolved_artifact_source);
+        let source_kind = resolved_artifact
+            .as_ref()
+            .map(|(source_kind, _)| *source_kind)
+            .unwrap_or(source_kind);
 
         // When the source is a .torrent HTTP URL and we have no info_hash_hint,
         // pre-fetch the torrent file so the plugin can compute the hash directly.
         // Some trackers redirect .torrent URLs to magnet URIs — detect that and
         // switch to the magnet path.
-        let mut torrent_bytes_base64 = None;
-        let mut resolved_magnet_uri: Option<String> = None;
-        let mut resolved_download_url = source_hint.clone();
-        let mut torrent_url = source_hint.clone().filter(|url| {
-            matches!(source_kind, DownloadSourceKind::TorrentFile)
-                && (url.starts_with("http://") || url.starts_with("https://"))
-        });
-        let mut torrent_content_type = None;
-        let mut nzb_bytes_base64 = None;
-        let mut nzb_file_name = None;
-        let mut nzb_content_type = None;
+        let mut torrent_bytes_base64 = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.torrent_bytes_base64.clone());
+        let mut resolved_magnet_uri: Option<String> = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.magnet_uri.clone());
+        let mut resolved_download_url = resolved_artifact
+            .is_none()
+            .then(|| source_hint.clone())
+            .flatten();
+        let mut torrent_url = if resolved_artifact.is_none() {
+            source_hint.clone().filter(|url| {
+                matches!(source_kind, DownloadSourceKind::TorrentFile)
+                    && (url.starts_with("http://") || url.starts_with("https://"))
+            })
+        } else {
+            None
+        };
+        let mut torrent_content_type = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.torrent_content_type.clone());
+        let mut torrent_file_name = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.torrent_file_name.clone());
+        let mut nzb_bytes_base64 = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.nzb_bytes_base64.clone());
+        let mut nzb_file_name = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.nzb_file_name.clone());
+        let mut nzb_content_type = resolved_artifact
+            .as_ref()
+            .and_then(|(_, resolved)| resolved.nzb_content_type.clone());
         if matches!(
             source_kind,
             DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl
@@ -539,74 +659,121 @@ impl DownloadClient for WasmDownloadClient {
 
         if matches!(source_kind, DownloadSourceKind::TorrentFile)
             && request.info_hash_hint.is_none()
+            && resolved_artifact.is_none()
             && let Some(url) = source_hint.as_ref()
             && (url.starts_with("http://") || url.starts_with("https://"))
             && !url.starts_with("magnet:")
         {
-            match scryer_outbound_http::send_reqwest_request(self.no_redirect_http.get(url)).await {
-                Ok(resp) if resp.status().is_redirection() => {
-                    if let Some(location) =
-                        resp.headers().get("location").and_then(|v| v.to_str().ok())
-                    {
-                        if location.starts_with("magnet:") {
-                            debug!(url = %url, magnet = %location, "torrent URL redirected to magnet");
-                            resolved_magnet_uri = Some(location.to_string());
-                            resolved_download_url = None;
-                            torrent_url = None;
-                        } else {
-                            resolved_download_url = Some(location.to_string());
-                            torrent_url = Some(location.to_string());
-                            // Follow the redirect with the normal client
-                            if let Ok(resp) =
-                                scryer_outbound_http::send_reqwest_request(self.http.get(location))
-                                    .await
-                                && resp.status().is_success()
-                            {
-                                let content_type = resp
-                                    .headers()
-                                    .get(reqwest::header::CONTENT_TYPE)
-                                    .and_then(|value| value.to_str().ok())
-                                    .map(str::to_string);
-                                if let Ok(bytes) = resp.bytes().await
-                                    && !bytes.is_empty()
+            // Route the plugin-controlled download URL through the guarded
+            // plugin egress facility: destination validated + DNS-pinned,
+            // link-local/cloud-metadata hard-blocked, and the redirect hop
+            // re-validated before it is followed.
+            match scryer_outbound_http::prepare_plugin_http_target(url, "plugin torrent fetch")
+                .await
+            {
+                Ok(target) => match scryer_outbound_http::send_reqwest_request(
+                    target.client().get(target.url().clone()),
+                )
+                .await
+                {
+                    Ok(resp) if resp.status().is_redirection() => {
+                        if let Some(location) =
+                            resp.headers().get("location").and_then(|v| v.to_str().ok())
+                        {
+                            if location.starts_with("magnet:") {
+                                debug!(url = %url, magnet = %location, "torrent URL redirected to magnet");
+                                resolved_magnet_uri = Some(location.to_string());
+                                resolved_download_url = None;
+                                torrent_url = None;
+                            } else if let Ok(redirect_url) = target.url().join(location) {
+                                let redirect_str = redirect_url.to_string();
+                                resolved_download_url = Some(redirect_str.clone());
+                                torrent_url = Some(redirect_str);
+                                // Re-validate the redirect target under the egress
+                                // policy before following it, so a declared host
+                                // cannot bounce the fetch into metadata space.
+                                match scryer_outbound_http::prepare_plugin_http_target_from_url(
+                                    redirect_url,
+                                    "plugin torrent redirect",
+                                )
+                                .await
                                 {
-                                    torrent_content_type = content_type;
-                                    debug!(url = %url, bytes = bytes.len(), "pre-fetched torrent file (via redirect)");
-                                    torrent_bytes_base64 = Some(BASE64.encode(&bytes));
+                                    Ok(redirect_target) => {
+                                        if let Ok(resp) =
+                                            scryer_outbound_http::send_reqwest_request(
+                                                redirect_target
+                                                    .client()
+                                                    .get(redirect_target.url().clone()),
+                                            )
+                                            .await
+                                            && resp.status().is_success()
+                                        {
+                                            let content_type = resp
+                                                .headers()
+                                                .get(reqwest::header::CONTENT_TYPE)
+                                                .and_then(|value| value.to_str().ok())
+                                                .map(str::to_string);
+                                            match read_torrent_body_bounded(resp).await {
+                                                Ok(bytes) if !bytes.is_empty() => {
+                                                    torrent_content_type = content_type;
+                                                    torrent_file_name =
+                                                        derive_torrent_file_name(request);
+                                                    debug!(url = %url, bytes = bytes.len(), "pre-fetched torrent file (via redirect)");
+                                                    torrent_bytes_base64 =
+                                                        Some(BASE64.encode(&bytes));
+                                                }
+                                                Ok(_) => {
+                                                    debug!(url = %url, "torrent redirect fetch returned empty body")
+                                                }
+                                                Err(error) => {
+                                                    debug!(url = %url, error = %error, "torrent redirect body rejected")
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        debug!(url = %url, error = %e, "torrent redirect target rejected by plugin egress policy")
+                                    }
                                 }
+                            } else {
+                                debug!(url = %url, location = %location, "torrent redirect location was not a valid URL")
                             }
                         }
                     }
-                }
-                Ok(resp) if resp.status().is_success() => {
-                    let response_url = resp.url().to_string();
-                    if response_url != *url {
-                        resolved_download_url = Some(response_url.clone());
-                        torrent_url = Some(response_url);
+                    Ok(resp) if resp.status().is_success() => {
+                        let response_url = resp.url().to_string();
+                        if response_url != *url {
+                            resolved_download_url = Some(response_url.clone());
+                            torrent_url = Some(response_url);
+                        }
+                        let content_type = resp
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_string);
+                        match read_torrent_body_bounded(resp).await {
+                            Ok(bytes) if !bytes.is_empty() => {
+                                torrent_content_type = content_type;
+                                torrent_file_name = derive_torrent_file_name(request);
+                                debug!(url = %url, bytes = bytes.len(), "pre-fetched torrent file for hash derivation");
+                                torrent_bytes_base64 = Some(BASE64.encode(&bytes));
+                            }
+                            Ok(_) => {
+                                debug!(url = %url, "torrent file fetch returned empty body")
+                            }
+                            Err(e) => {
+                                debug!(url = %url, error = %e, "torrent file body read failed")
+                            }
+                        }
                     }
-                    let content_type = resp
-                        .headers()
-                        .get(reqwest::header::CONTENT_TYPE)
-                        .and_then(|value| value.to_str().ok())
-                        .map(str::to_string);
-                    match resp.bytes().await {
-                        Ok(bytes) if !bytes.is_empty() => {
-                            torrent_content_type = content_type;
-                            debug!(url = %url, bytes = bytes.len(), "pre-fetched torrent file for hash derivation");
-                            torrent_bytes_base64 = Some(BASE64.encode(&bytes));
-                        }
-                        Ok(_) => {
-                            debug!(url = %url, "torrent file fetch returned empty body")
-                        }
-                        Err(e) => {
-                            debug!(url = %url, error = %e, "torrent file body read failed")
-                        }
+                    Ok(resp) => {
+                        debug!(url = %url, status = %resp.status(), "torrent file fetch returned non-success")
                     }
+                    Err(e) => debug!(url = %url, error = %e, "torrent file fetch failed"),
+                },
+                Err(e) => {
+                    debug!(url = %url, error = %e, "torrent file fetch rejected by plugin egress policy")
                 }
-                Ok(resp) => {
-                    debug!(url = %url, status = %resp.status(), "torrent file fetch returned non-success")
-                }
-                Err(e) => debug!(url = %url, error = %e, "torrent file fetch failed"),
             }
         }
 
@@ -625,7 +792,7 @@ impl DownloadClient for WasmDownloadClient {
                 magnet_uri,
                 torrent_bytes_base64,
                 torrent_url,
-                torrent_file_name: derive_torrent_file_name(request),
+                torrent_file_name,
                 torrent_content_type,
                 nzb_bytes_base64,
                 nzb_file_name,
@@ -638,16 +805,19 @@ impl DownloadClient for WasmDownloadClient {
         })?;
 
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call::<&str, String>(EXPORT_DOWNLOAD_ADD, &input)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_ADD}()"), e))
-        })
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_string(EXPORT_DOWNLOAD_ADD, &input)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_ADD}()"), e))
+            },
+        )
         .await
-        .map_err(|e| AppError::download_submit_unavailable(format!("plugin task panicked: {e}")))?
         .map_err(AppError::into_download_submit_unavailable)?;
 
         let response: PluginDownloadClientAddResponse =
@@ -662,16 +832,19 @@ impl DownloadClient for WasmDownloadClient {
 
     async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call::<(), String>(EXPORT_DOWNLOAD_LIST_QUEUE, ())
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_QUEUE}()"), e))
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_unit(EXPORT_DOWNLOAD_LIST_QUEUE)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_QUEUE}()"), e))
+            },
+        )
+        .await?;
 
         let items: Vec<PluginDownloadItem> =
             decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_QUEUE)?;
@@ -700,16 +873,19 @@ impl DownloadClient for WasmDownloadClient {
 
     async fn list_history(&self) -> AppResult<Vec<DownloadQueueItem>> {
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call::<(), String>(EXPORT_DOWNLOAD_LIST_HISTORY, ())
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_HISTORY}()"), e))
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_unit(EXPORT_DOWNLOAD_LIST_HISTORY)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_HISTORY}()"), e))
+            },
+        )
+        .await?;
 
         match decode_plugin_result::<Vec<PluginDownloadItem>>(&output, EXPORT_DOWNLOAD_LIST_HISTORY)
         {
@@ -765,16 +941,21 @@ impl DownloadClient for WasmDownloadClient {
 
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call::<(), String>(EXPORT_DOWNLOAD_LIST_COMPLETED, ())
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e))
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_unit(EXPORT_DOWNLOAD_LIST_COMPLETED)
+                    .map_err(|e| {
+                        plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e)
+                    })
+            },
+        )
+        .await?;
 
         let items: Vec<PluginCompletedDownload> =
             decode_plugin_result(&output, EXPORT_DOWNLOAD_LIST_COMPLETED)?;
@@ -800,28 +981,34 @@ impl DownloadClient for WasmDownloadClient {
                 AppError::Repository(format!("failed to serialize plugin request: {e}"))
             })?;
         let plugin = Arc::clone(&self.plugin);
-        let (output, export_name) = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            if guard.function_exists(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED) {
-                let output = guard
-                    .call::<&str, String>(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED, &input)
-                    .map_err(|e| {
-                        plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED}()"), e)
-                    })?;
-                Ok((output, EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED))
-            } else {
-                let output = guard
-                    .call::<(), String>(EXPORT_DOWNLOAD_LIST_COMPLETED, ())
-                    .map_err(|e| {
-                        plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e)
-                    })?;
-                Ok((output, EXPORT_DOWNLOAD_LIST_COMPLETED))
-            }
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let (output, export_name) = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                if guard.function_exists(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED) {
+                    let output = guard
+                        .call_string(EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED, &input)
+                        .map_err(|e| {
+                            plugin_call_error(
+                                &format!("{EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED}()"),
+                                e,
+                            )
+                        })?;
+                    Ok((output, EXPORT_DOWNLOAD_LIST_RECENT_COMPLETED))
+                } else {
+                    let output = guard
+                        .call_unit(EXPORT_DOWNLOAD_LIST_COMPLETED)
+                        .map_err(|e| {
+                            plugin_call_error(&format!("{EXPORT_DOWNLOAD_LIST_COMPLETED}()"), e)
+                        })?;
+                    Ok((output, EXPORT_DOWNLOAD_LIST_COMPLETED))
+                }
+            },
+        )
+        .await?;
 
         let mut items: Vec<PluginCompletedDownload> = decode_plugin_result(&output, export_name)?;
         if export_name == EXPORT_DOWNLOAD_LIST_COMPLETED {
@@ -859,17 +1046,20 @@ impl DownloadClient for WasmDownloadClient {
             AppError::Repository(format!("failed to serialize control request: {e}"))
         })?;
         let plugin = Arc::clone(&self.plugin);
-        tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            let output = guard
-                .call::<&str, String>(EXPORT_DOWNLOAD_CONTROL, &input)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
-            decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
-        })
+        run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                let output = guard
+                    .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
+                decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
+            },
+        )
         .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))?
     }
 
     async fn resume_queue_item(&self, id: &str) -> AppResult<()> {
@@ -883,17 +1073,20 @@ impl DownloadClient for WasmDownloadClient {
             AppError::Repository(format!("failed to serialize control request: {e}"))
         })?;
         let plugin = Arc::clone(&self.plugin);
-        tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            let output = guard
-                .call::<&str, String>(EXPORT_DOWNLOAD_CONTROL, &input)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
-            decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
-        })
+        run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                let output = guard
+                    .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
+                decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
+            },
+        )
         .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))?
     }
 
     async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {
@@ -907,17 +1100,20 @@ impl DownloadClient for WasmDownloadClient {
             AppError::Repository(format!("failed to serialize control request: {e}"))
         })?;
         let plugin = Arc::clone(&self.plugin);
-        tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            let output = guard
-                .call::<&str, String>(EXPORT_DOWNLOAD_CONTROL, &input)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
-            decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
-        })
+        run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                let output = guard
+                    .call_string(EXPORT_DOWNLOAD_CONTROL, &input)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_CONTROL}()"), e))?;
+                decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_CONTROL)
+            },
+        )
         .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))?
     }
 
     async fn mark_imported(&self, request: &DownloadClientMarkImportedRequest) -> AppResult<()> {
@@ -935,31 +1131,39 @@ impl DownloadClient for WasmDownloadClient {
             AppError::Repository(format!("failed to serialize mark_imported request: {e}"))
         })?;
         let plugin = Arc::clone(&self.plugin);
-        tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            let output = guard
-                .call::<&str, String>(EXPORT_DOWNLOAD_MARK_IMPORTED, &input)
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_MARK_IMPORTED}()"), e))?;
-            decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_MARK_IMPORTED)
-        })
+        run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                let output = guard
+                    .call_string(EXPORT_DOWNLOAD_MARK_IMPORTED, &input)
+                    .map_err(|e| {
+                        plugin_call_error(&format!("{EXPORT_DOWNLOAD_MARK_IMPORTED}()"), e)
+                    })?;
+                decode_plugin_result::<()>(&output, EXPORT_DOWNLOAD_MARK_IMPORTED)
+            },
+        )
         .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))?
     }
 
     async fn get_client_status(&self) -> AppResult<DownloadClientStatus> {
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call::<(), String>(EXPORT_DOWNLOAD_STATUS, ())
-                .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_STATUS}()"), e))
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_unit(EXPORT_DOWNLOAD_STATUS)
+                    .map_err(|e| plugin_call_error(&format!("{EXPORT_DOWNLOAD_STATUS}()"), e))
+            },
+        )
+        .await?;
 
         let status: PluginDownloadClientStatus =
             decode_plugin_result(&output, EXPORT_DOWNLOAD_STATUS)?;
@@ -976,21 +1180,24 @@ impl DownloadClient for WasmDownloadClient {
 
     async fn test_connection(&self) -> AppResult<String> {
         let plugin = Arc::clone(&self.plugin);
-        let output = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
-            guard
-                .call::<(), String>(crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION, ())
-                .map_err(|e| {
-                    plugin_call_error(
-                        &format!("{}()", crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION),
-                        e,
-                    )
-                })
-        })
-        .await
-        .map_err(|e| AppError::Repository(format!("plugin task panicked: {e}")))??;
+        let output = run_blocking_plugin_call(
+            DOWNLOAD_CLIENT_PLUGIN_TIMEOUT,
+            "download client plugin",
+            move || {
+                let mut guard = plugin
+                    .lock()
+                    .map_err(|e| AppError::Repository(format!("plugin mutex poisoned: {e}")))?;
+                guard
+                    .call_unit(crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION)
+                    .map_err(|e| {
+                        plugin_call_error(
+                            &format!("{}()", crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION),
+                            e,
+                        )
+                    })
+            },
+        )
+        .await?;
 
         decode_plugin_result(&output, crate::types::EXPORT_DOWNLOAD_TEST_CONNECTION)
     }
@@ -1001,6 +1208,38 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use scryer_plugin_sdk::PluginTorrentItem;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn torrent_prefetch_rejects_oversized_declared_body() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                TORRENT_PREFETCH_MAX_BYTES + 1
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+
+        let response = scryer_outbound_http::generic_reqwest_client()
+            .get(format!("http://{address}/release.torrent"))
+            .send()
+            .await
+            .expect("fetch test response");
+        let error = read_torrent_body_bounded(response)
+            .await
+            .expect_err("oversized torrent body must be rejected");
+
+        assert!(error.contains("exceeds"));
+        server.await.expect("test server task");
+    }
 
     fn sample_request() -> DownloadClientAddRequest {
         DownloadClientAddRequest {
@@ -1013,6 +1252,7 @@ mod tests {
                 ),
                 monitored: true,
                 tags: Vec::new(),
+                canonical_tags: vec![],
                 external_ids: Vec::new(),
                 root_folder_id: scryer_domain::root_folder_id_for_path("/data/series"),
                 created_by: None,
@@ -1024,10 +1264,11 @@ mod tests {
                 background_url: None,
                 background_source_url: None,
                 sort_title: None,
+                catalog_sort_key: String::new(),
                 slug: None,
                 imdb_id: None,
                 runtime_minutes: None,
-                genres: Vec::new(),
+                popularity: None,
                 content_status: None,
                 language: None,
                 first_aired: None,
@@ -1046,6 +1287,7 @@ mod tests {
             download_id: None,
             source_hint: Some("https://tracker.example/release.torrent".to_string()),
             staged_nzb: None,
+            resolved_download_artifact: None,
             source_kind: Some(DownloadSourceKind::TorrentFile),
             source_title: Some("Example.Release.torrent".to_string()),
             source_password: None,
@@ -1054,12 +1296,42 @@ mod tests {
             download_directory: Some("/downloads/series".to_string()),
             release_title: Some("Example.Release".to_string()),
             indexer_name: Some("Torrent Indexer".to_string()),
+            indexer_id: None,
             info_hash_hint: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
             seed_goal_ratio: Some(1.5),
             seed_goal_seconds: Some(3661),
             is_recent: Some(true),
             season_pack: Some(false),
         }
+    }
+
+    #[tokio::test]
+    async fn plugin_download_egress_blocks_cloud_metadata() {
+        let result = scryer_outbound_http::prepare_plugin_http_target(
+            "http://169.254.169.254/latest/meta-data/",
+            "plugin torrent fetch",
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(
+                    scryer_outbound_http::OutboundDestinationError::BlockedLinkLocalOrMetadata { .. }
+                )
+            ),
+            "cloud metadata address must be rejected on the download-client path"
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_download_egress_allows_private_tracker_host() {
+        scryer_outbound_http::prepare_plugin_http_target(
+            "http://10.10.0.5:8080/release.torrent",
+            "plugin torrent fetch",
+        )
+        .await
+        .expect("RFC1918 tracker host must be allowed for self-hosted plugins");
     }
 
     #[test]

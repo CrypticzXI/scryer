@@ -3,10 +3,11 @@ use std::fs as stdfs;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use scryer_application::file_source_signature::file_source_signature_from_metadata;
 use scryer_application::filesystem_walk::{FilesystemWalker, WalkedDirectory};
 use scryer_application::{
     AppError, AppResult, LibraryDirectoryScanResult, LibraryFile, LibraryFileBatchReceiver,
-    LibraryScanner, source_signature_from_std_metadata, stored_paths::path_to_stored_string,
+    LibraryScanner, stored_paths::path_to_stored_string,
 };
 use scryer_domain::VIDEO_EXTENSIONS;
 use std::time::{Duration, Instant};
@@ -341,23 +342,25 @@ fn collect_directory_files_with_source_snapshot(
             continue;
         }
 
-        let (size_bytes, source_signature_scheme, source_signature_value) =
-            if include_source_snapshot {
-                let stat_started = Instant::now();
-                let metadata = stdfs::metadata(&path).ok();
-                *stat_elapsed = stat_elapsed.saturating_add(stat_started.elapsed());
+        let (size_bytes, source_signature) = if include_source_snapshot {
+            let stat_started = Instant::now();
+            let metadata = stdfs::metadata(&path).ok();
+            *stat_elapsed = stat_elapsed.saturating_add(stat_started.elapsed());
 
-                let size_bytes = metadata
-                    .as_ref()
-                    .map(|metadata| i64::try_from(metadata.len()).unwrap_or(i64::MAX));
-                let (source_signature_scheme, source_signature_value) = metadata
-                    .as_ref()
-                    .and_then(source_signature_from_std_metadata)
-                    .map_or((None, None), |(scheme, value)| (Some(scheme), Some(value)));
-                (size_bytes, source_signature_scheme, source_signature_value)
-            } else {
-                (None, None, None)
-            };
+            let size_bytes = metadata
+                .as_ref()
+                .map(|metadata| i64::try_from(metadata.len()).unwrap_or(i64::MAX));
+            let source_signature = metadata
+                .as_ref()
+                .and_then(|metadata| file_source_signature_from_metadata(metadata).ok());
+
+            (size_bytes, source_signature)
+        } else {
+            (None, None)
+        };
+        let (source_signature_scheme, source_signature_value) = source_signature
+            .map(|signature| (Some(signature.scheme), Some(signature.value)))
+            .unwrap_or((None, None));
 
         files.push(LibraryFile {
             path: path_to_stored_string(&path),
@@ -396,6 +399,48 @@ impl LibraryScanner for FileSystemLibraryScanner {
             .scan_directory_with_metrics_internal(root, false)
             .await?
             .files)
+    }
+
+    async fn scan_directory_children(&self, root: &str) -> AppResult<Vec<LibraryFile>> {
+        let root_path = Self::validate_root(root).await?;
+        let allowed_extensions = self.allowed_extensions.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut files = Vec::new();
+            let entries = stdfs::read_dir(&root_path)
+                .map_err(|err| AppError::Validation(format!("library path error: {err}")))?;
+            for entry in entries.filter_map(|entry| entry.ok()) {
+                let path = entry.path();
+                let is_file = entry
+                    .file_type()
+                    .map(|file_type| file_type.is_file())
+                    .unwrap_or_else(|_| path.is_file());
+                if !is_file
+                    || !FileSystemLibraryScanner::path_has_allowed_extension(
+                        &allowed_extensions,
+                        &path,
+                    )
+                {
+                    continue;
+                }
+                files.push(LibraryFile {
+                    path: path_to_stored_string(&path),
+                    display_name: path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    nfo_path: None,
+                    size_bytes: None,
+                    source_signature_scheme: None,
+                    source_signature_value: None,
+                });
+            }
+            files.sort_by(|left, right| left.path.cmp(&right.path));
+            Ok(files)
+        })
+        .await
+        .map_err(|err| AppError::Repository(err.to_string()))?
     }
 
     async fn scan_library_batched(
@@ -718,12 +763,24 @@ mod tests {
         let show_dir = dir.path().join("Show");
         let junk_dir = show_dir.join("@eaDir");
         let trickplay_dir = show_dir.join("Episode.S01E01.trickplay");
+        let recycle_dir = show_dir.join("$RECYCLE.BIN");
+        let system_dir = show_dir.join("System Volume Information");
+        let lost_found_dir = show_dir.join("lost+found");
         tokio::fs::create_dir_all(&junk_dir)
             .await
             .expect("junk dir");
         tokio::fs::create_dir_all(&trickplay_dir)
             .await
             .expect("trickplay dir");
+        tokio::fs::create_dir_all(&recycle_dir)
+            .await
+            .expect("recycle dir");
+        tokio::fs::create_dir_all(&system_dir)
+            .await
+            .expect("system dir");
+        tokio::fs::create_dir_all(&lost_found_dir)
+            .await
+            .expect("lost+found dir");
         tokio::fs::write(show_dir.join("Episode.S01E01.mkv"), b"video")
             .await
             .expect("episode");
@@ -733,6 +790,15 @@ mod tests {
         tokio::fs::write(trickplay_dir.join("segment001.mkv"), b"video")
             .await
             .expect("trickplay segment");
+        tokio::fs::write(recycle_dir.join("Episode.S01E03.mkv"), b"video")
+            .await
+            .expect("recycle episode");
+        tokio::fs::write(system_dir.join("Episode.S01E04.mkv"), b"video")
+            .await
+            .expect("system episode");
+        tokio::fs::write(lost_found_dir.join("Episode.S01E05.mkv"), b"video")
+            .await
+            .expect("lost+found episode");
 
         let scanner = FileSystemLibraryScanner::new();
         let result = scanner
@@ -839,6 +905,8 @@ mod tests {
         let extras_dir = dir.path().join("extras");
         let trailers_dir = dir.path().join("trailers");
         let theme_music_dir = dir.path().join("theme-music");
+        let recycle_dir = dir.path().join("#recycle");
+        let trash_dir = dir.path().join("trash");
         tokio::fs::create_dir_all(&extras_dir)
             .await
             .expect("extras dir");
@@ -848,6 +916,12 @@ mod tests {
         tokio::fs::create_dir_all(&theme_music_dir)
             .await
             .expect("theme music dir");
+        tokio::fs::create_dir_all(&recycle_dir)
+            .await
+            .expect("recycle dir");
+        tokio::fs::create_dir_all(&trash_dir)
+            .await
+            .expect("trash dir");
         tokio::fs::write(dir.path().join("Movie.Title.2024.mkv"), b"video")
             .await
             .expect("movie");
@@ -863,6 +937,12 @@ mod tests {
         tokio::fs::write(theme_music_dir.join("Theme.Music.mkv"), b"video")
             .await
             .expect("theme music");
+        tokio::fs::write(recycle_dir.join("Deleted.Movie.mkv"), b"video")
+            .await
+            .expect("recycle movie");
+        tokio::fs::write(trash_dir.join("Trash.Movie.mkv"), b"video")
+            .await
+            .expect("trash movie");
 
         let scanner = FileSystemLibraryScanner::new();
         let files = scanner
@@ -918,5 +998,258 @@ mod tests {
                     .to_string()
             ]
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "diagnostic harness for local mounted media roots"]
+    async fn profile_real_media_root_walks() {
+        let roots = std::env::var("SCRYER_WALK_PROFILE_ROOTS").unwrap_or_else(|_| {
+            "/Volumes/Media/Movies:/Volumes/Media/Anime:/Volumes/Media/TV".to_string()
+        });
+        let limit = std::env::var("SCRYER_WALK_PROFILE_LIMIT")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok());
+        let scanner = FileSystemLibraryScanner::new();
+
+        for root in roots.split(':').filter(|root| !root.trim().is_empty()) {
+            let root_path = PathBuf::from(root);
+            if !root_path.is_dir() {
+                eprintln!("ROOT\t{}\tmissing", root_path.display());
+                continue;
+            }
+
+            let started = Instant::now();
+            let mut entries = stdfs::read_dir(&root_path)
+                .expect("read root")
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            entries.sort();
+            let list_ms = started.elapsed().as_millis();
+            let dirs = entries.iter().filter(|path| path.is_dir()).count();
+            let files = entries.iter().filter(|path| path.is_file()).count();
+            eprintln!(
+                "ROOT\t{}\tentries={}\tdirs={}\tfiles={}\tlist_ms={}",
+                root_path.display(),
+                entries.len(),
+                dirs,
+                files,
+                list_ms
+            );
+
+            if let Some(limit) = limit {
+                entries.truncate(limit);
+            }
+
+            if root_path.ends_with("Movies") {
+                profile_movie_entries(&scanner, &root_path, &entries).await;
+            } else {
+                profile_episodic_entries(&scanner, &root_path, &entries).await;
+            }
+        }
+    }
+
+    async fn profile_movie_entries(
+        scanner: &FileSystemLibraryScanner,
+        root: &Path,
+        entries: &[PathBuf],
+    ) {
+        let mut rows = Vec::new();
+        let mut total_scan_directory_ms = 0u128;
+        let mut total_scan_library_ms = 0u128;
+
+        for entry in entries.iter().filter(|path| path.is_dir()) {
+            let nfo_started = Instant::now();
+            let movie_nfo = entry.join("movie.nfo");
+            let nfo_bytes = stdfs::read_to_string(&movie_nfo)
+                .ok()
+                .map(|content| content.len())
+                .unwrap_or_default();
+            let nfo_ms = nfo_started.elapsed().as_millis();
+
+            let walked = count_walked_directories(entry, true);
+
+            let scan_directory_started = Instant::now();
+            let scan_directory_files = scanner
+                .scan_directory(entry.to_string_lossy().as_ref())
+                .await
+                .expect("scan directory");
+            let scan_directory_ms = scan_directory_started.elapsed().as_millis();
+            total_scan_directory_ms = total_scan_directory_ms.saturating_add(scan_directory_ms);
+
+            let scan_library_started = Instant::now();
+            let scan_library_files = scanner
+                .scan_library(entry.to_string_lossy().as_ref())
+                .await
+                .expect("scan library");
+            let scan_library_ms = scan_library_started.elapsed().as_millis();
+            total_scan_library_ms = total_scan_library_ms.saturating_add(scan_library_ms);
+
+            rows.push(ProfileRow {
+                path: entry.clone(),
+                nfo_bytes,
+                nfo_ms,
+                walked_dirs: walked.walked_dirs,
+                trickplay_dirs: walked.trickplay_dirs,
+                skipped_like_dirs: walked.skipped_like_dirs,
+                scan_directory_files: scan_directory_files.len(),
+                scan_directory_ms,
+                scan_library_files: scan_library_files.len(),
+                scan_library_ms,
+            });
+        }
+
+        eprintln!(
+            "MOVIES_SUMMARY\troot={}\tfolders={}\tscan_directory_total_ms={}\tscan_library_total_ms={}",
+            root.display(),
+            rows.len(),
+            total_scan_directory_ms,
+            total_scan_library_ms
+        );
+        print_slowest_rows("MOVIES_SCAN_DIRECTORY_SLOW", &rows, |row| {
+            row.scan_directory_ms
+        });
+        print_slowest_rows("MOVIES_SCAN_LIBRARY_SLOW", &rows, |row| row.scan_library_ms);
+        print_slowest_rows("MOVIES_NFO_SLOW", &rows, |row| row.nfo_ms);
+    }
+
+    async fn profile_episodic_entries(
+        scanner: &FileSystemLibraryScanner,
+        root: &Path,
+        entries: &[PathBuf],
+    ) {
+        let mut rows = Vec::new();
+        let mut total_nfo_ms = 0u128;
+        let mut total_progress_ms = 0u128;
+
+        for entry in entries.iter().filter(|path| path.is_dir()) {
+            let nfo_started = Instant::now();
+            let tvshow_nfo = entry.join("tvshow.nfo");
+            let nfo_bytes = stdfs::read_to_string(&tvshow_nfo)
+                .ok()
+                .map(|content| content.len())
+                .unwrap_or_default();
+            let nfo_ms = nfo_started.elapsed().as_millis();
+            total_nfo_ms = total_nfo_ms.saturating_add(nfo_ms);
+
+            let walked = count_walked_directories(entry, false);
+            let progress_started = Instant::now();
+            let progress = scanner
+                .scan_directory_for_progress_with_metrics(entry.to_string_lossy().as_ref())
+                .await
+                .expect("scan directory for progress");
+            let progress_ms = progress_started.elapsed().as_millis();
+            total_progress_ms = total_progress_ms.saturating_add(progress_ms);
+
+            rows.push(ProfileRow {
+                path: entry.clone(),
+                nfo_bytes,
+                nfo_ms,
+                walked_dirs: walked.walked_dirs,
+                trickplay_dirs: walked.trickplay_dirs,
+                skipped_like_dirs: walked.skipped_like_dirs,
+                scan_directory_files: progress.files.len(),
+                scan_directory_ms: progress_ms,
+                scan_library_files: 0,
+                scan_library_ms: 0,
+            });
+        }
+
+        eprintln!(
+            "EPISODIC_SUMMARY\troot={}\tfolders={}\tnfo_total_ms={}\tprogress_total_ms={}",
+            root.display(),
+            rows.len(),
+            total_nfo_ms,
+            total_progress_ms
+        );
+        print_slowest_rows("EPISODIC_PROGRESS_SLOW", &rows, |row| row.scan_directory_ms);
+        print_slowest_rows("EPISODIC_NFO_SLOW", &rows, |row| row.nfo_ms);
+    }
+
+    #[derive(Default)]
+    struct WalkCount {
+        walked_dirs: usize,
+        trickplay_dirs: usize,
+        skipped_like_dirs: usize,
+    }
+
+    #[derive(Clone)]
+    struct ProfileRow {
+        path: PathBuf,
+        nfo_bytes: usize,
+        nfo_ms: u128,
+        walked_dirs: usize,
+        trickplay_dirs: usize,
+        skipped_like_dirs: usize,
+        scan_directory_files: usize,
+        scan_directory_ms: u128,
+        scan_library_files: usize,
+        scan_library_ms: u128,
+    }
+
+    fn count_walked_directories(root: &Path, movie_policy: bool) -> WalkCount {
+        let mut count = WalkCount::default();
+        let walker = if movie_policy {
+            FilesystemWalker::new()
+                .skip_movie_scan_junk_and_extras()
+                .supported_video_and_nfo_files()
+        } else {
+            FilesystemWalker::new()
+                .skip_episodic_scan_junk_and_trailers()
+                .supported_video_files_only()
+        }
+        .max_depth(scryer_application::LIBRARY_SCAN_MAX_RECURSIVE_DEPTH);
+
+        walker
+            .walk_with(root, |walked_dir| {
+                count.walked_dirs = count.walked_dirs.saturating_add(1);
+                let name = walked_dir
+                    .path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if name.starts_with('.') || name.ends_with(".trickplay") {
+                    count.trickplay_dirs = count.trickplay_dirs.saturating_add(1);
+                }
+                for subdir in &walked_dir.subdirs {
+                    let name = subdir
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
+                    if name.contains("trailer")
+                        || name == "extras"
+                        || name == "featurettes"
+                        || name.ends_with(".trickplay")
+                    {
+                        count.skipped_like_dirs = count.skipped_like_dirs.saturating_add(1);
+                    }
+                }
+                Ok(true)
+            })
+            .expect("count walked directories");
+
+        count
+    }
+
+    fn print_slowest_rows(label: &str, rows: &[ProfileRow], elapsed: impl Fn(&ProfileRow) -> u128) {
+        let mut rows = rows.to_vec();
+        rows.sort_by_key(|row| std::cmp::Reverse(elapsed(row)));
+        for row in rows.into_iter().take(12) {
+            eprintln!(
+                "{}\tms={}\tnfo_ms={}\tnfo_bytes={}\twalked_dirs={}\ttrickplay_dirs={}\tskipped_like_dirs={}\tscan_directory_files={}\tscan_library_files={}\tpath={}",
+                label,
+                elapsed(&row),
+                row.nfo_ms,
+                row.nfo_bytes,
+                row.walked_dirs,
+                row.trickplay_dirs,
+                row.skipped_like_dirs,
+                row.scan_directory_files,
+                row.scan_library_files,
+                row.path.display()
+            );
+        }
     }
 }

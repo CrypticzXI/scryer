@@ -1,18 +1,16 @@
 import * as React from "react";
-import { ChevronDown, Loader2, Search } from "lucide-react";
-import { Link } from "react-router-dom";
+import { ChevronDown, Loader2, TriangleAlertIcon } from "lucide-react";
 import { useClient } from "urql";
 
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
-import { TitlePoster } from "@/components/title-poster";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PendingImportCard } from "@/components/containers/pending-import-card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
-import type { ViewId } from "@/components/root/types";
+import type { Translate, ViewId } from "@/components/root/types";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useLibraryScanProgress } from "@/lib/context/library-scan-progress-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import { facetForView } from "@/lib/facets/registry";
 import {
@@ -24,7 +22,7 @@ import {
   pendingImportBindingPreviewQuery,
   pendingImportsQuery,
   librariesQuery,
-  searchMetadataQuery,
+  pendingImportTitleSearchQuery,
 } from "@/lib/graphql/queries";
 import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
 import type {
@@ -65,6 +63,27 @@ type MetadataSearchResult = {
   language: string | null;
   runtimeMinutes: number | null;
   sortTitle: string | null;
+};
+
+type ExternalIdInput = {
+  source: string;
+  value: string;
+};
+
+type PendingImportResolveTitleInput = {
+  name: string;
+  facet: PendingImportItem["facet"];
+  libraryId: string;
+  monitored: false;
+  tags: string[];
+  externalIds: ExternalIdInput[];
+  year?: number;
+  overview?: string;
+  sortTitle?: string;
+  slug?: string;
+  runtimeMinutes?: number;
+  language?: string;
+  contentStatus?: string;
 };
 
 const GENERIC_PENDING_IMPORT_QUERY_SEEDS = new Set([
@@ -130,15 +149,62 @@ function summarizePendingImport(item: PendingImportItem): string {
   return parts.join(" • ");
 }
 
+function metadataResultExternalIds(result: MetadataSearchResult): ExternalIdInput[] {
+  const tvdbId = String(result.tvdbId).trim();
+  const imdbId = result.imdbId?.trim();
+  const seen = new Set<string>();
+  const ids: ExternalIdInput[] = [];
+
+  for (const externalId of [
+    ...(tvdbId ? [{ source: "tvdb", value: tvdbId }] : []),
+    ...(imdbId ? [{ source: "imdb", value: imdbId }] : []),
+  ]) {
+    const source = externalId.source.trim().toLowerCase();
+    const value = externalId.value.trim();
+    const key = `${source}:${value}`;
+    if (!source || !value || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    ids.push({ source, value });
+  }
+
+  return ids;
+}
+
+function buildPendingImportResolveTitleInput(
+  item: PendingImportItem,
+  result: MetadataSearchResult,
+): PendingImportResolveTitleInput {
+  const title: PendingImportResolveTitleInput = {
+    name: result.name.trim() || item.displayName.trim(),
+    facet: item.facet,
+    libraryId: item.libraryId,
+    monitored: false,
+    tags: [],
+    externalIds: metadataResultExternalIds(result),
+  };
+
+  if (typeof result.year === "number") title.year = result.year;
+  if (result.overview) title.overview = result.overview;
+  if (result.sortTitle) title.sortTitle = result.sortTitle;
+  if (result.slug) title.slug = result.slug;
+  if (typeof result.runtimeMinutes === "number") title.runtimeMinutes = result.runtimeMinutes;
+  if (result.language) title.language = result.language;
+  if (result.status) title.contentStatus = result.status;
+
+  return title;
+}
+
 function viewForPendingImportFacet(
   facet: PendingImportItem["facet"],
 ): Extract<ViewId, "movies" | "series" | "anime"> {
   switch (facet) {
-    case "movie":
+    case "MOVIE":
       return "movies";
-    case "series":
+    case "SERIES":
       return "series";
-    case "anime":
+    case "ANIME":
       return "anime";
   }
 }
@@ -164,14 +230,17 @@ function pendingImportKnownTitleLabel(item: PendingImportItem): string {
   return item.titleName?.trim() || item.titleId?.trim() || "";
 }
 
-function formatBindingEpisodeKey(episode: PendingImportBindingEpisode): string | null {
+function formatBindingEpisodeKey(
+  episode: PendingImportBindingEpisode,
+  t: Translate,
+): string | null {
   const season = episode.seasonNumber?.trim();
   const episodeNumber = episode.episodeNumber?.trim();
   if (season && episodeNumber) {
     return `S${season.padStart(2, "0")}E${episodeNumber.padStart(2, "0")}`;
   }
   if (episodeNumber) {
-    return `Episode ${episodeNumber}`;
+    return t("pendingImports.episodeNumberLabel", { number: episodeNumber });
   }
   return null;
 }
@@ -180,8 +249,8 @@ function formatBindingEpisodeLabel(episode: PendingImportBindingEpisode): string
   return episode.episodeLabel?.trim() || episode.title?.trim() || episode.id;
 }
 
-function formatBindingEpisodeDisplay(episode: PendingImportBindingEpisode) {
-  const key = formatBindingEpisodeKey(episode);
+function formatBindingEpisodeDisplay(episode: PendingImportBindingEpisode, t: Translate) {
+  const key = formatBindingEpisodeKey(episode, t);
   const label = formatBindingEpisodeLabel(episode);
   return {
     key,
@@ -247,13 +316,21 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const facet = facetForView(view);
+  const { dismissFacetReviewToasts } = useLibraryScanProgress();
+  const facetId = facet?.id;
+
+  React.useEffect(() => {
+    if (facetId) {
+      dismissFacetReviewToasts(facetId);
+    }
+  }, [dismissFacetReviewToasts, facetId]);
 
   const [pendingConnection, setPendingConnection] = React.useState<PendingImportConnection>({
-    total: 0,
+    totalCount: 0,
     items: [],
   });
   const [ignoredConnection, setIgnoredConnection] = React.useState<PendingImportConnection>({
-    total: 0,
+    totalCount: 0,
     items: [],
   });
   const [pendingOffset, setPendingOffset] = React.useState(0);
@@ -283,6 +360,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
   const [resolvingItemId, setResolvingItemId] = React.useState<string | null>(null);
   const [ignoringItemId, setIgnoringItemId] = React.useState<string | null>(null);
   const [ignoreTargetItem, setIgnoreTargetItem] = React.useState<PendingImportItem | null>(null);
+  const inFlightPendingImportActionsRef = React.useRef<Set<string>>(new Set());
   const libraryNameById = React.useMemo(
     () => new Map(libraries.map((library) => [library.id, library.name])),
     [libraries],
@@ -298,7 +376,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     void client
       .query(
         librariesQuery,
-        { facet: pendingImportFacetValueForView(view), permission: "resolveImports" },
+        { facet: pendingImportFacetValueForView(view), permission: "RESOLVE_IMPORTS" },
         { requestPolicy: "network-only" },
       )
       .toPromise()
@@ -349,7 +427,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         return null;
       }
 
-      const items = activeItemRef.status === "ignored"
+      const items = activeItemRef.status === "IGNORED"
         ? ignoredConnection.items
         : pendingConnection.items;
       return items.find((item) => item.id === activeItemRef.id) ?? null;
@@ -357,13 +435,13 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     [activeItemRef, ignoredConnection.items, pendingConnection.items],
   );
   const pendingHasPrevPage = pendingOffset > 0;
-  const pendingHasNextPage = pendingOffset + PAGE_SIZE < pendingConnection.total;
-  const pendingPageStart = pendingConnection.total === 0 ? 0 : pendingOffset + 1;
-  const pendingPageEnd = Math.min(pendingOffset + PAGE_SIZE, pendingConnection.total);
+  const pendingHasNextPage = pendingOffset + PAGE_SIZE < pendingConnection.totalCount;
+  const pendingPageStart = pendingConnection.totalCount === 0 ? 0 : pendingOffset + 1;
+  const pendingPageEnd = Math.min(pendingOffset + PAGE_SIZE, pendingConnection.totalCount);
   const ignoredHasPrevPage = ignoredOffset > 0;
-  const ignoredHasNextPage = ignoredOffset + PAGE_SIZE < ignoredConnection.total;
-  const ignoredPageStart = ignoredConnection.total === 0 ? 0 : ignoredOffset + 1;
-  const ignoredPageEnd = Math.min(ignoredOffset + PAGE_SIZE, ignoredConnection.total);
+  const ignoredHasNextPage = ignoredOffset + PAGE_SIZE < ignoredConnection.totalCount;
+  const ignoredPageStart = ignoredConnection.totalCount === 0 ? 0 : ignoredOffset + 1;
+  const ignoredPageEnd = Math.min(ignoredOffset + PAGE_SIZE, ignoredConnection.totalCount);
 
   const fetchPendingImportsPage = React.useCallback(
     async (
@@ -384,7 +462,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       }
 
       const connection = (data?.pendingImports ?? {
-        total: 0,
+        totalCount: 0,
         items: [],
       }) as PendingImportConnection;
       return {
@@ -403,11 +481,11 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       status: PendingImportStatus,
       pageOffset: number,
     ): Promise<PendingImportConnection | null> => {
-      const setLoading = status === "ignored" ? setIgnoredLoading : setPendingLoading;
-      const setLoaded = status === "ignored" ? setIgnoredLoaded : setPendingLoaded;
-      const setError = status === "ignored" ? setIgnoredError : setPendingError;
-      const setOffset = status === "ignored" ? setIgnoredOffset : setPendingOffset;
-      const setConnection = status === "ignored" ? setIgnoredConnection : setPendingConnection;
+      const setLoading = status === "IGNORED" ? setIgnoredLoading : setPendingLoading;
+      const setLoaded = status === "IGNORED" ? setIgnoredLoaded : setPendingLoaded;
+      const setError = status === "IGNORED" ? setIgnoredError : setPendingError;
+      const setOffset = status === "IGNORED" ? setIgnoredOffset : setPendingOffset;
+      const setConnection = status === "IGNORED" ? setIgnoredConnection : setPendingConnection;
 
       setLoading(true);
       setError(null);
@@ -416,10 +494,10 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         let nextOffset = Math.max(0, pageOffset);
         let nextConnection = await fetchPendingImportsPage(status, nextOffset);
 
-        if (nextConnection.total > 0 && nextOffset >= nextConnection.total) {
+        if (nextConnection.totalCount > 0 && nextOffset >= nextConnection.totalCount) {
           nextOffset = Math.max(
             0,
-            Math.floor((nextConnection.total - 1) / PAGE_SIZE) * PAGE_SIZE,
+            Math.floor((nextConnection.totalCount - 1) / PAGE_SIZE) * PAGE_SIZE,
           );
           nextConnection = await fetchPendingImportsPage(status, nextOffset);
         }
@@ -440,17 +518,17 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
 
   const refreshAll = React.useCallback(async () => {
     await Promise.all([
-      refresh("pending", pendingOffset),
-      refresh("ignored", ignoredOffset),
+      refresh("PENDING", pendingOffset),
+      refresh("IGNORED", ignoredOffset),
     ]);
   }, [ignoredOffset, pendingOffset, refresh]);
 
   React.useEffect(() => {
-    void refresh("pending", pendingOffset);
+    void refresh("PENDING", pendingOffset);
   }, [pendingOffset, refresh]);
 
   React.useEffect(() => {
-    void refresh("ignored", ignoredOffset);
+    void refresh("IGNORED", ignoredOffset);
   }, [ignoredOffset, refresh]);
 
   React.useEffect(() => {
@@ -474,18 +552,18 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return;
     }
 
-    if (pendingConnection.total > 0 || ignoredConnection.total > 0) {
+    if (pendingConnection.totalCount > 0 || ignoredConnection.totalCount > 0) {
       return;
     }
 
     onNavigateBackToOverview();
   }, [
-    ignoredConnection.total,
+    ignoredConnection.totalCount,
     ignoredError,
     ignoredLoaded,
     ignoredLoading,
     onNavigateBackToOverview,
-    pendingConnection.total,
+    pendingConnection.totalCount,
     pendingError,
     pendingLoaded,
     pendingLoading,
@@ -510,9 +588,9 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     const timeoutId = window.setTimeout(() => {
       setSearching(true);
       client
-        .query(searchMetadataQuery, {
+        .query(pendingImportTitleSearchQuery, {
+          pendingImportId: activeItemRef.id,
           query: searchQuery.trim(),
-          type: facet?.tvdbSearchType ?? "movie",
           limit: 8,
           year: activeItem?.yearHint ?? null,
         }, { fetch: abortableFetch })
@@ -524,7 +602,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           if (!active) {
             return;
           }
-          const items = (data?.searchMetadata ?? []) as MetadataSearchResult[];
+          const items = (data?.pendingImportTitleSearch ?? []) as MetadataSearchResult[];
           setSearchResults(items);
         })
         .catch((err: unknown) => {
@@ -552,7 +630,6 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     activeItem?.yearHint,
     activeItemRef,
     client,
-    facet?.tvdbSearchType,
     searchQuery,
     setGlobalStatus,
     t,
@@ -563,7 +640,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return;
     }
 
-    const items = activeItemRef.status === "ignored"
+    const items = activeItemRef.status === "IGNORED"
       ? ignoredConnection.items
       : pendingConnection.items;
 
@@ -605,7 +682,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           );
         })
         .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : "Failed to load binding preview";
+          const message = err instanceof Error ? err.message : t("pendingImports.bindPreviewLoadFailed");
           setBindingError(message);
           setGlobalStatus(message);
         })
@@ -617,28 +694,94 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       ? item.query.trim()
       : folderSearchSeedFromPath(item.folderPath) || item.displayName.trim();
     setSearchQuery(seedQuery);
-  }, [client, setGlobalStatus]);
+  }, [client, setGlobalStatus, t]);
 
   const handleRequestIgnore = React.useCallback((item: PendingImportItem) => {
-    if (item.status !== "pending") {
+    if (item.status !== "PENDING") {
+      return;
+    }
+    if (inFlightPendingImportActionsRef.current.has(item.id)) {
       return;
     }
 
     setIgnoreTargetItem(item);
   }, []);
 
-  const handleResolve = React.useCallback(async (tvdbId: string) => {
+  const applyMatchedTitle = React.useCallback((
+    item: PendingImportItem,
+    title: ResolvePendingImportResult["title"],
+  ) => {
+    if (item.facet === "MOVIE") {
+      const removeMatchedItem = (current: PendingImportConnection): PendingImportConnection => {
+        if (!current.items.some((candidate) => candidate.id === item.id)) {
+          return current;
+        }
+        return {
+          totalCount: Math.max(0, current.totalCount - 1),
+          items: current.items.filter((candidate) => candidate.id !== item.id),
+        };
+      };
+      setPendingConnection(removeMatchedItem);
+      setIgnoredConnection(removeMatchedItem);
+      return;
+    }
+
+    const resolvedItem: PendingImportItem = {
+      ...item,
+      status: "PENDING",
+      titleId: title.id,
+      titleName: title.name,
+      titleSlug: title.slug ?? item.titleSlug ?? null,
+      librarySlug: item.librarySlug ?? librarySlugById.get(item.libraryId) ?? null,
+    };
+
+    setPendingConnection((current) => {
+      const existingIndex = current.items.findIndex((candidate) => candidate.id === item.id);
+      if (existingIndex >= 0) {
+        return {
+          ...current,
+          items: current.items.map((candidate, index) =>
+            index === existingIndex ? resolvedItem : candidate,
+          ),
+        };
+      }
+
+      if (item.status !== "IGNORED") {
+        return current;
+      }
+
+      return {
+        totalCount: current.totalCount + 1,
+        items: [resolvedItem, ...current.items].slice(0, PAGE_SIZE),
+      };
+    });
+
+    if (item.status === "IGNORED") {
+      setIgnoredConnection((current) => ({
+        totalCount: Math.max(0, current.totalCount - 1),
+        items: current.items.filter((candidate) => candidate.id !== item.id),
+      }));
+    }
+  }, [librarySlugById]);
+
+  const handleResolve = React.useCallback(async (selectedResult: MetadataSearchResult) => {
     if (!activeItem) {
       return;
     }
 
-    setResolvingItemId(activeItem.id);
+    const itemId = activeItem.id;
+    if (inFlightPendingImportActionsRef.current.has(itemId)) {
+      return;
+    }
+    inFlightPendingImportActionsRef.current.add(itemId);
+
+    setResolvingItemId(itemId);
     try {
       const { data, error: mutationError } = await client
         .mutation(resolvePendingImportMutation, {
           input: {
-            pendingImportId: activeItem.id,
-            tvdbId,
+            pendingImportId: itemId,
+            title: buildPendingImportResolveTitleInput(activeItem, selectedResult),
           },
         })
         .toPromise();
@@ -646,38 +789,47 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         throw mutationError;
       }
 
-      const result = data?.resolvePendingImport as ResolvePendingImportResult | undefined;
+      const mutationResult = data?.resolvePendingImport as ResolvePendingImportResult | undefined;
       dispatchNavigationBadgesRefresh();
-      await refreshAll();
+      if (mutationResult?.title) {
+        applyMatchedTitle(activeItem, mutationResult.title);
+      }
 
       setGlobalStatus(
         t("pendingImports.resolveSuccess", {
-          name: result?.title?.name?.trim() || activeItem.displayName,
+          name: mutationResult?.title?.name?.trim() || activeItem.displayName,
         }),
       );
       clearActiveItem();
     } catch (err) {
       setGlobalStatus(err instanceof Error ? err.message : t("pendingImports.resolveFailed"));
     } finally {
-      setResolvingItemId(null);
+      inFlightPendingImportActionsRef.current.delete(itemId);
+      setResolvingItemId((current) => (current === itemId ? null : current));
     }
-  }, [activeItem, clearActiveItem, client, refreshAll, setGlobalStatus, t]);
+  }, [activeItem, applyMatchedTitle, clearActiveItem, client, setGlobalStatus, t]);
 
   const handleBind = React.useCallback(async () => {
     if (!activeItem) {
       return;
     }
     if (selectedEpisodeIds.length === 0) {
-      setGlobalStatus("Select at least one episode.");
+      setGlobalStatus(t("pendingImports.selectAtLeastOneEpisode"));
       return;
     }
 
-    setResolvingItemId(activeItem.id);
+    const itemId = activeItem.id;
+    if (inFlightPendingImportActionsRef.current.has(itemId)) {
+      return;
+    }
+    inFlightPendingImportActionsRef.current.add(itemId);
+
+    setResolvingItemId(itemId);
     try {
       const { data, error: mutationError } = await client
         .mutation(bindPendingImportMutation, {
           input: {
-            pendingImportId: activeItem.id,
+            pendingImportId: itemId,
             episodeIds: selectedEpisodeIds,
           },
         })
@@ -696,22 +848,29 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       );
       clearActiveItem();
     } catch (err) {
-      setGlobalStatus(err instanceof Error ? err.message : "Failed to bind pending import.");
+      setGlobalStatus(err instanceof Error ? err.message : t("pendingImports.bindFailed"));
     } finally {
-      setResolvingItemId(null);
+      inFlightPendingImportActionsRef.current.delete(itemId);
+      setResolvingItemId((current) => (current === itemId ? null : current));
     }
   }, [activeItem, clearActiveItem, client, refreshAll, selectedEpisodeIds, setGlobalStatus, t]);
 
   const handleIgnore = React.useCallback(async () => {
-    if (!ignoreTargetItem || ignoreTargetItem.status !== "pending") {
+    if (!ignoreTargetItem || ignoreTargetItem.status !== "PENDING") {
       return;
     }
 
-    setIgnoringItemId(ignoreTargetItem.id);
+    const itemId = ignoreTargetItem.id;
+    if (inFlightPendingImportActionsRef.current.has(itemId)) {
+      return;
+    }
+    inFlightPendingImportActionsRef.current.add(itemId);
+
+    setIgnoringItemId(itemId);
     try {
       const { error: mutationError } = await client
         .mutation(ignorePendingImportMutation, {
-          pendingImportId: ignoreTargetItem.id,
+          pendingImportId: itemId,
         })
         .toPromise();
       if (mutationError) {
@@ -726,7 +885,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         }),
       );
 
-      if (activeItemRef?.id === ignoreTargetItem.id && activeItemRef.status === "pending") {
+      if (activeItemRef?.id === ignoreTargetItem.id && activeItemRef.status === "PENDING") {
         clearActiveItem();
       } else {
         setIgnoreTargetItem(null);
@@ -734,7 +893,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
     } catch (err) {
       setGlobalStatus(err instanceof Error ? err.message : t("pendingImports.ignoreFailed"));
     } finally {
-      setIgnoringItemId(null);
+      inFlightPendingImportActionsRef.current.delete(itemId);
+      setIgnoringItemId((current) => (current === itemId ? null : current));
     }
   }, [activeItemRef, clearActiveItem, client, ignoreTargetItem, refreshAll, setGlobalStatus, t]);
 
@@ -764,8 +924,8 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       return null;
     }
 
-    const setOffset = status === "ignored" ? setIgnoredOffset : setPendingOffset;
-    const currentOffset = status === "ignored" ? ignoredOffset : pendingOffset;
+    const setOffset = status === "IGNORED" ? setIgnoredOffset : setPendingOffset;
+    const currentOffset = status === "IGNORED" ? ignoredOffset : pendingOffset;
 
     return (
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -812,332 +972,38 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
         const libraryLabel = item.libraryName ?? libraryNameById.get(item.libraryId) ?? item.libraryId;
 
         return (
-          <Card key={item.id} className="border-border/80 bg-card/60">
-            <CardHeader className="space-y-2">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="space-y-1">
-                  <CardTitle className="text-base">{item.displayName}</CardTitle>
-                  <p className="text-sm text-muted-foreground">{summarizePendingImport(item)}</p>
-                  <p className="text-xs text-muted-foreground">Library: {libraryLabel}</p>
-                </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={isActive ? "secondary" : item.status === "ignored" ? "outline" : "default"}
-                    onClick={() => handleOpenSearch(item)}
-                    disabled={isBusy}
-                  >
-                    {item.titleId ? null : <Search className="mr-2 h-4 w-4" />}
-                    {item.titleId ? "Bind Episodes" : t("pendingImports.searchAction")}
-                  </Button>
-                  {item.status === "pending" ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="destructive"
-                      onClick={() => handleRequestIgnore(item)}
-                      disabled={isBusy}
-                    >
-                      {t("pendingImports.ignore")}
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              <div>
-                <span className="font-medium text-foreground">{t("pendingImports.path")}:</span>{" "}
-                <span className="break-all text-muted-foreground">{item.path}</span>
-              </div>
-              {item.folderPath ? (
-                <div>
-                  <span className="font-medium text-foreground">{t("pendingImports.folderPath")}:</span>{" "}
-                  <span className="break-all text-muted-foreground">{item.folderPath}</span>
-                </div>
-              ) : null}
-              {item.titleId ? (
-                <div>
-                  <span className="font-medium text-foreground">Known title:</span>{" "}
-                  {knownTitleHref ? (
-                    <Link
-                      to={knownTitleHref}
-                      className="break-all text-primary underline-offset-4 hover:underline"
-                    >
-                      {knownTitleLabel}
-                    </Link>
-                  ) : (
-                    <span className="break-all text-muted-foreground">{knownTitleLabel}</span>
-                  )}
-                </div>
-              ) : null}
-              {isActive ? (
-                <div className="space-y-3 rounded-lg border border-border/80 bg-background/60 p-3">
-                  {item.titleId ? (
-                    <>
-                      {bindingLoading ? (
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Loading episode bindings...
-                        </div>
-                      ) : null}
-                      {bindingError ? (
-                        <div className="text-sm text-destructive">{bindingError}</div>
-                      ) : null}
-                      {bindingPreview ? (
-                        <div className="space-y-4">
-                          <div className="space-y-1">
-                            <div className="text-sm font-medium text-foreground">
-                              {bindingPreview.title.name}
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              {bindingPreview.file.fileName}
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              Parsed hints:
-                              {bindingPreview.file.parsedSeason != null
-                                ? ` season ${bindingPreview.file.parsedSeason}`
-                                : ""}
-                              {bindingPreview.file.parsedEpisodes.length > 0
-                                ? ` • episodes ${bindingPreview.file.parsedEpisodes.join(", ")}`
-                                : ""}
-                              {bindingPreview.file.parsedAbsoluteNumbers.length > 0
-                                ? ` • absolute ${bindingPreview.file.parsedAbsoluteNumbers.join(", ")}`
-                                : ""}
-                            </div>
-                          </div>
-
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={isBusy}
-                              onClick={() => {
-                                const suggestedEpisodeIds = bindingPreview.file.suggestedEpisodeIds;
-                                setSelectedEpisodeIds(suggestedEpisodeIds);
-                                setExpandedBindingSeasonKeys(
-                                  bindingSeasonKeysForSelection(
-                                    bindingPreview.availableEpisodes,
-                                    suggestedEpisodeIds,
-                                  ),
-                                );
-                              }}
-                            >
-                              Use Suggested
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              disabled={isBusy}
-                              onClick={() => {
-                                setSelectedEpisodeIds([]);
-                                setExpandedBindingSeasonKeys([]);
-                              }}
-                            >
-                              Clear
-                            </Button>
-                          </div>
-
-                          <div className="space-y-4">
-                            {bindingGroups.map(([seasonKey, episodes]) => {
-                              const seasonOpen = expandedBindingSeasonKeys.includes(seasonKey);
-                              return (
-                                <Collapsible
-                                  key={seasonKey}
-                                  open={seasonOpen}
-                                  onOpenChange={(open) =>
-                                    setExpandedBindingSeasonKeys((current) =>
-                                      open
-                                        ? current.includes(seasonKey)
-                                          ? current
-                                          : [...current, seasonKey]
-                                        : current.filter((key) => key !== seasonKey),
-                                    )
-                                  }
-                                  className="space-y-2"
-                                >
-                                  <div className="flex items-center justify-between gap-3">
-                                    <CollapsibleTrigger asChild>
-                                      <button
-                                        type="button"
-                                        className="flex min-w-0 items-center gap-2 text-left text-sm font-medium text-foreground"
-                                      >
-                                        <ChevronDown
-                                          className={`h-4 w-4 shrink-0 transition-transform ${
-                                            seasonOpen ? "rotate-0" : "-rotate-90"
-                                          }`}
-                                        />
-                                        <span>
-                                          {seasonKey === "specials"
-                                            ? "Specials"
-                                            : `Season ${seasonKey}`}
-                                        </span>
-                                      </button>
-                                    </CollapsibleTrigger>
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="ghost"
-                                      disabled={isBusy}
-                                      onClick={() => {
-                                        setSelectedEpisodeIds((current) => {
-                                          const next = new Set(current);
-                                          for (const episode of episodes) {
-                                            next.add(episode.id);
-                                          }
-                                          return Array.from(next);
-                                        });
-                                        setExpandedBindingSeasonKeys((current) =>
-                                          current.includes(seasonKey)
-                                            ? current
-                                            : [...current, seasonKey],
-                                        );
-                                      }}
-                                    >
-                                      Select Season
-                                    </Button>
-                                  </div>
-                                  <CollapsibleContent>
-                                    <div className="space-y-2 rounded-md border border-border/70 p-3">
-                                      {episodes.map((episode) => {
-                                        const episodeDisplay =
-                                          formatBindingEpisodeDisplay(episode);
-                                        return (
-                                          <label
-                                            key={episode.id}
-                                            className="flex items-start gap-3 text-sm text-foreground"
-                                          >
-                                            <Checkbox
-                                              checked={selectedEpisodeIds.includes(episode.id)}
-                                              onCheckedChange={(checked) =>
-                                                toggleEpisodeSelection(
-                                                  episode.id,
-                                                  Boolean(checked),
-                                                )
-                                              }
-                                              disabled={isBusy}
-                                            />
-                                            <span className="min-w-0">
-                                              {episodeDisplay.showSeparateLabel ? (
-                                                <>
-                                                  <span className="font-medium">
-                                                    {episodeDisplay.key}
-                                                  </span>
-                                                  <span className="ml-2 text-muted-foreground">
-                                                    {episodeDisplay.label}
-                                                  </span>
-                                                </>
-                                              ) : (
-                                                <span>
-                                                  {episodeDisplay.key ?? episodeDisplay.label}
-                                                </span>
-                                              )}
-                                            </span>
-                                          </label>
-                                        );
-                                      })}
-                                    </div>
-                                  </CollapsibleContent>
-                                </Collapsible>
-                              );
-                            })}
-                          </div>
-
-                          <div className="flex justify-end">
-                            <Button
-                              type="button"
-                              disabled={isBusy || selectedEpisodeIds.length === 0}
-                              onClick={() => void handleBind()}
-                            >
-                              {isResolving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                              Bind Selected Episodes
-                            </Button>
-                          </div>
-                        </div>
-                      ) : null}
-                    </>
-                  ) : (
-                    <>
-                      <Input
-                        value={searchQuery}
-                        onChange={(event) => setSearchQuery(event.target.value)}
-                        placeholder={t("pendingImports.searchPlaceholder")}
-                        disabled={isBusy}
-                      />
-
-                      {searching ? (
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          {t("pendingImports.searching")}
-                        </div>
-                      ) : null}
-
-                      {!searching && searchQuery.trim() && searchResults.length === 0 ? (
-                        <div className="text-sm text-muted-foreground">
-                          {t("pendingImports.noSearchResults")}
-                        </div>
-                      ) : null}
-
-                      <div className="space-y-3">
-                        {searchResults.map((result) => (
-                          <div
-                            key={`${item.id}-${result.tvdbId}`}
-                            className="flex gap-3 rounded-lg border border-border bg-card/40 p-3"
-                          >
-                            <div className="h-24 w-16 flex-none overflow-hidden rounded-md border border-border bg-muted">
-                              {result.posterUrl ? (
-                                <TitlePoster src={result.posterUrl} alt={result.name} />
-                              ) : null}
-                            </div>
-                            <div className="min-w-0 flex-1 space-y-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-medium text-foreground">{result.name}</span>
-                                {result.year ? (
-                                  <span className="text-xs text-muted-foreground">{result.year}</span>
-                                ) : null}
-                                <span className="text-xs text-muted-foreground">TVDB {result.tvdbId}</span>
-                              </div>
-                              {result.status ? (
-                                <div className="text-xs text-muted-foreground">{result.status}</div>
-                              ) : null}
-                              {result.overview ? (
-                                <p className="line-clamp-3 text-sm text-muted-foreground">
-                                  {result.overview}
-                                </p>
-                              ) : null}
-                            </div>
-                            <div className="flex flex-none items-start">
-                              <Button
-                                type="button"
-                                size="sm"
-                                onClick={() => void handleResolve(String(result.tvdbId))}
-                                disabled={isBusy}
-                              >
-                                {t("pendingImports.match")}
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-
-                  <div className="flex justify-end">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      onClick={clearActiveItem}
-                      disabled={isBusy}
-                    >
-                      {t("label.cancel")}
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-            </CardContent>
-          </Card>
+          <PendingImportCard
+            key={item.id}
+            item={item}
+            isActive={isActive}
+            isResolving={isResolving}
+            isBusy={isBusy}
+            libraryLabel={libraryLabel}
+            knownTitleHref={knownTitleHref}
+            knownTitleLabel={knownTitleLabel}
+            summary={summarizePendingImport(item)}
+            bindingLoading={bindingLoading}
+            bindingError={bindingError}
+            bindingPreview={bindingPreview}
+            bindingGroups={bindingGroups}
+            expandedBindingSeasonKeys={expandedBindingSeasonKeys}
+            selectedEpisodeIds={selectedEpisodeIds}
+            searchQuery={searchQuery}
+            searchResults={searchResults}
+            searching={searching}
+            formatBindingEpisodeDisplay={(episode) =>
+              formatBindingEpisodeDisplay(episode, t)
+            }
+            onOpenSearch={handleOpenSearch}
+            onRequestIgnore={handleRequestIgnore}
+            onBind={handleBind}
+            onResolve={handleResolve}
+            onToggleEpisodeSelection={toggleEpisodeSelection}
+            onSetSelectedEpisodeIds={setSelectedEpisodeIds}
+            onSetExpandedBindingSeasonKeys={setExpandedBindingSeasonKeys}
+            onSearchQueryChange={setSearchQuery}
+            onClearActiveItem={clearActiveItem}
+          />
         );
       })}
     </div>
@@ -1166,17 +1032,32 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
 
   return (
     <>
-    <div className="space-y-4">
-      <Card className="border-border/80 bg-card/70">
-        <CardHeader>
-          <CardTitle>{t("pendingImports.title")}</CardTitle>
-          <p className="text-sm text-muted-foreground">
+    <div className="min-h-0 flex-1 bg-transparent">
+      <div className="mx-auto w-full max-w-[1180px] space-y-5 px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-12">
+      <div className="flex flex-wrap items-end gap-4">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-[25px] font-bold tracking-normal text-[var(--scry-ink2)]">
+            {t("pendingImports.title")}
+          </h1>
+          <p className="mt-1.5 max-w-[640px] text-[13px] leading-5 text-[var(--scry-muted)]">
             {t("pendingImports.description", {
               facet: facet ? t(facet.navLabelKey) : view,
             })}
           </p>
-        </CardHeader>
-        <CardContent>
+        </div>
+        {!pendingLoading && !pendingError && pendingConnection.totalCount > 0 ? (
+          <span className="inline-flex h-[30px] items-center gap-2 rounded-[9px] border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-3 text-xs font-semibold tabular-nums text-[var(--scry-warning-text)]">
+            <TriangleAlertIcon className="h-3.5 w-3.5" />
+            {pendingConnection.totalCount === 1
+              ? t("pendingImports.unresolvedCountOne")
+              : t("pendingImports.unresolvedCountOther", {
+                  count: String(pendingConnection.totalCount),
+                })}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
           <LibraryMultiSelect
             libraries={libraries}
             selectedLibraryIds={selectedLibraryIds}
@@ -1188,8 +1069,7 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
             disabled={librariesLoading || libraries.length === 0}
             triggerClassName="w-full sm:w-[220px]"
           />
-        </CardContent>
-      </Card>
+      </div>
 
       {pendingLoading || ignoredLoading ? (
         <Card>
@@ -1201,12 +1081,12 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       ) : null}
 
       {pendingError ? (
-        <Card className="border-red-500/30 bg-red-500/10">
-          <CardContent className="py-4 text-sm text-red-200">{pendingError}</CardContent>
+        <Card className="border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)]">
+          <CardContent className="py-4 text-sm text-[var(--scry-danger-text)]">{pendingError}</CardContent>
         </Card>
       ) : null}
 
-      {!pendingLoading && !pendingError && pendingConnection.total === 0 ? (
+      {!pendingLoading && !pendingError && pendingConnection.totalCount === 0 ? (
         <Card>
           <CardContent className="py-6 text-sm text-muted-foreground">
             {t("pendingImports.empty")}
@@ -1217,15 +1097,15 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
       {renderItems(pendingConnection.items)}
 
       {renderPagination(
-        "pending",
-        pendingConnection.total,
+        "PENDING",
+        pendingConnection.totalCount,
         pendingHasPrevPage,
         pendingHasNextPage,
         pendingPageStart,
         pendingPageEnd,
       )}
 
-      {ignoredConnection.total > 0 ? (
+      {ignoredConnection.totalCount > 0 ? (
         <Card className="border-border/80 bg-card/50">
           <Collapsible open={ignoredOpen} onOpenChange={setIgnoredOpen}>
             <CollapsibleTrigger asChild>
@@ -1241,16 +1121,16 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
             </CollapsibleTrigger>
             <CollapsibleContent className="space-y-4 px-4 pb-4">
               {ignoredError ? (
-                <Card className="border-red-500/30 bg-red-500/10">
-                  <CardContent className="py-4 text-sm text-red-200">{ignoredError}</CardContent>
+                <Card className="border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)]">
+                  <CardContent className="py-4 text-sm text-[var(--scry-danger-text)]">{ignoredError}</CardContent>
                 </Card>
               ) : null}
 
               {renderItems(ignoredConnection.items)}
 
               {renderPagination(
-                "ignored",
-                ignoredConnection.total,
+                "IGNORED",
+                ignoredConnection.totalCount,
                 ignoredHasPrevPage,
                 ignoredHasNextPage,
                 ignoredPageStart,
@@ -1260,9 +1140,10 @@ export const PendingImportsContainer = React.memo(function PendingImportsContain
           </Collapsible>
         </Card>
       ) : null}
+      </div>
     </div>
     <ConfirmDialog
-      open={Boolean(ignoreTargetItem && ignoreTargetItem.status === "pending")}
+      open={Boolean(ignoreTargetItem && ignoreTargetItem.status === "PENDING")}
       title={t("pendingImports.ignoreConfirmTitle")}
       description=""
       confirmLabel={t("pendingImports.ignore")}

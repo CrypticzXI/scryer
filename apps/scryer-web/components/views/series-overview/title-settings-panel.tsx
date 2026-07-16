@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useClient } from "urql";
-import { Search } from "lucide-react";
+import { Eye, Loader2, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -299,7 +299,7 @@ export function TitleSettingsPanel({
             onValueChange={(v) => void handleRootFolderChange(v)}
             disabled={saving || sortedRootFolders.length === 0}
           >
-            <SelectTrigger id="series-overview-settings-root-folder" className="h-9 w-full font-mono text-sm">
+            <SelectTrigger id="series-overview-settings-root-folder" className="h-9 w-full font-[var(--font-code)] text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -360,7 +360,7 @@ export function TitleSettingsPanel({
           ) : null}
         </div>
 
-        {title.facet === "anime" ? (
+        {title.facet === "ANIME" ? (
           <>
             <div className="min-w-0">
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
@@ -376,8 +376,8 @@ export function TitleSettingsPanel({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={INHERIT_VALUE}>{t("title.inheritDefault")}</SelectItem>
-                  <SelectItem value="download_all">{t("settings.fillerPolicyDownloadAll")}</SelectItem>
-                  <SelectItem value="skip_filler">{t("settings.fillerPolicySkipFiller")}</SelectItem>
+                  <SelectItem value="DOWNLOAD_ALL">{t("settings.fillerPolicyDownloadAll")}</SelectItem>
+                  <SelectItem value="SKIP_FILLER">{t("settings.fillerPolicySkipFiller")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -396,8 +396,8 @@ export function TitleSettingsPanel({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={INHERIT_VALUE}>{t("title.inheritDefault")}</SelectItem>
-                  <SelectItem value="download_all">{t("settings.recapPolicyDownloadAll")}</SelectItem>
-                  <SelectItem value="skip_recap">{t("settings.recapPolicySkipRecap")}</SelectItem>
+                  <SelectItem value="DOWNLOAD_ALL">{t("settings.recapPolicyDownloadAll")}</SelectItem>
+                  <SelectItem value="SKIP_RECAP">{t("settings.recapPolicySkipRecap")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -432,13 +432,19 @@ export function TitleSettingsPanel({
           <div className="flex justify-end">
             <Button
               id="series-overview-rename-preview"
+              data-ui="series-overview-rename-preview"
               type="button"
               variant="primary"
               size="sm"
-              className="shrink-0"
+              className="w-full shrink-0 justify-center gap-2 rounded-md border border-transparent !bg-primary px-3 font-semibold !text-primary-foreground shadow-sm hover:!bg-primary/90 focus-visible:ring-[var(--scry-accent-ring)] sm:w-auto"
               onClick={() => void handlePreviewRename()}
               disabled={saving || renamePreviewing || renameApplying}
             >
+              {renamePreviewing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Eye className="h-4 w-4" />
+              )}
               {renamePreviewing ? t("rename.previewing") : t("rename.previewButton")}
             </Button>
           </div>

@@ -43,7 +43,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.3", features = ["v4", "serde"] }
-async-graphql = { version = "7.2", default-features = false, features = ["chrono"] }
+async-graphql = { version = "7.2", default-features = false, features = ["chrono", "dataloader"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["aws_lc_rs"] }
 rand_core = "0.10"
 webauthn-rs = { package = "scryer-webauthn", path = "crates/scryer-webauthn" }
@@ -54,7 +54,10 @@ aws-lc-rs = { version = "1.16", default-features = false, features = ["non-fips"
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 toml = "1"
 quick-xml = "0.41.0"
-extism = { version = "1.21", default-features = false, features = ["register-filesystem", "wasmtime-default-features"] }
+# Native Wasmtime hosts for command-model archive plugins and legacy reactor
+# compatibility.
+wasmtime = { version = "46", default-features = false, features = ["runtime", "cranelift", "std", "gc", "gc-null", "threads", "wat"] }
+wasmtime-wasi = { version = "46", default-features = false, features = ["p1"] }
 semver = "1"
 metrics = "0.24"
 security-framework = "3"
@@ -172,19 +175,7 @@ opt-level = 3
 [profile.release-lean.package.rustls-webpki]
 opt-level = 3
 
-[profile.release-lean.package.sevenz-rust2]
-opt-level = 3
-
 [profile.release-lean.package.sha2]
-opt-level = 3
-
-[profile.release-lean.package.weaver-rar]
-opt-level = 3
-
-[profile.release-lean.package.zip]
-opt-level = 3
-
-[profile.release-lean.package.zlib-rs]
 opt-level = 3
 
 [profile.release-lean.package.zstd]
@@ -275,19 +266,7 @@ opt-level = 3
 [profile.rc.package.rustls-webpki]
 opt-level = 3
 
-[profile.rc.package.sevenz-rust2]
-opt-level = 3
-
 [profile.rc.package.sha2]
-opt-level = 3
-
-[profile.rc.package.weaver-rar]
-opt-level = 3
-
-[profile.rc.package.zip]
-opt-level = 3
-
-[profile.rc.package.zlib-rs]
 opt-level = 3
 
 [profile.rc.package.zstd]

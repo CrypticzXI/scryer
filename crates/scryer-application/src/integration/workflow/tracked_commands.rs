@@ -3,6 +3,50 @@ const TRACKED_DOWNLOAD_BACKGROUND_WORKER_LIMIT: usize = 1;
 const DOWNLOAD_QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(10);
 const DOWNLOAD_QUEUE_RECENT_HISTORY_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Poll cadence for download-queue snapshots.
+///
+/// Defaults to `DOWNLOAD_QUEUE_POLL_INTERVAL`. The
+/// `SCRYER_DOWNLOAD_QUEUE_POLL_INTERVAL_SECS` environment variable exists solely so
+/// the e2e harness can shrink the interval; production leaves it unset and keeps
+/// the default, so production timing is unchanged. Resolved once and cached for the
+/// process lifetime rather than re-read on every poll tick.
+fn download_queue_poll_interval() -> Duration {
+    static CACHED: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let raw = std::env::var("SCRYER_DOWNLOAD_QUEUE_POLL_INTERVAL_SECS").ok();
+        parse_poll_secs(raw.as_deref(), DOWNLOAD_QUEUE_POLL_INTERVAL)
+    })
+}
+
+/// Poll cadence for the recent-history reconciliation pass.
+///
+/// Defaults to `DOWNLOAD_QUEUE_RECENT_HISTORY_POLL_INTERVAL`. The
+/// `SCRYER_DOWNLOAD_QUEUE_RECENT_HISTORY_POLL_INTERVAL_SECS` environment variable
+/// exists solely so the e2e harness can shrink the interval; production leaves it
+/// unset and keeps the default, so production timing is unchanged. Resolved once
+/// and cached for the process lifetime rather than re-read on every poll tick.
+fn download_queue_recent_history_poll_interval() -> Duration {
+    static CACHED: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let raw = std::env::var("SCRYER_DOWNLOAD_QUEUE_RECENT_HISTORY_POLL_INTERVAL_SECS").ok();
+        parse_poll_secs(raw.as_deref(), DOWNLOAD_QUEUE_RECENT_HISTORY_POLL_INTERVAL)
+    })
+}
+
+/// Parse a poll-interval override expressed in whole seconds.
+///
+/// Returns `default` when `raw` is unset, blank, unparsable, or zero so that a
+/// missing or malformed override never alters production timing; the minimum
+/// honored override is one second.
+fn parse_poll_secs(raw: Option<&str>, default: Duration) -> Duration {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|secs| *secs >= 1)
+        .map(Duration::from_secs)
+        .unwrap_or(default)
+}
+
 #[derive(Clone, Debug)]
 pub struct DownloadQueuePollerOptions {
     pub interval: Duration,
@@ -12,7 +56,7 @@ pub struct DownloadQueuePollerOptions {
 impl Default for DownloadQueuePollerOptions {
     fn default() -> Self {
         Self {
-            interval: DOWNLOAD_QUEUE_POLL_INTERVAL,
+            interval: download_queue_poll_interval(),
             excluded_client_types: Vec::new(),
         }
     }
@@ -723,7 +767,7 @@ pub async fn start_download_queue_poller_with_options(
             }
             _ = interval.tick() => {
                 let include_recent_history = last_recent_history_poll
-                    .map(|last| last.elapsed() >= DOWNLOAD_QUEUE_RECENT_HISTORY_POLL_INTERVAL)
+                    .map(|last| last.elapsed() >= download_queue_recent_history_poll_interval())
                     .unwrap_or(true);
                 if include_recent_history {
                     last_recent_history_poll = Some(Instant::now());
@@ -1616,5 +1660,50 @@ fn apply_reconciled_terminal_state(tracked: &mut TrackedDownload, state: Tracked
             tracked.status = TrackedDownloadStatus::Error;
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod poll_interval_tests {
+    use super::parse_poll_secs;
+    use std::time::Duration;
+
+    const DEFAULT: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn unset_override_falls_back_to_default() {
+        assert_eq!(parse_poll_secs(None, DEFAULT), DEFAULT);
+    }
+
+    #[test]
+    fn blank_override_falls_back_to_default() {
+        assert_eq!(parse_poll_secs(Some(""), DEFAULT), DEFAULT);
+        assert_eq!(parse_poll_secs(Some("   "), DEFAULT), DEFAULT);
+    }
+
+    #[test]
+    fn unparsable_override_falls_back_to_default() {
+        assert_eq!(parse_poll_secs(Some("abc"), DEFAULT), DEFAULT);
+        assert_eq!(parse_poll_secs(Some("1.5"), DEFAULT), DEFAULT);
+        assert_eq!(parse_poll_secs(Some("-1"), DEFAULT), DEFAULT);
+    }
+
+    #[test]
+    fn zero_override_falls_back_to_default() {
+        assert_eq!(parse_poll_secs(Some("0"), DEFAULT), DEFAULT);
+    }
+
+    #[test]
+    fn positive_override_is_honored() {
+        assert_eq!(parse_poll_secs(Some("1"), DEFAULT), Duration::from_secs(1));
+        assert_eq!(parse_poll_secs(Some("5"), DEFAULT), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed() {
+        assert_eq!(
+            parse_poll_secs(Some("  3  "), DEFAULT),
+            Duration::from_secs(3)
+        );
     }
 }

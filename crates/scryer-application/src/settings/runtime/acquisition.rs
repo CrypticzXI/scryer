@@ -1,11 +1,15 @@
+use crate::acquisition::convergence::{
+    ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY,
+    ACQUISITION_LONG_TAIL_RECONVERGE_DAYS_KEY, DEFAULT_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE,
+};
+
 const ACQUISITION_ENABLED_KEY: &str = "acquisition.enabled";
 const ACQUISITION_UPGRADE_COOLDOWN_HOURS_KEY: &str = "acquisition.upgrade_cooldown_hours";
 const ACQUISITION_SAME_TIER_MIN_DELTA_KEY: &str = "acquisition.same_tier_min_delta";
 const ACQUISITION_CROSS_TIER_MIN_DELTA_KEY: &str = "acquisition.cross_tier_min_delta";
 const ACQUISITION_FORCED_UPGRADE_DELTA_BYPASS_KEY: &str = "acquisition.forced_upgrade_delta_bypass";
 const ACQUISITION_POLL_INTERVAL_SECONDS_KEY: &str = "acquisition.poll_interval_seconds";
-const ACQUISITION_SYNC_INTERVAL_SECONDS_KEY: &str = "acquisition.sync_interval_seconds";
-const ACQUISITION_BATCH_SIZE_KEY: &str = "acquisition.batch_size";
+
 #[derive(Debug, Clone)]
 pub struct AcquisitionSettings {
     pub enabled: bool,
@@ -14,8 +18,12 @@ pub struct AcquisitionSettings {
     pub cross_tier_min_delta: i32,
     pub forced_upgrade_delta_bypass: i32,
     pub poll_interval_seconds: i32,
-    pub sync_interval_seconds: i32,
-    pub batch_size: i32,
+    /// Per-cycle evaluation cost ceiling for the convergence cursor (RFC 119
+    /// §D3) — how many scopes may be evaluated per tick, not a rate limiter.
+    pub long_tail_backfill_max_scopes_per_cycle: i32,
+    /// Dormant slow re-converge backstop (RFC 119 §D6): coverage older than
+    /// this many days re-converges. `0` = off, the intended steady state.
+    pub long_tail_reconverge_days: i32,
 }
 impl AcquisitionSettings {
     pub fn thresholds(&self) -> AcquisitionThresholds {
@@ -54,14 +62,15 @@ impl AppUseCase {
                 .read_setting_i64_value(ACQUISITION_POLL_INTERVAL_SECONDS_KEY, None)
                 .await?
                 .unwrap_or(60) as i32,
-            sync_interval_seconds: self
-                .read_setting_i64_value(ACQUISITION_SYNC_INTERVAL_SECONDS_KEY, None)
+            long_tail_backfill_max_scopes_per_cycle: self
+                .read_setting_i64_value(ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY, None)
                 .await?
-                .unwrap_or(3600) as i32,
-            batch_size: self
-                .read_setting_i64_value(ACQUISITION_BATCH_SIZE_KEY, None)
+                .unwrap_or(DEFAULT_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE)
+                as i32,
+            long_tail_reconverge_days: self
+                .read_setting_i64_value(ACQUISITION_LONG_TAIL_RECONVERGE_DAYS_KEY, None)
                 .await?
-                .unwrap_or(50) as i32,
+                .unwrap_or(0) as i32,
         })
     }
 }
@@ -95,14 +104,19 @@ impl AppUseCase {
                 "acquisition thresholds cannot be negative".to_string(),
             ));
         }
-        if settings.poll_interval_seconds < 1 || settings.sync_interval_seconds < 1 {
+        if settings.poll_interval_seconds < 1 {
             return Err(AppError::Validation(
-                "acquisition intervals must be at least 1 second".to_string(),
+                "acquisition poll interval must be at least 1 second".to_string(),
             ));
         }
-        if settings.batch_size < 1 {
+        if settings.long_tail_backfill_max_scopes_per_cycle < 1 {
             return Err(AppError::Validation(
-                "acquisition batch size must be at least 1".to_string(),
+                "convergence per-cycle scope ceiling must be at least 1".to_string(),
+            ));
+        }
+        if settings.long_tail_reconverge_days < 0 {
+            return Err(AppError::Validation(
+                "re-converge backstop cannot be negative".to_string(),
             ));
         }
 
@@ -143,14 +157,14 @@ impl AppUseCase {
         )
         .await?;
         self.upsert_system_setting_json(
-            ACQUISITION_SYNC_INTERVAL_SECONDS_KEY,
-            &settings.sync_interval_seconds,
+            ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY,
+            &settings.long_tail_backfill_max_scopes_per_cycle,
             Some(actor.id.clone()),
         )
         .await?;
         self.upsert_system_setting_json(
-            ACQUISITION_BATCH_SIZE_KEY,
-            &settings.batch_size,
+            ACQUISITION_LONG_TAIL_RECONVERGE_DAYS_KEY,
+            &settings.long_tail_reconverge_days,
             Some(actor.id.clone()),
         )
         .await?;
@@ -169,8 +183,8 @@ impl AppUseCase {
             ACQUISITION_CROSS_TIER_MIN_DELTA_KEY.to_string(),
             ACQUISITION_FORCED_UPGRADE_DELTA_BYPASS_KEY.to_string(),
             ACQUISITION_POLL_INTERVAL_SECONDS_KEY.to_string(),
-            ACQUISITION_SYNC_INTERVAL_SECONDS_KEY.to_string(),
-            ACQUISITION_BATCH_SIZE_KEY.to_string(),
+            ACQUISITION_LONG_TAIL_BACKFILL_MAX_SCOPES_PER_CYCLE_KEY.to_string(),
+            ACQUISITION_LONG_TAIL_RECONVERGE_DAYS_KEY.to_string(),
         ]);
         self.runtime.acquisition.acquisition_wake.notify_one();
 

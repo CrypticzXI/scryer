@@ -203,7 +203,6 @@ pub(crate) fn movie_entity_from_anime_movie(movie: &AnimeMovie) -> MovieEntity {
         language: non_empty_owned(movie.language.as_str()),
         runtime_minutes: (movie.runtime_minutes > 0).then_some(movie.runtime_minutes),
         content_status: non_empty_owned(movie.content_status.as_str()),
-        genres: movie.genres.clone(),
         studio: non_empty_owned(movie.studio.as_str()),
         digital_release_date: movie.digital_release_date.clone(),
         imdb_id: movie
@@ -394,7 +393,6 @@ mod anime_movie_mapping_tests {
             runtime_minutes: 95,
             sort_title: "Sample Movie".into(),
             imdb_id: "tt123".into(),
-            genres: vec!["Action".into()],
             studio: "Studio".into(),
             digital_release_date: Some("2024-02-01".into()),
             association_confidence: "high".into(),

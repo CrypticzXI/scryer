@@ -12,7 +12,7 @@ async fn graphql_download_queue_empty() {
 #[tokio::test]
 async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
     let ctx = TestContext::new().await;
-    let title_id = add_test_title(&ctx, "Broken NZB Movie", "movie").await;
+    let title_id = add_test_title(&ctx, "Broken NZB Movie", "MOVIE").await;
     let source_hint = format!("{}/invalid.nzb", ctx.nzbget_server.uri());
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let candidate_token = ctx
@@ -22,6 +22,7 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
             &title_id,
             &scryer_application::SubmissionScope::Title,
             &scryer_application::QueuedReleaseSelection {
+                indexer_id: None,
                 source_hint: Some(source_hint.clone()),
                 source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
                 source_title: Some("Broken.NZB.Movie.2024".to_string()),
@@ -107,7 +108,7 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
 #[tokio::test]
 async fn graphql_title_release_blocklist_entry_can_be_cleared() {
     let ctx = TestContext::new().await;
-    let title_id = add_test_title(&ctx, "Clear Blocklist Movie", "movie").await;
+    let title_id = add_test_title(&ctx, "Clear Blocklist Movie", "MOVIE").await;
     let source_hint = format!("{}/invalid-clear.nzb", ctx.nzbget_server.uri());
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
     let candidate_token = ctx
@@ -117,6 +118,7 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared() {
             &title_id,
             &scryer_application::SubmissionScope::Title,
             &scryer_application::QueuedReleaseSelection {
+                indexer_id: None,
                 source_hint: Some(source_hint.clone()),
                 source_kind: Some(scryer_application::DownloadSourceKind::NzbFile),
                 source_title: Some("Clear.Blocklist.Movie.2024".to_string()),
@@ -188,7 +190,6 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared() {
         mutation($id: ID!) {
           clearTitleReleaseBlocklistEntry(id: $id) {
             id
-            cleared
           }
         }
         "#,
@@ -201,11 +202,6 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared() {
         clear_body["data"]["clearTitleReleaseBlocklistEntry"]["id"],
         entry_id
     );
-    assert_eq!(
-        clear_body["data"]["clearTitleReleaseBlocklistEntry"]["cleared"],
-        true
-    );
-
     let blocklist_after = gql(
         &ctx,
         r#"
@@ -234,7 +230,7 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared() {
 #[tokio::test]
 async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title() {
     let ctx = TestContext::new().await;
-    let title_id = add_test_title(&ctx, "Friends", "series").await;
+    let title_id = add_test_title(&ctx, "Friends", "SERIES").await;
 
     scryer_infrastructure::BlocklistStore::new(ctx.db.datastore())
         .add(&scryer_application::NewBlocklistEntry {
@@ -372,8 +368,8 @@ async fn housekeeping_respects_configured_history_retention() {
 
     sqlx::query(
         "INSERT INTO wanted_items
-         (id, title_id, episode_id, media_type, search_phase, status, created_at, updated_at)
-         VALUES (?, ?, NULL, 'series', 'primary', 'wanted', ?, ?)",
+         (id, title_id, episode_id, media_type, status, created_at, updated_at)
+         VALUES (?, ?, NULL, 'series', 'wanted', ?, ?)",
     )
     .bind(&wanted_item_id)
     .bind(&title.id)
@@ -631,8 +627,8 @@ async fn housekeeping_skips_history_retention_when_keep_forever_is_enabled() {
 
     sqlx::query(
         "INSERT INTO wanted_items
-         (id, title_id, episode_id, media_type, search_phase, status, created_at, updated_at)
-         VALUES (?, ?, NULL, 'series', 'primary', 'wanted', ?, ?)",
+         (id, title_id, episode_id, media_type, status, created_at, updated_at)
+         VALUES (?, ?, NULL, 'series', 'wanted', ?, ?)",
     )
     .bind(&wanted_item_id)
     .bind(&title.id)

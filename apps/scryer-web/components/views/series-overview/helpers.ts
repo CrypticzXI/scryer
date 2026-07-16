@@ -5,24 +5,17 @@ import type {
   TitleCollection,
   TitleReleaseBlocklistEntry,
 } from "@/components/containers/series-overview-container";
+import type { UiDateTimeFormat } from "@/lib/types/settings";
+// Relative import (not the `@/` alias) so this module stays loadable by plain
+// `node --test`, which cannot resolve bundler path aliases. The type-only alias
+// imports above are erased by type stripping and are fine.
+import { formatUiDate } from "../../../lib/utils/date-format.ts";
 
-export function formatDate(iso: string | null | undefined) {
-  if (!iso) {
-    return "—";
-  }
-  try {
-    const locale =
-      typeof document !== "undefined"
-        ? document.documentElement.lang || undefined
-        : undefined;
-    return new Date(iso).toLocaleDateString(locale, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
+export function formatDate(
+  iso: string | null | undefined,
+  dateTimeFormat: UiDateTimeFormat,
+) {
+  return formatUiDate(iso, dateTimeFormat, { fallback: "—" });
 }
 
 export function formatRuntimeFromMinutes(runtimeMinutes: number | null | undefined) {
@@ -93,8 +86,8 @@ export function parseSeasonSortValue(collection: TitleCollection) {
 }
 
 export function isSpecialsCollection(collection: TitleCollection) {
-  return collection.collectionType === "specials"
-    || (collection.collectionType === "season" && parseSeasonSortValue(collection) === 0);
+  return collection.collectionType === "SPECIALS"
+    || (collection.collectionType === "SEASON" && parseSeasonSortValue(collection) === 0);
 }
 
 export function seasonHeading(
@@ -103,7 +96,7 @@ export function seasonHeading(
 ) {
   const label = collection.label?.trim();
   if (isSpecialsCollection(collection)) {
-    return !label || /^season\s*0+$/i.test(label) ? t("title.specials") : label;
+    return t("title.specials");
   }
   const indexValue = collection.collectionIndex.trim();
   const normalizedIndex = indexValue.match(/^\d+$/)

@@ -59,15 +59,15 @@ import type {
 } from "@/lib/types";
 
 const DEFAULT_CATEGORY_QUALITY_PROFILES: Record<ViewCategoryId, string> = {
-  movie: QUALITY_PROFILE_INHERIT_VALUE,
-  series: QUALITY_PROFILE_INHERIT_VALUE,
-  anime: QUALITY_PROFILE_INHERIT_VALUE,
+  MOVIE: QUALITY_PROFILE_INHERIT_VALUE,
+  SERIES: QUALITY_PROFILE_INHERIT_VALUE,
+  ANIME: QUALITY_PROFILE_INHERIT_VALUE,
 };
 
 const DEFAULT_CATEGORY_QUALITY_SAVING: Record<ViewCategoryId, boolean> = {
-  movie: false,
-  series: false,
-  anime: false,
+  MOVIE: false,
+  SERIES: false,
+  ANIME: false,
 };
 
 function resolveGlobalQualityProfileId(
@@ -169,13 +169,17 @@ export function useQualityProfilesManager(
     ParsedQualityProfileEntry[]
   >([]);
   const [qualityProfiles, setQualityProfiles] = React.useState<ParsedQualityProfile[]>([]);
+  // Monotonic counter of applied settings payloads; lets in-flight refetches
+  // detect that a newer (mutation-authoritative) payload landed and discard
+  // their stale snapshot instead of clobbering it.
+  const qualityProfileApplyEpochRef = React.useRef(0);
   const [qualityProfileParseError, setQualityProfileParseError] = React.useState("");
   const [qualityProfileDraft, setQualityProfileDraft] = React.useState<QualityProfileDraft>(() =>
     toQualityProfileDraft(null, "default", "4K"),
   );
   const [globalQualityProfileId, setGlobalQualityProfileId] = React.useState("default");
   const [globalScoringPersona, setGlobalScoringPersona] =
-    React.useState<ScoringPersonaId>("balanced");
+    React.useState<ScoringPersonaId>("BALANCED");
   const [categoryQualityProfileOverrides, setCategoryQualityProfileOverrides] = React.useState<
     Record<ViewCategoryId, string>
   >({ ...DEFAULT_CATEGORY_QUALITY_PROFILES });
@@ -257,9 +261,9 @@ export function useQualityProfilesManager(
   const qualityCategoryLabels = React.useMemo(
     () =>
       ({
-        movie: t("search.facetMovie"),
-        series: t("search.facetSeries"),
-        anime: t("search.facetAnime"),
+        MOVIE: t("search.facetMovie"),
+        SERIES: t("search.facetSeries"),
+        ANIME: t("search.facetAnime"),
       }) as Record<ViewCategoryId, string>,
     [t],
   );
@@ -295,7 +299,11 @@ export function useQualityProfilesManager(
     (
       payload: QualityProfileSettingsPayload | null | undefined,
       preserveProfileId?: string,
+      options?: { preserveDraft?: boolean },
     ) => {
+      // Every apply advances the epoch so in-flight event-triggered refetches
+      // that started before this (authoritative) payload can be discarded.
+      qualityProfileApplyEpochRef.current += 1;
       const resolved = resolveQualityProfileCatalogState(
         qualityProfileSettingsToCatalogText(payload),
       );
@@ -327,10 +335,12 @@ export function useQualityProfilesManager(
 
       setQualityProfileCatalogEntriesState(catalogEntries);
       setQualityProfiles(resolvedProfiles);
-      setSelectedQualityProfileId(nextDraftId);
-      setQualityProfileDraft(nextDefaultDraft);
+      if (!options?.preserveDraft) {
+        setSelectedQualityProfileId(nextDraftId);
+        setQualityProfileDraft(nextDefaultDraft);
+      }
       setGlobalQualityProfileId(validGlobalProfile);
-      setGlobalScoringPersona(payload?.globalScoringPersona ?? "balanced");
+      setGlobalScoringPersona(payload?.globalScoringPersona ?? "BALANCED");
 
       const nextOverrides = qualityProfileSettingsToCategoryOverrides(payload);
       setCategoryQualityProfileOverrides((previous) =>
@@ -383,23 +393,36 @@ export function useQualityProfilesManager(
     [applyQualityProfileSettingsPayload, client, setGlobalStatus, t],
   );
 
-  const refreshQualityProfiles = React.useCallback(async () => {
-    setMediaSettingsLoading(true);
-    try {
-      const { data, error } = await client
-        .query(qualityProfilesInitQuery, {}, { requestPolicy: "network-only" })
-        .toPromise();
-      if (error) throw error;
+  const refreshQualityProfiles = React.useCallback(
+    async (options?: { preserveDraft?: boolean }) => {
+      setMediaSettingsLoading(true);
+      const epochAtStart = qualityProfileApplyEpochRef.current;
+      try {
+        const { data, error } = await client
+          .query(qualityProfilesInitQuery, {}, { requestPolicy: "network-only" })
+          .toPromise();
+        if (error) throw error;
 
-      setDownloadClients(data.downloadClientConfigs || []);
-      applyQualityProfileSettingsPayload(data.qualityProfileSettings);
-    } catch (error) {
-      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
-    } finally {
-      setMediaSettingsLoading(false);
-      setInitialLoadComplete(true);
-    }
-  }, [applyQualityProfileSettingsPayload, client, setGlobalStatus, t]);
+        // A mutation applied its authoritative payload while this refetch was
+        // in flight; this snapshot is stale and must not clobber that state.
+        if (qualityProfileApplyEpochRef.current !== epochAtStart) {
+          return;
+        }
+        setDownloadClients(data.downloadClientConfigs || []);
+        applyQualityProfileSettingsPayload(
+          data.qualityProfileSettings,
+          undefined,
+          options,
+        );
+      } catch (error) {
+        setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+      } finally {
+        setMediaSettingsLoading(false);
+        setInitialLoadComplete(true);
+      }
+    },
+    [applyQualityProfileSettingsPayload, client, setGlobalStatus, t],
+  );
 
   React.useEffect(() => {
     void refreshQualityProfiles();
@@ -413,7 +436,9 @@ export function useQualityProfilesManager(
           keys.includes(QUALITY_PROFILE_ID_KEY) ||
           keys.includes(SCORING_PERSONA_KEY)
         ) {
-          void refreshQualityProfiles();
+          // Event-triggered refreshes update the list but never the operator's
+          // in-progress draft/selection (an unsaved editor must survive them).
+          void refreshQualityProfiles({ preserveDraft: true });
         }
       },
       [refreshQualityProfiles],

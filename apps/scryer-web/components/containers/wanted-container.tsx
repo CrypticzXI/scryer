@@ -1,10 +1,12 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
 import { useClient, useMutation } from "urql";
+import { TitleHistoryContainer } from "@/components/containers/title-history-container";
 import { WantedView } from "@/components/views/wanted-view";
 import type { CutoffUnmetItem } from "@/components/views/cutoff-unmet-view";
 import {
-  cutoffUnmetTitlesQuery,
+  acquisitionSearchJobQuery,
+  cutoffUnmetTitlesPageQuery,
   librariesQuery,
   pendingReleasesQuery,
   releaseDecisionsQuery,
@@ -13,25 +15,24 @@ import {
   wantedItemsQuery,
 } from "@/lib/graphql/queries";
 import {
-  triggerWantedSearchMutation,
+  cancelAcquisitionSearchMutation,
+  triggerAcquisitionSearchMutation,
   triggerTitleMismatchRecoverySearchMutation,
   pauseWantedItemMutation,
   resumeWantedItemMutation,
-  resetWantedItemMutation,
   queueBestReleaseMutation,
   queueExistingMutation,
   forceGrabPendingReleaseMutation,
   dismissPendingReleaseMutation,
 } from "@/lib/graphql/mutations";
 import type {
+  AcquisitionSearchJob,
   PendingReleaseItem,
   LibraryRecord,
   Release,
   ReleaseDecisionItem,
   TitleRecord,
   WantedItem,
-  WantedMediaType,
-  WantedStatus,
 } from "@/lib/types";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -57,6 +58,31 @@ type WantedContainerProps = {
 };
 
 const PENDING_RELEASE_PAGE_SIZE = 300;
+const CUTOFF_PAGE_SIZE = 50;
+// The interactive acquisition-search job runs server-side (RFC 119 §7.3); its id
+// is kept in sessionStorage so progress survives navigation and reload.
+const ACQUISITION_SEARCH_JOB_STORAGE_KEY = "scryer.acquisitionSearchJobId";
+const ACQUISITION_SEARCH_POLL_INTERVAL_MS = 2_000;
+
+function storedAcquisitionSearchJobId(): string | null {
+  try {
+    return window.sessionStorage.getItem(ACQUISITION_SEARCH_JOB_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storeAcquisitionSearchJobId(id: string | null) {
+  try {
+    if (id) {
+      window.sessionStorage.setItem(ACQUISITION_SEARCH_JOB_STORAGE_KEY, id);
+    } else {
+      window.sessionStorage.removeItem(ACQUISITION_SEARCH_JOB_STORAGE_KEY);
+    }
+  } catch {
+    // sessionStorage unavailable — progress simply will not survive reloads.
+  }
+}
 
 function cutoffItemKey(item: CutoffUnmetItem) {
   return item.episodeId?.trim() || item.titleId;
@@ -100,9 +126,6 @@ export const WantedContainer = memo(function WantedContainer({
   const [items, setItems] = useState<WantedItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [statusFilters, setStatusFilters] = useState<WantedStatus[]>([]);
-  const [mediaTypeFilters, setMediaTypeFilters] = useState<WantedMediaType[]>([]);
-  const [latestDecisionCodeFilters, setLatestDecisionCodeFilters] = useState<string[]>([]);
   const [selectedTitle, setSelectedTitle] = useState<TitleRecord | null>(null);
   const [libraries, setLibraries] = useState<LibraryRecord[]>([]);
   const [librariesLoading, setLibrariesLoading] = useState(false);
@@ -114,14 +137,16 @@ export const WantedContainer = memo(function WantedContainer({
   const [decisions, setDecisions] = useState<ReleaseDecisionItem[]>([]);
   const [decisionsLoading, setDecisionsLoading] = useState(false);
 
-  const [, executeTriggerSearch] = useMutation(triggerWantedSearchMutation);
+  const [, executeTriggerAcquisitionSearch] = useMutation(triggerAcquisitionSearchMutation);
+  const [, executeCancelAcquisitionSearch] = useMutation(cancelAcquisitionSearchMutation);
   const [, executePause] = useMutation(pauseWantedItemMutation);
   const [, executeResume] = useMutation(resumeWantedItemMutation);
-  const [, executeReset] = useMutation(resetWantedItemMutation);
   const [, executeMismatchRecovery] = useMutation(triggerTitleMismatchRecoverySearchMutation);
 
-  // --- Cutoff state ---
+  // --- Cutoff (Upgrades) state ---
   const [cutoffItems, setCutoffItems] = useState<CutoffUnmetItem[]>([]);
+  const [cutoffTotal, setCutoffTotal] = useState(0);
+  const [cutoffOffset, setCutoffOffset] = useState(0);
   const [cutoffLoading, setCutoffLoading] = useState(false);
   const [cutoffFacetFilter, setCutoffFacetFilter] = useState<string | undefined>(undefined);
   const [cutoffAutoSearchingId, setCutoffAutoSearchingId] = useState<string | null>(null);
@@ -130,9 +155,11 @@ export const WantedContainer = memo(function WantedContainer({
   const [cutoffSearchResultsByItemId, setCutoffSearchResultsByItemId] = useState<
     Record<string, Release[]>
   >({});
-  const [bulkSearching, setBulkSearching] = useState(false);
-  const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number } | null>(null);
-  const bulkCancelRef = useRef(false);
+
+  // --- Interactive acquisition-search job (RFC 119 §7.3) ---
+  const [searchJob, setSearchJob] = useState<AcquisitionSearchJob | null>(null);
+  const [searchJobStarting, setSearchJobStarting] = useState(false);
+  const searchJobIdRef = useRef<string | null>(null);
 
   // --- Pending releases state ---
   const [pendingItems, setPendingItems] = useState<PendingReleaseItem[]>([]);
@@ -162,9 +189,7 @@ export const WantedContainer = memo(function WantedContainer({
       setPendingItems(nextItems);
       setPendingTotal(typeof page.totalCount === "number" ? page.totalCount : nextItems.length);
       setPendingHasMore(Boolean(page.hasMore));
-      setPendingNextOffset(
-        typeof page.offset === "number" ? page.offset + nextItems.length : nextItems.length,
-      );
+      setPendingNextOffset(nextItems.length);
     } catch (error) {
       const message = error instanceof Error ? error.message : t("status.failedToLoad");
       setGlobalStatus(message);
@@ -202,11 +227,7 @@ export const WantedContainer = memo(function WantedContainer({
       });
       setPendingTotal(typeof page.totalCount === "number" ? page.totalCount : pendingTotal);
       setPendingHasMore(Boolean(page.hasMore));
-      setPendingNextOffset(
-        typeof page.offset === "number"
-          ? page.offset + nextItems.length
-          : pendingNextOffset + nextItems.length,
-      );
+      setPendingNextOffset(pendingNextOffset + nextItems.length);
     } catch (error) {
       const message = error instanceof Error ? error.message : t("status.failedToLoad");
       setGlobalStatus(message);
@@ -232,9 +253,12 @@ export const WantedContainer = memo(function WantedContainer({
 
   const forceGrabPending = useCallback(
     async (id: string) => {
-      const { error } = await executeForceGrab({ id });
+      const { data, error } = await executeForceGrab({ id });
       if (error) {
         setGlobalStatus(error.message);
+      } else if (data?.forceGrabPendingRelease?.grabbed === false) {
+        setGlobalStatus(t("pending.grabRejected"));
+        void refreshPending();
       } else {
         setGlobalStatus(t("pending.grabbed"));
         void refreshPending();
@@ -267,7 +291,7 @@ export const WantedContainer = memo(function WantedContainer({
     void client
       .query(
         librariesQuery,
-        { facet: null, permission: "view" },
+        { facet: null, permission: "VIEW" },
         { requestPolicy: "network-only" },
       )
       .toPromise()
@@ -302,38 +326,28 @@ export const WantedContainer = memo(function WantedContainer({
   const refreshItems = useCallback(async () => {
     setLoading(true);
     try {
+      // The derived Missing view (RFC 119 §7.2): the state-row status/media-type
+      // filters are gone; the title picker narrows via the name-based titleSearch.
       const { data, error } = await client
         .query(wantedItemsQuery, {
-          statuses: statusFilters.length > 0 ? statusFilters : null,
-          mediaTypes: mediaTypeFilters.length > 0 ? mediaTypeFilters : null,
-          titleId: selectedTitle?.id,
+          wantedKind: "MISSING",
+          facet: null,
           libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
-          latestDecisionCodes:
-            latestDecisionCodeFilters.length > 0 ? latestDecisionCodeFilters : null,
+          titleSearch: selectedTitle?.name?.trim() || null,
           limit,
           offset,
         })
         .toPromise();
       if (error) throw error;
       setItems(data?.wantedItems?.items ?? []);
-      setTotal(data?.wantedItems?.total ?? 0);
+      setTotal(data?.wantedItems?.totalCount ?? 0);
     } catch (error) {
       const message = error instanceof Error ? error.message : t("status.failedToLoad");
       setGlobalStatus(message);
     } finally {
       setLoading(false);
     }
-  }, [
-    client,
-    statusFilters,
-    mediaTypeFilters,
-    selectedTitle,
-    selectedLibraryIds,
-    latestDecisionCodeFilters,
-    offset,
-    t,
-    setGlobalStatus,
-  ]);
+  }, [client, selectedTitle, selectedLibraryIds, offset, t, setGlobalStatus]);
 
   useEffect(() => {
     if (wantedSection === "wanted") {
@@ -352,20 +366,23 @@ export const WantedContainer = memo(function WantedContainer({
     setCutoffLoading(true);
     try {
       const { data, error } = await client
-        .query(cutoffUnmetTitlesQuery, {
+        .query(cutoffUnmetTitlesPageQuery, {
           facet: cutoffFacetFilter ?? null,
           libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
+          limit: CUTOFF_PAGE_SIZE,
+          offset: cutoffOffset,
         })
         .toPromise();
       if (error) throw error;
-      setCutoffItems(data?.cutoffUnmetTitles ?? []);
+      setCutoffItems(data?.cutoffUnmetTitlesPage?.items ?? []);
+      setCutoffTotal(data?.cutoffUnmetTitlesPage?.totalCount ?? 0);
     } catch (error) {
       const message = error instanceof Error ? error.message : t("status.failedToLoad");
       setGlobalStatus(message);
     } finally {
       setCutoffLoading(false);
     }
-  }, [client, cutoffFacetFilter, selectedLibraryIds, t, setGlobalStatus]);
+  }, [client, cutoffFacetFilter, cutoffOffset, selectedLibraryIds, t, setGlobalStatus]);
 
   useEffect(() => {
     if (wantedSection === "cutoff") {
@@ -398,27 +415,138 @@ export const WantedContainer = memo(function WantedContainer({
     [client, expandedItemId],
   );
 
-  const triggerSearch = useCallback(
-    async (id: string) => {
-      try {
-        const payload = await retryWithReplaceOnConflict(
-          { wantedItemId: id },
-          async (input) => {
-            const { data, error } = await executeTriggerSearch({ input });
-            if (error) throw error;
-            return data?.triggerWantedSearch;
-          },
-          "A download is already in progress for this wanted item.",
-          confirmReplaceConflict,
+  // --- Interactive acquisition-search job (RFC 119 §7.3) ---
+
+  const applySearchJobSnapshot = useCallback(
+    (job: AcquisitionSearchJob | null) => {
+      setSearchJob(job);
+      if (!job || job.state !== "RUNNING") {
+        searchJobIdRef.current = null;
+        storeAcquisitionSearchJobId(null);
+      }
+      if (job && job.state !== "RUNNING") {
+        setGlobalStatus(
+          job.state === "CANCELLED"
+            ? t("wanted.searchJobCancelled", {
+                processed: job.processed,
+                grabbed: job.grabbedCount,
+              })
+            : t("wanted.searchJobComplete", {
+                processed: job.processed,
+                grabbed: job.grabbedCount,
+                failed: job.failedCount,
+              }),
         );
-        assertNoReplaceConflict(payload, "A download is already in progress for this wanted item.");
-        setGlobalStatus(t("wanted.searchTriggered"));
-        void refreshItems();
-      } catch (error) {
-        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
       }
     },
-    [executeTriggerSearch, confirmReplaceConflict, refreshItems, setGlobalStatus, t],
+    [setGlobalStatus, t],
+  );
+
+  const startAcquisitionSearch = useCallback(
+    async (input: {
+      wantedKind?: "MISSING" | "CUTOFF_UPGRADE";
+      facet?: string | null;
+      libraryIds?: string[] | null;
+      wantedItemId?: string;
+    }) => {
+      setSearchJobStarting(true);
+      try {
+        const { data, error } = await executeTriggerAcquisitionSearch({ input });
+        if (error) throw error;
+        const job = data?.triggerAcquisitionSearch as AcquisitionSearchJob | undefined;
+        if (job) {
+          searchJobIdRef.current = job.id;
+          storeAcquisitionSearchJobId(job.id);
+          setSearchJob(job);
+          setGlobalStatus(t("wanted.searchJobStarted"));
+        }
+      } catch (error) {
+        setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
+      } finally {
+        setSearchJobStarting(false);
+      }
+    },
+    [executeTriggerAcquisitionSearch, setGlobalStatus, t],
+  );
+
+  // Poll the running job (2s) so progress survives navigation; the id is
+  // rehydrated from sessionStorage on mount.
+  useEffect(() => {
+    const activeId = searchJob?.state === "RUNNING" ? searchJob.id : null;
+    if (!activeId) {
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const { data, error } = await client
+          .query(
+            acquisitionSearchJobQuery,
+            { id: activeId },
+            { requestPolicy: "network-only" },
+          )
+          .toPromise();
+        if (cancelled) return;
+        if (error) throw error;
+        const job = (data?.acquisitionSearchJob ?? null) as AcquisitionSearchJob | null;
+        applySearchJobSnapshot(job);
+        if (job && job.state !== "RUNNING") {
+          void refreshItems();
+          void refreshCutoff();
+        }
+      } catch {
+        // transient poll failure — keep polling
+      }
+    };
+    const interval = window.setInterval(() => void poll(), ACQUISITION_SEARCH_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [applySearchJobSnapshot, client, refreshCutoff, refreshItems, searchJob?.id, searchJob?.state]);
+
+  useEffect(() => {
+    const storedId = storedAcquisitionSearchJobId();
+    if (!storedId || searchJobIdRef.current === storedId) {
+      return;
+    }
+    searchJobIdRef.current = storedId;
+    void client
+      .query(acquisitionSearchJobQuery, { id: storedId }, { requestPolicy: "network-only" })
+      .toPromise()
+      .then(({ data }) => {
+        const job = (data?.acquisitionSearchJob ?? null) as AcquisitionSearchJob | null;
+        if (job && job.state === "RUNNING") {
+          setSearchJob(job);
+        } else {
+          searchJobIdRef.current = null;
+          storeAcquisitionSearchJobId(null);
+        }
+      })
+      .catch(() => {
+        searchJobIdRef.current = null;
+        storeAcquisitionSearchJobId(null);
+      });
+  }, [client]);
+
+  const cancelAcquisitionSearch = useCallback(async () => {
+    const id = searchJob?.id ?? searchJobIdRef.current;
+    if (!id) {
+      return;
+    }
+    const { error } = await executeCancelAcquisitionSearch({ id });
+    if (error) {
+      setGlobalStatus(error.message);
+    }
+  }, [executeCancelAcquisitionSearch, searchJob?.id, setGlobalStatus]);
+
+  // Per-item "Search now": one-scope interactive job — the id is the scope
+  // identity (state-row id or convergence scope key), resolved server-side.
+  const triggerSearch = useCallback(
+    async (id: string) => {
+      await startAcquisitionSearch({ wantedItemId: id });
+    },
+    [startAcquisitionSearch],
   );
 
   const pauseItem = useCallback(
@@ -443,18 +571,6 @@ export const WantedContainer = memo(function WantedContainer({
       }
     },
     [executeResume, refreshItems, setGlobalStatus],
-  );
-
-  const resetItem = useCallback(
-    async (id: string) => {
-      const { error } = await executeReset({ id });
-      if (error) {
-        setGlobalStatus(error.message);
-      } else {
-        void refreshItems();
-      }
-    },
-    [executeReset, refreshItems, setGlobalStatus],
   );
 
   const triggerMismatchRecovery = useCallback(
@@ -599,36 +715,24 @@ export const WantedContainer = memo(function WantedContainer({
     [client, confirmReplaceConflict, setGlobalStatus, t],
   );
 
+  // "Search All" is one server job over the filtered Upgrades scope set
+  // (RFC 119 §7.3) — progress/cancel survive navigation and reload.
   const cutoffBulkSearch = useCallback(() => {
-    bulkCancelRef.current = false;
-    setBulkSearching(true);
+    void startAcquisitionSearch({
+      wantedKind: "CUTOFF_UPGRADE",
+      facet: cutoffFacetFilter ?? null,
+      libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
+    });
+  }, [cutoffFacetFilter, selectedLibraryIds, startAcquisitionSearch]);
 
-    const filtered = cutoffFacetFilter
-      ? cutoffItems.filter((item) => item.titleFacet === cutoffFacetFilter)
-      : cutoffItems;
+  const handleCutoffFacetFilterChange = useCallback((value: string | undefined) => {
+    setCutoffOffset(0);
+    setCutoffFacetFilter(value);
+  }, []);
 
-    setBulkProgress({ current: 0, total: filtered.length });
-
-    void (async () => {
-      let searched = 0;
-      for (const item of filtered) {
-        if (bulkCancelRef.current) break;
-        searched++;
-        setBulkProgress({ current: searched, total: filtered.length });
-        try {
-          await searchAndQueueCutoffItem(item);
-        } catch {
-          // continue to next item on error
-        }
-      }
-      setBulkSearching(false);
-      setBulkProgress(null);
-      setGlobalStatus(t("cutoff.bulkComplete", { searched, total: filtered.length }));
-    })();
-  }, [cutoffItems, cutoffFacetFilter, searchAndQueueCutoffItem, setGlobalStatus, t]);
-
-  const cancelBulkSearch = useCallback(() => {
-    bulkCancelRef.current = true;
+  const handleCutoffLibraryIdsChange = useCallback((libraryIds: string[]) => {
+    setCutoffOffset(0);
+    setSelectedLibraryIds(libraryIds);
   }, []);
 
   return (
@@ -637,16 +741,15 @@ export const WantedContainer = memo(function WantedContainer({
       <WantedView
         section={wantedSection}
         onOpenOverview={onOpenOverview}
+        historyContent={
+          wantedSection === "history" ? (
+            <TitleHistoryContainer showRetryActions={false} />
+          ) : null
+        }
         wantedState={{
           items,
           total,
           loading,
-          statusFilters,
-          setStatusFilters,
-          mediaTypeFilters,
-          setMediaTypeFilters,
-          latestDecisionCodeFilters,
-          setLatestDecisionCodeFilters,
           selectedTitle,
           setSelectedTitle: handleSelectedTitleChange,
           libraries,
@@ -664,29 +767,32 @@ export const WantedContainer = memo(function WantedContainer({
           triggerSearch,
           pauseItem,
           resumeItem,
-          resetItem,
           triggerMismatchRecovery,
         }}
         cutoffState={{
           items: cutoffItems,
+          total: cutoffTotal,
+          offset: cutoffOffset,
+          setOffset: setCutoffOffset,
+          limit: CUTOFF_PAGE_SIZE,
           loading: cutoffLoading,
           facetFilter: cutoffFacetFilter,
-          setFacetFilter: setCutoffFacetFilter,
+          setFacetFilter: handleCutoffFacetFilterChange,
           libraries,
           librariesLoading,
           selectedLibraryIds,
-          setSelectedLibraryIds,
+          setSelectedLibraryIds: handleCutoffLibraryIdsChange,
           autoSearchingId: cutoffAutoSearchingId,
           interactiveSearchingId: cutoffInteractiveSearchingId,
           activeInteractiveItemId: cutoffActiveInteractiveItemId,
           searchResultsByItemId: cutoffSearchResultsByItemId,
-          bulkSearching,
-          bulkProgress,
+          searchJob,
+          searchJobStarting,
+          triggerBulkSearch: cutoffBulkSearch,
+          cancelBulkSearch: cancelAcquisitionSearch,
           triggerAutoSearch: cutoffTriggerAutoSearch,
           triggerInteractiveSearch: cutoffTriggerInteractiveSearch,
           queueRelease: cutoffQueueRelease,
-          triggerBulkSearch: cutoffBulkSearch,
-          cancelBulkSearch,
         }}
         pendingState={{
           items: pendingItems,

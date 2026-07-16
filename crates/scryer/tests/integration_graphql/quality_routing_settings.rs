@@ -61,23 +61,23 @@ async fn graphql_quality_profile_settings_round_trip() {
               }
             ],
             "globalProfileId": "custom-audio",
-            "globalScoringPersona": "audiophile",
+            "globalScoringPersona": "AUDIOPHILE",
             "categorySelections": [
               {
-                "scope": "movie",
+                "scope": "MOVIE",
                 "profileId": "custom-audio",
                 "inheritGlobal": false
               },
               {
-                "scope": "series",
+                "scope": "SERIES",
                 "profileId": null,
                 "inheritGlobal": true
               }
             ],
             "categoryPersonaSelections": [
               {
-                "scope": "anime",
-                "persona": "compatible",
+                "scope": "ANIME",
+                "persona": "COMPATIBLE",
                 "inheritGlobal": false
               }
             ],
@@ -93,17 +93,17 @@ async fn graphql_quality_profile_settings_round_trip() {
     );
     assert_eq!(
         update["data"]["saveQualityProfileSettings"]["globalScoringPersona"],
-        "audiophile"
+        "AUDIOPHILE"
     );
     let anime_persona_selection =
         update["data"]["saveQualityProfileSettings"]["categoryPersonaSelections"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|selection| selection["scope"] == "anime")
+            .find(|selection| selection["scope"] == "ANIME")
             .unwrap();
-    assert_eq!(anime_persona_selection["overridePersona"], "compatible");
-    assert_eq!(anime_persona_selection["effectivePersona"], "compatible");
+    assert_eq!(anime_persona_selection["overridePersona"], "COMPATIBLE");
+    assert_eq!(anime_persona_selection["effectivePersona"], "COMPATIBLE");
     assert_eq!(anime_persona_selection["inheritsGlobal"], false);
 
     let read = gql(
@@ -141,12 +141,12 @@ async fn graphql_quality_profile_settings_round_trip() {
 
     let settings = &read["data"]["qualityProfileSettings"];
     assert_eq!(settings["globalProfileId"], "custom-audio");
-    assert_eq!(settings["globalScoringPersona"], "audiophile");
+    assert_eq!(settings["globalScoringPersona"], "AUDIOPHILE");
     let movie_selection = settings["categorySelections"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|selection| selection["scope"] == "movie")
+        .find(|selection| selection["scope"] == "MOVIE")
         .unwrap();
     assert_eq!(movie_selection["overrideProfileId"], "custom-audio");
     assert_eq!(movie_selection["inheritsGlobal"], false);
@@ -155,10 +155,10 @@ async fn graphql_quality_profile_settings_round_trip() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|selection| selection["scope"] == "anime")
+        .find(|selection| selection["scope"] == "ANIME")
         .unwrap();
-    assert_eq!(anime_persona_selection["overridePersona"], "compatible");
-    assert_eq!(anime_persona_selection["effectivePersona"], "compatible");
+    assert_eq!(anime_persona_selection["overridePersona"], "COMPATIBLE");
+    assert_eq!(anime_persona_selection["effectivePersona"], "COMPATIBLE");
     assert_eq!(anime_persona_selection["inheritsGlobal"], false);
 }
 
@@ -205,7 +205,7 @@ async fn graphql_quality_profile_settings_updates_category_persona_selection_rou
               }
             ],
             "globalProfileId": null,
-            "globalScoringPersona": "balanced",
+            "globalScoringPersona": "BALANCED",
             "categorySelections": [],
             "categoryPersonaSelections": [],
             "replaceExisting": false
@@ -237,12 +237,12 @@ async fn graphql_quality_profile_settings_updates_category_persona_selection_rou
           "input": {
             "profiles": [],
             "globalProfileId": null,
-            "globalScoringPersona": "balanced",
+            "globalScoringPersona": "BALANCED",
             "categorySelections": [],
             "categoryPersonaSelections": [
               {
-                "scope": "anime",
-                "persona": "compatible",
+                "scope": "ANIME",
+                "persona": "COMPATIBLE",
                 "inheritGlobal": false
               }
             ],
@@ -255,21 +255,21 @@ async fn graphql_quality_profile_settings_updates_category_persona_selection_rou
 
     assert_eq!(
         update["data"]["saveQualityProfileSettings"]["globalScoringPersona"],
-        "balanced"
+        "BALANCED"
     );
     let anime_override = update["data"]["saveQualityProfileSettings"]["categoryPersonaSelections"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|entry| entry["scope"] == "anime")
+        .find(|entry| entry["scope"] == "ANIME")
         .unwrap();
-    assert_eq!(anime_override["overridePersona"], "compatible");
-    assert_eq!(anime_override["effectivePersona"], "compatible");
+    assert_eq!(anime_override["overridePersona"], "COMPATIBLE");
+    assert_eq!(anime_override["effectivePersona"], "COMPATIBLE");
     assert_eq!(anime_override["inheritsGlobal"], false);
 }
 
 #[tokio::test]
-async fn graphql_introspection_exposes_scoring_persona_values_lowercase() {
+async fn graphql_introspection_exposes_scoring_persona_values() {
     let ctx = TestContext::new().await;
     let body = gql(
         &ctx,
@@ -293,7 +293,7 @@ async fn graphql_introspection_exposes_scoring_persona_values_lowercase() {
         .collect();
     assert_eq!(
         names,
-        vec!["balanced", "audiophile", "efficient", "compatible"]
+        vec!["BALANCED", "AUDIOPHILE", "EFFICIENT", "COMPATIBLE"]
     );
 }
 
@@ -367,16 +367,18 @@ async fn graphql_introspection_exposes_plugin_config_field_metadata_enums() {
     assert_eq!(
         enum_names("fieldType"),
         vec![
-            "string",
-            "password",
-            "multiline",
-            "bool",
-            "select",
-            "number"
+            "STRING",
+            "PASSWORD",
+            "MULTILINE",
+            "BOOL",
+            "SELECT",
+            "NUMBER",
+            "PATH",
+            "TAG"
         ]
     );
-    assert_eq!(enum_names("valueSource"), vec!["user", "host_binding"]);
-    assert_eq!(enum_names("fieldRole"), vec!["connection_url"]);
+    assert_eq!(enum_names("valueSource"), vec!["USER", "HOST_BINDING"]);
+    assert_eq!(enum_names("fieldRole"), vec!["CONNECTION_URL"]);
 }
 
 #[tokio::test]
@@ -400,7 +402,7 @@ async fn graphql_typed_routing_round_trip() {
         "#,
         json!({
           "input": {
-            "scope": "movie",
+            "scope": "MOVIE",
             "entries": [
               {
                 "clientId": "client-a",
@@ -436,7 +438,7 @@ async fn graphql_typed_routing_round_trip() {
         "#,
         json!({
           "input": {
-            "scope": "anime",
+            "scope": "ANIME",
             "entries": [
               {
                 "indexerId": "indexer-a",
@@ -459,12 +461,12 @@ async fn graphql_typed_routing_round_trip() {
         &ctx,
         r#"
         query TypedRouting {
-          downloadClientRouting(scope: movie) {
+          downloadClientRouting(scope: MOVIE) {
             clientId
             category
             recentQueuePriority
           }
-          indexerRouting(scope: anime) {
+          indexerRouting(scope: ANIME) {
             indexerId
             categories
             priority

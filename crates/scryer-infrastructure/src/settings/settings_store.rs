@@ -314,6 +314,83 @@ impl SettingsRepository for SettingsStore {
         .map(|record| record.effective_value_json))
     }
 
+    async fn list_setting_json_explicit_for_scope_ids(
+        &self,
+        scope: &str,
+        key_name: &str,
+        scope_ids: &[String],
+    ) -> AppResult<Vec<(String, String)>> {
+        if scope_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let scope = scope.trim();
+        let key_name = key_name.trim();
+        if scope.is_empty() || key_name.is_empty() {
+            return Err(AppError::Validation(
+                "scope and key_name are required to read a setting".to_string(),
+            ));
+        }
+
+        let encryption_key = self.encryption_key()?;
+        let exec = self.datastore.read_exec();
+        let postgres_timestamps = exec_is_postgres(&exec);
+        let created_at = if postgres_timestamps {
+            "sv.created_at::TEXT"
+        } else {
+            "sv.created_at"
+        };
+        let updated_at = if postgres_timestamps {
+            "sv.updated_at::TEXT"
+        } else {
+            "sv.updated_at"
+        };
+        let placeholders = std::iter::repeat_n("{}", scope_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT
+                d.id AS definition_id,
+                d.category,
+                d.scope,
+                d.key_name,
+                d.data_type,
+                d.default_value_json,
+                d.is_sensitive,
+                d.validation_json,
+                sv.value_json AS effective_value_json,
+                sv.value_json,
+                sv.source,
+                sv.scope_id,
+                sv.updated_by_user_id,
+                {created_at} AS created_at,
+                {updated_at} AS updated_at
+             FROM settings_definitions d
+             JOIN settings_values sv
+               ON sv.setting_definition_id = d.id
+              AND sv.scope = d.scope
+             WHERE d.scope = {{}}
+               AND d.key_name = {{}}
+               AND sv.scope = {{}}
+               AND sv.scope_id IN ({placeholders})"
+        );
+        let mut args = vec![
+            SqlArg::Text(scope.to_string()),
+            SqlArg::Text(key_name.to_string()),
+            SqlArg::Text(scope.to_string()),
+        ];
+        args.extend(scope_ids.iter().cloned().map(SqlArg::Text));
+
+        let rows = SqlRuntime::fetch_all(exec, &sql, &args).await?;
+        let mut values = Vec::with_capacity(rows.len());
+        for row in rows.iter() {
+            let record = decode_settings_row(row, encryption_key.as_ref())?;
+            if let Some(scope_id) = record.scope_id {
+                values.push((scope_id, record.effective_value_json));
+            }
+        }
+        Ok(values)
+    }
+
     async fn upsert_setting_json(
         &self,
         scope: &str,

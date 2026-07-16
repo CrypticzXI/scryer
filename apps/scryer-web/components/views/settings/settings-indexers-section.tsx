@@ -1,7 +1,20 @@
 import * as React from "react";
-import { Edit, Lock, MonitorCog, Plus, Power, PowerOff, RefreshCw, Trash2 } from "lucide-react";
+import {
+  Edit,
+  Lock,
+  Plus,
+  Power,
+  PowerOff,
+  RefreshCw,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
+import { AddNewButton } from "@/components/common/add-new-button";
+import { PluginVisualLabel } from "@/components/common/plugin-visual";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox, CheckboxField } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -26,16 +39,14 @@ import { visibleIndexerConfigFields } from "@/lib/types";
 import type {
   IndexerRecord,
   IndexerDraft,
+  IndexerProxyDraft,
+  IndexerProxyRecord,
   ProviderTypeInfo,
   ConfigFieldDef,
 } from "@/lib/types";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 
 type SettingsIndexersSectionProps = {
   editingIndexerId: string | null;
@@ -49,6 +60,21 @@ type SettingsIndexersSectionProps = {
   settingsIndexerFilter: string;
   setSettingsIndexerFilter: (value: string) => void;
   settingsIndexers: IndexerRecord[];
+  indexerProxyConfigs: IndexerProxyRecord[];
+  indexerProxyDraft: IndexerProxyDraft;
+  setIndexerProxyDraft: React.Dispatch<React.SetStateAction<IndexerProxyDraft>>;
+  editingProxyId: string | null;
+  isProxyEditorOpen: boolean;
+  mutatingProxyId: string | null;
+  testingProxyId: string | null;
+  submitIndexerProxy: (
+    event: React.FormEvent<HTMLFormElement>,
+  ) => Promise<void> | void;
+  resetIndexerProxyDraft: () => void;
+  startCreateIndexerProxy: () => void;
+  editIndexerProxy: (proxy: IndexerProxyRecord) => void;
+  testIndexerProxy: (proxy: IndexerProxyRecord) => Promise<void> | void;
+  deleteIndexerProxy: (proxy: IndexerProxyRecord) => Promise<void> | void;
   editIndexer: (indexer: IndexerRecord) => void;
   toggleIndexerEnabled: (indexer: IndexerRecord) => Promise<void> | void;
   deleteIndexer: (indexer: IndexerRecord) => Promise<void> | void;
@@ -66,15 +92,6 @@ const FALLBACK_PROVIDER_OPTIONS = [
   { value: "newznab", label: "Newznab Indexer" },
 ];
 
-const INDEXER_PROVIDER_LOGOS: Record<string, string> = {
-  nzbgeek: "/media-sites/nzbgeek.svg",
-  prowlarr: "/media-sites/prowlarr.svg",
-};
-
-function getProviderLogoSrc(value: string) {
-  return INDEXER_PROVIDER_LOGOS[value.trim().toLowerCase()];
-}
-
 function formatIndexerProviderTypeLabel(
   providerType: string,
   t: ReturnType<typeof useTranslate>,
@@ -91,19 +108,13 @@ function formatIndexerProviderTypeLabel(
 
 function IndexerProviderTypeCell({ providerType }: { providerType: string }) {
   const t = useTranslate();
-  const logoSrc = getProviderLogoSrc(providerType);
   return (
-    <div className="inline-flex items-center gap-2">
-      {logoSrc ? (
-        <img
-          src={logoSrc}
-          alt=""
-          aria-hidden="true"
-          className="h-4 w-4 object-contain"
-        />
-      ) : null}
-      <span>{formatIndexerProviderTypeLabel(providerType, t)}</span>
-    </div>
+    <PluginVisualLabel
+      providerType={providerType}
+      pluginType="indexer"
+      label={formatIndexerProviderTypeLabel(providerType, t)}
+      logoClassName="h-5 w-5 rounded-[6px]"
+    />
   );
 }
 
@@ -113,7 +124,7 @@ function IndexerActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<
     BoxedActionButtonTone,
@@ -121,21 +132,9 @@ function IndexerActionButton({
   >;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={label}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
-      {...props}
-    >
+    <IconButton label={label} tone={tone} className={className} {...props}>
       {children}
-    </Button>
+    </IconButton>
   );
 }
 
@@ -165,6 +164,14 @@ function formatRelativeTime(isoDate: string): string {
   return relative;
 }
 
+function formatIndexerProxyHealth(status: string | null | undefined): string {
+  if (!status) return "Unknown";
+  const normalized = status.toLowerCase();
+  if (normalized === "healthy") return "Healthy";
+  if (normalized === "unhealthy") return "Unhealthy";
+  return "Unknown";
+}
+
 function IndexerStatusCell({ indexer }: { indexer: IndexerRecord }) {
   const t = useTranslate();
   if (!indexer.isEnabled) {
@@ -176,7 +183,7 @@ function IndexerStatusCell({ indexer }: { indexer: IndexerRecord }) {
     if (until > new Date()) {
       return (
         <span
-          className="text-yellow-600 dark:text-yellow-400"
+          className="text-[var(--scry-warning-text)]"
           title={indexer.disabledUntil}
         >
           {t("settings.indexerDisabledUntil", {
@@ -190,7 +197,7 @@ function IndexerStatusCell({ indexer }: { indexer: IndexerRecord }) {
   if (indexer.lastErrorAt) {
     return (
       <span
-        className="text-red-600 dark:text-red-400"
+        className="text-[var(--scry-danger-text-soft)]"
         title={indexer.lastErrorAt}
       >
         {t("settings.indexerLastError", {
@@ -236,32 +243,24 @@ function DynamicConfigField({
     </span>
   ) : null;
 
-  if (field.fieldType === "bool") {
+  if (field.fieldType === "BOOL") {
     return (
-      <label className="flex items-center gap-2">
-        <input
-          id={fieldId}
-          type="checkbox"
-          checked={value === "true"}
-          onChange={(e) =>
-            onChange(field.key, e.target.checked ? "true" : "false")
-          }
-          className="accent-primary"
-        />
-        <span className="inline-flex items-center gap-2 text-sm">
-          {field.label}
-          {requiredMarker}
-        </span>
-        {field.helpText ? (
-          <span className="text-xs text-muted-foreground">
-            {field.helpText}
-          </span>
-        ) : null}
-      </label>
+      <CheckboxField
+        id={fieldId}
+        checked={value === "true"}
+        onCheckedChange={(checkedValue) =>
+          onChange(field.key, checkedValue === true ? "true" : "false")
+        }
+        label={field.label}
+        labelAccessory={requiredMarker}
+        description={field.helpText}
+        className="items-center"
+        checkboxClassName="mt-0"
+      />
     );
   }
 
-  if (field.fieldType === "select" && field.options.length > 0) {
+  if (field.fieldType === "SELECT" && field.options.length > 0) {
     return (
       <label>
         <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -290,7 +289,7 @@ function DynamicConfigField({
     );
   }
 
-  if (field.fieldType === "multiline") {
+  if (field.fieldType === "MULTILINE") {
     return (
       <label>
         <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -322,11 +321,11 @@ function DynamicConfigField({
         id={fieldId}
         value={value}
         onChange={(e) => onChange(field.key, e.target.value)}
-        {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
+        {...(field.fieldType === "NUMBER" ? signedIntegerInputProps : {})}
         type={
-          field.fieldType === "password"
+          field.fieldType === "PASSWORD"
             ? "password"
-            : field.fieldType === "number"
+            : field.fieldType === "NUMBER"
               ? "number"
               : "text"
         }
@@ -354,6 +353,19 @@ export function SettingsIndexersSection({
   settingsIndexerFilter,
   setSettingsIndexerFilter,
   settingsIndexers,
+  indexerProxyConfigs,
+  indexerProxyDraft,
+  setIndexerProxyDraft,
+  editingProxyId,
+  isProxyEditorOpen,
+  mutatingProxyId,
+  testingProxyId,
+  submitIndexerProxy,
+  resetIndexerProxyDraft,
+  startCreateIndexerProxy,
+  editIndexerProxy,
+  testIndexerProxy,
+  deleteIndexerProxy,
   editIndexer,
   toggleIndexerEnabled,
   deleteIndexer,
@@ -384,6 +396,23 @@ export function SettingsIndexersSection({
     }
     return counts;
   }, [settingsIndexers]);
+  const proxiesById = React.useMemo(() => {
+    return new Map(indexerProxyConfigs.map((proxy) => [proxy.id, proxy]));
+  }, [indexerProxyConfigs]);
+  const selectedIndexerProxyId = indexerDraft.indexerProxyConfigId;
+  const selectedIndexerProxy = selectedIndexerProxyId
+    ? proxiesById.get(selectedIndexerProxyId) ?? null
+    : null;
+  const selectedIndexerProxyMissing =
+    Boolean(selectedIndexerProxyId) && !selectedIndexerProxy;
+  const selectableIndexerProxies = React.useMemo(() => {
+    if (!selectedIndexerProxyId) {
+      return indexerProxyConfigs.filter((proxy) => proxy.isEnabled);
+    }
+    return indexerProxyConfigs.filter(
+      (proxy) => proxy.isEnabled || proxy.id === selectedIndexerProxyId,
+    );
+  }, [indexerProxyConfigs, selectedIndexerProxyId]);
 
   // Build provider type options from loaded plugins, falling back to hardcoded list
   const providerTypeOptions = React.useMemo(() => {
@@ -423,7 +452,7 @@ export function SettingsIndexersSection({
       visibleIndexerConfigFields(
         normalizedProviderType,
         (selectedProvider?.configFields ?? []).filter(
-          (field) => field.valueSource !== "host_binding",
+          (field) => field.valueSource !== "HOST_BINDING",
         ),
       ),
     [normalizedProviderType, selectedProvider],
@@ -453,11 +482,11 @@ export function SettingsIndexersSection({
           prev.name === (previousProvider?.name ?? prev.providerType);
         const nextConfigValues: Record<string, string> = {};
         for (const field of nextProvider?.configFields ?? []) {
-          if (field.valueSource === "host_binding") {
+          if (field.valueSource === "HOST_BINDING") {
             continue;
           }
           nextConfigValues[field.key] =
-            field.defaultValue ?? (field.fieldType === "bool" ? "false" : "");
+            field.defaultValue ?? (field.fieldType === "BOOL" ? "false" : "");
         }
         return {
           ...prev,
@@ -472,11 +501,216 @@ export function SettingsIndexersSection({
   );
 
   return (
-    <div id="settings-indexers-section" className="space-y-4 text-sm">
-      <CardTitle className="flex items-center gap-2 text-base">
-        <MonitorCog className="h-4 w-4" />
-        {t("settings.indexerProviderSection")}
-      </CardTitle>
+    <div id="settings-indexers-section" className="flex flex-col gap-4 text-sm">
+      <div id="settings-indexer-proxies-panel" className="order-last space-y-4">
+      <div id="settings-indexer-proxies-card" className="rounded border border-border">
+        <div className="flex items-center justify-between border-b border-border px-3 py-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            Indexer proxies
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2 py-0.5 text-xs font-medium text-[var(--scry-warning-text)]">
+              <TriangleAlert className="h-3.5 w-3.5" />
+              Beta
+            </span>
+          </CardTitle>
+        </div>
+        <div className="overflow-x-auto">
+          <Table id="settings-indexer-proxies-table">
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("label.name")}</TableHead>
+                <TableHead>{t("settings.baseUrl")}</TableHead>
+                <TableHead className="text-center">{t("label.enabled")}</TableHead>
+                <TableHead>Health</TableHead>
+                <TableHead>Last error</TableHead>
+                <TableHead className="text-right">{t("label.actions")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {indexerProxyConfigs.map((proxy) => (
+                <TableRow key={proxy.id} id={selectorId("settings-indexer-proxy-row", proxy.name)}>
+                  <TableCell className="font-medium">{proxy.name}</TableCell>
+                  <TableCell className="max-w-[280px] truncate">{proxy.baseUrl}</TableCell>
+                  <TableCell className="text-center">
+                    <RenderBooleanIcon
+                      value={proxy.isEnabled}
+                      label={`${t("label.enabled")}: ${proxy.name}`}
+                    />
+                  </TableCell>
+                  <TableCell>{formatIndexerProxyHealth(proxy.lastHealthStatus)}</TableCell>
+                  <TableCell>
+                    {proxy.lastErrorAt ? (
+                      <span title={proxy.lastErrorAt}>
+                        {formatRelativeTime(proxy.lastErrorAt)}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
+                      <IndexerActionButton
+                        id={selectorId("settings-indexer-proxy-test", proxy.name)}
+                        tone="search"
+                        onClick={() => void testIndexerProxy(proxy)}
+                        disabled={testingProxyId === proxy.id || mutatingProxyId === proxy.id}
+                        label="Test"
+                      >
+                        <RefreshCw
+                          className={cn(
+                            "h-4 w-4",
+                            testingProxyId === proxy.id && "animate-spin",
+                          )}
+                        />
+                      </IndexerActionButton>
+                      <IndexerActionButton
+                        id={selectorId("settings-indexer-proxy-edit", proxy.name)}
+                        tone="edit"
+                        onClick={() => editIndexerProxy(proxy)}
+                        disabled={mutatingProxyId !== null}
+                        label={t("label.edit")}
+                      >
+                        <Edit className="h-4 w-4" />
+                      </IndexerActionButton>
+                      <IndexerActionButton
+                        id={selectorId("settings-indexer-proxy-delete", proxy.name)}
+                        tone="delete"
+                        onClick={() => void deleteIndexerProxy(proxy)}
+                        disabled={mutatingProxyId === proxy.id}
+                        label={t("label.delete")}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </IndexerActionButton>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {indexerProxyConfigs.length === 0 ? (
+                <TableRow id="settings-indexer-proxies-empty-row">
+                  <TableCell colSpan={6} className="text-muted-foreground">
+                    No indexer proxies configured.
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+      {isProxyEditorOpen ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              {editingProxyId ? "Update indexer proxy" : "Connect indexer proxy"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+        <form
+          id="settings-indexer-proxy-form"
+          className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_10rem_auto_auto]"
+          onSubmit={submitIndexerProxy}
+        >
+          <label>
+            <Label className="mb-2 block" htmlFor="settings-indexer-proxy-name">
+              {t("label.name")}
+            </Label>
+            <Input
+              id="settings-indexer-proxy-name"
+              value={indexerProxyDraft.name}
+              onChange={(event) =>
+                setIndexerProxyDraft((prev) => ({
+                  ...prev,
+                  name: event.target.value,
+                }))
+              }
+              required
+            />
+          </label>
+          <label>
+            <Label className="mb-2 block" htmlFor="settings-indexer-proxy-base-url">
+              {t("settings.baseUrl")}
+            </Label>
+            <Input
+              id="settings-indexer-proxy-base-url"
+              value={indexerProxyDraft.baseUrl}
+              onChange={(event) =>
+                setIndexerProxyDraft((prev) => ({
+                  ...prev,
+                  baseUrl: event.target.value,
+                }))
+              }
+              required
+            />
+          </label>
+          <label>
+            <Label className="mb-2 block" htmlFor="settings-indexer-proxy-timeout">
+              Timeout
+            </Label>
+            <Input
+              id="settings-indexer-proxy-timeout"
+              min={1}
+              max={180}
+              {...signedIntegerInputProps}
+              value={indexerProxyDraft.requestTimeoutSeconds}
+              onChange={(event) =>
+                setIndexerProxyDraft((prev) => ({
+                  ...prev,
+                  requestTimeoutSeconds:
+                    Number.parseInt(event.target.value, 10) || 1,
+                }))
+              }
+            />
+          </label>
+          <label className="flex items-center gap-2 self-end pb-2">
+            <Checkbox
+              id="settings-indexer-proxy-enabled"
+              checked={indexerProxyDraft.isEnabled}
+              onCheckedChange={(value) =>
+                setIndexerProxyDraft((prev) => ({
+                  ...prev,
+                  isEnabled: value === true,
+                }))
+              }
+            />
+            <span>{t("label.enabled")}</span>
+          </label>
+          <div className="flex items-end gap-2">
+            <Button
+              id="settings-indexer-proxy-save"
+              type="submit"
+              disabled={mutatingProxyId !== null}
+            >
+              {mutatingProxyId
+                ? t("label.saving")
+                : editingProxyId
+                  ? "Update proxy"
+                  : "Create proxy"}
+            </Button>
+            {editingProxyId ? (
+              <Button
+                id="settings-indexer-proxy-cancel"
+                type="button"
+                variant="outline"
+                onClick={resetIndexerProxyDraft}
+                disabled={mutatingProxyId !== null}
+              >
+                {t("label.cancel")}
+              </Button>
+            ) : null}
+          </div>
+        </form>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="flex justify-center">
+          <AddNewButton
+            id="settings-indexer-proxy-create"
+            icon={Plus}
+            label="Connect indexer proxy"
+            onClick={startCreateIndexerProxy}
+            disabled={mutatingProxyId !== null}
+          />
+        </div>
+      )}
+      </div>
 
       <div id="settings-indexers-table-card" className="rounded border border-border">
         <div className="flex items-center justify-between border-b border-border px-3 py-2">
@@ -498,6 +732,7 @@ export function SettingsIndexersSection({
                 <TableHead>{t("label.name")}</TableHead>
                 <TableHead>{t("settings.indexerProvider")}</TableHead>
                 <TableHead>{t("settings.baseUrl")}</TableHead>
+                <TableHead>Proxy</TableHead>
                 <TableHead className="text-center">
                   {t("label.enabled")}
                 </TableHead>
@@ -519,6 +754,9 @@ export function SettingsIndexersSection({
                   ? indexersById.get(indexer.managedParentConfigId)?.name
                   : null;
                 const managedChildCount = managedChildCounts.get(indexer.id) ?? 0;
+                const assignedProxy = indexer.indexerProxyConfigId
+                  ? proxiesById.get(indexer.indexerProxyConfigId) ?? null
+                  : null;
                 return (
                 <TableRow
                   key={indexer.id}
@@ -530,7 +768,7 @@ export function SettingsIndexersSection({
                       <div className="font-medium">{indexer.name}</div>
                       {indexer.isManaged ? (
                         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                          <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 font-medium text-amber-700 dark:border-amber-500/35 dark:bg-amber-500/12 dark:text-amber-200">
+                          <span className="inline-flex items-center gap-1 rounded-full border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] px-2 py-0.5 font-medium text-[var(--scry-warning-text)]">
                             <Lock className="h-3 w-3" />
                             {t("settings.managedIndexerBadge")}
                           </span>
@@ -556,6 +794,25 @@ export function SettingsIndexersSection({
                   </TableCell>
                   <TableCell className="max-w-[260px] truncate">
                     {indexer.baseUrl}
+                  </TableCell>
+                  <TableCell>
+                    {assignedProxy ? (
+                      <span
+                        className={cn(
+                          "font-medium",
+                          !assignedProxy.isEnabled &&
+                            "text-[var(--scry-warning-text)]",
+                        )}
+                      >
+                        {assignedProxy.name}
+                      </span>
+                    ) : indexer.indexerProxyConfigId ? (
+                      <span className="text-[var(--scry-warning-text)]">
+                        Missing proxy
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">Direct</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-center">
                     <RenderBooleanIcon
@@ -672,7 +929,7 @@ export function SettingsIndexersSection({
               })}
               {settingsIndexers.length === 0 ? (
                 <TableRow id="settings-indexers-empty-row">
-                  <TableCell colSpan={8} className="text-muted-foreground">
+                  <TableCell colSpan={9} className="text-muted-foreground">
                     {t("settings.noIndexersFound")}
                   </TableCell>
                 </TableRow>
@@ -706,12 +963,28 @@ export function SettingsIndexersSection({
                   <SelectTrigger id="settings-indexer-provider-type" className="w-full">
                     <SelectValue
                       placeholder={t("form.providerTypePlaceholder")}
-                    />
+                    >
+                      {normalizedProviderType ? (
+                        <PluginVisualLabel
+                          providerType={normalizedProviderType}
+                          pluginType="indexer"
+                          label={
+                            providerTypeOptions.find(
+                              (option) => option.value === normalizedProviderType,
+                            )?.label ?? formatIndexerProviderTypeLabel(normalizedProviderType, t)
+                          }
+                        />
+                      ) : null}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {providerTypeOptions.map((opt) => (
                       <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
+                        <PluginVisualLabel
+                          providerType={opt.value}
+                          pluginType="indexer"
+                          label={opt.label}
+                        />
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -734,6 +1007,48 @@ export function SettingsIndexersSection({
               </label>
             </div>
 
+            <div className="space-y-2">
+              <Label className="block" htmlFor="settings-indexer-proxy-select">
+                Indexer proxy
+              </Label>
+              <Select
+                value={selectedIndexerProxyId ?? "none"}
+                onValueChange={(value) =>
+                  setIndexerDraft((prev: IndexerDraft) => ({
+                    ...prev,
+                    indexerProxyConfigId: value === "none" ? null : value,
+                  }))
+                }
+              >
+                <SelectTrigger id="settings-indexer-proxy-select" className="w-full">
+                  <SelectValue placeholder="Direct (no proxy)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Direct (no proxy)</SelectItem>
+                  {selectedIndexerProxyMissing ? (
+                    <SelectItem value={selectedIndexerProxyId ?? "missing"} disabled>
+                      Missing proxy
+                    </SelectItem>
+                  ) : null}
+                  {selectableIndexerProxies.map((proxy) => (
+                    <SelectItem key={proxy.id} value={proxy.id}>
+                      {proxy.name}
+                      {proxy.isEnabled ? "" : " (disabled)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedIndexerProxyMissing ? (
+                <p className="text-xs text-[var(--scry-warning-text)]">
+                  Assigned proxy was not found.
+                </p>
+              ) : selectedIndexerProxy && !selectedIndexerProxy.isEnabled ? (
+                <p className="text-xs text-[var(--scry-warning-text)]">
+                  Assigned proxy is disabled.
+                </p>
+              ) : null}
+            </div>
+
             {selectedProviderFields.length > 0 ? (
               <div className="space-y-3">
                 <Label className="text-sm font-medium">
@@ -741,7 +1056,7 @@ export function SettingsIndexersSection({
                 </Label>
                 <div className="grid gap-3 md:grid-cols-3">
                   {selectedProviderFields
-                    .filter((f) => f.fieldType !== "bool")
+                    .filter((f) => f.fieldType !== "BOOL")
                     .map((field) => (
                       <DynamicConfigField
                         key={field.key}
@@ -758,10 +1073,10 @@ export function SettingsIndexersSection({
                       />
                     ))}
                 </div>
-                {selectedProviderFields.some((f) => f.fieldType === "bool") ? (
+                {selectedProviderFields.some((f) => f.fieldType === "BOOL") ? (
                   <div className="flex items-center gap-6">
                     {selectedProviderFields
-                      .filter((f) => f.fieldType === "bool")
+                      .filter((f) => f.fieldType === "BOOL")
                       .map((field) => (
                         <DynamicConfigField
                           key={field.key}
@@ -789,34 +1104,30 @@ export function SettingsIndexersSection({
             ) : (
               <div className="flex items-center gap-6">
                 <label className="flex items-center gap-2">
-                  <input
+                  <Checkbox
                     id="settings-indexer-enable-interactive-search"
-                    type="checkbox"
                     checked={indexerDraft.enableInteractiveSearch}
-                    onChange={(event) =>
+                    onCheckedChange={(value) =>
                       setIndexerDraft((prev: IndexerDraft) => ({
                         ...prev,
-                        enableInteractiveSearch: event.target.checked,
+                        enableInteractiveSearch: value === true,
                       }))
                     }
-                    className="accent-primary"
                   />
                   <span className="text-sm">
                     {t("settings.indexerInteractiveSearch")}
                   </span>
                 </label>
                 <label className="flex items-center gap-2">
-                  <input
+                  <Checkbox
                     id="settings-indexer-enable-auto-search"
-                    type="checkbox"
                     checked={indexerDraft.enableAutoSearch}
-                    onChange={(event) =>
+                    onCheckedChange={(value) =>
                       setIndexerDraft((prev: IndexerDraft) => ({
                         ...prev,
-                        enableAutoSearch: event.target.checked,
+                        enableAutoSearch: value === true,
                       }))
                     }
-                    className="accent-primary"
                   />
                   <span className="text-sm">
                     {t("settings.indexerAutoSearch")}
@@ -857,32 +1168,24 @@ export function SettingsIndexersSection({
           </Card>
           {isEditing ? (
             <div className="flex justify-center">
-              <Button
+              <AddNewButton
                 id="settings-indexer-create"
-                type="button"
-                size="lg"
+                icon={Plus}
+                label={t("settings.indexerCreateNew")}
                 onClick={startCreateIndexer}
                 disabled={mutatingIndexerId !== null}
-                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-              >
-                <Plus className="h-5 w-5" />
-                {t("settings.indexerCreateNew")}
-              </Button>
+              />
             </div>
           ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-indexer-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("settings.indexerCreateNew")}
             onClick={startCreateIndexer}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("settings.indexerCreateNew")}
-          </Button>
+          />
         </div>
       )}
     </div>

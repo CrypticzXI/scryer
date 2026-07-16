@@ -11,6 +11,7 @@ use crate::mappers::{
     from_resolve_pending_import_result,
 };
 use crate::types::*;
+use crate::utils::map_add_input;
 
 static RENAME_IDEMPOTENCY_KEYS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -46,16 +47,7 @@ fn claim_rename_idempotency_key(scope: &str, key: Option<String>) -> GqlResult<O
 fn library_settings_draft(
     input: LibrarySettingsInput,
 ) -> GqlResult<scryer_application::LibrarySettingsOverrideDraft> {
-    let import_mode = input
-        .import_mode
-        .map(|value| {
-            scryer_domain::ImportMode::from_setting(&value).map_err(|message| {
-                to_gql_error(AppError::Validation(format!(
-                    "invalid importMode: {message}"
-                )))
-            })
-        })
-        .transpose()?;
+    let import_mode = input.import_mode.map(scryer_domain::ImportMode::from);
 
     Ok(scryer_application::LibrarySettingsOverrideDraft {
         required_audio_languages: input.required_audio_languages,
@@ -66,14 +58,22 @@ fn library_settings_draft(
         scoring_persona: input
             .scoring_persona
             .map(ScoringPersonaValue::into_application),
-        filler_policy: input.filler_policy,
-        recap_policy: input.recap_policy,
+        filler_policy: input
+            .filler_policy
+            .map(|policy| policy.as_app_str().to_string()),
+        recap_policy: input
+            .recap_policy
+            .map(|policy| policy.as_app_str().to_string()),
         monitor_specials: input.monitor_specials,
         inter_season_movies: input.inter_season_movies,
         monitor_filler_movies: input.monitor_filler_movies,
         nfo_write_on_import: input.nfo_write_on_import,
         plexmatch_write_on_import: input.plexmatch_write_on_import,
         import_mode,
+        set_permissions_linux: input.set_permissions_linux,
+        file_chmod: input.file_chmod,
+        folder_chmod: input.folder_chmod,
+        chown_group: input.chown_group,
         indexer_routing: input.indexer_routing.map(|entries| {
             entries
                 .into_iter()
@@ -171,14 +171,10 @@ impl LibraryMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let id = id.to_string();
-        let deleted = app
-            .delete_library(&actor, &id)
+        app.delete_library(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteLibraryPayload {
-            id: ID::from(id),
-            deleted,
-        })
+        Ok(DeleteLibraryPayload { id: ID::from(id) })
     }
 
     async fn scan_library(
@@ -245,8 +241,18 @@ impl LibraryMutations {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let pending_import_id = input.pending_import_id.to_string();
+        let mut title_input = input.title;
+        title_input.library_id = None;
+        title_input.monitored = false;
+        title_input.tags.clear();
+        title_input.options = None;
+        title_input.source_hint = None;
+        title_input.source_kind = None;
+        title_input.source_title = None;
+        title_input.min_availability = None;
+        let request = map_add_input(title_input, None)?;
         let result = app
-            .resolve_pending_import(&actor, &pending_import_id, &input.tvdb_id)
+            .resolve_pending_import(&actor, &pending_import_id, request)
             .await
             .map_err(to_gql_error)?;
         Ok(from_resolve_pending_import_result(result))
@@ -352,7 +358,6 @@ impl LibraryMutations {
         .map_err(to_gql_error)?;
         Ok(DeleteMediaFilePayload {
             id: ID::from(file_id),
-            deleted: true,
         })
     }
 
@@ -413,7 +418,6 @@ impl LibraryMutations {
         Ok(RehydrateAllMetadataPayload {
             language,
             titles_cleared: i64::try_from(cleared).unwrap_or(i64::MAX),
-            accepted: true,
         })
     }
 }

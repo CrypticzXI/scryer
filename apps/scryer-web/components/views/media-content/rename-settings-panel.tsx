@@ -1,4 +1,6 @@
 import * as React from "react";
+import { createPortal } from "react-dom";
+import { FileText, Folder, Save } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
 import type { Translate } from "@/components/root/types";
 import { Button } from "@/components/ui/button";
@@ -9,30 +11,47 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
+  applyRenameTokenFilters,
   applyRenameTemplatePreview,
+  parseRenameTemplateTokenSpec,
   splitRenameTemplateSegments,
   validateRenameTemplateSyntax,
   type RenameTemplateSegment,
   type RenameTemplateValidationIssue,
 } from "@/lib/utils/rename-template";
+import { FACET_REFERENCE_SLOT_ID } from "./facet-settings-section";
 import type { ViewCategoryId } from "./indexer-category-picker";
 
 const RENAME_COLLISION_POLICY_OPTIONS = [
-  { value: "skip", label: "settings.renameCollisionPolicySkip" },
-  { value: "error", label: "settings.renameCollisionPolicyError" },
-  { value: "replace_if_better", label: "settings.renameCollisionPolicyReplaceIfBetter" },
+  { value: "SKIP", label: "settings.renameCollisionPolicySkip" },
+  { value: "ERROR", label: "settings.renameCollisionPolicyError" },
+  { value: "REPLACE_IF_BETTER", label: "settings.renameCollisionPolicyReplaceIfBetter" },
 ];
 
 const RENAME_MISSING_METADATA_POLICY_OPTIONS = [
-  { value: "fallback_title", label: "settings.renameMissingMetadataPolicyFallbackTitle" },
-  { value: "skip", label: "settings.renameMissingMetadataPolicySkip" },
+  { value: "FALLBACK_TITLE", label: "settings.renameMissingMetadataPolicyFallbackTitle" },
+  { value: "SKIP", label: "settings.renameMissingMetadataPolicySkip" },
 ];
 
-const VALID_RENAME_TOKENS = new Set([
-  "title", "year", "quality", "edition", "source",
+const COMMON_RENAME_TOKENS = [
+  "title", "year", "quality", "source",
   "video_codec", "audio_codec", "audio_channels", "group", "ext",
-  "season", "season_order", "episode", "episode_title", "absolute_episode",
+];
+const EXTERNAL_ID_RENAME_TOKENS = [
   "imdb_id", "tmdb_id", "tvdb_id", "anidb_id", "mal_id", "anilist_id",
+];
+const EPISODE_RENAME_TOKENS = [
+  "season", "season_order", "episode", "episode_title", "absolute_episode",
+];
+const VALID_MOVIE_RENAME_TOKENS = new Set([
+  ...COMMON_RENAME_TOKENS,
+  "edition",
+  ...EXTERNAL_ID_RENAME_TOKENS,
+]);
+const VALID_EPISODE_RENAME_TOKENS = new Set([
+  ...COMMON_RENAME_TOKENS,
+  ...EPISODE_RENAME_TOKENS,
+  ...EXTERNAL_ID_RENAME_TOKENS,
 ]);
 const VALID_FOLDER_TOKENS = new Set([
   "title", "year",
@@ -52,6 +71,7 @@ const FOLDER_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
 
 const SHARED_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
   { token: "title", labelKey: "settings.renameTokenTitle" },
+  { token: "year", labelKey: "settings.renameTokenYear" },
   { token: "quality", labelKey: "settings.renameTokenQuality" },
   { token: "source", labelKey: "settings.renameTokenSource" },
   { token: "video_codec", labelKey: "settings.renameTokenVideoCodec" },
@@ -62,7 +82,6 @@ const SHARED_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = 
 ];
 
 const MOVIE_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
-  { token: "year", labelKey: "settings.renameTokenYear" },
   { token: "edition", labelKey: "settings.renameTokenEdition" },
 ];
 
@@ -77,7 +96,9 @@ const EXTERNAL_ID_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }
 
 const SERIES_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
   { token: "season", labelKey: "settings.renameTokenSeason" },
+  { token: "season_order", labelKey: "settings.renameTokenSeasonOrder" },
   { token: "episode", labelKey: "settings.renameTokenEpisode" },
+  { token: "absolute_episode", labelKey: "settings.renameTokenAbsoluteEpisode" },
   { token: "episode_title", labelKey: "settings.renameTokenEpisodeTitle" },
 ];
 
@@ -94,24 +115,93 @@ type TokenDescription = {
   labelKey: string;
 };
 
+const RENAME_SPACE_FILTER_REFERENCES: { code: string; labelKey: string }[] = [
+  { code: "space:_", labelKey: "settings.renameSpaceUnderscoreFilterLabel" },
+  { code: "space:.", labelKey: "settings.renameSpaceDotFilterLabel" },
+  { code: "space:-", labelKey: "settings.renameSpaceDashFilterLabel" },
+  { code: "space:", labelKey: "settings.renameSpaceRemoveFilterLabel" },
+];
+
+type TokenApplicability = "files" | "folders";
+
+type TokenReference = TokenDescription & {
+  appliesTo: TokenApplicability[];
+};
+
+type TemplateFilterSuggestion = {
+  code: string;
+  insert: string;
+  labelKey: string;
+  aliases?: string[];
+  selectStart?: number;
+  selectEnd?: number;
+};
+
+const RENAME_FILTER_AUTOCOMPLETE_SUGGESTIONS: TemplateFilterSuggestion[] = [
+  {
+    code: "truncate:N",
+    insert: "truncate:N",
+    labelKey: "settings.renameTruncateFilterLabel",
+    aliases: ["length", "size"],
+    selectStart: "truncate:".length,
+    selectEnd: "truncate:N".length,
+  },
+  ...RENAME_SPACE_FILTER_REFERENCES.map((item) => ({
+    code: item.code,
+    insert: item.code,
+    labelKey: item.labelKey,
+  })),
+];
+
 function getRenameTokenDescriptions(scopeId: ViewCategoryId): { token: string; labelKey: string }[] {
-  const scopeSpecific = scopeId === "movie"
+  const scopeSpecific = scopeId === "MOVIE"
     ? MOVIE_RENAME_TOKEN_DESCRIPTIONS
-    : scopeId === "anime"
+    : scopeId === "ANIME"
       ? ANIME_RENAME_TOKEN_DESCRIPTIONS
       : SERIES_RENAME_TOKEN_DESCRIPTIONS;
-  const shared = scopeId === "series"
+  const shared = scopeId === "SERIES"
     ? SHARED_RENAME_TOKEN_DESCRIPTIONS.filter((token) => token.token !== "group")
     : SHARED_RENAME_TOKEN_DESCRIPTIONS;
   return [...scopeSpecific, ...EXTERNAL_ID_RENAME_TOKEN_DESCRIPTIONS, ...shared];
 }
 
+function getValidRenameTokens(scopeId: ViewCategoryId): ReadonlySet<string> {
+  return scopeId === "MOVIE"
+    ? VALID_MOVIE_RENAME_TOKENS
+    : VALID_EPISODE_RENAME_TOKENS;
+}
+
+function getRenameReferenceTokens(
+  renameTokenDescriptions: TokenDescription[],
+): TokenReference[] {
+  const tokens = new Map<string, TokenReference>();
+  const addToken = (item: TokenDescription, appliesTo: TokenApplicability) => {
+    const existing = tokens.get(item.token);
+    if (existing) {
+      if (!existing.appliesTo.includes(appliesTo)) {
+        existing.appliesTo.push(appliesTo);
+      }
+      return;
+    }
+    tokens.set(item.token, {
+      ...item,
+      appliesTo: [appliesTo],
+    });
+  };
+
+  FOLDER_TOKEN_DESCRIPTIONS.forEach((item) => addToken(item, "folders"));
+  renameTokenDescriptions.forEach((item) => addToken(item, "files"));
+
+  return Array.from(tokens.values());
+}
+
 function validateRenameTemplate(
   template: string,
+  scopeId: ViewCategoryId,
   t: Translate,
 ): string | null {
   return formatRenameValidationIssue(
-    validateRenameTemplateSyntax(template, VALID_RENAME_TOKENS),
+    validateRenameTemplateSyntax(template, getValidRenameTokens(scopeId)),
     t,
   );
 }
@@ -159,9 +249,14 @@ function validateFolderTemplate(
       if (inner.includes("{")) {
         return t("settings.renameValidationUnmatchedOpen");
       }
-      const tokenName = inner.includes(":") ? inner.split(":")[0] : inner;
-      if (!VALID_FOLDER_TOKENS.has(tokenName)) {
-        return t("settings.folderValidationUnknownToken", { token: tokenName });
+      const parsed = parseRenameTemplateTokenSpec(inner);
+      if (!parsed.ok) {
+        return parsed.kind === "invalidFilter"
+          ? t("settings.renameValidationInvalidFilter", { filter: parsed.value })
+          : t("settings.folderValidationUnknownToken", { token: parsed.value });
+      }
+      if (!VALID_FOLDER_TOKENS.has(parsed.spec.lookupName)) {
+        return t("settings.folderValidationUnknownToken", { token: parsed.spec.tokenName });
       }
       i = closeIndex + 1;
     } else if (template[i] === "}") {
@@ -189,7 +284,8 @@ const RENAME_PREVIEW_SERIES_SAMPLE: Record<string, string> = {
   audio_channels: "2.0", group: "NTb", ext: "mkv",
   imdb_id: "tt0108778", tmdb_id: "1668", tvdb_id: "79168",
   anidb_id: "", mal_id: "", anilist_id: "",
-  season: "5", episode: "12", episode_title: "The One with the Embryos",
+  season: "5", season_order: "5", episode: "12",
+  absolute_episode: "97", episode_title: "The One with the Embryos",
 };
 
 const RENAME_PREVIEW_ANIME_SAMPLE: Record<string, string> = {
@@ -204,12 +300,12 @@ const RENAME_PREVIEW_ANIME_SAMPLE: Record<string, string> = {
 
 function applyRenameTemplate(template: string, scopeId: ViewCategoryId): string | null {
   const sampleValues =
-    scopeId === "movie"
+    scopeId === "MOVIE"
       ? RENAME_PREVIEW_MOVIE_SAMPLE
-      : scopeId === "anime"
+      : scopeId === "ANIME"
         ? RENAME_PREVIEW_ANIME_SAMPLE
         : RENAME_PREVIEW_SERIES_SAMPLE;
-  return applyRenameTemplatePreview(template, VALID_RENAME_TOKENS, sampleValues);
+  return applyRenameTemplatePreview(template, getValidRenameTokens(scopeId), sampleValues);
 }
 
 function applyFolderTemplate(template: string, scopeId: ViewCategoryId): string | null {
@@ -217,9 +313,9 @@ function applyFolderTemplate(template: string, scopeId: ViewCategoryId): string 
   let result = "";
   let i = 0;
   const sampleValues =
-    scopeId === "movie"
+    scopeId === "MOVIE"
       ? RENAME_PREVIEW_MOVIE_SAMPLE
-      : scopeId === "anime"
+      : scopeId === "ANIME"
         ? RENAME_PREVIEW_ANIME_SAMPLE
         : RENAME_PREVIEW_SERIES_SAMPLE;
   while (i < template.length) {
@@ -228,15 +324,13 @@ function applyFolderTemplate(template: string, scopeId: ViewCategoryId): string 
       if (closeIndex === -1) return null;
       const inner = template.slice(i + 1, closeIndex);
       if (inner.includes("{")) return null;
-      const colonIdx = inner.indexOf(":");
-      const tokenName = colonIdx >= 0 ? inner.slice(0, colonIdx) : inner;
-      const padWidth = colonIdx >= 0 ? parseInt(inner.slice(colonIdx + 1), 10) : 0;
-      if (!VALID_FOLDER_TOKENS.has(tokenName)) return null;
-      let value = sampleValues[tokenName] ?? tokenName;
-      if (padWidth > 0 && /^\d+$/.test(value)) {
-        value = value.padStart(padWidth, "0");
+      const parsed = parseRenameTemplateTokenSpec(inner);
+      if (!parsed.ok || !VALID_FOLDER_TOKENS.has(parsed.spec.lookupName)) return null;
+      let value = sampleValues[parsed.spec.lookupName] ?? parsed.spec.tokenName;
+      if (parsed.spec.padWidth > 0 && /^\d+$/.test(value)) {
+        value = value.padStart(parsed.spec.padWidth, "0");
       }
-      result += value;
+      result += applyRenameTokenFilters(value, parsed.spec.filters);
       i = closeIndex + 1;
     } else if (template[i] === "}") {
       return null;
@@ -261,7 +355,10 @@ function splitFolderTemplateSegments(template: string): RenameTemplateSegment[] 
       const closeIndex = template.indexOf("}", cursor + 1);
       if (closeIndex !== -1) {
         const inner = template.slice(cursor + 1, closeIndex);
-        if (!inner.includes("{")) {
+        const parsed = inner.includes("{")
+          ? null
+          : parseRenameTemplateTokenSpec(inner);
+        if (parsed?.ok && VALID_FOLDER_TOKENS.has(parsed.spec.lookupName)) {
           segments.push({
             text: template.slice(cursor, closeIndex + 1),
             isToken: true,
@@ -289,8 +386,11 @@ function splitFolderTemplateSegments(template: string): RenameTemplateSegment[] 
   return segments.filter((segment) => segment.text.length > 0);
 }
 
-function splitRenameInputSegments(template: string): RenameTemplateSegment[] {
-  return splitRenameTemplateSegments(template, VALID_RENAME_TOKENS);
+function splitRenameInputSegments(
+  template: string,
+  scopeId: ViewCategoryId,
+): RenameTemplateSegment[] {
+  return splitRenameTemplateSegments(template, getValidRenameTokens(scopeId));
 }
 
 type HighlightedTemplateInputProps = React.ComponentProps<typeof Input> & {
@@ -299,6 +399,7 @@ type HighlightedTemplateInputProps = React.ComponentProps<typeof Input> & {
 };
 
 type TemplateTokenContext = {
+  kind: "token" | "filter";
   key: string;
   query: string;
   replaceStart: number;
@@ -359,15 +460,32 @@ function resolveTemplateTokenContext(
     return null;
   }
 
+  const nextOpen = value.indexOf("{", lastOpen + 1);
+  const nextClose = value.indexOf("}", lastOpen + 1);
+  const shouldCloseBrace =
+    nextClose === -1 || (nextOpen !== -1 && nextOpen < nextClose);
+  const pipeIndex = tokenBody.lastIndexOf("|");
+  if (pipeIndex !== -1) {
+    const tokenName = tokenBody.slice(0, pipeIndex).split("|", 1)[0]?.trim();
+    if (!tokenName || tokenName.includes(":")) {
+      return null;
+    }
+    const query = tokenBody.slice(pipeIndex + 1).trim().toLowerCase();
+    return {
+      kind: "filter",
+      key: `filter:${lastOpen}:${pipeIndex}:${query}`,
+      query,
+      replaceStart: lastOpen + 1 + pipeIndex + 1,
+      replaceEnd: lastOpen + 1 + tokenBody.length,
+      shouldCloseBrace,
+    };
+  }
+
   const colonIndex = tokenBody.indexOf(":");
   if (colonIndex !== -1) {
     return null;
   }
 
-  const nextOpen = value.indexOf("{", lastOpen + 1);
-  const nextClose = value.indexOf("}", lastOpen + 1);
-  const shouldCloseBrace =
-    nextClose === -1 || (nextOpen !== -1 && nextOpen < nextClose);
   const query = tokenBody.trim().toLowerCase();
 
   const matches = tokenDescriptions
@@ -384,6 +502,7 @@ function resolveTemplateTokenContext(
   }
 
   return {
+    kind: "token",
     key: `${lastOpen}:${query}`,
     query,
     replaceStart: lastOpen + 1,
@@ -397,6 +516,7 @@ function applyAutocompleteToken(
   currentValue: string,
   context: TemplateTokenContext,
   token: string,
+  options: { selectionStart?: number; selectionEnd?: number } = {},
 ) {
   const suffix = context.shouldCloseBrace ? "}" : "";
   const nextValue =
@@ -404,15 +524,21 @@ function applyAutocompleteToken(
     token +
     suffix +
     currentValue.slice(context.replaceEnd);
-  const cursor = context.replaceStart + token.length + suffix.length;
-  updateInputValue(input, nextValue, cursor);
+  const selectionStart =
+    context.replaceStart + (options.selectionStart ?? token.length + suffix.length);
+  const selectionEnd =
+    context.replaceStart + (options.selectionEnd ?? options.selectionStart ?? token.length + suffix.length);
+  updateInputValue(input, nextValue, selectionStart, selectionEnd);
 }
 
 const HighlightedTemplateInput = React.forwardRef<HTMLInputElement, HighlightedTemplateInputProps>(
   ({ className, value, getSegments, onScroll, ...props }, ref) => {
     const [scrollLeft, setScrollLeft] = React.useState(0);
     const segments = React.useMemo(
-      () => (getSegments ?? splitRenameInputSegments)(value),
+      () =>
+        getSegments
+          ? getSegments(value)
+          : splitRenameTemplateSegments(value, VALID_EPISODE_RENAME_TOKENS),
       [getSegments, value],
     );
     const showOverlay = value.length > 0;
@@ -431,7 +557,7 @@ const HighlightedTemplateInput = React.forwardRef<HTMLInputElement, HighlightedT
               {segments.map((segment, index) => (
                 <span
                   key={`${index}-${segment.text}`}
-                  className={segment.isToken ? "text-emerald-600 dark:text-emerald-400" : "text-foreground"}
+                  className={segment.isToken ? "text-[var(--scry-accent-text)]" : "text-foreground"}
                 >
                   {segment.text}
                 </span>
@@ -464,6 +590,17 @@ type TokenAutocompleteInputProps = Omit<HighlightedTemplateInputProps, "ref"> & 
   tokenDescriptions: TokenDescription[];
   onAutocompleteToken: (token: string) => void;
   translateLabel: Translate;
+};
+
+type TemplateAutocompleteSuggestion = {
+  key: string;
+  kind: "token" | "filter";
+  code: string;
+  labelKey: string;
+  token?: string;
+  insert?: string;
+  selectStart?: number;
+  selectEnd?: number;
 };
 
 function TokenAutocompleteInput({
@@ -505,6 +642,36 @@ function TokenAutocompleteInput({
     if (!tokenContext || tokenContext.key === dismissedKey) {
       return [];
     }
+
+    if (tokenContext.kind === "filter") {
+      return RENAME_FILTER_AUTOCOMPLETE_SUGGESTIONS
+        .map((item, index) => ({ item, index }))
+        .filter(({ item }) => {
+          const code = item.code.toLowerCase();
+          return code.includes(tokenContext.query) ||
+            item.aliases?.some((alias) => alias.includes(tokenContext.query));
+        })
+        .sort((left, right) => {
+          if (!tokenContext.query) {
+            return left.index - right.index;
+          }
+          const leftCode = left.item.code.toLowerCase();
+          const rightCode = right.item.code.toLowerCase();
+          const leftStarts = leftCode.startsWith(tokenContext.query) ? 0 : 1;
+          const rightStarts = rightCode.startsWith(tokenContext.query) ? 0 : 1;
+          return leftStarts - rightStarts || leftCode.localeCompare(rightCode);
+        })
+        .map(({ item }): TemplateAutocompleteSuggestion => ({
+          key: `filter:${item.code}`,
+          kind: "filter",
+          code: `|${item.code}`,
+          labelKey: item.labelKey,
+          insert: item.insert,
+          selectStart: item.selectStart,
+          selectEnd: item.selectEnd,
+        }));
+    }
+
     return tokenDescriptions
       .filter(({ token }) => token.toLowerCase().includes(tokenContext.query))
       .sort((left, right) => {
@@ -513,8 +680,36 @@ function TokenAutocompleteInput({
         const leftStarts = leftToken.startsWith(tokenContext.query) ? 0 : 1;
         const rightStarts = rightToken.startsWith(tokenContext.query) ? 0 : 1;
         return leftStarts - rightStarts || leftToken.localeCompare(rightToken);
-      });
+      })
+      .map((item): TemplateAutocompleteSuggestion => ({
+        key: `token:${item.token}`,
+        kind: "token",
+        code: `{${item.token}}`,
+        labelKey: item.labelKey,
+        token: item.token,
+      }));
   }, [dismissedKey, tokenContext, tokenDescriptions]);
+
+  const applySuggestion = React.useCallback(
+    (suggestion: TemplateAutocompleteSuggestion | undefined) => {
+      if (!suggestion || !tokenContext) {
+        return;
+      }
+      if (suggestion.kind === "token") {
+        onAutocompleteToken(suggestion.token ?? suggestion.code);
+        return;
+      }
+      const input = inputRef.current;
+      if (!input || !suggestion.insert) {
+        return;
+      }
+      applyAutocompleteToken(input, value, tokenContext, suggestion.insert, {
+        selectionStart: suggestion.selectStart,
+        selectionEnd: suggestion.selectEnd,
+      });
+    },
+    [inputRef, onAutocompleteToken, tokenContext, value],
+  );
 
   React.useEffect(() => {
     setHighlightedIndex(0);
@@ -569,7 +764,7 @@ function TokenAutocompleteInput({
             }
             if (event.key === "Enter" || event.key === "Tab") {
               event.preventDefault();
-              onAutocompleteToken(suggestions[highlightedIndex]?.token ?? suggestions[0].token);
+              applySuggestion(suggestions[highlightedIndex] ?? suggestions[0]);
               setDismissedKey(null);
               return;
             }
@@ -591,7 +786,7 @@ function TokenAutocompleteInput({
               const isActive = index === highlightedIndex;
               return (
                 <button
-                  key={item.token}
+                  key={item.key}
                   type="button"
                   className={cn(
                     "flex w-full items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-left text-sm transition-colors",
@@ -599,11 +794,11 @@ function TokenAutocompleteInput({
                   )}
                   onMouseDown={(event) => {
                     event.preventDefault();
-                    onAutocompleteToken(item.token);
+                    applySuggestion(item);
                     setDismissedKey(null);
                   }}
                 >
-                  <code className="font-mono text-emerald-600 dark:text-emerald-400">{`{${item.token}}`}</code>
+                  <code className="font-[var(--font-code)] text-[var(--scry-accent-text)]">{item.code}</code>
                   <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                     {translateLabel(item.labelKey)}
                   </span>
@@ -613,6 +808,236 @@ function TokenAutocompleteInput({
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function RenameTokenReferenceList({
+  tokens,
+  onFileTokenClick,
+  onFolderTokenClick,
+  t,
+}: {
+  tokens: TokenReference[];
+  onFileTokenClick: (token: string) => void;
+  onFolderTokenClick: (token: string) => void;
+  t: Translate;
+}) {
+  const applicabilityLabels: Record<TokenApplicability, string> = {
+    files: t("settings.renameReferenceFiles"),
+    folders: t("settings.renameReferenceFolders"),
+  };
+  const applicabilityActions: Record<TokenApplicability, (token: string) => void> = {
+    files: onFileTokenClick,
+    folders: onFolderTokenClick,
+  };
+
+  return (
+    <section className="space-y-2.5">
+      <h3 className="text-xs font-semibold uppercase text-muted-foreground">
+        {t("settings.renameReferenceTokens")}
+      </h3>
+      <div className="grid gap-1.5 2xl:grid-cols-2">
+        {tokens.map((item) => (
+          <div
+            key={item.token}
+            className="flex items-center justify-between gap-3 rounded-md border border-border/70 bg-muted/40 px-2.5 py-2"
+          >
+            <div className="min-w-0 space-y-1">
+              <code className="block font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
+                {`{${item.token}}`}
+              </code>
+              <p className="text-xs leading-snug text-muted-foreground">
+                {t(item.labelKey)}
+              </p>
+            </div>
+            <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+              {item.appliesTo.map((scope) => (
+                <button
+                  key={`${item.token}-${scope}`}
+                  type="button"
+                  className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground transition-colors hover:border-[var(--scry-accent)] hover:bg-accent hover:text-foreground"
+                  onClick={() => applicabilityActions[scope](item.token)}
+                >
+                  {applicabilityLabels[scope]}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function RenameFunctionReference({ t }: { t: Translate }) {
+  return (
+    <section className="space-y-2.5">
+      <h3 className="text-xs font-semibold uppercase text-muted-foreground">
+        {t("settings.renameReferenceFunctions")}
+      </h3>
+      <div className="space-y-3">
+        <div className="rounded-md border border-border/70 bg-muted/40 px-3 py-2.5">
+          <p className="text-sm font-medium text-card-foreground">
+            {t("settings.renameFunctionTruncateTitle")}
+          </p>
+          <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
+            {"{title|truncate:N}"}
+          </code>
+          <p className="mt-1 text-xs leading-snug text-muted-foreground">
+            {t("settings.renameTruncateFilterLabel")}
+          </p>
+        </div>
+
+        <div className="rounded-md border border-border/70 bg-muted/40 px-3 py-2.5">
+          <p className="text-sm font-medium text-card-foreground">
+            {t("settings.renameFunctionWhitespaceTitle")}
+          </p>
+          <p className="mt-1 text-xs leading-snug text-muted-foreground">
+            {t("settings.renameFunctionWhitespaceDescription")}
+          </p>
+          <div className="mt-2 grid gap-1.5 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+            {RENAME_SPACE_FILTER_REFERENCES.map((item) => (
+              <div
+                key={item.code}
+                className="rounded border border-border/60 bg-background/50 px-2 py-1.5"
+              >
+                <code className="font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
+                  {item.code}
+                </code>
+                <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+                  {t(item.labelKey)}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+          <div className="rounded-md border border-border/70 bg-muted/40 px-3 py-2.5">
+            <p className="text-sm font-medium text-card-foreground">
+              {t("settings.renameFunctionPaddingTitle")}
+            </p>
+            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
+              {"{season:2}"}
+            </code>
+            <p className="mt-1 text-xs leading-snug text-muted-foreground">
+              {t("settings.renameNumberPaddingLabel")}
+            </p>
+          </div>
+
+          <div className="rounded-md border border-border/70 bg-muted/40 px-3 py-2.5">
+            <p className="text-sm font-medium text-card-foreground">
+              {t("settings.renameFunctionChainTitle")}
+            </p>
+            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
+              {"{title|truncate:64|space:_}"}
+            </code>
+            <p className="mt-1 text-xs leading-snug text-muted-foreground">
+              {t("settings.renameFilterChainLabel")}
+            </p>
+          </div>
+
+          <div className="rounded-md border border-border/70 bg-muted/40 px-3 py-2.5">
+            <p className="text-sm font-medium text-card-foreground">
+              {t("settings.renameFunctionBracesTitle")}
+            </p>
+            <code className="mt-1 block break-all font-[var(--font-code)] text-xs text-[var(--scry-accent-text)]">
+              {"{{edition-{edition}}}"}
+            </code>
+            <p className="mt-1 text-xs leading-snug text-muted-foreground">
+              {t("settings.renameLiteralBracesLabel")}
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RenameReferencePanel({
+  tokens,
+  onFolderTokenClick,
+  onRenameTokenClick,
+  t,
+}: {
+  tokens: TokenReference[];
+  onFolderTokenClick: (token: string) => void;
+  onRenameTokenClick: (token: string) => void;
+  t: Translate;
+}) {
+  return (
+    <Card className="min-w-0 rounded-[16px] border-[var(--scry-border)] bg-[var(--scry-surf)]">
+      <CardHeader>
+        <CardTitle>{t("settings.renameReferenceTitle")}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <RenameTokenReferenceList
+          tokens={tokens}
+          onFileTokenClick={onRenameTokenClick}
+          onFolderTokenClick={onFolderTokenClick}
+          t={t}
+        />
+
+        <RenameFunctionReference t={t} />
+      </CardContent>
+    </Card>
+  );
+}
+
+type RenameSectionIcon = React.ComponentType<{ className?: string }>;
+
+function RenameSettingsSection({
+  icon: Icon,
+  title,
+  action,
+  children,
+}: {
+  icon: RenameSectionIcon;
+  title: string;
+  action?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-[16px] border border-[var(--scry-border)] bg-[var(--scry-surf)] p-5 sm:p-6">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-2.5">
+          <Icon className="h-[17px] w-[17px] text-[var(--scry-accent-text)]" />
+          <h2 className="text-[16px] font-bold text-[var(--scry-ink2)]">{title}</h2>
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
+      {children ? <div className="mt-5 space-y-5">{children}</div> : null}
+    </section>
+  );
+}
+
+function TemplateExample({
+  value,
+  outputId,
+}: {
+  value: string | null;
+  outputId?: string;
+}) {
+  return (
+    <div className="w-full space-y-2">
+      <Label className="text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint2)]">
+        Example
+      </Label>
+      {value ? (
+        <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] px-3.5 py-2.5">
+          <p
+            id={outputId}
+            className="break-all font-[var(--font-code)] text-[13.5px] text-[var(--scry-text2)]"
+          >
+            {value}
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-[12px] border border-dashed border-[var(--scry-border2)] bg-[var(--scry-bg)] px-3.5 py-2.5">
+          <p className="text-[13px] text-[var(--scry-faint)]">&mdash;</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -657,8 +1082,8 @@ export function RenameSettingsPanel({
     [folderTemplateValue, t],
   );
   const renameValidationError = React.useMemo(
-    () => (renameEnabled ? validateRenameTemplate(templateValue, t) : null),
-    [renameEnabled, templateValue, t],
+    () => (renameEnabled ? validateRenameTemplate(templateValue, activeQualityScopeId, t) : null),
+    [activeQualityScopeId, renameEnabled, templateValue, t],
   );
 
   const folderPreview = React.useMemo(
@@ -677,6 +1102,15 @@ export function RenameSettingsPanel({
     () => getRenameTokenDescriptions(activeQualityScopeId),
     [activeQualityScopeId],
   );
+  const referenceTokens = React.useMemo(
+    () => getRenameReferenceTokens(renameTokenDescriptions),
+    [renameTokenDescriptions],
+  );
+  const [referenceSlot, setReferenceSlot] = React.useState<HTMLElement | null>(null);
+
+  React.useEffect(() => {
+    setReferenceSlot(document.getElementById(FACET_REFERENCE_SLOT_ID));
+  }, []);
 
   const insertFolderToken = React.useCallback(
     (token: string) => {
@@ -731,176 +1165,95 @@ export function RenameSettingsPanel({
   );
 
   return (
-    <form onSubmit={updateCategoryMediaProfileSettings} className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("settings.renameSection")}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <section className="space-y-5 rounded-lg border border-border/70 bg-card/40 p-4">
-            <div className="space-y-1">
-              <h3 className="text-sm font-semibold text-card-foreground">
-                {t("settings.folderRenameSectionTitle")}
-              </h3>
-            </div>
-
-            <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
-              <div className="space-y-2.5">
-                <Label className="text-sm text-card-foreground">
-                  {t("settings.folderTemplateLabel")}
-                </Label>
-                <TokenAutocompleteInput
-                  inputRef={folderInputRef}
-                  value={folderTemplateValue}
-                  onChange={handleFolderTemplateChange}
-                  tokenDescriptions={FOLDER_TOKEN_DESCRIPTIONS}
-                  onAutocompleteToken={autocompleteFolderToken}
-                  translateLabel={t}
-                  getSegments={splitFolderTemplateSegments}
-                  placeholder={t("settings.folderTemplatePlaceholder")}
-                  disabled={mediaSettingsLoading}
-                  className={
-                    folderTemplateValue.trim()
-                      ? folderValidationError
-                        ? "border-rose-500/60"
-                        : "border-emerald-500/60"
-                      : undefined
-                  }
-                />
-                {folderValidationError ? (
-                  <p className="text-xs text-rose-400">{folderValidationError}</p>
-                ) : null}
-              </div>
-
-              <div className="space-y-2">
-                <Label className="text-xs uppercase tracking-wider text-muted-foreground/60">
-                  Example
-                </Label>
-                {folderPreview ? (
-                  <div className="rounded border border-border bg-muted px-3 py-1.5">
-                    <p className="break-all font-mono text-sm text-card-foreground">{folderPreview}</p>
-                  </div>
-                ) : (
-                  <div className="rounded border border-dashed border-border bg-card/40 px-3 py-1.5">
-                    <p className="text-sm text-muted-foreground/60">&mdash;</p>
-                  </div>
-                )}
-              </div>
-            </div>
-
+    <>
+      <form onSubmit={updateCategoryMediaProfileSettings} className="space-y-[18px]">
+        <RenameSettingsSection
+          icon={Folder}
+          title={t("settings.folderRenameSectionTitle")}
+        >
+          <div className="space-y-3">
             <div className="space-y-2.5">
-              <p className="text-sm font-medium text-card-foreground">
-                {t("settings.folderAvailableTokens")}
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {FOLDER_TOKEN_DESCRIPTIONS.map((item) => (
-                  <button
-                    key={item.token}
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2.5 py-1 text-xs text-card-foreground transition-colors hover:border-emerald-500 hover:bg-accent hover:text-foreground"
-                    title={t(item.labelKey)}
-                    onClick={() => insertFolderToken(item.token)}
-                  >
-                    <code className="text-emerald-600 dark:text-emerald-400">{`{${item.token}}`}</code>
-                    <span className="leading-none text-muted-foreground">{t(item.labelKey)}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </section>
-
-          <section className="space-y-6 rounded-lg border border-border/70 bg-card/40 p-4">
-            <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1">
-                <h3 className="text-sm font-semibold text-card-foreground">
-                  {t("settings.renameSectionTitle")}
-                </h3>
-              </div>
-              <SettingsToggleSwitch
-                id="rename-settings-enabled-toggle"
-                checked={renameEnabled}
+              <Label className="text-sm text-card-foreground">
+                {t("settings.folderTemplateLabel")}
+              </Label>
+              <TokenAutocompleteInput
+                inputRef={folderInputRef}
+                value={folderTemplateValue}
+                onChange={handleFolderTemplateChange}
+                tokenDescriptions={FOLDER_TOKEN_DESCRIPTIONS}
+                onAutocompleteToken={autocompleteFolderToken}
+                translateLabel={t}
+                getSegments={splitFolderTemplateSegments}
+                placeholder={t("settings.folderTemplatePlaceholder")}
                 disabled={mediaSettingsLoading}
-                ariaLabel={renameEnabled ? t("label.enabled") : t("label.disabled")}
-                onChange={handleRenameEnabledChange}
+                className={
+                  folderTemplateValue.trim()
+                    ? folderValidationError
+                      ? "border-[var(--scry-danger-border-strong)]"
+                      : "border-[var(--scry-accent)]"
+                    : undefined
+                }
               />
+              {folderValidationError ? (
+                <p className="text-xs text-[var(--scry-danger-text-soft)]">{folderValidationError}</p>
+              ) : null}
             </div>
 
-            {renameEnabled ? (
-              <>
-                <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
-                  <div className="space-y-2.5">
-                    <Label className="text-sm text-card-foreground">
-                      {t("settings.renameTemplateLabel")}
-                    </Label>
-                    <TokenAutocompleteInput
-                      id="rename-settings-template-input"
-                      inputRef={templateInputRef}
-                      value={templateValue}
-                      onChange={handleRenameTemplateChange}
-                      tokenDescriptions={renameTokenDescriptions}
-                      onAutocompleteToken={autocompleteRenameToken}
-                      translateLabel={t}
-                      placeholder={t("settings.renameTemplatePlaceholder")}
-                      disabled={mediaSettingsLoading}
-                      className={
-                        templateValue.trim()
-                          ? renameValidationError
-                            ? "border-rose-500/60"
-                            : "border-emerald-500/60"
-                          : undefined
-                      }
-                    />
-                    {renameValidationError ? (
-                      <p id="rename-settings-validation-message" className="text-xs text-rose-400">{renameValidationError}</p>
-                    ) : null}
-                  </div>
+            <TemplateExample value={folderPreview} />
+          </div>
+        </RenameSettingsSection>
 
-                  <div className="space-y-2">
-                    <Label className="text-xs uppercase tracking-wider text-muted-foreground/60">
-                      Example
-                    </Label>
-                    {renamePreview ? (
-                      <div className="rounded border border-border bg-muted px-3 py-1.5">
-                        <p id="rename-settings-preview-output" className="break-all font-mono text-sm text-card-foreground">{renamePreview}</p>
-                      </div>
-                    ) : (
-                      <div className="rounded border border-dashed border-border bg-card/40 px-3 py-1.5">
-                        <p className="text-sm text-muted-foreground/60">&mdash;</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
+        <RenameSettingsSection
+          icon={FileText}
+          title={t("settings.renameSectionTitle")}
+          action={
+            <SettingsToggleSwitch
+              id="rename-settings-enabled-toggle"
+              checked={renameEnabled}
+              disabled={mediaSettingsLoading}
+              ariaLabel={renameEnabled ? t("label.enabled") : t("label.disabled")}
+              onChange={handleRenameEnabledChange}
+            />
+          }
+        >
+          {renameEnabled ? (
+            <div className="space-y-5">
+              <div className="space-y-3">
                 <div className="space-y-2.5">
-                  <p className="text-sm font-medium text-card-foreground">
-                    {t("settings.renameAvailableTokens")}
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {renameTokenDescriptions.map((item) => (
-                      <button
-                        key={item.token}
-                        type="button"
-                        className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2.5 py-1 text-xs text-card-foreground transition-colors hover:border-emerald-500 hover:bg-accent hover:text-foreground"
-                        title={t(item.labelKey)}
-                        onClick={() => insertToken(item.token)}
-                      >
-                        <code className="text-emerald-600 dark:text-emerald-400">{`{${item.token}}`}</code>
-                        <span className="leading-none text-muted-foreground">{t(item.labelKey)}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-                    <p>
-                      <span className="font-medium text-card-foreground">{t("settings.renameLiteralBracesLabel")}:</span>{" "}
-                      <code className="text-emerald-600 dark:text-emerald-400">{"{{edition-{edition}}}"}</code>
-                    </p>
-                    <p>
-                      <span className="font-medium text-card-foreground">{t("settings.renameSpaceFilterLabel")}:</span>{" "}
-                      <code className="text-emerald-600 dark:text-emerald-400">{"{title|space:_}"}</code>
-                    </p>
-                  </div>
+                  <Label className="text-sm text-card-foreground">
+                    {t("settings.renameTemplateLabel")}
+                  </Label>
+                  <TokenAutocompleteInput
+                    id="rename-settings-template-input"
+                    inputRef={templateInputRef}
+                    value={templateValue}
+                    onChange={handleRenameTemplateChange}
+                    tokenDescriptions={renameTokenDescriptions}
+                    onAutocompleteToken={autocompleteRenameToken}
+                    translateLabel={t}
+                    getSegments={(value) => splitRenameInputSegments(value, activeQualityScopeId)}
+                    placeholder={t("settings.renameTemplatePlaceholder")}
+                    disabled={mediaSettingsLoading}
+                    className={
+                      templateValue.trim()
+                        ? renameValidationError
+                          ? "border-[var(--scry-danger-border-strong)]"
+                          : "border-[var(--scry-accent)]"
+                        : undefined
+                    }
+                  />
+                  {renameValidationError ? (
+                    <p id="rename-settings-validation-message" className="text-xs text-[var(--scry-danger-text-soft)]">{renameValidationError}</p>
+                  ) : null}
                 </div>
 
+                <TemplateExample
+                  value={renamePreview}
+                  outputId="rename-settings-preview-output"
+                />
+              </div>
+
+              <div className="rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-card2)] p-4">
                 <div className="grid gap-4 md:grid-cols-2">
                   <label className="space-y-2">
                     <Label className="text-sm text-card-foreground">
@@ -933,28 +1286,37 @@ export function RenameSettingsPanel({
                     </Select>
                   </label>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  {t("settings.renamePolicyHelp")}
-                </p>
-              </>
-            ) : null}
-          </section>
+              </div>
+            </div>
+          ) : null}
+        </RenameSettingsSection>
 
-          <div className="flex justify-end">
-            <Button
-              id="rename-settings-save"
-              type="submit"
-              disabled={
-                mediaSettingsSaving ||
-                folderValidationError !== null ||
-                renameValidationError !== null
-              }
-            >
-              {mediaSettingsSaving ? t("label.saving") : t("label.save")}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </form>
+        <div className="flex justify-end">
+          <Button
+            id="rename-settings-save"
+            type="submit"
+            disabled={
+              mediaSettingsSaving ||
+              folderValidationError !== null ||
+              renameValidationError !== null
+            }
+          >
+            <Save className="mr-1.5 h-4 w-4" />
+            {mediaSettingsSaving ? t("label.saving") : t("label.save")}
+          </Button>
+        </div>
+      </form>
+      {referenceSlot
+        ? createPortal(
+            <RenameReferencePanel
+              tokens={referenceTokens}
+              onFolderTokenClick={insertFolderToken}
+              onRenameTokenClick={insertToken}
+              t={t}
+            />,
+            referenceSlot,
+          )
+        : null}
+    </>
   );
 }

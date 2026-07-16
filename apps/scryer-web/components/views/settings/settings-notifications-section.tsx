@@ -1,17 +1,20 @@
 
 import * as React from "react";
-import { Bell, ChevronDown, Edit, Loader2, Plus, Power, PowerOff, Send, Trash2 } from "lucide-react";
+import { Bell, Edit, Loader2, Plus, Power, PowerOff, Send, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { AddNewButton } from "@/components/common/add-new-button";
 import { InfoHelp } from "@/components/common/info-help";
+import { PluginVisualLabel } from "@/components/common/plugin-visual";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import { LocalRemotePathMappingsField } from "@/components/common/local-remote-path-mappings-field";
 import type { LocalPathStyle } from "@/lib/utils/local-path-style";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Checkbox, CheckboxField } from "@/components/ui/checkbox";
 import { Input, signedIntegerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { MultiSelectDropdown } from "@/components/ui/multi-select-dropdown";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
@@ -39,12 +42,7 @@ import type {
   TitleRecord,
 } from "@/lib/types";
 import type { Facet } from "@/lib/types/titles";
-import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-  type BoxedActionButtonTone,
-} from "@/lib/utils/action-button-styles";
+import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 import { buildOverviewDetailPath } from "@/lib/utils/routing";
 
 type SettingsNotificationsSectionProps = {
@@ -84,7 +82,7 @@ type SettingsNotificationsSectionProps = {
 };
 
 const SCOPE_OPTIONS = ["global", "facet", "title"] as const;
-const FACET_SCOPE_OPTIONS: Facet[] = ["movie", "series", "anime"];
+const FACET_SCOPE_OPTIONS: Facet[] = ["MOVIE", "SERIES", "ANIME"];
 const MEDIA_SERVER_PROVIDER_TYPES = new Set(["jellyfin", "plex", "emby"]);
 
 function isMediaServerProviderType(providerType: string): boolean {
@@ -97,26 +95,19 @@ function NotificationActionButton({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof Button> & {
+}: Omit<React.ComponentProps<typeof IconButton>, "tone"> & {
   label: string;
   tone: Extract<BoxedActionButtonTone, "edit" | "enabled" | "disabled" | "delete" | "neutral">;
 }) {
   return (
-    <Button
-      type="button"
-      size="icon-sm"
-      variant="secondary"
-      title={label}
-      aria-label={label}
-      className={cn(
-        boxedActionButtonBaseClass,
-        boxedActionButtonToneClass[tone],
-        className,
-      )}
+    <IconButton
+      label={label}
+      tone={tone}
+      className={className}
       {...props}
     >
       {children}
-    </Button>
+    </IconButton>
   );
 }
 
@@ -247,26 +238,28 @@ function DynamicConfigField({
     </span>
   ) : null;
 
-  if (field.fieldType === "bool") {
+  if (field.fieldType === "BOOL") {
     return (
-      <label className="flex items-center gap-2">
-        <input
-          id={fieldId}
-          type="checkbox"
-          checked={value === "true"}
-          onChange={(e) => onChange(field.key, e.target.checked ? "true" : "false")}
-          className="accent-primary"
-        />
-        <span className="inline-flex items-center gap-2 text-sm">
-          {field.label}
-          {requiredMarker}
-          {help}
-        </span>
-      </label>
+      <CheckboxField
+        id={fieldId}
+        checked={value === "true"}
+        onCheckedChange={(checkedValue) =>
+          onChange(field.key, checkedValue === true ? "true" : "false")
+        }
+        label={field.label}
+        labelAccessory={
+          <>
+            {requiredMarker}
+            {help}
+          </>
+        }
+        className="items-center"
+        checkboxClassName="mt-0"
+      />
     );
   }
 
-  if (field.fieldType === "select" && field.options.length > 0) {
+  if (field.fieldType === "SELECT" && field.options.length > 0) {
     return (
       <label>
         <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
@@ -291,7 +284,7 @@ function DynamicConfigField({
     );
   }
 
-  if (field.fieldType === "multiline") {
+  if (field.fieldType === "MULTILINE") {
     if (field.key === "path_mappings") {
       return (
         <LocalRemotePathMappingsField
@@ -336,11 +329,11 @@ function DynamicConfigField({
         id={fieldId}
         value={value}
         onChange={(e) => onChange(field.key, e.target.value)}
-        {...(field.fieldType === "number" ? signedIntegerInputProps : {})}
+        {...(field.fieldType === "NUMBER" ? signedIntegerInputProps : {})}
         type={
-          field.fieldType === "password"
+          field.fieldType === "PASSWORD"
             ? "password"
-            : field.fieldType === "number"
+            : field.fieldType === "NUMBER"
               ? "number"
               : "text"
         }
@@ -376,91 +369,6 @@ function notificationTargetName(
   return (
     targets.find((target) => target.targetKind === targetKind && target.id === targetId)?.name ??
     targetId
-  );
-}
-
-type MultiSelectDropdownOption = {
-  value: string;
-  label: string;
-};
-
-function MultiSelectDropdown({
-  options,
-  selectedValues,
-  onSelectedValuesChange,
-  placeholder,
-  triggerId,
-  optionIdPrefix,
-}: {
-  options: MultiSelectDropdownOption[];
-  selectedValues: string[];
-  onSelectedValuesChange: (values: string[]) => void;
-  placeholder: string;
-  triggerId?: string;
-  optionIdPrefix?: string;
-}) {
-  const selectedLabel = React.useMemo(() => {
-    const labels = options
-      .filter((option) => selectedValues.includes(option.value))
-      .map((option) => option.label);
-    return labels.length > 0 ? labels.join(", ") : placeholder;
-  }, [options, placeholder, selectedValues]);
-
-  const toggleOption = React.useCallback(
-    (value: string) => {
-      const selectedSet = new Set(selectedValues);
-      if (selectedSet.has(value)) {
-        selectedSet.delete(value);
-      } else {
-        selectedSet.add(value);
-      }
-
-      onSelectedValuesChange(
-        options
-          .map((option) => option.value)
-          .filter((optionValue) => selectedSet.has(optionValue)),
-      );
-    },
-    [onSelectedValuesChange, options, selectedValues],
-  );
-
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          id={triggerId}
-          type="button"
-          variant="outline"
-          className="w-full justify-between px-3 text-left font-normal"
-        >
-          <span
-            className={`truncate ${selectedValues.length === 0 ? "text-muted-foreground" : ""}`}
-          >
-            {selectedLabel}
-          </span>
-          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-2">
-        <div className="flex max-h-72 flex-col gap-1 overflow-y-auto">
-          {options.map((option) => {
-            const checked = selectedValues.includes(option.value);
-            return (
-              <button
-                key={option.value}
-                id={selectorId(optionIdPrefix, option.value)}
-                type="button"
-                onClick={() => toggleOption(option.value)}
-                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
-              >
-                <Checkbox checked={checked} className="pointer-events-none" />
-                <span className="truncate">{option.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </PopoverContent>
-    </Popover>
   );
 }
 
@@ -678,7 +586,17 @@ export function SettingsNotificationsSection({
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell>{providerLabel}</TableCell>
+                    <TableCell>
+                      <PluginVisualLabel
+                        providerType={target.providerType}
+                        pluginType={
+                          target.targetKind === "media_server_connection"
+                            ? "media_server"
+                            : "notification"
+                        }
+                        label={providerLabel}
+                      />
+                    </TableCell>
                     <TableCell className="text-center">
                       <RenderBooleanIcon
                         value={target.isEnabled}
@@ -795,7 +713,15 @@ export function SettingsNotificationsSection({
                      }}
                    >
                      <SelectTrigger id="settings-notification-channel-provider-type" className="w-full">
-                       <SelectValue placeholder={t("settings.notificationProviderType")} />
+                       <SelectValue placeholder={t("settings.notificationProviderType")}>
+                         {selectedProvider ? (
+                           <PluginVisualLabel
+                             providerType={selectedProvider.providerType}
+                             pluginType="notification"
+                             label={selectedProvider.name}
+                           />
+                         ) : null}
+                       </SelectValue>
                      </SelectTrigger>
                      <SelectContent>
                       {providerTypeOptions.map((opt) => (
@@ -804,7 +730,11 @@ export function SettingsNotificationsSection({
                            key={opt.value}
                            value={opt.value}
                          >
-                           {opt.label}
+                           <PluginVisualLabel
+                             providerType={opt.value}
+                             pluginType="notification"
+                             label={opt.label}
+                           />
                          </SelectItem>
                        ))}
                      </SelectContent>
@@ -831,7 +761,7 @@ export function SettingsNotificationsSection({
                 <div className="space-y-3">
                   <div className="grid gap-3 md:grid-cols-2">
                     {selectedProviderFields
-                      .filter((f) => f.fieldType !== "bool")
+                      .filter((f) => f.fieldType !== "BOOL")
                       .map((field) => (
                         <DynamicConfigField
                           key={field.key}
@@ -842,10 +772,10 @@ export function SettingsNotificationsSection({
                         />
                       ))}
                   </div>
-                  {selectedProviderFields.some((f) => f.fieldType === "bool") ? (
+                  {selectedProviderFields.some((f) => f.fieldType === "BOOL") ? (
                     <div className="flex items-center gap-6">
                       {selectedProviderFields
-                        .filter((f) => f.fieldType === "bool")
+                        .filter((f) => f.fieldType === "BOOL")
                         .map((field) => (
                           <DynamicConfigField
                             key={field.key}
@@ -861,17 +791,15 @@ export function SettingsNotificationsSection({
               ) : null}
 
               <label className="flex items-center gap-2">
-                <input
+                <Checkbox
                   id="settings-notification-channel-enabled"
-                  type="checkbox"
                   checked={channelDraft.isEnabled}
-                  onChange={(event) =>
+                  onCheckedChange={(value) =>
                     setChannelDraft((prev) => ({
                       ...prev,
-                      isEnabled: event.target.checked,
+                      isEnabled: value === true,
                     }))
                   }
-                  className="accent-primary"
                 />
                 <span className="text-sm">{t("label.enabled")}</span>
               </label>
@@ -894,32 +822,24 @@ export function SettingsNotificationsSection({
           </Card>
           {isEditingChannel ? (
             <div className="flex justify-center">
-              <Button
+              <AddNewButton
                 id="settings-notification-channel-create"
-                type="button"
-                size="lg"
+                icon={Plus}
+                label={t("settings.notificationChannelCreateNew")}
                 onClick={startCreateChannel}
                 disabled={mutatingChannelId !== null}
-                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-              >
-                <Plus className="h-5 w-5" />
-                {t("settings.notificationChannelCreateNew")}
-              </Button>
+              />
             </div>
           ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-notification-channel-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("settings.notificationChannelCreateNew")}
             onClick={startCreateChannel}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("settings.notificationChannelCreateNew")}
-          </Button>
+          />
         </div>
       )}
 
@@ -1104,8 +1024,14 @@ export function SettingsNotificationsSection({
                         eventTypes: values,
                       }))
                     }
+                    triggerLabel={
+                      eventTypeOptions
+                        .filter((option) => subscriptionDraft.eventTypes.includes(option.value))
+                        .map((option) => option.label)
+                        .join(", ") || t("settings.notificationEventType")
+                    }
                     placeholder={t("settings.notificationEventType")}
-                    triggerId="settings-notification-subscription-event-types"
+                    id="settings-notification-subscription-event-types"
                     optionIdPrefix="settings-notification-subscription-event-type-option"
                   />
                 </label>
@@ -1224,17 +1150,15 @@ export function SettingsNotificationsSection({
               ) : null}
 
               <label className="flex items-center gap-2">
-                <input
+                <Checkbox
                   id="settings-notification-subscription-enabled"
-                  type="checkbox"
                   checked={subscriptionDraft.isEnabled}
-                  onChange={(event) =>
+                  onCheckedChange={(value) =>
                     setSubscriptionDraft((prev) => ({
                       ...prev,
-                      isEnabled: event.target.checked,
+                      isEnabled: value === true,
                     }))
                   }
-                  className="accent-primary"
                 />
                 <span className="text-sm">{t("label.enabled")}</span>
               </label>
@@ -1266,32 +1190,24 @@ export function SettingsNotificationsSection({
           </Card>
           {isEditingSubscription ? (
             <div className="flex justify-center">
-              <Button
+              <AddNewButton
                 id="settings-notification-subscription-create"
-                type="button"
-                size="lg"
+                icon={Plus}
+                label={t("settings.notificationSubscriptionCreateNew")}
                 onClick={() => startCreateSubscription()}
                 disabled={mutatingSubscriptionId !== null}
-                className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-              >
-                <Plus className="h-5 w-5" />
-                {t("settings.notificationSubscriptionCreateNew")}
-              </Button>
+              />
             </div>
           ) : null}
         </>
       ) : (
         <div className="flex justify-center">
-          <Button
+          <AddNewButton
             id="settings-notification-subscription-create"
-            type="button"
-            size="lg"
+            icon={Plus}
+            label={t("settings.notificationSubscriptionCreateNew")}
             onClick={() => startCreateSubscription()}
-            className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-          >
-            <Plus className="h-5 w-5" />
-            {t("settings.notificationSubscriptionCreateNew")}
-          </Button>
+          />
         </div>
       )}
     </div>

@@ -880,6 +880,26 @@ impl AppUseCase {
         let import_mode = self
             .resolve_import_mode(Some(&library.id), &library.facet)
             .await?;
+        let set_permissions_linux_override = self
+            .read_setting_bool_value_explicit(SET_PERMISSIONS_LINUX_KEY, Some(&library.id))
+            .await?;
+        let import_permissions = self
+            .resolve_import_file_permissions(Some(&library.id), &library.facet)
+            .await?;
+        let file_chmod_override = normalize_chmod_setting(
+            self.read_setting_string_value_explicit(FILE_CHMOD_KEY, Some(&library.id))
+                .await?,
+            FILE_CHMOD_KEY,
+        )?;
+        let folder_chmod_override = normalize_chmod_setting(
+            self.read_setting_string_value_explicit(FOLDER_CHMOD_KEY, Some(&library.id))
+                .await?,
+            FOLDER_CHMOD_KEY,
+        )?;
+        let chown_group_override = normalize_chown_group_setting(
+            self.read_setting_string_value_explicit(CHOWN_GROUP_KEY, Some(&library.id))
+                .await?,
+        )?;
         let indexer_routing_override = self.load_indexer_routing_override(&library.id).await?;
         let download_client_routing_override = self
             .load_download_client_routing_override(&library.id)
@@ -911,10 +931,408 @@ impl AppUseCase {
             plexmatch_write_on_import,
             import_mode_override,
             import_mode,
+            set_permissions_linux_override,
+            set_permissions_linux: import_permissions.set_permissions_linux,
+            file_chmod_override,
+            file_chmod: import_permissions.file_chmod,
+            folder_chmod_override,
+            folder_chmod: import_permissions.folder_chmod,
+            chown_group_override,
+            chown_group: import_permissions.chown_group,
             indexer_routing_override,
             download_client_routing_override,
         })
     }
+}
+impl AppUseCase {
+    async fn external_import_has_effective_explicit_setting(
+        &self,
+        key_name: &str,
+        library_id: &str,
+        facet: &MediaFacet,
+        include_facet: bool,
+        include_global: bool,
+    ) -> AppResult<bool> {
+        if self
+            .read_setting_string_value_explicit(key_name, Some(library_id))
+            .await?
+            .is_some()
+        {
+            return Ok(true);
+        }
+
+        if include_facet
+            && self
+                .read_setting_string_value_explicit(key_name, Some(facet.as_str()))
+                .await?
+                .is_some()
+        {
+            return Ok(true);
+        }
+
+        if include_global
+            && self
+                .read_setting_string_value_explicit(key_name, None)
+                .await?
+                .is_some()
+        {
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    pub async fn apply_external_import_library_settings_auto_apply(
+        &self,
+        actor: &User,
+        library_id: &str,
+        settings: ExternalImportLibrarySettingsAutoApplyDraft,
+    ) -> AppResult<ExternalImportLibrarySettingsAutoApplyResult> {
+        let library = self
+            .services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
+            .await?;
+
+        let is_anime_library = library.facet == MediaFacet::Anime;
+        if !is_anime_library && settings.monitor_specials.is_some() {
+            return Err(AppError::Validation(
+                "monitor_specials is only valid for anime libraries".to_string(),
+            ));
+        }
+        if library.facet == MediaFacet::Movie && settings.plexmatch_write_on_import.is_some() {
+            return Err(AppError::Validation(
+                "plexmatch_write_on_import is only valid for series and anime libraries"
+                    .to_string(),
+            ));
+        }
+
+        let mut changed_keys = Vec::new();
+        let mut skipped_keys = Vec::new();
+        let quality_profile_has_explicit_override = self
+            .external_import_has_effective_explicit_setting(
+                QUALITY_PROFILE_ID_KEY,
+                &library.id,
+                &library.facet,
+                true,
+                true,
+            )
+            .await?;
+
+        if let Some(profile_id) = normalize_optional_string(settings.quality_profile_id) {
+            if quality_profile_has_explicit_override {
+                push_external_import_auto_apply_skip(
+                    &mut skipped_keys,
+                    QUALITY_PROFILE_ID_KEY,
+                    "target setting already has an explicit override",
+                );
+            } else {
+                let profile_settings = self.load_quality_profile_settings().await?;
+                if !profile_settings
+                    .profiles
+                    .iter()
+                    .any(|profile| profile.id == profile_id)
+                {
+                    push_external_import_auto_apply_skip(
+                        &mut skipped_keys,
+                        QUALITY_PROFILE_ID_KEY,
+                        format!("unknown quality profile {profile_id}"),
+                    );
+                } else {
+                    self.upsert_scoped_system_setting_json(
+                        QUALITY_PROFILE_ID_KEY,
+                        &library.id,
+                        &profile_id,
+                        Some(actor.id.clone()),
+                    )
+                    .await?;
+                    changed_keys.push(QUALITY_PROFILE_ID_KEY.to_string());
+                }
+            }
+        }
+
+        if let Some(profile_ids) = settings.request_quality_profile_ids {
+            if quality_profile_has_explicit_override {
+                push_external_import_auto_apply_skip(
+                    &mut skipped_keys,
+                    REQUEST_QUALITY_PROFILE_IDS_KEY,
+                    "quality profile setting already has an explicit override",
+                );
+            } else if self
+                .external_import_has_effective_explicit_setting(
+                    REQUEST_QUALITY_PROFILE_IDS_KEY,
+                    &library.id,
+                    &library.facet,
+                    false,
+                    false,
+                )
+                .await?
+            {
+                push_external_import_auto_apply_skip(
+                    &mut skipped_keys,
+                    REQUEST_QUALITY_PROFILE_IDS_KEY,
+                    "target setting already has an explicit override",
+                );
+            } else {
+                let normalized = normalize_request_quality_profile_ids(profile_ids);
+                if !normalized.is_empty() {
+                    let profile_settings = self.load_quality_profile_settings().await?;
+                    let catalog_profile_ids = profile_settings
+                        .profiles
+                        .iter()
+                        .map(|profile| profile.id.clone())
+                        .collect::<HashSet<_>>();
+                    if let Some(missing_profile_id) = normalized
+                        .iter()
+                        .find(|profile_id| !catalog_profile_ids.contains(*profile_id))
+                    {
+                        push_external_import_auto_apply_skip(
+                            &mut skipped_keys,
+                            REQUEST_QUALITY_PROFILE_IDS_KEY,
+                            format!("unknown request quality profile {missing_profile_id}"),
+                        );
+                    } else {
+                        self.upsert_scoped_system_setting_json(
+                            REQUEST_QUALITY_PROFILE_IDS_KEY,
+                            &library.id,
+                            &normalized,
+                            Some(actor.id.clone()),
+                        )
+                        .await?;
+                        changed_keys.push(REQUEST_QUALITY_PROFILE_IDS_KEY.to_string());
+                    }
+                }
+            }
+        }
+
+        if is_anime_library
+            && let Some(value) = settings.monitor_specials
+        {
+            if self
+                .external_import_has_effective_explicit_setting(
+                    ANIME_MONITOR_SPECIALS_KEY,
+                    &library.id,
+                    &library.facet,
+                    true,
+                    false,
+                )
+                .await?
+            {
+                push_external_import_auto_apply_skip(
+                    &mut skipped_keys,
+                    ANIME_MONITOR_SPECIALS_KEY,
+                    "target setting already has an explicit override",
+                );
+            } else {
+                self.upsert_scoped_system_setting_json(
+                    ANIME_MONITOR_SPECIALS_KEY,
+                    &library.id,
+                    &value,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+                changed_keys.push(ANIME_MONITOR_SPECIALS_KEY.to_string());
+            }
+        }
+
+        if let Some(value) = settings.nfo_write_on_import {
+            let key_name = nfo_write_on_import_key(&library.facet);
+            if self
+                .external_import_has_effective_explicit_setting(
+                    key_name,
+                    &library.id,
+                    &library.facet,
+                    false,
+                    true,
+                )
+                .await?
+            {
+                push_external_import_auto_apply_skip(
+                    &mut skipped_keys,
+                    key_name,
+                    "target setting already has an explicit override",
+                );
+            } else {
+                self.upsert_scoped_system_setting_json(
+                    key_name,
+                    &library.id,
+                    &value,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+                changed_keys.push(key_name.to_string());
+            }
+        }
+
+        if let Some(key_name) = plexmatch_write_on_import_key(&library.facet)
+            && let Some(value) = settings.plexmatch_write_on_import
+        {
+            if self
+                .external_import_has_effective_explicit_setting(
+                    key_name,
+                    &library.id,
+                    &library.facet,
+                    false,
+                    true,
+                )
+                .await?
+            {
+                push_external_import_auto_apply_skip(
+                    &mut skipped_keys,
+                    key_name,
+                    "target setting already has an explicit override",
+                );
+            } else {
+                self.upsert_scoped_system_setting_json(
+                    key_name,
+                    &library.id,
+                    &value,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+                changed_keys.push(key_name.to_string());
+            }
+        }
+
+        if let Some(value) = settings.set_permissions_linux {
+            if self
+                .external_import_has_effective_explicit_setting(
+                    SET_PERMISSIONS_LINUX_KEY,
+                    &library.id,
+                    &library.facet,
+                    true,
+                    true,
+                )
+                .await?
+            {
+                push_external_import_auto_apply_skip(
+                    &mut skipped_keys,
+                    SET_PERMISSIONS_LINUX_KEY,
+                    "target setting already has an explicit override",
+                );
+            } else {
+                self.upsert_scoped_system_setting_json(
+                    SET_PERMISSIONS_LINUX_KEY,
+                    &library.id,
+                    &value,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+                changed_keys.push(SET_PERMISSIONS_LINUX_KEY.to_string());
+            }
+        }
+
+        if settings.folder_chmod.is_some() {
+            if self
+                .external_import_has_effective_explicit_setting(
+                    FOLDER_CHMOD_KEY,
+                    &library.id,
+                    &library.facet,
+                    true,
+                    true,
+                )
+                .await?
+            {
+                push_external_import_auto_apply_skip(
+                    &mut skipped_keys,
+                    FOLDER_CHMOD_KEY,
+                    "target setting already has an explicit override",
+                );
+            } else {
+                match normalize_chmod_setting(settings.folder_chmod, FOLDER_CHMOD_KEY) {
+                    Ok(Some(value)) => {
+                        self.upsert_scoped_system_setting_json(
+                            FOLDER_CHMOD_KEY,
+                            &library.id,
+                            &value,
+                            Some(actor.id.clone()),
+                        )
+                        .await?;
+                        changed_keys.push(FOLDER_CHMOD_KEY.to_string());
+                    }
+                    Ok(None) => {}
+                    Err(AppError::Validation(reason)) => {
+                        push_external_import_auto_apply_skip(
+                            &mut skipped_keys,
+                            FOLDER_CHMOD_KEY,
+                            reason,
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+
+        if settings.chown_group.is_some() {
+            if self
+                .external_import_has_effective_explicit_setting(
+                    CHOWN_GROUP_KEY,
+                    &library.id,
+                    &library.facet,
+                    true,
+                    true,
+                )
+                .await?
+            {
+                push_external_import_auto_apply_skip(
+                    &mut skipped_keys,
+                    CHOWN_GROUP_KEY,
+                    "target setting already has an explicit override",
+                );
+            } else {
+                match normalize_chown_group_setting(settings.chown_group) {
+                    Ok(Some(value)) => {
+                        self.upsert_scoped_system_setting_json(
+                            CHOWN_GROUP_KEY,
+                            &library.id,
+                            &value,
+                            Some(actor.id.clone()),
+                        )
+                        .await?;
+                        changed_keys.push(CHOWN_GROUP_KEY.to_string());
+                    }
+                    Ok(None) => {}
+                    Err(AppError::Validation(reason)) => {
+                        push_external_import_auto_apply_skip(
+                            &mut skipped_keys,
+                            CHOWN_GROUP_KEY,
+                            reason,
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+
+        if !changed_keys.is_empty() {
+            self.emit_settings_saved(
+                actor,
+                "external_import_library_settings",
+                Some(library.id.clone()),
+                changed_keys.clone(),
+            )
+            .await;
+        }
+
+        Ok(ExternalImportLibrarySettingsAutoApplyResult {
+            changed_keys,
+            skipped_keys,
+        })
+    }
+}
+fn push_external_import_auto_apply_skip(
+    skipped_keys: &mut Vec<ExternalImportSettingsAutoApplySkip>,
+    key_name: &str,
+    reason: impl Into<String>,
+) {
+    skipped_keys.push(ExternalImportSettingsAutoApplySkip {
+        key_name: key_name.to_string(),
+        reason: reason.into(),
+    });
 }
 impl AppUseCase {
     pub async fn update_library_settings(
@@ -1135,6 +1553,58 @@ impl AppUseCase {
             .await?;
         } else {
             self.delete_scoped_system_setting(IMPORT_MODE_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(value) = settings.set_permissions_linux {
+            self.upsert_scoped_system_setting_json(
+                SET_PERMISSIONS_LINUX_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(SET_PERMISSIONS_LINUX_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(value) = normalize_chmod_setting(settings.file_chmod, FILE_CHMOD_KEY)? {
+            self.upsert_scoped_system_setting_json(
+                FILE_CHMOD_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(FILE_CHMOD_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(value) = normalize_chmod_setting(settings.folder_chmod, FOLDER_CHMOD_KEY)? {
+            self.upsert_scoped_system_setting_json(
+                FOLDER_CHMOD_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(FOLDER_CHMOD_KEY, &library.id)
+                .await?;
+        }
+
+        if let Some(value) = normalize_chown_group_setting(settings.chown_group)? {
+            self.upsert_scoped_system_setting_json(
+                CHOWN_GROUP_KEY,
+                &library.id,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        } else {
+            self.delete_scoped_system_setting(CHOWN_GROUP_KEY, &library.id)
                 .await?;
         }
 

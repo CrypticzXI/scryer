@@ -5,6 +5,7 @@ use scryer_domain::{
     NotificationChannelConfig, PersistedPluginWasmPayload, PluginHostBindingId, PluginSupportTier,
     PluginWasmEncoding,
 };
+use scryer_plugin_sdk::ArchivePluginFormat;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1037,6 +1038,16 @@ fn make_runtime_plugin_load(
                 capabilities: scryer_plugin_sdk::DownloadClientCapabilities::default(),
             },
         ),
+        "archive_extractor" => scryer_plugin_sdk::ProviderDescriptor::ArchiveExtractor(
+            scryer_plugin_sdk::ArchiveExtractorDescriptor {
+                provider_type: provider_type.to_string(),
+                provider_aliases: vec![format!("{provider_type}-alias")],
+                config_fields: vec![],
+                default_base_url: None,
+                allowed_hosts: vec![],
+                capabilities: scryer_plugin_sdk::ArchiveExtractorCapabilities::default(),
+            },
+        ),
         other => panic!("unsupported plugin type for runtime load helper: {other}"),
     };
 
@@ -1369,6 +1380,7 @@ fn make_indexer_config(provider_type: &str) -> IndexerConfig {
         rate_limit_seconds: None,
         rate_limit_burst: None,
         disabled_until: None,
+        indexer_proxy_config_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
@@ -1508,6 +1520,22 @@ fn bootstrap_plugins_with_runtime_providers(
     download_client_plugin_provider: Option<Arc<MockDownloadClientPluginProvider>>,
     notification_plugin_provider: Option<Arc<MockNotificationPluginProvider>>,
 ) -> TestHarness {
+    bootstrap_plugins_with_runtime_providers_and_archive(
+        provider,
+        subtitle_provider,
+        download_client_plugin_provider,
+        notification_plugin_provider,
+        None,
+    )
+}
+
+fn bootstrap_plugins_with_runtime_providers_and_archive(
+    provider: Option<MockPluginProvider>,
+    subtitle_provider: Option<Arc<MockSubtitlePluginProvider>>,
+    download_client_plugin_provider: Option<Arc<MockDownloadClientPluginProvider>>,
+    notification_plugin_provider: Option<Arc<MockNotificationPluginProvider>>,
+    archive_plugin_provider: Option<Arc<MockArchiveExtractorPluginProvider>>,
+) -> TestHarness {
     use crate::null_repositories::NullSettingsRepository;
     use crate::null_repositories::test_nulls::*;
     use crate::types::JwtAuthConfig;
@@ -1543,6 +1571,9 @@ fn bootstrap_plugins_with_runtime_providers(
     }
     if let Some(provider) = &notification_plugin_provider {
         services = services.with_notification_provider(provider.clone());
+    }
+    if let Some(provider) = &archive_plugin_provider {
+        services = services.with_archive_extractor_plugin_provider(provider.clone());
     }
 
     let registry = FacetRegistry::new();
@@ -1873,6 +1904,59 @@ impl NotificationPluginProvider for MockNotificationPluginProvider {
     }
 }
 
+struct MockArchiveExtractorPluginProvider {
+    available_types: Vec<String>,
+    upsert_count: AtomicUsize,
+    remove_count: AtomicUsize,
+    reload_count: AtomicUsize,
+}
+
+impl MockArchiveExtractorPluginProvider {
+    fn new(provider_types: &[&str]) -> Self {
+        Self {
+            available_types: provider_types
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            upsert_count: AtomicUsize::new(0),
+            remove_count: AtomicUsize::new(0),
+            reload_count: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ArchiveExtractorPluginProvider for MockArchiveExtractorPluginProvider {
+    fn client_for_format(
+        &self,
+        _format: ArchivePluginFormat,
+    ) -> Option<Arc<dyn ArchiveExtractorClient>> {
+        None
+    }
+
+    fn available_provider_types(&self) -> Vec<String> {
+        self.available_types.clone()
+    }
+
+    fn upsert_runtime_plugin(&self, _plugin: RuntimePluginLoad) -> Result<(), String> {
+        self.upsert_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn remove_runtime_plugin(&self, _provider_type: &str) -> Result<(), String> {
+        self.remove_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn reload_runtime_plugins(
+        &self,
+        _runtime_plugins: &[RuntimePluginLoad],
+        _disabled_builtins: &[String],
+    ) -> Result<(), String> {
+        self.reload_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 // ── Runtime mutation routing ────────────────────────────────────────────────
 
 #[tokio::test]
@@ -2051,6 +2135,52 @@ async fn apply_runtime_plugin_upsert_routes_download_client_family_only() {
 
     let indexer = h.plugin_provider.as_ref().expect("indexer provider");
     assert_eq!(download.upsert_count.load(Ordering::Relaxed), 1);
+    assert_eq!(download.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(subtitle.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(notification.upsert_count.load(Ordering::Relaxed), 0);
+    assert_eq!(notification.reload_count.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn apply_runtime_plugin_upsert_routes_archive_extractor_family_only() {
+    let subtitle = Arc::new(MockSubtitlePluginProvider::new(&[]));
+    let download = Arc::new(MockDownloadClientPluginProvider::new(&[]));
+    let notification = Arc::new(MockNotificationPluginProvider::new(&[]));
+    let archive = Arc::new(MockArchiveExtractorPluginProvider::new(&[]));
+    let h = bootstrap_plugins_with_runtime_providers_and_archive(
+        Some(MockPluginProvider::new().with_provider("example_indexer", "Example Indexer", None)),
+        Some(subtitle.clone()),
+        Some(download.clone()),
+        Some(notification.clone()),
+        Some(archive.clone()),
+    );
+
+    h.app
+        .apply_runtime_plugin_upsert(
+            &make_installation_with_type(
+                "archive-extraction",
+                "0.1.1",
+                "archive_extractor",
+                "archive-extraction",
+                false,
+                true,
+            ),
+            make_runtime_plugin_load(
+                "archive-extraction",
+                "archive_extractor",
+                "archive-extraction",
+            ),
+        )
+        .unwrap();
+
+    let indexer = h.plugin_provider.as_ref().expect("indexer provider");
+    assert_eq!(archive.upsert_count.load(Ordering::Relaxed), 1);
+    assert_eq!(archive.reload_count.load(Ordering::Relaxed), 0);
+    assert_eq!(archive.remove_count.load(Ordering::Relaxed), 0);
+    assert_eq!(download.upsert_count.load(Ordering::Relaxed), 0);
     assert_eq!(download.reload_count.load(Ordering::Relaxed), 0);
     assert_eq!(indexer.upsert_count.load(Ordering::Relaxed), 0);
     assert_eq!(indexer.reload_count.load(Ordering::Relaxed), 0);
@@ -2428,14 +2558,40 @@ async fn list_hides_incompatible_catalog_entries() {
 }
 
 #[tokio::test]
+async fn list_hides_catalog_entries_that_only_require_newer_scryer() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let json = make_raw_catalog_v3_json(&[catalog_entry_with_releases(
+        "alpha",
+        vec![catalog_v3_release(
+            "2.0.0",
+            "https://example.com/alpha-v2.wasm.zst",
+            Some("999.0.0"),
+        )],
+    )]);
+    h.plugin_repo
+        .store_catalog_fixture_json(&json)
+        .await
+        .unwrap();
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
 async fn list_uses_compatible_release_when_newer_release_requires_newer_host() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
     let json = make_raw_catalog_v3_json(&[catalog_entry_with_releases(
         "alpha",
         vec![
             catalog_v3_release(
-                "2.0.0",
-                "https://example.com/alpha-v2.wasm.zst",
+                "3.0.0",
+                "https://example.com/alpha-v3.wasm.zst",
+                Some("999.0.0"),
+            ),
+            catalog_v3_release("1.0.0", "https://example.com/alpha-v1.wasm.zst", None),
+            catalog_v3_release(
+                "4.0.0",
+                "https://example.com/alpha-v4.wasm.zst",
                 Some("999.0.0"),
             ),
             catalog_v3_release("1.5.0", "https://example.com/alpha-v1_5.wasm.zst", None),
@@ -2456,14 +2612,55 @@ async fn list_uses_compatible_release_when_newer_release_requires_newer_host() {
 }
 
 #[tokio::test]
-async fn list_keeps_installed_incompatible_catalog_entries_visible() {
+async fn list_upgrades_to_compatible_release_when_newer_release_requires_newer_host() {
     let h = bootstrap_plugins(Some(MockPluginProvider::new()));
-    let json = make_catalog_fixture_json(&[catalog_entry_with_sdk_constraint(
+    let json = make_raw_catalog_v3_json(&[catalog_entry_with_releases(
+        "alpha",
+        vec![
+            catalog_v3_release(
+                "3.0.0",
+                "https://example.com/alpha-v3.wasm.zst",
+                Some("999.0.0"),
+            ),
+            catalog_v3_release("1.2.0", "https://example.com/alpha-v1_2.wasm.zst", None),
+            catalog_v3_release(
+                "4.0.0",
+                "https://example.com/alpha-v4.wasm.zst",
+                Some("999.0.0"),
+            ),
+            catalog_v3_release("1.5.0", "https://example.com/alpha-v1_5.wasm.zst", None),
+        ],
+    )]);
+    h.plugin_repo
+        .store_raw_catalog_source(CENTRAL_CATALOG_SOURCE_KEY, "central", Some(json))
+        .await;
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation("alpha", "1.0.0", false, true));
+
+    let result = h.app.list_available_plugins(&admin()).await.unwrap();
+    assert_eq!(result.len(), 1);
+    let plugin = &result[0];
+    assert_eq!(plugin.id, "alpha");
+    assert_eq!(plugin.version, "1.5.0");
+    assert_eq!(plugin.installed_version.as_deref(), Some("1.0.0"));
+    assert!(plugin.latest_version.is_none());
+    assert!(plugin.blocked_reason.is_none());
+    assert!(plugin.update_available);
+}
+
+#[tokio::test]
+async fn list_keeps_installed_plugin_visible_when_catalog_only_has_incompatible_releases() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let json = make_raw_catalog_v3_json(&[catalog_entry_with_releases(
         "torrent-rss",
-        "2.0.0",
-        false,
-        Some("https://example.com/torrent-rss.wasm"),
-        ">=99.0.0",
+        vec![catalog_v3_release(
+            "2.0.0",
+            "https://example.com/torrent-rss-v2.wasm.zst",
+            Some("999.0.0"),
+        )],
     )]);
     h.plugin_repo
         .store_catalog_fixture_json(&json)
@@ -2478,7 +2675,9 @@ async fn list_keeps_installed_incompatible_catalog_entries_visible() {
     let result = h.app.list_available_plugins(&admin()).await.unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].id, "torrent-rss");
+    assert_eq!(result[0].version, "1.0.0");
     assert!(result[0].is_installed);
+    assert!(result[0].latest_version.is_none());
     assert!(result[0].blocked_reason.is_none());
     assert!(!result[0].update_available);
 }
@@ -3010,6 +3209,10 @@ fn provider_catalog_families_map_known_plugin_types() {
         vec![ProviderCatalogFamily::DownloadClient]
     );
     assert_eq!(
+        provider_catalog_families_for_plugin_type("archive_extractor"),
+        vec![ProviderCatalogFamily::ArchiveExtractor]
+    );
+    assert_eq!(
         provider_catalog_families_for_plugin_type("indexer"),
         vec![ProviderCatalogFamily::Indexer]
     );
@@ -3536,6 +3739,7 @@ fn validate_downloaded_plugin_descriptor_rejects_invalid_allowed_hosts() {
         "alpha",
         &release,
         &descriptor,
+        PluginSupportTier::Official,
         true,
     )
     .unwrap_err();
@@ -3583,6 +3787,7 @@ fn validate_downloaded_plugin_descriptor_accepts_release_sdk_constraint_override
         "jellyfin",
         &release,
         &descriptor,
+        PluginSupportTier::Official,
         true,
     )
     .unwrap();
@@ -3618,11 +3823,113 @@ fn validate_catalog_downloaded_plugin_descriptor_skips_release_host_compatibilit
         "email",
         &release,
         &descriptor,
+        PluginSupportTier::Official,
         false,
     )
     .unwrap();
 
     assert_eq!(validated.sdk_constraint, ">=99.0.0");
+}
+
+#[test]
+fn validate_downloaded_plugin_descriptor_rejects_unverified_host_process_capability() {
+    let release =
+        downloaded_release_contract("0.2.0", &scryer_plugin_sdk::current_sdk_constraint(), None);
+    let descriptor = scryer_plugin_sdk::PluginDescriptor {
+        id: "customscript".to_string(),
+        name: "Custom Script".to_string(),
+        version: "0.2.0".to_string(),
+        sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+        sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+        socket_permissions: vec![],
+        provider: scryer_plugin_sdk::ProviderDescriptor::Notification(
+            scryer_plugin_sdk::NotificationDescriptor {
+                provider_type: "customscript".to_string(),
+                provider_aliases: Vec::new(),
+                allowed_hosts: Vec::new(),
+                capabilities: scryer_plugin_sdk::NotificationCapabilities {
+                    requires_host_process: true,
+                    ..Default::default()
+                },
+                config_fields: Vec::new(),
+                default_base_url: None,
+            },
+        ),
+    };
+
+    let err = validate_downloaded_plugin_descriptor(
+        "customscript",
+        "notification",
+        "customscript",
+        &release,
+        &descriptor,
+        PluginSupportTier::Unverified,
+        false,
+    )
+    .unwrap_err();
+    match err {
+        AppError::Validation(msg) => assert!(
+            msg.contains("host-process capability"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected Validation, got {other:?}"),
+    }
+}
+
+#[test]
+fn validate_downloaded_plugin_descriptor_allows_only_official_host_process_capability() {
+    let release =
+        downloaded_release_contract("0.2.0", &scryer_plugin_sdk::current_sdk_constraint(), None);
+    let descriptor = scryer_plugin_sdk::PluginDescriptor {
+        id: "customscript".to_string(),
+        name: "Custom Script".to_string(),
+        version: "0.2.0".to_string(),
+        sdk_version: scryer_plugin_sdk::SDK_VERSION.to_string(),
+        sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
+        socket_permissions: vec![],
+        provider: scryer_plugin_sdk::ProviderDescriptor::Notification(
+            scryer_plugin_sdk::NotificationDescriptor {
+                provider_type: "customscript".to_string(),
+                provider_aliases: Vec::new(),
+                allowed_hosts: Vec::new(),
+                capabilities: scryer_plugin_sdk::NotificationCapabilities {
+                    requires_host_process: true,
+                    ..Default::default()
+                },
+                config_fields: Vec::new(),
+                default_base_url: None,
+            },
+        ),
+    };
+
+    validate_downloaded_plugin_descriptor(
+        "customscript",
+        "notification",
+        "customscript",
+        &release,
+        &descriptor,
+        PluginSupportTier::Official,
+        false,
+    )
+    .expect("official plugins may request the host-process capability");
+
+    let err = validate_downloaded_plugin_descriptor(
+        "customscript",
+        "notification",
+        "customscript",
+        &release,
+        &descriptor,
+        PluginSupportTier::VerifiedCommunity,
+        false,
+    )
+    .expect_err("verified community plugins must not install host-process plugins");
+    match err {
+        AppError::Validation(msg) => assert!(
+            msg.contains("official plugins"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected Validation, got {other:?}"),
+    }
 }
 
 #[test]
@@ -3800,6 +4107,48 @@ async fn install_uploaded_plugin_requires_risk_acknowledgement() {
 
     assert!(matches!(err, AppError::Validation(_)));
     assert!(err.to_string().contains("risk acknowledgement"));
+}
+
+#[tokio::test]
+async fn install_uploaded_plugin_rejects_host_process_capability() {
+    let provider =
+        MockPluginProvider::new().with_provider("host-proc", "Host Proc", Some("https://example.com"));
+    let h = bootstrap_plugins(Some(provider));
+    let wasm_bytes = vec![0x00, 0x61, 0x73, 0x6d];
+    let mut descriptor =
+        make_runtime_plugin_load("host-proc-plugin", "notification", "host-proc").descriptor;
+    if let scryer_plugin_sdk::ProviderDescriptor::Notification(provider) = &mut descriptor.provider {
+        provider.capabilities.requires_host_process = true;
+    }
+    h.plugin_descriptor_loader
+        .register(&wasm_bytes, descriptor.clone());
+
+    let err = h
+        .app
+        .install_uploaded_plugin(
+            &config_admin(),
+            "host-proc-plugin.wasm",
+            &base64::engine::general_purpose::STANDARD.encode(&wasm_bytes),
+            true,
+        )
+        .await
+        .unwrap_err();
+
+    match err {
+        AppError::Validation(msg) => assert!(
+            msg.contains("host-process capability"),
+            "unexpected message: {msg}"
+        ),
+        other => panic!("expected Validation, got {other:?}"),
+    }
+    // The rejected upload must not have been persisted or pushed to the runtime.
+    assert!(
+        h.plugin_repo
+            .get_plugin_installation("host-proc-plugin")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 // ── seed_builtin_plugins ─────────────────────────────────────────────────────
@@ -4032,5 +4381,55 @@ async fn recover_restored_plugins_skips_local_uploads_and_persists_warning() {
         serde_json::json!([
             "Skipped restoring plugin 'Local Upload' because it was uploaded locally and cannot be re-downloaded from a remote catalog source."
         ])
+    );
+}
+
+#[tokio::test]
+async fn plugin_catalog_status_returns_cached_status_without_rewriting_it() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new()));
+    let checked_at = Utc::now() - chrono::Duration::minutes(10);
+    let cached_payload = serde_json::json!({
+        "githubAvailable": false,
+        "blockedActions": ["install", "upgrade"],
+        "message": "cached outage",
+        "restoreWarnings": ["cached restore warning"],
+        "lastError": "cached probe failure",
+    });
+    h.plugin_repo
+        .upsert_plugin_catalog_status(&scryer_domain::PluginCatalogStatusRecord {
+            status_key: CATALOG_STATUS_KEY.to_string(),
+            status_json: cached_payload.to_string(),
+            checked_at,
+        })
+        .await
+        .unwrap();
+
+    let status = h.app.plugin_catalog_status(&config_admin()).await.unwrap();
+    let checked_at_rfc3339 = checked_at.to_rfc3339();
+
+    assert_eq!(status.refresh_state, "degraded");
+    assert!(!status.github_available);
+    assert_eq!(
+        status.last_checked_at.as_deref(),
+        Some(checked_at_rfc3339.as_str())
+    );
+    assert_eq!(status.outage_message.as_deref(), Some("cached outage"));
+    assert_eq!(status.blocked_actions, vec!["install", "upgrade"]);
+    assert_eq!(
+        status.restore_warnings,
+        vec!["cached restore warning".to_string()]
+    );
+    assert_eq!(status.last_error.as_deref(), Some("cached probe failure"));
+
+    let stored = h
+        .plugin_repo
+        .get_plugin_catalog_status(CATALOG_STATUS_KEY)
+        .await
+        .unwrap()
+        .expect("stored plugin catalog status");
+    assert_eq!(stored.checked_at, checked_at);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stored.status_json).unwrap(),
+        cached_payload
     );
 }

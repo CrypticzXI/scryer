@@ -1,7 +1,12 @@
 [package]
 name = "scryer"
-version = "0.16.8"
+version = "0.17.0"
 edition.workspace = true
+
+[features]
+default = []
+par2-metal = ["scryer-application/runtime-par2-metal"]
+par2-wgpu = ["scryer-application/runtime-par2-wgpu"]
 
 [dependencies]
 scryer-application = { path = "../scryer-application", features = ["runtime"] }

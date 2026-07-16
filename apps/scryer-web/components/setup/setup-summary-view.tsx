@@ -1,5 +1,11 @@
-import { Check } from "lucide-react";
+import { Check, ClipboardCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  SetupBackButton,
+  SetupPanel,
+  SetupPrimaryButton,
+  SetupStepHeader,
+} from "./setup-chrome";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import type {
@@ -11,6 +17,7 @@ import type { FacetQualityPrefs, ViewCategoryId } from "@/lib/types/quality-prof
 interface SummaryItem {
   label: string;
   value: string;
+  code?: boolean;
 }
 
 interface SetupSummaryViewProps {
@@ -38,11 +45,11 @@ function formatFacetPrefs(
   t: (key: string) => string,
 ): string {
   const FACET_LABELS: Record<ViewCategoryId, string> = {
-    movie: t("setup.facetMovies"),
-    series: t("setup.facetSeries"),
-    anime: t("setup.facetAnime"),
+    MOVIE: t("setup.facetMovies"),
+    SERIES: t("setup.facetSeries"),
+    ANIME: t("setup.facetAnime"),
   };
-  return (["movie", "series", "anime"] as ViewCategoryId[])
+  return (["MOVIE", "SERIES", "ANIME"] as ViewCategoryId[])
     .map((facet) => {
       const p = facetPrefs[facet];
       const quality = formatQualityTarget(p.quality);
@@ -72,31 +79,31 @@ function activeWarmupPhaseState(
   phaseProgress: ExternalImportMonitorWarmupPhaseProgress;
 } {
   switch (progress.phase) {
-    case "loading_movies":
+    case "LOADING_MOVIES":
       return {
         label: t("setup.monitorWarmupLoadingMovies"),
         totalKnown: progress.moviesTotalKnown,
         phaseProgress: progress.moviesProgress,
       };
-    case "loading_series":
+    case "LOADING_SERIES":
       return {
         label: t("setup.monitorWarmupLoadingSeries"),
         totalKnown: progress.seriesTotalKnown,
         phaseProgress: progress.seriesProgress,
       };
-    case "loading_episodes":
+    case "LOADING_EPISODES":
       return {
         label: t("setup.monitorWarmupLoadingEpisodes"),
         totalKnown: progress.episodeFetchTotalKnown,
         phaseProgress: progress.episodeFetchProgress,
       };
-    case "building_snapshot":
+    case "BUILDING_SNAPSHOT":
       return {
         label: t("setup.monitorWarmupBuildingSnapshot"),
         totalKnown: progress.snapshotBuildTotalKnown,
         phaseProgress: progress.snapshotBuildProgress,
       };
-    case "ready":
+    case "READY":
       return {
         label: t("setup.monitorWarmupReady"),
         totalKnown: progress.overallTotalKnown,
@@ -132,7 +139,7 @@ export function SetupSummaryView({
   const showWarmupCard = Boolean(
     isImportPath &&
       (monitorWarmupError ||
-        (monitorWarmupProgress && monitorWarmupProgress.status !== "completed")),
+        (monitorWarmupProgress && monitorWarmupProgress.status !== "COMPLETED")),
   );
   const warmupPercent =
     warmupPhaseState &&
@@ -145,7 +152,7 @@ export function SetupSummaryView({
 
   const items: SummaryItem[] = [
     { label: t("setup.summaryPersona"), value: formatFacetPrefs(facetPrefs, t) },
-    { label: t("setup.summaryMediaPaths"), value: mediaPathsSummary },
+    { label: t("setup.summaryMediaPaths"), value: mediaPathsSummary, code: true },
   ];
 
   if (isImportPath) {
@@ -167,35 +174,38 @@ export function SetupSummaryView({
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">{t("setup.summaryTitle")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">{t("setup.summaryDescription")}</p>
-      </div>
+    <SetupPanel className="flex flex-col gap-6">
+      <SetupStepHeader
+        icon={ClipboardCheck}
+        title={t("setup.summaryTitle")}
+        subtitle={t("setup.summaryDescription")}
+      />
       <Card className="mx-auto w-full max-w-md">
         <CardContent className="flex flex-col gap-3 p-5">
           {items.map((item) => (
             <div key={item.label} className="flex items-start gap-3">
-              <Check className="mt-0.5 h-4 w-4 flex-none text-emerald-500" />
+              <Check className="mt-0.5 h-4 w-4 flex-none text-[var(--scry-success-text-soft)]" />
               <div>
                 <p className="text-sm font-medium">{item.label}</p>
-                <p className="text-sm text-muted-foreground">{item.value}</p>
+                <p className={item.code ? "font-[var(--font-code)] text-sm text-muted-foreground" : "text-sm text-muted-foreground"}>
+                  {item.value}
+                </p>
               </div>
             </div>
           ))}
         </CardContent>
       </Card>
       {showWarmupCard ? (
-        <Card className="mx-auto w-full max-w-md border-emerald-500/30">
+        <Card className="mx-auto w-full max-w-md border-[var(--scry-success-border)]">
           <CardContent className="flex flex-col gap-3 p-5">
             <div className="space-y-1">
               <p className="text-sm font-medium">{t("setup.monitorWarmupTitle")}</p>
               <p className="text-sm text-muted-foreground">
                 {monitorWarmupError
                   ? t("setup.monitorWarmupFailed")
-                  : monitorWarmupProgress?.status === "failed"
+                  : monitorWarmupProgress?.status === "FAILED"
                   ? t("setup.monitorWarmupFailed")
-                  : monitorWarmupProgress?.status === "canceled"
+                  : monitorWarmupProgress?.status === "CANCELED"
                     ? t("setup.monitorWarmupCanceled")
                     : t("setup.monitorWarmupDescription")}
               </p>
@@ -209,7 +219,7 @@ export function SetupSummaryView({
                 <Progress
                   value={warmupPercent ?? undefined}
                   indeterminate={warmupPercent === null}
-                  indicatorClassName="bg-emerald-500"
+                  indicatorClassName="bg-[var(--scry-success-solid)]"
                 />
                 <p className="text-xs text-muted-foreground">
                   {warmupPhaseState.totalKnown
@@ -229,7 +239,9 @@ export function SetupSummaryView({
         </Card>
       ) : null}
       <div id="setup-summary-view" className="flex justify-between pt-2">
-        <Button id="setup-summary-back" variant="ghost" onClick={onBack}>{t("setup.back")}</Button>
+        <SetupBackButton id="setup-summary-back" onClick={onBack}>
+          {t("setup.back")}
+        </SetupBackButton>
         {isImportPath && onImportOnly && onImportAndScan ? (
           <div className="flex items-center gap-2">
             <Button
@@ -249,11 +261,11 @@ export function SetupSummaryView({
             </Button>
           </div>
         ) : (
-          <Button id="setup-summary-finish" onClick={onFinish} disabled={finishing}>
+          <SetupPrimaryButton id="setup-summary-finish" onClick={onFinish} disabled={finishing}>
             {finishing ? t("label.saving") : t("setup.finish")}
-          </Button>
+          </SetupPrimaryButton>
         )}
       </div>
-    </div>
+    </SetupPanel>
   );
 }

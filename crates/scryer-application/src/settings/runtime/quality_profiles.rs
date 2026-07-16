@@ -152,6 +152,84 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    /// Resolves the effective quality-profile label for a catalog page without
+    /// fetching per-title settings or profile data.
+    pub async fn list_title_effective_quality_summaries(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+    ) -> AppResult<Vec<crate::TitleQualitySummary>> {
+        let titles = self.get_titles_by_ids(actor, title_ids).await?;
+        if titles.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let settings = self.load_quality_profile_settings().await?;
+        let profile_names = settings
+            .profiles
+            .iter()
+            .map(|profile| (profile.id.clone(), profile.name.clone()))
+            .collect::<HashMap<_, _>>();
+        let facet_profile_ids = settings
+            .category_selections
+            .into_iter()
+            .map(|selection| (selection.facet, selection.effective_profile_id))
+            .collect::<HashMap<_, _>>();
+        let library_ids = titles
+            .iter()
+            .map(|title| title.library_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let library_profile_ids = self
+            .services
+            .config
+            .settings
+            .list_setting_json_explicit_for_scope_ids(
+                SETTINGS_SCOPE_SYSTEM,
+                QUALITY_PROFILE_ID_KEY,
+                &library_ids,
+            )
+            .await?
+            .into_iter()
+            .filter_map(|(library_id, raw_value)| {
+                serde_json::from_str::<String>(&raw_value)
+                    .ok()
+                    .and_then(|profile_id| normalize_optional_string(Some(profile_id)))
+                    .filter(|profile_id| profile_names.contains_key(profile_id))
+                    .map(|profile_id| (library_id, profile_id))
+            })
+            .collect::<HashMap<_, _>>();
+
+        Ok(titles
+            .into_iter()
+            .filter_map(|title| {
+                let title_profile_id = title
+                    .tags
+                    .iter()
+                    .find_map(|tag| tag.strip_prefix("scryer:quality-profile:"))
+                    .map(str::trim)
+                    .filter(|profile_id| !profile_id.is_empty())
+                    .filter(|profile_id| profile_names.contains_key(*profile_id));
+                let profile_id = title_profile_id
+                    .or_else(|| {
+                        library_profile_ids
+                            .get(&title.library_id)
+                            .map(String::as_str)
+                    })
+                    .or_else(|| facet_profile_ids.get(&title.facet).map(String::as_str))
+                    .unwrap_or(settings.global_profile_id.as_str());
+                profile_names.get(profile_id).cloned().map(|quality_tier| {
+                    crate::TitleQualitySummary {
+                        title_id: title.id,
+                        quality_tier,
+                    }
+                })
+            })
+            .collect())
+    }
+}
+impl AppUseCase {
     pub(crate) async fn delay_profiles(&self) -> AppResult<Vec<crate::DelayProfile>> {
         let profiles = self
             .read_setting_json_value::<Vec<crate::DelayProfile>>(
@@ -249,7 +327,10 @@ impl AppUseCase {
             .has_any_library_permission(actor, scryer_domain::LibraryPermission::ManageTitles)
             .await?;
         let can_manage_library = self
-            .has_any_granted_library_permission(actor, scryer_domain::LibraryPermission::ManageLibrary)
+            .has_any_granted_library_permission(
+                actor,
+                scryer_domain::LibraryPermission::ManageLibrary,
+            )
             .await?;
         let can_request = self
             .has_any_library_permission(actor, scryer_domain::LibraryPermission::Request)

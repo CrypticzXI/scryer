@@ -1,11 +1,18 @@
-import { Headphones, Scale, Zap, MonitorSmartphone } from "lucide-react";
+import { Headphones, Scale, SlidersHorizontal, Zap, MonitorSmartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  SetupBackButton,
+  SetupPanel,
+  SetupPrimaryButton,
+  SetupStepHeader,
+} from "./setup-chrome";
 import type {
   ScoringPersonaId,
   QualityTargetId,
   FacetQualityPrefs,
   ViewCategoryId,
 } from "@/lib/types/quality-profiles";
+import { selectorToken } from "@/lib/utils/dom-ids";
 
 interface SetupPersonaViewProps {
   t: (key: string) => string;
@@ -18,18 +25,18 @@ interface SetupPersonaViewProps {
 }
 
 const PERSONAS: { id: ScoringPersonaId; icon: typeof Scale; labelKey: string; descKey: string }[] = [
-  { id: "balanced", icon: Scale, labelKey: "qualityProfile.personaBalanced", descKey: "setup.personaBalancedDesc" },
-  { id: "audiophile", icon: Headphones, labelKey: "qualityProfile.personaAudiophile", descKey: "setup.personaAudiophileDesc" },
-  { id: "efficient", icon: Zap, labelKey: "qualityProfile.personaEfficient", descKey: "setup.personaEfficientDesc" },
-  { id: "compatible", icon: MonitorSmartphone, labelKey: "qualityProfile.personaCompatible", descKey: "setup.personaCompatibleDesc" },
+  { id: "BALANCED", icon: Scale, labelKey: "qualityProfile.personaBalanced", descKey: "setup.personaBalancedDesc" },
+  { id: "AUDIOPHILE", icon: Headphones, labelKey: "qualityProfile.personaAudiophile", descKey: "setup.personaAudiophileDesc" },
+  { id: "EFFICIENT", icon: Zap, labelKey: "qualityProfile.personaEfficient", descKey: "setup.personaEfficientDesc" },
+  { id: "COMPATIBLE", icon: MonitorSmartphone, labelKey: "qualityProfile.personaCompatible", descKey: "setup.personaCompatibleDesc" },
 ];
 
-const QUALITY_TARGETS: QualityTargetId[] = ["8k", "4k", "1080p"];
+const QUALITY_TARGETS: QualityTargetId[] = ["4k", "1080p"];
 
 const FACETS: { id: ViewCategoryId; labelKey: string }[] = [
-  { id: "movie", labelKey: "setup.facetMovies" },
-  { id: "series", labelKey: "setup.facetSeries" },
-  { id: "anime", labelKey: "setup.facetAnime" },
+  { id: "MOVIE", labelKey: "setup.facetMovies" },
+  { id: "SERIES", labelKey: "setup.facetSeries" },
+  { id: "ANIME", labelKey: "setup.facetAnime" },
 ];
 
 export function SetupPersonaView({
@@ -42,13 +49,12 @@ export function SetupPersonaView({
   saving,
 }: SetupPersonaViewProps) {
   return (
-    <div id="setup-persona-view" className="flex flex-col gap-6">
-      <div className="text-center">
-        <h2 className="text-xl font-semibold">{t("setup.personaTitle")}</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t("setup.personaDescription")}
-        </p>
-      </div>
+    <SetupPanel id="setup-persona-view" className="flex flex-col gap-6">
+      <SetupStepHeader
+        icon={SlidersHorizontal}
+        title={t("setup.personaTitle")}
+        subtitle={t("setup.personaDescription")}
+      />
 
       {/* Persona reference */}
       <div className="grid grid-cols-2 gap-x-6 gap-y-1 rounded-lg border border-border bg-muted/30 px-4 py-3 text-xs text-muted-foreground">
@@ -84,7 +90,7 @@ export function SetupPersonaView({
                   <div className="flex gap-1">
                     {QUALITY_TARGETS.map((q) => (
                       <button
-                        id={`setup-persona-${facet}-quality-${q}`}
+                        id={`setup-persona-${selectorToken(facet)}-quality-${q}`}
                         key={q}
                         type="button"
                         onClick={() =>
@@ -110,7 +116,7 @@ export function SetupPersonaView({
                   <div className="flex flex-wrap gap-1">
                     {PERSONAS.map(({ id: persona, icon: Icon, labelKey }) => (
                       <button
-                        id={`setup-persona-${facet}-persona-${persona}`}
+                        id={`setup-persona-${selectorToken(facet)}-persona-${selectorToken(persona)}`}
                         key={persona}
                         type="button"
                         onClick={() =>
@@ -135,26 +141,31 @@ export function SetupPersonaView({
       </div>
 
       <div className="flex items-center justify-between pt-2">
-        <Button id="setup-persona-back" variant="ghost" onClick={onBack}>
+        <SetupBackButton id="setup-persona-back" onClick={onBack}>
           {t("setup.back")}
-        </Button>
+        </SetupBackButton>
         <div className="flex items-center gap-3">
           {onSkip && (
-            <button
+            <Button
               id="setup-persona-skip"
               type="button"
+              variant="link"
               onClick={onSkip}
-              className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+              className="px-0 text-muted-foreground"
             >
               {t("setup.skip")}
-            </button>
+            </Button>
           )}
-          <Button id="setup-persona-next" onClick={onNext} disabled={saving}>
+          <SetupPrimaryButton
+            id="setup-persona-next"
+            onClick={onNext}
+            disabled={saving}
+          >
             {saving ? t("label.saving") : t("setup.next")}
-          </Button>
+          </SetupPrimaryButton>
         </div>
       </div>
-    </div>
+    </SetupPanel>
   );
 }
 

@@ -4,10 +4,12 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use scryer_application::{
-    AppResult, BlocklistRepository, DownloadSourceKind, HousekeepingMediaFileRootRow,
-    HousekeepingRepository, LibraryProbeRepository, LibraryProbeSignature, NewBlocklistEntry,
-    PendingRelease, PendingReleaseRepository, PendingReleaseStatus, ReleaseDecision,
-    SubtitleDownloadRepository, WantedItem, WantedItemRepository, WantedItemsQuery, WantedStatus,
+    AcquisitionScopeState, AcquisitionScopeStateRepository, AcquisitionScopeStatesQuery,
+    AcquisitionScopeStatus, AppResult, BlocklistRepository, DownloadSourceKind,
+    HousekeepingMediaFileRootRow, HousekeepingRepository, LibraryProbeRepository,
+    LibraryProbeSignature, NewBlocklistEntry, PendingRelease, PendingReleasePageSort,
+    PendingReleaseRepository, PendingReleaseStatus, PendingReleasesPageQuery, ReleaseDecision,
+    SubtitleDownloadRepository,
     subtitles::{ExternalSubtitleDetectionSource, ExternalSubtitleProbeCacheEntry},
 };
 use scryer_domain::{
@@ -20,6 +22,15 @@ use crate::encryption::{EncryptionKey, is_encrypted};
 use crate::queries::common::parse_utc_datetime;
 use crate::queries::sql_runtime::repo_err;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
+
+// RFC 121 SW4.3: throttle the SQLite full VACUUM so it does not run on every
+// daily maintenance tick. `auto_vacuum` is not enabled on the connection, so
+// `PRAGMA incremental_vacuum` would be a no-op; instead gate a full VACUUM on
+// the free-page ratio (bloat left behind by discovery prune + raw-page removal).
+// VACUUM only when free pages are a meaningful fraction of the file AND exceed a
+// small absolute floor (skip trivially small databases).
+const SQLITE_VACUUM_MIN_FREELIST_FRACTION: f64 = 0.10;
+const SQLITE_VACUUM_MIN_FREELIST_PAGES: i64 = 2_000;
 
 const LIBRARY_PROBE_COLUMNS: &str = "title_id, path, probe_signature_scheme, probe_signature_value, last_probed_at, last_changed_at";
 
@@ -56,44 +67,6 @@ pub struct LibraryProbeStore {
 #[derive(Clone)]
 pub struct WantedStore {
     datastore: StoreDatastore,
-}
-
-fn wanted_due_numeric_text_order_sql(datastore: &StoreDatastore, column: &str) -> String {
-    let value = format!("trim(coalesce({column}, ''))");
-    let is_numeric = match datastore {
-        StoreDatastore::Sqlite { .. } => {
-            format!("{value} GLOB '[0-9]*' AND {value} NOT GLOB '*[^0-9]*'")
-        }
-        StoreDatastore::Postgres { .. } => format!("{value} ~ '^[0-9]+$'"),
-    };
-    let numeric_value = match datastore {
-        StoreDatastore::Sqlite { .. } => format!("CAST({value} AS INTEGER)"),
-        StoreDatastore::Postgres { .. } => format!("CAST({value} AS NUMERIC)"),
-    };
-
-    format!(
-        "CASE WHEN {is_numeric} THEN 0 ELSE 1 END ASC,
-         CASE WHEN {is_numeric} THEN {numeric_value} ELSE NULL END ASC,
-         CASE WHEN {value} = '' THEN 1 ELSE 0 END ASC,
-         lower({value}) ASC"
-    )
-}
-
-fn wanted_due_order_sql(datastore: &StoreDatastore) -> String {
-    format!(
-        " ORDER BY
-             w.next_search_at ASC,
-             lower(coalesce(t.sort_title, t.name, w.title_id)) ASC,
-             w.title_id ASC,
-             CASE WHEN w.media_type = 'episode' THEN 0 ELSE 1 END ASC,
-             {},
-             {},
-             w.created_at ASC,
-             w.id ASC
-          LIMIT {{}}",
-        wanted_due_numeric_text_order_sql(datastore, "e.season_number"),
-        wanted_due_numeric_text_order_sql(datastore, "e.episode_number")
-    )
 }
 
 #[derive(Clone)]
@@ -328,9 +301,9 @@ fn required_timestamp_text(row: &SqlRow, column: &str) -> AppResult<String> {
     }
 }
 
-fn wanted_seed_row_to_item(row: &SqlRow) -> AppResult<WantedItem> {
+fn wanted_seed_row_to_item(row: &SqlRow) -> AppResult<AcquisitionScopeState> {
     let status = row.text("status")?;
-    Ok(WantedItem {
+    Ok(AcquisitionScopeState {
         id: row.text("id")?,
         title_id: row.text("title_id")?,
         title_name: None,
@@ -345,12 +318,8 @@ fn wanted_seed_row_to_item(row: &SqlRow) -> AppResult<WantedItem> {
         season_number: None,
         episode_number: None,
         media_type: row.text("media_type")?,
-        search_phase: row.text("search_phase")?,
-        next_search_at: opt_timestamp_text(row, "next_search_at")?,
         last_search_at: opt_timestamp_text(row, "last_search_at")?,
-        search_count: row.i64("search_count")?,
-        baseline_date: opt_timestamp_text(row, "baseline_date")?,
-        status: WantedStatus::parse(&status).unwrap_or_default(),
+        status: AcquisitionScopeStatus::parse(&status).unwrap_or_default(),
         grabbed_release: row.opt_text("grabbed_release")?,
         current_score: row.opt_i32("current_score")?,
         latest_release_decision: None,
@@ -391,7 +360,7 @@ fn json_text_from_row(row: &SqlRow, column: &str) -> AppResult<Option<String>> {
     }
 }
 
-fn wanted_row_to_item(row: &SqlRow) -> AppResult<WantedItem> {
+fn wanted_row_to_item(row: &SqlRow) -> AppResult<AcquisitionScopeState> {
     let latest_release_decision = match row.opt_text("latest_decision_id")? {
         Some(id) => Some(ReleaseDecision {
             id,
@@ -413,7 +382,7 @@ fn wanted_row_to_item(row: &SqlRow) -> AppResult<WantedItem> {
     };
 
     let status = row.text("status")?;
-    Ok(WantedItem {
+    Ok(AcquisitionScopeState {
         id: row.text("id")?,
         title_id: row.text("title_id")?,
         title_name: row.opt_text("title_name")?,
@@ -428,12 +397,8 @@ fn wanted_row_to_item(row: &SqlRow) -> AppResult<WantedItem> {
         season_number: row.opt_text("season_number")?,
         episode_number: row.opt_text("episode_number")?,
         media_type: row.text("media_type")?,
-        search_phase: row.text("search_phase")?,
-        next_search_at: opt_timestamp_text(row, "next_search_at")?,
         last_search_at: opt_timestamp_text(row, "last_search_at")?,
-        search_count: row.i64("search_count")?,
-        baseline_date: opt_timestamp_text(row, "baseline_date")?,
-        status: WantedStatus::parse(&status).unwrap_or_default(),
+        status: AcquisitionScopeStatus::parse(&status).unwrap_or_default(),
         grabbed_release: row.opt_text("grabbed_release")?,
         current_score: row.opt_i32("current_score")?,
         latest_release_decision,
@@ -448,8 +413,8 @@ fn wanted_item_select_sql() -> &'static str {
             t.facet AS title_facet, t.library_id AS library_id,
             libraries.name AS library_name, libraries.slug AS library_slug,
             w.episode_id, w.collection_id, w.series_movie_link_id,
-            e.season_number, e.episode_number, w.media_type, w.search_phase, w.next_search_at,
-            w.last_search_at, w.search_count, w.baseline_date, w.status, w.grabbed_release,
+            e.season_number, e.episode_number, w.media_type,
+            w.last_search_at, w.status, w.grabbed_release,
             w.current_score,
             latest_decision.id AS latest_decision_id,
             latest_decision.wanted_item_id AS latest_decision_wanted_item_id,
@@ -509,7 +474,7 @@ fn append_in_filter(sql: &mut String, args: &mut Vec<SqlArg>, column: &str, valu
 fn append_wanted_query_filters(
     sql: &mut String,
     args: &mut Vec<SqlArg>,
-    query: &WantedItemsQuery,
+    query: &AcquisitionScopeStatesQuery,
     include_title_search: bool,
 ) {
     append_in_filter(sql, args, "w.status", &query.statuses);
@@ -551,7 +516,7 @@ fn append_wanted_query_filters(
     );
 }
 
-fn sqlite_title_search_requires_spellfix(query: &WantedItemsQuery) -> bool {
+fn sqlite_title_search_requires_spellfix(query: &AcquisitionScopeStatesQuery) -> bool {
     query
         .title_search
         .as_deref()
@@ -559,7 +524,7 @@ fn sqlite_title_search_requires_spellfix(query: &WantedItemsQuery) -> bool {
         .is_some_and(|value| !value.is_empty())
 }
 
-fn wanted_upsert_sql(datastore: &StoreDatastore, item: &WantedItem) -> String {
+fn wanted_upsert_sql(datastore: &StoreDatastore, item: &AcquisitionScopeState) -> String {
     let conflict_target = if item.series_movie_link_id.is_some() {
         "(series_movie_link_id) WHERE series_movie_link_id IS NOT NULL"
     } else if item.collection_id.is_some() {
@@ -577,21 +542,11 @@ fn wanted_upsert_sql(datastore: &StoreDatastore, item: &WantedItem) -> String {
 
     format!(
         "INSERT INTO wanted_items
-         (id, title_id, episode_id, collection_id, series_movie_link_id, media_type, search_phase, next_search_at,
-          last_search_at, search_count, baseline_date, status, grabbed_release, current_score,
+         (id, title_id, episode_id, collection_id, series_movie_link_id, media_type,
+          last_search_at, status, grabbed_release, current_score,
           created_at, updated_at)
-         VALUES ({{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}})
+         VALUES ({{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}}, {{}})
          ON CONFLICT{conflict_target} DO UPDATE SET
-            search_phase = excluded.search_phase,
-            next_search_at = CASE
-                WHEN excluded.next_search_at IS NULL THEN NULL
-                WHEN wanted_items.search_count > 0 AND wanted_items.next_search_at IS NOT NULL
-                THEN wanted_items.next_search_at
-                WHEN wanted_items.status IN ('paused', 'completed')
-                THEN wanted_items.next_search_at
-                ELSE excluded.next_search_at
-            END,
-            baseline_date = excluded.baseline_date,
             status = CASE
                 WHEN wanted_items.status IN ('completed', 'paused') AND excluded.status = 'wanted'
                 THEN wanted_items.status
@@ -601,7 +556,10 @@ fn wanted_upsert_sql(datastore: &StoreDatastore, item: &WantedItem) -> String {
     )
 }
 
-fn wanted_upsert_args(datastore: &StoreDatastore, item: &WantedItem) -> AppResult<Vec<SqlArg>> {
+fn wanted_upsert_args(
+    datastore: &StoreDatastore,
+    item: &AcquisitionScopeState,
+) -> AppResult<Vec<SqlArg>> {
     let now = Utc::now().to_rfc3339();
     Ok(vec![
         SqlArg::Text(item.id.clone()),
@@ -610,11 +568,7 @@ fn wanted_upsert_args(datastore: &StoreDatastore, item: &WantedItem) -> AppResul
         SqlArg::OptText(item.collection_id.clone()),
         SqlArg::OptText(item.series_movie_link_id.clone()),
         SqlArg::Text(item.media_type.clone()),
-        SqlArg::Text(item.search_phase.clone()),
-        opt_timestamp_arg_for_datastore(datastore, item.next_search_at.as_deref())?,
         opt_timestamp_arg_for_datastore(datastore, item.last_search_at.as_deref())?,
-        SqlArg::I64(item.search_count),
-        opt_timestamp_arg_for_datastore(datastore, item.baseline_date.as_deref())?,
         SqlArg::Text(item.status.as_str().to_string()),
         SqlArg::OptText(item.grabbed_release.clone()),
         SqlArg::OptI32(item.current_score),
@@ -626,7 +580,7 @@ fn wanted_upsert_args(datastore: &StoreDatastore, item: &WantedItem) -> AppResul
 async fn execute_wanted_upsert_tx(
     tx: &mut crate::queries::sql_runtime::SqlTx<'_>,
     datastore: &StoreDatastore,
-    item: &WantedItem,
+    item: &AcquisitionScopeState,
 ) -> AppResult<String> {
     let sql = wanted_upsert_sql(datastore, item);
     let args = wanted_upsert_args(datastore, item)?;
@@ -651,10 +605,11 @@ async fn execute_datastore_write(
 
 async fn fetch_seed_target_tx(
     tx: &mut crate::queries::sql_runtime::SqlTx<'_>,
-    item: &WantedItem,
-) -> AppResult<Option<WantedItem>> {
-    let columns = "SELECT id, title_id, episode_id, collection_id, series_movie_link_id, media_type, search_phase,
-                          next_search_at, last_search_at, search_count, baseline_date, status,
+    item: &AcquisitionScopeState,
+) -> AppResult<Option<AcquisitionScopeState>> {
+    let columns =
+        "SELECT id, title_id, episode_id, collection_id, series_movie_link_id, media_type,
+                          last_search_at, status,
                           grabbed_release, current_score, created_at, updated_at
                      FROM wanted_items";
     let (sql, args) = if let Some(collection_id) = item.collection_id.as_deref() {
@@ -697,127 +652,72 @@ async fn fetch_seed_target_tx(
         .transpose()
 }
 
-fn merge_seeded_wanted_item(item: &WantedItem, existing: Option<&WantedItem>) -> WantedItem {
-    let mut seeded = item.clone();
-    if let Some(existing) = existing {
-        seeded.id = existing.id.clone();
-        if existing.search_count > 0 {
-            seeded.next_search_at = existing.next_search_at.clone();
-        }
-        if item.status == WantedStatus::Wanted && existing.status != WantedStatus::Wanted {
-            seeded.status = existing.status;
-        }
-    }
-    seeded
-}
-
 #[async_trait]
-impl WantedItemRepository for WantedStore {
-    async fn upsert_wanted_item(&self, item: &WantedItem) -> AppResult<String> {
-        let item = item.clone();
-        let datastore = self.datastore.clone();
-        SqlRuntime::run_in_transaction(&self.datastore, "upsert_wanted_item", move |tx| {
-            let datastore = datastore.clone();
-            let item = item.clone();
-            Box::pin(async move { execute_wanted_upsert_tx(tx, &datastore, &item).await })
-        })
-        .await
-    }
-
-    async fn ensure_wanted_item_seeded(&self, item: &WantedItem) -> AppResult<String> {
-        let item = item.clone();
-        let datastore = self.datastore.clone();
-        SqlRuntime::run_in_transaction(&self.datastore, "ensure_wanted_item_seeded", move |tx| {
-            let datastore = datastore.clone();
-            let item = item.clone();
-            Box::pin(async move {
-                let existing = fetch_seed_target_tx(tx, &item).await?;
-                let seeded = merge_seeded_wanted_item(&item, existing.as_ref());
-                execute_wanted_upsert_tx(tx, &datastore, &seeded).await?;
-                Ok(existing.map_or(item.id.clone(), |existing| existing.id))
-            })
-        })
-        .await
-    }
-
-    async fn list_due_wanted_items(
+impl AcquisitionScopeStateRepository for WantedStore {
+    async fn upsert_acquisition_scope_state(
         &self,
-        now: &str,
-        batch_limit: i64,
-        excluded_facets: &[MediaFacet],
-    ) -> AppResult<Vec<WantedItem>> {
-        let mut sql = String::from(
-            "SELECT w.id, w.title_id,
-                    CAST(NULL AS TEXT) AS title_name,
-                    CAST(NULL AS TEXT) AS title_slug,
-                    t.facet AS title_facet,
-                    t.library_id AS library_id,
-                    CAST(NULL AS TEXT) AS library_name,
-                    CAST(NULL AS TEXT) AS library_slug,
-                    w.episode_id, w.collection_id, w.series_movie_link_id,
-                    e.season_number, e.episode_number, w.media_type, w.search_phase,
-                    w.next_search_at, w.last_search_at, w.search_count, w.baseline_date,
-                    w.status, w.grabbed_release, w.current_score,
-                    CAST(NULL AS TEXT) AS latest_decision_id,
-                    FALSE AS mismatch_recovery_eligible,
-                    w.created_at, w.updated_at
-               FROM wanted_items w
-               JOIN titles t ON t.id = w.title_id
-               LEFT JOIN episodes e ON e.id = w.episode_id
-              WHERE w.status = 'wanted'
-                AND w.next_search_at IS NOT NULL
-                AND w.next_search_at <= {}
-                AND (w.media_type != 'episode' OR w.baseline_date IS NOT NULL)",
-        );
-        let mut args = vec![timestamp_arg_for_datastore(&self.datastore, now)?];
-        if !excluded_facets.is_empty() {
-            sql.push_str(" AND t.facet NOT IN (");
-            sql.push_str(&placeholders(excluded_facets.len()));
-            sql.push(')');
-            args.extend(
-                excluded_facets
-                    .iter()
-                    .map(|facet| SqlArg::Text(facet.as_str().to_string())),
-            );
-        }
-        sql.push_str(&wanted_due_order_sql(&self.datastore));
-        args.push(SqlArg::I64(batch_limit));
-
-        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
-            .await?
-            .iter()
-            .map(wanted_row_to_item)
-            .collect()
+        item: &AcquisitionScopeState,
+    ) -> AppResult<String> {
+        let item = item.clone();
+        let datastore = self.datastore.clone();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "upsert_acquisition_scope_state",
+            move |tx| {
+                let datastore = datastore.clone();
+                let item = item.clone();
+                Box::pin(async move { execute_wanted_upsert_tx(tx, &datastore, &item).await })
+            },
+        )
+        .await
     }
 
-    async fn update_wanted_item_status(
+    async fn ensure_acquisition_scope_state(
+        &self,
+        item: &AcquisitionScopeState,
+    ) -> AppResult<String> {
+        let item = item.clone();
+        let datastore = self.datastore.clone();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "ensure_acquisition_scope_state",
+            move |tx| {
+                let datastore = datastore.clone();
+                let item = item.clone();
+                Box::pin(async move {
+                    if let Some(existing) = fetch_seed_target_tx(tx, &item).await? {
+                        return Ok(existing.id);
+                    }
+                    execute_wanted_upsert_tx(tx, &datastore, &item).await?;
+                    Ok(item.id.clone())
+                })
+            },
+        )
+        .await
+    }
+
+    async fn update_acquisition_scope_status(
         &self,
         id: &str,
         status: &str,
-        next_search_at: Option<&str>,
         last_search_at: Option<&str>,
-        search_count: i64,
         current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         let now = Utc::now().to_rfc3339();
         execute_datastore_write(
             &self.datastore,
-            "update_wanted_item_status",
+            "update_acquisition_scope_status",
             "UPDATE wanted_items
                 SET status = {},
-                    next_search_at = {},
                     last_search_at = {},
-                    search_count = {},
                     current_score = {},
                     grabbed_release = {},
                     updated_at = {}
               WHERE id = {}",
             vec![
                 SqlArg::Text(status.to_string()),
-                opt_timestamp_arg_for_datastore(&self.datastore, next_search_at)?,
                 opt_timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
-                SqlArg::I64(search_count),
                 SqlArg::OptI32(current_score),
                 SqlArg::OptText(grabbed_release.map(str::to_string)),
                 timestamp_arg_for_datastore(&self.datastore, &now)?,
@@ -828,11 +728,34 @@ impl WantedItemRepository for WantedStore {
         Ok(())
     }
 
-    async fn get_wanted_item_for_title(
+    async fn record_acquisition_scope_search_attempt(
+        &self,
+        id: &str,
+        last_search_at: &str,
+    ) -> AppResult<()> {
+        let now = Utc::now().to_rfc3339();
+        execute_datastore_write(
+            &self.datastore,
+            "record_acquisition_scope_search_attempt",
+            "UPDATE wanted_items
+                SET last_search_at = {},
+                    updated_at = {}
+              WHERE id = {}",
+            vec![
+                timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
+                timestamp_arg_for_datastore(&self.datastore, &now)?,
+                SqlArg::Text(id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn get_acquisition_scope_state_for_title(
         &self,
         title_id: &str,
         episode_id: Option<&str>,
-    ) -> AppResult<Option<WantedItem>> {
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         let (sql, args) = if let Some(episode_id) = episode_id {
             (
                 format!(
@@ -860,7 +783,31 @@ impl WantedItemRepository for WantedStore {
             .transpose()
     }
 
-    async fn complete_wanted_item_for_title(
+    async fn list_acquisition_scope_states_for_title_ids(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        if title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = placeholders(title_ids.len());
+        let sql = format!(
+            "{} WHERE w.title_id IN ({placeholders})",
+            wanted_item_select_sql()
+        );
+        let args = title_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
+            .await?
+            .iter()
+            .map(wanted_row_to_item)
+            .collect()
+    }
+
+    async fn complete_acquisition_scope_for_title(
         &self,
         title_id: &str,
         episode_id: Option<&str>,
@@ -872,7 +819,6 @@ impl WantedItemRepository for WantedStore {
             (
                 "UPDATE wanted_items
                     SET status = {},
-                        next_search_at = {},
                         last_search_at = {},
                         current_score = COALESCE({}, current_score),
                         grabbed_release = CASE WHEN {} IS NULL THEN grabbed_release ELSE NULL END,
@@ -880,8 +826,7 @@ impl WantedItemRepository for WantedStore {
                   WHERE title_id = {} AND episode_id = {}"
                     .to_string(),
                 vec![
-                    SqlArg::Text(WantedStatus::Completed.as_str().to_string()),
-                    opt_timestamp_arg_for_datastore(&self.datastore, None)?,
+                    SqlArg::Text(AcquisitionScopeStatus::Completed.as_str().to_string()),
                     opt_timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
                     SqlArg::OptI32(current_score),
                     SqlArg::OptI32(current_score),
@@ -894,7 +839,6 @@ impl WantedItemRepository for WantedStore {
             (
                 "UPDATE wanted_items
                     SET status = {},
-                        next_search_at = {},
                         last_search_at = {},
                         current_score = COALESCE({}, current_score),
                         grabbed_release = CASE WHEN {} IS NULL THEN grabbed_release ELSE NULL END,
@@ -905,8 +849,7 @@ impl WantedItemRepository for WantedStore {
                     AND series_movie_link_id IS NULL"
                     .to_string(),
                 vec![
-                    SqlArg::Text(WantedStatus::Completed.as_str().to_string()),
-                    opt_timestamp_arg_for_datastore(&self.datastore, None)?,
+                    SqlArg::Text(AcquisitionScopeStatus::Completed.as_str().to_string()),
                     opt_timestamp_arg_for_datastore(&self.datastore, last_search_at)?,
                     SqlArg::OptI32(current_score),
                     SqlArg::OptI32(current_score),
@@ -915,16 +858,20 @@ impl WantedItemRepository for WantedStore {
                 ],
             )
         };
-        let rows =
-            execute_datastore_write(&self.datastore, "complete_wanted_item_for_title", sql, args)
-                .await?;
+        let rows = execute_datastore_write(
+            &self.datastore,
+            "complete_acquisition_scope_for_title",
+            sql,
+            args,
+        )
+        .await?;
         Ok(rows > 0)
     }
 
-    async fn delete_wanted_items_for_title(&self, title_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_title(&self, title_id: &str) -> AppResult<()> {
         execute_datastore_write(
             &self.datastore,
-            "delete_wanted_items_for_title",
+            "delete_acquisition_scope_states_for_title",
             "DELETE FROM wanted_items WHERE title_id = {}",
             vec![SqlArg::Text(title_id.to_string())],
         )
@@ -932,10 +879,13 @@ impl WantedItemRepository for WantedStore {
         Ok(())
     }
 
-    async fn delete_wanted_items_for_collection(&self, collection_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_collection(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<()> {
         execute_datastore_write(
             &self.datastore,
-            "delete_wanted_items_for_collection",
+            "delete_acquisition_scope_states_for_collection",
             "DELETE FROM wanted_items
               WHERE collection_id = {}
                  OR episode_id IN (
@@ -952,13 +902,13 @@ impl WantedItemRepository for WantedStore {
         Ok(())
     }
 
-    async fn delete_wanted_items_for_series_movie_link(
+    async fn delete_acquisition_scope_states_for_series_movie_link(
         &self,
         series_movie_link_id: &str,
     ) -> AppResult<()> {
         execute_datastore_write(
             &self.datastore,
-            "delete_wanted_items_for_series_movie_link",
+            "delete_acquisition_scope_states_for_series_movie_link",
             "DELETE FROM wanted_items WHERE series_movie_link_id = {}",
             vec![SqlArg::Text(series_movie_link_id.to_string())],
         )
@@ -966,33 +916,15 @@ impl WantedItemRepository for WantedStore {
         Ok(())
     }
 
-    async fn delete_wanted_items_for_episode(&self, episode_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_episode(&self, episode_id: &str) -> AppResult<()> {
         execute_datastore_write(
             &self.datastore,
-            "delete_wanted_items_for_episode",
+            "delete_acquisition_scope_states_for_episode",
             "DELETE FROM wanted_items WHERE episode_id = {}",
             vec![SqlArg::Text(episode_id.to_string())],
         )
         .await?;
         Ok(())
-    }
-
-    async fn reset_fruitless_wanted_items(&self, now: &str) -> AppResult<u64> {
-        execute_datastore_write(
-            &self.datastore,
-            "reset_fruitless_wanted_items",
-            "UPDATE wanted_items
-                SET next_search_at = {}, updated_at = {}
-              WHERE status = 'wanted'
-                AND search_count > 0
-                AND current_score IS NULL
-                AND (media_type != 'episode' OR baseline_date IS NOT NULL)",
-            vec![
-                timestamp_arg_for_datastore(&self.datastore, now)?,
-                timestamp_arg_for_datastore(&self.datastore, now)?,
-            ],
-        )
-        .await
     }
 
     async fn insert_release_decision(&self, decision: &ReleaseDecision) -> AppResult<String> {
@@ -1022,7 +954,10 @@ impl WantedItemRepository for WantedStore {
         Ok(decision.id.clone())
     }
 
-    async fn get_wanted_item_by_id(&self, id: &str) -> AppResult<Option<WantedItem>> {
+    async fn get_acquisition_scope_state_by_id(
+        &self,
+        id: &str,
+    ) -> AppResult<Option<AcquisitionScopeState>> {
         let sql = format!("{} WHERE w.id = {{}}", wanted_item_select_sql());
         SqlRuntime::fetch_optional(
             self.datastore.read_exec(),
@@ -1035,7 +970,30 @@ impl WantedItemRepository for WantedStore {
         .transpose()
     }
 
-    async fn list_wanted_items(&self, query: WantedItemsQuery) -> AppResult<Vec<WantedItem>> {
+    async fn list_acquisition_scope_states_by_ids(
+        &self,
+        ids: &[String],
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = placeholders(ids.len());
+        let sql = format!(
+            "{} WHERE w.id IN ({placeholders})",
+            wanted_item_select_sql()
+        );
+        let args = ids.iter().cloned().map(SqlArg::Text).collect::<Vec<_>>();
+        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
+            .await?
+            .iter()
+            .map(wanted_row_to_item)
+            .collect()
+    }
+
+    async fn list_acquisition_scope_states(
+        &self,
+        query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<Vec<AcquisitionScopeState>> {
         if let StoreDatastore::Sqlite { pool, .. } = &self.datastore
             && sqlite_title_search_requires_spellfix(&query)
         {
@@ -1057,7 +1015,10 @@ impl WantedItemRepository for WantedStore {
             .collect()
     }
 
-    async fn count_wanted_items(&self, query: WantedItemsQuery) -> AppResult<i64> {
+    async fn count_acquisition_scope_states(
+        &self,
+        query: AcquisitionScopeStatesQuery,
+    ) -> AppResult<i64> {
         if let StoreDatastore::Sqlite { pool, .. } = &self.datastore
             && sqlite_title_search_requires_spellfix(&query)
         {
@@ -1090,6 +1051,7 @@ impl WantedItemRepository for WantedStore {
         &self,
         title_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
@@ -1098,17 +1060,22 @@ impl WantedItemRepository for WantedStore {
                FROM release_decisions
               WHERE title_id = {}
               ORDER BY created_at DESC
-              LIMIT {}",
-            &[SqlArg::Text(title_id.to_string()), SqlArg::I64(limit)],
+              LIMIT {} OFFSET {}",
+            &[
+                SqlArg::Text(title_id.to_string()),
+                SqlArg::I64(limit),
+                SqlArg::I64(offset.max(0)),
+            ],
         )
         .await?;
         rows.iter().map(release_decision_row_to_item).collect()
     }
 
-    async fn list_release_decisions_for_wanted_item(
+    async fn list_release_decisions_for_acquisition_scope_state(
         &self,
         wanted_item_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<ReleaseDecision>> {
         let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
@@ -1117,11 +1084,42 @@ impl WantedItemRepository for WantedStore {
                FROM release_decisions
               WHERE wanted_item_id = {}
               ORDER BY created_at DESC
-              LIMIT {}",
-            &[SqlArg::Text(wanted_item_id.to_string()), SqlArg::I64(limit)],
+              LIMIT {} OFFSET {}",
+            &[
+                SqlArg::Text(wanted_item_id.to_string()),
+                SqlArg::I64(limit),
+                SqlArg::I64(offset.max(0)),
+            ],
         )
         .await?;
         rows.iter().map(release_decision_row_to_item).collect()
+    }
+
+    async fn count_release_decisions_for_title(&self, title_id: &str) -> AppResult<i64> {
+        SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT COUNT(*) AS cnt FROM release_decisions WHERE title_id = {}",
+            &[SqlArg::Text(title_id.to_string())],
+        )
+        .await?
+        .map(|row| row.i64("cnt"))
+        .transpose()
+        .map(|value| value.unwrap_or_default())
+    }
+
+    async fn count_release_decisions_for_acquisition_scope_state(
+        &self,
+        wanted_item_id: &str,
+    ) -> AppResult<i64> {
+        SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT COUNT(*) AS cnt FROM release_decisions WHERE wanted_item_id = {}",
+            &[SqlArg::Text(wanted_item_id.to_string())],
+        )
+        .await?
+        .map(|row| row.i64("cnt"))
+        .transpose()
+        .map(|value| value.unwrap_or_default())
     }
 }
 
@@ -1213,18 +1211,6 @@ impl HousekeepingRepository for HousekeepingStore {
             "DELETE FROM release_download_attempts
               WHERE attempted_at < {}
                 AND outcome != 'pending'",
-            vec![housekeeping_cutoff_arg(days)],
-        )
-        .await
-    }
-
-    async fn delete_dispatched_event_outboxes_older_than(&self, days: i64) -> AppResult<u32> {
-        execute_housekeeping_delete(
-            &self.datastore,
-            "delete_dispatched_event_outboxes_older_than",
-            "DELETE FROM event_outboxes
-              WHERE status = 'dispatched'
-                AND created_at < {}",
             vec![housekeeping_cutoff_arg(days)],
         )
         .await
@@ -1424,6 +1410,27 @@ impl HousekeepingRepository for HousekeepingStore {
         delete_media_files_by_ids_shared(&self.datastore, ids).await
     }
 
+    async fn prune_unreferenced_title_image_blobs(&self, limit: u32) -> AppResult<u32> {
+        execute_housekeeping_delete(
+            &self.datastore,
+            "prune_unreferenced_title_image_blobs",
+            "DELETE FROM title_image_blobs
+              WHERE digest IN (
+                    SELECT blob.digest
+                      FROM title_image_blobs blob
+                     WHERE NOT EXISTS (
+                            SELECT 1
+                              FROM title_image_variants variant
+                             WHERE variant.blob_digest = blob.digest
+                     )
+                     ORDER BY blob.digest
+                     LIMIT {}
+              )",
+            vec![SqlArg::I64(i64::from(limit))],
+        )
+        .await
+    }
+
     async fn run_database_maintenance(&self) -> AppResult<()> {
         match &self.datastore {
             StoreDatastore::Sqlite { .. } => {
@@ -1439,6 +1446,36 @@ impl HousekeepingRepository for HousekeepingStore {
                             .execute(&pool)
                             .await
                             .map_err(repo_err)?;
+                        // Throttled full VACUUM (RFC 121 SW4.3): only reclaim when
+                        // the free-page ratio shows meaningful bloat, so the daily
+                        // maintenance tick does not pay the VACUUM cost every run.
+                        let freelist_pages: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+                            .fetch_one(&pool)
+                            .await
+                            .map_err(repo_err)?;
+                        let total_pages: i64 = sqlx::query_scalar("PRAGMA page_count")
+                            .fetch_one(&pool)
+                            .await
+                            .map_err(repo_err)?;
+                        let freelist_fraction = if total_pages > 0 {
+                            freelist_pages as f64 / total_pages as f64
+                        } else {
+                            0.0
+                        };
+                        if freelist_pages >= SQLITE_VACUUM_MIN_FREELIST_PAGES
+                            && freelist_fraction >= SQLITE_VACUUM_MIN_FREELIST_FRACTION
+                        {
+                            tracing::info!(
+                                freelist_pages,
+                                total_pages,
+                                freelist_fraction,
+                                "running throttled sqlite VACUUM to reclaim free pages"
+                            );
+                            sqlx::query("VACUUM")
+                                .execute(&pool)
+                                .await
+                                .map_err(repo_err)?;
+                        }
                         Ok(())
                     },
                 )
@@ -1457,6 +1494,14 @@ const PENDING_RELEASE_COLUMNS: &str =
     "id, wanted_item_id, title_id, release_title, release_url, release_size_bytes,
     source_kind, release_score, scoring_log_json, indexer_source, release_guid,
     added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash";
+
+/// Same columns as [`PENDING_RELEASE_COLUMNS`] but qualified with the `pr` alias
+/// so the paged read can JOIN `titles` for library scoping without ambiguous
+/// column names. The output column names are unchanged.
+const PENDING_RELEASE_COLUMNS_PR: &str =
+    "pr.id, pr.wanted_item_id, pr.title_id, pr.release_title, pr.release_url, pr.release_size_bytes,
+    pr.source_kind, pr.release_score, pr.scoring_log_json, pr.indexer_source, pr.release_guid,
+    pr.added_at, pr.delay_until, pr.status, pr.grabbed_at, pr.source_password, pr.published_at, pr.info_hash";
 
 fn pending_release_row_to_item(
     row: &SqlRow,
@@ -1655,6 +1700,84 @@ impl PendingReleaseRepository for PendingReleaseStore {
         .await
     }
 
+    async fn list_pending_releases_page(
+        &self,
+        query: PendingReleasesPageQuery,
+    ) -> AppResult<(Vec<PendingRelease>, i64)> {
+        let limit = query.limit.max(0);
+        let offset = query.offset.max(0);
+
+        // Only JOIN titles when a library scope is supplied; the per-wanted-item
+        // caller has already authorized its single scope and passes no libraries.
+        let use_library_filter = !query.library_ids.is_empty();
+        let from_clause = if use_library_filter {
+            "FROM pending_releases pr JOIN titles t ON t.id = pr.title_id"
+        } else {
+            "FROM pending_releases pr"
+        };
+
+        // Base set is `waiting`, matching the historic list_waiting / for_wanted
+        // reads; the optional status filter narrows within that base.
+        let mut where_sql = String::from(" WHERE pr.status = 'waiting'");
+        let mut filter_args: Vec<SqlArg> = Vec::new();
+        if let Some(title_id) = query.title_id.as_deref() {
+            where_sql.push_str(" AND pr.title_id = {}");
+            filter_args.push(SqlArg::Text(title_id.to_string()));
+        }
+        if let Some(wanted_item_id) = query.wanted_item_id.as_deref() {
+            where_sql.push_str(" AND pr.wanted_item_id = {}");
+            filter_args.push(SqlArg::Text(wanted_item_id.to_string()));
+        }
+        append_in_filter(
+            &mut where_sql,
+            &mut filter_args,
+            "pr.status",
+            &query.statuses,
+        );
+        if use_library_filter {
+            append_in_filter(
+                &mut where_sql,
+                &mut filter_args,
+                "t.library_id",
+                &query.library_ids,
+            );
+        }
+
+        let count_sql = format!("SELECT COUNT(*) AS cnt {from_clause}{where_sql}");
+        let total =
+            SqlRuntime::fetch_optional(self.datastore.read_exec(), &count_sql, &filter_args)
+                .await?
+                .map(|row| row.i64("cnt"))
+                .transpose()?
+                .unwrap_or_default();
+
+        if limit == 0 || total == 0 {
+            return Ok((Vec::new(), total));
+        }
+
+        let order_sql = match query.sort {
+            PendingReleasePageSort::DelayUntilAsc => " ORDER BY pr.delay_until ASC, pr.id ASC",
+            PendingReleasePageSort::ReleaseScoreDesc => {
+                " ORDER BY pr.release_score DESC, pr.delay_until ASC, pr.id ASC"
+            }
+        };
+        let page_sql = format!(
+            "SELECT {PENDING_RELEASE_COLUMNS_PR} {from_clause}{where_sql}{order_sql} LIMIT {{}} OFFSET {{}}"
+        );
+        let mut page_args = filter_args;
+        page_args.push(SqlArg::I64(limit));
+        page_args.push(SqlArg::I64(offset));
+        let encryption_key = self.encryption_key()?;
+        let items = fetch_pending_releases(
+            self.datastore.read_exec(),
+            &page_sql,
+            &page_args,
+            encryption_key.as_ref(),
+        )
+        .await?;
+        Ok((items, total))
+    }
+
     async fn update_pending_release_status(
         &self,
         id: &str,
@@ -1753,14 +1876,14 @@ impl PendingReleaseRepository for PendingReleaseStore {
         Ok(rows > 0)
     }
 
-    async fn supersede_pending_releases_for_wanted_item(
+    async fn supersede_pending_releases_for_acquisition_scope_state(
         &self,
         wanted_item_id: &str,
         except_id: &str,
     ) -> AppResult<()> {
         execute_datastore_write(
             &self.datastore,
-            "supersede_pending_releases_for_wanted_item",
+            "supersede_pending_releases_for_acquisition_scope_state",
             "UPDATE pending_releases
                 SET status = 'superseded'
               WHERE wanted_item_id = {} AND id != {} AND status = 'waiting'",

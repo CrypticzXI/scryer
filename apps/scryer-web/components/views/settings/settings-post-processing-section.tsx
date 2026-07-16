@@ -9,12 +9,10 @@ import {
   Terminal,
   Trash2,
 } from "lucide-react";
+import { AddNewButton } from "@/components/common/add-new-button";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import {
-  boxedActionButtonBaseClass,
-  boxedActionButtonToneClass,
-} from "@/lib/utils/action-button-styles";
+import { IconButton } from "@/components/ui/icon-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -23,7 +21,8 @@ import {
   sanitizeDigits,
 } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { LazyRegoEditor } from "@/components/common/lazy-rego-editor";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { LazyCodeEditor } from "@/components/common/lazy-code-editor";
 import { RenderBooleanIcon } from "@/components/common/boolean-icon";
 import { FolderBrowserDialog } from "@/components/setup/folder-browser-dialog";
 import {
@@ -71,20 +70,17 @@ const FACET_OPTIONS = [
 function FacetBadges({ facets }: { facets: string[] }) {
   if (facets.length === 0) {
     return (
-      <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-xs text-blue-300">
+      <Badge tone="info" className="capitalize">
         All
-      </span>
+      </Badge>
     );
   }
   return (
     <div className="flex gap-1">
       {facets.map((f) => (
-        <span
-          key={f}
-          className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground capitalize"
-        >
+        <Badge key={f} tone="neutral" className="capitalize">
           {f}
-        </span>
+        </Badge>
       ))}
     </div>
   );
@@ -93,13 +89,13 @@ function FacetBadges({ facets }: { facets: string[] }) {
 function statusColor(status: string): string {
   switch (status) {
     case "success":
-      return "text-emerald-400";
+      return "text-[var(--scry-success-text-soft)]";
     case "failed":
-      return "text-red-400";
+      return "text-[var(--scry-danger-text-soft)]";
     case "timeout":
-      return "text-yellow-400";
+      return "text-[var(--scry-warning-text)]";
     case "running":
-      return "text-blue-400";
+      return "text-[var(--scry-info-text-soft)]";
     default:
       return "text-muted-foreground";
   }
@@ -148,7 +144,12 @@ function ScriptRunsTable({
           return (
             <TableRow
               key={run.id}
-              id={selectorId("settings-post-processing-run-row", run.id)}
+              id={selectorId(
+                "settings-post-processing-run-row",
+                run.status,
+                run.titleName || run.titleId || "unknown-title",
+                run.id,
+              )}
             >
               <TableCell className="text-xs">
                 {run.titleName || run.titleId || "--"}
@@ -173,7 +174,7 @@ function ScriptRunsTable({
                     {run.stdoutTail ? (
                       <pre
                         id={selectorId("settings-post-processing-run-stdout", run.id)}
-                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-1.5 font-mono text-[10px] leading-relaxed text-muted-foreground"
+                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-1.5 font-[var(--font-code)] text-[10px] leading-relaxed text-muted-foreground"
                       >
                         {run.stdoutTail}
                       </pre>
@@ -181,7 +182,7 @@ function ScriptRunsTable({
                     {run.stderrTail ? (
                       <pre
                         id={selectorId("settings-post-processing-run-stderr", run.id)}
-                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-900/20 p-1.5 font-mono text-[10px] leading-relaxed text-red-300"
+                        className="max-h-24 overflow-auto whitespace-pre-wrap rounded bg-[var(--scry-danger-bg)] p-1.5 font-[var(--font-code)] text-[10px] leading-relaxed text-[var(--scry-danger-text)]"
                       >
                         {run.stderrTail}
                       </pre>
@@ -238,11 +239,9 @@ export const SettingsPostProcessingSection = React.memo(
 
     return (
       <div id="settings-post-processing-section" className="space-y-4 text-sm">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Terminal className="h-4 w-4" />
-          {t("settings.pp.title")}
-        </CardTitle>
-
+        <div className="mx-auto flex w-full max-w-[2176px] flex-col gap-4 xl:flex-row xl:items-start">
+          <div className="min-w-0 flex-1">
+            <div className="mx-auto w-full max-w-[1280px] space-y-4">
         {/* Scripts Table */}
         <div className="rounded border border-border">
           <div className="flex items-center justify-between border-b border-border px-3 py-2">
@@ -276,7 +275,7 @@ export const SettingsPostProcessingSection = React.memo(
                 {scripts.map((script) => (
                   <React.Fragment key={script.id}>
                     <TableRow
-                      id={selectorId("settings-post-processing-row", script.id)}
+                      id={selectorId("settings-post-processing-row", script.name)}
                       className="cursor-pointer"
                       onClick={() => handleToggleExpand(script.id)}
                     >
@@ -294,12 +293,12 @@ export const SettingsPostProcessingSection = React.memo(
                         <FacetBadges facets={script.appliedFacets} />
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {script.executionMode === "blocking"
+                        {script.executionMode === "BLOCKING"
                           ? t("settings.pp.blocking")
                           : t("settings.pp.fireAndForget")}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {script.executionMode === "blocking"
+                        {script.executionMode === "BLOCKING"
                           ? `${script.timeoutSecs}s`
                           : "--"}
                       </TableCell>
@@ -314,53 +313,32 @@ export const SettingsPostProcessingSection = React.memo(
                           className="flex justify-end gap-1"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          <Button
+                          <IconButton
                             id={selectorId("settings-post-processing-toggle", script.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={script.enabled ? t("label.disable") : t("label.enable")}
-                            aria-label={script.enabled ? t("label.disable") : t("label.enable")}
+                            label={script.enabled ? t("label.disable") : t("label.enable")}
+                            tone={script.enabled ? "disabled" : "enabled"}
                             onClick={() => void toggleScript(script)}
                             disabled={mutatingScriptId === script.id}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass[script.enabled ? "disabled" : "enabled"],
-                            )}
                           >
                             <Power className="h-4 w-4" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             id={selectorId("settings-post-processing-edit", script.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("label.edit")}
-                            aria-label={t("label.edit")}
+                            label={t("label.edit")}
+                            tone="edit"
                             onClick={() => editScript(script)}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.edit,
-                            )}
                           >
                             <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button
+                          </IconButton>
+                          <IconButton
                             id={selectorId("settings-post-processing-delete", script.id)}
-                            type="button"
-                            size="icon-sm"
-                            variant="secondary"
-                            title={t("label.delete")}
-                            aria-label={t("label.delete")}
+                            label={t("label.delete")}
+                            tone="delete"
                             onClick={() => deleteScript(script)}
                             disabled={mutatingScriptId === script.id}
-                            className={cn(
-                              boxedActionButtonBaseClass,
-                              boxedActionButtonToneClass.delete,
-                            )}
                           >
                             <Trash2 className="h-4 w-4" />
-                          </Button>
+                          </IconButton>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -485,14 +463,15 @@ export const SettingsPostProcessingSection = React.memo(
                     <Label className="mb-2 block">
                       {t("settings.pp.inlineHelp")}
                     </Label>
-                    <LazyRegoEditor
+                    <LazyCodeEditor
                       id="settings-post-processing-script-content"
                       value={scriptDraft.scriptContent}
                       onChange={(value) =>
                         setScriptDraft((prev) => ({ ...prev, scriptContent: value }))
                       }
-                      minLines={20}
-                      maxLines={50}
+                      language="shell"
+                      minLines={10}
+                      maxLines={35}
                     />
                   </>
                 ) : (
@@ -510,7 +489,7 @@ export const SettingsPostProcessingSection = React.memo(
                             scriptContent: e.target.value,
                           }))
                         }
-                        className="font-mono"
+                        className="font-[var(--font-code)]"
                         placeholder="/usr/local/bin/post-process.sh"
                       />
                       <Button
@@ -529,7 +508,13 @@ export const SettingsPostProcessingSection = React.memo(
                       onSelect={(path) =>
                         setScriptDraft((prev) => ({ ...prev, scriptContent: path }))
                       }
-                      initialPath={scriptDraft.scriptContent || "/"}
+                      selectionTypes={["file"]}
+                      initialPath={
+                        scriptDraft.scriptContent.startsWith("/")
+                          ? scriptDraft.scriptContent.replace(/\/[^/]+$/, "") || "/"
+                          : "/"
+                      }
+                      title="Select script file"
                     />
                   </>
                 )}
@@ -564,41 +549,35 @@ export const SettingsPostProcessingSection = React.memo(
                 <Label className="mb-2 block">
                   {t("settings.pp.executionMode")}
                 </Label>
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2">
-                    <input
+                <RadioGroup
+                  value={scriptDraft.executionMode}
+                  onValueChange={(value) =>
+                    setScriptDraft((prev) => ({
+                      ...prev,
+                      executionMode: value,
+                    }))
+                  }
+                >
+                  <label
+                    htmlFor="settings-post-processing-execution-blocking"
+                    className="flex items-center gap-2"
+                  >
+                    <RadioGroupItem
                       id="settings-post-processing-execution-blocking"
-                      type="radio"
-                      name="executionMode"
-                      value="blocking"
-                      checked={scriptDraft.executionMode === "blocking"}
-                      onChange={() =>
-                        setScriptDraft((prev) => ({
-                          ...prev,
-                          executionMode: "blocking",
-                        }))
-                      }
-                      className="accent-primary"
+                      value="BLOCKING"
                     />
                     <span className="text-sm">{t("settings.pp.blocking")}</span>
                     <span className="text-xs text-muted-foreground">
                       {t("settings.pp.blockingHelp")}
                     </span>
                   </label>
-                  <label className="flex items-center gap-2">
-                    <input
+                  <label
+                    htmlFor="settings-post-processing-execution-fire-and-forget"
+                    className="flex items-center gap-2"
+                  >
+                    <RadioGroupItem
                       id="settings-post-processing-execution-fire-and-forget"
-                      type="radio"
-                      name="executionMode"
-                      value="fire_and_forget"
-                      checked={scriptDraft.executionMode === "fire_and_forget"}
-                      onChange={() =>
-                        setScriptDraft((prev) => ({
-                          ...prev,
-                          executionMode: "fire_and_forget",
-                        }))
-                      }
-                      className="accent-primary"
+                      value="FIRE_AND_FORGET"
                     />
                     <span className="text-sm">
                       {t("settings.pp.fireAndForget")}
@@ -607,11 +586,11 @@ export const SettingsPostProcessingSection = React.memo(
                       {t("settings.pp.fireAndForgetHelp")}
                     </span>
                   </label>
-                </div>
+                </RadioGroup>
               </div>
 
               {/* Timeout + Priority (only for blocking) */}
-              {scriptDraft.executionMode === "blocking" ? (
+              {scriptDraft.executionMode === "BLOCKING" ? (
                 <div className="grid gap-3 md:grid-cols-2">
                   <label>
                     <Label className="mb-2 block">
@@ -694,38 +673,35 @@ export const SettingsPostProcessingSection = React.memo(
         </Card>
         {editorMode === "edit" ? (
           <div className="flex justify-center">
-            <Button
+            <AddNewButton
               id="settings-post-processing-create-new"
-              type="button"
-              size="lg"
+              icon={Plus}
+              label={t("settings.pp.createNewScript")}
               onClick={startCreateScript}
               disabled={mutatingScriptId !== null}
-              className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-            >
-              <Plus className="h-5 w-5" />
-              {t("settings.pp.createNewScript")}
-            </Button>
+            />
           </div>
         ) : null}
           </>
         ) : (
           <div className="flex justify-center">
-          <Button
-            id="settings-post-processing-create"
-            type="button"
-              size="lg"
+            <AddNewButton
+              id="settings-post-processing-create"
+              icon={Plus}
+              label={t("settings.pp.createNewScript")}
               onClick={startCreateScript}
               disabled={mutatingScriptId !== null}
-              className="h-12 border border-emerald-500/30 bg-emerald-500/15 px-5 text-base font-semibold text-emerald-100 hover:bg-emerald-500/25 hover:text-emerald-50"
-            >
-              <Plus className="h-5 w-5" />
-              {t("settings.pp.createNewScript")}
-            </Button>
+            />
           </div>
         )}
+            </div>
+          </div>
+          <div className="@container w-full space-y-4 xl:w-[44%] xl:max-w-[880px] xl:shrink-0">
 
         {/* Environment Variables Reference */}
         <EnvVarsReference />
+          </div>
+        </div>
       </div>
     );
   },
@@ -733,7 +709,7 @@ export const SettingsPostProcessingSection = React.memo(
 
 function EnvVarsReference() {
   const t = useTranslate();
-  const [open, setOpen] = React.useState(false);
+  const [open, setOpen] = React.useState(true);
 
   return (
     <Card>

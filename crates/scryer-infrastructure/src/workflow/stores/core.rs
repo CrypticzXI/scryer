@@ -3,12 +3,12 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
-    AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
+    AcquisitionScopeStatus, AcquisitionStateRepository, AppError, AppResult, DomainEventRepository,
     DownloadQueueCommandRecord, DownloadSourceIdentity, DownloadSubmission,
     DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, DownloadSubmissionRepository,
     ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind, ImportArtifact,
     ImportArtifactRepository, ImportRepository, JobKey, JobRunRecord, JobRunStatus,
-    JobTriggerSource, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit, WantedStatus,
+    JobTriggerSource, PendingReleaseStatus, SubmissionScope, SuccessfulGrabCommit,
     WorkflowOperationInfo,
 };
 use scryer_domain::{
@@ -157,14 +157,12 @@ pub(crate) async fn commit_successful_grab_tx(
         SqlRuntime::execute(
             SqlExec::Tx(tx),
             "UPDATE wanted_items
-             SET status = {}, next_search_at = {}, last_search_at = {},
-                 search_count = {}, current_score = {}, grabbed_release = {}, updated_at = {}
+             SET status = {}, last_search_at = {},
+                 current_score = {}, grabbed_release = {}, updated_at = {}
              WHERE id = {}",
             &[
-                SqlArg::Text(WantedStatus::Grabbed.as_str().to_string()),
-                SqlArg::OptTimestamp(None),
+                SqlArg::Text(AcquisitionScopeStatus::Grabbed.as_str().to_string()),
                 opt_timestamp_arg(commit.last_search_at.as_deref()),
-                SqlArg::I64(commit.search_count),
                 SqlArg::OptI32(commit.current_score),
                 SqlArg::Text(commit.grabbed_release.clone()),
                 SqlArg::Timestamp(Utc::now()),
@@ -614,6 +612,41 @@ pub(crate) async fn recover_stale_processing_imports(
                AND updated_at < {{}}"
         ),
         args,
+    )
+    .await?;
+    Ok(rows)
+}
+
+/// Boot-time reconciliation for persisted job runs whose worker died mid-flight.
+///
+/// Invariant: a `workflow_operations` row in a non-terminal state (`queued`,
+/// `running`, `discovering`) is only advanced by the in-process worker that owns
+/// it. That worker lives in memory, so once the process restarts it is gone and
+/// the run can never reach a terminal state on its own — it is unfinishable.
+/// Left alone it would poll as "running" forever (the jobs UI and the
+/// acquisition-search view both surface these), so at boot we fail them and
+/// clear `progress_json` so any state derived from it (e.g. the
+/// acquisition-search view) falls back to the now-terminal `failed` status.
+pub(crate) async fn reconcile_interrupted_job_runs(datastore: &StoreDatastore) -> AppResult<u64> {
+    let now = Utc::now();
+    let rows = execute_write(
+        datastore,
+        "reconcile_interrupted_job_runs",
+        format!(
+            "UPDATE workflow_operations
+             SET status = '{}',
+                 progress_json = NULL,
+                 error_text = 'interrupted by restart',
+                 completed_at = {{}},
+                 updated_at = {{}}
+             WHERE job_key IS NOT NULL
+               AND status IN ('{}', '{}', '{}')",
+            JobRunStatus::Failed.as_str(),
+            JobRunStatus::Queued.as_str(),
+            JobRunStatus::Running.as_str(),
+            JobRunStatus::Discovering.as_str(),
+        ),
+        vec![SqlArg::Timestamp(now), SqlArg::Timestamp(now)],
     )
     .await?;
     Ok(rows)
@@ -1212,6 +1245,7 @@ pub(crate) fn snapshot_chunk_from_row(
     let facet_raw = row.text("facet")?;
     let entry_kind_raw = row.text("entry_kind")?;
     Ok(ExternalImportMonitorSnapshotChunk {
+        session_id: row.text("session_id")?,
         facet: MediaFacet::parse(&facet_raw).ok_or_else(|| {
             AppError::Repository(format!("invalid monitor snapshot chunk facet: {facet_raw}"))
         })?,

@@ -1,5 +1,17 @@
-export type ViewId = "movies" | "series" | "anime" | "activity" | "calendar" | "wanted" | "history" | "settings" | "system";
-export type SystemSection = "overview" | "jobs" | "audit";
+export type ViewId =
+  | "movies"
+  | "series"
+  | "anime"
+  | "discovery"
+  | "requests"
+  | "activity"
+  | "calendar"
+  | "wanted"
+  | "settings"
+  | "logs"
+  | "system";
+export type SystemSection = "overview" | "jobs" | "recycleBin";
+export type LogsSection = "logs" | "audit";
 export type ActivitySection = "activity" | "import" | "history";
 export type WantedSection = "wanted" | "cutoff" | "pending" | "history";
 export type SettingsSection =
@@ -18,12 +30,10 @@ export type SettingsSection =
   | "plugins"
   | "notifications"
   | "post-processing"
-  | "subtitles"
-  | "recycleBin";
+  | "subtitles";
 export type ContentSettingsSection =
   | "overview"
   | "import"
-  | "requests"
   | "library"
   | "general"
   | "quality"

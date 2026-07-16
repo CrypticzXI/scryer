@@ -5,20 +5,22 @@ use std::{collections::HashMap, sync::Arc};
 use async_graphql_axum::GraphQLRequest;
 use async_trait::async_trait;
 use axum::Router;
+use axum::body::{Body, to_bytes};
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, Request as HttpRequest, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
+use tower::ServiceExt as _;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use scryer_application::{
-    AppResult, AppServices, AppUseCase, AuthenticatedTokenClaims, BlocklistRepository,
-    FacetRegistry, HousekeepingRepository, IndexerPluginProvider, JwtAuthConfig, MovieFacetHandler,
-    OAuthAuthorizationSource, PendingReleaseRepository, SeriesFacetHandler,
-    SubtitleDownloadRepository, WantedItemRepository,
+    AcquisitionScopeStateRepository, AppResult, AppServices, AppUseCase, AuthenticatedTokenClaims,
+    BlocklistRepository, FacetRegistry, HousekeepingRepository, IndexerPluginProvider,
+    JwtAuthConfig, MovieFacetHandler, OAuthAuthorizationSource, PendingReleaseRepository,
+    SeriesFacetHandler, SubtitleDownloadRepository,
 };
 use scryer_infrastructure::sqlite::{
     LibraryStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore,
@@ -82,82 +84,81 @@ pub struct TestLibraryStateStore {
 }
 
 #[async_trait]
-impl WantedItemRepository for TestLibraryStateStore {
-    async fn upsert_wanted_item(&self, item: &scryer_application::WantedItem) -> AppResult<String> {
-        self.wanted.upsert_wanted_item(item).await
-    }
-
-    async fn list_due_wanted_items(
+impl AcquisitionScopeStateRepository for TestLibraryStateStore {
+    async fn upsert_acquisition_scope_state(
         &self,
-        now: &str,
-        batch_limit: i64,
-        excluded_facets: &[scryer_domain::MediaFacet],
-    ) -> AppResult<Vec<scryer_application::WantedItem>> {
-        self.wanted
-            .list_due_wanted_items(now, batch_limit, excluded_facets)
-            .await
+        item: &scryer_application::AcquisitionScopeState,
+    ) -> AppResult<String> {
+        self.wanted.upsert_acquisition_scope_state(item).await
     }
 
-    async fn update_wanted_item_status(
+    async fn update_acquisition_scope_status(
         &self,
         id: &str,
         status: &str,
-        next_search_at: Option<&str>,
         last_search_at: Option<&str>,
-        search_count: i64,
         current_score: Option<i32>,
         grabbed_release: Option<&str>,
     ) -> AppResult<()> {
         self.wanted
-            .update_wanted_item_status(
+            .update_acquisition_scope_status(
                 id,
                 status,
-                next_search_at,
                 last_search_at,
-                search_count,
                 current_score,
                 grabbed_release,
             )
             .await
     }
 
-    async fn get_wanted_item_for_title(
+    async fn record_acquisition_scope_search_attempt(
+        &self,
+        id: &str,
+        last_search_at: &str,
+    ) -> AppResult<()> {
+        self.wanted
+            .record_acquisition_scope_search_attempt(id, last_search_at)
+            .await
+    }
+
+    async fn get_acquisition_scope_state_for_title(
         &self,
         title_id: &str,
         episode_id: Option<&str>,
-    ) -> AppResult<Option<scryer_application::WantedItem>> {
+    ) -> AppResult<Option<scryer_application::AcquisitionScopeState>> {
         self.wanted
-            .get_wanted_item_for_title(title_id, episode_id)
+            .get_acquisition_scope_state_for_title(title_id, episode_id)
             .await
     }
 
-    async fn delete_wanted_items_for_title(&self, title_id: &str) -> AppResult<()> {
-        self.wanted.delete_wanted_items_for_title(title_id).await
-    }
-
-    async fn delete_wanted_items_for_collection(&self, collection_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_title(&self, title_id: &str) -> AppResult<()> {
         self.wanted
-            .delete_wanted_items_for_collection(collection_id)
+            .delete_acquisition_scope_states_for_title(title_id)
             .await
     }
 
-    async fn delete_wanted_items_for_series_movie_link(
+    async fn delete_acquisition_scope_states_for_collection(
+        &self,
+        collection_id: &str,
+    ) -> AppResult<()> {
+        self.wanted
+            .delete_acquisition_scope_states_for_collection(collection_id)
+            .await
+    }
+
+    async fn delete_acquisition_scope_states_for_series_movie_link(
         &self,
         series_movie_link_id: &str,
     ) -> AppResult<()> {
         self.wanted
-            .delete_wanted_items_for_series_movie_link(series_movie_link_id)
+            .delete_acquisition_scope_states_for_series_movie_link(series_movie_link_id)
             .await
     }
 
-    async fn delete_wanted_items_for_episode(&self, episode_id: &str) -> AppResult<()> {
+    async fn delete_acquisition_scope_states_for_episode(&self, episode_id: &str) -> AppResult<()> {
         self.wanted
-            .delete_wanted_items_for_episode(episode_id)
+            .delete_acquisition_scope_states_for_episode(episode_id)
             .await
-    }
-
-    async fn reset_fruitless_wanted_items(&self, now: &str) -> AppResult<u64> {
-        self.wanted.reset_fruitless_wanted_items(now).await
     }
 
     async fn insert_release_decision(
@@ -167,44 +168,61 @@ impl WantedItemRepository for TestLibraryStateStore {
         self.wanted.insert_release_decision(decision).await
     }
 
-    async fn get_wanted_item_by_id(
+    async fn get_acquisition_scope_state_by_id(
         &self,
         id: &str,
-    ) -> AppResult<Option<scryer_application::WantedItem>> {
-        self.wanted.get_wanted_item_by_id(id).await
+    ) -> AppResult<Option<scryer_application::AcquisitionScopeState>> {
+        self.wanted.get_acquisition_scope_state_by_id(id).await
     }
 
-    async fn list_wanted_items(
+    async fn list_acquisition_scope_states(
         &self,
-        query: scryer_application::WantedItemsQuery,
-    ) -> AppResult<Vec<scryer_application::WantedItem>> {
-        self.wanted.list_wanted_items(query).await
+        query: scryer_application::AcquisitionScopeStatesQuery,
+    ) -> AppResult<Vec<scryer_application::AcquisitionScopeState>> {
+        self.wanted.list_acquisition_scope_states(query).await
     }
 
-    async fn count_wanted_items(
+    async fn count_acquisition_scope_states(
         &self,
-        query: scryer_application::WantedItemsQuery,
+        query: scryer_application::AcquisitionScopeStatesQuery,
     ) -> AppResult<i64> {
-        self.wanted.count_wanted_items(query).await
+        self.wanted.count_acquisition_scope_states(query).await
     }
 
     async fn list_release_decisions_for_title(
         &self,
         title_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<scryer_application::ReleaseDecision>> {
         self.wanted
-            .list_release_decisions_for_title(title_id, limit)
+            .list_release_decisions_for_title(title_id, limit, offset)
             .await
     }
 
-    async fn list_release_decisions_for_wanted_item(
+    async fn list_release_decisions_for_acquisition_scope_state(
         &self,
         wanted_item_id: &str,
         limit: i64,
+        offset: i64,
     ) -> AppResult<Vec<scryer_application::ReleaseDecision>> {
         self.wanted
-            .list_release_decisions_for_wanted_item(wanted_item_id, limit)
+            .list_release_decisions_for_acquisition_scope_state(wanted_item_id, limit, offset)
+            .await
+    }
+
+    async fn count_release_decisions_for_title(&self, title_id: &str) -> AppResult<i64> {
+        self.wanted
+            .count_release_decisions_for_title(title_id)
+            .await
+    }
+
+    async fn count_release_decisions_for_acquisition_scope_state(
+        &self,
+        wanted_item_id: &str,
+    ) -> AppResult<i64> {
+        self.wanted
+            .count_release_decisions_for_acquisition_scope_state(wanted_item_id)
             .await
     }
 }
@@ -258,6 +276,15 @@ impl PendingReleaseRepository for TestLibraryStateStore {
             .await
     }
 
+    async fn list_pending_releases_page(
+        &self,
+        query: scryer_application::PendingReleasesPageQuery,
+    ) -> AppResult<(Vec<scryer_application::PendingRelease>, i64)> {
+        self.pending_releases
+            .list_pending_releases_page(query)
+            .await
+    }
+
     async fn update_pending_release_status(
         &self,
         id: &str,
@@ -307,13 +334,13 @@ impl PendingReleaseRepository for TestLibraryStateStore {
             .await
     }
 
-    async fn supersede_pending_releases_for_wanted_item(
+    async fn supersede_pending_releases_for_acquisition_scope_state(
         &self,
         wanted_item_id: &str,
         except_id: &str,
     ) -> AppResult<()> {
         self.pending_releases
-            .supersede_pending_releases_for_wanted_item(wanted_item_id, except_id)
+            .supersede_pending_releases_for_acquisition_scope_state(wanted_item_id, except_id)
             .await
     }
 
@@ -380,12 +407,6 @@ impl HousekeepingRepository for TestLibraryStateStore {
     async fn delete_release_attempts_older_than(&self, days: i64) -> AppResult<u32> {
         self.housekeeping
             .delete_release_attempts_older_than(days)
-            .await
-    }
-
-    async fn delete_dispatched_event_outboxes_older_than(&self, days: i64) -> AppResult<u32> {
-        self.housekeeping
-            .delete_dispatched_event_outboxes_older_than(days)
             .await
     }
 
@@ -471,6 +492,12 @@ impl HousekeepingRepository for TestLibraryStateStore {
 
     async fn delete_media_files_by_ids(&self, ids: &[String]) -> AppResult<u32> {
         self.housekeeping.delete_media_files_by_ids(ids).await
+    }
+
+    async fn prune_unreferenced_title_image_blobs(&self, limit: u32) -> AppResult<u32> {
+        self.housekeeping
+            .prune_unreferenced_title_image_blobs(limit)
+            .await
     }
 
     async fn run_database_maintenance(&self) -> AppResult<()> {
@@ -677,6 +704,8 @@ impl TestContext {
         let titles: Arc<dyn scryer_application::TitleRepository> = Arc::new(title_store.clone());
         let shows: Arc<dyn scryer_application::ShowRepository> = Arc::new(show_store.clone());
         let users: Arc<dyn scryer_application::UserRepository> = Arc::new(user_store.clone());
+        let ui_settings: Arc<dyn scryer_application::UserUiSettingsRepository> =
+            Arc::new(user_store.clone());
         let indexer_configs: Arc<dyn scryer_application::IndexerConfigRepository> =
             indexer_config_store;
         let download_client_configs: Arc<dyn scryer_application::DownloadClientConfigRepository> =
@@ -713,6 +742,12 @@ impl TestContext {
         let import_store = Arc::new(ImportStore::new(datastore.clone()));
         let external_import_monitor_store =
             Arc::new(ExternalImportMonitorStore::new(datastore.clone()));
+        let external_import_setup_secret_draft_store = Arc::new(
+            scryer_infrastructure::ExternalImportSetupSecretDraftStore::new(
+                datastore.clone(),
+                db.encryption_key_state(),
+            ),
+        );
         let download_queue_command_store =
             Arc::new(DownloadQueueCommandStore::new(datastore.clone()));
         let workflow_operation_store = Arc::new(WorkflowOperationStore::new(datastore.clone()));
@@ -730,7 +765,7 @@ impl TestContext {
             app_data_dir.path().display().to_string(),
         )
         .with_media_files(Arc::new(media_file_store.clone()))
-        .with_wanted_items(Arc::new(wanted_store))
+        .with_acquisition_scope_states(Arc::new(wanted_store))
         .with_pending_releases(Arc::new(pending_release_store))
         .with_blocklist_repo(Arc::new(blocklist_store))
         .with_library_probe_signatures(Arc::new(library_probe_store.clone()))
@@ -740,6 +775,7 @@ impl TestContext {
         .with_subtitle_downloads(Arc::new(subtitle_download_store))
         .with_libraries(Arc::new(library_store.clone()))
         .with_external_account_store(Arc::new(user_store.clone()))
+        .with_user_ui_settings_store(ui_settings)
         .with_external_identity_verifier(Arc::new(
             scryer_infrastructure::external_identity::HttpExternalIdentityVerifier::new(),
         ))
@@ -758,6 +794,7 @@ impl TestContext {
         .with_download_queue_commands(download_queue_command_store)
         .with_download_submissions(download_submission_store)
         .with_external_import_monitor_snapshots(external_import_monitor_store)
+        .with_external_import_setup_secret_drafts(external_import_setup_secret_draft_store)
         .with_import_artifacts(import_store.clone())
         .with_imports(import_store)
         .with_job_runs(workflow_operation_store.clone())
@@ -844,13 +881,46 @@ impl TestContext {
     pub fn http_client(&self) -> reqwest::Client {
         scryer_outbound_http::generic_reqwest_client()
     }
+
+    pub async fn graphql_json(&self, query: &str, variables: Value, token: Option<&str>) -> Value {
+        let body = serde_json::to_vec(&json!({ "query": query, "variables": variables }))
+            .expect("serialize graphql request");
+        let mut request = HttpRequest::builder()
+            .method("POST")
+            .uri("/graphql")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+
+        let app = self.app.clone();
+        let schema = self.schema.clone();
+        let auth_runtime = self.auth_runtime.clone();
+        let request = request
+            .body(Body::from(body))
+            .expect("build graphql request");
+        let response = tokio::spawn(async move {
+            build_test_router(app, schema, auth_runtime)
+                .oneshot(request)
+                .await
+        })
+        .await
+        .expect("graphql request task should finish")
+        .expect("graphql request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read graphql response body");
+        serde_json::from_slice(&bytes).expect("should be valid JSON")
+    }
 }
 
 async fn mount_default_smg_metadata_mocks(server: &MockServer) {
     let fixture = json!({
         "data": {
-            "m0": {
-                "movie": {
+            "metadataBulk": {
+                "movies": [{
                     "tvdb_id": 123456,
                     "name": "Test Movie Title",
                     "slug": "test-movie-title",
@@ -862,13 +932,24 @@ async fn mount_default_smg_metadata_mocks(server: &MockServer) {
                     "runtime_minutes": 142,
                     "sort_title": "Test Movie Title",
                     "imdb_id": "tt1234567",
-                    "genres": ["Action", "Thriller"],
+                    "canonical_tags": [
+                        {
+                            "key": "canonical:genre:action",
+                            "category": "genre",
+                            "name": "Action",
+                            "confidence": 1.0
+                        },
+                        {
+                            "key": "canonical:genre:thriller",
+                            "category": "genre",
+                            "name": "Thriller",
+                            "confidence": 1.0
+                        }
+                    ],
                     "studio": "Test Studios",
                     "tmdb_release_date": "2024-06-15"
-                }
-            },
-            "s0": {
-                "series": {
+                }],
+                "series": [{
                     "tvdb_id": 345678,
                     "name": "Test Show Name",
                     "sort_name": "Test Show Name",
@@ -881,7 +962,20 @@ async fn mount_default_smg_metadata_mocks(server: &MockServer) {
                     "runtime_minutes": 45,
                     "poster_url": "https://artworks.thetvdb.com/banners/series/345678/posters/test.jpg",
                     "country": "usa",
-                    "genres": ["Drama", "Thriller"],
+                    "canonical_tags": [
+                        {
+                            "key": "canonical:genre:drama",
+                            "category": "genre",
+                            "name": "Drama",
+                            "confidence": 1.0
+                        },
+                        {
+                            "key": "canonical:genre:thriller",
+                            "category": "genre",
+                            "name": "Thriller",
+                            "confidence": 1.0
+                        }
+                    ],
                     "aliases": ["Testing Show", "QA Chronicles"],
                     "tagged_aliases": [],
                     "seasons": [
@@ -909,7 +1003,7 @@ async fn mount_default_smg_metadata_mocks(server: &MockServer) {
                     ],
                     "anime_mappings": [],
                     "anime_movies": []
-                }
+                }]
             }
         }
     })

@@ -43,6 +43,7 @@ fn new_nzbgeek_client(uri: &str) -> Arc<dyn IndexerClient> {
         is_enabled: true,
         enable_interactive_search: true,
         enable_auto_search: true,
+        indexer_proxy_config_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
@@ -115,6 +116,8 @@ async fn nzbgeek_search_movie_by_category() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .expect("search should succeed")
@@ -174,6 +177,8 @@ async fn nzbgeek_search_movie_extracts_size() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap()
@@ -211,6 +216,8 @@ async fn nzbgeek_search_movie_extracts_download_url() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap()
@@ -256,6 +263,8 @@ async fn nzbgeek_search_series_by_category() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .expect("series search should succeed")
@@ -291,6 +300,8 @@ async fn nzbgeek_search_series_endpoint_by_anime_category() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -327,6 +338,8 @@ async fn nzbgeek_search_series_endpoint_by_series_category() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -364,6 +377,8 @@ async fn nzbgeek_search_infers_movie_from_imdb_id() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -400,6 +415,8 @@ async fn nzbgeek_search_infers_series_endpoint_from_tvdb_id() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -437,6 +454,8 @@ async fn nzbgeek_search_generic_without_ids() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -476,6 +495,8 @@ async fn nzbgeek_search_empty_results() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .expect("empty search should succeed")
@@ -511,6 +532,8 @@ async fn nzbgeek_search_single_item_response() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .expect("single-item response should parse correctly")
@@ -538,6 +561,7 @@ async fn nzbgeek_search_no_api_key_fails() {
         is_enabled: true,
         enable_interactive_search: true,
         enable_auto_search: true,
+        indexer_proxy_config_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
@@ -574,6 +598,8 @@ async fn nzbgeek_search_no_api_key_fails() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -603,6 +629,8 @@ async fn nzbgeek_search_http_error() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -617,7 +645,7 @@ async fn nzbgeek_search_rate_limited() {
         .respond_with(
             ResponseTemplate::new(429)
                 .set_body_string(load_fixture("nzbgeek/error_rate_limit.json"))
-                .insert_header("Retry-After", "60"),
+                .insert_header("Retry-After", "1"),
         )
         .mount(&ctx.nzbgeek_server)
         .await;
@@ -636,6 +664,8 @@ async fn nzbgeek_search_rate_limited() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -679,6 +709,8 @@ async fn nzbgeek_search_server_error_fallback() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -709,6 +741,8 @@ async fn nzbgeek_search_empty_query_and_no_ids_fails() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await;
 
@@ -749,6 +783,8 @@ async fn newznab_search_extracts_standard_metadata_attributes() {
             None,
             None, // absolute_episode
             vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
         )
         .await
         .unwrap()

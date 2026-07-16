@@ -50,6 +50,7 @@ mod tests {
             language: "eng".to_string(),
             release_info: None,
             score,
+            score_percent: score,
             hearing_impaired: false,
             forced: false,
             ai_translated: false,

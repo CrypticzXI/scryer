@@ -122,7 +122,9 @@ async fn execute_resolved_episode_import(
             return Ok(EpisodeImportOutcome::Skipped {
                 message: reason,
                 reason_code: Some(code.to_string()),
-                skip_reason: Some(skip_reason_for_import_check_code(code)),
+                skip_reason: Some(
+                    skip_reason_for_import_check_rejection(app, code, &dest_path).await?,
+                ),
                 episode_ids: target_episode_ids.clone(),
             });
         }
@@ -133,6 +135,8 @@ async fn execute_resolved_episode_import(
         let file_result = import_file_with_record_progress(
             app,
             import_id,
+            &title.library_id,
+            &title.facet,
             source_video,
             &dest_path,
             import_mode,
@@ -274,7 +278,9 @@ async fn execute_resolved_episode_import(
         return Ok(EpisodeImportOutcome::Skipped {
             message: reason,
             reason_code: Some(code.to_string()),
-            skip_reason: Some(skip_reason_for_import_check_code(code)),
+            skip_reason: Some(
+                skip_reason_for_import_check_rejection(app, code, &precheck_dest_path).await?,
+            ),
             episode_ids: target_episode_ids.clone(),
         });
     }
@@ -359,6 +365,10 @@ async fn execute_resolved_episode_import(
         .resolve_import_mode(Some(&title.library_id), &title.facet)
         .await?;
 
+    let manual_replacement = matches!(
+        runtime_sample_mode,
+        crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck
+    );
     if !existing_incumbents.is_empty() {
         let post_download_score =
             crate::post_download_gate::compute_post_download_acquisition_decision(
@@ -375,11 +385,19 @@ async fn execute_resolved_episode_import(
                 is_filler,
             )
             .await;
-        let new_score = post_download_score.score;
+        // A manual operator replacement always lands and is score-boosted so it is
+        // not immediately re-replaced by a marginally-higher automatic upgrade.
+        let new_score = post_download_score.score
+            + if manual_replacement {
+                crate::post_download_gate::MANUAL_GRAB_BOOST
+            } else {
+                0
+            };
         let upgrade_plan = match build_episode_upgrade_plan(
             &existing_incumbents,
             &target_episode_ids,
             new_score,
+            manual_replacement,
         ) {
             Ok(plan) => plan,
             Err(rejection) => {
@@ -483,6 +501,8 @@ async fn execute_resolved_episode_import(
     let file_result = import_file_with_record_progress(
         app,
         import_id,
+        &title.library_id,
+        &title.facet,
         source_video,
         &dest_path,
         import_mode,
@@ -600,10 +620,9 @@ async fn execute_resolved_episode_import(
         link_type: Some(link_type),
     })
 }
-/// Mark a wanted item as completed for a title (and optionally a specific episode).
-/// If `imported_score` is provided, it becomes the new `current_score`.
-/// If the quality profile allows upgrades, the item re-enters "wanted" status
-/// with a recomputed schedule (the 24h cooldown in `evaluate_upgrade` prevents churn).
+/// Mark an existing acquisition-state row completed for a title scope.
+/// If no row exists, leave it absent: convergence derives target-ness from
+/// library state, so passive scans/imports must not synthesize wanted rows.
 pub(crate) async fn mark_wanted_completed(
     app: &AppUseCase,
     title_id: &str,
@@ -615,8 +634,8 @@ pub(crate) async fn mark_wanted_completed(
     match app
         .services
         .workflow
-        .wanted_items
-        .complete_wanted_item_for_title(title_id, episode_id, Some(&now), imported_score)
+        .acquisition_scope_states
+        .complete_acquisition_scope_for_title(title_id, episode_id, Some(&now), imported_score)
         .await
     {
         Ok(true) => {}

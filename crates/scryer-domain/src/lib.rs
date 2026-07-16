@@ -4,6 +4,12 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod title_sort;
+pub use title_sort::{
+    title_catalog_name_tie_key, title_catalog_sort_input, title_catalog_sort_key,
+    title_catalog_sort_key_for_title,
+};
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Id(pub String);
 
@@ -627,13 +633,25 @@ pub struct ExternalId {
     pub value: String,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct CanonicalMediaTag {
+    pub key: String,
+    pub category: String,
+    pub name: String,
+    pub confidence: Option<f64>,
+    pub sources: Vec<String>,
+    pub source_tag_keys: Vec<String>,
+    pub is_adult: bool,
+    pub is_spoiler: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TaggedAlias {
     pub name: String,
     pub language: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Title {
     pub id: String,
     pub library_id: String,
@@ -653,10 +671,12 @@ pub struct Title {
     pub background_url: Option<String>,
     pub background_source_url: Option<String>,
     pub sort_title: Option<String>,
+    pub catalog_sort_key: String,
     pub slug: Option<String>,
     pub imdb_id: Option<String>,
     pub runtime_minutes: Option<i32>,
-    pub genres: Vec<String>,
+    pub popularity: Option<f64>,
+    pub canonical_tags: Vec<CanonicalMediaTag>,
     pub content_status: Option<String>,
     pub language: Option<String>,
     pub first_aired: Option<String>,
@@ -685,7 +705,6 @@ pub struct MovieEntity {
     pub language: Option<String>,
     pub runtime_minutes: Option<i32>,
     pub content_status: Option<String>,
-    pub genres: Vec<String>,
     pub studio: Option<String>,
     pub digital_release_date: Option<String>,
     pub imdb_id: Option<String>,
@@ -866,6 +885,7 @@ pub struct IndexerConfig {
     pub is_enabled: bool,
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
+    pub indexer_proxy_config_id: Option<String>,
     pub managed_parent_config_id: Option<String>,
     pub managed_child_key: Option<String>,
     pub managed_metadata_json: Option<String>,
@@ -873,6 +893,91 @@ pub struct IndexerConfig {
     pub last_health_status: Option<String>,
     pub last_error_at: Option<DateTime<Utc>>,
     pub config_json: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexerProxyProviderType {
+    Byparr,
+}
+
+impl IndexerProxyProviderType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Byparr => "byparr",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "byparr" => Some(Self::Byparr),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChallengeSolverProtocol {
+    RequestSolutionV1,
+}
+
+impl ChallengeSolverProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RequestSolutionV1 => "request_solution_v1",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "request_solution_v1" => Some(Self::RequestSolutionV1),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexerProxyHealthStatus {
+    Unknown,
+    Healthy,
+    Unhealthy,
+}
+
+impl IndexerProxyHealthStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Healthy => "healthy",
+            Self::Unhealthy => "unhealthy",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "unknown" => Some(Self::Unknown),
+            "healthy" => Some(Self::Healthy),
+            "unhealthy" => Some(Self::Unhealthy),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IndexerProxyConfig {
+    pub id: String,
+    pub name: String,
+    pub provider_type: IndexerProxyProviderType,
+    pub protocol: ChallengeSolverProtocol,
+    pub base_url: String,
+    pub request_timeout_seconds: u32,
+    pub is_enabled: bool,
+    pub last_health_status: Option<IndexerProxyHealthStatus>,
+    pub last_error_message: Option<String>,
+    pub last_error_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -930,6 +1035,7 @@ pub struct NewIndexerConfig {
     pub is_enabled: bool,
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
+    pub indexer_proxy_config_id: Option<String>,
     pub config_json: Option<String>,
 }
 
@@ -3486,6 +3592,13 @@ pub struct IndexerProviderCapabilities {
     /// None → indexer does not accept freetext queries (RSS-only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_param: Option<String>,
+    /// Facets for which the provider can accept title/freetext searches.
+    ///
+    /// Empty means legacy inference: ID-declared facets are query-capable, and
+    /// query-only providers with no `supported_ids` are assumed to accept all
+    /// current search facets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_query_facets: Vec<String>,
 
     // -- Legacy boolean fields kept for backward compat during migration.
     // -- New code should use supported_ids / query_param instead.
@@ -3524,9 +3637,38 @@ pub struct IndexerManagementCapabilities {
 }
 
 impl IndexerProviderCapabilities {
+    pub const QUERY_FACETS: [&'static str; 3] = ["movie", "series", "anime"];
+
     /// Whether this indexer supports any structured or freetext search at all.
     pub fn supports_any_search(&self) -> bool {
         self.query_param.is_some() || !self.supported_ids.is_empty() || self.search
+    }
+
+    /// Whether this indexer can accept a title/freetext query for `facet`.
+    pub fn supports_query_for_facet(&self, facet: &str) -> bool {
+        if self.query_param.is_none() {
+            return false;
+        }
+
+        let facet = facet.trim();
+        if facet.is_empty() {
+            return false;
+        }
+
+        if !self.supported_query_facets.is_empty() {
+            return self
+                .supported_query_facets
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(facet));
+        }
+
+        if self.supported_ids.is_empty() {
+            return Self::QUERY_FACETS
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(facet));
+        }
+
+        self.has_facet(facet)
     }
 
     /// Whether this indexer has any ID types for the given facet.
@@ -3556,6 +3698,8 @@ pub enum ConfigFieldType {
     Bool,
     Select,
     Number,
+    Path,
+    Tag,
 }
 
 impl ConfigFieldType {
@@ -3567,6 +3711,8 @@ impl ConfigFieldType {
             Self::Bool => "bool",
             Self::Select => "select",
             Self::Number => "number",
+            Self::Path => "path",
+            Self::Tag => "tag",
         }
     }
 
@@ -3578,6 +3724,8 @@ impl ConfigFieldType {
             "bool" => Some(Self::Bool),
             "select" => Some(Self::Select),
             "number" => Some(Self::Number),
+            "path" => Some(Self::Path),
+            "tag" => Some(Self::Tag),
             _ => None,
         }
     }

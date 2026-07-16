@@ -2,8 +2,8 @@ import { Loader2 } from "lucide-react";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { FilterChipButton } from "@/components/common/filter-chip-button";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { UnderlineFilterButton } from "@/components/common/underline-filter-button";
 import { HistoryEventTable } from "@/components/common/history-event-table";
 import type { LibraryRecord, TitleHistoryEvent, TitleRecord } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -51,7 +51,7 @@ export function TitleHistoryView({
   onClearFilters: () => void;
   onPreviousPage: () => void;
   onNextPage: () => void;
-  onRetry: (importId: string, password?: string) => Promise<void>;
+  onRetry?: (importId: string, password?: string) => Promise<void>;
   hasPreviousPage: boolean;
   hasNextPage: boolean;
 }) {
@@ -60,12 +60,11 @@ export function TitleHistoryView({
   const pageEnd = totalCount === 0 ? 0 : currentPage * pageSize + events.length;
 
   return (
-    <Card className="flex min-h-0 flex-1 flex-col">
-      <CardHeader className="space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+    <Card className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border-0 bg-transparent shadow-none">
+      <CardHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,var(--scry-surfD),transparent)] px-4 py-4 sm:px-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
-            <CardTitle>{`${t("nav.wanted")} ${t("history.title")}`}</CardTitle>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-[12.5px] text-[var(--scry-muted3)]">
               {t("pendingImports.pageRange", {
                 start: pageStart,
                 end: pageEnd,
@@ -76,8 +75,9 @@ export function TitleHistoryView({
           <div className="flex items-center gap-2">
             <Button
               type="button"
-              variant="outline"
+              variant="secondary"
               size="sm"
+              className="h-9 rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none hover:bg-[var(--scry-hover)]"
               disabled={!hasPreviousPage || loading}
               onClick={onPreviousPage}
             >
@@ -85,8 +85,9 @@ export function TitleHistoryView({
             </Button>
             <Button
               type="button"
-              variant="outline"
+              variant="secondary"
               size="sm"
+              className="h-9 rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none hover:bg-[var(--scry-hover)]"
               disabled={!hasNextPage || loading}
               onClick={onNextPage}
             >
@@ -94,62 +95,63 @@ export function TitleHistoryView({
             </Button>
           </div>
         </div>
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
-          <TitleAutocompletePicker
-            className="w-full lg:flex-1"
-            placeholder={t("title.filterPlaceholder")}
-            selectedTitle={selectedTitle}
-            selectedTitleId={selectedTitle?.id ?? null}
-            onSelectedTitleChange={onSelectedTitleChange}
-          />
-          <LibraryMultiSelect
-            libraries={libraries}
-            selectedLibraryIds={selectedLibraryIds}
-            onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
-            disabled={librariesLoading}
-            triggerClassName="w-full lg:w-72 lg:shrink-0"
-          />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <FilterChipButton
-            selected={activeFilters.length === 0}
-            onClick={onClearFilters}
-            className="text-xs"
-          >
-            {t("history.allEvents")}
-          </FilterChipButton>
-          {availableFilters.map((eventType) => {
-            const isActive = activeFilters.includes(eventType);
-            return (
-              <FilterChipButton
-                key={eventType}
-                selected={isActive}
-                onClick={() => onToggleFilter(eventType)}
-                icon={<HistoryEventIcon eventType={eventType} size={14} />}
-              >
-                {getTitleHistoryFilterLabel(eventType, t)}
-              </FilterChipButton>
-            );
-          })}
-        </div>
       </CardHeader>
-      <CardContent className="min-h-0 flex-1">
+      <CardContent className="flex min-h-0 flex-1 flex-col space-y-3 bg-[color-mix(in_srgb,var(--scry-bg)_52%,transparent)] p-4 sm:p-5">
+        <div className="flex flex-col gap-3 rounded-[14px] border border-[var(--scry-border3)] bg-[var(--scry-surfC)] p-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <TitleAutocompletePicker
+              className="w-full sm:max-w-sm"
+              placeholder={t("title.filterPlaceholder")}
+              selectedTitle={selectedTitle}
+              selectedTitleId={selectedTitle?.id ?? null}
+              onSelectedTitleChange={onSelectedTitleChange}
+            />
+            <LibraryMultiSelect
+              libraries={libraries}
+              selectedLibraryIds={selectedLibraryIds}
+              onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+              disabled={librariesLoading}
+              triggerClassName="h-10 w-full rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] text-[13px] text-[var(--scry-body)] shadow-none sm:w-[200px]"
+            />
+          </div>
+          <div className="relative top-px flex min-h-10 min-w-0 max-w-full flex-wrap items-center justify-start gap-x-5 gap-y-1 border-0 bg-transparent p-0 shadow-none">
+            <UnderlineFilterButton
+              selected={activeFilters.length === 0}
+              onClick={onClearFilters}
+              label={t("history.allEvents")}
+            />
+            {availableFilters.map((eventType) => {
+              const isActive = activeFilters.includes(eventType);
+              return (
+                <UnderlineFilterButton
+                  key={eventType}
+                  selected={isActive}
+                  onClick={() => onToggleFilter(eventType)}
+                  icon={<HistoryEventIcon eventType={eventType} size={14} />}
+                  label={getTitleHistoryFilterLabel(eventType, t)}
+                />
+              );
+            })}
+          </div>
+        </div>
         {loading && events.length === 0 ? (
-          <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 py-8 text-sm text-[var(--scry-muted3)]">
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>{t("label.loading")}</span>
           </div>
         ) : error ? (
-          <p className="py-8 text-sm text-rose-300">{error}</p>
+          <p className="py-8 text-sm text-[var(--scry-danger-text)]">{error}</p>
         ) : (
-          <HistoryEventTable
-            events={events}
-            showTitle
-            showFacet
-            showActor
-            onRetry={onRetry}
-            emptyMessage={t("history.empty")}
-          />
+          <div className="min-h-0 flex-1 overflow-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]">
+            <HistoryEventTable
+              events={events}
+              showTitle
+              showFacet
+              showActor
+              onRetry={onRetry}
+              emptyMessage={t("history.empty")}
+            />
+          </div>
         )}
       </CardContent>
     </Card>

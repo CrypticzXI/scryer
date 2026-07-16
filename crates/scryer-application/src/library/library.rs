@@ -11,21 +11,20 @@ use crate::library_discovery::{
     list_movie_top_level_entries, matching_movie_nfo_path, run_background_refresh_probe_with_delta,
     stream_child_directories_batched, stream_movie_top_level_entries_batched,
 };
-use crate::library_scan::{LibraryDirectoryScanResult, source_signature_from_std_metadata};
+use crate::library_scan::LibraryDirectoryScanResult;
 use crate::library_scan_coordinator::LibraryScanCoordinator;
 use crate::library_scan_helpers::{
     LibraryScanSessionDropGuard, spawn_library_discovery_queue,
     wait_for_projected_library_scan_session,
 };
 use crate::library_scan_metadata::{
-    MetadataLookupBatchStats, MetadataSearchResults, PreparedMovieLibraryScanCandidate,
-    PreparedMovieLibraryScanEntry, PreparedSeriesLibraryScanCandidate,
-    StreamingMetadataProgressUpdate, StreamingMovieMetadataResolver,
+    LIBRARY_SCAN_METADATA_SEARCH_BATCH_SIZE, MetadataLookupBatchStats, MetadataSearchResults,
+    PreparedMovieLibraryScanCandidate, PreparedSeriesLibraryScanCandidate,
     build_movie_metadata_batch_stats, build_series_metadata_batch_stats,
     movie_candidate_batch_search_keys, prepare_movie_library_scan_entries,
-    prepare_series_library_scan_candidates, resolve_full_scan_metadata_batches,
+    prepare_series_library_scan_candidates, resolve_refresh_metadata_batches,
     select_movie_metadata_from_batch_results, select_series_metadata_from_batch_results,
-    series_candidate_batch_search_keys, stream_prepared_movie_library_scan_entries,
+    series_candidate_batch_search_keys,
 };
 use crate::library_scan_titles::{
     append_movie_title, append_series_title, build_movie_probe_path_indexes,
@@ -43,17 +42,19 @@ use crate::library_scan_unmatched::{
 use crate::settings::settings::{
     effective_scan_roots_from_root_folders, root_folder_entries_from_library_roots,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
-const LIBRARY_METADATA_LOOKUP_CONCURRENCY: usize = 4;
 const LIBRARY_SCAN_MOVIE_BATCH_SIZE: usize = 32;
 const LIBRARY_SCAN_SERIES_BATCH_SIZE: usize = 8;
-const LIBRARY_SCAN_TITLE_WALK_CONCURRENCY: usize = 4;
 const TITLE_SCAN_FILE_BATCH_SIZE: usize = 128;
 #[path = "scan/candidates.rs"]
 mod scan_candidates;
 #[path = "scan/full.rs"]
 mod scan_full;
+#[path = "scan/metadata_refresh.rs"]
+mod scan_metadata_refresh;
+#[path = "scan/pipeline.rs"]
+mod scan_pipeline;
 #[path = "scan/refresh.rs"]
 mod scan_refresh;
 #[path = "scan/title_files.rs"]
@@ -71,13 +72,16 @@ use scan_candidates::{
     scan_episodic_title_directory_for_progress_metrics,
 };
 use scan_full::{scan_library_movies, scan_library_series};
+use scan_pipeline::{
+    LibraryScanPipelineKind, LibraryScanPipelineRequest, run_library_scan_pipeline,
+};
 use scan_refresh::{
     background_refresh_movies, background_refresh_series,
     maybe_probe_existing_series_title_for_background_refresh,
 };
 pub(crate) use scan_title_files::{
     FileSourceSnapshot, PlannedTitleScanFile, PlannedTitleScanRecord,
-    file_source_signature_from_metadata, file_source_snapshot_from_library_file,
+    file_source_snapshot_from_library_file, file_source_snapshot_from_path,
 };
 use scan_title_files::{
     TitleScanLayoutSummary, classify_title_scan_layout, merge_title_scan_option_tags,
@@ -85,6 +89,14 @@ use scan_title_files::{
 };
 use scan_title_finalize::finalize_movie_scan_file;
 pub(crate) use scan_title_finalize::finalize_title_scan_file;
+use scan_title_scan::{LibraryScanMediaAnalysisPolicy, LibraryScanMediaAnalysisPool};
+
+/// Destination for matched title work. Implemented by the media-analysis pool
+/// (direct dispatch for background refresh and one-off scans) and by the full-scan
+/// pipeline's staging sink (rendezvous with candidate inventory).
+trait LibraryScanTitleWorkQueue: Send {
+    fn enqueue(&mut self, work: LibraryScanTitleWork) -> bool;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibraryScanTitleWalkMode {
@@ -123,17 +135,88 @@ enum LibraryScanTitleFacetPlan {
 pub(crate) struct LibraryScanTitleWork {
     title: Title,
     facet_plan: LibraryScanTitleFacetPlan,
-    discovered_files: Option<Vec<LibraryFile>>,
+    scope: LibraryScanTitleWorkScope,
     mode: LibraryScanTitleWalkMode,
     created_in_scan: bool,
 }
 
 impl LibraryScanTitleWork {
     fn discovered_file_count(&self) -> usize {
-        self.discovered_files
-            .as_ref()
-            .map(Vec::len)
-            .unwrap_or_default()
+        self.scope.discovered_file_count()
+    }
+
+    fn discovered_files(&self) -> Option<&Vec<LibraryFile>> {
+        self.scope.discovered_files()
+    }
+
+    fn discovered_files_mut(&mut self) -> Option<&mut Vec<LibraryFile>> {
+        self.scope.discovered_files_mut()
+    }
+
+    fn has_full_folder_coverage(&self) -> bool {
+        self.scope.has_full_folder_coverage()
+    }
+
+    fn requires_folder_enumeration(&self) -> bool {
+        matches!(self.scope, LibraryScanTitleWorkScope::FullFolder)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum LibraryScanTitleWorkScope {
+    FullFolder,
+    PreEnumeratedFullFolder(Vec<LibraryFile>),
+    ScopedFiles(Vec<LibraryFile>),
+}
+
+impl LibraryScanTitleWorkScope {
+    fn discovered_file_count(&self) -> usize {
+        self.discovered_files().map(Vec::len).unwrap_or_default()
+    }
+
+    fn discovered_files(&self) -> Option<&Vec<LibraryFile>> {
+        match self {
+            Self::FullFolder => None,
+            Self::PreEnumeratedFullFolder(files) | Self::ScopedFiles(files) => Some(files),
+        }
+    }
+
+    fn discovered_files_mut(&mut self) -> Option<&mut Vec<LibraryFile>> {
+        match self {
+            Self::FullFolder => None,
+            Self::PreEnumeratedFullFolder(files) | Self::ScopedFiles(files) => Some(files),
+        }
+    }
+
+    fn has_full_folder_coverage(&self) -> bool {
+        matches!(self, Self::FullFolder | Self::PreEnumeratedFullFolder(_))
+    }
+
+    fn into_discovered_files(self) -> Option<Vec<LibraryFile>> {
+        match self {
+            Self::FullFolder => None,
+            Self::PreEnumeratedFullFolder(files) | Self::ScopedFiles(files) => Some(files),
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        let current = std::mem::replace(self, Self::ScopedFiles(Vec::new()));
+        *self = match (current, other) {
+            (Self::FullFolder, _) | (_, Self::FullFolder) => Self::FullFolder,
+            (Self::PreEnumeratedFullFolder(mut existing), Self::PreEnumeratedFullFolder(files))
+            | (Self::PreEnumeratedFullFolder(mut existing), Self::ScopedFiles(files)) => {
+                append_unique_library_files(&mut existing, files);
+                Self::PreEnumeratedFullFolder(existing)
+            }
+            (Self::ScopedFiles(mut existing), Self::ScopedFiles(files)) => {
+                append_unique_library_files(&mut existing, files);
+                Self::ScopedFiles(existing)
+            }
+            (Self::ScopedFiles(mut existing), Self::PreEnumeratedFullFolder(files)) => {
+                append_unique_library_files(&mut existing, files);
+                Self::PreEnumeratedFullFolder(existing)
+            }
+        };
     }
 }
 
@@ -169,7 +252,7 @@ fn movie_work_folders_match(left: Option<&str>, right: Option<&str>) -> bool {
 
 fn merge_library_scan_title_work(
     workset: &mut HashMap<String, LibraryScanTitleWork>,
-    mut work: LibraryScanTitleWork,
+    work: LibraryScanTitleWork,
 ) -> bool {
     let title_id = work.title.id.clone();
     match workset.get_mut(&title_id) {
@@ -206,10 +289,7 @@ fn merge_library_scan_title_work(
                 }
             }
 
-            if let Some(files) = work.discovered_files.take() {
-                let existing_files = existing.discovered_files.get_or_insert_with(Vec::new);
-                append_unique_library_files(existing_files, files);
-            }
+            existing.scope.merge(work.scope);
 
             if let (
                 LibraryScanTitleFacetPlan::Movie(existing_cleanup),
@@ -291,6 +371,16 @@ pub(crate) struct TitleScanFinalizeOutcome {
 enum StartedLibraryScanOutcome {
     Completed(LibraryScanSummary),
     Canceled(LibraryScanSummary),
+}
+
+struct StartedLibraryScanRequest {
+    actor: User,
+    facet: MediaFacet,
+    library_id: String,
+    library_paths: Vec<String>,
+    session_id: String,
+    mode: LibraryScanMode,
+    scan_hints: Option<LibraryScanHintSet>,
 }
 
 #[derive(Clone, Debug)]
@@ -458,6 +548,21 @@ impl AppUseCase {
         }
         self.require_app_permission(actor, AppPermission::ManageCatalogSettings)
             .await
+    }
+
+    pub async fn external_import_library(
+        &self,
+        actor: &User,
+        library_id: &str,
+    ) -> AppResult<Library> {
+        self.require_app_permission(actor, AppPermission::ManageCatalogSettings)
+            .await?;
+        self.services
+            .catalog
+            .libraries
+            .get_by_id(library_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))
     }
 
     pub async fn create_library(
@@ -799,9 +904,23 @@ impl AppUseCase {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
 
-        let (_coordinator, session) =
-            LibraryScanCoordinator::start(self.clone(), facet.clone(), LibraryScanMode::Full, None)
-                .await?;
+        let library_paths = self.read_library_paths_for_scan_facet(&facet).await?;
+        let library_id = self
+            .services
+            .catalog
+            .libraries
+            .default_for_facet(facet.clone())
+            .await?
+            .map(|library| library.id)
+            .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet));
+        let (_coordinator, session) = LibraryScanCoordinator::start_for_library(
+            self.clone(),
+            facet.clone(),
+            Some(library_id.clone()),
+            LibraryScanMode::Full,
+            None,
+        )
+        .await?;
         self.ensure_library_scan_cancellation_token(&session.session_id, LibraryScanMode::Full)
             .await;
         let mut session_guard =
@@ -811,16 +930,17 @@ impl AppUseCase {
         let actor = actor.clone();
         let session_id = session.session_id.clone();
         tokio::spawn(async move {
-            if let Err(error) = app
-                .run_started_library_scan_session(
-                    &actor,
-                    facet.clone(),
-                    &session_id,
-                    LibraryScanMode::Full,
-                    None,
-                )
-                .await
-            {
+            let request = StartedLibraryScanRequest {
+                actor,
+                facet: facet.clone(),
+                library_id: library_id.clone(),
+                library_paths: library_paths.clone(),
+                session_id: session_id.clone(),
+                mode: LibraryScanMode::Full,
+                scan_hints: None,
+            };
+            let result = app.run_started_library_scan_session(&request).await;
+            if let Err(error) = result {
                 warn!(
                     error = %error,
                     session_id = %session_id,
@@ -890,16 +1010,18 @@ impl AppUseCase {
         let actor = actor.clone();
         let session_id = session.session_id.clone();
         let facet = library.facet.clone();
+        let library_id = library.id.clone();
         tokio::spawn(async move {
-            let result = app
-                .run_started_library_scan_session(
-                    &actor,
-                    facet.clone(),
-                    &session_id,
-                    LibraryScanMode::Full,
-                    scan_hints,
-                )
-                .await;
+            let request = StartedLibraryScanRequest {
+                actor,
+                facet: facet.clone(),
+                library_id: library_id.clone(),
+                library_paths: library_paths.clone(),
+                session_id: session_id.clone(),
+                mode: LibraryScanMode::Full,
+                scan_hints,
+            };
+            let result = app.run_started_library_scan_session(&request).await;
             match result {
                 Ok(_) => {}
                 Err(error) => {
@@ -932,10 +1054,11 @@ impl AppUseCase {
             .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet));
         self.require_library_management_permission(actor, &session_library_id)
             .await?;
+        let library_paths = self.read_library_paths_for_scan_facet(&facet).await?;
         let (_coordinator, session) = LibraryScanCoordinator::start_for_library(
             self.clone(),
             facet.clone(),
-            Some(session_library_id),
+            Some(session_library_id.clone()),
             mode.clone(),
             session_id_override,
         )
@@ -945,9 +1068,16 @@ impl AppUseCase {
 
         self.ensure_library_scan_cancellation_token(&session.session_id, mode.clone())
             .await;
-        let result = self
-            .run_started_library_scan_session(actor, facet, &session.session_id, mode, None)
-            .await;
+        let request = StartedLibraryScanRequest {
+            actor: actor.clone(),
+            facet,
+            library_id: session_library_id,
+            library_paths,
+            session_id: session.session_id.clone(),
+            mode,
+            scan_hints: None,
+        };
+        let result = self.run_started_library_scan_session(&request).await;
 
         if result.is_err() {
             LibraryScanCoordinator::new(self.clone(), session.session_id.clone())
@@ -975,43 +1105,35 @@ impl AppUseCase {
 
     async fn run_started_library_scan_session(
         &self,
-        actor: &User,
-        facet: MediaFacet,
-        session_id: &str,
-        mode: LibraryScanMode,
-        scan_hints: Option<LibraryScanHintSet>,
+        request: &StartedLibraryScanRequest,
     ) -> AppResult<StartedLibraryScanOutcome> {
-        let library_paths = self.read_library_paths_for_scan_facet(&facet).await?;
-        let library_id = self
-            .services
-            .catalog
-            .libraries
-            .default_for_facet(facet.clone())
-            .await?
-            .map(|library| library.id)
-            .unwrap_or_else(|| scryer_domain::default_library_id_for_facet(&facet));
-        let cancel_token = self.library_scan_cancellation_token(session_id).await;
-        let should_apply_import_monitor_snapshot = mode == LibraryScanMode::Full;
+        let cancel_token = self
+            .library_scan_cancellation_token(&request.session_id)
+            .await;
+        let should_apply_import_monitor_snapshot = request.mode == LibraryScanMode::Full;
         let summary = self
             .execute_started_library_scan_session(
-                actor,
-                &facet,
-                &library_id,
-                &library_paths,
-                session_id,
-                mode,
+                &request.actor,
+                &request.facet,
+                &request.library_id,
+                &request.library_paths,
+                &request.session_id,
+                request.mode.clone(),
                 cancel_token.clone(),
-                scan_hints,
+                request.scan_hints.clone(),
             )
             .await?;
         if library_scan_cancel_requested(cancel_token.as_ref()) {
-            self.cancel_started_library_scan_session(session_id, &summary)
+            self.cancel_started_library_scan_session(&request.session_id, &summary)
                 .await;
             Ok(StartedLibraryScanOutcome::Canceled(summary))
         } else {
             if should_apply_import_monitor_snapshot
                 && let Err(error) = self
-                    .apply_pending_external_import_monitor_snapshot_for_facet(&facet)
+                    .apply_pending_external_import_monitor_snapshot_for_library(
+                        &request.facet,
+                        &request.library_id,
+                    )
                     .await
             {
                 let warning_message =
@@ -1020,16 +1142,16 @@ impl AppUseCase {
                     .runtime
                     .library
                     .library_scan_tracker
-                    .set_warning_message(session_id, Some(warning_message))
+                    .set_warning_message(&request.session_id, Some(warning_message))
                     .await;
                 warn!(
-                    facet = facet.as_str(),
-                    session_id,
+                    facet = request.facet.as_str(),
+                    session_id = %request.session_id,
                     error = %error,
                     "failed to apply pending external import monitoring snapshot after full scan"
                 );
             }
-            self.finalize_started_library_scan_session(session_id, &summary)
+            self.finalize_started_library_scan_session(&request.session_id, &summary)
                 .await;
             Ok(StartedLibraryScanOutcome::Completed(summary))
         }
@@ -1158,6 +1280,11 @@ impl AppUseCase {
                     .await?
                 }
                 (LibraryScanMode::Full, MediaFacet::Series | MediaFacet::Anime) => {
+                    // Both Series and Anime route through scan_library_series and
+                    // look up hints under LibraryScanHintFacet::Series, which is how
+                    // BOTH Sonarr series and Sonarr anime import hints are stamped.
+                    // Previously Anime was passed None here, so anime imports lost
+                    // their arr identity and fell back to the filesystem parser.
                     scan_library_series(
                         self,
                         actor,
@@ -1167,11 +1294,7 @@ impl AppUseCase {
                         session_id,
                         finalize_discovery_on_drain,
                         cancel_token.clone(),
-                        if matches!(facet, MediaFacet::Series) {
-                            scan_hints.as_ref()
-                        } else {
-                            None
-                        },
+                        scan_hints.as_ref(),
                     )
                     .await?
                 }

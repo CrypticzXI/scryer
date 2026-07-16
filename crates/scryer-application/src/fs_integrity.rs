@@ -32,15 +32,26 @@ pub fn import_content_proof(path: &Path) -> AppResult<ImportContentProof> {
         })?
         .len();
 
+    sampled_content_proof_from_reader(&mut file, &path.display().to_string(), size_bytes)
+}
+
+/// Compute the sampled proof from an already-open seekable reader. This is used
+/// by both import verification and media-file scan signatures so they share the
+/// same first/last-window semantics.
+pub fn sampled_content_proof_from_reader<R: Read + Seek>(
+    reader: &mut R,
+    label: &str,
+    size_bytes: u64,
+) -> AppResult<ImportContentProof> {
     let first_len = size_bytes.min(IMPORT_CONTENT_PROOF_SAMPLE_BYTES as u64) as usize;
     let mut sample = Vec::with_capacity(first_len.saturating_mul(2));
-    read_import_content_sample(&mut file, path, 0, first_len, &mut sample)?;
+    read_import_content_sample(reader, label, 0, first_len, &mut sample)?;
 
     let remaining_after_first = size_bytes.saturating_sub(first_len as u64);
     let last_len = remaining_after_first.min(IMPORT_CONTENT_PROOF_SAMPLE_BYTES as u64) as usize;
     if last_len > 0 {
         let last_offset = size_bytes - last_len as u64;
-        read_import_content_sample(&mut file, path, last_offset, last_len, &mut sample)?;
+        read_import_content_sample(reader, label, last_offset, last_len, &mut sample)?;
     }
 
     Ok(ImportContentProof {
@@ -50,25 +61,23 @@ pub fn import_content_proof(path: &Path) -> AppResult<ImportContentProof> {
     })
 }
 
-fn read_import_content_sample(
-    file: &mut std::fs::File,
-    path: &Path,
+fn read_import_content_sample<R: Read + Seek>(
+    reader: &mut R,
+    label: &str,
     offset: u64,
     len: usize,
     sample: &mut Vec<u8>,
 ) -> AppResult<()> {
-    file.seek(SeekFrom::Start(offset)).map_err(|error| {
+    reader.seek(SeekFrom::Start(offset)).map_err(|error| {
         AppError::Repository(format!(
-            "failed to seek import content proof path: {}: {error}",
-            path.display()
+            "failed to seek import content proof path: {label}: {error}"
         ))
     })?;
     let start = sample.len();
     sample.resize(start + len, 0);
-    file.read_exact(&mut sample[start..]).map_err(|error| {
+    reader.read_exact(&mut sample[start..]).map_err(|error| {
         AppError::Repository(format!(
-            "failed to read import content proof path: {}: {error}",
-            path.display()
+            "failed to read import content proof path: {label}: {error}"
         ))
     })
 }
@@ -120,6 +129,60 @@ pub async fn verify_same_file_async(source: &Path, dest: &Path) -> AppResult<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
+
+    struct RecordingReader {
+        bytes: Vec<u8>,
+        position: u64,
+        seeks: Vec<u64>,
+        reads: Vec<usize>,
+    }
+
+    impl RecordingReader {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                bytes,
+                position: 0,
+                seeks: Vec::new(),
+                reads: Vec::new(),
+            }
+        }
+    }
+
+    impl Read for RecordingReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let start = usize::try_from(self.position).unwrap_or(usize::MAX);
+            if start >= self.bytes.len() {
+                return Ok(0);
+            }
+            let len = buf.len().min(self.bytes.len() - start);
+            buf[..len].copy_from_slice(&self.bytes[start..start + len]);
+            self.position = self.position.saturating_add(len as u64);
+            self.reads.push(len);
+            Ok(len)
+        }
+    }
+
+    impl Seek for RecordingReader {
+        fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+            let next = match pos {
+                SeekFrom::Start(offset) => offset,
+                SeekFrom::End(offset) => {
+                    let base = i128::try_from(self.bytes.len()).unwrap_or(i128::MAX);
+                    u64::try_from(base + i128::from(offset))
+                        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid seek"))?
+                }
+                SeekFrom::Current(offset) => {
+                    let base = i128::from(self.position);
+                    u64::try_from(base + i128::from(offset))
+                        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid seek"))?
+                }
+            };
+            self.position = next;
+            self.seeks.push(next);
+            Ok(next)
+        }
+    }
 
     #[test]
     fn identical_files_verify_ok() {
@@ -147,6 +210,63 @@ mod tests {
             verify_same_file(&a, &b).is_err(),
             "same-size content with changed tail sample must fail verification"
         );
+    }
+
+    #[test]
+    fn sampled_proof_seeks_to_tail_without_reading_middle() {
+        let size = IMPORT_CONTENT_PROOF_SAMPLE_BYTES * 3;
+        let mut reader = RecordingReader::new(vec![b'x'; size]);
+
+        let proof = sampled_content_proof_from_reader(&mut reader, "recording", size as u64)
+            .expect("sampled proof");
+
+        assert_eq!(proof.size_bytes, size as u64);
+        assert_eq!(
+            proof.sample_bytes,
+            (IMPORT_CONTENT_PROOF_SAMPLE_BYTES * 2) as u64
+        );
+        assert_eq!(
+            reader.seeks,
+            vec![0, (size - IMPORT_CONTENT_PROOF_SAMPLE_BYTES) as u64]
+        );
+        assert_eq!(
+            reader.reads,
+            vec![
+                IMPORT_CONTENT_PROOF_SAMPLE_BYTES,
+                IMPORT_CONTENT_PROOF_SAMPLE_BYTES
+            ]
+        );
+    }
+
+    #[test]
+    fn sampled_proof_hashes_small_file_once() {
+        let size = IMPORT_CONTENT_PROOF_SAMPLE_BYTES / 2;
+        let mut reader = RecordingReader::new(vec![b'x'; size]);
+
+        let proof = sampled_content_proof_from_reader(&mut reader, "recording", size as u64)
+            .expect("sampled proof");
+
+        assert_eq!(proof.size_bytes, size as u64);
+        assert_eq!(proof.sample_bytes, size as u64);
+        assert_eq!(reader.seeks, vec![0]);
+        assert_eq!(reader.reads, vec![size]);
+    }
+
+    #[test]
+    fn sampled_proof_hashes_between_one_and_two_windows_without_overlap() {
+        let size = IMPORT_CONTENT_PROOF_SAMPLE_BYTES + 123;
+        let mut reader = RecordingReader::new(vec![b'x'; size]);
+
+        let proof = sampled_content_proof_from_reader(&mut reader, "recording", size as u64)
+            .expect("sampled proof");
+
+        assert_eq!(proof.size_bytes, size as u64);
+        assert_eq!(proof.sample_bytes, size as u64);
+        assert_eq!(
+            reader.seeks,
+            vec![0, IMPORT_CONTENT_PROOF_SAMPLE_BYTES as u64]
+        );
+        assert_eq!(reader.reads, vec![IMPORT_CONTENT_PROOF_SAMPLE_BYTES, 123]);
     }
 
     #[test]

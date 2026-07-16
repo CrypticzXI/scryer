@@ -1,5 +1,6 @@
 use super::*;
 use crate::acquisition_release_search::ResolvedReleaseSearchSubject;
+use crate::ports::IndexerSearchLearningContext;
 use crate::quality_profile::ScoringSource;
 use crate::quality_profile::evaluate_against_profile_for_category;
 use crate::settings::keys::default_indexer_routing_categories_for_scope;
@@ -8,6 +9,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 fn release_search_tagged_aliases(title: &Title) -> Vec<TaggedAlias> {
@@ -215,6 +217,43 @@ fn normalize_structured_dispatch_query(query: &str, absolute_episode: Option<u32
     tokens.join(" ").trim().to_string()
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum StructuredDispatchQueryShape {
+    AbsoluteEpisode,
+    SeasonEpisode,
+    Season,
+    Other,
+}
+
+fn structured_dispatch_query_shape(
+    query: &str,
+    absolute_episode: Option<u32>,
+) -> StructuredDispatchQueryShape {
+    let Some(last) = query.split_whitespace().last() else {
+        return StructuredDispatchQueryShape::Other;
+    };
+    let trimmed = last.trim_matches(|ch: char| !ch.is_ascii_alphanumeric());
+    if trimmed.is_empty() {
+        return StructuredDispatchQueryShape::Other;
+    }
+
+    if absolute_episode.is_some_and(|value| {
+        trimmed.chars().all(|ch| ch.is_ascii_digit()) && trimmed.parse::<u32>().ok() == Some(value)
+    }) {
+        return StructuredDispatchQueryShape::AbsoluteEpisode;
+    }
+
+    let upper = trimmed.to_ascii_uppercase();
+    if upper.starts_with('S') && upper.contains('E') {
+        return StructuredDispatchQueryShape::SeasonEpisode;
+    }
+    if upper.starts_with('S') || upper == "OVA" || upper == "SPECIAL" {
+        return StructuredDispatchQueryShape::Season;
+    }
+
+    StructuredDispatchQueryShape::Other
+}
+
 fn dedupe_structured_dispatch_queries(
     queries: Vec<String>,
     season: Option<u32>,
@@ -236,6 +275,38 @@ fn dedupe_structured_dispatch_queries(
             normalized.as_str()
         };
         if seen.insert(key_source.to_ascii_lowercase()) {
+            deduped.push(query);
+        }
+    }
+
+    deduped
+}
+
+fn dedupe_text_safe_structured_dispatch_queries(
+    queries: Vec<String>,
+    season: Option<u32>,
+    episode: Option<u32>,
+    absolute_episode: Option<u32>,
+) -> Vec<String> {
+    if season.is_none() && episode.is_none() && absolute_episode.is_none() {
+        return queries;
+    }
+
+    let mut deduped = Vec::with_capacity(queries.len());
+    let mut seen = std::collections::HashSet::new();
+
+    for query in queries {
+        let normalized = normalize_structured_dispatch_query(&query, absolute_episode);
+        let key_source = if normalized.is_empty() {
+            query.trim()
+        } else {
+            normalized.as_str()
+        };
+        let key = (
+            key_source.to_ascii_lowercase(),
+            structured_dispatch_query_shape(&query, absolute_episode),
+        );
+        if seen.insert(key) {
             deduped.push(query);
         }
     }
@@ -368,7 +439,7 @@ pub(crate) fn dedupe_cross_indexer_release_results(
         idx += 1;
         keep
     });
-    info!(before, after = deduped.len(), "cross-indexer release dedup");
+    debug!(before, after = deduped.len(), "cross-indexer release dedup");
     deduped
 }
 
@@ -532,7 +603,7 @@ impl AppUseCase {
         resolved_profile.criteria.scoring_persona = resolved_persona.clone();
         resolved_profile.criteria.facet_persona_overrides.clear();
         let title_language_metadata = match self.services.catalog.titles.get_by_id(title_id).await {
-            Ok(Some(title)) => Some((title.language, title.country)),
+            Ok(Some(title)) => Some((title.language, title.country, title.facet)),
             Ok(None) => None,
             Err(error) => {
                 warn!(
@@ -545,14 +616,22 @@ impl AppUseCase {
         };
         let title_original_language = title_language_metadata
             .as_ref()
-            .and_then(|(language, _)| language.as_deref());
+            .and_then(|(language, _, _)| language.as_deref());
         let title_original_country = title_language_metadata
             .as_ref()
-            .and_then(|(_, country)| country.as_deref());
+            .and_then(|(_, country, _)| country.as_deref());
+        // Prefer the owning title's facet for anime detection: the search facet
+        // (and thus `category`) collapses anime movies and series-movie links to
+        // "movie", which would otherwise hide their anime origin and break
+        // dual-audio language inference (e.g. eng+jpn).
+        let audio_context_category = title_language_metadata
+            .as_ref()
+            .map(|(_, _, facet)| facet.as_str())
+            .or(category);
         let title_language_context = crate::title_audio_language_context(
             title_original_language,
             title_original_country,
-            category,
+            audio_context_category,
             title_tags,
         );
         let library_name = match library_id {
@@ -784,10 +863,15 @@ impl AppUseCase {
     }
 
     /// Internal search+score pipeline shared by both user-facing search and background acquisition.
+    /// Returns the scored releases plus the set of indexer ids that actually
+    /// **fired** a query and returned a response (empty included), aggregated across
+    /// all queries (RFC 119 §D2: fired iff ≥1 query returned a response). The fired
+    /// set — never the routed set — is what background acquisition records as
+    /// convergence coverage.
     pub(crate) async fn search_and_score_releases(
         &self,
         request: ReleaseSearchRequest<'_>,
-    ) -> AppResult<Vec<IndexerSearchResult>> {
+    ) -> AppResult<(Vec<IndexerSearchResult>, Vec<String>)> {
         let ReleaseSearchRequest {
             queries,
             imdb_id,
@@ -812,7 +896,13 @@ impl AppUseCase {
             absolute_episode,
             tagged_aliases,
             search_subject_kind,
+            cancel_token,
+            restrict_to_indexer_ids,
+            background_value,
         } = request;
+        if cancel_token.is_cancelled() {
+            return Err(AppError::canceled("indexer search canceled"));
+        }
         let quality_profile_lookup = QualityProfileLookup {
             title_tags,
             library_id,
@@ -826,6 +916,43 @@ impl AppUseCase {
         let mut indexer_routing = self
             .resolve_indexer_routing(library_id, scope_id.as_deref())
             .await;
+        // Restrict the search to the requested indexer subset (the convergence
+        // cursor's uncovered indexers, RFC 119 §D3). With no routing plan
+        // configured, synthesize one over the enabled indexers so the
+        // restriction still applies.
+        if let Some(allowed) = restrict_to_indexer_ids.as_ref() {
+            let mut plan = match indexer_routing.take() {
+                Some(plan) => plan,
+                None => crate::contracts::IndexerRoutingPlan {
+                    entries: self
+                        .services
+                        .integrations
+                        .indexer_configs
+                        .list(None)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|config| config.is_enabled)
+                        .map(|config| {
+                            (
+                                config.id,
+                                crate::contracts::IndexerRoutingEntry {
+                                    enabled: true,
+                                    categories: Vec::new(),
+                                    priority: 0,
+                                },
+                            )
+                        })
+                        .collect(),
+                },
+            };
+            for (indexer_id, entry) in plan.entries.iter_mut() {
+                if !allowed.contains(indexer_id) {
+                    entry.enabled = false;
+                }
+            }
+            indexer_routing = Some(plan);
+        }
         let newznab_categories = if newznab_categories.is_empty() {
             None
         } else {
@@ -847,7 +974,7 @@ impl AppUseCase {
                     scope_id = scope_id.as_deref().unwrap_or("none"),
                     "all indexers disabled for scope, skipping search"
                 );
-                return Ok(Vec::new());
+                return Ok((Vec::new(), Vec::new()));
             }
         }
 
@@ -870,11 +997,10 @@ impl AppUseCase {
             );
 
         // Auto mode normally conserves API calls by using the first query, but
-        // episode acquisition needs season/title fallbacks so packs and ranges
-        // can be considered for a single requested episode. Equivalent
-        // structured variants are only collapsed when the eligible search set
-        // is *nab-only, because non-*nab indexers may still need the full
-        // variant fanout.
+        // episode acquisition keeps season/title fallbacks so packs and ranges
+        // can be considered for a single requested episode. Broad structured
+        // collapse is only safe when provider dispatch uses season/episode
+        // parameters; text dispatch still needs distinct SxxEyy/Sxx/title forms.
         let effective_queries = match mode {
             SearchMode::Auto if search_subject_kind == ReleaseSearchSubjectKind::Episode => queries,
             SearchMode::Auto => queries.into_iter().take(1).collect(),
@@ -882,6 +1008,15 @@ impl AppUseCase {
         };
         let effective_queries = if collapse_structured_queries {
             dedupe_structured_dispatch_queries(effective_queries, season, episode, absolute_episode)
+        } else if mode == SearchMode::Auto
+            && search_subject_kind == ReleaseSearchSubjectKind::Episode
+        {
+            dedupe_text_safe_structured_dispatch_queries(
+                effective_queries,
+                season,
+                episode,
+                absolute_episode,
+            )
         } else {
             effective_queries
         };
@@ -903,6 +1038,18 @@ impl AppUseCase {
         if let Some(mal_id) = mal_id.clone() {
             ids.insert("mal_id".to_string(), mal_id);
         }
+        let learning_context = if mode == SearchMode::Auto && !title_id.trim().is_empty() {
+            Some(IndexerSearchLearningContext {
+                title_id: title_id.to_string(),
+                facet: search_facet.as_str().to_string(),
+                subject_kind: search_subject_kind,
+                // The convergence value hint rides the Auto background context so
+                // the scheduler can lane-rank this scope (RFC 119 §D3).
+                background_value,
+            })
+        } else {
+            None
+        };
 
         for query in effective_queries {
             let indexer_client = self.services.integrations.indexer_client.clone();
@@ -915,7 +1062,9 @@ impl AppUseCase {
             let indexer_routing = indexer_routing.clone();
             let newznab_categories = newznab_categories.clone();
             let tagged_aliases = tagged_aliases.to_vec();
+            let learning_context = learning_context.clone();
             let query = query.clone();
+            let query_cancel_token = cancel_token.child_token();
 
             set.spawn(async move {
                 indexer_client
@@ -932,6 +1081,8 @@ impl AppUseCase {
                         episode,
                         absolute_episode,
                         tagged_aliases,
+                        learning_context,
+                        query_cancel_token,
                     )
                     .await
             });
@@ -941,11 +1092,34 @@ impl AppUseCase {
         let mut successful_searches = 0usize;
         let mut first_failure: Option<String> = None;
         let mut raw_results: Vec<IndexerSearchResult> = Vec::new();
+        // RFC 119: indexers that fired a query and returned a response (empty
+        // included) across any query. Aggregated here so the coverage write-hook
+        // records exactly the fired subset, never the routed set.
+        let mut fired_indexers: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
-        while let Some(result) = set.join_next().await {
+        loop {
+            let result = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    set.abort_all();
+                    while set.join_next().await.is_some() {}
+                    return Err(AppError::canceled("indexer search canceled"));
+                }
+                result = set.join_next() => result,
+            };
+
+            let Some(result) = result else {
+                break;
+            };
+
             match result {
                 Ok(Ok(mut response)) => {
                     successful_searches += 1;
+                    for outcome in &response.indexer_outcomes {
+                        if outcome.outcome.fired() {
+                            fired_indexers.insert(outcome.indexer_id.clone());
+                        }
+                    }
                     for result in &mut response.results {
                         let provenance =
                             result.provenance.get_or_insert(ReleaseCandidateProvenance {
@@ -958,6 +1132,11 @@ impl AppUseCase {
                     raw_results.append(&mut response.results);
                 }
                 Ok(Err(error)) => {
+                    if error.is_canceled() {
+                        set.abort_all();
+                        while set.join_next().await.is_some() {}
+                        return Err(error);
+                    }
                     query_failures += 1;
                     first_failure = first_failure.or_else(|| Some(error.to_string()));
                     warn!(
@@ -984,7 +1163,7 @@ impl AppUseCase {
             return Err(AppError::Repository(details));
         }
 
-        Ok(self
+        let scored = self
             .score_release_results(
                 raw_results,
                 &quality_profile,
@@ -1000,7 +1179,8 @@ impl AppUseCase {
                 episode,
                 absolute_episode,
             )
-            .await)
+            .await;
+        Ok((scored, fired_indexers.into_iter().collect()))
     }
 
     pub(crate) async fn search_and_evaluate_subject(
@@ -1009,9 +1189,40 @@ impl AppUseCase {
         subject: &crate::acquisition_release_search::ResolvedReleaseSearchSubject,
         caller_label: &str,
         mode: SearchMode,
+        cancel_token: CancellationToken,
+    ) -> AppResult<Vec<IndexerSearchResult>> {
+        self.search_and_evaluate_subject_restricted(
+            title,
+            subject,
+            caller_label,
+            mode,
+            cancel_token,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Search and evaluate `subject`, optionally restricted to a subset of
+    /// indexers. The convergence cursor passes the scope's uncovered subset
+    /// (RFC 119 §D3) — a covered indexer's catalog holds no new information
+    /// for this scope, so re-querying it is pure spend.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "background search threads the convergence subset and value hint alongside the subject"
+    )]
+    pub(crate) async fn search_and_evaluate_subject_restricted(
+        &self,
+        title: &Title,
+        subject: &crate::acquisition_release_search::ResolvedReleaseSearchSubject,
+        caller_label: &str,
+        mode: SearchMode,
+        cancel_token: CancellationToken,
+        restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
+        background_value: Option<f64>,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let tagged_aliases = release_search_tagged_aliases(title);
-        let results = self
+        let (results, fired_indexer_ids) = self
             .search_and_score_releases(ReleaseSearchRequest {
                 queries: subject.queries.clone(),
                 imdb_id: subject.imdb_id.clone(),
@@ -1036,12 +1247,21 @@ impl AppUseCase {
                 tagged_aliases: &tagged_aliases,
                 search_subject_kind: subject.subject_kind,
                 parse_context: &subject.title_evidence.parse_context,
+                cancel_token,
+                restrict_to_indexer_ids,
+                background_value,
             })
             .await?;
 
-        Ok(self
+        let evaluated = self
             .evaluate_search_results_for_subject(title, subject, results)
-            .await)
+            .await;
+        // A search is a search (RFC 119 §D5): every scoped search — background,
+        // interactive, season-pack — records per-indexer convergence coverage
+        // for the indexers that actually fired. Best-effort.
+        self.record_search_coverage(title, subject, &fired_indexer_ids)
+            .await;
+        Ok(evaluated)
     }
 
     /// Interactive search for a title (movie or standalone). Resolves all
@@ -1113,6 +1333,7 @@ impl AppUseCase {
             };
             result.queue_scope = Some(scope.clone());
             let selection = QueuedReleaseSelection {
+                indexer_id: result.indexer_id.clone(),
                 source_hint: result.download_url.clone().or(result.link.clone()),
                 source_kind: result.source_kind,
                 source_title: Some(result.title.clone()),
@@ -1149,6 +1370,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         title_id: String,
+        cancel_token: CancellationToken,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let title = self
             .services
@@ -1176,7 +1398,13 @@ impl AppUseCase {
         );
 
         let mut results = self
-            .search_and_evaluate_subject(&title, &subject, &actor.id, SearchMode::Interactive)
+            .search_and_evaluate_subject(
+                &title,
+                &subject,
+                &actor.id,
+                SearchMode::Interactive,
+                cancel_token,
+            )
             .await?;
         self.attach_candidate_tokens(actor, &title, &subject, &mut results, false)
             .await;
@@ -1197,6 +1425,7 @@ impl AppUseCase {
         actor: &User,
         title_id: String,
         series_movie_link_id: String,
+        cancel_token: CancellationToken,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let title = self
             .services
@@ -1243,6 +1472,7 @@ impl AppUseCase {
                 &subject,
                 &actor.id,
                 SearchMode::Interactive,
+                cancel_token,
             )
             .await?;
         self.attach_candidate_tokens(actor, &search_title, &subject, &mut results, true)
@@ -1268,6 +1498,7 @@ impl AppUseCase {
         title_id: String,
         season: String,
         episode: String,
+        cancel_token: CancellationToken,
     ) -> AppResult<Vec<IndexerSearchResult>> {
         let title = self
             .services
@@ -1295,7 +1526,13 @@ impl AppUseCase {
         );
 
         let mut results = self
-            .search_and_evaluate_subject(&title, &subject, &actor.id, SearchMode::Interactive)
+            .search_and_evaluate_subject(
+                &title,
+                &subject,
+                &actor.id,
+                SearchMode::Interactive,
+                cancel_token,
+            )
             .await?;
         self.attach_candidate_tokens(actor, &title, &subject, &mut results, false)
             .await;
@@ -1371,6 +1608,15 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) tagged_aliases: &'a [TaggedAlias],
     pub(crate) search_subject_kind: ReleaseSearchSubjectKind,
     pub(crate) parse_context: &'a ReleaseParseContext,
+    pub(crate) cancel_token: CancellationToken,
+    /// When set, only these indexer ids are queried (the convergence cursor's
+    /// uncovered subset, RFC 119 §D3). `None` = every routed indexer.
+    pub(crate) restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
+    /// Background convergence value hint (RFC 119 §D3): the target's recency
+    /// lane maps to a scheduler candidate value (hot → high, cold → low) so
+    /// plan 112 can drain cold work first under quota pressure. Only the Auto
+    /// background path carries it; interactive/RSS leave it `None` (neutral).
+    pub(crate) background_value: Option<f64>,
 }
 
 impl AppUseCase {
@@ -1692,7 +1938,7 @@ impl AppUseCase {
             );
         }
 
-        info!(
+        debug!(
             scope_id = scope_id,
             indexer_count = entries.len(),
             "resolved per-indexer routing plan"
@@ -1709,6 +1955,44 @@ pub(crate) fn build_user_rule_input(
     context: crate::user_rule_input::SearchRuleInputContext<'_>,
 ) -> scryer_rules::UserRuleInput {
     crate::user_rule_input::build_search_rule_input(parsed, profile, result, decision, context)
+}
+
+#[cfg(test)]
+mod structured_dispatch_query_tests {
+    use super::*;
+
+    #[test]
+    fn text_safe_dedupe_preserves_distinct_episode_season_absolute_and_title_queries() {
+        let queries = vec![
+            "Silver Horizon 033".to_string(),
+            "Silver Horizon S02E05".to_string(),
+            "Silver Horizon S02".to_string(),
+            "Silver Horizon".to_string(),
+        ];
+
+        let deduped = dedupe_text_safe_structured_dispatch_queries(
+            queries.clone(),
+            Some(2),
+            Some(5),
+            Some(33),
+        );
+
+        assert_eq!(deduped, queries);
+    }
+
+    #[test]
+    fn broad_structured_dedupe_still_collapses_equivalent_parameterized_queries() {
+        let queries = vec![
+            "Silver Horizon 033".to_string(),
+            "Silver Horizon S02E05".to_string(),
+            "Silver Horizon S02".to_string(),
+            "Silver Horizon".to_string(),
+        ];
+
+        let deduped = dedupe_structured_dispatch_queries(queries, Some(2), Some(5), Some(33));
+
+        assert_eq!(deduped, vec!["Silver Horizon 033".to_string()]);
+    }
 }
 
 #[cfg(test)]

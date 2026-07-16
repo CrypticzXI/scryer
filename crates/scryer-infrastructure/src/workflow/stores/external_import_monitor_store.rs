@@ -36,12 +36,13 @@ impl ExternalImportMonitorSnapshotRepository for ExternalImportMonitorStore {
                     SqlRuntime::execute(
                         SqlExec::Tx(tx),
                         "INSERT INTO external_import_monitor_snapshot_chunks
-                         (facet, entry_kind, chunk_index, payload_ndjson, created_at)
-                         VALUES ({}, {}, {}, {}, {})
-                         ON CONFLICT(facet, entry_kind, chunk_index) DO UPDATE SET
+                         (session_id, facet, entry_kind, chunk_index, payload_ndjson, created_at)
+                         VALUES ({}, {}, {}, {}, {}, {})
+                         ON CONFLICT(session_id, facet, entry_kind, chunk_index) DO UPDATE SET
                              payload_ndjson = excluded.payload_ndjson,
                              created_at = excluded.created_at",
                         &[
+                            SqlArg::Text(chunk.session_id),
                             SqlArg::Text(chunk.facet.as_str().to_string()),
                             SqlArg::Text(chunk.entry_kind.as_str().to_string()),
                             SqlArg::I32(chunk.chunk_index),
@@ -60,6 +61,7 @@ impl ExternalImportMonitorSnapshotRepository for ExternalImportMonitorStore {
 
     async fn list_external_import_monitor_snapshot_chunk_batch(
         &self,
+        session_id: &str,
         facet: MediaFacet,
         entry_kind: ExternalImportMonitorSnapshotEntryKind,
         after_chunk_index: Option<i32>,
@@ -67,12 +69,13 @@ impl ExternalImportMonitorSnapshotRepository for ExternalImportMonitorStore {
     ) -> AppResult<Vec<ExternalImportMonitorSnapshotChunk>> {
         fetch_snapshot_chunks(
             self.datastore.read_exec(),
-            "SELECT facet, entry_kind, chunk_index, payload_ndjson, created_at
+            "SELECT session_id, facet, entry_kind, chunk_index, payload_ndjson, created_at
              FROM external_import_monitor_snapshot_chunks
-             WHERE facet = {} AND entry_kind = {} AND ({} IS NULL OR chunk_index > {})
+             WHERE session_id = {} AND facet = {} AND entry_kind = {} AND ({} IS NULL OR chunk_index > {})
              ORDER BY chunk_index ASC
              LIMIT {}",
             &[
+                SqlArg::Text(session_id.to_string()),
                 SqlArg::Text(facet.as_str().to_string()),
                 SqlArg::Text(entry_kind.as_str().to_string()),
                 SqlArg::OptI32(after_chunk_index),
@@ -85,13 +88,55 @@ impl ExternalImportMonitorSnapshotRepository for ExternalImportMonitorStore {
 
     async fn delete_external_import_monitor_snapshot_chunks(
         &self,
+        session_id: &str,
         facet: MediaFacet,
     ) -> AppResult<()> {
         execute_write(
             &self.datastore,
             "delete_external_import_monitor_snapshot_chunks",
-            "DELETE FROM external_import_monitor_snapshot_chunks WHERE facet = {}".to_string(),
-            vec![SqlArg::Text(facet.as_str().to_string())],
+            "DELETE FROM external_import_monitor_snapshot_chunks WHERE session_id = {} AND facet = {}"
+                .to_string(),
+            vec![
+                SqlArg::Text(session_id.to_string()),
+                SqlArg::Text(facet.as_str().to_string()),
+            ],
+        )
+        .await
+        .map_err(map_snapshot_chunk_error)?;
+        Ok(())
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks_for_session_prefix(
+        &self,
+        session_prefix: &str,
+        facet: MediaFacet,
+    ) -> AppResult<()> {
+        execute_write(
+            &self.datastore,
+            "delete_external_import_monitor_snapshot_chunks_for_session_prefix",
+            "DELETE FROM external_import_monitor_snapshot_chunks
+              WHERE session_id LIKE {} AND facet = {}"
+                .to_string(),
+            vec![
+                SqlArg::Text(format!("{session_prefix}%")),
+                SqlArg::Text(facet.as_str().to_string()),
+            ],
+        )
+        .await
+        .map_err(map_snapshot_chunk_error)?;
+        Ok(())
+    }
+
+    async fn delete_external_import_monitor_snapshot_chunks_except_session_prefix(
+        &self,
+        preserved_session_prefix: &str,
+    ) -> AppResult<()> {
+        execute_write(
+            &self.datastore,
+            "delete_external_import_monitor_snapshot_chunks_except_session_prefix",
+            "DELETE FROM external_import_monitor_snapshot_chunks WHERE session_id NOT LIKE {}"
+                .to_string(),
+            vec![SqlArg::Text(format!("{preserved_session_prefix}%"))],
         )
         .await
         .map_err(map_snapshot_chunk_error)?;

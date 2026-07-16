@@ -386,13 +386,12 @@ async fn specials_convergence_migration_repoints_legacy_season_zero_references()
 
     sqlx::query(
         "INSERT INTO wanted_items
-         (id, title_id, media_type, search_phase, status, created_at, updated_at, collection_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, title_id, media_type, status, created_at, updated_at, collection_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind("wanted-legacy")
     .bind("title-series")
     .bind("episode")
-    .bind("primary")
     .bind("wanted")
     .bind(&now)
     .bind(&now)
@@ -403,13 +402,12 @@ async fn specials_convergence_migration_repoints_legacy_season_zero_references()
 
     sqlx::query(
         "INSERT INTO wanted_items
-         (id, title_id, media_type, search_phase, status, created_at, updated_at, collection_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (id, title_id, media_type, status, created_at, updated_at, collection_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind("wanted-canonical")
     .bind("title-series")
     .bind("episode")
-    .bind("primary")
     .bind("wanted")
     .bind(&now)
     .bind(&now)
@@ -499,6 +497,694 @@ async fn migrations_apply_then_validate_is_idempotent() {
         .expect("applied DB should pass validate mode");
 
     let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_0140_rollup_creates_scheduler_tables_and_rss_gap_columns() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0140_scheduler_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+
+    for table in [
+        "upstream_scheduler_states",
+        "upstream_destination_cooldowns",
+        "upstream_scheduler_rss_cadence",
+    ] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)
+               FROM sqlite_master
+              WHERE type = 'table'
+                AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(&services.pool)
+        .await
+        .expect("sqlite_master query should succeed");
+        assert_eq!(exists, 1, "{table} should exist after migrations apply");
+    }
+
+    let rss_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('upstream_scheduler_rss_cadence')")
+            .fetch_all(&services.pool)
+            .await
+            .expect("rss cadence columns should load");
+    for column in [
+        "host_key",
+        "account_quota_key",
+        "destination_key",
+        "rss_request_key",
+        "target_interval_seconds",
+        "latest_safe_poll_at",
+        "last_seen_release_identity",
+        "last_seen_release_published_at",
+        "last_feed_gap_start_at",
+        "last_feed_gap_end_at",
+    ] {
+        assert!(
+            rss_columns.iter().any(|name| name == column),
+            "upstream_scheduler_rss_cadence should include {column}; columns were {rss_columns:?}"
+        );
+    }
+
+    let destination_columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('upstream_destination_cooldowns')")
+            .fetch_all(&services.pool)
+            .await
+            .expect("destination cooldown columns should load");
+    for column in [
+        "destination_key",
+        "cooldown_until",
+        "retry_after_seconds",
+        "source",
+        "observed_at",
+    ] {
+        assert!(
+            destination_columns.iter().any(|name| name == column),
+            "upstream_destination_cooldowns should include {column}; columns were {destination_columns:?}"
+        );
+    }
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_0140_uses_owner_scoped_metadata_storage_only() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0140_owner_metadata_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+
+    for table in [
+        "title_metadata_tags",
+        "title_metadata_tag_sources",
+        "title_metadata_tag_source_keys",
+        "title_metadata_rating_summaries",
+        "title_metadata_rating_sources",
+        "title_metadata_external_ratings",
+        "discovery_title_metadata_tags",
+        "discovery_title_metadata_tag_sources",
+        "discovery_title_metadata_tag_source_keys",
+        "discovery_title_metadata_rating_summaries",
+        "discovery_title_metadata_rating_sources",
+        "discovery_title_metadata_external_ratings",
+    ] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)
+               FROM sqlite_master
+              WHERE type = 'table'
+                AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(&services.pool)
+        .await
+        .expect("owner metadata table lookup should succeed");
+        assert_eq!(exists, 1, "{table} should exist after migrations apply");
+    }
+
+    for table in [
+        "canonical_media_subjects",
+        "canonical_media_tags",
+        "canonical_media_tag_sources",
+        "canonical_media_tag_source_keys",
+        "canonical_media_rating_summaries",
+        "canonical_media_rating_sources",
+        "canonical_media_external_ratings",
+        "discovery_title_ratings",
+        "title_rating_summaries",
+        "title_rating_sources",
+        "title_external_ratings",
+    ] {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)
+               FROM sqlite_master
+              WHERE type = 'table'
+                AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(&services.pool)
+        .await
+        .expect("obsolete metadata table lookup should succeed");
+        assert_eq!(exists, 0, "{table} should not exist after migrations apply");
+    }
+
+    let obsolete_discovery_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM pragma_table_info('discovery_titles')
+          WHERE name IN ('rating', 'canonical_subject_id')",
+    )
+    .fetch_one(&services.pool)
+    .await
+    .expect("discovery title columns should load");
+    assert_eq!(obsolete_discovery_columns, 0);
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_0146_drops_retired_event_outboxes() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0146_event_outboxes_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM sqlite_master
+          WHERE type = 'table'
+            AND name = 'event_outboxes'",
+    )
+    .fetch_one(&services.pool)
+    .await
+    .expect("event outbox table lookup should succeed");
+    assert_eq!(exists, 0, "event outboxes should be removed by migration");
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_0140_upgrades_v0_16_8_title_metadata_and_media_in_place() {
+    crate::spellfix::register_spellfix_auto_extension()
+        .expect("spellfix auto-extension should register");
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0140_v0_16_8_upgrade_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
+        .await
+        .expect("0.16.8 database should open");
+
+    crate::migrations::replay_source_catalog_for_fresh_install(&pool, Some(139), true)
+        .await
+        .expect("migrations through the 0.16.8 head should apply");
+
+    let library_id = scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Movie);
+    let root_folder_id: String = sqlx::query_scalar(
+        "SELECT id FROM library_roots WHERE library_id = ? ORDER BY is_default DESC, path LIMIT 1",
+    )
+    .bind(&library_id)
+    .fetch_one(&pool)
+    .await
+    .expect("0.16.8 default movie root should exist");
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        "INSERT INTO titles (
+            id, name, name_normalized, library_id, facet, monitored, status,
+            tags, external_ids, root_folder_id, genres, year, overview, created_at
+         ) VALUES (?, ?, ?, ?, 'movie', 1, 'active', '[]', ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("title-v0-16-8")
+    .bind("Sasaki and Miyano: Graduation")
+    .bind("sasaki and miyano graduation")
+    .bind(&library_id)
+    .bind(r#"[{"source":"tmdb","value":"998731"}]"#)
+    .bind(&root_folder_id)
+    .bind(r#"["Drama","Slice of Life"]"#)
+    .bind(2023i32)
+    .bind("A preserved 0.16.8 overview")
+    .bind(&now)
+    .execute(&pool)
+    .await
+    .expect("0.16.8 title should insert");
+
+    for (id, name, normalized) in [
+        (
+            "title-v0-16-8-image-copy",
+            "Sasaki and Miyano Image Copy",
+            "sasaki and miyano image copy",
+        ),
+        (
+            "title-v0-16-8-corrupt-image",
+            "Sasaki and Miyano Corrupt Image",
+            "sasaki and miyano corrupt image",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO titles (
+                id, name, name_normalized, library_id, facet, monitored, status,
+                tags, external_ids, root_folder_id, genres, year, overview, created_at
+             ) VALUES (?, ?, ?, ?, 'movie', 1, 'active', '[]', '[]', ?, '[]', 2023, '', ?)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(normalized)
+        .bind(&library_id)
+        .bind(&root_folder_id)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("0.16.8 image fixture title should insert");
+    }
+
+    sqlx::query(
+        "INSERT INTO media_files (
+            id, title_id, file_path, size_bytes, scan_status, created_at
+         ) VALUES (?, ?, ?, ?, 'complete', ?)",
+    )
+    .bind("file-v0-16-8")
+    .bind("title-v0-16-8")
+    .bind("/data/movies2/Sasaki and Miyano Graduation/movie.mkv")
+    .bind(1234i64)
+    .bind(&now)
+    .execute(&pool)
+    .await
+    .expect("0.16.8 media file should insert");
+
+    let legacy_image_bytes = vec![4_u8, 5, 6];
+    let legacy_image_digest = format!("blake3:{}", blake3::hash(&legacy_image_bytes).to_hex());
+    for (title_id, image_id) in [
+        ("title-v0-16-8", "image-v0-16-8-a"),
+        ("title-v0-16-8-image-copy", "image-v0-16-8-b"),
+        ("title-v0-16-8-corrupt-image", "image-v0-16-8-corrupt"),
+    ] {
+        sqlx::query(
+            "INSERT INTO title_images (
+                id, title_id, provider, provider_image_id, kind, source_url,
+                source_etag, source_last_modified, source_format, source_width,
+                source_height, created_at, updated_at
+             ) VALUES (?, ?, 'tvdb', NULL, 'poster', ?, NULL, NULL, 'jpeg', 1000, 1500, ?, ?)",
+        )
+        .bind(image_id)
+        .bind(title_id)
+        .bind(format!("https://artworks.thetvdb.com/{image_id}.jpg"))
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("0.16.8 title image should insert");
+        sqlx::query("UPDATE titles SET poster_local_path = ? WHERE id = ?")
+            .bind(format!("/images/titles/{title_id}/poster/w250?v=legacy"))
+            .bind(title_id)
+            .execute(&pool)
+            .await
+            .expect("0.16.8 local image path should update");
+    }
+    for (variant_id, image_id, bytes) in [
+        (
+            "variant-v0-16-8-a",
+            "image-v0-16-8-a",
+            legacy_image_bytes.clone(),
+        ),
+        (
+            "variant-v0-16-8-b",
+            "image-v0-16-8-b",
+            legacy_image_bytes.clone(),
+        ),
+        (
+            "variant-v0-16-8-corrupt",
+            "image-v0-16-8-corrupt",
+            vec![9_u8, 9, 9],
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO title_image_variants (
+                id, title_image_id, variant_key, path, format, width, height,
+                bytes, digest, created_at, updated_at
+             ) VALUES (?, ?, 'w250', ?, 'avif', 250, 375, ?, ?, ?, ?)",
+        )
+        .bind(variant_id)
+        .bind(image_id)
+        .bind(format!("/legacy-cache/{variant_id}.avif"))
+        .bind(bytes)
+        .bind(&legacy_image_digest)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("0.16.8 title image variant should insert");
+    }
+
+    pool.close().await;
+
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("0.16.8 database should upgrade to 0.17");
+    let title: (String, String, String, i32, String) = sqlx::query_as(
+        "SELECT library_id, genres, external_ids, year, overview
+           FROM titles
+          WHERE id = 'title-v0-16-8'",
+    )
+    .fetch_one(&services.pool)
+    .await
+    .expect("upgraded title should remain");
+    assert_eq!(title.0, library_id);
+    assert_eq!(title.1, r#"["Drama","Slice of Life"]"#);
+    assert_eq!(title.2, r#"[{"source":"tmdb","value":"998731"}]"#);
+    assert_eq!(title.3, 2023);
+    assert_eq!(title.4, "A preserved 0.16.8 overview");
+
+    let metadata_tags: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT tag_key, category, name
+           FROM title_metadata_tags
+          WHERE title_id = 'title-v0-16-8'
+          ORDER BY sort_index",
+    )
+    .fetch_all(&services.pool)
+    .await
+    .expect("legacy genres should seed title-owned metadata tags");
+    assert_eq!(
+        metadata_tags,
+        vec![
+            (
+                "metadata:genre:drama".to_string(),
+                "genre".to_string(),
+                "Drama".to_string(),
+            ),
+            (
+                "metadata:genre:slice_of_life".to_string(),
+                "genre".to_string(),
+                "Slice of Life".to_string(),
+            ),
+        ]
+    );
+
+    let media: (String, String) =
+        sqlx::query_as("SELECT title_id, file_path FROM media_files WHERE id = 'file-v0-16-8'")
+            .fetch_one(&services.pool)
+            .await
+            .expect("upgraded media file should remain attached to its title");
+    assert_eq!(media.0, "title-v0-16-8");
+    assert_eq!(
+        media.1,
+        "/data/movies2/Sasaki and Miyano Graduation/movie.mkv"
+    );
+
+    let image_blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
+        .fetch_one(&services.pool)
+        .await
+        .expect("migrated image blob count should load");
+    let migrated_image_variants: Vec<(String, String)> = sqlx::query_as(
+        "SELECT ti.title_id, tiv.blob_digest
+           FROM title_image_variants tiv
+           JOIN title_images ti ON ti.id = tiv.title_image_id
+          ORDER BY ti.title_id",
+    )
+    .fetch_all(&services.pool)
+    .await
+    .expect("migrated image variants should load");
+    assert_eq!(image_blob_count, 1);
+    assert_eq!(
+        migrated_image_variants,
+        vec![
+            ("title-v0-16-8".to_string(), legacy_image_digest.clone(),),
+            ("title-v0-16-8-image-copy".to_string(), legacy_image_digest,),
+        ]
+    );
+    let image_paths: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT id, poster_local_path
+           FROM titles
+          WHERE id IN (
+              'title-v0-16-8',
+              'title-v0-16-8-image-copy',
+              'title-v0-16-8-corrupt-image'
+          )
+          ORDER BY id",
+    )
+    .fetch_all(&services.pool)
+    .await
+    .expect("upgraded image paths should load");
+    assert_eq!(
+        image_paths,
+        vec![
+            (
+                "title-v0-16-8".to_string(),
+                Some("/images/titles/title-v0-16-8/poster/w250?v=legacy".to_string(),),
+            ),
+            ("title-v0-16-8-corrupt-image".to_string(), None),
+            (
+                "title-v0-16-8-image-copy".to_string(),
+                Some("/images/titles/title-v0-16-8-image-copy/poster/w250?v=legacy".to_string(),),
+            ),
+        ]
+    );
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_0140_postgres_transfers_shared_image_bytes_through_catalog_from_env()
+-> AppResult<()> {
+    let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let admin_pool = sqlx::PgPool::connect(&raw_url)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to connect to postgres: {error}")))?;
+    let schema = format!(
+        "scryer_image_migration_{}",
+        chrono::Utc::now().timestamp_micros()
+    );
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin_pool)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to create postgres test schema: {error}"))
+        })?;
+    let mut schema_url = url::Url::parse(&raw_url)
+        .map_err(|error| AppError::Validation(format!("invalid postgres test URL: {error}")))?;
+    schema_url
+        .query_pairs_mut()
+        .append_pair("options", &format!("-csearch_path={schema}"));
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(schema_url.as_str())
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to open postgres test schema: {error}"))
+        })?;
+
+    let result = async {
+        crate::postgres::replay_source_catalog_for_fresh_install(&pool, Some(139)).await?;
+        let library_id = scryer_domain::default_library_id_for_facet(
+            &scryer_domain::MediaFacet::Movie,
+        );
+        let root_folder_id: String = sqlx::query_scalar(
+            "SELECT id FROM library_roots
+              WHERE library_id = $1
+              ORDER BY is_default DESC, path
+              LIMIT 1",
+        )
+        .bind(&library_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let now = chrono::Utc::now();
+
+        for (id, name) in [
+            ("pg-image-title-a", "Postgres Image A"),
+            ("pg-image-title-b", "Postgres Image B"),
+            ("pg-image-title-corrupt", "Postgres Image Corrupt"),
+        ] {
+            sqlx::query(
+                "INSERT INTO titles (
+                    id, name, name_normalized, library_id, facet, monitored, status,
+                    tags, external_ids, root_folder_id, genres, year, overview, created_at
+                 ) VALUES ($1, $2, $2, $3, 'movie', TRUE, 'active', '[]', '[]', $4, '[]', 2024, '', $5)",
+            )
+            .bind(id)
+            .bind(name)
+            .bind(&library_id)
+            .bind(&root_folder_id)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        }
+        sqlx::query(
+            "INSERT INTO media_files (
+                id, title_id, file_path, size_bytes, scan_status, created_at
+             ) VALUES ('pg-image-media-a', 'pg-image-title-a', '/data/pg-image-a.mkv', 321, 'complete', $1)",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+
+        let bytes = vec![4_u8, 5, 6];
+        let digest = format!("blake3:{}", blake3::hash(&bytes).to_hex());
+        for (title_id, image_id) in [
+            ("pg-image-title-a", "pg-image-a"),
+            ("pg-image-title-b", "pg-image-b"),
+            ("pg-image-title-corrupt", "pg-image-corrupt"),
+        ] {
+            sqlx::query(
+                "INSERT INTO title_images (
+                    id, title_id, provider, provider_image_id, kind, source_url,
+                    source_etag, source_last_modified, source_format, source_width,
+                    source_height, created_at, updated_at
+                 ) VALUES ($1, $2, 'tvdb', NULL, 'poster', $3, NULL, NULL, 'jpeg', 1000, 1500, $4, $4)",
+            )
+            .bind(image_id)
+            .bind(title_id)
+            .bind(format!("https://artworks.thetvdb.com/{image_id}.jpg"))
+            .bind(now)
+            .execute(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+            sqlx::query("UPDATE titles SET poster_local_path = $1 WHERE id = $2")
+                .bind(format!(
+                    "/images/titles/{title_id}/poster/w250?v=legacy"
+                ))
+                .bind(title_id)
+                .execute(&pool)
+                .await
+                .map_err(|error| AppError::Repository(error.to_string()))?;
+        }
+        for (variant_id, image_id, variant_bytes) in [
+            ("pg-variant-a", "pg-image-a", bytes.clone()),
+            ("pg-variant-b", "pg-image-b", bytes.clone()),
+            (
+                "pg-variant-corrupt",
+                "pg-image-corrupt",
+                vec![9_u8, 9, 9],
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO title_image_variants (
+                    id, title_image_id, variant_key, path, format, width, height,
+                    bytes, digest, created_at, updated_at
+                 ) VALUES ($1, $2, 'w250', $3, 'avif', 250, 375, $4, $5, $6, $6)",
+            )
+            .bind(variant_id)
+            .bind(image_id)
+            .bind(format!("/legacy-cache/{variant_id}.avif"))
+            .bind(variant_bytes)
+            .bind(&digest)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        }
+
+        let migrated_services = PostgresServices::new_with_mode(
+            schema_url.as_str(),
+            crate::types::MigrationMode::Apply,
+        )
+        .await?;
+
+        let blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        let variants: Vec<(String, String)> = sqlx::query_as(
+            "SELECT ti.title_id, tiv.blob_digest
+               FROM title_image_variants tiv
+               JOIN title_images ti ON ti.id = tiv.title_image_id
+              ORDER BY ti.title_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let corrupt_local_path: Option<String> = sqlx::query_scalar(
+            "SELECT poster_local_path FROM titles WHERE id = 'pg-image-title-corrupt'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let media_owner: String = sqlx::query_scalar(
+            "SELECT title_id FROM media_files WHERE id = 'pg-image-media-a'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        assert_eq!(blob_count, 1);
+        assert_eq!(
+            variants,
+            vec![
+                ("pg-image-title-a".to_string(), digest.clone()),
+                ("pg-image-title-b".to_string(), digest),
+            ]
+        );
+        assert!(corrupt_local_path.is_none());
+        assert_eq!(media_owner, "pg-image-title-a");
+        migrated_services.pool().close().await;
+        Ok::<_, AppError>(())
+    }
+    .await;
+
+    pool.close().await;
+    let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin_pool)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to drop test schema: {error}")));
+    admin_pool.close().await;
+    cleanup?;
+    result
+}
+
+#[test]
+fn migration_0140_sqlite_and_postgres_rollup_sources_include_scheduler_columns() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("crate should live under repo/crates");
+    let sqlite = std::fs::read_to_string(
+        repo_root.join("crates/scryer/src/db/migrations/0140_0_17_release_rollup.sql"),
+    )
+    .expect("sqlite 0140 rollup migration should load");
+    let postgres = std::fs::read_to_string(
+        repo_root.join("crates/scryer/src/db/postgres/migrations/0140_0_17_release_rollup.sql"),
+    )
+    .expect("postgres 0140 rollup migration should load");
+
+    for sql in [&sqlite, &postgres] {
+        for required in [
+            "CREATE TABLE IF NOT EXISTS upstream_scheduler_states",
+            "CREATE TABLE IF NOT EXISTS upstream_destination_cooldowns",
+            "CREATE TABLE IF NOT EXISTS upstream_scheduler_rss_cadence",
+            "CREATE TABLE IF NOT EXISTS user_ui_settings",
+            "CREATE TABLE IF NOT EXISTS user_ui_table_columns",
+            "CREATE TABLE IF NOT EXISTS title_metadata_tags",
+            "CREATE TABLE IF NOT EXISTS title_metadata_tag_sources",
+            "CREATE TABLE IF NOT EXISTS title_metadata_tag_source_keys",
+            "CREATE TABLE IF NOT EXISTS title_metadata_rating_summaries",
+            "CREATE TABLE IF NOT EXISTS title_metadata_rating_sources",
+            "CREATE TABLE IF NOT EXISTS title_metadata_external_ratings",
+            "CREATE TABLE IF NOT EXISTS discovery_title_metadata_tags",
+            "CREATE TABLE IF NOT EXISTS discovery_title_metadata_tag_sources",
+            "CREATE TABLE IF NOT EXISTS discovery_title_metadata_tag_source_keys",
+            "CREATE TABLE IF NOT EXISTS discovery_title_metadata_rating_summaries",
+            "CREATE TABLE IF NOT EXISTS discovery_title_metadata_rating_sources",
+            "CREATE TABLE IF NOT EXISTS discovery_title_metadata_external_ratings",
+            "quota_observed_at",
+            "quota_probe_after",
+            "quota_reset_at",
+            "retry_after_seconds",
+            "rss_request_key",
+            "host_key",
+            "last_seen_release_identity",
+            "last_seen_release_published_at",
+            "last_feed_gap_start_at",
+            "last_feed_gap_end_at",
+        ] {
+            assert!(
+                sql.contains(required),
+                "0140 rollup migration source should include {required}"
+            );
+        }
+        assert!(!sql.contains("canonical_media_"));
+        assert!(!sql.contains("canonical_subject_id"));
+    }
 }
 
 #[tokio::test]

@@ -7,19 +7,19 @@ use scryer_outbound_http::{
     OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
     external_arr_reqwest_client, validate_operator_http_url,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
 /// Root folder discovered from a Sonarr/Radarr instance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrRootFolder {
     pub id: i64,
     pub path: String,
 }
 
 /// Download client discovered from a Sonarr/Radarr instance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrDownloadClient {
     pub id: i64,
     pub name: String,
@@ -28,12 +28,46 @@ pub struct ArrDownloadClient {
 }
 
 /// Indexer discovered from a Sonarr/Radarr instance.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrIndexer {
     pub id: i64,
     pub name: String,
     pub implementation: String,
     pub fields: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ArrNamingConfig {
+    pub rename_enabled: Option<bool>,
+    pub replace_illegal_characters: Option<bool>,
+    pub colon_replacement_format: Option<String>,
+    pub standard_format: Option<String>,
+    pub folder_format: Option<String>,
+    pub season_folder_format: Option<String>,
+    pub specials_folder_format: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ArrMediaManagementConfig {
+    pub set_permissions_linux: Option<bool>,
+    pub chmod_folder: Option<String>,
+    pub chown_group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArrMetadataProvider {
+    pub id: i64,
+    pub name: String,
+    pub implementation: String,
+    pub enable: bool,
+    pub fields: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArrQualityProfile {
+    pub id: i64,
+    pub name: String,
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +77,7 @@ pub struct DetectedProwlarrIndexer {
     pub child_name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrMovie {
     pub id: i64,
     pub root_folder_path: String,
@@ -52,32 +86,52 @@ pub struct ArrMovie {
     pub tmdb_id: Option<String>,
     pub imdb_id: Option<String>,
     pub monitored: bool,
+    #[serde(default)]
+    pub quality_profile_id: Option<i64>,
+    #[serde(default)]
+    pub minimum_availability: Option<String>,
+    #[serde(default)]
+    pub original_language: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<i64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrSeriesSeason {
     pub season_number: i32,
     pub monitored: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ArrSeriesStatistics {
     pub total_episode_count: Option<i32>,
     pub monitored_episode_count: Option<i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrSeries {
     pub id: i64,
     pub root_folder_path: String,
     pub path: Option<String>,
     pub tvdb_id: Option<String>,
     pub monitored: bool,
+    #[serde(default)]
+    pub quality_profile_id: Option<i64>,
+    #[serde(default)]
+    pub series_type: Option<String>,
+    #[serde(default)]
+    pub season_folder: Option<bool>,
+    #[serde(default)]
+    pub monitor_new_items: Option<String>,
+    #[serde(default)]
+    pub original_language: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<i64>,
     pub seasons: Vec<ArrSeriesSeason>,
     pub statistics: ArrSeriesStatistics,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrEpisode {
     pub id: i64,
     pub series_id: i64,
@@ -120,6 +174,20 @@ impl ExternalArrApiBucket {
         match self {
             Self::SonarrV4 => "sonarr_v4",
             Self::RadarrV6 => "radarr_v6",
+        }
+    }
+
+    fn naming_config_path(self, api_prefix: &str) -> &'static str {
+        match self {
+            Self::SonarrV4 if api_prefix.eq_ignore_ascii_case("v5") => "settings/naming",
+            Self::SonarrV4 | Self::RadarrV6 => "config/naming",
+        }
+    }
+
+    fn media_management_config_path(self, api_prefix: &str) -> &'static str {
+        match self {
+            Self::SonarrV4 if api_prefix.eq_ignore_ascii_case("v5") => "settings/mediamanagement",
+            Self::SonarrV4 | Self::RadarrV6 => "config/mediamanagement",
         }
     }
 
@@ -422,6 +490,90 @@ impl ExternalArrClient {
         Ok(results)
     }
 
+    pub async fn get_naming_config(&self) -> AppResult<ArrNamingConfig> {
+        self.ensure_supported_system_status().await?;
+        let api_prefix = self.ensure_supported_api_prefix().await?;
+        let json = self
+            .api_get_with_prefix(&api_prefix, self.api_bucket.naming_config_path(&api_prefix))
+            .await?;
+        Ok(ArrNamingConfig {
+            rename_enabled: value_bool(json.get(match self.api_bucket {
+                ExternalArrApiBucket::SonarrV4 => "renameEpisodes",
+                ExternalArrApiBucket::RadarrV6 => "renameMovies",
+            })),
+            replace_illegal_characters: value_bool(json.get("replaceIllegalCharacters")),
+            colon_replacement_format: value_trimmed_string(json.get("colonReplacementFormat")),
+            standard_format: value_trimmed_string(json.get(match self.api_bucket {
+                ExternalArrApiBucket::SonarrV4 => "standardEpisodeFormat",
+                ExternalArrApiBucket::RadarrV6 => "standardMovieFormat",
+            })),
+            folder_format: value_trimmed_string(json.get(match self.api_bucket {
+                ExternalArrApiBucket::SonarrV4 => "seriesFolderFormat",
+                ExternalArrApiBucket::RadarrV6 => "movieFolderFormat",
+            })),
+            season_folder_format: value_trimmed_string(json.get("seasonFolderFormat")),
+            specials_folder_format: value_trimmed_string(json.get("specialsFolderFormat")),
+        })
+    }
+
+    pub async fn get_media_management_config(&self) -> AppResult<ArrMediaManagementConfig> {
+        self.ensure_supported_system_status().await?;
+        let api_prefix = self.ensure_supported_api_prefix().await?;
+        let json = self
+            .api_get_with_prefix(
+                &api_prefix,
+                self.api_bucket.media_management_config_path(&api_prefix),
+            )
+            .await?;
+        Ok(ArrMediaManagementConfig {
+            set_permissions_linux: value_bool(json.get("setPermissionsLinux")),
+            chmod_folder: value_trimmed_string(json.get("chmodFolder")),
+            chown_group: value_trimmed_string(json.get("chownGroup")),
+        })
+    }
+
+    pub async fn list_metadata_providers(&self) -> AppResult<Vec<ArrMetadataProvider>> {
+        let json = self.api_get("metadata").await?;
+        let arr = json
+            .as_array()
+            .ok_or_else(|| AppError::Repository("metadata response was not an array".into()))?;
+
+        Ok(arr
+            .iter()
+            .filter_map(|item| {
+                Some(ArrMetadataProvider {
+                    id: item.get("id").and_then(Value::as_i64)?,
+                    name: value_trimmed_string(item.get("name"))?,
+                    implementation: value_trimmed_string(item.get("implementation"))?,
+                    enable: value_bool(item.get("enable")).unwrap_or(false),
+                    fields: item
+                        .get("fields")
+                        .and_then(Value::as_array)
+                        .map(|fields| flatten_arr_fields(fields))
+                        .unwrap_or_default(),
+                })
+            })
+            .collect())
+    }
+
+    pub async fn list_quality_profiles(&self) -> AppResult<Vec<ArrQualityProfile>> {
+        let json = self.api_get("qualityprofile").await?;
+        let arr = json.as_array().ok_or_else(|| {
+            AppError::Repository("qualityprofile response was not an array".into())
+        })?;
+
+        Ok(arr
+            .iter()
+            .filter_map(|item| {
+                Some(ArrQualityProfile {
+                    id: item.get("id").and_then(Value::as_i64)?,
+                    name: value_trimmed_string(item.get("name"))?,
+                    language: value_language_name(item.get("language")),
+                })
+            })
+            .collect())
+    }
+
     pub async fn list_movies(&self) -> AppResult<Vec<ArrMovie>> {
         let json = self.api_get("movie").await?;
         let arr = json
@@ -458,6 +610,10 @@ impl ExternalArrClient {
                         .get("monitored")
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
+                    quality_profile_id: item.get("qualityProfileId").and_then(Value::as_i64),
+                    minimum_availability: value_trimmed_string(item.get("minimumAvailability")),
+                    original_language: value_language_name(item.get("originalLanguage")),
+                    tags: value_i64_vec(item.get("tags")),
                 })
             })
             .collect())
@@ -520,6 +676,12 @@ impl ExternalArrClient {
                         .get("monitored")
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
+                    quality_profile_id: item.get("qualityProfileId").and_then(Value::as_i64),
+                    series_type: value_trimmed_string(item.get("seriesType")),
+                    season_folder: value_bool(item.get("seasonFolder")),
+                    monitor_new_items: value_trimmed_string(item.get("monitorNewItems")),
+                    original_language: value_language_name(item.get("originalLanguage")),
+                    tags: value_i64_vec(item.get("tags")),
                     seasons,
                     statistics: item
                         .get("statistics")
@@ -746,6 +908,7 @@ impl ExternalArrClient {
         )
         .with_max_retries(2)
         .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
+        .without_redirects()
     }
 }
 
@@ -907,12 +1070,59 @@ fn value_str_or_number(value: Option<&Value>) -> Option<String> {
     })
 }
 
+fn value_bool(value: Option<&Value>) -> Option<bool> {
+    value.and_then(|value| match value {
+        Value::Bool(value) => Some(*value),
+        Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Some(true),
+            "false" | "0" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        Value::Number(number) => number.as_i64().and_then(|value| match value {
+            1 => Some(true),
+            0 => Some(false),
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
+fn value_i64_vec(value: Option<&Value>) -> Vec<i64> {
+    value
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| match value {
+                    Value::Number(number) => number.as_i64(),
+                    Value::String(value) => value.trim().parse::<i64>().ok(),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn value_trimmed_string(value: Option<&Value>) -> Option<String> {
     value
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn value_language_name(value: Option<&Value>) -> Option<String> {
+    match value? {
+        Value::String(value) => {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        Value::Object(object) => value_trimmed_string(object.get("name"))
+            .or_else(|| value_trimmed_string(object.get("nameLower")))
+            .or_else(|| value_trimmed_string(object.get("id")))
+            .or_else(|| value_str_or_number(object.get("id"))),
+        _ => None,
+    }
 }
 
 fn arr_nested_file_path(value: Option<&Value>, parent_path: Option<&str>) -> Option<String> {
@@ -1154,6 +1364,42 @@ mod tests {
         ExternalArrApiBucket::SonarrV4
             .validate_api_prefix("v5")
             .expect("newer Sonarr api prefix should be supported");
+    }
+
+    #[test]
+    fn sonarr_v4_bucket_uses_legacy_settings_routes_before_v5() {
+        assert_eq!(
+            ExternalArrApiBucket::SonarrV4.naming_config_path("v4"),
+            "config/naming"
+        );
+        assert_eq!(
+            ExternalArrApiBucket::SonarrV4.media_management_config_path("v4"),
+            "config/mediamanagement"
+        );
+    }
+
+    #[test]
+    fn sonarr_v4_bucket_uses_v5_settings_routes_for_v5_prefix() {
+        assert_eq!(
+            ExternalArrApiBucket::SonarrV4.naming_config_path("v5"),
+            "settings/naming"
+        );
+        assert_eq!(
+            ExternalArrApiBucket::SonarrV4.media_management_config_path("v5"),
+            "settings/mediamanagement"
+        );
+    }
+
+    #[test]
+    fn radarr_v6_bucket_uses_v3_config_settings_routes() {
+        assert_eq!(
+            ExternalArrApiBucket::RadarrV6.naming_config_path("v3"),
+            "config/naming"
+        );
+        assert_eq!(
+            ExternalArrApiBucket::RadarrV6.media_management_config_path("v3"),
+            "config/mediamanagement"
+        );
     }
 
     #[test]

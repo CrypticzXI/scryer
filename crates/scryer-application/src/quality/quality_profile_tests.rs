@@ -642,7 +642,7 @@ fn unknown_non_anime_unlabeled_release_satisfies_required_english() {
 }
 
 #[test]
-fn non_anime_dual_audio_does_not_satisfy_required_english_by_itself() {
+fn non_anime_dual_audio_satisfies_required_english() {
     let mut profile = QualityProfile::parse(
         r#"{"id":"t","name":"T","criteria":{"allow_unknown_quality":true,"allow_upgrades":true}}"#,
     )
@@ -654,6 +654,31 @@ fn non_anime_dual_audio_does_not_satisfy_required_english_by_itself() {
         crate::title_audio_language_context(None, Some("France"), Some("movie"), &[]);
     release.languages_audio =
         crate::release_audio_language_hints_for_title(&release, None, Some(&title_context), true);
+    // DUAL audio means English plus the title's original language (French here),
+    // so a required-English profile is satisfied rather than falsely blocked.
+    let d = evaluate_against_profile(&profile, &release, false, &w);
+    assert!(d.allowed);
+    assert!(
+        !d.block_codes
+            .contains(&"required_audio_language_missing".to_string())
+    );
+}
+
+#[test]
+fn non_anime_dual_audio_does_not_satisfy_unrelated_required_language() {
+    let mut profile = QualityProfile::parse(
+        r#"{"id":"t","name":"T","criteria":{"allow_unknown_quality":true,"allow_upgrades":true}}"#,
+    )
+    .unwrap();
+    profile.criteria.required_audio_languages = vec!["jpn".to_string()];
+    let w = balanced_weights();
+    let mut release = parse_release_metadata("Movie.2024.1080p.WEB-DL.DUAL.H.265");
+    let title_context =
+        crate::title_audio_language_context(None, Some("France"), Some("movie"), &[]);
+    release.languages_audio =
+        crate::release_audio_language_hints_for_title(&release, None, Some(&title_context), true);
+    // DUAL infers eng+fra for a French title; a required Japanese track is still
+    // correctly reported missing, so the gate keeps blocking genuine mismatches.
     let d = evaluate_against_profile(&profile, &release, false, &w);
     assert!(!d.allowed);
     assert!(

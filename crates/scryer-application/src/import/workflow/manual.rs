@@ -1,5 +1,4 @@
 const MANUAL_IMPORT_POLLER_INTERVAL_SECONDS: u64 = 2;
-const MANUAL_IMPORT_STALE_RECOVERY_SECONDS: i64 = 120;
 const MANUAL_IMPORT_ALLOWED_ROOTS_ENV: &str = "SCRYER_MANUAL_IMPORT_ALLOWED_ROOTS";
 pub async fn start_background_manual_import_poller(
     app: AppUseCase,
@@ -25,7 +24,7 @@ pub async fn start_background_manual_import_poller(
             .imports
             .recover_stale_processing_imports_for_type(
                 ImportType::ManualImport,
-                MANUAL_IMPORT_STALE_RECOVERY_SECONDS,
+                IMPORT_STALE_RECOVERY_SECONDS,
             )
             .await
         {
@@ -1131,10 +1130,18 @@ async fn execute_manual_series_movie_import(
     let import_mode = app
         .resolve_import_mode(Some(&title.library_id), &title.facet)
         .await?;
-    let file_result =
-        match import_file_with_record_progress(app, import_id, source, &dest_path, import_mode, None)
-            .await
-        {
+    let file_result = match import_file_with_record_progress(
+        app,
+        import_id,
+        &title.library_id,
+        &title.facet,
+        source,
+        &dest_path,
+        import_mode,
+        None,
+    )
+    .await
+    {
             Ok(file_result) => file_result,
             Err(error) => {
                 let message = error.to_string();

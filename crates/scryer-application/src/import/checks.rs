@@ -155,12 +155,12 @@ pub fn check_not_already_imported(ctx: &ImportCheckContext<'_>) -> ImportVerdict
 ///
 /// Requires at least `source_size + 500 MB` free on the destination volume.
 pub fn check_disk_space(ctx: &ImportCheckContext<'_>) -> ImportVerdict {
-    let target_dir = ctx.dest_path.parent().unwrap_or(ctx.dest_path);
-
     #[cfg(unix)]
     {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
+
+        let target_dir = ctx.dest_path.parent().unwrap_or(ctx.dest_path);
 
         // Find an existing ancestor to stat (dest dir may not exist yet).
         let stat_path = {

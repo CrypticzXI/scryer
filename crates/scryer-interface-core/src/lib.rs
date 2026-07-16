@@ -10,6 +10,8 @@ use scryer_application::{
 use scryer_domain::{ActorCapabilityMask, AppPermission, Id, LibraryPermission, User};
 use tokio::sync::{broadcast, watch};
 
+pub mod loaders;
+
 const AUTHENTICATION_REQUIRED_MESSAGE: &str = "authentication required";
 const AUTHENTICATION_REQUIRED_CODE: &str = "AUTHENTICATION_REQUIRED";
 const INTERNAL_SERVER_ERROR_MESSAGE: &str = "Internal server error";
@@ -256,6 +258,25 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::DownloadSubmitUnavailable(message) => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_UNAVAILABLE")
         }
+        AppError::ArchiveExtractionPluginRequired {
+            message,
+            source_path,
+        } => Error::new(message).extend_with(|_, extensions| {
+            extensions.set("code", "ARCHIVE_EXTRACTION_PLUGIN_REQUIRED");
+            if let Some(source_path) = source_path {
+                extensions.set("sourcePath", source_path);
+            }
+        }),
+        AppError::TemporaryUnavailable {
+            message,
+            retry_after,
+            ..
+        } => Error::new(message).extend_with(|_, extensions| {
+            extensions.set("code", "TEMPORARY_UNAVAILABLE");
+            if let Some(delay) = retry_after {
+                extensions.set("retryAfterSeconds", delay.as_secs());
+            }
+        }),
         AppError::PluginInstallInProgress(message) => {
             coded_gql_error(message, "PLUGIN_INSTALL_IN_PROGRESS")
         }
@@ -264,6 +285,9 @@ pub fn to_gql_error(err: AppError) -> Error {
         }
         AppError::DownloadSubmitAmbiguous(message) => {
             coded_gql_error(message, "DOWNLOAD_SUBMIT_AMBIGUOUS")
+        }
+        AppError::DownloadSubmitRejected(message) => {
+            coded_gql_error(message, "DOWNLOAD_SUBMIT_REJECTED")
         }
         AppError::MfaStepUpRequired(message) => coded_gql_error(message, "MFA_STEP_UP_REQUIRED"),
         AppError::TotpEnrollmentRequired(message) => {
@@ -276,6 +300,7 @@ pub fn to_gql_error(err: AppError) -> Error {
         AppError::TotpRecoveryCodeUsed(message) => {
             coded_gql_error(message, "TOTP_RECOVERY_CODE_USED")
         }
+        AppError::Canceled(message) => coded_gql_error(message, "CANCELED"),
         AppError::Repository(message) => repository_gql_error(message),
     }
 }
@@ -319,12 +344,16 @@ fn app_error_kind(err: &AppError) -> &'static str {
         AppError::NotFound(_) => "NotFound",
         AppError::DownloadFeedbackTimeout(_) => "DownloadFeedbackTimeout",
         AppError::DownloadSubmitAmbiguous(_) => "DownloadSubmitAmbiguous",
+        AppError::DownloadSubmitRejected(_) => "DownloadSubmitRejected",
         AppError::DownloadSubmitUnavailable(_) => "DownloadSubmitUnavailable",
+        AppError::ArchiveExtractionPluginRequired { .. } => "ArchiveExtractionPluginRequired",
+        AppError::TemporaryUnavailable { .. } => "TemporaryUnavailable",
         AppError::MfaStepUpRequired(_) => "MfaStepUpRequired",
         AppError::TotpEnrollmentRequired(_) => "TotpEnrollmentRequired",
         AppError::MfaEnrollmentRequired(_) => "MfaEnrollmentRequired",
         AppError::TotpInvalidCode(_) => "TotpInvalidCode",
         AppError::TotpRecoveryCodeUsed(_) => "TotpRecoveryCodeUsed",
+        AppError::Canceled(_) => "Canceled",
         AppError::Repository(_) => "Repository",
     }
 }
@@ -555,9 +584,19 @@ mod tests {
                 "DOWNLOAD_SUBMIT_AMBIGUOUS",
             ),
             (
+                AppError::DownloadSubmitRejected("sabnzbd rejected the nzb: Duplicate NZB".into()),
+                "sabnzbd rejected the nzb: Duplicate NZB",
+                "DOWNLOAD_SUBMIT_REJECTED",
+            ),
+            (
                 AppError::DownloadSubmitUnavailable("download submitter unavailable".into()),
                 "download submitter unavailable",
                 "DOWNLOAD_SUBMIT_UNAVAILABLE",
+            ),
+            (
+                AppError::temporary_unavailable("provider is deferred", None),
+                "provider is deferred",
+                "TEMPORARY_UNAVAILABLE",
             ),
             (
                 AppError::MfaStepUpRequired("MFA code is required".into()),
@@ -589,6 +628,23 @@ mod tests {
             assert_eq!(error.message, expected_message);
             assert_eq!(graphql_error_code(&error), Some(expected_code));
         }
+    }
+
+    #[test]
+    fn temporary_unavailable_graphql_error_preserves_retry_after() {
+        let error = to_gql_error(AppError::temporary_unavailable(
+            "subtitle provider is temporarily deferred",
+            Some(std::time::Duration::from_secs(120)),
+        ));
+
+        assert_eq!(error.message, "subtitle provider is temporarily deferred");
+        assert_eq!(graphql_error_code(&error), Some("TEMPORARY_UNAVAILABLE"));
+        let retry_after = error
+            .extensions
+            .as_ref()
+            .and_then(|extensions| extensions.get("retryAfterSeconds"))
+            .expect("retryAfterSeconds extension should be present");
+        assert_eq!(retry_after.to_string(), "120");
     }
 
     #[test]

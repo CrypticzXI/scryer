@@ -199,6 +199,27 @@ fn skip_reason_for_import_check_code(code: &str) -> ImportSkipReason {
     }
 }
 
+async fn skip_reason_for_import_check_rejection(
+    app: &AppUseCase,
+    code: &str,
+    dest_path: &Path,
+) -> AppResult<ImportSkipReason> {
+    if code == "duplicate_file" {
+        let stored_dest_path = path_to_stored_string(dest_path);
+        let cataloged = app
+            .services
+            .library
+            .media_files
+            .get_media_file_by_path(&stored_dest_path)
+            .await?
+            .is_some();
+        if !cataloged {
+            return Ok(ImportSkipReason::DuplicateFile);
+        }
+    }
+    Ok(skip_reason_for_import_check_code(code))
+}
+
 async fn finalize_import_source_cleanup(
     app: &AppUseCase,
     import_mode: scryer_domain::ImportMode,

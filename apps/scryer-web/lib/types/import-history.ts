@@ -1,44 +1,44 @@
 import type { Facet } from "./titles";
 
 export type ImportType =
-  | "movie_download"
-  | "series_download"
-  | "manual_import"
-  | "rename_preview"
-  | "rename_apply_title"
-  | "rename_apply_facet"
-  | "rename_apply_result"
-  | "rename_io_failed"
-  | "rename_move"
-  | "rename_stale_plan";
+  | "MOVIE_DOWNLOAD"
+  | "SERIES_DOWNLOAD"
+  | "MANUAL_IMPORT"
+  | "RENAME_PREVIEW"
+  | "RENAME_APPLY_TITLE"
+  | "RENAME_APPLY_FACET"
+  | "RENAME_APPLY_RESULT"
+  | "RENAME_IO_FAILED"
+  | "RENAME_MOVE"
+  | "RENAME_STALE_PLAN";
 
 export type ImportRecordStatus =
-  | "pending"
-  | "running"
-  | "processing"
-  | "completed"
-  | "failed"
-  | "skipped";
+  | "PENDING"
+  | "RUNNING"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "FAILED"
+  | "SKIPPED";
 
 export type ImportDecision =
-  | "imported"
-  | "rejected"
-  | "skipped"
-  | "conflict"
-  | "unmatched"
-  | "failed";
+  | "IMPORTED"
+  | "REJECTED"
+  | "SKIPPED"
+  | "CONFLICT"
+  | "UNMATCHED"
+  | "FAILED";
 
 export type ImportSkipReason =
-  | "already_imported"
-  | "duplicate_file"
-  | "post_download_rule_blocked"
-  | "policy_mismatch"
-  | "unresolved_identity"
-  | "unparseable_episode"
-  | "no_video_files"
-  | "disk_full"
-  | "permission_denied"
-  | "password_required";
+  | "ALREADY_IMPORTED"
+  | "DUPLICATE_FILE"
+  | "POST_DOWNLOAD_RULE_BLOCKED"
+  | "POLICY_MISMATCH"
+  | "UNRESOLVED_IDENTITY"
+  | "UNPARSEABLE_EPISODE"
+  | "NO_VIDEO_FILES"
+  | "DISK_FULL"
+  | "PERMISSION_DENIED"
+  | "PASSWORD_REQUIRED";
 
 export type ImportRecord = {
   id: string;

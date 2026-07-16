@@ -1,0 +1,94 @@
+export type EpisodeDetailMergeEpisode = {
+  id: string;
+  overview?: string | null;
+  imageUrl?: string | null;
+};
+
+export type EpisodeDetailMergeCollection<
+  Episode extends EpisodeDetailMergeEpisode = EpisodeDetailMergeEpisode,
+> = {
+  id: string;
+  episodes?: Episode[] | null;
+};
+
+export function episodeIdsForCollections(
+  collections: readonly EpisodeDetailMergeCollection[],
+): Set<string> {
+  const ids = new Set<string>();
+  for (const collection of collections) {
+    for (const episode of collection.episodes ?? []) {
+      ids.add(episode.id);
+    }
+  }
+  return ids;
+}
+
+export function mergeLoadedEpisodeDetailsForCollections<
+  Episode extends EpisodeDetailMergeEpisode,
+>(
+  nextCollections: readonly EpisodeDetailMergeCollection<Episode>[],
+  currentEpisodesByCollection: Record<
+    string,
+    readonly EpisodeDetailMergeEpisode[]
+  >,
+  loadedEpisodeIds: ReadonlySet<string>,
+): Record<string, Episode[]> {
+  const loadedDetailsByEpisodeId = new Map<
+    string,
+    Pick<EpisodeDetailMergeEpisode, "overview" | "imageUrl">
+  >();
+  for (const episodes of Object.values(currentEpisodesByCollection)) {
+    for (const episode of episodes) {
+      if (!loadedEpisodeIds.has(episode.id)) {
+        continue;
+      }
+      loadedDetailsByEpisodeId.set(episode.id, {
+        overview: episode.overview,
+        imageUrl: episode.imageUrl,
+      });
+    }
+  }
+
+  return Object.fromEntries(
+    nextCollections.map((collection) => [
+      collection.id,
+      (collection.episodes ?? []).map((episode) => {
+        const loadedDetail = loadedDetailsByEpisodeId.get(episode.id);
+        return loadedDetail
+          ? {
+              ...episode,
+              overview: loadedDetail.overview ?? episode.overview ?? null,
+              imageUrl: loadedDetail.imageUrl ?? episode.imageUrl ?? null,
+            }
+          : episode;
+      }),
+    ]),
+  );
+}
+
+export function pruneEpisodeRecord<Value>(
+  current: Record<string, Value>,
+  episodeIds: ReadonlySet<string>,
+): Record<string, Value> {
+  return Object.fromEntries(
+    Object.entries(current).filter(([episodeId]) => episodeIds.has(episodeId)),
+  );
+}
+
+export function pruneSeriesMovieLinkMediaFiles<
+  File extends { episodeId: string | null },
+>(
+  current: Record<string, readonly File[]>,
+  episodeIds: ReadonlySet<string>,
+): Record<string, File[]> {
+  return Object.fromEntries(
+    Object.entries(current)
+      .map(([linkId, files]) => [
+        linkId,
+        files.filter(
+          (file) => file.episodeId === null || episodeIds.has(file.episodeId),
+        ),
+      ])
+      .filter(([, files]) => files.length > 0),
+  );
+}

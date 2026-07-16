@@ -4,13 +4,18 @@ import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { generalSettingsQuery } from "@/lib/graphql/queries";
 import {
   rehydrateAllMetadataMutation,
+  setMyUiSettingsMutation,
   updateGeneralSettingsMutation,
 } from "@/lib/graphql/mutations";
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import {
+  uiSettingsInputFromSettings,
+  useUiSettings,
+} from "@/lib/context/ui-settings-context";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
-import type { GeneralSettings } from "@/lib/types/settings";
+import type { GeneralSettings, UiDateTimeFormat, UiSettings } from "@/lib/types/settings";
 
 const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   keepHistoryForever: false,
@@ -35,8 +40,15 @@ export function SettingsOverviewContainer({
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
+  const {
+    uiSettings,
+    uiSettingsLoaded,
+    uiSettingsLoading,
+    setUiSettings,
+  } = useUiSettings();
   const [pendingLanguage, setPendingLanguage] = React.useState<string | null>(null);
   const [rehydrating, setRehydrating] = React.useState(false);
+  const [uiSettingsSaving, setUiSettingsSaving] = React.useState(false);
   const [generalSettings, setGeneralSettings] = React.useState<GeneralSettings>(
     DEFAULT_GENERAL_SETTINGS,
   );
@@ -105,6 +117,51 @@ export function SettingsOverviewContainer({
     ? availableLanguages.find((l) => l.code === pendingLanguage)?.label ?? pendingLanguage
     : "";
 
+  const handleDateTimeFormatChange = React.useCallback(
+    async (dateTimeFormat: UiDateTimeFormat) => {
+      if (
+        !uiSettingsLoaded ||
+        uiSettingsLoading ||
+        uiSettingsSaving ||
+        dateTimeFormat === uiSettings.dateTimeFormat
+      ) {
+        return;
+      }
+
+      const nextSettings: UiSettings = {
+        ...uiSettings,
+        dateTimeFormat,
+      };
+      setUiSettingsSaving(true);
+      try {
+        const { data, error } = await client
+          .mutation<{ setMyUiSettings: UiSettings }>(setMyUiSettingsMutation, {
+            input: uiSettingsInputFromSettings(nextSettings),
+          })
+          .toPromise();
+        if (error) throw error;
+        setUiSettings(data?.setMyUiSettings ?? nextSettings);
+        setGlobalStatus(t("settings.uiSaved"));
+      } catch (error) {
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.failedToUpdate"),
+        );
+      } finally {
+        setUiSettingsSaving(false);
+      }
+    },
+    [
+      client,
+      setGlobalStatus,
+      setUiSettings,
+      t,
+      uiSettings,
+      uiSettingsLoaded,
+      uiSettingsLoading,
+      uiSettingsSaving,
+    ],
+  );
+
   const handleSaveGeneralSettings = React.useCallback(async () => {
     if (!generalSettings.keepHistoryForever && generalSettings.historyRetentionDays < 1) {
       setGlobalStatus(t("settings.historyRetentionValidation"));
@@ -144,6 +201,10 @@ export function SettingsOverviewContainer({
         selectedLanguage={selectedLanguage}
         uiLanguage={uiLanguage}
         onSelectLanguage={handleLanguageSelect}
+        dateTimeFormat={uiSettings.dateTimeFormat}
+        dateTimeFormatLoading={uiSettingsLoading || !uiSettingsLoaded}
+        dateTimeFormatSaving={uiSettingsSaving}
+        onDateTimeFormatChange={handleDateTimeFormatChange}
         generalSettings={generalSettings}
         onGeneralSettingsChange={setGeneralSettings}
         generalLoading={generalLoading}
