@@ -173,7 +173,7 @@ const ALL_LIBRARIES_VALUE = "__all__";
 
 const EMPTY_TITLE_CATALOG_FILTER_OPTIONS: TitleCatalogFilterOptionsRecord = {
   genres: [],
-  tags: [],
+  themes: [],
   minimumYear: null,
   maximumYear: null,
 };
@@ -2722,7 +2722,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setBulkDeletePreviewLoading(false);
     setBulkDeletePreviewError(null);
     setBulkDeletePreviewsByTitleId({});
-  }, [selectedTitles.length]);
+  }, [
+    selectedTitles.length,
+    setBulkDeleteDialogOpen,
+    setBulkDeleteFilesOnDisk,
+    setBulkDeletePreviewError,
+    setBulkDeletePreviewLoading,
+    setBulkDeletePreviewsByTitleId,
+    setBulkDeleteTypedConfirmation,
+  ]);
 
   useDeferredWsSubscription<{ data?: { jobRunEvents?: unknown } }>({
     requestKey: "mediaContentTitleDeletionJobRuns",

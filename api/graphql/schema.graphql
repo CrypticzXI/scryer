@@ -284,6 +284,11 @@ type CanonicalMediaTagPayload {
 	isSpoiler: Boolean!
 }
 
+type CanonicalTagFilterOptionPayload {
+	key: String!
+	name: String!
+}
+
 enum CatalogDiscoveryGroupKindValue {
 	PUBLIC_TOP
 	PUBLIC_SECTION
@@ -793,6 +798,7 @@ type DeleteUserPayload {
 type DirectoryEntryPayload {
 	name: String!
 	path: String!
+	isDirectory: Boolean!
 }
 
 type DiscoveryExternalIdPayload {
@@ -818,11 +824,76 @@ type DiscoveryFacetPayload {
 	localCount: Long
 }
 
+type DiscoveryHomeCardPayload {
+	id: ID!
+	targetKey: String!
+	targetKind: MediaFacetValue!
+	displayTitle: String!
+	originalTitle: String
+	sortTitle: String
+	year: Int
+	posterUrl: String
+	contentType: MediaFacetValue!
+	ownedInInput: Boolean!
+}
+
+type DiscoveryHomeCardsPayload {
+	status: DiscoverySyncStatusPayload!
+	heroItem: DiscoveryHomeHeroPayload
+	publicSections: [DiscoveryHomeSectionPayload!]!
+	personalizedSections: [DiscoveryHomeSectionPayload!]!
+	completeCollection: DiscoveryHomeSectionPayload
+	canViewPersonalized: Boolean!
+}
+
+input DiscoveryHomeFilterOptionsInput {
+	includePublic: Boolean
+	includePersonalized: Boolean
+	includeUnresolved: Boolean
+}
+
+type DiscoveryHomeFilterOptionsPayload {
+	genres: [CanonicalTagFilterOptionPayload!]!
+	themes: [CanonicalTagFilterOptionPayload!]!
+	studioSlugs: [String!]!
+}
+
+input DiscoveryHomeFiltersInput {
+	contentTypes: [MediaFacetValue!]
+	genreTagKeys: [String!]
+	themeTagKeys: [String!]
+	studioSlugs: [String!]
+	minimumYear: Int
+	maximumYear: Int
+	minimumRating: Float
+}
+
+type DiscoveryHomeHeroPayload {
+	id: ID!
+	targetKey: String!
+	targetKind: MediaFacetValue!
+	displayTitle: String!
+	originalTitle: String
+	sortTitle: String
+	year: Int
+	posterUrl: String
+	backgroundUrl: String
+	overview: String
+	contentType: MediaFacetValue!
+	rating: Float
+	ratingSources: [String!]!
+	externalRatings: [DiscoveryExternalRatingPayload!]!
+	genreTags: [CanonicalMediaTagPayload!]!
+	matchedSubjectCount: Int!
+	ownedInInput: Boolean!
+}
+
 input DiscoveryHomeInput {
 	includePublic: Boolean
 	includePersonalized: Boolean
 	includeUnresolved: Boolean
 	limitPerSection: Int
+	filters: DiscoveryHomeFiltersInput
 }
 
 type DiscoveryHomePayload {
@@ -833,6 +904,15 @@ type DiscoveryHomePayload {
 	completeCollection: DiscoverySectionPayload
 	facets: [DiscoveryFacetPayload!]!
 	canViewPersonalized: Boolean!
+}
+
+type DiscoveryHomeSectionPayload {
+	sectionId: String!
+	sectionType: String!
+	title: String!
+	surface: DiscoverySurfaceValue!
+	totalCount: Long!
+	items: [DiscoveryHomeCardPayload!]!
 }
 
 input DiscoveryItemDetailInput {
@@ -910,6 +990,11 @@ type DiscoverySectionPayload {
 	surface: String!
 	totalCount: Long!
 	items: [DiscoveryItemPayload!]!
+}
+
+enum DiscoverySurfaceValue {
+	PUBLIC
+	PERSONALIZED
 }
 
 type DiscoverySyncStatePayload {
@@ -3295,6 +3380,7 @@ type QualityProfileSettingsPayload {
 
 type QueryRoot {
 	titles(facet: MediaFacetValue, libraryIds: [ID!], query: String, filter: TitleCatalogFilterInput, sort: TitleCatalogSortInput, limit: Int, offset: Int): TitleCatalogPayload!
+	titleCatalogFilterOptions(facet: MediaFacetValue, libraryIds: [ID!], rootFolderIds: [ID!]): TitleCatalogFilterOptionsPayload!
 	libraries(facet: MediaFacetValue, permission: LibraryPermissionValue): [LibraryPayload!]!
 	catalogHasValidRoot(facet: MediaFacetValue!): Boolean!
 	mediaRequests(facet: MediaFacetValue, libraryIds: [ID!], status: MediaRequestStatusValue): [MediaRequestPayload!]!
@@ -3337,6 +3423,8 @@ type QueryRoot {
 	jobRuns(jobKey: JobKeyValue!, limit: Int): [JobRunPayload!]!
 	recentJobRuns(limit: Int): [JobRunPayload!]!
 	discoveryHome(input: DiscoveryHomeInput): DiscoveryHomePayload!
+	discoveryHomeCards(input: DiscoveryHomeInput): DiscoveryHomeCardsPayload!
+	discoveryHomeFilterOptions(input: DiscoveryHomeFilterOptionsInput): DiscoveryHomeFilterOptionsPayload!
 	discoveryItems(input: DiscoveryItemsInput): DiscoveryItemsPayload!
 	discoveryItemDetail(input: DiscoveryItemDetailInput!): DiscoveryItemPayload
 	catalogDiscovery(input: CatalogDiscoveryInput!): CatalogDiscoveryPayload!
@@ -3439,7 +3527,12 @@ type QueryRoot {
 	notificationProviderTypes: [ProviderTypePayload!]!
 	notificationEventTypes: [String!]!
 	setupStatus: SetupStatusPayload!
-	browsePath(path: String! = "/"): [DirectoryEntryPayload!]!
+	"""
+	Browses local paths after the caller passes the library-settings read permission check.
+	
+	Directories are returned by default; set `includeFiles` to `true` to include regular files.
+	"""
+	browsePath(path: String! = "/", includeFiles: Boolean): [DirectoryEntryPayload!]!
 	serviceLogs(limit: Int! = 250): ServiceLogsPayload!
 	"""
 	List external subtitles for a title.
@@ -4182,6 +4275,19 @@ type TitleCatalogFilterCountsPayload {
 input TitleCatalogFilterInput {
 	monitored: Boolean
 	contentStatuses: [TitleCatalogContentStatusValue!]
+	rootFolderIds: [ID!]
+	genreTagKeys: [String!]
+	themeTagKeys: [String!]
+	minimumYear: Int
+	maximumYear: Int
+	minimumRating: Float
+}
+
+type TitleCatalogFilterOptionsPayload {
+	genres: [CanonicalTagFilterOptionPayload!]!
+	themes: [CanonicalTagFilterOptionPayload!]!
+	minimumYear: Int
+	maximumYear: Int
 }
 
 type TitleCatalogPayload {
@@ -4189,6 +4295,7 @@ type TitleCatalogPayload {
 	hasMore: Boolean!
 	totalCount: Int!
 	filterCounts: TitleCatalogFilterCountsPayload!
+	managedBytes: Long!
 }
 
 input TitleCatalogSortInput {
@@ -4412,7 +4519,7 @@ type TitlePayload {
 	fillerPolicy: FillerPolicyValue
 	recapPolicy: RecapPolicyValue
 	"""
-	Legacy title quality label.
+	Effective target quality-profile label for the title.
 	"""
 	qualityTier: String
 	"""

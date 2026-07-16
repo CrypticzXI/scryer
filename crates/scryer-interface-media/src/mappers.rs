@@ -1578,28 +1578,72 @@ pub fn from_discovery_sync_state(state: DiscoverySyncStateRecord) -> DiscoverySy
     }
 }
 
-pub fn discovery_home_query_from_input(input: Option<DiscoveryHomeInput>) -> DiscoveryHomeQuery {
+const DISCOVERY_HOME_MAX_SECTION_LIMIT: i32 = 100;
+
+fn discovery_home_canonical_tag_keys(
+    field_name: &str,
+    keys: Option<Vec<String>>,
+) -> scryer_application::AppResult<Vec<String>> {
+    let keys = keys.unwrap_or_default();
+    if keys.iter().any(|key| key.trim().is_empty()) {
+        return Err(scryer_application::AppError::Validation(format!(
+            "discovery home {field_name} entries must not be blank"
+        )));
+    }
+    Ok(keys)
+}
+
+pub fn discovery_home_query_from_input(
+    input: Option<DiscoveryHomeInput>,
+) -> scryer_application::AppResult<DiscoveryHomeQuery> {
     let input = input.unwrap_or_default();
     let filters = input.filters.unwrap_or_default();
-    DiscoveryHomeQuery {
+    let limit_per_section = match input.limit_per_section {
+        Some(value) if !(1..=DISCOVERY_HOME_MAX_SECTION_LIMIT).contains(&value) => {
+            return Err(scryer_application::AppError::Validation(format!(
+                "discovery home limitPerSection must be between 1 and {DISCOVERY_HOME_MAX_SECTION_LIMIT}"
+            )));
+        }
+        Some(value) => value as usize,
+        None => 25,
+    };
+    let minimum_rating = filters.minimum_rating;
+    if minimum_rating.is_some_and(|value| !value.is_finite() || !(0.0..=10.0).contains(&value)) {
+        return Err(scryer_application::AppError::Validation(
+            "discovery home minimumRating must be a finite value between 0 and 10".to_owned(),
+        ));
+    }
+    if let (Some(minimum_year), Some(maximum_year)) = (filters.minimum_year, filters.maximum_year)
+        && minimum_year > maximum_year
+    {
+        return Err(scryer_application::AppError::Validation(
+            "discovery home minimumYear must not exceed maximumYear".to_owned(),
+        ));
+    }
+    let genre_tag_keys = discovery_home_canonical_tag_keys("genreTagKeys", filters.genre_tag_keys)?;
+    let theme_tag_keys = discovery_home_canonical_tag_keys("themeTagKeys", filters.theme_tag_keys)?;
+
+    Ok(DiscoveryHomeQuery {
         include_public: input.include_public.unwrap_or(true),
         include_personalized: input.include_personalized.unwrap_or(true),
         include_unresolved: input.include_unresolved.unwrap_or(false),
-        limit_per_section: input
-            .limit_per_section
-            .map(|value| value.max(1) as usize)
-            .unwrap_or(25),
+        limit_per_section,
         filters: DiscoveryHomeFilters {
-            content_types: filters.content_types.unwrap_or_default(),
-            genres: filters.genres.unwrap_or_default(),
-            themes: filters.themes.unwrap_or_default(),
-            relation_types: filters.relation_types.unwrap_or_default(),
+            content_types: filters
+                .content_types
+                .unwrap_or_default()
+                .into_iter()
+                .map(MediaFacetValue::as_scope_id)
+                .map(str::to_owned)
+                .collect(),
+            genre_tag_keys,
+            theme_tag_keys,
             studio_slugs: filters.studio_slugs.unwrap_or_default(),
             minimum_year: filters.minimum_year,
             maximum_year: filters.maximum_year,
-            minimum_rating: filters.minimum_rating.filter(|value| value.is_finite()),
+            minimum_rating,
         },
-    }
+    })
 }
 
 pub fn discovery_home_filter_options_query_from_input(
@@ -1711,9 +1755,22 @@ pub fn from_discovery_home_filter_options(
     options: DiscoveryHomeFilterOptions,
 ) -> DiscoveryHomeFilterOptionsPayload {
     DiscoveryHomeFilterOptionsPayload {
-        genres: options.genres,
-        themes: options.themes,
-        relation_types: options.relation_types,
+        genres: options
+            .genres
+            .into_iter()
+            .map(|option| CanonicalTagFilterOptionPayload {
+                key: option.key,
+                name: option.name,
+            })
+            .collect(),
+        themes: options
+            .themes
+            .into_iter()
+            .map(|option| CanonicalTagFilterOptionPayload {
+                key: option.key,
+                name: option.name,
+            })
+            .collect(),
         studio_slugs: options.studio_slugs,
     }
 }
@@ -1789,7 +1846,11 @@ fn from_discovery_home_section(section: DiscoverySectionResult) -> DiscoveryHome
         section_id: section.section_id,
         section_type: section.section_type,
         title: section.title,
-        surface: section.surface,
+        surface: match section.surface.as_str() {
+            "public" => DiscoverySurfaceValue::Public,
+            "personalized" => DiscoverySurfaceValue::Personalized,
+            value => panic!("invalid discovery home section surface: {value}"),
+        },
         total_count: Long(section.total_count),
         items: section
             .items
@@ -1803,13 +1864,19 @@ fn from_discovery_home_card(item: DiscoveryItemRecord) -> DiscoveryHomeCardPaylo
     DiscoveryHomeCardPayload {
         id: item.id.into(),
         target_key: item.target_key,
-        target_kind: item.target_kind,
+        target_kind: MediaFacetValue::parse(&item.target_kind)
+            .expect("discovery home card target kind must be a supported media facet"),
         display_title: item.display_title,
         original_title: item.original_title,
         sort_title: item.sort_title,
         year: item.year,
         poster_url: item.poster_url,
-        content_type: item.content_type,
+        content_type: MediaFacetValue::parse(
+            item.content_type
+                .as_deref()
+                .unwrap_or(item.target_kind.as_str()),
+        )
+        .expect("discovery home card content type must be a supported media facet"),
         owned_in_input: item.owned_in_input,
     }
 }
@@ -1818,7 +1885,8 @@ fn from_discovery_home_hero(item: DiscoveryItemRecord) -> DiscoveryHomeHeroPaylo
     DiscoveryHomeHeroPayload {
         id: item.id.into(),
         target_key: item.target_key,
-        target_kind: item.target_kind,
+        target_kind: MediaFacetValue::parse(&item.target_kind)
+            .expect("discovery home hero target kind must be a supported media facet"),
         display_title: item.display_title,
         original_title: item.original_title,
         sort_title: item.sort_title,
@@ -1826,7 +1894,12 @@ fn from_discovery_home_hero(item: DiscoveryItemRecord) -> DiscoveryHomeHeroPaylo
         poster_url: item.poster_url,
         background_url: item.background_url,
         overview: item.overview,
-        content_type: item.content_type,
+        content_type: MediaFacetValue::parse(
+            item.content_type
+                .as_deref()
+                .unwrap_or(item.target_kind.as_str()),
+        )
+        .expect("discovery home hero content type must be a supported media facet"),
         rating: item.rating,
         rating_sources: item.rating_sources,
         external_ratings: item
@@ -3209,11 +3282,13 @@ pub fn json_string_to_value(raw: String) -> async_graphql::Json<serde_json::Valu
 #[cfg(test)]
 mod tests {
     use super::{
-        from_import_record, from_title_history_record, from_wanted_item,
-        provider_config_values_from_json_with_fields, provider_config_values_to_json,
+        discovery_home_query_from_input, from_import_record, from_title_history_record,
+        from_wanted_item, provider_config_values_from_json_with_fields,
+        provider_config_values_to_json,
     };
     use crate::types::{
-        BoolConfigValuePayload, FloatConfigValuePayload, IntConfigValuePayload, MediaFacetValue,
+        BoolConfigValuePayload, DiscoveryHomeFiltersInput, DiscoveryHomeInput,
+        FloatConfigValuePayload, IntConfigValuePayload, MediaFacetValue,
         PluginConfigFieldTypeValue, ProviderConfigFieldValue, ProviderConfigValueInput,
         SecretConfigValuePayload,
     };
@@ -3495,5 +3570,67 @@ mod tests {
             Some("Example.Show.S01E01.1080p.WEB-DL")
         );
         assert!(matches!(mapped.facet, Some(MediaFacetValue::Anime)));
+    }
+
+    #[test]
+    fn discovery_home_filters_require_valid_ranges() {
+        let invalid_rating = discovery_home_query_from_input(Some(DiscoveryHomeInput {
+            filters: Some(DiscoveryHomeFiltersInput {
+                minimum_rating: Some(10.1),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .expect_err("ratings above ten must be rejected");
+        assert!(invalid_rating.to_string().contains("minimumRating"));
+
+        let invalid_years = discovery_home_query_from_input(Some(DiscoveryHomeInput {
+            filters: Some(DiscoveryHomeFiltersInput {
+                minimum_year: Some(2025),
+                maximum_year: Some(2024),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .expect_err("inverted years must be rejected");
+        assert!(invalid_years.to_string().contains("minimumYear"));
+
+        let invalid_limit = discovery_home_query_from_input(Some(DiscoveryHomeInput {
+            limit_per_section: Some(0),
+            ..Default::default()
+        }))
+        .expect_err("zero card limits must be rejected");
+        assert!(invalid_limit.to_string().contains("limitPerSection"));
+
+        let blank_tag_key = discovery_home_query_from_input(Some(DiscoveryHomeInput {
+            filters: Some(DiscoveryHomeFiltersInput {
+                genre_tag_keys: Some(vec!["  ".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .expect_err("blank canonical tag keys must be rejected");
+        assert!(blank_tag_key.to_string().contains("genreTagKeys"));
+    }
+
+    #[test]
+    fn discovery_home_filters_map_media_enums_and_canonical_tag_keys() {
+        let query = discovery_home_query_from_input(Some(DiscoveryHomeInput {
+            filters: Some(DiscoveryHomeFiltersInput {
+                content_types: Some(vec![MediaFacetValue::Anime, MediaFacetValue::Movie]),
+                genre_tag_keys: Some(vec!["Canonical:Genre:Drama".to_string()]),
+                theme_tag_keys: Some(vec!["canonical:theme:found-family".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }))
+        .expect("semantic filters should map");
+
+        assert_eq!(query.filters.content_types, ["anime", "movie"]);
+        assert_eq!(query.filters.genre_tag_keys, ["Canonical:Genre:Drama"]);
+        assert_eq!(
+            query.filters.theme_tag_keys,
+            ["canonical:theme:found-family"]
+        );
     }
 }

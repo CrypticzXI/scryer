@@ -1846,10 +1846,9 @@ pub struct DiscoveryHomeInput {
 
 #[derive(InputObject, Clone, Default)]
 pub struct DiscoveryHomeFiltersInput {
-    pub content_types: Option<Vec<String>>,
-    pub genres: Option<Vec<String>>,
-    pub themes: Option<Vec<String>>,
-    pub relation_types: Option<Vec<String>>,
+    pub content_types: Option<Vec<MediaFacetValue>>,
+    pub genre_tag_keys: Option<Vec<String>>,
+    pub theme_tag_keys: Option<Vec<String>>,
     pub studio_slugs: Option<Vec<String>>,
     pub minimum_year: Option<i32>,
     pub maximum_year: Option<i32>,
@@ -1912,22 +1911,29 @@ pub struct DiscoveryHomeSectionPayload {
     pub section_id: String,
     pub section_type: String,
     pub title: String,
-    pub surface: String,
+    pub surface: DiscoverySurfaceValue,
     pub total_count: Long,
     pub items: Vec<DiscoveryHomeCardPayload>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum DiscoverySurfaceValue {
+    Public,
+    Personalized,
 }
 
 #[derive(SimpleObject, Clone)]
 pub struct DiscoveryHomeCardPayload {
     pub id: ID,
     pub target_key: String,
-    pub target_kind: String,
+    pub target_kind: MediaFacetValue,
     pub display_title: String,
     pub original_title: Option<String>,
     pub sort_title: Option<String>,
     pub year: Option<i32>,
     pub poster_url: Option<String>,
-    pub content_type: Option<String>,
+    pub content_type: MediaFacetValue,
     pub owned_in_input: bool,
 }
 
@@ -1935,7 +1941,7 @@ pub struct DiscoveryHomeCardPayload {
 pub struct DiscoveryHomeHeroPayload {
     pub id: ID,
     pub target_key: String,
-    pub target_kind: String,
+    pub target_kind: MediaFacetValue,
     pub display_title: String,
     pub original_title: Option<String>,
     pub sort_title: Option<String>,
@@ -1943,7 +1949,7 @@ pub struct DiscoveryHomeHeroPayload {
     pub poster_url: Option<String>,
     pub background_url: Option<String>,
     pub overview: Option<String>,
-    pub content_type: Option<String>,
+    pub content_type: MediaFacetValue,
     pub rating: Option<f64>,
     pub rating_sources: Vec<String>,
     pub external_ratings: Vec<DiscoveryExternalRatingPayload>,
@@ -1954,10 +1960,15 @@ pub struct DiscoveryHomeHeroPayload {
 
 #[derive(SimpleObject, Clone)]
 pub struct DiscoveryHomeFilterOptionsPayload {
-    pub genres: Vec<String>,
-    pub themes: Vec<String>,
-    pub relation_types: Vec<String>,
+    pub genres: Vec<CanonicalTagFilterOptionPayload>,
+    pub themes: Vec<CanonicalTagFilterOptionPayload>,
     pub studio_slugs: Vec<String>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct CanonicalTagFilterOptionPayload {
+    pub key: String,
+    pub name: String,
 }
 
 #[derive(SimpleObject, Clone)]

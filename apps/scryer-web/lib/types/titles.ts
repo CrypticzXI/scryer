@@ -209,7 +209,7 @@ export type TitleCatalogTagFilterOption = {
 
 export type TitleCatalogFilterOptionsRecord = {
   genres: TitleCatalogTagFilterOption[];
-  tags: TitleCatalogTagFilterOption[];
+  themes: TitleCatalogTagFilterOption[];
   minimumYear: number | null;
   maximumYear: number | null;
 };

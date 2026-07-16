@@ -176,17 +176,17 @@ export function CatalogFiltersPanel({
       })),
     [options.genres],
   );
-  const tagLabels = React.useMemo(
-    () => new Map(options.tags.map((option) => [option.key, option.name])),
-    [options.tags],
+  const themeLabels = React.useMemo(
+    () => new Map(options.themes.map((option) => [option.key, option.name])),
+    [options.themes],
   );
-  const tagOptions = React.useMemo(
+  const themeOptions = React.useMemo(
     () =>
-      options.tags.map((option) => ({
+      options.themes.map((option) => ({
         value: option.key,
         label: option.name,
       })),
-    [options.tags],
+    [options.themes],
   );
   const handleRootFolderChange = React.useCallback(
     (rootFolderIds: string[]) => onFiltersChange({ rootFolderIds }),
@@ -375,14 +375,14 @@ export function CatalogFiltersPanel({
             {t("discovery.tags")}
           </FilterLabel>
           <MultiSelectDropdown
-            options={tagOptions}
+            options={themeOptions}
             selectedValues={filters.themeTagKeys}
             onSelectedValuesChange={handleThemeChange}
             triggerLabel={
               filters.themeTagKeys.length === 0
                 ? t("discovery.selectTags")
                 : filters.themeTagKeys.length === 1
-                  ? (tagLabels.get(filters.themeTagKeys[0]) ??
+                  ? (themeLabels.get(filters.themeTagKeys[0]) ??
                     filters.themeTagKeys[0])
                   : t("title.catalogFilters.selectedCount", {
                       count: filters.themeTagKeys.length,
@@ -394,7 +394,7 @@ export function CatalogFiltersPanel({
           />
           <FilterChips
             values={filters.themeTagKeys}
-            labels={tagLabels}
+            labels={themeLabels}
             onRemove={(key) =>
               onFiltersChange({
                 themeTagKeys: filters.themeTagKeys.filter(

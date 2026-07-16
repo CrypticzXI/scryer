@@ -123,15 +123,9 @@ pub struct TitleCatalogFilterInput {
 }
 
 #[derive(SimpleObject, Clone)]
-pub struct TitleCatalogTagFilterOptionPayload {
-    pub key: String,
-    pub name: String,
-}
-
-#[derive(SimpleObject, Clone)]
 pub struct TitleCatalogFilterOptionsPayload {
-    pub genres: Vec<TitleCatalogTagFilterOptionPayload>,
-    pub tags: Vec<TitleCatalogTagFilterOptionPayload>,
+    pub genres: Vec<CanonicalTagFilterOptionPayload>,
+    pub themes: Vec<CanonicalTagFilterOptionPayload>,
     pub minimum_year: Option<i32>,
     pub maximum_year: Option<i32>,
 }

@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/scryer-media/scryer/releases"><img src="https://img.shields.io/github/v/release/scryer-media/scryer" alt="Release" /></a>
   <a href="https://ghcr.io/scryer-media/scryer"><img src="https://img.shields.io/badge/container-ghcr.io-blue" alt="Container" /></a>
-  <a href="https://github.com/sponsors/NZBMan"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4%EF%B8%8F-db61a2?logo=githubsponsors&logoColor=white" alt="Sponsor NZBMan" /></a>
+  <a href="https://www.scryer.media/scryer/donate/"><img src="https://img.shields.io/badge/Donate-%E2%9D%A4%EF%B8%8F-db61a2?logo=githubsponsors&logoColor=white" alt="Donate to Scryer" /></a>
 </p>
 
 [![Scryer overview](docs/img/scryer-overview.webp)](https://www.scryer.media/scryer/)

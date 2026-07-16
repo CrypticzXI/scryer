@@ -136,7 +136,6 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
   const [filterOptions, setFilterOptions] = useState<DiscoveryHomeFilterOptions>({
     genres: [],
     themes: [],
-    relationTypes: [],
     studioSlugs: [],
   });
   const [loading, setLoading] = useState(false);
@@ -156,7 +155,6 @@ export const DiscoveryContainer = memo(function DiscoveryContainer({
     setFilterOptions({
       genres: [],
       themes: [],
-      relationTypes: [],
       studioSlugs: [],
     });
     setSelectedItem(null);

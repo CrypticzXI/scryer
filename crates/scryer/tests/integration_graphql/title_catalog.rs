@@ -241,6 +241,30 @@ async fn graphql_list_titles_starts_empty() {
 }
 
 #[tokio::test]
+async fn graphql_title_catalog_rejects_invalid_filter_values() {
+    let ctx = TestContext::new().await;
+    for (filter, expected_message) in [
+        (
+            json!({ "minimumYear": 2025, "maximumYear": 2024 }),
+            "minimumYear",
+        ),
+        (json!({ "minimumRating": 10.1 }), "minimumRating"),
+        (json!({ "genreTagKeys": [" "] }), "genreTagKeys"),
+    ] {
+        let body = gql(
+            &ctx,
+            "query($filter: TitleCatalogFilterInput) { titles(filter: $filter) { items { id } } }",
+            json!({ "filter": filter }),
+        )
+        .await;
+        let message = body["errors"][0]["message"]
+            .as_str()
+            .expect("validation error message");
+        assert!(message.contains(expected_message), "{body}");
+    }
+}
+
+#[tokio::test]
 async fn graphql_title_catalog_advanced_filters_apply_to_seeded_catalog_data() {
     let ctx = TestContext::new().await;
     let library = create_title_catalog_library(
@@ -339,7 +363,7 @@ async fn graphql_title_catalog_advanced_filters_apply_to_seeded_catalog_data() {
                 rootFolderIds: $rootFolderIds
             ) {
                 genres { key name }
-                tags { key name }
+                themes { key name }
                 minimumYear
                 maximumYear
             }
@@ -361,7 +385,7 @@ async fn graphql_title_catalog_advanced_filters_apply_to_seeded_catalog_data() {
         json!([{ "key": "genre-alpha", "name": "Genre Alpha" }])
     );
     assert_eq!(
-        body["data"]["titleCatalogFilterOptions"]["tags"],
+        body["data"]["titleCatalogFilterOptions"]["themes"],
         json!([{ "key": "theme-signal", "name": "Theme Signal" }])
     );
     assert_eq!(

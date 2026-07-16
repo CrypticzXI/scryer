@@ -203,20 +203,24 @@ impl Default for DiscoveryHomeQuery {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DiscoveryHomeFilters {
     pub content_types: Vec<String>,
-    pub genres: Vec<String>,
-    pub themes: Vec<String>,
-    pub relation_types: Vec<String>,
+    pub genre_tag_keys: Vec<String>,
+    pub theme_tag_keys: Vec<String>,
     pub studio_slugs: Vec<String>,
     pub minimum_year: Option<i32>,
     pub maximum_year: Option<i32>,
     pub minimum_rating: Option<f64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveryCanonicalTagFilterOption {
+    pub key: String,
+    pub name: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiscoveryHomeFilterOptions {
-    pub genres: Vec<String>,
-    pub themes: Vec<String>,
-    pub relation_types: Vec<String>,
+    pub genres: Vec<DiscoveryCanonicalTagFilterOption>,
+    pub themes: Vec<DiscoveryCanonicalTagFilterOption>,
     pub studio_slugs: Vec<String>,
 }
 

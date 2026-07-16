@@ -1,5 +1,6 @@
 import type { TitleExternalRating } from "@/lib/utils/title-ratings";
 import type { CanonicalMediaTag } from "./canonical-tags";
+import type { Facet } from "./titles";
 
 export type DiscoveryExternalId = {
   source: string;
@@ -17,14 +18,18 @@ export type DiscoveryHomeInput = {
 };
 
 export type DiscoveryHomeFilters = {
-  contentTypes?: string[] | null;
-  genres?: string[] | null;
-  themes?: string[] | null;
-  relationTypes?: string[] | null;
+  contentTypes?: Facet[] | null;
+  genreTagKeys?: string[] | null;
+  themeTagKeys?: string[] | null;
   studioSlugs?: string[] | null;
   minimumYear?: number | null;
   maximumYear?: number | null;
   minimumRating?: number | null;
+};
+
+export type CanonicalTagFilterOption = {
+  key: string;
+  name: string;
 };
 
 export type DiscoveryHomeFilterOptionsInput = Pick<
@@ -33,9 +38,8 @@ export type DiscoveryHomeFilterOptionsInput = Pick<
 >;
 
 export type DiscoveryHomeFilterOptions = {
-  genres: string[];
-  themes: string[];
-  relationTypes: string[];
+  genres: CanonicalTagFilterOption[];
+  themes: CanonicalTagFilterOption[];
   studioSlugs: string[];
 };
 
@@ -127,34 +131,35 @@ export type DiscoveryHomePayload = {
   canViewPersonalized: boolean;
 };
 
-export type DiscoveryHomeCard = Pick<
-  DiscoveryItem,
-  | "id"
-  | "targetKey"
-  | "targetKind"
-  | "displayTitle"
-  | "originalTitle"
-  | "sortTitle"
-  | "year"
-  | "posterUrl"
-  | "contentType"
-  | "ownedInInput"
->;
+export type DiscoveryHomeCard = {
+  id: string;
+  targetKey: string;
+  targetKind: Facet;
+  displayTitle: string;
+  originalTitle: string | null;
+  sortTitle: string | null;
+  year: number | null;
+  posterUrl: string | null;
+  contentType: Facet;
+  ownedInInput: boolean;
+};
 
-export type DiscoveryHomeHero = DiscoveryHomeCard &
-  Pick<
-    DiscoveryItem,
-    | "backgroundUrl"
-    | "overview"
-    | "rating"
-    | "ratingSources"
-    | "externalRatings"
-    | "matchedSubjectCount"
-  > & {
-    genreTags: NonNullable<DiscoveryItem["canonicalTags"]>;
-  };
+export type DiscoveryHomeHero = DiscoveryHomeCard & {
+  backgroundUrl: string | null;
+  overview: string | null;
+  rating: number | null;
+  ratingSources: string[];
+  externalRatings: TitleExternalRating[];
+  genreTags: CanonicalMediaTag[];
+  matchedSubjectCount: number;
+};
 
-export type DiscoveryHomeSection = Omit<DiscoverySection, "items"> & {
+export type DiscoveryHomeSection = {
+  sectionId: string;
+  sectionType: string;
+  title: string;
+  surface: CatalogDiscoverySurface;
+  totalCount: number;
   items: DiscoveryHomeCard[];
 };
 

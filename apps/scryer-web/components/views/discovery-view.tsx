@@ -2,10 +2,13 @@ import * as React from "react";
 import type { CSSProperties } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
+  Building2,
+  CalendarDays,
   Check,
   ChevronRight,
   Disc3,
   Eye,
+  Film,
   Heart,
   Loader2,
   MonitorPlay,
@@ -13,6 +16,8 @@ import {
   Send,
   SlidersHorizontal,
   Sparkles,
+  Star,
+  Tag,
   X,
 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -77,9 +82,8 @@ const DEFAULT_MINIMUM_RATING = 0;
 function emptyDiscoveryHomeFilters(): DiscoveryHomeFilters {
   return {
     contentTypes: [],
-    genres: [],
-    themes: [],
-    relationTypes: [],
+    genreTagKeys: [],
+    themeTagKeys: [],
     studioSlugs: [],
   };
 }
@@ -615,15 +619,20 @@ function DiscoveryHero({
         className="pointer-events-none absolute inset-0 z-30 bg-[radial-gradient(circle_at_center,rgba(var(--scry-accent-rgb),0.3),transparent_48%)] opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-hover:backdrop-blur-sm group-focus-within:opacity-100 group-focus-within:backdrop-blur-sm"
       />
       {heroActionAvailable ? (
-        <button
-          type="button"
-          onClick={() => onAction(item)}
-          aria-label={`${heroActionLabel}: ${titleLabel}`}
-          title={heroActionLabel}
-          className="pointer-events-none absolute left-1/2 top-1/2 z-40 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-[16px] bg-[var(--scry-accent)] text-primary-foreground opacity-0 shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.45),0_0_36px_rgba(var(--scry-accent-rgb),0.5),0_18px_36px_rgba(0,0,0,0.42)] transition duration-200 hover:brightness-110 focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
-        >
-          <HeroActionIcon className="h-7 w-7" aria-hidden="true" />
-        </button>
+        <>
+          <button
+            type="button"
+            onClick={() => onAction(item)}
+            aria-label={`${heroActionLabel}: ${titleLabel}`}
+            className="absolute inset-0 z-20 cursor-pointer rounded-[18px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+          />
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute left-1/2 top-1/2 z-40 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-[16px] bg-[var(--scry-accent)] text-primary-foreground opacity-0 shadow-[0_0_0_1px_rgba(var(--scry-accent-rgb),0.45),0_0_36px_rgba(var(--scry-accent-rgb),0.5),0_18px_36px_rgba(0,0,0,0.42)] transition duration-200 group-hover:opacity-100 group-focus-within:opacity-100"
+          >
+            <HeroActionIcon className="h-7 w-7" aria-hidden="true" />
+          </span>
+        </>
       ) : null}
       <div className="relative flex min-h-[340px] flex-col p-6 sm:p-8 lg:h-full">
         <div className="max-w-[min(72%,760px)] max-lg:max-w-[82%] max-sm:max-w-full">
@@ -702,7 +711,7 @@ function DiscoveryFilterMultiSelect({
   ariaLabel,
   onSelectedValuesChange,
 }: {
-  options: string[];
+  options: Array<{ key: string; name: string }>;
   selectedValues: string[];
   placeholder: string;
   ariaLabel: string;
@@ -711,13 +720,17 @@ function DiscoveryFilterMultiSelect({
   const triggerLabel =
     selectedValues.length > 0
       ? selectedValues.length === 1
-        ? selectedValues[0]
+        ? (options.find((option) => option.key === selectedValues[0])?.name ??
+          selectedValues[0])
         : `${selectedValues.length} selected`
       : placeholder;
 
   return (
     <MultiSelectDropdown
-      options={options.map((option) => ({ value: option, label: option }))}
+      options={options.map((option) => ({
+        value: option.key,
+        label: option.name,
+      }))}
       selectedValues={selectedValues}
       onSelectedValuesChange={onSelectedValuesChange}
       triggerLabel={triggerLabel}
@@ -731,9 +744,11 @@ function DiscoveryFilterMultiSelect({
 
 function DiscoveryFilterChips({
   values,
+  labels,
   onRemove,
 }: {
   values: string[];
+  labels?: ReadonlyMap<string, string>;
   onRemove: (value: string) => void;
 }) {
   if (values.length === 0) {
@@ -749,7 +764,9 @@ function DiscoveryFilterChips({
           onClick={() => onRemove(value)}
           className="inline-flex max-w-full items-center gap-2 rounded-[8px] border border-[rgba(var(--scry-accent-rgb),0.34)] bg-[rgba(var(--scry-accent-rgb),0.15)] px-3 py-1.5 text-xs font-semibold text-[var(--scry-accent-text)] transition hover:border-[rgba(var(--scry-accent-rgb),0.48)] hover:bg-[rgba(var(--scry-accent-rgb),0.22)]"
         >
-          <span className="truncate">{value}</span>
+          <span className="truncate">
+            {labels?.get(value) ?? discoveryFilterOptionLabel(value)}
+          </span>
           <X className="h-3.5 w-3.5 opacity-75" aria-hidden="true" />
         </button>
       ))}
@@ -763,14 +780,28 @@ function discoveryFilterOptionLabel(value: string) {
     .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function DiscoveryFilterLabel({
+  children,
+  icon,
+}: {
+  children: React.ReactNode;
+  icon: React.ReactNode;
+}) {
+  return (
+    <div className="mb-2.5 flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+      {icon}
+      {children}
+    </div>
+  );
+}
+
 function DiscoveryFilters({
   variant = "desktop",
   filterOptions,
   availableContentTypes,
   selectedContentTypes,
   selectedGenres,
-  selectedTags,
-  selectedRelationTypes,
+  selectedThemes,
   selectedStudioSlugs,
   minimumYear,
   maximumYear,
@@ -778,8 +809,7 @@ function DiscoveryFilters({
   hiddenItemCount,
   onToggleContentType,
   onGenresChange,
-  onTagsChange,
-  onToggleRelationType,
+  onThemesChange,
   onToggleStudioSlug,
   onMinimumYearChange,
   onMaximumYearChange,
@@ -793,8 +823,7 @@ function DiscoveryFilters({
   availableContentTypes: DiscoveryContentType[];
   selectedContentTypes: DiscoveryContentType[];
   selectedGenres: string[];
-  selectedTags: string[];
-  selectedRelationTypes: string[];
+  selectedThemes: string[];
   selectedStudioSlugs: string[];
   minimumYear: number;
   maximumYear: number;
@@ -802,8 +831,7 @@ function DiscoveryFilters({
   hiddenItemCount: number;
   onToggleContentType: (contentType: DiscoveryContentType) => void;
   onGenresChange: (genres: string[]) => void;
-  onTagsChange: (tags: string[]) => void;
-  onToggleRelationType: (relationType: string) => void;
+  onThemesChange: (themes: string[]) => void;
   onToggleStudioSlug: (studioSlug: string) => void;
   onMinimumYearChange: (year: number) => void;
   onMaximumYearChange: (year: number) => void;
@@ -825,8 +853,9 @@ function DiscoveryFilters({
           ? t("discovery.type.series")
           : t("discovery.type.anime"),
   }));
-  const { genres, themes: tags, relationTypes: relationTypeOptions, studioSlugs: studioSlugOptions } =
-    filterOptions;
+  const { genres, themes, studioSlugs: studioSlugOptions } = filterOptions;
+  const genreLabels = new Map(genres.map((option) => [option.key, option.name]));
+  const themeLabels = new Map(themes.map((option) => [option.key, option.name]));
   const minimumYearBound = DEFAULT_MINIMUM_YEAR;
   const maximumYearBound = defaultMaximumDiscoveryYear();
   const yearSpan = Math.max(1, maximumYearBound - minimumYearBound);
@@ -839,16 +868,20 @@ function DiscoveryFilters({
   return (
     <aside
       className={cn(
-        "overflow-y-auto px-5 py-5",
+        "relative flex min-h-0 flex-col overflow-y-auto bg-[var(--scry-surf)] px-[18px] py-4",
         variant === "desktop"
-          ? "w-[284px] flex-none border-l border-[var(--scry-border3)] bg-slate-950/25 max-xl:hidden"
-          : "h-full w-full border-l border-white/10 bg-slate-950/95 shadow-[-18px_0_38px_rgba(0,0,0,0.36)]",
+          ? "w-[284px] flex-none border-l border-[var(--scry-border3)] max-xl:hidden"
+          : "h-full w-full border-l border-[var(--scry-border3)] shadow-[-18px_0_38px_rgba(0,0,0,0.36)]",
       )}
     >
-      <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-2 font-[var(--font-space-grotesk)] text-[15px] font-semibold text-[var(--scry-ink2)]">
-          <SlidersHorizontal className="h-4 w-4 text-[var(--scry-accent-text)]" />
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.32),rgba(155,91,255,0.2))] text-[var(--scry-accent-text)]">
+            <SlidersHorizontal className="h-[18px] w-[18px]" />
+          </div>
+          <span className="text-[16px] font-semibold text-[var(--scry-ink2)]">
           {t("discovery.filters")}
+          </span>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -870,9 +903,9 @@ function DiscoveryFilters({
           ) : null}
         </div>
       </div>
-      <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+      <DiscoveryFilterLabel icon={<Disc3 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
         {t("discovery.contentType")}
-      </div>
+      </DiscoveryFilterLabel>
       <div className="mb-5 grid gap-2">
         {contentTypes.map((entry) => (
           <button
@@ -900,9 +933,9 @@ function DiscoveryFilters({
           </button>
         ))}
       </div>
-      <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+      <DiscoveryFilterLabel icon={<Film className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
         {t("discovery.genres")}
-      </div>
+      </DiscoveryFilterLabel>
       <div className="mb-5">
         <DiscoveryFilterMultiSelect
           options={genres}
@@ -913,6 +946,7 @@ function DiscoveryFilters({
         />
         <DiscoveryFilterChips
           values={selectedGenres}
+          labels={genreLabels}
           onRemove={(genre) =>
             onGenresChange(
               selectedGenres.filter((selectedGenre) => selectedGenre !== genre),
@@ -920,59 +954,32 @@ function DiscoveryFilters({
           }
         />
       </div>
-      <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+      <DiscoveryFilterLabel icon={<Tag className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
         {t("discovery.tags")}
-      </div>
+      </DiscoveryFilterLabel>
       <div className="mb-5">
         <DiscoveryFilterMultiSelect
-          options={tags}
-          selectedValues={selectedTags}
+          options={themes}
+          selectedValues={selectedThemes}
           placeholder={t("discovery.selectTags")}
           ariaLabel={t("discovery.tags")}
-          onSelectedValuesChange={onTagsChange}
+          onSelectedValuesChange={onThemesChange}
         />
         <DiscoveryFilterChips
-          values={selectedTags}
+          values={selectedThemes}
+          labels={themeLabels}
           onRemove={(tag) =>
-            onTagsChange(
-              selectedTags.filter((selectedTag) => selectedTag !== tag),
+            onThemesChange(
+              selectedThemes.filter((selectedTheme) => selectedTheme !== tag),
             )
           }
         />
       </div>
-      {relationTypeOptions.length > 0 ? (
-        <>
-          <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
-            {t("discovery.relationship")}
-          </div>
-          <div className="mb-5 flex flex-wrap gap-2">
-            {relationTypeOptions.map((relationType) => {
-              const active = selectedRelationTypes.includes(relationType);
-              return (
-                <button
-                  key={relationType}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => onToggleRelationType(relationType)}
-                  className={cn(
-                    "inline-flex items-center rounded-[8px] border px-3 py-1.5 text-xs font-semibold transition",
-                    active
-                      ? "border-[rgba(var(--scry-accent-rgb),0.48)] bg-[rgba(var(--scry-accent-rgb),0.22)] text-[var(--scry-accent-text)]"
-                      : "border-[var(--scry-border2)] bg-[var(--scry-bg)] text-[var(--scry-text2)] hover:border-[rgba(var(--scry-accent-rgb),0.34)]",
-                  )}
-                >
-                  {discoveryFilterOptionLabel(relationType)}
-                </button>
-              );
-            })}
-          </div>
-        </>
-      ) : null}
       {studioSlugOptions.length > 0 ? (
         <>
-          <div className="mb-2.5 text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+          <DiscoveryFilterLabel icon={<Building2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
             {t("discovery.studio")}
-          </div>
+          </DiscoveryFilterLabel>
           <div className="mb-5 flex flex-wrap gap-2">
             {studioSlugOptions.map((studioSlug) => {
               const active = selectedStudioSlugs.includes(studioSlug);
@@ -999,15 +1006,15 @@ function DiscoveryFilters({
         </>
       ) : null}
       <div className="mb-2.5 flex items-center justify-between">
-        <span className="text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+        <DiscoveryFilterLabel icon={<CalendarDays className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
           {t("discovery.releaseYear")}
-        </span>
+        </DiscoveryFilterLabel>
         <span className="text-[11.5px] text-[var(--scry-faint)]">
           {minimumYear} - {maximumYear}
         </span>
       </div>
       <div className="relative mb-6 h-5">
-        <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[#16203a]" />
+        <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[var(--scry-border2)]" />
         <div
           className="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-gradient-to-r from-[var(--scry-accent)] to-[var(--scry-accent-ring)]"
           style={{
@@ -1047,15 +1054,15 @@ function DiscoveryFilters({
         />
       </div>
       <div className="mb-2.5 flex items-center justify-between">
-        <span className="text-xs font-bold uppercase tracking-[0.05em] text-[var(--scry-muted2)]">
+        <DiscoveryFilterLabel icon={<Star className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}>
           {t("discovery.minimumRating")}
-        </span>
+        </DiscoveryFilterLabel>
         <span className="text-[11.5px] font-bold text-[var(--scry-accent-ring)]">
           {minimumRating.toFixed(1)}+
         </span>
       </div>
       <div className="relative h-5">
-        <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[#16203a]" />
+        <div className="absolute left-0 right-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[var(--scry-border2)]" />
         <div
           className="absolute left-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-gradient-to-r from-[var(--scry-accent)] to-[var(--scry-accent-ring)]"
           style={{ width: `${ratingPercent}%` }}
@@ -1278,7 +1285,7 @@ export function DiscoveryView({
     });
   }, [discoverableFacetSet, discoverableFacets]);
   const [selectedGenres, setSelectedGenres] = React.useState<string[]>([]);
-  const [selectedTags, setSelectedTags] = React.useState<string[]>([]);
+  const [selectedThemes, setSelectedThemes] = React.useState<string[]>([]);
   const [minimumYear, setMinimumYear] =
     React.useState(DEFAULT_MINIMUM_YEAR);
   const [maximumYear, setMaximumYear] = React.useState(
@@ -1287,9 +1294,6 @@ export function DiscoveryView({
   const [minimumRating, setMinimumRating] = React.useState(
     DEFAULT_MINIMUM_RATING,
   );
-  const [selectedRelationTypes, setSelectedRelationTypes] = React.useState<
-    string[]
-  >([]);
   const [selectedStudioSlugs, setSelectedStudioSlugs] = React.useState<
     string[]
   >([]);
@@ -1357,9 +1361,8 @@ export function DiscoveryView({
       contentTypes: allDiscoverableTypesSelected
         ? []
         : effectiveSelectedContentTypes,
-      genres: selectedGenres,
-      themes: selectedTags,
-      relationTypes: selectedRelationTypes,
+      genreTagKeys: selectedGenres,
+      themeTagKeys: selectedThemes,
       studioSlugs: selectedStudioSlugs,
       minimumYear:
         effectiveMinimumYear > yearBounds.minimum
@@ -1379,9 +1382,8 @@ export function DiscoveryView({
     effectiveSelectedContentTypes,
     minimumRating,
     selectedGenres,
-    selectedRelationTypes,
     selectedStudioSlugs,
-    selectedTags,
+    selectedThemes,
     yearBounds.maximum,
     yearBounds.minimum,
   ]);
@@ -1408,9 +1410,8 @@ export function DiscoveryView({
     effectiveSelectedContentTypes,
     onFiltersChange,
     selectedGenres,
-    selectedRelationTypes,
     selectedStudioSlugs,
-    selectedTags,
+    selectedThemes,
   ]);
   React.useEffect(() => {
     const expectedSignature = serverFiltersSignatureRef.current;
@@ -1502,13 +1503,6 @@ export function DiscoveryView({
     },
     [],
   );
-  const toggleRelationType = React.useCallback((relationType: string) => {
-    setSelectedRelationTypes((current) =>
-      current.includes(relationType)
-        ? current.filter((value) => value !== relationType)
-        : [...current, relationType],
-    );
-  }, []);
   const toggleStudioSlug = React.useCallback((studioSlug: string) => {
     setSelectedStudioSlugs((current) =>
       current.includes(studioSlug)
@@ -1527,8 +1521,7 @@ export function DiscoveryView({
     }
     setSelectedContentTypes(discoverableFacets);
     setSelectedGenres([]);
-    setSelectedTags([]);
-    setSelectedRelationTypes([]);
+    setSelectedThemes([]);
     setSelectedStudioSlugs([]);
     setMinimumYear(Math.max(yearBounds.minimum, DEFAULT_MINIMUM_YEAR));
     setMaximumYear(yearBounds.maximum);
@@ -1561,8 +1554,7 @@ export function DiscoveryView({
     availableContentTypes: discoverableFacets,
     selectedContentTypes: effectiveSelectedContentTypes,
     selectedGenres,
-    selectedTags,
-    selectedRelationTypes,
+    selectedThemes,
     selectedStudioSlugs,
     minimumYear: effectiveMinimumYear,
     maximumYear: effectiveMaximumYear,
@@ -1570,8 +1562,7 @@ export function DiscoveryView({
     hiddenItemCount,
     onToggleContentType: toggleContentType,
     onGenresChange: setSelectedGenres,
-    onTagsChange: setSelectedTags,
-    onToggleRelationType: toggleRelationType,
+    onThemesChange: setSelectedThemes,
     onToggleStudioSlug: toggleStudioSlug,
     onMinimumYearChange: setMinimumYear,
     onMaximumYearChange: setMaximumYear,

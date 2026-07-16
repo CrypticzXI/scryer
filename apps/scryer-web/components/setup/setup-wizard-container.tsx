@@ -266,7 +266,12 @@ export function SetupWizardContainer({
       setDcTypeOptions(buildDownloadClientTypeOptions([]));
       setIdxProviderOptions(FALLBACK_PROVIDER_OPTIONS);
     }
-  }, [client]);
+  }, [
+    client,
+    setDcLocalPathStyle,
+    setDcTypeOptions,
+    setIdxProviderOptions,
+  ]);
 
   const {
     plugins,

@@ -193,15 +193,40 @@ fn title_catalog_sort_from_input(sort: Option<TitleCatalogSortInput>) -> TitleCa
     TitleCatalogSort { key, direction }
 }
 
-fn title_catalog_filter_from_input(filter: Option<TitleCatalogFilterInput>) -> TitleCatalogFilter {
+fn title_catalog_tag_filter_keys(
+    field_name: &str,
+    keys: Option<Vec<String>>,
+) -> Result<Vec<String>, AppError> {
+    let keys = keys.unwrap_or_default();
+    if keys.iter().any(|key| key.trim().is_empty()) {
+        return Err(AppError::Validation(format!(
+            "title catalog {field_name} entries must not be blank"
+        )));
+    }
+    Ok(keys)
+}
+
+fn title_catalog_filter_from_input(
+    filter: Option<TitleCatalogFilterInput>,
+) -> Result<TitleCatalogFilter, AppError> {
     let Some(filter) = filter else {
-        return TitleCatalogFilter::default();
+        return Ok(TitleCatalogFilter::default());
     };
-    let (minimum_year, maximum_year) = match (filter.minimum_year, filter.maximum_year) {
-        (Some(minimum), Some(maximum)) if minimum > maximum => (Some(maximum), Some(minimum)),
-        bounds => bounds,
-    };
-    TitleCatalogFilter {
+    if let (Some(minimum_year), Some(maximum_year)) = (filter.minimum_year, filter.maximum_year)
+        && minimum_year > maximum_year
+    {
+        return Err(AppError::Validation(
+            "title catalog minimumYear must not exceed maximumYear".to_owned(),
+        ));
+    }
+    let minimum_rating = filter.minimum_rating;
+    if minimum_rating.is_some_and(|rating| !rating.is_finite() || !(0.0..=10.0).contains(&rating)) {
+        return Err(AppError::Validation(
+            "title catalog minimumRating must be a finite value between 0 and 10".to_owned(),
+        ));
+    }
+
+    Ok(TitleCatalogFilter {
         monitored: filter.monitored,
         content_statuses: filter
             .content_statuses
@@ -219,15 +244,12 @@ fn title_catalog_filter_from_input(filter: Option<TitleCatalogFilterInput>) -> T
                 .into_iter()
                 .map(String::from),
         ),
-        genre_tag_keys: normalize_catalog_filter_values(filter.genre_tag_keys.unwrap_or_default()),
-        theme_tag_keys: normalize_catalog_filter_values(filter.theme_tag_keys.unwrap_or_default()),
-        minimum_year,
-        maximum_year,
-        minimum_rating: filter
-            .minimum_rating
-            .filter(|rating| rating.is_finite())
-            .map(|rating| rating.clamp(0.0, 10.0)),
-    }
+        genre_tag_keys: title_catalog_tag_filter_keys("genreTagKeys", filter.genre_tag_keys)?,
+        theme_tag_keys: title_catalog_tag_filter_keys("themeTagKeys", filter.theme_tag_keys)?,
+        minimum_year: filter.minimum_year,
+        maximum_year: filter.maximum_year,
+        minimum_rating,
+    })
 }
 
 fn normalize_catalog_filter_values(values: impl IntoIterator<Item = String>) -> Vec<String> {
@@ -561,6 +583,7 @@ impl CatalogQueries {
         let actor = actor_from_ctx(ctx)?;
         let selection = TitlePayloadSelection::from_ctx(ctx);
         let lookahead = ctx.look_ahead();
+        let catalog_filter = title_catalog_filter_from_input(filter).map_err(to_gql_error)?;
         let include_catalog_counts = lookahead.field("hasMore").exists()
             || lookahead.field("totalCount").exists()
             || lookahead.field("filterCounts").exists()
@@ -571,7 +594,7 @@ impl CatalogQueries {
                 facet.map(MediaFacetValue::into_domain),
                 optional_ids_to_strings(library_ids),
                 query,
-                title_catalog_filter_from_input(filter),
+                catalog_filter,
                 title_catalog_sort_from_input(sort),
                 title_catalog_page_limit(limit),
                 title_catalog_page_offset(offset),
@@ -627,7 +650,7 @@ impl CatalogQueries {
         let map_options = |values: Vec<scryer_application::TitleCatalogTagFilterOption>| {
             values
                 .into_iter()
-                .map(|option| TitleCatalogTagFilterOptionPayload {
+                .map(|option| CanonicalTagFilterOptionPayload {
                     key: option.key,
                     name: option.name,
                 })
@@ -636,7 +659,7 @@ impl CatalogQueries {
 
         Ok(TitleCatalogFilterOptionsPayload {
             genres: map_options(options.genres),
-            tags: map_options(options.tags),
+            themes: map_options(options.tags),
             minimum_year: options.minimum_year,
             maximum_year: options.maximum_year,
         })
@@ -1470,8 +1493,9 @@ impl JobAndDownloadQueries {
     ) -> GqlResult<DiscoveryHomePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let query = discovery_home_query_from_input(input).map_err(to_gql_error)?;
         let result = app
-            .discovery_home(&actor, discovery_home_query_from_input(input))
+            .discovery_home(&actor, query)
             .await
             .map_err(to_gql_error)?;
         Ok(from_discovery_home(result))
@@ -1484,8 +1508,9 @@ impl JobAndDownloadQueries {
     ) -> GqlResult<DiscoveryHomeCardsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
+        let query = discovery_home_query_from_input(input).map_err(to_gql_error)?;
         let result = app
-            .discovery_home_cards(&actor, discovery_home_query_from_input(input))
+            .discovery_home_cards(&actor, query)
             .await
             .map_err(to_gql_error)?;
         Ok(from_discovery_home_cards(result))
@@ -2417,6 +2442,9 @@ impl UtilityQueries {
         })
     }
 
+    /// Browses local paths after the caller passes the library-settings read permission check.
+    ///
+    /// Directories are returned by default; set `includeFiles` to `true` to include regular files.
     async fn browse_path(
         &self,
         ctx: &Context<'_>,

@@ -156,11 +156,13 @@ export function useBulkDelete({
       cancelled = true;
     };
   }, [
+    batchFailureDetail,
     bulkDeleteDialogOpen,
     bulkDeleteFilesOnDisk,
     client,
     selectedTitles,
     t,
+    withFailureDetail,
   ]);
 
   const bulkDeletePreview = React.useMemo(
@@ -168,7 +170,7 @@ export function useBulkDelete({
       aggregateDeletePreviews(
         Object.values(bulkDeletePreviewsByTitleId).filter(Boolean),
       ),
-    [bulkDeletePreviewsByTitleId],
+    [aggregateDeletePreviews, bulkDeletePreviewsByTitleId],
   );
   const bulkDeletePreviewMissing =
     bulkDeleteFilesOnDisk &&
@@ -256,18 +258,24 @@ export function useBulkDelete({
       setBulkActionBusy(false);
     }
   }, [
+    batchFailureDetail,
     bulkActionBusy,
     bulkDeleteFilesOnDisk,
     bulkDeletePreviewsByTitleId,
     bulkDeleteTypedConfirmation,
     client,
     closeBulkDeleteDialog,
+    deletionJobIdsRef,
     recordCriticalCatalogMutation,
     registerInteractiveJobRun,
     scheduleDeletionJobFallbackChecks,
     selectedTitles,
+    setBulkActionBusy,
     setGlobalStatus,
+    setPendingDeletedTitleIds,
+    setSelectedTitleIds,
     t,
+    withFailureDetail,
   ]);
 
   const openBulkTitleDelete = React.useCallback(() => {

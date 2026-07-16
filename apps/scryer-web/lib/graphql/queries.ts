@@ -140,9 +140,8 @@ ${DISCOVERY_HOME_SECTION_FIELDS}
 
 export const discoveryHomeFilterOptionsQuery = `query DiscoveryHomeFilterOptions($input: DiscoveryHomeFilterOptionsInput) {
   discoveryHomeFilterOptions(input: $input) {
-    genres
-    themes
-    relationTypes
+    genres { key name }
+    themes { key name }
     studioSlugs
   }
 }`;
@@ -1507,7 +1506,7 @@ export const titleCatalogFilterOptionsQuery = `query TitleCatalogFilterOptions(
     rootFolderIds: $rootFolderIds
   ) {
     genres { key name }
-    tags { key name }
+    themes { key name }
     minimumYear
     maximumYear
   }
