@@ -362,29 +362,29 @@ async fn load_metadata_ratings(
                 summary.{owner_column},
                 0,
                 summary.rating,
-                NULL,
-                NULL,
-                NULL,
-                NULL,
-                NULL,
-                NULL,
-                NULL,
-                NULL,
-                NULL
+                CAST(NULL AS TEXT),
+                CAST(NULL AS TEXT),
+                CAST(NULL AS DOUBLE PRECISION),
+                CAST(NULL AS DOUBLE PRECISION),
+                CAST(NULL AS DOUBLE PRECISION),
+                CAST(NULL AS INTEGER),
+                CAST(NULL AS TEXT),
+                CAST(NULL AS INTEGER),
+                CAST(NULL AS TEXT)
               FROM {rating_summaries} summary
              WHERE summary.{owner_column} IN ({placeholders})
             UNION ALL
             SELECT
                 source.{owner_column},
                 1,
-                NULL,
+                CAST(NULL AS DOUBLE PRECISION),
                 source.source,
-                NULL,
-                NULL,
-                NULL,
-                NULL,
-                NULL,
-                NULL,
+                CAST(NULL AS TEXT),
+                CAST(NULL AS DOUBLE PRECISION),
+                CAST(NULL AS DOUBLE PRECISION),
+                CAST(NULL AS DOUBLE PRECISION),
+                CAST(NULL AS INTEGER),
+                CAST(NULL AS TEXT),
                 source.sort_index,
                 source.source
               FROM {rating_sources} source
@@ -393,8 +393,8 @@ async fn load_metadata_ratings(
             SELECT
                 external.{owner_column},
                 2,
-                NULL,
-                NULL,
+                CAST(NULL AS DOUBLE PRECISION),
+                CAST(NULL AS TEXT),
                 external.source,
                 external.value,
                 external.score,

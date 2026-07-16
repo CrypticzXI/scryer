@@ -5303,6 +5303,7 @@ mod tests {
         rated.target_key = "tmdb:movie:100".to_string();
         rated.display_title = "Rated match".to_string();
         rated.sort_title = Some(rated.display_title.clone());
+        rated.poster_url = Some("https://example.invalid/rated-match.jpg".to_string());
         rated.year = Some(2022);
         rated.rating = Some(9.5);
         rated.rank_score = Some(10.0);
@@ -5327,6 +5328,7 @@ mod tests {
         excluded.display_title = "Wrong genre".to_string();
         excluded.sort_title = Some(excluded.display_title.clone());
         excluded.rank_score = Some(1_000.0);
+        excluded.canonical_tags[0].key = "canonical:genre:comedy".to_string();
         excluded.canonical_tags[0].name = "Comedy".to_string();
         excluded.library_provenance[0].subject_key = "tmdb:movie:102".to_string();
 

@@ -694,8 +694,9 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
 
     let fixture = json!({
         "data": {
-            "s0": {
-                "series": {
+            "metadataBulk": {
+                "movies": [],
+                "series": [{
                     "tvdb_id": 345678,
                     "name": "Test Show Name",
                     "sort_name": "Test Show Name",
@@ -749,7 +750,7 @@ async fn library_series_scan_hydrates_without_creating_wanted_for_unmonitored_ti
                     ],
                     "anime_mappings": [],
                     "anime_movies": []
-                }
+                }]
             }
         }
     })
@@ -848,8 +849,9 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
 
     let fixture = json!({
         "data": {
-            "s0": {
-                "series": {
+            "metadataBulk": {
+                "movies": [],
+                "series": [{
                     "tvdb_id": 456789,
                     "name": "Hydrated Anime Title",
                     "sort_name": "Hydrated Anime Title",
@@ -897,7 +899,7 @@ async fn library_anime_scan_hydrates_and_relinks_files_from_discovered_folder_pa
                     ],
                     "anime_mappings": [],
                     "anime_movies": []
-                }
+                }]
             }
         }
     })
@@ -1008,8 +1010,9 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_nightfall_fixture() 
 
     let fixture = json!({
         "data": {
-            "s0": {
-                "series": {
+            "metadataBulk": {
+                "movies": [],
+                "series": [{
                     "tvdb_id": 415677,
                     "name": "Nightfall!! Correct Match",
                     "sort_name": "Nightfall!! Correct Match",
@@ -1063,7 +1066,7 @@ async fn library_anime_scan_prefers_tvshow_nfo_identity_for_nightfall_fixture() 
                     ],
                     "anime_mappings": [],
                     "anime_movies": []
-                }
+                }]
             }
         }
     })
@@ -1942,7 +1945,7 @@ async fn library_movie_scan_creates_unmonitored_title_and_collection() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
 
-    let fixture = load_fixture("smg/get_movie.json");
+    let fixture = load_fixture("smg/metadata_bulk_movie.json");
     Mock::given(method("GET"))
         .and(path("/graphql"))
         .respond_with(ResponseTemplate::new(200).set_body_string(fixture.clone()))

@@ -131,17 +131,19 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // (+12 ENUM), and QueueDownloadScopePayload / ProviderConfigFieldValue became unions
     // (+2 UNION with 6 scope + 5 config-value member OBJECT types, +11 OBJECT).
     // Root-field counts unchanged; ENUM 77->89, OBJECT 255->266, public types 491->516.
-    // Library catalog filter options add one query and two payload OBJECT types.
+    // Library catalog filter options add one query and two payload OBJECT types;
+    // external subtitle listing and blocklist lookup add two query roots and eight public types
+    // (five OBJECT, two INPUT_OBJECT, and one ENUM support types).
     assert_eq!(
-        query_field_count, 117,
+        query_field_count, 119,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(mutation_field_count, 163);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 518);
-    assert_eq!(kind_count("OBJECT"), 268);
-    assert_eq!(kind_count("INPUT_OBJECT"), 149);
-    assert_eq!(kind_count("ENUM"), 89);
+    assert_eq!(public_types.len(), 526);
+    assert_eq!(kind_count("OBJECT"), 273);
+    assert_eq!(kind_count("INPUT_OBJECT"), 151);
+    assert_eq!(kind_count("ENUM"), 90);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));

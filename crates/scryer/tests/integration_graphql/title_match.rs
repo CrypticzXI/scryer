@@ -6,7 +6,7 @@ fn graphql_fix_title_match_movie_updates_identity_and_history() {
         "graphql_fix_title_match_movie_updates_identity_and_history",
         || async {
             let ctx = TestContext::new().await;
-            mount_smg_mocks(&ctx, "smg/get_movie.json").await;
+            mount_smg_mocks(&ctx, "smg/metadata_bulk_movie.json").await;
 
             let title = create_catalog_title(
                 &ctx,
@@ -161,7 +161,7 @@ fn graphql_fix_title_match_series_rebuilds_and_relinks_library() {
         "graphql_fix_title_match_series_rebuilds_and_relinks_library",
         || async {
             let ctx = TestContext::new().await;
-            mount_smg_mocks(&ctx, "smg/get_series.json").await;
+            mount_smg_mocks(&ctx, "smg/metadata_bulk_series.json").await;
 
             let media_root = tempfile::tempdir().expect("media root tempdir");
             configure_default_library_root(&ctx, MediaFacet::Series, media_root.path()).await;

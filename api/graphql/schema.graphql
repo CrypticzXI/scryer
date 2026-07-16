@@ -995,6 +995,7 @@ type DiscoverySectionPayload {
 enum DiscoverySurfaceValue {
 	PUBLIC
 	PERSONALIZED
+	MIXED
 }
 
 type DiscoverySyncStatePayload {

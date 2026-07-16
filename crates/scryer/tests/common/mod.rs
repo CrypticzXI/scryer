@@ -919,8 +919,8 @@ impl TestContext {
 async fn mount_default_smg_metadata_mocks(server: &MockServer) {
     let fixture = json!({
         "data": {
-            "m0": {
-                "movie": {
+            "metadataBulk": {
+                "movies": [{
                     "tvdb_id": 123456,
                     "name": "Test Movie Title",
                     "slug": "test-movie-title",
@@ -948,10 +948,8 @@ async fn mount_default_smg_metadata_mocks(server: &MockServer) {
                     ],
                     "studio": "Test Studios",
                     "tmdb_release_date": "2024-06-15"
-                }
-            },
-            "s0": {
-                "series": {
+                }],
+                "series": [{
                     "tvdb_id": 345678,
                     "name": "Test Show Name",
                     "sort_name": "Test Show Name",
@@ -1005,7 +1003,7 @@ async fn mount_default_smg_metadata_mocks(server: &MockServer) {
                     ],
                     "anime_mappings": [],
                     "anime_movies": []
-                }
+                }]
             }
         }
     })

@@ -1513,7 +1513,7 @@ impl JobAndDownloadQueries {
             .discovery_home_cards(&actor, query)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_discovery_home_cards(result))
+        from_discovery_home_cards(result).map_err(to_gql_error)
     }
 
     async fn discovery_home_filter_options(

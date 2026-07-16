@@ -890,7 +890,7 @@ async fn discovery_filters_every_read_path_by_request_or_manage_facet() {
             "TRENDING_NOW",
             "public",
         ));
-    let movie_item = discovery_item_record(
+    let mut movie_item = discovery_item_record(
         "public-run",
         "public-run",
         Some("mixed_public"),
@@ -903,6 +903,8 @@ async fn discovery_filters_every_read_path_by_request_or_manage_facet() {
         false,
         true,
     );
+    movie_item.background_url =
+        Some("https://example.invalid/visible-movie-backdrop.jpg".to_string());
     let series_item = discovery_item_record(
         "public-run",
         "public-run",
@@ -1167,6 +1169,9 @@ async fn discovery_home_hydrates_only_selected_cards_from_large_candidate_set() 
             false,
             true,
         );
+        item.background_url = Some(format!(
+            "https://example.invalid/candidate-{index}-backdrop.jpg"
+        ));
         item.matched_subject_keys = vec!["tmdb:movie:9000".to_string()];
         item.library_provenance = vec![DiscoveryItemLibraryProvenanceRecord {
             subject_key: "tmdb:movie:9000".to_string(),

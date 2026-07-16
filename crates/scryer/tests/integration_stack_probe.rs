@@ -463,8 +463,9 @@ fn build_iron_vale_metadata_fixture() -> String {
 
     json!({
         "data": {
-            "s0": {
-                "series": {
+            "metadataBulk": {
+                "movies": [],
+                "series": [{
                     "tvdb_id": IRON_VALE_TVDB_ID,
                     "name": "Iron Vale!!",
                     "sort_name": "Iron Vale!!",
@@ -498,7 +499,7 @@ fn build_iron_vale_metadata_fixture() -> String {
                     "episodes": episodes,
                     "anime_mappings": anime_mappings,
                     "anime_movies": anime_movies
-                }
+                }]
             }
         }
     })

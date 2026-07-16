@@ -1921,6 +1921,7 @@ pub struct DiscoveryHomeSectionPayload {
 pub enum DiscoverySurfaceValue {
     Public,
     Personalized,
+    Mixed,
 }
 
 #[derive(SimpleObject, Clone)]

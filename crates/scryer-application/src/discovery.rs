@@ -1443,6 +1443,7 @@ fn select_personalized_discovery_home_hero(
         .flat_map(|section| section.items.iter())
         .filter(|item| discovery_home_item_is_personalized(item))
         .filter(|item| !item.owned_in_input)
+        .filter(|item| discovery_home_item_has_hero_backdrop(item, candidates_by_id))
         .cloned()
         .collect::<Vec<_>>();
     candidates.sort_by(|left, right| {
@@ -1465,6 +1466,7 @@ fn select_public_discovery_home_hero_with_candidates(
     let mut candidates = sections
         .iter()
         .flat_map(|section| section.items.iter())
+        .filter(|item| discovery_home_item_has_hero_backdrop(item, candidates_by_id))
         .cloned()
         .collect::<Vec<_>>();
     candidates.sort_by(|left, right| {
@@ -4996,6 +4998,15 @@ mod tests {
         .expect("hero item");
 
         assert_eq!(hero.target_key, "tmdb:movie:real");
+    }
+
+    #[test]
+    fn discovery_home_hero_requires_a_backdrop() {
+        let item = test_discovery_item("poster-only", "movie", Some("movie"));
+
+        let hero = select_discovery_home_hero(&[test_discovery_section("public", vec![item])], &[]);
+
+        assert!(hero.is_none());
     }
 
     #[test]

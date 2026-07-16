@@ -1732,23 +1732,33 @@ pub fn from_discovery_home(result: DiscoveryHomeResult) -> DiscoveryHomePayload 
     }
 }
 
-pub fn from_discovery_home_cards(result: DiscoveryHomeResult) -> DiscoveryHomeCardsPayload {
-    DiscoveryHomeCardsPayload {
+pub fn from_discovery_home_cards(
+    result: DiscoveryHomeResult,
+) -> scryer_application::AppResult<DiscoveryHomeCardsPayload> {
+    let hero_item = result.hero_item.map(from_discovery_home_hero).transpose()?;
+    let public_sections = result
+        .public_sections
+        .into_iter()
+        .map(from_discovery_home_section)
+        .collect::<scryer_application::AppResult<Vec<_>>>()?;
+    let personalized_sections = result
+        .personalized_sections
+        .into_iter()
+        .map(from_discovery_home_section)
+        .collect::<scryer_application::AppResult<Vec<_>>>()?;
+    let complete_collection = result
+        .complete_collection
+        .map(from_discovery_home_section)
+        .transpose()?;
+
+    Ok(DiscoveryHomeCardsPayload {
         status: from_discovery_sync_status(result.status),
-        hero_item: result.hero_item.map(from_discovery_home_hero),
-        public_sections: result
-            .public_sections
-            .into_iter()
-            .map(from_discovery_home_section)
-            .collect(),
-        personalized_sections: result
-            .personalized_sections
-            .into_iter()
-            .map(from_discovery_home_section)
-            .collect(),
-        complete_collection: result.complete_collection.map(from_discovery_home_section),
+        hero_item,
+        public_sections,
+        personalized_sections,
+        complete_collection,
         can_view_personalized: result.can_view_personalized,
-    }
+    })
 }
 
 pub fn from_discovery_home_filter_options(
@@ -1841,52 +1851,86 @@ pub fn from_discovery_section(section: DiscoverySectionResult) -> DiscoverySecti
     }
 }
 
-fn from_discovery_home_section(section: DiscoverySectionResult) -> DiscoveryHomeSectionPayload {
-    DiscoveryHomeSectionPayload {
+fn discovery_home_media_facet(
+    value: &str,
+    field_name: &str,
+) -> scryer_application::AppResult<MediaFacetValue> {
+    MediaFacetValue::parse(value).ok_or_else(|| {
+        scryer_application::AppError::Validation(format!(
+            "discovery home {field_name} must be a supported media facet: {value}"
+        ))
+    })
+}
+
+fn from_discovery_home_section(
+    section: DiscoverySectionResult,
+) -> scryer_application::AppResult<DiscoveryHomeSectionPayload> {
+    let surface = match section.surface.as_str() {
+        "public" => DiscoverySurfaceValue::Public,
+        "personalized" => DiscoverySurfaceValue::Personalized,
+        "mixed" => DiscoverySurfaceValue::Mixed,
+        value => {
+            return Err(scryer_application::AppError::Validation(format!(
+                "discovery home section has an unsupported surface: {value}"
+            )));
+        }
+    };
+    let items = section
+        .items
+        .into_iter()
+        .map(from_discovery_home_card)
+        .collect::<scryer_application::AppResult<Vec<_>>>()?;
+
+    Ok(DiscoveryHomeSectionPayload {
         section_id: section.section_id,
         section_type: section.section_type,
         title: section.title,
-        surface: match section.surface.as_str() {
-            "public" => DiscoverySurfaceValue::Public,
-            "personalized" => DiscoverySurfaceValue::Personalized,
-            value => panic!("invalid discovery home section surface: {value}"),
-        },
+        surface,
         total_count: Long(section.total_count),
-        items: section
-            .items
-            .into_iter()
-            .map(from_discovery_home_card)
-            .collect(),
-    }
+        items,
+    })
 }
 
-fn from_discovery_home_card(item: DiscoveryItemRecord) -> DiscoveryHomeCardPayload {
-    DiscoveryHomeCardPayload {
+fn from_discovery_home_card(
+    item: DiscoveryItemRecord,
+) -> scryer_application::AppResult<DiscoveryHomeCardPayload> {
+    let target_kind = discovery_home_media_facet(&item.target_kind, "card targetKind")?;
+    let content_type = discovery_home_media_facet(
+        item.content_type
+            .as_deref()
+            .unwrap_or(item.target_kind.as_str()),
+        "card contentType",
+    )?;
+
+    Ok(DiscoveryHomeCardPayload {
         id: item.id.into(),
         target_key: item.target_key,
-        target_kind: MediaFacetValue::parse(&item.target_kind)
-            .expect("discovery home card target kind must be a supported media facet"),
+        target_kind,
         display_title: item.display_title,
         original_title: item.original_title,
         sort_title: item.sort_title,
         year: item.year,
         poster_url: item.poster_url,
-        content_type: MediaFacetValue::parse(
-            item.content_type
-                .as_deref()
-                .unwrap_or(item.target_kind.as_str()),
-        )
-        .expect("discovery home card content type must be a supported media facet"),
+        content_type,
         owned_in_input: item.owned_in_input,
-    }
+    })
 }
 
-fn from_discovery_home_hero(item: DiscoveryItemRecord) -> DiscoveryHomeHeroPayload {
-    DiscoveryHomeHeroPayload {
+fn from_discovery_home_hero(
+    item: DiscoveryItemRecord,
+) -> scryer_application::AppResult<DiscoveryHomeHeroPayload> {
+    let target_kind = discovery_home_media_facet(&item.target_kind, "hero targetKind")?;
+    let content_type = discovery_home_media_facet(
+        item.content_type
+            .as_deref()
+            .unwrap_or(item.target_kind.as_str()),
+        "hero contentType",
+    )?;
+
+    Ok(DiscoveryHomeHeroPayload {
         id: item.id.into(),
         target_key: item.target_key,
-        target_kind: MediaFacetValue::parse(&item.target_kind)
-            .expect("discovery home hero target kind must be a supported media facet"),
+        target_kind,
         display_title: item.display_title,
         original_title: item.original_title,
         sort_title: item.sort_title,
@@ -1894,12 +1938,7 @@ fn from_discovery_home_hero(item: DiscoveryItemRecord) -> DiscoveryHomeHeroPaylo
         poster_url: item.poster_url,
         background_url: item.background_url,
         overview: item.overview,
-        content_type: MediaFacetValue::parse(
-            item.content_type
-                .as_deref()
-                .unwrap_or(item.target_kind.as_str()),
-        )
-        .expect("discovery home hero content type must be a supported media facet"),
+        content_type,
         rating: item.rating,
         rating_sources: item.rating_sources,
         external_ratings: item
@@ -1931,7 +1970,7 @@ fn from_discovery_home_hero(item: DiscoveryItemRecord) -> DiscoveryHomeHeroPaylo
             .collect(),
         matched_subject_count: item.matched_subject_count,
         owned_in_input: item.owned_in_input,
-    }
+    })
 }
 
 pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
@@ -3282,17 +3321,19 @@ pub fn json_string_to_value(raw: String) -> async_graphql::Json<serde_json::Valu
 #[cfg(test)]
 mod tests {
     use super::{
-        discovery_home_query_from_input, from_import_record, from_title_history_record,
-        from_wanted_item, provider_config_values_from_json_with_fields,
+        discovery_home_query_from_input, from_discovery_home_section, from_import_record,
+        from_title_history_record, from_wanted_item, provider_config_values_from_json_with_fields,
         provider_config_values_to_json,
     };
     use crate::types::{
         BoolConfigValuePayload, DiscoveryHomeFiltersInput, DiscoveryHomeInput,
-        FloatConfigValuePayload, IntConfigValuePayload, MediaFacetValue,
+        DiscoverySurfaceValue, FloatConfigValuePayload, IntConfigValuePayload, MediaFacetValue,
         PluginConfigFieldTypeValue, ProviderConfigFieldValue, ProviderConfigValueInput,
         SecretConfigValuePayload,
     };
-    use scryer_application::{AcquisitionScopeState, AcquisitionScopeStatus};
+    use scryer_application::{
+        AcquisitionScopeState, AcquisitionScopeStatus, DiscoverySectionResult,
+    };
     use scryer_domain::{
         CompletedDownload, ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, ImportRecord,
         ImportStatus, ImportType, TitleHistoryEventType, TitleHistoryRecord,
@@ -3632,5 +3673,45 @@ mod tests {
             query.filters.theme_tag_keys,
             ["canonical:theme:found-family"]
         );
+    }
+
+    #[test]
+    fn discovery_home_section_maps_mixed_surface() {
+        let section = from_discovery_home_section(DiscoverySectionResult {
+            section_id: "top_rated".to_string(),
+            section_type: "TOP_RATED".to_string(),
+            title: "Top Rated".to_string(),
+            surface: "mixed".to_string(),
+            total_count: 0,
+            items: Vec::new(),
+        })
+        .expect("mixed is a supported discovery home surface");
+
+        assert!(matches!(section.surface, DiscoverySurfaceValue::Mixed));
+    }
+
+    #[test]
+    fn discovery_home_section_rejects_unknown_surface_without_panicking() {
+        let error = from_discovery_home_section(DiscoverySectionResult {
+            section_id: "invalid".to_string(),
+            section_type: "PUBLIC_SECTION".to_string(),
+            title: "Invalid".to_string(),
+            surface: "unknown".to_string(),
+            total_count: 0,
+            items: Vec::new(),
+        })
+        .err()
+        .expect("unknown surfaces must be returned as validation errors");
+
+        assert!(error.to_string().contains("unsupported surface"));
+    }
+
+    #[test]
+    fn discovery_home_rejects_unknown_media_facets_without_panicking() {
+        let error = super::discovery_home_media_facet("documentary", "card targetKind")
+            .err()
+            .expect("unsupported media facets must be returned as validation errors");
+
+        assert!(error.to_string().contains("card targetKind"));
     }
 }
