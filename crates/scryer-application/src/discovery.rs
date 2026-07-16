@@ -20,7 +20,8 @@ use crate::{AppError, AppResult, AppUseCase};
 use chrono::{DateTime, Utc};
 use scryer_domain::{
     CanonicalMediaTag, DomainEvent, DomainEventPayload, DomainExternalIds, ExternalId,
-    LibraryPermission, MediaFacet, Title, TitleContextSnapshot, User, title_catalog_sort_input,
+    LibraryPermission, MediaFacet, SeriesMovieLink, Title, TitleContextSnapshot, User,
+    title_catalog_sort_input,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -205,6 +206,7 @@ impl AppUseCase {
             .await?
             .into_iter()
             .collect::<HashSet<_>>();
+        let readable_library_id_list = sorted_discovery_library_ids(&readable_library_ids);
         let candidate_limit = requested_limit.saturating_mul(4).clamp(24, 100) as i64;
         let mut items = self
             .services
@@ -214,6 +216,7 @@ impl AppUseCase {
             .await?;
         let mut item_lookup_indexes = vec![Vec::<usize>::new(); items.len()];
         let mut lookups = Vec::new();
+        let mut series_movie_lookups = Vec::new();
         for item in &mut items {
             item.resolved_title_id = None;
             item.owned_in_input = false;
@@ -222,15 +225,20 @@ impl AppUseCase {
             let Some((source, kind, value)) = discovery_target_key_parts(&item.target_key) else {
                 continue;
             };
+            let is_movie = kind == "movie";
             let values = discovery_local_external_id_values(&kind, &value);
             for source in discovery_local_external_id_sources(&source, &kind) {
                 for external_id in &values {
                     let lookup_index = lookups.len();
-                    lookups.push(TitleExternalIdLookup {
+                    let lookup = TitleExternalIdLookup {
                         lookup_index,
                         source: source.clone(),
                         external_id: external_id.clone(),
-                    });
+                    };
+                    if is_movie {
+                        series_movie_lookups.push(lookup.clone());
+                    }
+                    lookups.push(lookup);
                     item_lookup_indexes[item_index].push(lookup_index);
                 }
             }
@@ -248,6 +256,18 @@ impl AppUseCase {
                 .or_default()
                 .push(lookup_match.title);
         }
+        let series_movie_owned_lookup_indexes = self
+            .services
+            .catalog
+            .shows
+            .list_series_movie_external_id_lookup_matches(
+                &readable_library_id_list,
+                &series_movie_lookups,
+            )
+            .await?
+            .into_iter()
+            .map(|matched| matched.lookup_index)
+            .collect::<HashSet<_>>();
         let mut filtered_items = Vec::with_capacity(requested_limit.min(items.len()));
         for (mut item, lookup_indexes) in items.into_iter().zip(item_lookup_indexes) {
             let readable_local_title = lookup_indexes.iter().find_map(|lookup_index| {
@@ -259,7 +279,11 @@ impl AppUseCase {
                         })
                     })
             });
-            if readable_local_title.is_some() {
+            if readable_local_title.is_some()
+                || lookup_indexes
+                    .iter()
+                    .any(|lookup_index| series_movie_owned_lookup_indexes.contains(lookup_index))
+            {
                 continue;
             }
 
@@ -352,8 +376,14 @@ impl AppUseCase {
             .map(|media_kind| (*media_kind).to_string())
             .collect::<Vec<_>>();
         allowed_media_kinds.sort();
+        let owned_library_ids = self
+            .authorized_library_ids(actor, None, LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let owned_library_id_list = sorted_discovery_library_ids(&owned_library_ids);
         let owned_visibility = self
-            .discovery_home_owned_visibility(&readable_library_id_list)
+            .discovery_home_owned_visibility(&owned_library_id_list)
             .await?;
         let candidate_load_started_at = Instant::now();
         let mut candidates_by_id = HashMap::<String, DiscoveryHomeCandidate>::new();
@@ -818,12 +848,18 @@ impl AppUseCase {
         let limit = catalog_discovery_group_limit(query.limit_per_group);
         let max_groups = catalog_discovery_max_groups(query.max_groups);
         let candidate_limit = catalog_discovery_candidate_limit(limit, max_groups);
+        let owned_library_ids = self
+            .authorized_library_ids(actor, None, LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let owned_library_id_list = sorted_discovery_library_ids(&owned_library_ids);
         let owned_visibility = self
-            .catalog_owned_visibility(query.facet, &effective_library_id_list)
+            .owned_discovery_visibility(&owned_library_id_list)
             .await?;
         let excluded_public_identity_keys = owned_visibility.excluded_discovery_identity_keys();
 
-        let public_sections =
+        let mut public_sections =
             if let Some(public_run_id) = state.last_public_feed_generation_id.as_deref() {
                 self.services
                     .library
@@ -840,6 +876,11 @@ impl AppUseCase {
             } else {
                 Default::default()
             };
+        for section in &mut public_sections {
+            section
+                .items
+                .retain(|item| !owned_visibility.item_is_owned(item));
+        }
 
         let mut personalized_candidates = Vec::new();
         let mut submitted_subjects = Vec::new();
@@ -876,7 +917,6 @@ impl AppUseCase {
 
         let mut groups = Vec::new();
         let mut emitted_item_keys = HashSet::new();
-        let mut public_sections = public_sections;
         if media_kind == "anime" {
             catalog_filter_anime_public_sections(&mut public_sections);
         }
@@ -1038,24 +1078,7 @@ impl AppUseCase {
         })
     }
 
-    async fn catalog_owned_visibility(
-        &self,
-        facet: MediaFacet,
-        readable_library_ids: &[String],
-    ) -> AppResult<CatalogOwnedVisibility> {
-        if readable_library_ids.is_empty() {
-            return Ok(CatalogOwnedVisibility::default());
-        }
-        let titles = self
-            .services
-            .catalog
-            .titles
-            .list_for_libraries(Some(facet), readable_library_ids, None)
-            .await?;
-        Ok(CatalogOwnedVisibility::from_titles(&titles))
-    }
-
-    async fn discovery_home_owned_visibility(
+    async fn owned_discovery_visibility(
         &self,
         readable_library_ids: &[String],
     ) -> AppResult<CatalogOwnedVisibility> {
@@ -1068,7 +1091,24 @@ impl AppUseCase {
             .titles
             .list_catalog_owned_title_records(readable_library_ids)
             .await?;
-        Ok(CatalogOwnedVisibility::from_title_records(&titles))
+        let title_ids = titles
+            .iter()
+            .map(|title| title.id.clone())
+            .collect::<Vec<_>>();
+        let series_movies = self
+            .services
+            .catalog
+            .shows
+            .list_series_movie_links_for_titles(&title_ids)
+            .await?;
+        Ok(CatalogOwnedVisibility::from_title_records_and_series_movies(&titles, &series_movies))
+    }
+
+    async fn discovery_home_owned_visibility(
+        &self,
+        readable_library_ids: &[String],
+    ) -> AppResult<CatalogOwnedVisibility> {
+        self.owned_discovery_visibility(readable_library_ids).await
     }
 }
 
@@ -1894,6 +1934,7 @@ struct CatalogOwnedVisibility {
 }
 
 impl CatalogOwnedVisibility {
+    #[cfg(test)]
     fn from_titles(titles: &[Title]) -> Self {
         let mut visibility = Self::default();
         for title in titles {
@@ -1936,6 +1977,31 @@ impl CatalogOwnedVisibility {
                     &external_id.source,
                     Some(external_id.value.as_str()),
                     title.facet.clone(),
+                );
+            }
+        }
+        visibility
+    }
+
+    fn from_title_records_and_series_movies(
+        titles: &[CatalogOwnedTitleRecord],
+        series_movies: &[SeriesMovieLink],
+    ) -> Self {
+        let mut visibility = Self::from_title_records(titles);
+        for series_movie in series_movies {
+            for (source, value) in [
+                ("imdb", series_movie.movie.imdb_id.as_deref()),
+                ("tvdb", series_movie.movie.tvdb_id.as_deref()),
+                ("tmdb", series_movie.movie.tmdb_id.as_deref()),
+                ("mal", series_movie.movie.mal_id.as_deref()),
+                ("anidb", series_movie.movie.anidb_id.as_deref()),
+            ] {
+                add_catalog_owned_external_keys(
+                    &mut visibility.keys,
+                    &mut visibility.identity_keys,
+                    source,
+                    value,
+                    MediaFacet::Movie,
                 );
             }
         }

@@ -96,7 +96,7 @@ export function seasonHeading(
 ) {
   const label = collection.label?.trim();
   if (isSpecialsCollection(collection)) {
-    return !label || /^season\s*0+$/i.test(label) ? t("title.specials") : label;
+    return t("title.specials");
   }
   const indexValue = collection.collectionIndex.trim();
   const normalizedIndex = indexValue.match(/^\d+$/)

@@ -2891,6 +2891,13 @@ pub mod test_nulls {
         ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>> {
             Ok(vec![])
         }
+        async fn list_series_movie_external_id_lookup_matches(
+            &self,
+            _: &[String],
+            _: &[crate::TitleExternalIdLookup],
+        ) -> AppResult<Vec<crate::SeriesMovieExternalIdLookupMatch>> {
+            Ok(vec![])
+        }
         async fn get_series_movie_link_by_id(
             &self,
             _: &str,

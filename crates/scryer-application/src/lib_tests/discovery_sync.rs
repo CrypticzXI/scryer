@@ -2,7 +2,7 @@ use super::StoredSettingsRepo;
 use super::support_bootstrap_fixtures::{
     TestPermissionPreset, bootstrap_with_metadata_gateway_and_titles,
     bootstrap_with_metadata_gateway_settings_and_titles, create_authenticated_user,
-    library_permission_user, library_permission_user_with_grants,
+    library_permission_user, library_permission_user_with_grants, test_series_movie_link,
 };
 use crate::ports::{
     CatalogDiscoveryCandidatesRecord, CatalogDiscoverySectionCandidatesRecord,
@@ -1802,12 +1802,21 @@ async fn catalog_discovery_excludes_public_rows_owned_by_normalized_external_id(
     let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
     let observed_at = Utc.timestamp_opt(2_200, 0).unwrap();
     let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
-    let viewer = library_permission_user(
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    let viewer = library_permission_user_with_grants(
         "movie-public-owned-viewer",
-        &movie_library_id,
         &[
-            scryer_domain::LibraryPermission::View,
-            scryer_domain::LibraryPermission::Request,
+            (
+                &movie_library_id,
+                &[
+                    scryer_domain::LibraryPermission::View,
+                    scryer_domain::LibraryPermission::Request,
+                ],
+            ),
+            (
+                &series_library_id,
+                &[scryer_domain::LibraryPermission::View],
+            ),
         ],
     );
     let mut owned_movie = test_title(
@@ -1817,7 +1826,30 @@ async fn catalog_discovery_excludes_public_rows_owned_by_normalized_external_id(
         vec![("tmdb_movie", "603")],
     );
     owned_movie.library_id = movie_library_id.clone();
-    titles.store.lock().await.push(owned_movie);
+    let mut owned_series = test_title(
+        "owned-series",
+        "Owned Series",
+        MediaFacet::Series,
+        vec![("tvdb", "900")],
+    );
+    owned_series.library_id = series_library_id.clone();
+    titles
+        .store
+        .lock()
+        .await
+        .extend([owned_movie, owned_series]);
+    app.services
+        .catalog
+        .shows
+        .upsert_series_movie_link(test_series_movie_link(
+            "owned-series",
+            "Owned Series Movie",
+            Some(2026),
+            None,
+            Some("604"),
+        ))
+        .await
+        .expect("create owned series movie link");
 
     *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
         last_public_feed_generation_id: Some("public-run".to_string()),
@@ -1852,6 +1884,19 @@ async fn catalog_discovery_excludes_public_rows_owned_by_normalized_external_id(
             "public-run",
             "public-run",
             Some("trending_now"),
+            "tvdb:movie:604",
+            "Owned Series Movie",
+            "movie",
+            95.0,
+            &["Action"],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "public-run",
+            "public-run",
+            Some("trending_now"),
             "tmdb:movie:999999",
             "Fresh Public Movie",
             "movie",
@@ -1870,7 +1915,7 @@ async fn catalog_discovery_excludes_public_rows_owned_by_normalized_external_id(
                 facet: MediaFacet::Movie,
                 library_ids: Vec::new(),
                 include_unresolved: true,
-                limit_per_group: 1,
+                limit_per_group: 2,
                 max_groups: 1,
             },
         )
@@ -1878,12 +1923,34 @@ async fn catalog_discovery_excludes_public_rows_owned_by_normalized_external_id(
         .expect("catalog discovery should exclude owned public rows");
 
     assert_eq!(result.groups.len(), 1);
-    assert_eq!(result.groups[0].total_count, 1);
     assert_eq!(result.groups[0].items.len(), 1);
     assert_eq!(
         result.groups[0].items[0].display_title,
         "Fresh Public Movie"
     );
+
+    let home = app
+        .discovery_home(
+            &viewer,
+            DiscoveryHomeQuery {
+                include_public: true,
+                include_personalized: false,
+                include_unresolved: true,
+                limit_per_section: 10,
+                filters: DiscoveryHomeFilters::default(),
+            },
+        )
+        .await
+        .expect("discovery home should exclude owned series movies");
+    let home_item_titles = home
+        .public_sections
+        .iter()
+        .flat_map(|section| section.items.iter())
+        .map(|item| item.display_title.as_str())
+        .collect::<Vec<_>>();
+    assert!(home_item_titles.contains(&"Fresh Public Movie"));
+    assert!(!home_item_titles.contains(&"Owned Public Movie"));
+    assert!(!home_item_titles.contains(&"Owned Series Movie"));
 }
 
 #[tokio::test]
@@ -1893,10 +1960,16 @@ async fn title_more_like_this_filters_readable_library_titles_and_refills_limit(
     let discovery = Arc::new(RecordingDiscoveryRepository::default());
     let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
     let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
-    let viewer = library_permission_user(
+    let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    let viewer = library_permission_user_with_grants(
         "title-more-like-this-viewer",
-        &movie_library_id,
-        &[scryer_domain::LibraryPermission::View],
+        &[
+            (&movie_library_id, &[scryer_domain::LibraryPermission::View]),
+            (
+                &series_library_id,
+                &[scryer_domain::LibraryPermission::View],
+            ),
+        ],
     );
 
     let mut source_title = test_title(
@@ -1913,11 +1986,30 @@ async fn title_more_like_this_filters_readable_library_titles_and_refills_limit(
         vec![("tmdb_movie", "603")],
     );
     owned_title.library_id = movie_library_id.clone();
+    let mut owned_series = test_title(
+        "owned-series",
+        "Owned Series",
+        MediaFacet::Series,
+        vec![("tvdb", "900")],
+    );
+    owned_series.library_id = series_library_id;
     titles
         .store
         .lock()
         .await
-        .extend([source_title, owned_title]);
+        .extend([source_title, owned_title, owned_series]);
+    app.services
+        .catalog
+        .shows
+        .upsert_series_movie_link(test_series_movie_link(
+            "owned-series",
+            "Owned Series Movie",
+            Some(2026),
+            None,
+            Some("604"),
+        ))
+        .await
+        .expect("create owned series movie link");
 
     let mut cached_items = vec![
         discovery_item_record(
@@ -1937,7 +2029,20 @@ async fn title_more_like_this_filters_readable_library_titles_and_refills_limit(
             "title-more-like-this-run",
             "title-more-like-this-run",
             None,
-            "tmdb:movie:604",
+            "tvdb:movie:604",
+            "Owned Series Movie Recommendation",
+            "movie",
+            95.0,
+            &["Drama"],
+            &[],
+            false,
+            true,
+        ),
+        discovery_item_record(
+            "title-more-like-this-run",
+            "title-more-like-this-run",
+            None,
+            "tmdb:movie:605",
             "Fresh Recommendation One",
             "movie",
             90.0,
@@ -1950,7 +2055,7 @@ async fn title_more_like_this_filters_readable_library_titles_and_refills_limit(
             "title-more-like-this-run",
             "title-more-like-this-run",
             None,
-            "tmdb:movie:605",
+            "tmdb:movie:606",
             "Fresh Recommendation Two",
             "movie",
             80.0,

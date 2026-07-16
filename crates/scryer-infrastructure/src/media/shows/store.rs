@@ -2,13 +2,14 @@ use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
     AppError, AppResult, CollectionUpdate, EpisodeImageUrlUpdate, EpisodeUpdate,
-    PrimaryCollectionSummary, ScopedExternalId, ShowRepository,
+    PrimaryCollectionSummary, ScopedExternalId, SeriesMovieExternalIdLookupMatch, ShowRepository,
+    TitleExternalIdLookup,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, CollectionType, Episode, EpisodeType, Id, MovieEntity,
     SeriesMovieLink,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::queries::sql_runtime::{
     SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTarget, SqlTx, StoreDatastore, repo_err,
@@ -118,6 +119,15 @@ impl ShowRepository for ShowStore {
         title_ids: &[String],
     ) -> AppResult<Vec<SeriesMovieLink>> {
         list_series_movie_links_for_titles_query(self.read_target(), title_ids).await
+    }
+
+    async fn list_series_movie_external_id_lookup_matches(
+        &self,
+        library_ids: &[String],
+        lookups: &[TitleExternalIdLookup],
+    ) -> AppResult<Vec<SeriesMovieExternalIdLookupMatch>> {
+        list_series_movie_external_id_lookup_matches_query(self.read_target(), library_ids, lookups)
+            .await
     }
 
     async fn get_series_movie_link_by_id(
@@ -529,6 +539,84 @@ async fn list_series_movie_links_for_titles_query(
         .collect::<Vec<_>>();
     let rows = SqlRuntime::fetch_all(SqlExec::Target(target), &sql, &args).await?;
     rows.iter().map(row_to_series_movie_link).collect()
+}
+
+fn movie_entity_external_id_column(source: &str) -> Option<&'static str> {
+    match source.trim().to_ascii_lowercase().as_str() {
+        "imdb" => Some("imdb_id"),
+        "tvdb" | "tvdb_movie" => Some("tvdb_id"),
+        "tmdb" | "tmdb_movie" => Some("tmdb_id"),
+        "mal" | "myanimelist" => Some("mal_id"),
+        "anidb" => Some("anidb_id"),
+        _ => None,
+    }
+}
+
+async fn list_series_movie_external_id_lookup_matches_query(
+    target: SqlTarget<'_>,
+    library_ids: &[String],
+    lookups: &[TitleExternalIdLookup],
+) -> AppResult<Vec<SeriesMovieExternalIdLookupMatch>> {
+    if library_ids.is_empty() || lookups.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Keep each provider in its own query so the matching movie_entities ID index remains usable.
+    let mut lookup_indexes_by_column_and_id =
+        HashMap::<&'static str, HashMap<String, Vec<usize>>>::new();
+    for lookup in lookups {
+        let Some(column) = movie_entity_external_id_column(&lookup.source) else {
+            continue;
+        };
+        let external_id = lookup.external_id.trim();
+        if external_id.is_empty() {
+            continue;
+        }
+        lookup_indexes_by_column_and_id
+            .entry(column)
+            .or_default()
+            .entry(external_id.to_string())
+            .or_default()
+            .push(lookup.lookup_index);
+    }
+
+    let library_placeholders = bind_placeholders(library_ids.len());
+    let mut matched_lookup_indexes = BTreeSet::new();
+    for (column, lookup_indexes_by_id) in lookup_indexes_by_column_and_id {
+        let external_ids = lookup_indexes_by_id.keys().cloned().collect::<Vec<_>>();
+        let external_id_placeholders = bind_placeholders(external_ids.len());
+        let sql = format!(
+            "SELECT DISTINCT me.{column} AS external_id
+             FROM movie_entities me
+             INNER JOIN series_movie_links sml ON sml.movie_entity_id = me.id
+             INNER JOIN titles parent ON parent.id = sml.series_title_id
+             WHERE parent.library_id IN ({library_placeholders})
+               AND me.{column} IS NOT NULL
+               AND me.{column} <> ''
+               AND me.{column} IN ({external_id_placeholders})"
+        );
+        let args = library_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .chain(external_ids.into_iter().map(SqlArg::Text))
+            .collect::<Vec<_>>();
+        let execution_target = match &target {
+            SqlTarget::Sqlite(pool) => SqlTarget::Sqlite(pool),
+            SqlTarget::Postgres(pool) => SqlTarget::Postgres(pool),
+        };
+        for row in SqlRuntime::fetch_all(SqlExec::Target(execution_target), &sql, &args).await? {
+            let external_id = row.text("external_id")?;
+            if let Some(lookup_indexes) = lookup_indexes_by_id.get(&external_id) {
+                matched_lookup_indexes.extend(lookup_indexes.iter().copied());
+            }
+        }
+    }
+
+    Ok(matched_lookup_indexes
+        .into_iter()
+        .map(|lookup_index| SeriesMovieExternalIdLookupMatch { lookup_index })
+        .collect())
 }
 
 async fn get_series_movie_link_by_id_query(
@@ -1796,8 +1884,91 @@ async fn insert_scoped_episode_ids_postgres(
 
 #[cfg(test)]
 mod tests {
-    use super::{SummaryCandidate, summary_candidate_sort_key};
+    use super::{
+        SqlTarget, SummaryCandidate, list_series_movie_external_id_lookup_matches_query,
+        summary_candidate_sort_key,
+    };
+    use scryer_application::TitleExternalIdLookup;
     use scryer_domain::CollectionType;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn series_movie_external_id_lookup_respects_parent_library_access() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open SQLite pool");
+        for sql in [
+            "CREATE TABLE titles (id TEXT PRIMARY KEY, library_id TEXT NOT NULL)",
+            "CREATE TABLE movie_entities (id TEXT PRIMARY KEY, tvdb_id TEXT)",
+            "CREATE TABLE series_movie_links (series_title_id TEXT NOT NULL, movie_entity_id TEXT NOT NULL)",
+        ] {
+            sqlx::query(sql)
+                .execute(&pool)
+                .await
+                .expect("create lookup table");
+        }
+        for (id, library_id) in [
+            ("visible-series", "library-visible"),
+            ("hidden-series", "library-hidden"),
+        ] {
+            sqlx::query("INSERT INTO titles (id, library_id) VALUES (?, ?)")
+                .bind(id)
+                .bind(library_id)
+                .execute(&pool)
+                .await
+                .expect("insert series parent");
+        }
+        for (id, tvdb_id) in [("visible-movie", "604"), ("hidden-movie", "605")] {
+            sqlx::query("INSERT INTO movie_entities (id, tvdb_id) VALUES (?, ?)")
+                .bind(id)
+                .bind(tvdb_id)
+                .execute(&pool)
+                .await
+                .expect("insert movie entity");
+        }
+        for (series_title_id, movie_entity_id) in [
+            ("visible-series", "visible-movie"),
+            ("hidden-series", "hidden-movie"),
+        ] {
+            sqlx::query(
+                "INSERT INTO series_movie_links (series_title_id, movie_entity_id) VALUES (?, ?)",
+            )
+            .bind(series_title_id)
+            .bind(movie_entity_id)
+            .execute(&pool)
+            .await
+            .expect("link series movie");
+        }
+
+        let matches = list_series_movie_external_id_lookup_matches_query(
+            SqlTarget::Sqlite(&pool),
+            &["library-visible".to_string()],
+            &[
+                TitleExternalIdLookup {
+                    lookup_index: 3,
+                    source: "tvdb".to_string(),
+                    external_id: "604".to_string(),
+                },
+                TitleExternalIdLookup {
+                    lookup_index: 4,
+                    source: "tvdb_movie".to_string(),
+                    external_id: "605".to_string(),
+                },
+            ],
+        )
+        .await
+        .expect("lookup linked movie ownership");
+
+        assert_eq!(
+            matches
+                .into_iter()
+                .map(|matched| matched.lookup_index)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+    }
 
     #[test]
     fn movie_collection_wins_over_index_zero_fallback() {

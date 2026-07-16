@@ -47,6 +47,11 @@ pub struct TitleExternalIdLookupMatch {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeriesMovieExternalIdLookupMatch {
+    pub lookup_index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CatalogOwnedTitleRecord {
     pub id: String,
     pub facet: MediaFacet,
@@ -1678,6 +1683,11 @@ pub trait ShowRepository: Send + Sync {
         }
         Ok(links)
     }
+    async fn list_series_movie_external_id_lookup_matches(
+        &self,
+        library_ids: &[String],
+        lookups: &[TitleExternalIdLookup],
+    ) -> AppResult<Vec<SeriesMovieExternalIdLookupMatch>>;
     async fn get_series_movie_link_by_id(
         &self,
         link_id: &str,

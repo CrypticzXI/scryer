@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { useTranslate } from "@/lib/context/translate-context";
+import { HorizontalScrollFade } from "@/components/common/horizontal-scroll-fade";
 import { Button } from "@/components/ui/button";
 import { MultiSelectDropdown } from "@/components/ui/multi-select-dropdown";
 import { TitleCard } from "@/components/title-card";
@@ -540,11 +541,13 @@ function DiscoverySectionRail({
           <ChevronRight className="h-3.5 w-3.5" />
         </span>
       </div>
-      <div
+      <HorizontalScrollFade
         className={cn(
           "flex gap-3.5 overflow-x-auto pb-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
-          fillHeight && "min-h-0 flex-1",
+          fillHeight && "h-full",
         )}
+        containerClassName={cn(fillHeight && "min-h-0 flex-1")}
+        fadeClassName="to-[var(--scry-bg)]"
       >
         {items.map((item) => {
           const facet = discoveryItemFacet(item);
@@ -563,7 +566,7 @@ function DiscoverySectionRail({
             />
           );
         })}
-      </div>
+      </HorizontalScrollFade>
     </section>
   );
 }

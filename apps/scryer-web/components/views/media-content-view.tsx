@@ -15,6 +15,7 @@ import {
   LayoutList,
   Loader2,
   PanelLeftOpen,
+  PanelRightOpen,
   Pencil,
   RefreshCw,
   Search,
@@ -70,6 +71,7 @@ import {
   type ReleaseSearchSortDirection,
   type ReleaseSearchSortKey,
 } from "@/components/common/release-search-results";
+import { HorizontalScrollFade } from "@/components/common/horizontal-scroll-fade";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { TitleCard } from "@/components/title-card";
 import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
@@ -540,7 +542,7 @@ function TitleContextMoreLikeThisStrip({
         icon={Sparkles}
         title={t("title.contextMoreLikeThis")}
       />
-      <div className="flex gap-[11px] overflow-x-auto pb-1">
+      <HorizontalScrollFade className="flex gap-[11px] overflow-x-auto pb-1">
         {items.map((item) => {
           const posterUrl = selectPosterVariantUrl(item.posterUrl, "w250");
           const yearLabel =
@@ -573,7 +575,7 @@ function TitleContextMoreLikeThisStrip({
             </div>
           );
         })}
-      </div>
+      </HorizontalScrollFade>
     </TitleWorkspaceSectionCard>
   );
 }
@@ -639,7 +641,10 @@ function TitleContextForYouPanel({
               <h3 className="mx-0.5 mb-3.5 text-[11px] font-bold uppercase tracking-[0.06em] text-[var(--scry-muted3)]">
                 {group.label}
               </h3>
-              <div className="flex gap-3.5 overflow-x-auto pb-1.5 pr-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <HorizontalScrollFade
+                className="flex gap-3.5 overflow-x-auto pb-1.5 pr-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                fadeClassName="to-[var(--scry-card2)]"
+              >
                 {group.recommendations.map((recommendation) => (
                   <div
                     key={`${group.id}-${recommendation.item.id}`}
@@ -655,7 +660,7 @@ function TitleContextForYouPanel({
                     />
                   </div>
                 ))}
-              </div>
+              </HorizontalScrollFade>
             </section>
           ))}
         </div>
@@ -956,6 +961,7 @@ function TitleContextPanel({
   onToggleQuickStatus,
   onClearQuickFilters,
   titleListDisclosure,
+  onCollapseCatalogRail,
   className,
 }: {
   id?: string;
@@ -1030,6 +1036,7 @@ function TitleContextPanel({
   onToggleQuickStatus: (filter: "continuing" | "ended") => void;
   onClearQuickFilters: () => void;
   titleListDisclosure?: React.ReactNode;
+  onCollapseCatalogRail?: () => void;
   className?: string;
 }) {
   const t = useTranslate();
@@ -1168,10 +1175,7 @@ function TitleContextPanel({
       <aside
         id={id}
         aria-label={t("title.contextPanelTitle")}
-        className={cn(
-          panelClassName,
-          "flex",
-        )}
+        className={cn("flex", panelClassName)}
       >
         <CatalogFiltersPanel
           libraries={libraries}
@@ -1192,6 +1196,7 @@ function TitleContextPanel({
           onToggleQuickMonitoring={onToggleQuickMonitoring}
           onToggleQuickStatus={onToggleQuickStatus}
           onClearQuickFilters={onClearQuickFilters}
+          onCollapse={onCollapseCatalogRail}
           className="shrink-0 border-b border-[var(--scry-border2)]"
         />
         <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -2415,10 +2420,14 @@ export function MediaContentView({
     contextPanelWidthMatches || selectedOverviewTitleAvailable;
   const selectedTitleLayoutActive =
     titleContextPanelAvailable && activeOverviewTitleId !== null;
+  const [catalogContextRailCollapsed, setCatalogContextRailCollapsed] =
+    React.useState(false);
   const catalogDiscoveryInlineAvailable =
-    activeOverviewTitleId === null && catalogDiscoveryInlineWidthMatches;
+    activeOverviewTitleId === null &&
+    catalogDiscoveryInlineWidthMatches &&
+    !catalogContextRailCollapsed;
   const catalogDiscoveryFlyoutAvailable =
-    activeOverviewTitleId === null && !catalogDiscoveryInlineAvailable;
+    activeOverviewTitleId === null && !catalogDiscoveryInlineWidthMatches;
   const contextPanelAvailable =
     selectedTitleLayoutActive || catalogDiscoveryInlineAvailable;
   const selectedTitlePosterInlineActive =
@@ -3075,6 +3084,21 @@ export function MediaContentView({
           <LayoutGrid className="h-[1.125rem] w-[1.125rem]" />
         </ToggleGroupItem>
       </ToggleGroup>
+      {catalogContextRailCollapsed &&
+      activeOverviewTitleId === null &&
+      catalogDiscoveryInlineWidthMatches ? (
+        <Button
+          type="button"
+          variant="outline"
+          className="h-[2.8125rem] w-full rounded-[11px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-[var(--scry-inset)] px-4 text-[15px] text-[var(--scry-accent-text)] shadow-none transition hover:bg-[var(--scry-hover)] sm:w-[2.8125rem] sm:px-0"
+          aria-label={t("discovery.filters")}
+          title={t("discovery.filters")}
+          onClick={() => setCatalogContextRailCollapsed(false)}
+        >
+          <PanelRightOpen className="!size-[1.125rem]" />
+          <span className="sm:hidden">{t("discovery.filters")}</span>
+        </Button>
+      ) : null}
     </div>
   );
 
@@ -3871,6 +3895,9 @@ export function MediaContentView({
                       onToggleQuickStatus={toggleTitleQuickStatusFilter}
                       onClearQuickFilters={clearTitleQuickFilters}
                       titleListDisclosure={titleListDisclosure}
+                      onCollapseCatalogRail={() =>
+                        setCatalogContextRailCollapsed(true)
+                      }
                       className={titleOverviewPaneClassName}
                     />
                   );

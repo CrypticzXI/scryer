@@ -2602,15 +2602,25 @@ fn append_discovery_home_filters(
     }
     if let Some(minimum_rating) = filters.minimum_rating.filter(|value| value.is_finite()) {
         clauses.push(
-            "NOT EXISTS (
-                SELECT 1
-                FROM discovery_title_metadata_rating_summaries rating_summary
-                WHERE rating_summary.discovery_title_id = i.discovery_title_id
-                  AND (CASE WHEN rating_summary.rating <= 1.0
-                            THEN rating_summary.rating * 10.0
-                            ELSE rating_summary.rating END) < {}
-             )"
-            .to_string(),
+            "COALESCE(
+                (
+                    SELECT MAX(CASE WHEN external.normalized <= 1.0
+                                    THEN external.normalized * 10.0
+                                    ELSE external.normalized END)
+                    FROM discovery_title_metadata_external_ratings external
+                    WHERE external.discovery_title_id = i.discovery_title_id
+                      AND external.normalized IS NOT NULL
+                      AND external.normalized > 0
+                ),
+                (
+                    SELECT CASE WHEN rating_summary.rating <= 1.0
+                                THEN rating_summary.rating * 10.0
+                                ELSE rating_summary.rating END
+                    FROM discovery_title_metadata_rating_summaries rating_summary
+                    WHERE rating_summary.discovery_title_id = i.discovery_title_id
+                )
+             ) >= {}"
+                .to_string(),
         );
         args.push(SqlArg::F64(minimum_rating));
     }
@@ -5249,7 +5259,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sqlite_personalized_home_filters_apply_before_limit_and_keep_null_year_and_rating() {
+    async fn sqlite_personalized_home_minimum_rating_uses_effective_rating() {
         let db = std::env::temp_dir().join(format!(
             "scryer_discovery_personalized_home_filters_{}.db",
             Utc::now().timestamp_micros()
@@ -5312,28 +5322,60 @@ mod tests {
         rated.studio_slug = Some("a24".to_string());
         rated.library_provenance = vec![provenance.clone()];
 
-        let mut null_metadata = rated.clone();
-        null_metadata.id = format!("{run_id}:null-metadata");
-        null_metadata.target_key = "tmdb:movie:101".to_string();
-        null_metadata.display_title = "Null metadata match".to_string();
-        null_metadata.sort_title = Some(null_metadata.display_title.clone());
-        null_metadata.year = None;
-        null_metadata.rating = None;
-        null_metadata.rank_score = Some(100.0);
-        null_metadata.library_provenance[0].subject_key = "tmdb:movie:101".to_string();
+        let mut external_high = rated.clone();
+        external_high.id = format!("{run_id}:external-high");
+        external_high.target_key = "tmdb:movie:101".to_string();
+        external_high.display_title = "External high match".to_string();
+        external_high.sort_title = Some(external_high.display_title.clone());
+        external_high.year = None;
+        external_high.rating = None;
+        external_high.external_ratings = vec![TitleExternalRating {
+            source: "trakt".to_string(),
+            value: Some(9.0),
+            score: None,
+            normalized: 9.0,
+            votes: Some(100),
+            url: "https://trakt.tv/movies/external-high".to_string(),
+        }];
+        external_high.rank_score = Some(100.0);
+        external_high.library_provenance[0].subject_key = "tmdb:movie:101".to_string();
+
+        let mut external_low = external_high.clone();
+        external_low.id = format!("{run_id}:external-low");
+        external_low.target_key = "tmdb:movie:102".to_string();
+        external_low.display_title = "External low match".to_string();
+        external_low.sort_title = Some(external_low.display_title.clone());
+        external_low.external_ratings[0].value = Some(7.5);
+        external_low.external_ratings[0].normalized = 6.944_444_444_444_445;
+        external_low.external_ratings[0].votes = Some(2);
+        external_low.rank_score = Some(1_000.0);
+        external_low.library_provenance[0].subject_key = "tmdb:movie:102".to_string();
+
+        let mut unrated = rated.clone();
+        unrated.id = format!("{run_id}:unrated");
+        unrated.target_key = "tmdb:movie:103".to_string();
+        unrated.display_title = "Unrated match".to_string();
+        unrated.sort_title = Some(unrated.display_title.clone());
+        unrated.year = None;
+        unrated.rating = None;
+        unrated.rank_score = Some(10_000.0);
+        unrated.library_provenance[0].subject_key = "tmdb:movie:103".to_string();
 
         let mut excluded = rated.clone();
         excluded.id = format!("{run_id}:excluded");
-        excluded.target_key = "tmdb:movie:102".to_string();
+        excluded.target_key = "tmdb:movie:104".to_string();
         excluded.display_title = "Wrong genre".to_string();
         excluded.sort_title = Some(excluded.display_title.clone());
         excluded.rank_score = Some(1_000.0);
         excluded.canonical_tags[0].key = "canonical:genre:comedy".to_string();
         excluded.canonical_tags[0].name = "Comedy".to_string();
-        excluded.library_provenance[0].subject_key = "tmdb:movie:102".to_string();
+        excluded.library_provenance[0].subject_key = "tmdb:movie:104".to_string();
 
         store
-            .replace_discovery_items(run_id, &[rated, null_metadata, excluded])
+            .replace_discovery_items(
+                run_id,
+                &[rated, external_high, external_low, unrated, excluded],
+            )
             .await
             .expect("items should upsert");
 
@@ -5347,7 +5389,7 @@ mod tests {
             studio_slugs: vec!["a24".to_string()],
             minimum_year: Some(2020),
             maximum_year: Some(2024),
-            minimum_rating: Some(9.0),
+            minimum_rating: Some(8.5),
         };
         let candidates = fetch_personalized_home_candidates(
             &store.datastore,
@@ -5357,16 +5399,40 @@ mod tests {
             true,
             &filters,
             None,
-            1,
+            25,
         )
         .await
         .expect("filtered candidates should load");
 
-        assert_eq!(candidates.len(), 1);
         assert_eq!(
-            candidates[0].item.target_key, "tmdb:movie:101",
-            "filters must apply before the rail limit and retain null year/rating"
+            candidates
+                .iter()
+                .map(|candidate| candidate.item.target_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tmdb:movie:101", "tmdb:movie:100"],
+            "minimum rating must use the normalized external score before the blended rating"
         );
+
+        let mut no_rating_filter = filters.clone();
+        no_rating_filter.minimum_rating = None;
+        let candidates_without_minimum = fetch_personalized_home_candidates(
+            &store.datastore,
+            run_id,
+            &[library_id.to_string()],
+            &["movie".to_string()],
+            true,
+            &no_rating_filter,
+            None,
+            25,
+        )
+        .await
+        .expect("unfiltered candidates should load");
+        let candidate_keys_without_minimum = candidates_without_minimum
+            .iter()
+            .map(|candidate| candidate.item.target_key.as_str())
+            .collect::<Vec<_>>();
+        assert!(candidate_keys_without_minimum.contains(&"tmdb:movie:102"));
+        assert!(candidate_keys_without_minimum.contains(&"tmdb:movie:103"));
 
         let _ = std::fs::remove_file(db);
     }

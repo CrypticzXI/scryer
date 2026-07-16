@@ -22,7 +22,8 @@ use crate::{
     DownloadSubmissionRepository, EpisodeUpdate, FacetRegistry, ImportArtifact,
     ImportArtifactRepository, IndexerConfigRepository, JwtAuthConfig, PendingTitleHydration,
     QualityProfile, QualityProfileRepository, SETTINGS_SCOPE_SYSTEM, ScopedExternalId,
-    SettingsRepository, ShowRepository, SubmissionScope, TitleMetadataUpdate, TitleRepository,
+    SeriesMovieExternalIdLookupMatch, SettingsRepository, ShowRepository, SubmissionScope,
+    TitleExternalIdLookup, TitleMetadataUpdate, TitleRepository,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -269,6 +270,14 @@ impl ShowRepository for TestShowRepo {
         &self,
         _: &str,
     ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>> {
+        Ok(vec![])
+    }
+
+    async fn list_series_movie_external_id_lookup_matches(
+        &self,
+        _: &[String],
+        _: &[TitleExternalIdLookup],
+    ) -> AppResult<Vec<SeriesMovieExternalIdLookupMatch>> {
         Ok(vec![])
     }
 

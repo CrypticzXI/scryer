@@ -5,6 +5,7 @@ import {
   CalendarDays,
   Film,
   Folder,
+  PanelRightClose,
   RefreshCw,
   Search,
   SlidersHorizontal,
@@ -59,6 +60,7 @@ type CatalogFiltersPanelProps = {
   onToggleQuickMonitoring: (filter: "monitored" | "unmonitored") => void;
   onToggleQuickStatus: (filter: "continuing" | "ended") => void;
   onClearQuickFilters: () => void;
+  onCollapse?: () => void;
   className?: string;
 };
 
@@ -127,6 +129,7 @@ export function CatalogFiltersPanel({
   onToggleQuickMonitoring,
   onToggleQuickStatus,
   onClearQuickFilters,
+  onCollapse,
   className,
 }: CatalogFiltersPanelProps) {
   const t = useTranslate();
@@ -239,26 +242,37 @@ export function CatalogFiltersPanel({
       )}
     >
       <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-[10px] border border-[var(--scry-baccent)] bg-[linear-gradient(135deg,rgba(var(--scry-accent-rgb),0.32),rgba(155,91,255,0.2))] text-[var(--scry-accent-text)]">
             <SlidersHorizontal className="h-[18px] w-[18px]" />
           </div>
           <span className="text-[16px] font-semibold text-[var(--scry-ink2)]">
             {t("discovery.filters")}
           </span>
+          <button
+            type="button"
+            disabled={!hasActiveFilters}
+            onClick={() => {
+              onClear();
+              onSearchValueChange("");
+              onClearQuickFilters();
+            }}
+            className="text-xs font-medium text-[var(--scry-accent-ring)] transition disabled:cursor-default disabled:opacity-40"
+          >
+            {t("discovery.clearAll")}
+          </button>
         </div>
-        <button
-          type="button"
-          disabled={!hasActiveFilters}
-          onClick={() => {
-            onClear();
-            onSearchValueChange("");
-            onClearQuickFilters();
-          }}
-          className="text-xs font-medium text-[var(--scry-accent-ring)] transition disabled:cursor-default disabled:opacity-40"
-        >
-          {t("discovery.clearAll")}
-        </button>
+        {onCollapse ? (
+          <button
+            type="button"
+            onClick={onCollapse}
+            className="flex size-7 shrink-0 items-center justify-center rounded-[7px] border border-[var(--scry-baccent)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)] transition hover:bg-[var(--scry-hover)]"
+            aria-label={t("label.close")}
+            title={t("label.close")}
+          >
+            <PanelRightClose className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
       </div>
 
       <div className="relative mb-4">
