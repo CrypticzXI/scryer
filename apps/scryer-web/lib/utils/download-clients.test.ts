@@ -118,6 +118,21 @@ test("blank optional descriptor secrets are omitted", () => {
   assert.equal(values.has("password"), false);
 });
 
+test("stored descriptor secrets can be explicitly cleared", () => {
+  const values = valuesByKey(
+    buildDownloadClientConfigValues(
+      draft({
+        clientType: "qbittorrent",
+        configValues: { api_key: "" },
+      }),
+      [configField({ key: "api_key", fieldType: "PASSWORD" })],
+      new Set(["api_key"]),
+    ),
+  );
+
+  assert.equal(values.get("api_key")?.clearSecret, true);
+});
+
 test("file-backed config field detection recognizes explicit and inferred paths", () => {
   assert.equal(
     isFileBackedDownloadClientConfigField(

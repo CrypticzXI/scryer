@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, type FormEvent } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, type FormEvent } from "react";
 import { useClient } from "urql";
 import { notifyExternalAccountInviteSourcesChanged } from "@/components/containers/settings/external-account-invites-container";
 import { sanitizeTotpCode } from "@/components/auth/totp-code-form";
@@ -25,6 +25,7 @@ import {
   myTotpQuery,
 } from "@/lib/graphql/queries";
 import { normalizeGraphQlErrorMessage } from "@/lib/graphql/error-message";
+import { shouldLoadProfilePasskeys } from "@/lib/utils/profile-passkey-gate";
 import {
   VISIBLE_EXTERNAL_ACCOUNT_PROVIDERS,
   isVisibleExternalAccountProvider,
@@ -93,7 +94,13 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
-  const { login, user: authUser } = useAuth();
+  const {
+    login,
+    user: authUser,
+    loading: authLoading,
+    effectiveFormLoginEnabled,
+    passkeyEnabled,
+  } = useAuth();
   const { uiSettings, setUiSettings, uiSettingsLoaded, uiSettingsLoading } =
     useUiSettings();
   const [savingHighlightColor, setSavingHighlightColor] = useState<string | null>(
@@ -105,6 +112,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [saving, setSaving] = useState(false);
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
+  const passkeyLoadGenerationRef = useRef(0);
   const [oauthApps, setOauthApps] = useState<OAuthConnectedApp[]>([]);
   const [hasPassword, setHasPassword] = useState<boolean | null>(null);
   const [accountKind, setAccountKind] = useState<UserAccountKind | null>(null);
@@ -343,7 +351,14 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, [client, setGlobalStatus, t, userId]);
 
   const loadPasskeys = useCallback(async () => {
-    if (!userId || accountKind !== "LOCAL") {
+    const generation = ++passkeyLoadGenerationRef.current;
+    if (!shouldLoadProfilePasskeys({
+      authLoading,
+      effectiveFormLoginEnabled: effectiveFormLoginEnabled === true,
+      passkeyEnabled,
+      userId,
+      accountKind,
+    })) {
       setPasskeys([]);
       setLoadingPasskeys(false);
       return;
@@ -352,6 +367,9 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     setLoadingPasskeys(true);
     try {
       const result = await client.query<{ myPasskeys?: PasskeySummary[] }>(myPasskeysQuery, {}).toPromise();
+      if (generation !== passkeyLoadGenerationRef.current) {
+        return;
+      }
       if (result.error) {
         if (isPasskeyFormLoginDisabledError(result.error.message)) {
           setPasskeys([]);
@@ -364,14 +382,30 @@ export function SettingsProfileContainer({ userId, username }: Props) {
 
       setPasskeys(result.data?.myPasskeys ?? []);
     } catch (error) {
-      setGlobalStatus(error instanceof Error ? error.message : t("profile.passkeyOperationFailed"));
+      if (generation === passkeyLoadGenerationRef.current) {
+        setGlobalStatus(error instanceof Error ? error.message : t("profile.passkeyOperationFailed"));
+      }
     } finally {
-      setLoadingPasskeys(false);
+      if (generation === passkeyLoadGenerationRef.current) {
+        setLoadingPasskeys(false);
+      }
     }
-  }, [accountKind, client, setGlobalStatus, t, userId]);
+  }, [
+    accountKind,
+    authLoading,
+    client,
+    effectiveFormLoginEnabled,
+    passkeyEnabled,
+    setGlobalStatus,
+    t,
+    userId,
+  ]);
 
   useEffect(() => {
     void loadPasskeys();
+    return () => {
+      passkeyLoadGenerationRef.current += 1;
+    };
   }, [loadPasskeys]);
 
   const loadOauthApps = useCallback(async () => {

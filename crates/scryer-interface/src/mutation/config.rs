@@ -105,6 +105,25 @@ fn merge_omitted_provider_secrets(
         .map_err(|error| scryer_application::AppError::Validation(error.to_string()))
 }
 
+fn prepare_download_client_connection_test_config(
+    id: &str,
+    requested_client_type: &str,
+    incoming_json: String,
+    existing: Option<(&str, &str)>,
+    config_fields: &[scryer_domain::ConfigFieldDef],
+) -> scryer_application::AppResult<String> {
+    let Some((existing_client_type, existing_json)) = existing else {
+        return Err(AppError::NotFound(format!("download client {id}")));
+    };
+    if !existing_client_type.eq_ignore_ascii_case(requested_client_type) {
+        return Err(AppError::Validation(format!(
+            "download client {id} uses provider type '{existing_client_type}', not '{requested_client_type}'"
+        )));
+    }
+
+    merge_omitted_provider_secrets(incoming_json, existing_json, config_fields)
+}
+
 #[derive(Default)]
 pub(crate) struct ConfigMutations;
 
@@ -453,6 +472,25 @@ impl ConfigMutations {
 
         let client_type = input.client_type.trim().to_lowercase();
         let config_json = provider_config_values_to_json(input.config).map_err(to_gql_error)?;
+        let config_json = if let Some(id) = input.id {
+            let existing = app
+                .get_download_client_config(&actor, id.as_ref())
+                .await
+                .map_err(to_gql_error)?;
+            let config_fields = download_client_config_fields(&app, &client_type);
+            prepare_download_client_connection_test_config(
+                id.as_ref(),
+                &client_type,
+                config_json,
+                existing
+                    .as_ref()
+                    .map(|config| (config.client_type.as_str(), config.config_json.as_str())),
+                &config_fields,
+            )
+            .map_err(to_gql_error)?
+        } else {
+            config_json
+        };
         app.test_download_client_connection(&actor, &client_type, &config_json)
             .await
             .map_err(to_gql_error)?;
@@ -654,5 +692,97 @@ mod tests {
         .expect("config enrichment should succeed");
 
         assert_eq!(config_json, r#"{"host":"127.0.0.1","port":"8081"}"#);
+    }
+
+    fn secret_field(key: &str) -> scryer_domain::ConfigFieldDef {
+        scryer_domain::ConfigFieldDef {
+            key: key.to_string(),
+            label: key.to_string(),
+            field_type: scryer_domain::ConfigFieldType::Password,
+            required: false,
+            default_value: None,
+            value_source: Default::default(),
+            role: None,
+            host_binding: None,
+            options: vec![],
+            help_text: None,
+        }
+    }
+
+    #[test]
+    fn connection_test_merge_reuses_omitted_saved_secrets() {
+        let merged = merge_omitted_provider_secrets(
+            r#"{"host":"localhost"}"#.to_string(),
+            r#"{"host":"localhost","api_key":"saved-key","password":"saved-password"}"#,
+            &[secret_field("api_key"), secret_field("password")],
+        )
+        .expect("merge saved secrets");
+        let merged: serde_json::Value = serde_json::from_str(&merged).unwrap();
+
+        assert_eq!(merged["api_key"], "saved-key");
+        assert_eq!(merged["password"], "saved-password");
+    }
+
+    #[test]
+    fn connection_test_merge_respects_explicit_secret_clear() {
+        let merged = merge_omitted_provider_secrets(
+            r#"{"api_key":null}"#.to_string(),
+            r#"{"api_key":"saved-key"}"#,
+            &[secret_field("api_key")],
+        )
+        .expect("merge explicit clear");
+        let merged: serde_json::Value = serde_json::from_str(&merged).unwrap();
+
+        assert!(merged["api_key"].is_null());
+    }
+
+    #[test]
+    fn connection_test_with_saved_client_reuses_omitted_secrets() {
+        let merged = prepare_download_client_connection_test_config(
+            "client-1",
+            "qbittorrent",
+            r#"{"host":"localhost"}"#.to_string(),
+            Some((
+                "qBittorrent",
+                r#"{"host":"localhost","api_key":"saved-key"}"#,
+            )),
+            &[secret_field("api_key")],
+        )
+        .expect("saved client config should merge");
+        let merged: serde_json::Value = serde_json::from_str(&merged).unwrap();
+
+        assert_eq!(merged["api_key"], "saved-key");
+    }
+
+    #[test]
+    fn connection_test_with_missing_client_id_is_rejected() {
+        let error = prepare_download_client_connection_test_config(
+            "missing",
+            "qbittorrent",
+            "{}".to_string(),
+            None,
+            &[secret_field("api_key")],
+        )
+        .expect_err("missing client should fail");
+
+        assert!(
+            matches!(error, AppError::NotFound(message) if message == "download client missing")
+        );
+    }
+
+    #[test]
+    fn connection_test_with_mismatched_client_type_is_rejected() {
+        let error = prepare_download_client_connection_test_config(
+            "client-1",
+            "qbittorrent",
+            "{}".to_string(),
+            Some(("sabnzbd", "{}")),
+            &[secret_field("api_key")],
+        )
+        .expect_err("mismatched client should fail");
+
+        assert!(
+            matches!(error, AppError::Validation(message) if message.contains("uses provider type 'sabnzbd', not 'qbittorrent'"))
+        );
     }
 }

@@ -3470,10 +3470,6 @@ export const browsePathQuery = `query BrowsePath($path: String!, $includeFiles: 
   }
 }`;
 
-export const catalogHasValidRootQuery = `query CatalogHasValidRoot($facet: MediaFacetValue!) {
-  catalogHasValidRoot(facet: $facet)
-}`;
-
 export const postProcessingScriptsQuery = `query PostProcessingScripts {
   postProcessingScripts {
     id

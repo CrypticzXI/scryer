@@ -3805,6 +3805,7 @@ pub struct ReorderDownloadClientConfigsPayload {
 
 #[derive(InputObject)]
 pub struct TestDownloadClientConnectionInput {
+    pub id: Option<ID>,
     pub client_type: String,
     pub config: Vec<ProviderConfigValueInput>,
 }

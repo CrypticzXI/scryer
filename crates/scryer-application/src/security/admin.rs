@@ -798,6 +798,33 @@ impl AppUseCase {
             return Err(AppError::Validation("cannot delete current user".into()));
         }
 
+        let full_admin_permissions = Self::required_startup_admin_app_permissions();
+        let target_is_full_admin = self
+            .attach_user_authorization(user.clone())
+            .await?
+            .authorization
+            .app
+            .contains(full_admin_permissions);
+        let deleting_bootstrap_admin = user.username.eq_ignore_ascii_case(DEFAULT_ADMIN_USERNAME);
+        if target_is_full_admin || deleting_bootstrap_admin {
+            let mut replacement_full_admin_exists = false;
+            for candidate in self.services.identity.users.list_all().await? {
+                if candidate.id == user.id {
+                    continue;
+                }
+                let candidate = self.attach_user_authorization(candidate).await?;
+                if candidate.authorization.app.contains(full_admin_permissions) {
+                    replacement_full_admin_exists = true;
+                    break;
+                }
+            }
+            if !replacement_full_admin_exists {
+                return Err(AppError::Validation(
+                    "cannot delete the last full administrator".into(),
+                ));
+            }
+        }
+
         self.revoke_oauth_refresh_grants_for_user(user_id, "user_deleted")
             .await?;
         self.services.identity.users.delete(user_id).await?;

@@ -1821,7 +1821,6 @@ export function MediaContentView({
       | "content"
       | "empty"
       | "rootsMissing"
-      | "rootsInvalid"
       | "error";
     catalogSurfaceError: string | null;
     retryCatalogBootstrap: () => void;
@@ -1907,6 +1906,7 @@ export function MediaContentView({
     librariesLoading: boolean;
     rootValidationLibraries: LibraryRecord[];
     rootValidationLibrariesLoading: boolean;
+    rootValidationUnavailable: boolean;
     invalidRootPathsByLibraryId: Record<string, string[]>;
     selectedLibraryIds: string[];
     allLibrariesValue: string;
@@ -2138,6 +2138,7 @@ export function MediaContentView({
     libraryDownloadClientsLoading,
     rootValidationLibraries,
     rootValidationLibrariesLoading,
+    rootValidationUnavailable,
     invalidRootPathsByLibraryId,
     selectedLibraryIds,
     allLibrariesValue,
@@ -2650,11 +2651,8 @@ export function MediaContentView({
     canManageLibrarySettings &&
     catalogSurfacePhase === "empty";
   const showConfigureRootFoldersAction =
-    canManageLibrarySettings &&
-    (catalogSurfacePhase === "rootsMissing" ||
-      catalogSurfacePhase === "rootsInvalid");
-  const configureRootFoldersReason =
-    catalogSurfacePhase === "rootsInvalid" ? "invalid" : "missing";
+    canManageLibrarySettings && catalogSurfacePhase === "rootsMissing";
+  const configureRootFoldersReason = "missing" as const;
   const configureRootFoldersHref =
     view === "movies" || view === "series" || view === "anime"
       ? buildViewPath(view, undefined, "library")
@@ -3316,6 +3314,7 @@ export function MediaContentView({
             onActiveLibraryNameChange={setLibraryCrumb}
             rootValidationLibraries={rootValidationLibraries}
             rootValidationLibrariesLoading={rootValidationLibrariesLoading}
+            rootValidationUnavailable={rootValidationUnavailable}
             invalidRootPathsByLibraryId={invalidRootPathsByLibraryId}
             preferredLibraryId={
               selectedLibraryIds.length === 1
@@ -3524,10 +3523,7 @@ export function MediaContentView({
                       <TitleCollectionLoadingState />
                     </div>
                   );
-                } else if (
-                  catalogSurfacePhase === "rootsMissing" ||
-                  catalogSurfacePhase === "rootsInvalid"
-                ) {
+                } else if (catalogSurfacePhase === "rootsMissing") {
                   titleCollectionView = (
                     <div className="flex h-full w-full items-start justify-center px-4 pt-12">
                       <TitleCollectionEmptyState

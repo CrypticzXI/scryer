@@ -193,6 +193,8 @@ pub struct SchedulerBatchRequest {
 #[derive(Clone, Debug)]
 pub struct SchedulerBatchDecision {
     pub batch_id: String,
+    /// Decisions are ordered from highest to lowest dispatch priority.
+    /// Candidates with equal priority retain their input order.
     pub decisions: Vec<SchedulerAdmission>,
 }
 

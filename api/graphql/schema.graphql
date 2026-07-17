@@ -3383,7 +3383,6 @@ type QueryRoot {
 	titles(facet: MediaFacetValue, libraryIds: [ID!], query: String, filter: TitleCatalogFilterInput, sort: TitleCatalogSortInput, limit: Int, offset: Int): TitleCatalogPayload!
 	titleCatalogFilterOptions(facet: MediaFacetValue, libraryIds: [ID!], rootFolderIds: [ID!]): TitleCatalogFilterOptionsPayload!
 	libraries(facet: MediaFacetValue, permission: LibraryPermissionValue): [LibraryPayload!]!
-	catalogHasValidRoot(facet: MediaFacetValue!): Boolean!
 	mediaRequests(facet: MediaFacetValue, libraryIds: [ID!], status: MediaRequestStatusValue): [MediaRequestPayload!]!
 	myMediaRequests(facet: MediaFacetValue, libraryIds: [ID!], status: MediaRequestStatusValue): [MediaRequestPayload!]!
 	librarySettings(libraryId: ID!): LibrarySettingsPayload!
@@ -4228,6 +4227,7 @@ type SystemHealthPayload {
 }
 
 input TestDownloadClientConnectionInput {
+	id: ID
 	clientType: String!
 	config: [ProviderConfigValueInput!]!
 }

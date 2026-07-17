@@ -640,13 +640,9 @@ impl AppUseCase {
         }
     }
 
-    /// Re-open a scope's convergence after an event that invalidates its
-    /// acquired state — a failed grab, a rejected import, or an operator
-    /// replacing the download: reset the state row to `wanted` (clearing the
-    /// in-flight grab, keeping the upgrade baseline), prune the scope's
-    /// coverage so the cursor re-searches every routed indexer, and wake the
-    /// acquisition loop. Best-effort — recovery paths must never fail on
-    /// bookkeeping.
+    /// Re-open a scope after a failed grab, rejected import, or operator
+    /// replacement. The acquisition state returns to `wanted`, but convergence
+    /// coverage remains intact because it records searches that already occurred.
     pub(crate) async fn reopen_wanted_scope_for_acquisition(&self, item: &AcquisitionScopeState) {
         if let Err(error) = self
             .services
@@ -659,28 +655,6 @@ impl AppUseCase {
                 wanted_item_id = item.id.as_str(),
                 error = %error,
                 "failed to reset wanted state row while re-opening scope"
-            );
-        }
-        let scope = crate::contracts::SubmissionScope::from_persisted(
-            &item.title_id,
-            item.episode_id.clone(),
-            item.collection_id.clone(),
-            item.series_movie_link_id.clone(),
-            None,
-        );
-        if let Some(scope_key) = convergence_scope_key(&scope, &item.title_id)
-            && let Err(error) = self
-                .services
-                .integrations
-                .scope_indexer_coverage
-                .prune_scope(&scope_key)
-                .await
-        {
-            tracing::warn!(
-                wanted_item_id = item.id.as_str(),
-                scope_key = scope_key.as_str(),
-                error = %error,
-                "failed to prune scope coverage while re-opening scope"
             );
         }
         self.runtime.acquisition.acquisition_wake.notify_one();

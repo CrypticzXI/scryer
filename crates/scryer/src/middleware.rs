@@ -1504,7 +1504,7 @@ async fn resolve_actor(
                 }
             }
             Err(_) if !snapshot.effective_form_login_enabled => {
-                resolve_default_user(&state.app).await.map(|user| {
+                resolve_default_user(&state.app, true).await.map(|user| {
                     (
                         anonymous_user(user),
                         AuthenticatedTokenClaims::default(),
@@ -1512,7 +1512,7 @@ async fn resolve_actor(
                     )
                 })
             }
-            Err(_) if local_bypass => resolve_default_user(&state.app).await.map(|user| {
+            Err(_) if local_bypass => resolve_default_user(&state.app, false).await.map(|user| {
                 (
                     anonymous_user(user),
                     mfa_bypass_token_claims(),
@@ -1522,7 +1522,7 @@ async fn resolve_actor(
             Err(_) => None,
         },
         Ok(None) | Err(_) if !snapshot.effective_form_login_enabled => {
-            resolve_default_user(&state.app).await.map(|user| {
+            resolve_default_user(&state.app, true).await.map(|user| {
                 (
                     anonymous_user(user),
                     AuthenticatedTokenClaims::default(),
@@ -1530,7 +1530,7 @@ async fn resolve_actor(
                 )
             })
         }
-        Ok(None) | Err(_) if local_bypass => resolve_default_user(&state.app).await.map(|user| {
+        Ok(None) | Err(_) if local_bypass => resolve_default_user(&state.app, false).await.map(|user| {
             (
                 anonymous_user(user),
                 mfa_bypass_token_claims(),
@@ -1575,10 +1575,14 @@ async fn attach_resolved_actor(
     })
 }
 
-async fn resolve_default_user(app_use_case: &AppUseCase) -> Option<scryer_domain::User> {
+async fn resolve_default_user(
+    app_use_case: &AppUseCase,
+    create_if_missing: bool,
+) -> Option<scryer_domain::User> {
     match app_use_case.find_default_user().await {
         Ok(Some(user)) => Some(user),
-        Ok(None) => app_use_case.find_or_create_default_user().await.ok(),
+        Ok(None) if create_if_missing => app_use_case.find_or_create_default_user().await.ok(),
+        Ok(None) => None,
         Err(_) => None,
     }
 }

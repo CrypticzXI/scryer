@@ -69,6 +69,10 @@ import {
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
 import {
+  normalizeComparableLibraryRootPath,
+  trimLibraryRootPath,
+} from "@/lib/utils/library-root-validation";
+import {
   FILE_CHMOD_PRESETS,
   FOLDER_CHMOD_PRESETS,
   formatChmodMode,
@@ -110,6 +114,7 @@ type MediaLibrarySettingsPanelProps = {
   librariesLoading: boolean;
   rootValidationLibraries: LibraryRecord[];
   rootValidationLibrariesLoading: boolean;
+  rootValidationUnavailable: boolean;
   invalidRootPathsByLibraryId: Record<string, string[]>;
   preferredLibraryId: string;
   allLibrariesValue: string;
@@ -188,21 +193,18 @@ function rootsFromLibrary(library: LibraryRecord | null): RootFolderOption[] {
   }));
 }
 
-function normalizeComparableRootPath(path: string): string {
-  return path.trim().replace(/\/+$/u, "").toLowerCase();
-}
-
 function normalizeRoots(roots: RootFolderOption[]): RootFolderOption[] {
   const seen = new Set<string>();
   let hasDefault = false;
   const next: RootFolderOption[] = [];
 
   roots.forEach((root) => {
-    const path = root.path.trim();
-    if (!path || seen.has(path)) {
+    const path = trimLibraryRootPath(root.path);
+    const comparablePath = normalizeComparableLibraryRootPath(path);
+    if (!path || seen.has(comparablePath)) {
       return;
     }
-    seen.add(path);
+    seen.add(comparablePath);
     const isDefault = root.isDefault && !hasDefault;
     if (isDefault) {
       hasDefault = true;
@@ -270,6 +272,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   librariesLoading,
   rootValidationLibraries,
   rootValidationLibrariesLoading,
+  rootValidationUnavailable,
   invalidRootPathsByLibraryId,
   preferredLibraryId,
   allLibrariesValue,
@@ -543,7 +546,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       }
 
       library.roots.forEach((root) => {
-        const normalizedPath = normalizeComparableRootPath(root.path);
+        const normalizedPath = normalizeComparableLibraryRootPath(root.path);
         if (!normalizedPath) {
           return;
         }
@@ -562,7 +565,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
 
     const conflicts = new Map<string, string[]>();
     normalizedDraftRoots.forEach((root) => {
-      const normalizedPath = normalizeComparableRootPath(root.path);
+      const normalizedPath = normalizeComparableLibraryRootPath(root.path);
       const libraryNames = otherLibrariesByRootPath.get(normalizedPath);
       if (libraryNames?.length) {
         conflicts.set(root.path, libraryNames);
@@ -594,7 +597,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     }
     return new Set(
       (invalidRootPathsByLibraryId[activeLibrary.id] ?? []).map(
-        normalizeComparableRootPath,
+        normalizeComparableLibraryRootPath,
       ),
     );
   }, [activeLibrary?.id, invalidRootPathsByLibraryId]);
@@ -1188,6 +1191,11 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
 
               <div className="space-y-3">
                 <Label className="block">{t("settings.rootFoldersLabel")}</Label>
+                {rootValidationUnavailable ? (
+                  <p className="text-xs text-[var(--scry-warning-text)]">
+                    {t("settings.rootFolderValidationUnavailable")}
+                  </p>
+                ) : null}
                 {normalizedDraftRoots.length === 0 && !loading ? (
                   <p className="text-xs text-muted-foreground">{t("settings.rootFoldersEmpty")}</p>
                 ) : null}
@@ -1198,7 +1206,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     const pathFormatIsInvalid = invalidRootFolderPaths.has(rf.path);
                     const pathValidationIsInvalid =
                       validatedInvalidRootPathKeys.has(
-                        normalizeComparableRootPath(rf.path),
+                        normalizeComparableLibraryRootPath(rf.path),
                       );
                     const pathIsInvalid =
                       pathFormatIsInvalid || pathValidationIsInvalid;

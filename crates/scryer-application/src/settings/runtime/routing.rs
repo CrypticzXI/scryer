@@ -520,7 +520,7 @@ impl AppUseCase {
                 Some(scope_id.to_string()),
                 serde_json::Value::Object(payload).to_string(),
                 SETTINGS_SOURCE_TYPED_GRAPHQL,
-                Some(actor.id.clone()),
+                (!actor.is_system_execution_actor()).then(|| actor.id.clone()),
             )
             .await?;
 
@@ -570,7 +570,7 @@ impl AppUseCase {
                     Some(scope_id.to_string()),
                     serde_json::Value::Object(payload).to_string(),
                     "admin_graphql",
-                    Some(actor.id.clone()),
+                    (!actor.is_system_execution_actor()).then(|| actor.id.clone()),
                 )
                 .await?;
         }
@@ -590,7 +590,7 @@ impl AppUseCase {
         self.ensure_indexer_routing_entry_for_indexer_internal(
             indexer_id,
             "admin_graphql",
-            Some(actor.id.clone()),
+            (!actor.is_system_execution_actor()).then(|| actor.id.clone()),
         )
         .await
     }
@@ -660,6 +660,53 @@ impl AppUseCase {
                 None,
             )
             .await?;
+        }
+        Ok(())
+    }
+}
+impl AppUseCase {
+    pub(crate) async fn remove_indexer_routing_entries_internal(
+        &self,
+        indexer_ids: &[String],
+        source: &str,
+        updated_by_user_id: Option<String>,
+    ) -> AppResult<()> {
+        if indexer_ids.is_empty() {
+            return Ok(());
+        }
+
+        for scope_id in ["movie", "series", "anime"] {
+            let Some(raw_json) = self
+                .read_setting_string_value(INDEXER_ROUTING_SETTINGS_KEY, Some(scope_id))
+                .await?
+            else {
+                continue;
+            };
+            let mut payload = parse_json_object(&raw_json).ok_or_else(|| {
+                AppError::Repository(format!(
+                    "indexer routing settings for scope '{scope_id}' are not a JSON object"
+                ))
+            })?;
+            let mut changed = false;
+            for indexer_id in indexer_ids {
+                changed |= payload.remove(indexer_id).is_some();
+            }
+            if !changed {
+                continue;
+            }
+
+            self.services
+                .config
+                .settings
+                .upsert_setting_json(
+                    SETTINGS_SCOPE_SYSTEM,
+                    INDEXER_ROUTING_SETTINGS_KEY,
+                    Some(scope_id.to_string()),
+                    serde_json::Value::Object(payload).to_string(),
+                    source,
+                    updated_by_user_id.clone(),
+                )
+                .await?;
         }
         Ok(())
     }
@@ -736,7 +783,7 @@ impl AppUseCase {
                 Some(scope_id.to_string()),
                 serde_json::Value::Object(payload).to_string(),
                 SETTINGS_SOURCE_TYPED_GRAPHQL,
-                Some(actor.id.clone()),
+                (!actor.is_system_execution_actor()).then(|| actor.id.clone()),
             )
             .await?;
 

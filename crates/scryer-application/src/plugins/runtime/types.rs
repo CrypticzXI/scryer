@@ -303,6 +303,7 @@ impl AppUseCase {
     /// installed before the auto-create logic existed, or when the registry was
     /// stale at install time.
     pub async fn reconcile_indexer_configs(&self) -> AppResult<()> {
+        self.reconcile_orphaned_managed_indexer_configs().await?;
         let Some(provider) = self.services.integrations.plugin_provider.available() else {
             return Ok(());
         };

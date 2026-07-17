@@ -51,15 +51,15 @@ fn remove_indexer_routing_entries(
     }
 }
 impl AppUseCase {
-    pub fn queue_managed_indexer_sync(&self, config_id: &str) {
+    pub fn queue_managed_indexer_sync(&self, actor: &User, config_id: &str) {
         let config_id = config_id.trim().to_string();
         if config_id.is_empty() {
             return;
         }
 
         let app = self.clone();
+        let actor = actor.clone();
         tokio::spawn(async move {
-            let actor = scryer_domain::User::new_admin("system-managed-indexer-sync");
             if let Err(error) = app.sync_indexer_config(&actor, &config_id).await {
                 tracing::warn!(
                     config_id = %config_id,

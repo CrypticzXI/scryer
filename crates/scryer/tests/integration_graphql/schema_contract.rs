@@ -134,8 +134,9 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Library catalog filter options add one query and two payload OBJECT types;
     // external subtitle listing and blocklist lookup add two query roots and eight public types
     // (five OBJECT, two INPUT_OBJECT, and one ENUM support types).
+    // Catalog bootstrap no longer exposes filesystem reachability as a blocking query.
     assert_eq!(
-        query_field_count, 119,
+        query_field_count, 118,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(mutation_field_count, 163);
@@ -152,6 +153,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
     assert!(query_field_names.contains(&"episode"));
     assert!(query_field_names.contains(&"titleCatalogFilterOptions"));
+    assert!(!query_field_names.contains(&"catalogHasValidRoot"));
     // 0.17.0 dataloader/dual-mode workstream added the id-anchored lookups.
     assert!(query_field_names.contains(&"episodeById"));
     assert!(query_field_names.contains(&"collectionById"));
@@ -1764,7 +1766,7 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
             fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
           }
           testDownloadClientInput: __type(name: "TestDownloadClientConnectionInput") {
-            inputFields { name }
+            inputFields { name type { kind name ofType { kind name } } }
           }
           createSubtitleProviderInput: __type(name: "CreateSubtitleProviderConfigInput") {
             inputFields { name }
@@ -1982,6 +1984,10 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
     assert_non_null_id(
         input_field("updateDownloadClientInput", "id"),
         "UpdateDownloadClientConfigInput.id",
+    );
+    assert_optional_id(
+        input_field("testDownloadClientInput", "id"),
+        "TestDownloadClientConnectionInput.id",
     );
     let disabled_until = input_field("updateSubtitleProviderInput", "disabledUntil");
     assert_eq!(

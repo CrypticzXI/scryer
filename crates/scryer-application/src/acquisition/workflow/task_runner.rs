@@ -1413,17 +1413,6 @@ async fn process_single_target(
                         "download submission result is ambiguous; re-opening scope without blocklisting or failover"
                     );
 
-                    // The search fired (coverage was recorded), but the grab
-                    // outcome is unknown. Prune the scope's coverage so the
-                    // cursor retries it; if the download did register, the
-                    // submission gate blocks a duplicate next cycle.
-                    let _ = app
-                        .services
-                        .integrations
-                        .scope_indexer_coverage
-                        .prune_scope(&convergence.scope_key)
-                        .await;
-
                     return Ok(());
                 }
 

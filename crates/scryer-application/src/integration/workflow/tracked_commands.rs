@@ -676,13 +676,7 @@ pub async fn start_download_queue_poller_with_options(
 ) {
     use crate::tracked_downloads::publish_runtime_tracked_download_snapshot_cache;
 
-    let actor = match app.find_or_create_default_user().await {
-        Ok(actor) => actor,
-        Err(error) => {
-            tracing::warn!(error = %error, "download queue poller failed to resolve actor");
-            return;
-        }
-    };
+    let actor = User::system_execution_actor();
 
     let mut runtime = TrackedDownloadRuntimeState::new();
     let (tracked_work_result_tx, mut tracked_work_result_rx) =

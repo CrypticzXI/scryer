@@ -226,9 +226,11 @@ Legacy routing/category values are copied into their current settings when the c
 
 ### Backup and restore scope changed
 
-Backups now include canonical metadata ratings/tags, Discovery state/content, indexer learning and proxy configuration, more-like-this caches, and per-user UI/table settings.
+Backups now preserve durable convergence coverage and cursor state, indexer learning and proxy configuration, canonical metadata ratings/tags, and per-user UI/table settings.
 
-Some operational state is deliberately not portable: temporary external-import secret drafts, upstream quota/cooldown/RSS cadence state, and scope/indexer convergence coverage all rebuild after a restore. Title-image blobs are also regenerated as needed, so restored or invalid artwork can trigger cache reprocessing and fresh metadata traffic.
+Discovery data, more-like-this results, and all centralized title-image cache records are deliberately omitted. After a restore, Scryer will synchronize Discovery again and its bounded background image workers will download and process artwork from the restored remote source URLs. Remote artwork remains available while local variants are rebuilt, but operators should expect a temporary increase in network and image-processing activity.
+
+Temporary external-import secret drafts and upstream quota/cooldown/RSS cadence state also remain non-portable. This backup ownership correction requires no GraphQL, environment-variable, or database migration changes.
 
 ### UI routes and local state
 

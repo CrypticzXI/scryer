@@ -1469,6 +1469,72 @@ mod tests {
         }
     }
 
+    fn decision_candidate_id(decision: &SchedulerAdmission) -> &SchedulerCandidateId {
+        match decision {
+            SchedulerAdmission::Admit { candidate_id, .. }
+            | SchedulerAdmission::Defer { candidate_id, .. }
+            | SchedulerAdmission::Skip { candidate_id, .. } => candidate_id,
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_decisions_are_ranked_highest_priority_first() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let low = candidate(SchedulerIntent::InteractiveSearch, 1.0);
+        let high = candidate(SchedulerIntent::InteractiveSearch, 50.0);
+        let low_id = low.candidate_id.clone();
+        let high_id = high.candidate_id.clone();
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "ranked".to_string(),
+                now: Utc::now(),
+                candidates: vec![low, high],
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert_eq!(
+            decision
+                .decisions
+                .iter()
+                .map(decision_candidate_id)
+                .collect::<Vec<_>>(),
+            vec![&high_id, &low_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn equally_ranked_batch_decisions_preserve_input_order() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let candidates = (0..3)
+            .map(|_| candidate(SchedulerIntent::InteractiveSearch, 10.0))
+            .collect::<Vec<_>>();
+        let expected_ids = candidates
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<Vec<_>>();
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "stable".to_string(),
+                now: Utc::now(),
+                candidates,
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert_eq!(
+            decision
+                .decisions
+                .iter()
+                .map(decision_candidate_id)
+                .cloned()
+                .collect::<Vec<_>>(),
+            expected_ids
+        );
+    }
+
     #[test]
     fn scheduler_prune_due_only_after_interval() {
         let last_prune = Instant::now();

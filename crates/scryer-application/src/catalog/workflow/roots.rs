@@ -21,8 +21,13 @@ pub(crate) fn library_path_is_under_root(path: &str, root: &str) -> bool {
     #[cfg(not(windows))]
     let separator = "/";
 
-    normalized_path == normalized_root
-        || normalized_path.starts_with(&format!("{normalized_root}{separator}"))
+    let descendant_prefix = if normalized_root.ends_with(separator) {
+        normalized_root.clone()
+    } else {
+        format!("{normalized_root}{separator}")
+    };
+
+    normalized_path == normalized_root || normalized_path.starts_with(&descendant_prefix)
 }
 pub(crate) fn library_root_paths_overlap(left: &str, right: &str) -> bool {
     library_path_is_under_root(left, right) || library_path_is_under_root(right, left)
@@ -261,5 +266,28 @@ impl AppUseCase {
         }
 
         self.root_folders_for_facet(fallback_facet).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::library_path_is_under_root;
+
+    #[test]
+    fn root_containment_handles_unix_root() {
+        assert!(library_path_is_under_root("/media/movies", "/"));
+    }
+
+    #[test]
+    fn root_containment_handles_windows_drive_root() {
+        assert!(library_path_is_under_root("C:\\Media\\Movies", "C:\\"));
+    }
+
+    #[test]
+    fn root_containment_handles_unc_share_root() {
+        assert!(library_path_is_under_root(
+            "\\\\server\\share\\Movies",
+            "\\\\server\\share\\"
+        ));
     }
 }

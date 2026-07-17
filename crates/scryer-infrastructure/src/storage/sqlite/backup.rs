@@ -131,41 +131,31 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
     let payload = prepare_backup_restore_payload(bundle_path, passphrase)?;
     validate_backup_catalog(pool).await?;
     let export_tables = ordered_export_tables(pool).await?;
+    let restore_tables = ordered_restore_tables(pool).await?;
     validate_restore_manifest_table_set(&payload.manifest().row_counts, &export_tables)?;
 
     let mut conn = pool.acquire().await.map_err(|error| {
         AppError::Repository(format!("failed to acquire restore connection: {error}"))
     })?;
 
-    sqlx::query("PRAGMA foreign_keys = OFF")
-        .execute(&mut *conn)
-        .await
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to disable foreign keys for restore: {error}"
-            ))
-        })?;
+    if let Err(error) = sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await {
+        return Err(AppError::Repository(format!(
+            "failed to begin SQLite restore transaction: {error}"
+        )));
+    }
 
     let tables_dir = payload.tables_dir();
     let restore_result = async {
-        sqlx::query("DELETE FROM title_image_variants")
+        sqlx::query("PRAGMA defer_foreign_keys = ON")
             .execute(&mut *conn)
             .await
             .map_err(|error| {
                 AppError::Repository(format!(
-                    "failed to clear generated title image variants: {error}"
-                ))
-            })?;
-        sqlx::query("DELETE FROM title_image_blobs")
-            .execute(&mut *conn)
-            .await
-            .map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to clear generated title image blobs: {error}"
+                    "failed to defer SQLite foreign keys for restore: {error}"
                 ))
             })?;
 
-        for table in export_tables.iter().rev() {
+        for table in restore_tables.iter().rev() {
             let sql = format!("DELETE FROM {}", quote_identifier(table));
             sqlx::query(sqlx::AssertSqlSafe(&*sql))
                 .execute(&mut *conn)
@@ -184,55 +174,70 @@ pub async fn restore_backup_bundle_into_sqlite_pool(
             .await?;
         }
 
+        let violations = foreign_key_violations(&mut conn).await?;
+        if !violations.is_empty() {
+            return Err(AppError::Validation(format!(
+                "restored database failed foreign key validation: {}",
+                format_foreign_key_violations(&violations)
+            )));
+        }
+
+        for table in &export_tables {
+            let expected_rows = payload.manifest().row_counts.get(table).ok_or_else(|| {
+                AppError::Validation(format!(
+                    "backup bundle table set does not match the current restore catalog: missing [{}], unexpected []",
+                    table
+                ))
+            })?;
+            let sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
+            let actual_rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(&*sql))
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to validate restored table {table}: {error}"
+                    ))
+                })?;
+            if actual_rows as u64 != *expected_rows {
+                return Err(AppError::Validation(format!(
+                    "restored table {table} row count mismatch: expected {expected_rows}, got {actual_rows}"
+                )));
+            }
+        }
+
         AppResult::Ok(())
     }
     .await;
 
-    let enable_foreign_keys_result = sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(&mut *conn)
-        .await
-        .map(|_| ())
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to re-enable foreign keys for restore: {error}"
-            ))
-        });
+    let transaction_result = match restore_result {
+        Ok(()) => match sqlx::query("COMMIT").execute(&mut *conn).await {
+            Ok(_) => Ok(()),
+            Err(commit_error) => {
+                let rollback_result = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                match rollback_result {
+                    Ok(_) => Err(AppError::Repository(format!(
+                        "failed to commit SQLite restore: {commit_error}"
+                    ))),
+                    Err(rollback_error) => Err(AppError::Repository(format!(
+                        "failed to commit SQLite restore: {commit_error}; rollback also failed: {rollback_error}"
+                    ))),
+                }
+            }
+        },
+        Err(error) => {
+            let rollback_result = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            match rollback_result {
+                Ok(_) => Err(error),
+                Err(rollback_error) => Err(AppError::Repository(format!(
+                    "SQLite restore failed: {error}; rollback also failed: {rollback_error}"
+                ))),
+            }
+        }
+    };
 
-    restore_result?;
-    enable_foreign_keys_result?;
-
-    let violations = foreign_key_violations(&mut conn).await?;
-    if !violations.is_empty() {
-        return Err(AppError::Validation(format!(
-            "restored database failed foreign key validation: {}",
-            format_foreign_key_violations(&violations)
-        )));
-    }
+    transaction_result?;
 
     crate::queries::title_search::rebuild_title_search_projection(pool).await?;
-
-    for table in &export_tables {
-        let expected_rows = payload.manifest().row_counts.get(table).ok_or_else(|| {
-            AppError::Validation(format!(
-                "backup bundle table set does not match the current restore catalog: missing [{}], unexpected []",
-                table
-            ))
-        })?;
-        let sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(table));
-        let actual_rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(&*sql))
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(|error| {
-                AppError::Repository(format!(
-                    "failed to validate restored table {table}: {error}"
-                ))
-            })?;
-        if actual_rows as u64 != *expected_rows {
-            return Err(AppError::Validation(format!(
-                "restored table {table} row count mismatch: expected {expected_rows}, got {actual_rows}"
-            )));
-        }
-    }
 
     Ok(
         BackupRestorePreparedBundle::from_summary_and_instance_secrets_env(
@@ -298,20 +303,38 @@ fn is_engine_internal_table(table: &str) -> bool {
 }
 
 async fn ordered_export_tables(pool: &sqlx::SqlitePool) -> AppResult<Vec<String>> {
-    let export_tables = BACKUP_TABLE_CATALOG
+    ordered_catalog_tables(pool, &[BackupTableClassification::Export]).await
+}
+
+async fn ordered_restore_tables(pool: &sqlx::SqlitePool) -> AppResult<Vec<String>> {
+    ordered_catalog_tables(
+        pool,
+        &[
+            BackupTableClassification::Export,
+            BackupTableClassification::ResetOnRestore,
+        ],
+    )
+    .await
+}
+
+async fn ordered_catalog_tables(
+    pool: &sqlx::SqlitePool,
+    classifications: &[BackupTableClassification],
+) -> AppResult<Vec<String>> {
+    let catalog_tables = BACKUP_TABLE_CATALOG
         .iter()
-        .filter(|entry| entry.classification == BackupTableClassification::Export)
+        .filter(|entry| classifications.contains(&entry.classification))
         .map(|entry| entry.table.to_string())
         .collect::<BTreeSet<_>>();
 
     let mut incoming = BTreeMap::<String, usize>::new();
     let mut outgoing = BTreeMap::<String, BTreeSet<String>>::new();
-    for table in &export_tables {
+    for table in &catalog_tables {
         incoming.insert(table.clone(), 0);
         outgoing.insert(table.clone(), BTreeSet::new());
     }
 
-    for table in &export_tables {
+    for table in &catalog_tables {
         let pragma = format!("PRAGMA foreign_key_list({})", quote_identifier(table));
         let rows = sqlx::query(sqlx::AssertSqlSafe(&*pragma))
             .fetch_all(pool)
@@ -327,7 +350,7 @@ async fn ordered_export_tables(pool: &sqlx::SqlitePool) -> AppResult<Vec<String>
                     "failed to inspect foreign key for {table}: {error}"
                 ))
             })?;
-            if !export_tables.contains(&referenced) {
+            if !catalog_tables.contains(&referenced) {
                 continue;
             }
             if referenced == *table {
@@ -365,7 +388,7 @@ async fn ordered_export_tables(pool: &sqlx::SqlitePool) -> AppResult<Vec<String>
         }
     }
 
-    if ordered.len() != export_tables.len() {
+    if ordered.len() != catalog_tables.len() {
         return Err(AppError::Repository(
             "backup catalog dependencies contain a cycle".into(),
         ));

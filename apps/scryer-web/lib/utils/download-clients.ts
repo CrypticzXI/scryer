@@ -359,6 +359,7 @@ export function isFileBackedDownloadClientConfigField(field: ConfigFieldDef): bo
 export function buildDownloadClientConfigValues(
   draft: DownloadClientDraft,
   fields: ConfigFieldDef[] = [],
+  storedSecretKeys: ReadonlySet<string> = new Set(),
 ) {
   const normalizedClientType = normalizeDownloadClientType(draft.clientType);
   const descriptorFieldKeys = normalizedConfigFieldKeys(fields);
@@ -387,9 +388,22 @@ export function buildDownloadClientConfigValues(
 
   const fieldsByKey = configFieldByKey(fields);
   const cleaned = cleanPayloadObject(payload);
-  return Object.entries(cleaned).map(([key, value]): ProviderConfigValueInput =>
+  const values = Object.entries(cleaned).map(([key, value]): ProviderConfigValueInput =>
     configValueInput(key, value, fieldsByKey.get(key)),
   );
+  const explicitSecretClears = fields
+    .filter(
+      (field) =>
+        field.fieldType === "PASSWORD"
+        && storedSecretKeys.has(field.key)
+        && Object.hasOwn(draft.configValues, field.key)
+        && draft.configValues[field.key] === "",
+    )
+    .map((field): ProviderConfigValueInput => ({
+      key: field.key,
+      clearSecret: true,
+    }));
+  return [...values, ...explicitSecretClears];
 }
 
 export function buildDownloadClientDraftFromRecord(record: DownloadClientRecord): DownloadClientDraft {

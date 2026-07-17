@@ -25,7 +25,6 @@ import {
 } from "@/lib/graphql/mutations";
 import {
   browsePathQuery,
-  catalogHasValidRootQuery,
   deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
   downloadClientRoutingQuery,
@@ -84,6 +83,11 @@ import {
   type TitleCatalogAdvancedFilters,
 } from "@/lib/utils/title-catalog-query";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
+import { validateLibraryRootPaths } from "@/lib/utils/library-root-validation";
+import {
+  resolveCatalogSurfacePhase,
+  type CatalogSurfacePhase,
+} from "@/lib/utils/catalog-bootstrap-policy";
 import { useBulkDelete } from "@/lib/hooks/use-bulk-delete";
 import { useDownloadClientRouting } from "@/lib/hooks/use-download-client-routing";
 import { useIndexerRouting } from "@/lib/hooks/use-indexer-routing";
@@ -191,14 +195,6 @@ function createAdvancedTitleFiltersByFacet(): Record<
 function createSelectedLibraryIdsByFacet(): Record<Facet, string[]> {
   return { MOVIE: [], SERIES: [], ANIME: [] };
 }
-
-type CatalogSurfacePhase =
-  | "resolving"
-  | "content"
-  | "empty"
-  | "rootsMissing"
-  | "rootsInvalid"
-  | "error";
 
 type CatalogBootstrapState = {
   key: string;
@@ -1328,6 +1324,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const [, setInvalidRootLibraryIds] = React.useState<string[]>([]);
   const [invalidRootPathsByLibraryId, setInvalidRootPathsByLibraryId] =
     React.useState<Record<string, string[]>>({});
+  const [rootValidationUnavailable, setRootValidationUnavailable] =
+    React.useState(false);
   const [, setValidatedRootFolderSnapshotKey] = React.useState<string | null>(
     null,
   );
@@ -4053,6 +4051,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     if (rootFolderValidationSnapshot === null) {
       setInvalidRootLibraryIds([]);
       setInvalidRootPathsByLibraryId({});
+      setRootValidationUnavailable(false);
       setValidatedRootFolderSnapshotKey(null);
       return;
     }
@@ -4063,6 +4062,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     if (librariesWithConfiguredRoots.length === 0) {
       setInvalidRootLibraryIds([]);
       setInvalidRootPathsByLibraryId({});
+      setRootValidationUnavailable(false);
       setValidatedRootFolderSnapshotKey(key);
       return;
     }
@@ -4072,43 +4072,36 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     const validateRoots = async () => {
       const invalidIds = new Set<string>();
       const invalidPathsByLibraryId: Record<string, string[]> = {};
-
-      await Promise.all(
-        librariesWithConfiguredRoots.map(async (library) => {
-          const configuredPaths = library.roots
-            .map((root) => root.path.trim())
-            .filter((path) => path.length > 0);
-          if (configuredPaths.length === 0) {
-            return;
-          }
-
-          const validationResults = await Promise.all(
-            configuredPaths.map(async (path) => {
-              const { error } = await client
-                .query(
-                  browsePathQuery,
-                  { path },
-                  { requestPolicy: "network-only" },
-                )
-                .toPromise();
-              return error != null;
-            }),
-          );
-
-          const invalidPaths = configuredPaths.filter(
-            (_path, index) => validationResults[index],
-          );
-
-          if (invalidPaths.length > 0) {
-            invalidIds.add(library.id);
-            invalidPathsByLibraryId[library.id] = invalidPaths;
-          }
-        }),
+      const pathEntries = librariesWithConfiguredRoots.flatMap((library) =>
+        library.roots
+          .map((root) => root.path.trim())
+          .filter((path) => path.length > 0)
+          .map((path) => ({ libraryId: library.id, path })),
       );
+      const validation = await validateLibraryRootPaths(
+        pathEntries.map(({ path }) => path),
+        async (path) => {
+          const { error } = await client
+            .query(
+              browsePathQuery,
+              { path },
+              { requestPolicy: "network-only" },
+            )
+            .toPromise();
+          return error;
+        },
+      );
+      const invalidPaths = new Set(validation.invalidPaths);
+      for (const { libraryId, path } of pathEntries) {
+        if (!invalidPaths.has(path)) continue;
+        invalidIds.add(libraryId);
+        (invalidPathsByLibraryId[libraryId] ??= []).push(path);
+      }
 
       if (!cancelled) {
         setInvalidRootLibraryIds([...invalidIds]);
         setInvalidRootPathsByLibraryId(invalidPathsByLibraryId);
+        setRootValidationUnavailable(validation.unavailable);
         setValidatedRootFolderSnapshotKey(key);
       }
     };
@@ -4121,6 +4114,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       if (!cancelled) {
         setInvalidRootLibraryIds([]);
         setInvalidRootPathsByLibraryId({});
+        setRootValidationUnavailable(true);
         setValidatedRootFolderSnapshotKey(key);
       }
     });
@@ -4226,6 +4220,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         }
         return next;
       });
+      if (
+        routeOverviewTitleId !== null &&
+        acceptedIds.includes(routeOverviewTitleId)
+      ) {
+        handleCloseOverview();
+      }
       setGlobalStatus(`Queued deletion for ${titleToDelete.name}.`);
     } catch (error) {
       setGlobalStatus(
@@ -4243,6 +4243,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     closeDeleteTitleDialog,
     deleteFilesOnDisk,
     client,
+    handleCloseOverview,
     recordCriticalCatalogMutation,
     registerInteractiveJobRun,
     scheduleDeletionJobFallbackChecks,
@@ -4250,6 +4251,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     titleDeleteTypedConfirmation,
     t,
     titleToDelete,
+    routeOverviewTitleId,
     setGlobalStatus,
     setDeleteTitleLoadingById,
   ]);
@@ -4905,34 +4907,23 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             library.roots.some((root) => root.path.trim().length > 0),
           );
 
-          if (canManageLibrarySettings && !hasConfiguredRoots) {
+          const rootConfigurationPhase = resolveCatalogSurfacePhase({
+            canManageLibrarySettings,
+            hasConfiguredRoots,
+            loadedTitleCount: null,
+          });
+          if (rootConfigurationPhase === "rootsMissing") {
             setMonitoredTitles([]);
             setCatalogPaginationState({ ...emptyTitleCatalogState });
-            commitBootstrapState("rootsMissing");
+            commitBootstrapState(rootConfigurationPhase);
             return;
           }
 
-          const rootValidityPromise = canManageLibrarySettings
-            ? client
-                .query(
-                  catalogHasValidRootQuery,
-                  { facet: activeFacet },
-                  { requestPolicy: "network-only" },
-                )
-                .toPromise()
-                .then(({ data, error }) => {
-                  if (error) {
-                    throw error;
-                  }
-                  return data?.catalogHasValidRoot ?? false;
-                })
-            : Promise.resolve(true);
-          const [nextTitles, hasValidRoot] = await Promise.all([
-            reloadTitles(debouncedTitleFilter, normalizedSelectedLibraryIds, {
-              mode: "initial",
-            }),
-            rootValidityPromise,
-          ]);
+          const nextTitles = await reloadTitles(
+            debouncedTitleFilter,
+            normalizedSelectedLibraryIds,
+            { mode: "initial" },
+          );
           if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
             return;
           }
@@ -4942,11 +4933,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           }
 
           commitBootstrapState(
-            canManageLibrarySettings && !hasValidRoot
-              ? "rootsInvalid"
-              : nextTitles.length > 0
-                ? "content"
-                : "empty",
+            resolveCatalogSurfacePhase({
+              canManageLibrarySettings,
+              hasConfiguredRoots,
+              loadedTitleCount: nextTitles.length,
+            }),
           );
         })().catch((error) => {
           console.error("[catalog-bootstrap] failed to resolve catalog:", error);
@@ -4961,7 +4952,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
       if (
         catalogSurfaceState.phase === "rootsMissing" ||
-        catalogSurfaceState.phase === "rootsInvalid" ||
         catalogSurfaceState.phase === "error"
       ) {
         setRoutingInitLoading(false);
@@ -5236,6 +5226,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           libraryDownloadClientsLoading,
           rootValidationLibraries,
           rootValidationLibrariesLoading,
+          rootValidationUnavailable,
           invalidRootPathsByLibraryId,
           selectedLibraryIds,
           allLibrariesValue: ALL_LIBRARIES_VALUE,

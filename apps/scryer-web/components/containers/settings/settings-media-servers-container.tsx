@@ -14,7 +14,6 @@ import {
   mediaServerConnectionsQuery,
 } from "@/lib/graphql/queries";
 import { useClient } from "urql";
-import { toast } from "sonner";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useTranslate } from "@/lib/context/translate-context";
 import {
@@ -509,9 +508,6 @@ export function SettingsMediaServersContainer() {
           }
         },
       });
-      toast.success(t("status.mediaServerConnectionTestPassed", {
-        server: connection.displayName,
-      }));
     } catch {
       // Shared connection feedback already surfaced the failure.
     } finally {

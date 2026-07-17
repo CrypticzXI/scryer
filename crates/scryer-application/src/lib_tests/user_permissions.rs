@@ -232,3 +232,44 @@ async fn delete_other_user_removes_user() {
     let users = app.list_users(&user).await.expect("list users");
     assert!(!users.iter().any(|entry| entry.id == created.id));
 }
+
+#[tokio::test]
+async fn delete_user_rejects_removing_last_full_administrator() {
+    let (app, actor) = bootstrap();
+    let bootstrap_admin = app
+        .find_or_create_default_user()
+        .await
+        .expect("create bootstrap admin");
+
+    let result = app.delete_user(&actor, &bootstrap_admin.id).await;
+
+    assert!(matches!(
+        result,
+        Err(AppError::Validation(message))
+            if message == "cannot delete the last full administrator"
+    ));
+}
+
+#[tokio::test]
+async fn delete_user_allows_removing_bootstrap_admin_after_replacement_exists() {
+    let (app, actor) = bootstrap();
+    let bootstrap_admin = app
+        .find_or_create_default_user()
+        .await
+        .expect("create bootstrap admin");
+    app.create_user(
+        &actor,
+        "replacement-admin".to_string(),
+        "password123".to_string(),
+        scryer_domain::UserAuthorization::full_admin().app,
+        vec![],
+    )
+    .await
+    .expect("create replacement full admin");
+
+    app.delete_user(&actor, &bootstrap_admin.id)
+        .await
+        .expect("delete bootstrap admin");
+
+    assert!(app.find_default_user().await.unwrap().is_none());
+}

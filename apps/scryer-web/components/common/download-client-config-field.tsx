@@ -36,12 +36,14 @@ export function DownloadClientConfigField({
   hasStoredSecretValue = false,
   idPrefix = "download-client-field",
   onChange,
+  onClearStoredSecret,
 }: {
   field: ConfigFieldDef;
   value: string;
   hasStoredSecretValue?: boolean;
   idPrefix?: string;
   onChange: (key: string, value: string) => void;
+  onClearStoredSecret?: (key: string) => void;
 }) {
   const t = useTranslate();
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -221,31 +223,43 @@ export function DownloadClientConfigField({
   }
 
   return (
-    <label>
+    <div>
       <Label className="mb-2 inline-flex items-center gap-2" htmlFor={fieldId}>
         {field.label}
         {requiredMarker}
         {help}
       </Label>
-      <Input
-        id={fieldId}
-        value={value}
-        onChange={(event) => onChange(field.key, event.target.value)}
-        {...(field.fieldType === "NUMBER" ? signedIntegerInputProps : {})}
-        type={
-          field.fieldType === "PASSWORD"
-            ? "password"
-            : field.fieldType === "NUMBER"
-              ? "number"
-              : "text"
-        }
-        required={field.required && !hasStoredSecretValue}
-        placeholder={
-          hasStoredSecretValue
-            ? t("form.apiKeyStoredPlaceholder")
-            : field.defaultValue ?? ""
-        }
-      />
-    </label>
+      <div className="flex gap-2">
+        <Input
+          id={fieldId}
+          value={value}
+          onChange={(event) => onChange(field.key, event.target.value)}
+          {...(field.fieldType === "NUMBER" ? signedIntegerInputProps : {})}
+          type={
+            field.fieldType === "PASSWORD"
+              ? "password"
+              : field.fieldType === "NUMBER"
+                ? "number"
+                : "text"
+          }
+          required={field.required && !hasStoredSecretValue}
+          placeholder={
+            hasStoredSecretValue
+              ? t("form.apiKeyStoredPlaceholder")
+              : field.defaultValue ?? ""
+          }
+        />
+        {field.fieldType === "PASSWORD" && hasStoredSecretValue && onClearStoredSecret ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="shrink-0"
+            onClick={() => onClearStoredSecret(field.key)}
+          >
+            {t("label.clear")}
+          </Button>
+        ) : null}
+      </div>
+    </div>
   );
 }

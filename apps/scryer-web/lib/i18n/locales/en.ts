@@ -384,6 +384,8 @@ const en: LocaleDictionary = {
   "settings.rootFolderInvalid": "Invalid",
   "settings.rootFolderInvalidTooltip":
     "Scryer could not browse this root folder from the host.",
+  "settings.rootFolderValidationUnavailable":
+    "Root folder validation is temporarily unavailable. Saved paths have not been marked invalid.",
   "settings.unsavedLibraryChangesTitle": "Unsaved library changes",
   "settings.unsavedLibraryChangesConfirm":
     "Discard your unsaved library changes and leave this page?",

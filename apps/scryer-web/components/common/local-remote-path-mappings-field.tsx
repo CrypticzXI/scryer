@@ -11,18 +11,19 @@ import {
   isLocalPathFormatValidForStyle,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
-
-type PathMappingRow = {
-  localPath: string;
-  remotePath: string;
-};
+import {
+  emptyPathMappingRow as emptyRow,
+  parsePathMappings,
+  removePathMappingRow,
+  serializePathMappings,
+  type PathMappingDirection,
+  type PathMappingRow,
+} from "@/lib/utils/path-mappings";
 
 type PathMappingRowErrors = {
   localPath?: string;
   remotePath?: string;
 };
-
-type PathMappingDirection = "local-to-remote" | "remote-to-local";
 
 export type LocalRemotePathMappingsFieldProps = {
   fieldKey: string;
@@ -39,47 +40,6 @@ export type LocalRemotePathMappingsFieldProps = {
 };
 
 const DEFAULT_MAX_ROWS = 10;
-
-function emptyRow(): PathMappingRow {
-  return { localPath: "", remotePath: "" };
-}
-
-function parsePathMappings(value: string, direction: PathMappingDirection): PathMappingRow[] {
-  const rows = value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => {
-      const [firstPath, secondPath = ""] = line.split(/=>/, 2);
-      const first = firstPath.trim();
-      const second = secondPath.trim();
-
-      if (direction === "remote-to-local") {
-        return {
-          localPath: second,
-          remotePath: first,
-        };
-      }
-
-      return {
-        localPath: first,
-        remotePath: second,
-      };
-    });
-
-  return rows.length > 0 ? rows : [emptyRow()];
-}
-
-function serializePathMappings(rows: PathMappingRow[], direction: PathMappingDirection): string {
-  return rows
-    .filter((row) => row.localPath.trim() || row.remotePath.trim())
-    .map((row) =>
-      direction === "remote-to-local"
-        ? `${row.remotePath.trim()} => ${row.localPath.trim()}`
-        : `${row.localPath.trim()} => ${row.remotePath.trim()}`,
-    )
-    .join("\n");
-}
 
 export function LocalRemotePathMappingsField({
   fieldKey,
@@ -134,7 +94,7 @@ export function LocalRemotePathMappingsField({
 
   const removeRow = React.useCallback(
     (index: number) => {
-      writeRows(rows.filter((_, rowIndex) => rowIndex !== index));
+      writeRows(removePathMappingRow(rows, index));
     },
     [rows, writeRows],
   );
@@ -277,7 +237,7 @@ export function LocalRemotePathMappingsField({
                   ) : null}
                 </div>
 
-                {rows.length > 1 ? (
+                {rows.length > 1 || Boolean(row.localPath.trim() || row.remotePath.trim()) ? (
                   <IconButton
                     id={removeButtonId}
                     label={t("label.remove")}

@@ -169,30 +169,14 @@ async fn restore_bundle_parts_into_postgres_pool(
 ) -> AppResult<()> {
     validate_backup_catalog(pool).await?;
     let export_tables = ordered_export_tables(pool).await?;
+    let restore_tables = ordered_restore_tables(pool).await?;
     validate_restore_manifest_table_set(row_counts, &export_tables)?;
 
     let mut tx = pool.begin().await.map_err(|error| {
         AppError::Repository(format!("failed to begin PostgreSQL restore: {error}"))
     })?;
 
-    sqlx::query("DELETE FROM title_image_variants")
-        .execute(&mut *tx)
-        .await
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to clear generated title image variants: {error}"
-            ))
-        })?;
-    sqlx::query("DELETE FROM title_image_blobs")
-        .execute(&mut *tx)
-        .await
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to clear generated title image blobs: {error}"
-            ))
-        })?;
-
-    for table in export_tables.iter().rev() {
+    for table in restore_tables.iter().rev() {
         let sql = format!("DELETE FROM {}", quote_identifier(table));
         sqlx::query(sqlx::AssertSqlSafe(&*sql))
             .execute(&mut *tx)
@@ -289,15 +273,33 @@ fn is_engine_internal_table(table: &str) -> bool {
 }
 
 async fn ordered_export_tables(pool: &PgPool) -> AppResult<Vec<String>> {
-    let export_tables = BACKUP_TABLE_CATALOG
+    ordered_catalog_tables(pool, &[BackupTableClassification::Export]).await
+}
+
+async fn ordered_restore_tables(pool: &PgPool) -> AppResult<Vec<String>> {
+    ordered_catalog_tables(
+        pool,
+        &[
+            BackupTableClassification::Export,
+            BackupTableClassification::ResetOnRestore,
+        ],
+    )
+    .await
+}
+
+async fn ordered_catalog_tables(
+    pool: &PgPool,
+    classifications: &[BackupTableClassification],
+) -> AppResult<Vec<String>> {
+    let catalog_tables = BACKUP_TABLE_CATALOG
         .iter()
-        .filter(|entry| entry.classification == BackupTableClassification::Export)
+        .filter(|entry| classifications.contains(&entry.classification))
         .map(|entry| entry.table.to_string())
         .collect::<BTreeSet<_>>();
 
     let mut incoming = BTreeMap::<String, usize>::new();
     let mut outgoing = BTreeMap::<String, BTreeSet<String>>::new();
-    for table in &export_tables {
+    for table in &catalog_tables {
         incoming.insert(table.clone(), 0);
         outgoing.insert(table.clone(), BTreeSet::new());
     }
@@ -326,7 +328,7 @@ async fn ordered_export_tables(pool: &PgPool) -> AppResult<Vec<String>> {
     for row in rows {
         let table: String = row.try_get("table_name").map_err(repo_err)?;
         let referenced: String = row.try_get("referenced_table").map_err(repo_err)?;
-        if !export_tables.contains(&table) || !export_tables.contains(&referenced) {
+        if !catalog_tables.contains(&table) || !catalog_tables.contains(&referenced) {
             continue;
         }
         if referenced == table {
@@ -363,7 +365,7 @@ async fn ordered_export_tables(pool: &PgPool) -> AppResult<Vec<String>> {
         }
     }
 
-    if ordered.len() != export_tables.len() {
+    if ordered.len() != catalog_tables.len() {
         return Err(AppError::Repository(
             "backup catalog dependencies contain a PostgreSQL cycle".into(),
         ));

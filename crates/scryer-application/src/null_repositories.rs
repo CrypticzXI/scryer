@@ -142,14 +142,6 @@ impl ScopeIndexerCoverageRepository for NullScopeIndexerCoverageRepository {
     ) -> AppResult<Vec<crate::ScopeCoverageRow>> {
         Ok(Vec::new())
     }
-
-    async fn prune_scope(&self, _scope_key: &str) -> AppResult<()> {
-        Ok(())
-    }
-
-    async fn prune_orphaned_coverage(&self) -> AppResult<()> {
-        Ok(())
-    }
 }
 
 #[derive(Default)]

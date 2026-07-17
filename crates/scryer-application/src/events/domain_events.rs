@@ -21,6 +21,9 @@ impl DomainEventActor {
     }
 
     pub fn user(actor: &User) -> Self {
+        if actor.is_system_execution_actor() {
+            return Self::system();
+        }
         let display_name = normalized_actor_display_name(&actor.username, &actor.id);
         let kind = if display_name == "Anonymous" {
             DomainEventActorKind::Anonymous
