@@ -617,21 +617,37 @@ fn opt_bool_from_pg_row(row: &PgRow, column: &str) -> AppResult<Option<bool>> {
     row.try_get(column).map_err(repo_err)
 }
 
+// SQLITE_BUSY (5) and SQLITE_LOCKED (6) families only; anything else (IOERR,
+// CONSTRAINT, ABORT, ...) must fail immediately instead of burning the retry
+// deadline while holding the writer gate.
+const TRANSIENT_SQLITE_ERROR_CODES: [u64; 6] = [5, 261, 517, 773, 6, 262];
+
 pub(crate) fn is_transient_sqlite_busy(error: &AppError) -> bool {
     let AppError::Repository(message) = error else {
         return false;
     };
 
     let normalized = message.to_ascii_lowercase();
-    normalized.contains("sqlite_code=5")
-        || normalized.contains("sqlite_code=517")
-        || normalized.contains("database is locked")
+    normalized.contains("database is locked")
         || normalized.contains("database table is locked")
         || normalized.contains("database schema is locked")
         || normalized.contains("sqlite_busy")
         || normalized.contains("busy_snapshot")
-        || normalized.contains("code: 5")
-        || normalized.contains("code: 517")
+        || sqlite_error_codes(&normalized)
+            .any(|code| TRANSIENT_SQLITE_ERROR_CODES.contains(&code))
+}
+
+// sqlx renders sqlite errors as "(code: N) message"; match N exactly so codes
+// that merely start with a transient digit (516, 522, 526, ...) never retry.
+fn sqlite_error_codes(message: &str) -> impl Iterator<Item = u64> + '_ {
+    const CODE_PREFIX: &str = "code: ";
+    message.match_indices(CODE_PREFIX).filter_map(|(index, _)| {
+        let digits: String = message[index + CODE_PREFIX.len()..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse().ok()
+    })
 }
 
 pub(crate) async fn run_with_sqlite_busy_retries<T, Op, Fut>(
@@ -703,4 +719,64 @@ where
 
 pub(crate) fn repo_err(error: impl std::fmt::Display) -> AppError {
     AppError::Repository(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo_error(message: &str) -> AppError {
+        AppError::Repository(message.to_string())
+    }
+
+    #[test]
+    fn busy_matcher_accepts_busy_and_locked_codes() {
+        for message in [
+            "error returned from database: (code: 5) database is locked",
+            "error returned from database: (code: 261) recovery in progress",
+            "error returned from database: (code: 517) busy snapshot",
+            "error returned from database: (code: 773) busy timeout",
+            "error returned from database: (code: 6) database table is locked",
+            "error returned from database: (code: 262) shared cache locked",
+        ] {
+            assert!(
+                is_transient_sqlite_busy(&repo_error(message)),
+                "expected transient: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn busy_matcher_accepts_stable_message_fallbacks() {
+        assert!(is_transient_sqlite_busy(&repo_error(
+            "SQLITE_BUSY: unable to acquire lock"
+        )));
+        assert!(is_transient_sqlite_busy(&repo_error(
+            "transaction failed: BUSY_SNAPSHOT"
+        )));
+    }
+
+    #[test]
+    fn busy_matcher_rejects_non_transient_codes() {
+        for message in [
+            "error returned from database: (code: 516) abort due to rollback",
+            "error returned from database: (code: 522) disk I/O error (short read)",
+            "error returned from database: (code: 526) unable to open database file",
+            "error returned from database: (code: 531) constraint failed in commit hook",
+            "error returned from database: (code: 1555) UNIQUE constraint failed: titles.id",
+            "error returned from database: (code: 1) SQL logic error",
+        ] {
+            assert!(
+                !is_transient_sqlite_busy(&repo_error(message)),
+                "expected non-transient: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn busy_matcher_ignores_non_repository_errors() {
+        assert!(!is_transient_sqlite_busy(&AppError::Validation(
+            "(code: 5) database is locked".to_string()
+        )));
+    }
 }
