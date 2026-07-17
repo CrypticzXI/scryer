@@ -1821,6 +1821,7 @@ export function MediaContentView({
       | "content"
       | "empty"
       | "rootsMissing"
+      | "rootsInvalid"
       | "error";
     catalogSurfaceError: string | null;
     retryCatalogBootstrap: () => void;
@@ -2651,8 +2652,11 @@ export function MediaContentView({
     canManageLibrarySettings &&
     catalogSurfacePhase === "empty";
   const showConfigureRootFoldersAction =
-    canManageLibrarySettings && catalogSurfacePhase === "rootsMissing";
-  const configureRootFoldersReason = "missing" as const;
+    canManageLibrarySettings &&
+    (catalogSurfacePhase === "rootsMissing" ||
+      catalogSurfacePhase === "rootsInvalid");
+  const configureRootFoldersReason =
+    catalogSurfacePhase === "rootsInvalid" ? "invalid" : "missing";
   const configureRootFoldersHref =
     view === "movies" || view === "series" || view === "anime"
       ? buildViewPath(view, undefined, "library")
@@ -3523,7 +3527,10 @@ export function MediaContentView({
                       <TitleCollectionLoadingState />
                     </div>
                   );
-                } else if (catalogSurfacePhase === "rootsMissing") {
+                } else if (
+                  catalogSurfacePhase === "rootsMissing" ||
+                  catalogSurfacePhase === "rootsInvalid"
+                ) {
                   titleCollectionView = (
                     <div className="flex h-full w-full items-start justify-center px-4 pt-12">
                       <TitleCollectionEmptyState

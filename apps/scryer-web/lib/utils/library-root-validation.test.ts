@@ -22,9 +22,9 @@ test("library root normalization preserves filesystem roots", () => {
 
 test("root validation distinguishes invalid paths from unavailable validation", async () => {
   const result = await validateLibraryRootPaths(
-    ["/valid", "/missing", "/unknown"],
+    ["/valid", "/missing", "/unreadable", "/unknown"],
     async (path) => {
-      if (path === "/missing") {
+      if (path === "/missing" || path === "/unreadable") {
         return { graphQLErrors: [{ extensions: { code: "VALIDATION_ERROR" } }] };
       }
       if (path === "/unknown") {
@@ -34,7 +34,7 @@ test("root validation distinguishes invalid paths from unavailable validation", 
     },
   );
 
-  assert.deepEqual(result.invalidPaths, ["/missing"]);
+  assert.deepEqual(result.invalidPaths.sort(), ["/missing", "/unreadable"]);
   assert.equal(result.unavailable, true);
 });
 
