@@ -2,8 +2,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT, RETRY_AFTER, USER_AGENT};
-use scryer_outbound_http::{blocking_reqwest_client, send_blocking_reqwest_request};
+use reqwest::header::{ACCEPT, RETRY_AFTER};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +19,7 @@ const GITHUB_API_BASE: &str = "https://api.github.com/repos/TRaSH-Guides/Guides/
 const GITHUB_RAW_BASE: &str =
     "https://raw.githubusercontent.com/TRaSH-Guides/Guides/master/docs/json";
 const REQUEST_USER_AGENT: &str = "scryer-xtask-trash-guides";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 const QUALITY_OUTPUT: &str =
     "crates/scryer-application/src/quality/trash_guides_release_groups.generated.rs";
@@ -415,7 +415,7 @@ pub fn run_sync(ctx: &TaskContext) -> Result<()> {
 }
 
 fn fetch_all_records() -> Result<Vec<UpstreamRecord>> {
-    let client = blocking_reqwest_client().context("failed to build HTTP client")?;
+    let client = trash_guides_http_client()?;
     let mut tasks = Vec::new();
 
     for app in APPS {
@@ -465,6 +465,16 @@ fn fetch_all_records() -> Result<Vec<UpstreamRecord>> {
     Ok(records)
 }
 
+fn trash_guides_http_client() -> Result<Client> {
+    Client::builder()
+        .min_tls_version(reqwest::tls::Version::TLS_1_2)
+        .timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(REQUEST_USER_AGENT)
+        .build()
+        .context("failed to build TRaSH Guides HTTP client")
+}
+
 fn fetch_records_for_task(client: &Client, task: &FetchTask) -> Result<Vec<UpstreamRecord>> {
     let raw_url = format!("{GITHUB_RAW_BASE}/{}/cf/{}", task.app, task.filename);
     let source_path = format!("docs/json/{}/cf/{}", task.app, task.filename);
@@ -498,12 +508,7 @@ fn fetch_records_for_task(client: &Client, task: &FetchTask) -> Result<Vec<Upstr
 fn get_json<T: for<'de> Deserialize<'de>>(client: &Client, url: &str) -> Result<T> {
     let mut last_error = None;
     for attempt in 1..=4 {
-        match send_blocking_reqwest_request(
-            client
-                .get(url)
-                .header(USER_AGENT, REQUEST_USER_AGENT)
-                .header(ACCEPT, "application/json"),
-        ) {
+        match client.get(url).header(ACCEPT, "application/json").send() {
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
@@ -1809,6 +1814,13 @@ fn rust_str(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standalone_http_client_builds_without_runtime_http_state() {
+        trash_guides_http_client().expect("TRaSH Guides should build its own HTTP client");
+        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(60));
+        assert_eq!(FETCH_WORKERS, 36);
+    }
 
     #[test]
     fn service_alias_extraction_keeps_plausible_tokens_only() {

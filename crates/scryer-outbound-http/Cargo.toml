@@ -11,3 +11,4 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
 chrono = { workspace = true }
+governor = { workspace = true }

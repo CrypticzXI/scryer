@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
+use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
 use toml_edit::{DocumentMut, value};
 use webpki::{EndEntityCert, KeyUsage};
@@ -69,6 +70,12 @@ const SCRYER_CI_CLIPPY_PACKAGES: &[&str] = &[
     "scryer-rules",
 ];
 const RELEASE_DRY_RUN_CACHE_FILE: &str = "tmp/xtask-release-dry-run.json";
+const TRASH_GUIDES_SYNC_TIMEOUT: Duration = Duration::from_secs(60);
+const TRASH_GUIDES_GENERATED_PATHS: &[&str] = &[
+    "crates/scryer-application/src/quality/trash_guides_release_groups.generated.rs",
+    "crates/scryer-release-parser/src/trash_guides_parser_knowledge.generated.rs",
+    "xtask-trash-guides/generated/latest-summary.txt",
+];
 const RELEASE_DRY_RUN_BUILTINS_DIR: &str = "tmp/xtask-release-dry-run-builtins";
 const RELEASE_NOTES_DIR: &str = "release-notes";
 const RELEASE_NOTES_AI_MARKER: &str = "AI generated release notes";
@@ -782,22 +789,34 @@ Commit range: {range}
     ))
 }
 
-fn validate_release_notes_output(path: &Path, tag_name: &str) -> Result<()> {
-    let content = fs::read_to_string(path).with_context(|| {
-        format!(
-            "failed to read generated release notes at {}",
-            path.display()
-        )
-    })?;
+fn validate_release_notes_document(
+    path: &Path,
+    tag_name: &str,
+    require_ai_marker: bool,
+) -> Result<()> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read release notes at {}", path.display()))?;
     let trimmed = content.trim();
     if trimmed.is_empty() {
-        bail!("generated release notes are empty");
+        bail!("release notes are empty");
     }
     let expected_heading = format!("# {tag_name}");
-    if trimmed.lines().next() != Some(expected_heading.as_str()) {
-        bail!("generated release notes must start with `{expected_heading}`");
+    let prewritten_heading = format!(
+        "# Scryer {} release notes",
+        tag_name.trim_start_matches("scryer-v")
+    );
+    let heading = trimmed.lines().next();
+    if heading != Some(expected_heading.as_str())
+        && (require_ai_marker || heading != Some(prewritten_heading.as_str()))
+    {
+        let accepted_headings = if require_ai_marker {
+            format!("`{expected_heading}`")
+        } else {
+            format!("`{expected_heading}` or `{prewritten_heading}`")
+        };
+        bail!("release notes must start with {accepted_headings}");
     }
-    if !trimmed.contains(RELEASE_NOTES_AI_MARKER) {
+    if require_ai_marker && !trimmed.contains(RELEASE_NOTES_AI_MARKER) {
         bail!("generated release notes must include `{RELEASE_NOTES_AI_MARKER}`");
     }
     let lower = trimmed.to_ascii_lowercase();
@@ -809,11 +828,19 @@ fn validate_release_notes_output(path: &Path, tag_name: &str) -> Result<()> {
     let violations = scan_release_hygiene_content(path, &content);
     if !violations.is_empty() {
         bail!(
-            "generated release notes contain release hygiene violations:\n{}",
+            "release notes contain release hygiene violations:\n{}",
             violations.join("\n")
         );
     }
     Ok(())
+}
+
+fn validate_release_notes_output(path: &Path, tag_name: &str) -> Result<()> {
+    validate_release_notes_document(path, tag_name, true)
+}
+
+fn validate_prewritten_release_notes(path: &Path, tag_name: &str) -> Result<()> {
+    validate_release_notes_document(path, tag_name, false)
 }
 
 fn codex_release_notes_command_for(output_path: &Path, model: &str, reasoning: &str) -> Command {
@@ -2529,12 +2556,77 @@ fn docker_cache_key_component(value: &str) -> String {
         .collect()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum TimedCommandOutcome {
+    Success,
+    Failed(Option<i32>),
+    TimedOut,
+}
+
+fn run_command_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<TimedCommandOutcome> {
+    let mut child = command.spawn().context("failed to spawn command")?;
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if let Some(status) = child.try_wait().context("failed to poll command")? {
+            return Ok(if status.success() {
+                TimedCommandOutcome::Success
+            } else {
+                TimedCommandOutcome::Failed(status.code())
+            });
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            if let Err(error) = child.kill()
+                && error.kind() != io::ErrorKind::InvalidInput
+            {
+                return Err(error).context("failed to terminate timed-out command");
+            }
+            child.wait().context("failed to reap timed-out command")?;
+            return Ok(TimedCommandOutcome::TimedOut);
+        }
+
+        thread::sleep((deadline - now).min(Duration::from_millis(100)));
+    }
+}
+
 fn sync_trash_guides_for_release(ctx: &TaskContext) -> Result<()> {
     step("Syncing TRaSH Guides knowledge");
+    let generated_paths = TRASH_GUIDES_GENERATED_PATHS
+        .iter()
+        .map(|path| ctx.path(path))
+        .collect::<Vec<_>>();
+    let snapshots = snapshot_files(&generated_paths)?;
     let mut command = ctx.command_in("cargo", &ctx.repo_root);
     command.args(["run", "-p", "xtask", "--", "trash-guides", "sync"]);
-    run_checked(&mut command)?;
-    ok("TRaSH Guides sync complete");
+
+    match run_command_with_timeout(&mut command, TRASH_GUIDES_SYNC_TIMEOUT) {
+        Ok(TimedCommandOutcome::Success) => ok("TRaSH Guides sync complete"),
+        Ok(TimedCommandOutcome::Failed(code)) => {
+            restore_snapshots(snapshots)?;
+            warn(format!(
+                "TRaSH Guides sync failed with exit code {}; continuing with existing generated artifacts",
+                code.map_or_else(|| "unknown".to_string(), |code| code.to_string())
+            ));
+        }
+        Ok(TimedCommandOutcome::TimedOut) => {
+            restore_snapshots(snapshots)?;
+            warn(format!(
+                "TRaSH Guides sync exceeded {}s; continuing with existing generated artifacts",
+                TRASH_GUIDES_SYNC_TIMEOUT.as_secs()
+            ));
+        }
+        Err(error) => {
+            restore_snapshots(snapshots)?;
+            warn(format!(
+                "TRaSH Guides sync could not complete ({error:#}); continuing with existing generated artifacts"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -2732,16 +2824,30 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         if args.dry_run {
             match validation_result {
                 Ok((refreshed_builtins, validated_steps)) => {
-                    step("Generating AI release notes");
-                    let (release_notes_path, release_notes_sha256) = generate_release_notes(
-                        ctx,
-                        latest_tag.as_deref(),
-                        &tag_name,
-                        &next_version,
-                    )?;
+                    let prewritten_release_notes = expected_release_notes_file.is_file();
+                    let (release_notes_path, release_notes_sha256) = if prewritten_release_notes {
+                        step("Validating prewritten release notes");
+                        validate_prewritten_release_notes(&expected_release_notes_file, &tag_name)?;
+                        (
+                            expected_release_notes_file.clone(),
+                            release_notes_sha256(&expected_release_notes_file)?,
+                        )
+                    } else {
+                        step("Generating AI release notes");
+                        generate_release_notes(
+                            ctx,
+                            latest_tag.as_deref(),
+                            &tag_name,
+                            &next_version,
+                        )?
+                    };
                     let release_notes_path_relative =
                         relative_to_repo_root(ctx, &release_notes_path)?;
-                    ok(format!("Generated {release_notes_path_relative}"));
+                    ok(if prewritten_release_notes {
+                        format!("Using {release_notes_path_relative}")
+                    } else {
+                        format!("Generated {release_notes_path_relative}")
+                    });
 
                     let mut prep_changed_paths = git_tracked_dirty_paths(ctx)?;
                     maybe_add_changed_graphql_schema_artifact(ctx, &mut prep_changed_paths)?;
@@ -3343,6 +3449,72 @@ fn run_scryer_nextest_validation(ctx: &TaskContext, prefix: &'static str) -> Res
 mod tests {
     use super::*;
 
+    const TIMED_COMMAND_CHILD_ENV: &str = "SCRYER_XTASK_TIMED_COMMAND_CHILD";
+
+    #[test]
+    fn timed_command_reports_success_and_failure() {
+        let executable = std::env::current_exe().unwrap();
+        let mut success = Command::new(&executable);
+        success
+            .arg("--list")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        assert_eq!(
+            run_command_with_timeout(&mut success, Duration::from_secs(5)).unwrap(),
+            TimedCommandOutcome::Success
+        );
+
+        let mut failure = Command::new(executable);
+        failure
+            .arg("--definitely-not-a-test-harness-option")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        assert!(matches!(
+            run_command_with_timeout(&mut failure, Duration::from_secs(5)).unwrap(),
+            TimedCommandOutcome::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn timed_command_kills_and_reaps_child() {
+        if std::env::var_os(TIMED_COMMAND_CHILD_ENV).is_some() {
+            thread::sleep(Duration::from_secs(5));
+            return;
+        }
+
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "tests::timed_command_kills_and_reaps_child",
+                "--nocapture",
+            ])
+            .env(TIMED_COMMAND_CHILD_ENV, "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        assert_eq!(
+            run_command_with_timeout(&mut command, Duration::from_millis(50)).unwrap(),
+            TimedCommandOutcome::TimedOut
+        );
+    }
+
+    #[test]
+    fn file_snapshots_restore_existing_and_remove_new_outputs() {
+        let temp = tempfile::tempdir().unwrap();
+        let existing = temp.path().join("existing.txt");
+        let created = temp.path().join("created.txt");
+        fs::write(&existing, b"before").unwrap();
+        let snapshots = snapshot_files(&[existing.clone(), created.clone()]).unwrap();
+
+        fs::write(&existing, b"after").unwrap();
+        fs::write(&created, b"partial").unwrap();
+        restore_snapshots(snapshots).unwrap();
+
+        assert_eq!(fs::read(existing).unwrap(), b"before");
+        assert!(!created.exists());
+    }
+
     #[test]
     fn schema_breaks_allowed_only_for_minor_or_major_bump() {
         assert!(schema_breaks_allowed_for_bump(
@@ -3567,6 +3739,19 @@ mod tests {
         .unwrap();
 
         validate_release_notes_output(&path, "scryer-v1.2.3").unwrap();
+    }
+
+    #[test]
+    fn prewritten_release_notes_accept_human_heading_without_ai_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("notes.md");
+        fs::write(
+            &path,
+            "# Scryer 1.2.3 release notes\n\n- Improved release notes.\n",
+        )
+        .unwrap();
+
+        validate_prewritten_release_notes(&path, "scryer-v1.2.3").unwrap();
     }
 
     #[test]

@@ -6018,6 +6018,7 @@ name = "scryer-outbound-http"
 version = "0.17.0"
 dependencies = [
  "chrono",
+ "governor",
  "metrics",
  "reqwest",
  "rustls",
@@ -8938,7 +8939,6 @@ dependencies = [
  "chrono",
  "clap",
  "reqwest",
- "scryer-outbound-http",
  "serde",
  "serde_json",
  "xtask-support",
