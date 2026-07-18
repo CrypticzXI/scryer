@@ -862,7 +862,7 @@ async fn assign_tracked_download_title_busy_rejection_persists_nothing() {
 
 #[tokio::test]
 async fn assign_tracked_download_title_missing_rejection_persists_nothing() {
-    let mut fixture = tracked_title_assignment_fixture().await;
+    let fixture = tracked_title_assignment_fixture().await;
     let actor_snapshot = crate::domain_events::DomainEventActor::from(&fixture.user)
         .into_download_submission_actor_snapshot();
     let mut empty_tracker = crate::tracked_downloads::TrackedDownloadService::new();

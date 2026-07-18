@@ -1020,8 +1020,8 @@ async fn handle_tracked_download_command(
                 tracker,
                 tracked_work_in_flight,
                 id,
-                title,
-                submission,
+                *title,
+                *submission,
                 actor_snapshot,
             )
             .await;

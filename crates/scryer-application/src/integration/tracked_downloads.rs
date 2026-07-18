@@ -898,8 +898,8 @@ pub enum TrackedDownloadCommand {
     },
     AssignTitle {
         id: String,
-        title: Title,
-        submission: DownloadSubmission,
+        title: Box<Title>,
+        submission: Box<DownloadSubmission>,
         actor_snapshot: DownloadSubmissionActorSnapshot,
         reply: oneshot::Sender<AppResult<()>>,
     },
@@ -1031,8 +1031,8 @@ impl TrackedDownloadHandle {
         self.tx
             .send(TrackedDownloadCommand::AssignTitle {
                 id,
-                title,
-                submission,
+                title: Box::new(title),
+                submission: Box::new(submission),
                 actor_snapshot,
                 reply: reply_tx,
             })
