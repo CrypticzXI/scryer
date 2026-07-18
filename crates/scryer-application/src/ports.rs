@@ -1831,6 +1831,12 @@ pub trait UserRepository: Send + Sync {
     async fn get_by_id(&self, id: &str) -> AppResult<Option<User>>;
     async fn auth_session_version(&self, user_id: &str) -> AppResult<Option<String>>;
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User>;
+    async fn update_login_status_and_rotate_session(
+        &self,
+        id: &str,
+        status: scryer_domain::UserLoginStatus,
+        auth_session_version: &str,
+    ) -> AppResult<User>;
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
 

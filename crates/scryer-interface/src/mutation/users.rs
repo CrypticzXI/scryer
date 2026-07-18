@@ -219,6 +219,27 @@ impl UserMutations {
         user_payload_from_user(&app, user).await
     }
 
+    async fn set_user_login_enabled(
+        &self,
+        ctx: &Context<'_>,
+        input: SetUserLoginEnabledInput,
+    ) -> GqlResult<UserPayload> {
+        let app = app_from_ctx(ctx)?;
+        let auth_runtime = auth_runtime_from_ctx(ctx);
+        let actor = require_config_app_permission(ctx, AppPermission::ManageUsers).await?;
+        let user = app
+            .set_user_login_enabled(
+                &actor,
+                input.user_id.as_str(),
+                input.enabled,
+                auth_runtime.snapshot().effective_form_login_enabled,
+            )
+            .await
+            .map_err(to_gql_error)?;
+        auth_runtime.invalidate_connections();
+        user_payload_from_user(&app, user).await
+    }
+
     async fn delete_user(&self, ctx: &Context<'_>, id: ID) -> GqlResult<DeleteUserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageUsers).await?;

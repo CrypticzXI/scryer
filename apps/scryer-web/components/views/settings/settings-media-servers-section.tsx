@@ -729,13 +729,13 @@ export function SettingsMediaServersSection({
                               defaultAppPermissions: nextPermissions,
                             }))
                           }
-                          onLibraryChange={(libraryId, nextPermissions) =>
+                          onLibraryChange={(changes) =>
                             setDraft((previous) => ({
                               ...previous,
-                              defaultLibraryGrants: updateLibraryGrant(
+                              defaultLibraryGrants: Object.entries(changes).reduce(
+                                (grants, [libraryId, permissions]) =>
+                                  updateLibraryGrant(grants, libraryId, permissions),
                                 previous.defaultLibraryGrants,
-                                libraryId,
-                                nextPermissions,
                               ),
                             }))
                           }

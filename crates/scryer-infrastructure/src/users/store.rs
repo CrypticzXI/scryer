@@ -7,7 +7,7 @@ use scryer_application::{
 };
 use scryer_domain::{
     AppPermissionMask, ExternalAccountProvider, ExternalAccountStatus, LibraryGrant, User,
-    UserAccountKind, UserExternalAccount,
+    UserAccountKind, UserExternalAccount, UserLoginStatus,
 };
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, SqlTx, StoreDatastore};
@@ -43,7 +43,7 @@ impl UserRepository for UserStore {
     async fn list_all(&self) -> AppResult<Vec<User>> {
         let rows = SqlRuntime::fetch_all(
             self.datastore.read_exec(),
-            "SELECT id, username, password_hash, account_kind FROM users",
+            "SELECT id, username, password_hash, account_kind, status FROM users",
             &[],
         )
         .await?;
@@ -75,6 +75,41 @@ impl UserRepository for UserStore {
                     .execute(
                         "UPDATE users SET password_hash = {} WHERE id = {}",
                         &[SqlArg::Text(password_hash), SqlArg::Text(id.clone())],
+                    )
+                    .await?;
+                if rows == 0 {
+                    return Err(AppError::NotFound(format!("user {id}")));
+                }
+                load_user_by_id_tx(tx, &id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound(format!("user {id}")))
+            })
+        })
+        .await
+    }
+
+    async fn update_login_status_and_rotate_session(
+        &self,
+        id: &str,
+        status: UserLoginStatus,
+        auth_session_version: &str,
+    ) -> AppResult<User> {
+        let id = id.to_string();
+        let status = status.as_storage_str().to_string();
+        let auth_session_version = auth_session_version.to_string();
+        SqlRuntime::run_in_transaction(&self.datastore, "update_user_login_status", move |tx| {
+            let id = id.clone();
+            let status = status.clone();
+            let auth_session_version = auth_session_version.clone();
+            Box::pin(async move {
+                let rows = tx
+                    .execute(
+                        "UPDATE users SET status = {}, auth_session_version = {} WHERE id = {}",
+                        &[
+                            SqlArg::Text(status),
+                            SqlArg::Text(auth_session_version),
+                            SqlArg::Text(id.clone()),
+                        ],
                     )
                     .await?;
                 if rows == 0 {
@@ -317,7 +352,7 @@ impl UserExternalAccountRepository for UserStore {
 async fn load_user_by_username(exec: SqlExec<'_, '_>, username: &str) -> AppResult<Option<User>> {
     let row = SqlRuntime::fetch_optional(
         exec,
-        "SELECT id, username, password_hash, account_kind FROM users WHERE username = {}",
+        "SELECT id, username, password_hash, account_kind, status FROM users WHERE username = {}",
         &[SqlArg::Text(username.to_string())],
     )
     .await?;
@@ -327,7 +362,7 @@ async fn load_user_by_username(exec: SqlExec<'_, '_>, username: &str) -> AppResu
 async fn load_user_by_id(exec: SqlExec<'_, '_>, id: &str) -> AppResult<Option<User>> {
     let row = SqlRuntime::fetch_optional(
         exec,
-        "SELECT id, username, password_hash, account_kind FROM users WHERE id = {}",
+        "SELECT id, username, password_hash, account_kind, status FROM users WHERE id = {}",
         &[SqlArg::Text(id.to_string())],
     )
     .await?;
@@ -340,13 +375,14 @@ async fn load_user_by_id_tx(tx: &mut SqlTx<'_>, id: &str) -> AppResult<Option<Us
 
 async fn insert_user_tx(tx: &mut SqlTx<'_>, user: &User) -> AppResult<()> {
     tx.execute(
-        "INSERT INTO users (id, username, password_hash, account_kind)
-         VALUES ({}, {}, {}, {})",
+        "INSERT INTO users (id, username, password_hash, account_kind, status)
+         VALUES ({}, {}, {}, {}, {})",
         &[
             SqlArg::Text(user.id.clone()),
             SqlArg::Text(user.username.clone()),
             SqlArg::OptText(user.password_hash.clone()),
             SqlArg::Text(user.account_kind.as_str().to_string()),
+            SqlArg::Text(user.login_status().as_storage_str().to_string()),
         ],
     )
     .await?;
@@ -402,6 +438,12 @@ async fn replace_library_grants_tx(
 }
 
 fn row_to_user(row: &SqlRow) -> AppResult<User> {
+    let login_status = UserLoginStatus::parse_storage(&row.text("status")?).ok_or_else(|| {
+        AppError::Repository(format!(
+            "invalid user login status for user {}",
+            row.text("id").unwrap_or_else(|_| "<unknown>".to_string())
+        ))
+    })?;
     Ok(User {
         id: row.text("id")?,
         username: row.text("username")?,
@@ -412,7 +454,10 @@ fn row_to_user(row: &SqlRow) -> AppResult<User> {
                 row.text("id").unwrap_or_else(|_| "<unknown>".to_string())
             ))
         })?,
-        authorization: Default::default(),
+        authorization: scryer_domain::UserAuthorization {
+            login_status,
+            ..Default::default()
+        },
     })
 }
 
@@ -740,6 +785,7 @@ mod tests {
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT,
                 account_kind TEXT NOT NULL DEFAULT 'local',
+                status TEXT NOT NULL DEFAULT 'active',
                 auth_session_version TEXT
             )",
         )
@@ -842,6 +888,7 @@ mod tests {
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
                 actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+                login_status: Default::default(),
                 loaded: true,
             },
         }

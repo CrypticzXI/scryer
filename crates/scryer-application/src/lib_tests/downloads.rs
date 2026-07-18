@@ -703,6 +703,217 @@ async fn find_download_queue_scope_returns_orphan_without_title_lookup() {
     assert!(matches!(scope, Some(SubmissionScope::Orphan)));
 }
 
+struct TrackedTitleAssignmentFixture {
+    app: AppUseCase,
+    user: User,
+    submissions: Arc<TrackingDownloadSubmissionRepo>,
+    title: Title,
+    tracker: crate::tracked_downloads::TrackedDownloadService,
+    tracked_id: String,
+    submission: DownloadSubmission,
+}
+
+async fn tracked_title_assignment_fixture() -> TrackedTitleAssignmentFixture {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) =
+        bootstrap_with_cleanup_tracking(download_client, submissions.clone(), pending_releases);
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Manual Assignment".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create assignment title");
+    let client_id = "weaver-primary";
+    let item_id = "foreign-10000";
+    let mut queue_item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 100);
+    queue_item.client_id = client_id.to_string();
+    queue_item.client_name = "Weaver".to_string();
+    queue_item.client_type = "weaver".to_string();
+    queue_item.title_id = None;
+    queue_item.facet = None;
+    let tracked_id =
+        crate::tracked_downloads::tracked_download_id(Some(client_id), "weaver", item_id);
+    let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+    tracker.insert_for_tests(crate::tracked_downloads::TrackedDownload {
+        id: tracked_id.clone(),
+        client_id: client_id.to_string(),
+        client_type: "weaver".to_string(),
+        client_item: queue_item,
+        state: TrackedDownloadState::ImportBlocked,
+        status: scryer_domain::TrackedDownloadStatus::Warning,
+        status_messages: vec!["title required".to_string()],
+        title_id: None,
+        facet: None,
+        source_title: Some("Foreign.Download".to_string()),
+        indexer: None,
+        added_at: None,
+        notified_manual_interaction: false,
+        match_type: scryer_domain::TitleMatchType::Unmatched,
+        is_trackable: true,
+        import_attempted: false,
+        waiting_for_completed_history: false,
+        path_missing_since: None,
+        no_video_import_retry: None,
+        skip_reacquire_on_failure: false,
+    });
+    let submission = DownloadSubmission {
+        title_id: title.id.clone(),
+        purpose: DownloadSubmissionPurpose::Standard,
+        facet: "movie".to_string(),
+        download_client_id: Some(client_id.to_string()),
+        download_client_type: "weaver".to_string(),
+        download_client_item_id: item_id.to_string(),
+        source_hint: None,
+        source_kind: None,
+        source_title: Some(title.name.clone()),
+        request_signature: None,
+        scope: SubmissionScope::Title,
+    };
+
+    TrackedTitleAssignmentFixture {
+        app,
+        user,
+        submissions,
+        title,
+        tracker,
+        tracked_id,
+        submission,
+    }
+}
+
+#[tokio::test]
+async fn assign_tracked_download_title_serializes_submission_and_runtime_assignment() {
+    let mut fixture = tracked_title_assignment_fixture().await;
+    let actor_snapshot = crate::domain_events::DomainEventActor::from(&fixture.user)
+        .into_download_submission_actor_snapshot();
+
+    crate::integration::workflow::assign_tracked_download_title_command(
+        &fixture.app,
+        &mut fixture.tracker,
+        &HashSet::new(),
+        fixture.tracked_id.clone(),
+        fixture.title.clone(),
+        fixture.submission.clone(),
+        actor_snapshot,
+    )
+    .await
+    .expect("assignment command should succeed");
+
+    let submissions = fixture.submissions.store.lock().await;
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(submissions[0].title_id, fixture.submission.title_id);
+    assert_eq!(
+        submissions[0].download_client_item_id,
+        fixture.submission.download_client_item_id
+    );
+    drop(submissions);
+    let tracked = fixture
+        .tracker
+        .find(&fixture.tracked_id)
+        .expect("tracked download remains available");
+    assert_eq!(tracked.title_id.as_deref(), Some(fixture.title.id.as_str()));
+    assert_eq!(tracked.facet.as_deref(), Some("movie"));
+    assert_eq!(
+        tracked.match_type,
+        scryer_domain::TitleMatchType::Submission
+    );
+    assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+}
+
+#[tokio::test]
+async fn assign_tracked_download_title_busy_rejection_persists_nothing() {
+    let mut fixture = tracked_title_assignment_fixture().await;
+    let actor_snapshot = crate::domain_events::DomainEventActor::from(&fixture.user)
+        .into_download_submission_actor_snapshot();
+    let in_flight = HashSet::from([fixture.tracked_id.clone()]);
+
+    let error = crate::integration::workflow::assign_tracked_download_title_command(
+        &fixture.app,
+        &mut fixture.tracker,
+        &in_flight,
+        fixture.tracked_id.clone(),
+        fixture.title,
+        fixture.submission,
+        actor_snapshot,
+    )
+    .await
+    .expect_err("busy assignment should fail");
+
+    assert!(matches!(error, AppError::Validation(_)));
+    assert!(fixture.submissions.store.lock().await.is_empty());
+    assert!(
+        fixture
+            .tracker
+            .find(&fixture.tracked_id)
+            .is_some_and(|tracked| tracked.title_id.is_none())
+    );
+}
+
+#[tokio::test]
+async fn assign_tracked_download_title_missing_rejection_persists_nothing() {
+    let mut fixture = tracked_title_assignment_fixture().await;
+    let actor_snapshot = crate::domain_events::DomainEventActor::from(&fixture.user)
+        .into_download_submission_actor_snapshot();
+    let mut empty_tracker = crate::tracked_downloads::TrackedDownloadService::new();
+
+    let error = crate::integration::workflow::assign_tracked_download_title_command(
+        &fixture.app,
+        &mut empty_tracker,
+        &HashSet::new(),
+        fixture.tracked_id,
+        fixture.title,
+        fixture.submission,
+        actor_snapshot,
+    )
+    .await
+    .expect_err("missing assignment should fail");
+
+    assert!(matches!(error, AppError::NotFound(_)));
+    assert!(fixture.submissions.store.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn assign_tracked_download_title_persistence_failure_keeps_runtime_unchanged() {
+    let mut fixture = tracked_title_assignment_fixture().await;
+    *fixture.submissions.record_submission_error.lock().await =
+        Some("submission store unavailable".to_string());
+    let actor_snapshot = crate::domain_events::DomainEventActor::from(&fixture.user)
+        .into_download_submission_actor_snapshot();
+
+    let error = crate::integration::workflow::assign_tracked_download_title_command(
+        &fixture.app,
+        &mut fixture.tracker,
+        &HashSet::new(),
+        fixture.tracked_id.clone(),
+        fixture.title,
+        fixture.submission,
+        actor_snapshot,
+    )
+    .await
+    .expect_err("persistence failure should fail assignment");
+
+    assert!(matches!(error, AppError::Repository(_)));
+    assert!(fixture.submissions.store.lock().await.is_empty());
+    let tracked = fixture
+        .tracker
+        .find(&fixture.tracked_id)
+        .expect("tracked download remains available");
+    assert!(tracked.title_id.is_none());
+    assert_eq!(tracked.match_type, scryer_domain::TitleMatchType::Unmatched);
+    assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+}
+
 #[tokio::test]
 async fn list_download_import_page_returns_promptly_when_tracked_snapshot_handle_never_replies() {
     let download_client = Arc::new(StubDownloadClient::default());

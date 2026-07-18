@@ -30,8 +30,9 @@ type FacetPermissionDropdownProps = {
   permissions?: string[];
   selectedByLibrary: LibraryPermissionDrafts;
   disabled?: boolean;
+  showSelectAll: boolean;
   idPrefix?: string;
-  onLibraryChange: (libraryId: string, next: string[], permission: string) => void;
+  onLibraryChange: (changes: LibraryPermissionDrafts) => void;
 };
 
 export const APP_PERMISSION_OPTIONS: Array<{ value: AppPermission; label: string }> = [
@@ -142,16 +143,21 @@ function AppPermissionDropdown({
   permissions,
   selected,
   disabled,
+  showSelectAll,
   idPrefix,
   onChange,
 }: {
   permissions?: string[];
   selected: string[];
   disabled?: boolean;
+  showSelectAll: boolean;
   idPrefix?: string;
-  onChange: (next: string[], permission: string) => void;
+  onChange: (next: string[]) => void;
 }) {
   const options = permissionOptions(permissions, APP_PERMISSION_OPTIONS);
+  const allPermissions = options.map((option) => option.value);
+  const allSelected =
+    allPermissions.length > 0 && allPermissions.every((permission) => selected.includes(permission));
 
   return (
     <Popover>
@@ -178,9 +184,14 @@ function AppPermissionDropdown({
             })),
           }]}
           selectedValues={selected}
-          onSelectedValuesChange={(next) =>
-            onChange(next, changedPermissionValue(selected, next))
-          }
+          onSelectedValuesChange={onChange}
+          allOption={showSelectAll ? {
+            id: idPrefix ? `${idPrefix}-app-select-all` : undefined,
+            label: allSelected ? "Unselect all" : "Select all",
+            selected: allSelected,
+            onSelect: () => onChange(allSelected ? [] : allPermissions),
+          } : undefined}
+          allOptionClassName="mb-1 rounded-b-none border-b border-[var(--scry-line2)] pb-2"
           disabled={disabled}
           optionClassName="min-w-max"
           optionLabelClassName="whitespace-nowrap"
@@ -197,11 +208,22 @@ function FacetPermissionDropdown({
   permissions,
   selectedByLibrary,
   disabled,
+  showSelectAll,
   idPrefix,
   onLibraryChange,
 }: FacetPermissionDropdownProps) {
   const options = permissionOptions(permissions, LIBRARY_PERMISSION_OPTIONS);
   const facetLibraries = libraries.filter((library) => library.facet === facet);
+  const allPermissions = options.map((option) => option.value);
+  const allSelected =
+    allPermissions.length > 0 &&
+    facetLibraries.length > 0 &&
+    facetLibraries.every((library) => {
+      const selected = libraryPermissionsWithRequestShadowing(
+        selectedByLibrary[library.id] ?? [],
+      );
+      return allPermissions.every((permission) => selected.includes(permission));
+    });
   const selectedCount = facetLibraries.reduce(
     (count, library) =>
       count +
@@ -225,6 +247,32 @@ function FacetPermissionDropdown({
         className="w-max min-w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] p-2"
       >
         <div className="flex max-h-80 flex-col gap-3 overflow-y-auto">
+          {showSelectAll ? (
+            <MultiSelectOptionList
+              groups={[]}
+              selectedValues={[]}
+              onSelectedValuesChange={() => {}}
+              allOption={{
+                id: idPrefix ? `${idPrefix}-${facet.toLowerCase()}-select-all` : undefined,
+                label: allSelected ? "Unselect all" : "Select all",
+                selected: allSelected,
+                onSelect: () =>
+                  onLibraryChange(
+                    Object.fromEntries(
+                      facetLibraries.map((library) => [
+                        library.id,
+                        allSelected ? [] : allPermissions,
+                      ]),
+                    ),
+                  ),
+              }}
+              disabled={disabled || allPermissions.length === 0}
+              className="overflow-visible border-b border-[var(--scry-line2)] pb-2"
+              maxHeightClassName=""
+              optionClassName="min-w-max"
+              optionLabelClassName="whitespace-nowrap"
+            />
+          ) : null}
           {facetLibraries.map((library) => {
             const selected = selectedByLibrary[library.id] ?? [];
             const effectiveSelected = libraryPermissionsWithRequestShadowing(selected);
@@ -254,11 +302,9 @@ function FacetPermissionDropdown({
                   onSelectedValuesChange={(next) => {
                     const permission = changedPermissionValue(effectiveSelected, next);
                     if (permission) {
-                      onLibraryChange(
-                        library.id,
-                        togglePermissionValue(selected, permission),
-                        permission,
-                      );
+                      onLibraryChange({
+                        [library.id]: togglePermissionValue(selected, permission),
+                      });
                     }
                   }}
                   disabled={disabled}
@@ -283,6 +329,7 @@ export function PermissionDropdowns({
   selectedAppPermissions,
   selectedLibraryPermissions,
   disabled,
+  showSelectAll = false,
   idPrefix,
   onAppChange,
   onLibraryChange,
@@ -293,9 +340,10 @@ export function PermissionDropdowns({
   selectedAppPermissions: string[];
   selectedLibraryPermissions: LibraryPermissionDrafts;
   disabled?: boolean;
+  showSelectAll?: boolean;
   idPrefix?: string;
-  onAppChange: (next: string[], permission: string) => void;
-  onLibraryChange: (libraryId: string, next: string[], permission: string) => void;
+  onAppChange: (next: string[]) => void;
+  onLibraryChange: (changes: LibraryPermissionDrafts) => void;
 }) {
   return (
     <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -303,6 +351,7 @@ export function PermissionDropdowns({
         permissions={appPermissions}
         selected={selectedAppPermissions}
         disabled={disabled}
+        showSelectAll={showSelectAll}
         idPrefix={idPrefix}
         onChange={onAppChange}
       />
@@ -315,6 +364,7 @@ export function PermissionDropdowns({
           permissions={libraryPermissions}
           selectedByLibrary={selectedLibraryPermissions}
           disabled={disabled}
+          showSelectAll={showSelectAll}
           idPrefix={idPrefix}
           onLibraryChange={onLibraryChange}
         />

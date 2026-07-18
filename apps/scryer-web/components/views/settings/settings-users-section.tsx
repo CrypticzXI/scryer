@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ChevronRight, KeyRound, Plus, ShieldOff, Trash2 } from "lucide-react";
+import { ChevronRight, KeyRound, Plus, Power, PowerOff, ShieldOff, Trash2 } from "lucide-react";
 import { AddNewButton } from "@/components/common/add-new-button";
 import {
   PermissionDropdowns,
@@ -51,23 +51,26 @@ type SettingsUsersSectionProps = {
   newAppPermissions: string[];
   newLibraryPermissionDrafts: LibraryPermissionDrafts;
   canManagePermissions: boolean;
-  toggleNewAppPermission: (value: string) => void;
-  toggleNewLibraryPermission: (libraryId: string, value: string) => void;
+  setNewAppPermissions: (permissions: string[]) => void;
+  updateNewLibraryPermissions: (changes: LibraryPermissionDrafts) => void;
   createUser: (event: React.FormEvent<HTMLFormElement>) => Promise<void> | void;
   userPasswordDrafts: Record<string, string>;
   userAppPermissionDrafts: Record<string, string[]>;
   userLibraryPermissionDrafts: Record<string, LibraryPermissionDrafts>;
   updateUserPasswordDraft: (userId: string, value: string) => void;
-  toggleUserAppPermission: (userId: string, permission: string) => void;
-  toggleUserLibraryPermission: (userId: string, libraryId: string, permission: string) => void;
+  updateUserAppPermissionDraft: (userId: string, permissions: string[]) => void;
+  updateUserLibraryPermissionDrafts: (
+    userId: string,
+    changes: LibraryPermissionDrafts,
+  ) => void;
   mutatingUserId: string | null;
   setUserPassword: (userId: string) => Promise<void> | void;
   setUserAppPermissions: (userId: string, permissions?: string[]) => Promise<void> | void;
   setUserLibraryPermissions: (
     userId: string,
-    libraryId: string,
-    permissions?: string[],
+    changes?: LibraryPermissionDrafts,
   ) => Promise<void> | void;
+  setUserLoginEnabled: (user: UserRecord) => Promise<void> | void;
   deleteUser: (user: UserRecord) => Promise<void> | void;
   resetUserMfa: (user: UserRecord) => Promise<void> | void;
 };
@@ -111,6 +114,22 @@ function AuthFactorStatusBadge({ enabled }: { enabled: boolean }) {
   );
 }
 
+function UserLoginStatusBadge({ enabled }: { enabled: boolean }) {
+  const t = useTranslate();
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+        enabled
+          ? "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
+          : "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+      )}
+    >
+      {t(enabled ? "settings.loginEnabled" : "settings.loginDisabled")}
+    </span>
+  );
+}
+
 export function SettingsUsersSection({
   settingsUsers,
   libraries,
@@ -124,19 +143,20 @@ export function SettingsUsersSection({
   newAppPermissions,
   newLibraryPermissionDrafts,
   canManagePermissions,
-  toggleNewAppPermission,
-  toggleNewLibraryPermission,
+  setNewAppPermissions,
+  updateNewLibraryPermissions,
   createUser,
   userPasswordDrafts,
   userAppPermissionDrafts,
   userLibraryPermissionDrafts,
   updateUserPasswordDraft,
-  toggleUserAppPermission,
-  toggleUserLibraryPermission,
+  updateUserAppPermissionDraft,
+  updateUserLibraryPermissionDrafts,
   mutatingUserId,
   setUserPassword,
   setUserAppPermissions,
   setUserLibraryPermissions,
+  setUserLoginEnabled,
   deleteUser,
   resetUserMfa,
   externalAccountInvitesPanel,
@@ -190,6 +210,8 @@ export function SettingsUsersSection({
                   ) : (
                     settingsUsers.map((user) => {
                       const isOwnUser = currentUserId === user.id;
+                      const isRecoveryManaged =
+                        user.username.toLowerCase() === "recovery-admin";
                       const canSetPassword =
                         user.accountKind !== "EXTERNAL_AUTO_PROVISIONED";
                       const permissionControlsDisabled =
@@ -210,13 +232,17 @@ export function SettingsUsersSection({
                         <TableRow
                           key={user.id}
                           id={selectorId("settings-user-row", user.username)}
+                          data-ui="settings-user-table-row"
                         >
-                    <TableCell className="align-top">
+                    <TableCell className="align-middle">
                       <div className="text-lg font-semibold text-[var(--scry-ink2)]">
                         {user.username}
                       </div>
+                      <div className="mt-1">
+                        <UserLoginStatusBadge enabled={user.loginEnabled} />
+                      </div>
                     </TableCell>
-                    <TableCell className="align-top">
+                    <TableCell className="align-middle">
                       <CollapsiblePermissionSection
                         id={selectorId("settings-user-permissions", user.username, "section")}
                         title="Permissions"
@@ -229,19 +255,16 @@ export function SettingsUsersSection({
                           selectedAppPermissions={appSelected}
                           selectedLibraryPermissions={libraryDrafts}
                           disabled={permissionControlsDisabled}
-                          onAppChange={(nextPermissions, permission) => {
+                          showSelectAll
+                          onAppChange={(nextPermissions) => {
                             if (isOwnUser || !canManagePermissions) return;
-                            toggleUserAppPermission(user.id, permission);
+                            updateUserAppPermissionDraft(user.id, nextPermissions);
                             void setUserAppPermissions(user.id, nextPermissions);
                           }}
-                          onLibraryChange={(libraryId, nextPermissions, permission) => {
+                          onLibraryChange={(changes) => {
                             if (isOwnUser || !canManagePermissions) return;
-                            toggleUserLibraryPermission(user.id, libraryId, permission);
-                            void setUserLibraryPermissions(
-                              user.id,
-                              libraryId,
-                              nextPermissions,
-                            );
+                            updateUserLibraryPermissionDrafts(user.id, changes);
+                            void setUserLibraryPermissions(user.id, changes);
                           }}
                         />
                       </CollapsiblePermissionSection>
@@ -294,22 +317,43 @@ export function SettingsUsersSection({
                           <IconButton
                             id={selectorId("settings-user-reset-mfa", user.username)}
                             label={t("settings.resetMfa")}
-                            tone="neutral"
+                            tone={user.loginEnabled ? "disabled" : "enabled"}
                             onClick={() => void resetUserMfa(user)}
                             disabled={mutatingUserId === user.id}
                           >
                             <ShieldOff className="h-4 w-4" />
                           </IconButton>
                         ) : null}
-                        <IconButton
-                          id={selectorId("settings-user-delete", user.username)}
-                          label={t("label.delete")}
-                          tone="delete"
-                          onClick={() => void deleteUser(user)}
-                          disabled={mutatingUserId === user.id || isOwnUser}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </IconButton>
+                        {!isRecoveryManaged ? (
+                          <IconButton
+                            id={selectorId("settings-user-login-status", user.username)}
+                            label={t(
+                              user.loginEnabled
+                                ? "settings.disableLogin"
+                                : "settings.enableLogin",
+                            )}
+                            tone={user.loginEnabled ? "disabled" : "enabled"}
+                            onClick={() => void setUserLoginEnabled(user)}
+                            disabled={mutatingUserId === user.id || isOwnUser}
+                          >
+                            {user.loginEnabled ? (
+                              <PowerOff className="h-4 w-4" />
+                            ) : (
+                              <Power className="h-4 w-4" />
+                            )}
+                          </IconButton>
+                        ) : null}
+                        {!user.isDefaultAdmin ? (
+                          <IconButton
+                            id={selectorId("settings-user-delete", user.username)}
+                            label={t("label.delete")}
+                            tone="delete"
+                            onClick={() => void deleteUser(user)}
+                            disabled={mutatingUserId === user.id || isOwnUser}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </IconButton>
+                        ) : null}
                       </div>
                     </TableCell>
                         </TableRow>
@@ -372,12 +416,9 @@ export function SettingsUsersSection({
                     libraryPermissions={libraryPermissions}
                     selectedAppPermissions={newAppPermissions}
                     selectedLibraryPermissions={newLibraryPermissionDrafts}
-                    onAppChange={(_nextPermissions, permission) =>
-                      toggleNewAppPermission(permission)
-                    }
-                    onLibraryChange={(libraryId, _nextPermissions, permission) =>
-                      toggleNewLibraryPermission(libraryId, permission)
-                    }
+                    showSelectAll
+                    onAppChange={setNewAppPermissions}
+                    onLibraryChange={updateNewLibraryPermissions}
                   />
                 </div>
               ) : null}

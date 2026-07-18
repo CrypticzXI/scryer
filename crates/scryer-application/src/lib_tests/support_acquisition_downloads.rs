@@ -246,6 +246,7 @@ impl BlocklistRepository for MockBlocklistRepo {
 #[derive(Default, Clone)]
 pub(super) struct TrackingDownloadSubmissionRepo {
     pub(super) store: Arc<Mutex<Vec<DownloadSubmission>>>,
+    pub(super) record_submission_error: Arc<Mutex<Option<String>>>,
     pub(super) identities: DownloadSubmissionIdentities,
     pub(super) identity_states: DownloadIdentityStates,
     pub(super) tracked_states: TrackedDownloadStates,
@@ -698,6 +699,9 @@ pub(super) fn download_identity_state_key(
 #[async_trait]
 impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
     async fn record_submission(&self, submission: DownloadSubmission) -> AppResult<()> {
+        if let Some(message) = self.record_submission_error.lock().await.clone() {
+            return Err(AppError::Repository(message));
+        }
         let mut entries = self.store.lock().await;
         if let Some(existing) = entries.iter_mut().find(|entry| {
             entry.download_client_id == submission.download_client_id

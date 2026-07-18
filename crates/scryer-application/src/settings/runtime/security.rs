@@ -27,7 +27,7 @@ pub struct UpdateServiceSettings {
     pub tls_key_path: String,
 }
 impl AppUseCase {
-    async fn load_security_settings(&self) -> AppResult<SecuritySettings> {
+    pub(crate) async fn load_security_settings(&self) -> AppResult<SecuritySettings> {
         let form_login_enabled = self
             .read_setting_bool_value(FORM_LOGIN_ENABLED_KEY, None)
             .await?
@@ -75,10 +75,7 @@ impl AppUseCase {
             return Ok(value);
         }
 
-        let Some(legacy_value) = self
-            .read_setting_bool_value(legacy_key_name, None)
-            .await?
-        else {
+        let Some(legacy_value) = self.read_setting_bool_value(legacy_key_name, None).await? else {
             return Ok(false);
         };
 
@@ -177,13 +174,25 @@ impl AppUseCase {
             ));
         }
 
-        if !current.form_login_enabled
-            && input.form_login_enabled
-            && self.default_admin_uses_bootstrap_password().await?
-        {
-            return Err(AppError::Validation(
-                "change the default admin password before enabling form login".into(),
-            ));
+        if !current.form_login_enabled && input.form_login_enabled {
+            if self
+                .existing_default_admin_uses_bootstrap_password()
+                .await?
+            {
+                return Err(AppError::Validation(
+                    "change the default admin password before enabling form login".into(),
+                ));
+            }
+            if !self.usable_admin_login_exists().await? {
+                return Err(AppError::Validation(
+                    "configure an enabled full administrator login before enabling form login"
+                        .into(),
+                ));
+            }
+        }
+
+        if current.form_login_enabled && !input.form_login_enabled {
+            self.find_or_create_default_user().await?;
         }
 
         self.upsert_system_setting_json(

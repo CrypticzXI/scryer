@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
-    SubmissionScope,
+    AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmission,
+    DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, SubmissionScope,
 };
 
 const DEFAULT_TRACKED_DOWNLOAD_CACHE_TTL_HOURS: i64 = 24;
@@ -898,7 +898,9 @@ pub enum TrackedDownloadCommand {
     },
     AssignTitle {
         id: String,
-        title_id: String,
+        title: Title,
+        submission: DownloadSubmission,
+        actor_snapshot: DownloadSubmissionActorSnapshot,
         reply: oneshot::Sender<AppResult<()>>,
     },
     Snapshot {
@@ -1018,12 +1020,20 @@ impl TrackedDownloadHandle {
         })?
     }
 
-    pub async fn assign_title(&self, id: String, title_id: String) -> AppResult<()> {
+    pub async fn assign_title(
+        &self,
+        id: String,
+        title: Title,
+        submission: DownloadSubmission,
+        actor_snapshot: DownloadSubmissionActorSnapshot,
+    ) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(TrackedDownloadCommand::AssignTitle {
                 id,
-                title_id,
+                title,
+                submission,
+                actor_snapshot,
                 reply: reply_tx,
             })
             .await
@@ -2228,6 +2238,7 @@ mod tests {
                 libraries,
                 default_library: permissions,
                 actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+                login_status: Default::default(),
                 loaded: true,
             },
         }

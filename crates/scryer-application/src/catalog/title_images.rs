@@ -214,22 +214,22 @@ async fn start_background_image_loop(app: AppUseCase, token: tokio_util::sync::C
             }
 
             let (batch_len, succeeded, failed, unknown_failures) = {
-                let _maintenance_guard = tokio::select! {
-                    _ = token.cancelled() => return,
-                    guard = app.runtime.catalog.title_image_maintenance_lock.read() => guard,
-                };
+                let batch_result = {
+                    let _maintenance_guard = tokio::select! {
+                        _ = token.cancelled() => return,
+                        guard = app.runtime.catalog.title_image_maintenance_lock.read() => guard,
+                    };
 
-                let batch = match app
-                    .services
-                    .library
-                    .title_images
-                    .list_title_image_refresh_work(IMAGE_MAX_BATCH, &skipped_work)
-                    .await
-                {
+                    app.services
+                        .library
+                        .title_images
+                        .list_title_image_refresh_work(IMAGE_MAX_BATCH, &skipped_work)
+                        .await
+                };
+                let batch = match batch_result {
                     Ok(batch) => batch,
                     Err(error) => {
                         warn!(error = %error, "image loop: failed to list pending image sync work");
-                        drop(_maintenance_guard);
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         continue 'drain;
                     }
@@ -255,6 +255,10 @@ async fn start_background_image_loop(app: AppUseCase, token: tokio_util::sync::C
                         return;
                     }
 
+                    let _maintenance_guard = tokio::select! {
+                        _ = token.cancelled() => return,
+                        guard = app.runtime.catalog.title_image_maintenance_lock.read() => guard,
+                    };
                     let (chunk_succeeded, mut chunk_failed, chunk_unknown_failures) =
                         process_image_refresh_chunk(&app, chunk).await;
                     succeeded += chunk_succeeded;

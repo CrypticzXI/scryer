@@ -207,12 +207,37 @@ async fn user_crud_queries_work() {
         .expect("query by id")
         .expect("id should exist");
     assert_eq!(from_db.username, created.username);
+    assert_eq!(
+        from_db.login_status(),
+        scryer_domain::UserLoginStatus::Enabled
+    );
 
     let updated =
         UserRepository::update_password_hash(&users, &created.id, "hashed-password".to_string())
             .await
             .expect("update password hash");
     assert_eq!(updated.password_hash.as_deref(), Some("hashed-password"));
+
+    let disabled = UserRepository::update_login_status_and_rotate_session(
+        &users,
+        &created.id,
+        scryer_domain::UserLoginStatus::Disabled,
+        "session-2",
+    )
+    .await
+    .expect("disable user login");
+    assert_eq!(
+        disabled.login_status(),
+        scryer_domain::UserLoginStatus::Disabled
+    );
+    assert_eq!(disabled.password_hash.as_deref(), Some("hashed-password"));
+    assert_eq!(
+        UserRepository::auth_session_version(&users, &created.id)
+            .await
+            .expect("load session version")
+            .as_deref(),
+        Some("session-2")
+    );
 
     UserRepository::delete(&users, &created.id)
         .await

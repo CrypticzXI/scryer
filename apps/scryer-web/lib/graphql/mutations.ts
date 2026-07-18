@@ -210,6 +210,24 @@ export const deleteUserMutation = `mutation DeleteUser($id: ID!) {
   }
 }`;
 
+export const setUserLoginEnabledMutation = `mutation SetUserLoginEnabled($input: SetUserLoginEnabledInput!) {
+  setUserLoginEnabled(input: $input) {
+    id
+    username
+    loginEnabled
+    isDefaultAdmin
+    hasPassword
+    hasMfa
+    hasPasskey
+    accountKind
+    appPermissions
+    libraryPermissions {
+      libraryId
+      permissions
+    }
+  }
+}`;
+
 export const resetUserMfaMutation = `mutation ResetUserMfa($id: ID!) {
   resetUserMfa(id: $id) {
     id

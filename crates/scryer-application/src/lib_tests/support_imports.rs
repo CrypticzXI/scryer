@@ -3,6 +3,7 @@ use super::*;
 #[derive(Default)]
 pub(super) struct MockUserRepo {
     pub(super) store: Arc<Mutex<Vec<User>>>,
+    pub(super) auth_session_versions: Arc<Mutex<HashMap<String, String>>>,
     pub(super) get_by_id_calls: Arc<AtomicUsize>,
     pub(super) list_all_calls: Arc<AtomicUsize>,
 }
@@ -933,8 +934,13 @@ impl UserRepository for MockUserRepo {
         Ok(self.store.lock().await.clone())
     }
 
-    async fn auth_session_version(&self, _user_id: &str) -> AppResult<Option<String>> {
-        Ok(None)
+    async fn auth_session_version(&self, user_id: &str) -> AppResult<Option<String>> {
+        Ok(self
+            .auth_session_versions
+            .lock()
+            .await
+            .get(user_id)
+            .cloned())
     }
 
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User> {
@@ -947,6 +953,26 @@ impl UserRepository for MockUserRepo {
         Ok(user.clone())
     }
 
+    async fn update_login_status_and_rotate_session(
+        &self,
+        id: &str,
+        status: scryer_domain::UserLoginStatus,
+        auth_session_version: &str,
+    ) -> AppResult<User> {
+        let mut users = self.store.lock().await;
+        let user = users
+            .iter_mut()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("user {id}")))?;
+        user.set_login_status(status);
+        let user = user.clone();
+        self.auth_session_versions
+            .lock()
+            .await
+            .insert(id.to_string(), auth_session_version.to_string());
+        Ok(user)
+    }
+
     async fn delete(&self, id: &str) -> AppResult<()> {
         let mut users = self.store.lock().await;
         let index = users
@@ -954,6 +980,7 @@ impl UserRepository for MockUserRepo {
             .position(|entry| entry.id == id)
             .ok_or_else(|| AppError::NotFound(format!("user {}", id)))?;
         users.remove(index);
+        self.auth_session_versions.lock().await.remove(id);
         Ok(())
     }
 }

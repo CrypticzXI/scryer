@@ -1588,6 +1588,8 @@ pub struct IndexerQueryStatsPayload {
 pub struct UserPayload {
     pub id: ID,
     pub username: String,
+    pub login_enabled: bool,
+    pub is_default_admin: bool,
     pub has_password: bool,
     pub has_mfa: bool,
     pub has_passkey: bool,
@@ -3892,6 +3894,12 @@ pub struct CreateUserInput {
     pub password: String,
     pub app_permissions: Vec<AppPermissionValue>,
     pub library_permissions: Vec<LibraryPermissionGrantInput>,
+}
+
+#[derive(InputObject)]
+pub struct SetUserLoginEnabledInput {
+    pub user_id: ID,
+    pub enabled: bool,
 }
 
 #[derive(InputObject)]

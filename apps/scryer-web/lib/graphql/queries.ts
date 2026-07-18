@@ -2013,6 +2013,8 @@ export const usersQuery = `query Users {
   users {
     id
     username
+    loginEnabled
+    isDefaultAdmin
     hasPassword
     hasMfa
     hasPasskey

@@ -5492,6 +5492,43 @@ async fn recover_reserved_admin_access_creates_recovery_admin() {
 }
 
 #[tokio::test]
+async fn recover_reserved_admin_access_reenables_environment_managed_identity() {
+    let (app, _) = bootstrap();
+    let recovery_admin = app
+        .recover_reserved_admin_access("initial recovery password")
+        .await
+        .expect("create recovery admin");
+    app.services
+        .identity
+        .users
+        .update_login_status_and_rotate_session(
+            &recovery_admin.id,
+            scryer_domain::UserLoginStatus::Disabled,
+            "disabled-session",
+        )
+        .await
+        .expect("seed disabled recovery admin");
+
+    let repaired = app
+        .recover_reserved_admin_access("replacement recovery password")
+        .await
+        .expect("repair disabled recovery admin");
+
+    assert_eq!(
+        repaired.login_status(),
+        scryer_domain::UserLoginStatus::Enabled
+    );
+    app.set_recovery_admin_login_enabled(true);
+    assert_eq!(
+        app.authenticate_credentials("recovery-admin", "replacement recovery password")
+            .await
+            .expect("authenticate repaired recovery admin")
+            .id,
+        recovery_admin.id
+    );
+}
+
+#[tokio::test]
 async fn update_default_library_roots_updates_all_facet_root_read_paths() {
     let (app, user) = bootstrap();
     let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);

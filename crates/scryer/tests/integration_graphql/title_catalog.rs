@@ -62,6 +62,7 @@ fn catalog_view_actor(library_id: &str) -> User {
             )]),
             default_library: LibraryPermissionMask::NONE,
             actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+            login_status: Default::default(),
             loaded: true,
         },
     }

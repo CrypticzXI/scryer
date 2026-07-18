@@ -1544,6 +1544,12 @@ const en: LocaleDictionary = {
   "settings.resetMfa": "Reset MFA",
   "settings.resetMfaConfirm":
     "Reset MFA for {{name}}? They will need to set up MFA again the next time it is required during sign-in.",
+  "settings.loginEnabled": "Login enabled",
+  "settings.loginDisabled": "Login disabled",
+  "settings.enableLogin": "Enable login",
+  "settings.disableLogin": "Disable login",
+  "settings.disableLoginConfirm":
+    "Disable login for {{name}}? Their credentials and factors will be retained, but existing sessions will be revoked.",
   "settings.save": "Save",
   "settings.noPermissions": "No permissions",
   "settings.filter": "Filter",
@@ -2426,6 +2432,8 @@ const en: LocaleDictionary = {
   "status.editingDownloadClient": "Editing download client {{name}}",
   "status.editingSubtitleProvider": "Editing subtitle provider {{name}}",
   "status.deletingUser": "Delete user {{name}}?",
+  "status.userLoginEnabled": "Enabled login for {{name}}.",
+  "status.userLoginDisabled": "Disabled login for {{name}}.",
   "status.deletingIndexer": "Delete indexer {{name}}?",
   "status.deletingDownloadClient": "Delete download client {{name}}?",
   "status.deletingSubtitleProvider": "Delete subtitle provider {{name}}?",

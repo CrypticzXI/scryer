@@ -135,15 +135,16 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // external subtitle listing and blocklist lookup add two query roots and eight public types
     // (five OBJECT, two INPUT_OBJECT, and one ENUM support types).
     // Catalog bootstrap no longer exposes filesystem reachability as a blocking query.
+    // User login suspension adds one mutation and its INPUT_OBJECT.
     assert_eq!(
         query_field_count, 118,
         "query fields: {query_field_names:?}"
     );
-    assert_eq!(mutation_field_count, 163);
+    assert_eq!(mutation_field_count, 164);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 526);
+    assert_eq!(public_types.len(), 527);
     assert_eq!(kind_count("OBJECT"), 273);
-    assert_eq!(kind_count("INPUT_OBJECT"), 151);
+    assert_eq!(kind_count("INPUT_OBJECT"), 152);
     assert_eq!(kind_count("ENUM"), 90);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
@@ -164,6 +165,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(mutation_field_names.contains(&"createIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"deleteIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"saveExternalImportSetupSecretDraft"));
+    assert!(mutation_field_names.contains(&"setUserLoginEnabled"));
     assert!(mutation_field_names.contains(&"testIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"updateIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"updateBackupSettings"));

@@ -3035,6 +3035,14 @@ pub mod test_nulls {
         async fn update_password_hash(&self, _: &str, _: String) -> AppResult<User> {
             Err(AppError::Repository("not configured".into()))
         }
+        async fn update_login_status_and_rotate_session(
+            &self,
+            _: &str,
+            _: scryer_domain::UserLoginStatus,
+            _: &str,
+        ) -> AppResult<User> {
+            Err(AppError::Repository("not configured".into()))
+        }
         async fn delete(&self, _: &str) -> AppResult<()> {
             Ok(())
         }

@@ -347,7 +347,7 @@ async fn graphql_typed_security_settings_reject_short_password_minimum() {
 }
 
 #[tokio::test]
-async fn graphql_typed_security_settings_reject_enable_with_default_admin_password() {
+async fn graphql_typed_security_settings_rejects_enable_without_usable_admin_login() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let admin = ctx.app.find_or_create_default_user().await.unwrap();
@@ -377,8 +377,9 @@ async fn graphql_typed_security_settings_reject_enable_with_default_admin_passwo
         .as_str()
         .expect("graphql error message");
     assert!(
-        message.contains("change the default admin password before enabling form login"),
-        "expected default admin password validation error: {update}"
+        message
+            .contains("configure an enabled full administrator login before enabling form login"),
+        "expected usable administrator validation error: {update}"
     );
 
     let read = schema_exec(

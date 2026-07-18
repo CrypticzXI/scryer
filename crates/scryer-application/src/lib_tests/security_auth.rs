@@ -1723,6 +1723,27 @@ async fn passkey_management_requires_enabled_form_login() {
 }
 
 #[tokio::test]
+async fn disabled_user_cannot_start_passkey_authentication() {
+    let users = Arc::new(MockUserRepo::default());
+    let mut user = User::with_password_hash("disabled_passkey", TEST_PASSWORD_HASH);
+    user.set_login_status(scryer_domain::UserLoginStatus::Disabled);
+    users.create(user.clone()).await.expect("create user");
+
+    let (mut app, _) = bootstrap_with_user_repo(users);
+    let origin = url::Url::parse("https://scryer.test").expect("valid WebAuthn origin");
+    let webauthn = webauthn_rs::WebauthnBuilder::new("scryer.test", &origin)
+        .expect("valid WebAuthn builder")
+        .build()
+        .expect("valid WebAuthn runtime");
+    app.webauthn = services::RuntimeFeature::enabled(Arc::new(webauthn));
+
+    let result = app
+        .webauthn_authenticate_start(Some(&user.username), true)
+        .await;
+    assert!(matches!(result, Err(AppError::Unauthorized(_))));
+}
+
+#[tokio::test]
 async fn password_change_invalidates_existing_token_immediately() {
     let (app, admin) = bootstrap();
     let created = create_user_with_permissions(

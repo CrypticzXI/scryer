@@ -275,6 +275,7 @@ pub(super) fn library_permission_user_with_grants(
             .collect(),
         default_library: scryer_domain::LibraryPermissionMask::NONE,
         actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+        login_status: Default::default(),
         loaded: true,
     };
     user

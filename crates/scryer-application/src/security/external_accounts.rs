@@ -641,6 +641,20 @@ impl AppUseCase {
             ));
         };
 
+        let user = if let Some(user) = auto_added_user {
+            user
+        } else {
+            self.services
+                .identity
+                .users
+                .get_by_id(&account.user_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("user {}", account.user_id)))?
+        };
+        if !user.login_status().is_enabled() {
+            return Err(AppError::Unauthorized("credentials unavailable".into()));
+        }
+
         match account.status {
             scryer_domain::ExternalAccountStatus::Disabled => {
                 return Err(AppError::Unauthorized(
@@ -666,16 +680,6 @@ impl AppUseCase {
             .update(account.clone())
             .await?;
 
-        let user = if let Some(user) = auto_added_user {
-            user
-        } else {
-            self.services
-                .identity
-                .users
-                .get_by_id(&account.user_id)
-                .await?
-                .ok_or_else(|| AppError::NotFound(format!("user {}", account.user_id)))?
-        };
         self.cache_jwt_signing_key(&user).await?;
         Ok(user)
     }
@@ -1272,6 +1276,21 @@ mod tests {
             Ok(user.clone())
         }
 
+        async fn update_login_status_and_rotate_session(
+            &self,
+            id: &str,
+            status: scryer_domain::UserLoginStatus,
+            _auth_session_version: &str,
+        ) -> AppResult<User> {
+            let mut users = self.users.lock().await;
+            let user = users
+                .iter_mut()
+                .find(|user| user.id == id)
+                .ok_or_else(|| AppError::NotFound(format!("user {id}")))?;
+            user.set_login_status(status);
+            Ok(user.clone())
+        }
+
         async fn delete(&self, id: &str) -> AppResult<()> {
             self.users.lock().await.retain(|user| user.id != id);
             Ok(())
@@ -1460,6 +1479,7 @@ mod tests {
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
                 actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+                login_status: Default::default(),
                 loaded: true,
             },
         }
@@ -1476,6 +1496,7 @@ mod tests {
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
                 actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+                login_status: Default::default(),
                 loaded: true,
             },
         }
@@ -2272,6 +2293,7 @@ mod tests {
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
                 actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+                login_status: Default::default(),
                 loaded: true,
             },
         };
@@ -2351,6 +2373,7 @@ mod tests {
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
                 actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+                login_status: Default::default(),
                 loaded: true,
             },
         };
@@ -2405,6 +2428,56 @@ mod tests {
             Some("https://plex.example.test/avatar")
         );
         assert!(updated.last_login_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn disabled_user_rejects_external_login_without_updating_account() {
+        let mut user = regular_user("disabled-external-user");
+        user.set_login_status(scryer_domain::UserLoginStatus::Disabled);
+        let account = UserExternalAccount {
+            id: "disabled-account".to_string(),
+            user_id: user.id.clone(),
+            provider: ExternalAccountProvider::Plex,
+            connection_id: "plex-main".to_string(),
+            external_user_id: Some("remote-user".to_string()),
+            username: "old-name".to_string(),
+            display_name: None,
+            avatar_url: None,
+            status: ExternalAccountStatus::Active,
+            verified_at: None,
+            last_login_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let external_accounts = Arc::new(TestExternalAccountRepository::new(vec![account]));
+        let app = test_app_with_identity(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![user])),
+            external_accounts.clone(),
+        );
+
+        let result = app
+            .login_verified_external_account(
+                VerifiedExternalIdentity {
+                    provider: ExternalAccountProvider::Plex,
+                    connection_id: "plex-main".to_string(),
+                    external_user_id: "remote-user".to_string(),
+                    username: "fresh-name".to_string(),
+                    display_name: Some("Fresh Name".to_string()),
+                    avatar_url: None,
+                },
+                test_media_server_connection(scryer_domain::MediaServerProvider::Plex, "plex-main"),
+            )
+            .await;
+        assert!(matches!(result, Err(AppError::Unauthorized(_))));
+
+        let stored = external_accounts
+            .get_by_provider_identity(ExternalAccountProvider::Plex, "plex-main", "remote-user")
+            .await
+            .expect("load account")
+            .expect("account exists");
+        assert_eq!(stored.username, "old-name");
+        assert!(stored.last_login_at.is_none());
     }
 
     #[tokio::test]

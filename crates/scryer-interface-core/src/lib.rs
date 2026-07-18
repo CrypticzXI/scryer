@@ -120,6 +120,19 @@ impl AuthRuntimeStateHandle {
     pub fn subscribe_epoch(&self) -> watch::Receiver<u64> {
         self.epoch_tx.subscribe()
     }
+
+    pub fn invalidate_connections(&self) -> u64 {
+        let next_epoch = {
+            let mut snapshot = self
+                .snapshot
+                .write()
+                .expect("auth runtime snapshot lock poisoned");
+            snapshot.epoch += 1;
+            snapshot.epoch
+        };
+        let _ = self.epoch_tx.send(next_epoch);
+        next_epoch
+    }
 }
 
 #[derive(Clone, Copy)]

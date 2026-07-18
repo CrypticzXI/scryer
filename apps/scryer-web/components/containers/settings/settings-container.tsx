@@ -415,7 +415,9 @@ export const SettingsContainer = memo(function SettingsContainer({
               : settingsSection === "rules" ||
                   settingsSection === "post-processing"
                 ? "max-w-none"
-                : "max-w-[1280px]",
+                : settingsSection === "users"
+                  ? "max-w-[1620px]"
+                  : "max-w-[1280px]",
           )}
         >
           <div
