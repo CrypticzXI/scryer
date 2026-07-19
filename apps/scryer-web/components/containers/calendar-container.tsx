@@ -5,7 +5,6 @@ import { FACETS_BY_ID } from "@/lib/facets/registry";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
-import { useIsMobile } from "@/lib/hooks/use-mobile";
 import type { CalendarEpisodeItem } from "@/components/views/calendar-view";
 import type { LibraryRecord } from "@/lib/types";
 import {
@@ -33,7 +32,6 @@ export const CalendarContainer = memo(function CalendarContainer({
   onOpenOverview,
 }: CalendarContainerProps) {
   const t = useTranslate();
-  const isMobile = useIsMobile();
   const setGlobalStatus = useGlobalStatus();
   const client = useClient();
   const [calendarEpisodes, setCalendarEpisodes] = useState<CalendarEpisodeItem[]>([]);
@@ -132,13 +130,9 @@ export const CalendarContainer = memo(function CalendarContainer({
     [onOpenOverview],
   );
 
-  if (isMobile) {
-    return null;
-  }
-
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-transparent">
-      <div className="mx-auto flex min-h-0 w-full max-w-none flex-1 flex-col px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]">
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain bg-transparent">
+      <div className="mx-auto flex min-h-0 w-full max-w-none flex-1 flex-col px-4 py-4 pb-[calc(env(safe-area-inset-bottom)+5rem)] sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]">
         <Suspense
           fallback={
             <div className="py-6 text-sm text-[var(--scry-muted3)]">

@@ -633,8 +633,7 @@ pub(crate) fn is_transient_sqlite_busy(error: &AppError) -> bool {
         || normalized.contains("database schema is locked")
         || normalized.contains("sqlite_busy")
         || normalized.contains("busy_snapshot")
-        || sqlite_error_codes(&normalized)
-            .any(|code| TRANSIENT_SQLITE_ERROR_CODES.contains(&code))
+        || sqlite_error_codes(&normalized).any(|code| TRANSIENT_SQLITE_ERROR_CODES.contains(&code))
 }
 
 // sqlx renders sqlite errors as "(code: N) message"; match N exactly so codes

@@ -61,7 +61,7 @@ struct SchedulerEligibleIndexer<'a> {
     config: &'a IndexerConfig,
     had_persisted_system_backoff: bool,
     candidate_id: SchedulerCandidateId,
-    deadline_at: Option<tokio::time::Instant>,
+    candidate_timeout: Option<std::time::Duration>,
     category_request: Option<Vec<String>>,
     rss_request_key: Option<String>,
 }
@@ -2376,8 +2376,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                 self.candidate_timeout(scheduler_search_timeout, is_rss_request);
             for category_request in category_requests {
                 let scheduler_candidate_id = SchedulerCandidateId::new();
-                let deadline_at = matches!(mode, SearchMode::Interactive)
-                    .then(|| tokio::time::Instant::now() + scheduler_candidate_timeout);
+                let candidate_timeout =
+                    matches!(mode, SearchMode::Interactive).then_some(scheduler_candidate_timeout);
                 let rss_request_key =
                     is_rss_request.then(|| Self::rss_request_key(category_request.as_deref()));
                 let rss_activity = if is_rss_request {
@@ -2427,7 +2427,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     config,
                     had_persisted_system_backoff: *had_persisted_system_backoff,
                     candidate_id: scheduler_candidate_id,
-                    deadline_at,
+                    candidate_timeout,
                     category_request,
                     rss_request_key,
                 });
@@ -2613,6 +2613,12 @@ impl IndexerClient for MultiIndexerSearchClient {
                         continue;
                     }
                 };
+            // Client construction can synchronously compile a cold WASM plugin.
+            // Start the dispatch window afterward so it covers only permit waits,
+            // rate limiting, and network execution.
+            let deadline_at = dispatch
+                .candidate_timeout
+                .map(|timeout| tokio::time::Instant::now() + timeout);
 
             // RSS-only indexers: fetch the feed once, cache it, return cached
             // results for all concurrent callers. The feed content is the same
@@ -2649,12 +2655,8 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let initial_permit = if initialization_guard.is_some()
                     && cache_entry.cell.get().is_none()
                 {
-                    match acquire_search_permit(
-                        search_limit.clone(),
-                        &cancel_token,
-                        dispatch.deadline_at,
-                    )
-                    .await
+                    match acquire_search_permit(search_limit.clone(), &cancel_token, deadline_at)
+                        .await
                     {
                         Ok(permit) => Some(permit),
                         Err(SearchPermitError::Cancelled) => {
@@ -2666,7 +2668,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                         Err(SearchPermitError::DeadlineExpired) => {
                             debug!(
                                 indexer = config.name.as_str(),
-                                "skipping indexer: scheduler deadline expired while queued"
+                                "skipping indexer: candidate deadline expired while queued"
                             );
                             indexer_outcomes.push(IndexerQueryOutcome {
                                 indexer_id: config.id.clone(),
@@ -2700,7 +2702,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                 let facet = facet.clone();
                 let search_limit = search_limit.clone();
                 let task_cancel_token = cancel_token.child_token();
-                let deadline_at = dispatch.deadline_at;
                 let scheduler_lease_for_task = scheduler_lease.clone();
 
                 set.spawn(async move {
@@ -3042,40 +3043,36 @@ impl IndexerClient for MultiIndexerSearchClient {
                 );
             }
 
-            let initial_permit = match acquire_search_permit(
-                search_limit.clone(),
-                &cancel_token,
-                dispatch.deadline_at,
-            )
-            .await
-            {
-                Ok(permit) => permit,
-                Err(SearchPermitError::Cancelled) => {
-                    set.abort_all();
-                    while set.join_next().await.is_some() {}
-                    self.rss_feed_cache.lock().await.clear();
-                    return Err(AppError::canceled("indexer search canceled while queued"));
-                }
-                Err(SearchPermitError::DeadlineExpired) => {
-                    debug!(
-                        indexer = config.name.as_str(),
-                        "skipping indexer: scheduler deadline expired while queued"
-                    );
-                    indexer_outcomes.push(IndexerQueryOutcome {
-                        indexer_id: config.id.clone(),
-                        outcome: IndexerSearchOutcome::Skipped,
-                    });
-                    continue;
-                }
-                Err(SearchPermitError::Closed(error)) => {
-                    set.abort_all();
-                    while set.join_next().await.is_some() {}
-                    self.rss_feed_cache.lock().await.clear();
-                    return Err(AppError::Repository(format!(
-                        "indexer search concurrency limiter closed: {error}"
-                    )));
-                }
-            };
+            let initial_permit =
+                match acquire_search_permit(search_limit.clone(), &cancel_token, deadline_at).await
+                {
+                    Ok(permit) => permit,
+                    Err(SearchPermitError::Cancelled) => {
+                        set.abort_all();
+                        while set.join_next().await.is_some() {}
+                        self.rss_feed_cache.lock().await.clear();
+                        return Err(AppError::canceled("indexer search canceled while queued"));
+                    }
+                    Err(SearchPermitError::DeadlineExpired) => {
+                        debug!(
+                            indexer = config.name.as_str(),
+                            "skipping indexer: candidate deadline expired while queued"
+                        );
+                        indexer_outcomes.push(IndexerQueryOutcome {
+                            indexer_id: config.id.clone(),
+                            outcome: IndexerSearchOutcome::Skipped,
+                        });
+                        continue;
+                    }
+                    Err(SearchPermitError::Closed(error)) => {
+                        set.abort_all();
+                        while set.join_next().await.is_some() {}
+                        self.rss_feed_cache.lock().await.clear();
+                        return Err(AppError::Repository(format!(
+                            "indexer search concurrency limiter closed: {error}"
+                        )));
+                    }
+                };
 
             let rss_category_request = request_categories.clone();
             let indexer_id = config.id.clone();
@@ -3096,7 +3093,6 @@ impl IndexerClient for MultiIndexerSearchClient {
             let rate_limiter = self.rate_limiter.clone();
             let rate_limit_seconds = config.rate_limit_seconds;
             let task_cancel_token = cancel_token.child_token();
-            let deadline_at = dispatch.deadline_at;
             let scheduler_lease_for_task = scheduler_lease.clone();
 
             set.spawn(async move {
@@ -4621,6 +4617,32 @@ mod tests {
         }
     }
 
+    struct DelayedSetupIndexerPluginProvider {
+        setup_delay: std::time::Duration,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl IndexerPluginProvider for DelayedSetupIndexerPluginProvider {
+        fn client_for_provider(&self, _config: &IndexerConfig) -> Option<Arc<dyn IndexerClient>> {
+            std::thread::sleep(self.setup_delay);
+            Some(Arc::new(MockIndexerClient {
+                calls: self.calls.clone(),
+            }))
+        }
+
+        fn available_provider_types(&self) -> Vec<String> {
+            vec!["mock".into()]
+        }
+
+        fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy> {
+            vec![]
+        }
+
+        fn capabilities_for_provider(&self, _provider_type: &str) -> IndexerProviderCapabilities {
+            movie_caps()
+        }
+    }
+
     struct OrderedStartIndexerClient {
         indexer_id: String,
         starts: StdArc<StdMutex<Vec<String>>>,
@@ -5198,6 +5220,42 @@ mod tests {
             .await
             .expect("second RSS task should join")
             .expect("cached RSS search should succeed");
+    }
+
+    #[tokio::test]
+    async fn client_setup_time_does_not_consume_dispatch_deadline() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut multi = MultiIndexerSearchClient::new(
+            Arc::new(MockIndexerConfigRepository {
+                configs: vec![mock_indexer_config()],
+            }),
+            Arc::new(MockIndexerStatsTracker),
+            Arc::new(DelayedSetupIndexerPluginProvider {
+                setup_delay: std::time::Duration::from_millis(30),
+                calls: calls.clone(),
+            }),
+        );
+        multi.candidate_timeout_override = Some(std::time::Duration::from_millis(10));
+
+        multi
+            .search(
+                "Cold Plugin Search".to_string(),
+                HashMap::new(),
+                None,
+                Some("movie".to_string()),
+                None,
+                None,
+                None,
+                SearchMode::Interactive,
+                None,
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .expect("slow client setup must not expire the dispatch window");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

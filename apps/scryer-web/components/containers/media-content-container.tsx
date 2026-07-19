@@ -1162,9 +1162,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   >(() => ({ [view]: readStoredContentViewMode(view) }));
   const desktopViewMode =
     desktopViewModes[view] ?? readStoredContentViewMode(view);
-  const effectiveViewMode: ContentViewMode = isMobile
-    ? "poster"
-    : desktopViewMode;
+  const effectiveViewMode: ContentViewMode = desktopViewMode;
   const [selectedTitleIds, setSelectedTitleIds] = React.useState<Set<string>>(
     () => new Set(),
   );
@@ -1789,11 +1787,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   }, [view]);
 
   React.useEffect(() => {
-    if (isMobile) {
-      return;
-    }
     writeStoredContentViewMode(desktopViewMode, view);
-  }, [desktopViewMode, isMobile, view]);
+  }, [desktopViewMode, view]);
 
   React.useEffect(() => {
     if (
@@ -3193,11 +3188,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     selectedOverviewTitleRecord !== null
       ? !hasSelectedTitleMovieMediaDetails(selectedOverviewTitleRecord)
       : false;
-  const selectedPanelNeedsMoreLikeThis =
-    selectedOverviewTitleRecord !== null
-      ? selectedOverviewTitleRecord.moreLikeThis === undefined
-      : false;
-
   const activeCatalogDiscoveryGroups = React.useMemo(() => {
     if (!canManageCatalogDiscovery && !canRequestCatalogDiscovery) {
       return [];
@@ -3310,12 +3300,10 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           )
           .toPromise()
       : Promise.resolve(null);
-    const recommendationsResult = selectedPanelNeedsMoreLikeThis
-      ? fetchTitleMoreLikeThis(client, titleId).then(
-          (items) => ({ status: "fulfilled" as const, items }),
-          (error: unknown) => ({ status: "rejected" as const, error }),
-        )
-      : null;
+    const recommendationsResult = fetchTitleMoreLikeThis(client, titleId).then(
+      (items) => ({ status: "fulfilled" as const, items }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
 
     void Promise.allSettled([
       titleDetailsRequest,
@@ -3385,26 +3373,21 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         }
         setSelectedOverviewBlocklistState({ titleId, entries: blocklistEntries });
 
-        if (recommendationsResult) {
-          void recommendationsResult.then((result) => {
-            window.requestAnimationFrame(() => {
-              if (selectedPanelHydrationKeyRef.current !== requestKey) {
-                return;
-              }
-              if (result.status === "rejected") {
-                console.error(
-                  "[selected-title-more-like-this-refresh] refresh failed:",
-                  result.error,
-                );
-              }
-              applyTitleMoreLikeThis(
-                titleId,
-                result.status === "fulfilled" ? result.items : [],
-                requestEpoch,
+        void recommendationsResult.then((result) => {
+          window.requestAnimationFrame(() => {
+            if (selectedPanelHydrationKeyRef.current !== requestKey) {
+              return;
+            }
+            if (result.status === "rejected") {
+              console.error(
+                "[selected-title-more-like-this-refresh] refresh failed:",
+                result.error,
               );
-            });
+              return;
+            }
+            applyTitleMoreLikeThis(titleId, result.items, requestEpoch);
           });
-        }
+        });
       },
     );
 
@@ -3419,7 +3402,6 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     selectedPanelHydrationCreatedAt,
     selectedPanelHydrationMetadataFetchedAt,
     selectedPanelHydrationTitleId,
-    selectedPanelNeedsMoreLikeThis,
     selectedPanelNeedsMovieMediaDetails,
     selectedPanelNeedsPanelDetails,
     shouldLoadCatalogTitles,

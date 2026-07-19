@@ -1530,13 +1530,15 @@ async fn resolve_actor(
                 )
             })
         }
-        Ok(None) | Err(_) if local_bypass => resolve_default_user(&state.app, false).await.map(|user| {
-            (
-                anonymous_user(user),
-                mfa_bypass_token_claims(),
-                ResolvedActorSource::AuthlessDefault,
-            )
-        }),
+        Ok(None) | Err(_) if local_bypass => {
+            resolve_default_user(&state.app, false).await.map(|user| {
+                (
+                    anonymous_user(user),
+                    mfa_bypass_token_claims(),
+                    ResolvedActorSource::AuthlessDefault,
+                )
+            })
+        }
         Ok(None) | Err(_) => None,
     };
 

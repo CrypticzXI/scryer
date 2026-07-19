@@ -1914,7 +1914,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                 <div className="border-t border-[var(--scry-border2)] bg-[var(--scry-surf)]">
                   <div
                     className={cn(
-                      "mx-auto flex w-full flex-wrap items-center gap-2 px-4 py-3.5 sm:px-6 md:px-[30px]",
+                      "mx-auto flex w-full flex-wrap items-center gap-2 px-4 pb-[max(1.5rem,calc(0.875rem+env(safe-area-inset-bottom)))] pt-3.5 sm:px-6 sm:pb-3.5 md:px-[30px]",
                       draftDownloadClientRoutingMode === "custom"
                         ? "max-w-[1280px]"
                         : "max-w-[920px]",

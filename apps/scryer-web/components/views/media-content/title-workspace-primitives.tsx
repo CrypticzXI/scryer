@@ -44,7 +44,7 @@ export function TitleWorkspaceHero({
           <X className="h-4 w-4" />
         </button>
       </ActionTooltip>
-      <div className="relative flex gap-4 p-[18px] pr-14 sm:pr-16">
+      <div className="relative flex flex-col gap-4 p-[18px] sm:flex-row sm:pr-16">
         {children}
       </div>
     </section>
@@ -57,7 +57,7 @@ export function TitleWorkspacePosterFrame({
   children: React.ReactNode;
 }) {
   return (
-    <div className="relative h-[300px] w-[200px] shrink-0 overflow-hidden rounded-[9px] border border-[#2a3556] bg-[var(--scry-inset)] shadow-[0_8px_22px_rgba(0,0,0,0.5)]">
+    <div className="relative mx-auto h-[300px] w-[200px] shrink-0 overflow-hidden rounded-[9px] border border-[#2a3556] bg-[var(--scry-inset)] shadow-[0_8px_22px_rgba(0,0,0,0.5)] sm:mx-0">
       {children}
     </div>
   );
@@ -69,7 +69,7 @@ export function TitleWorkspaceActionGrid({
   children: React.ReactNode;
 }) {
   return (
-    <div className="mb-3 grid grid-cols-7 overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-border)] [gap:1px]">
+    <div className="mb-3 grid grid-cols-12 overflow-hidden rounded-[12px] border border-[var(--scry-border)] bg-[var(--scry-border)] [gap:1px] [&>*:nth-child(-n+4)]:col-span-3 [&>*:nth-child(n+5)]:col-span-4 sm:grid-cols-7 sm:[&>*:nth-child(-n+4)]:col-span-1 sm:[&>*:nth-child(n+5)]:col-span-1">
       {children}
     </div>
   );

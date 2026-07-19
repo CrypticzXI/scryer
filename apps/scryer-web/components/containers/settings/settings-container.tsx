@@ -366,7 +366,7 @@ export const SettingsContainer = memo(function SettingsContainer({
   );
 
   return (
-    <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-transparent md:flex-row">
+    <div className="flex min-h-0 w-full flex-1 flex-col overflow-visible bg-transparent md:flex-row min-[981px]:overflow-hidden">
       {showPrimarySettingsSubnav ? (
         <aside
           data-slot="settings-subnav-scroll"
@@ -403,11 +403,11 @@ export const SettingsContainer = memo(function SettingsContainer({
       <main
         ref={settingsContentRef}
         data-slot="settings-main-scroll"
-        className="min-w-0 flex-1 overflow-y-auto bg-transparent"
+        className="min-w-0 flex-1 overflow-visible bg-transparent min-[981px]:overflow-y-auto"
       >
         <div
           className={cn(
-            "mx-auto w-full px-4 py-5 sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]",
+            "mx-auto w-full px-4 py-5 pb-[calc(env(safe-area-inset-bottom)+5rem)] sm:px-6 md:px-[30px] md:py-[26px] md:pb-[60px]",
             showReferenceRail
               ? referenceRailDocked
                 ? referenceLayout?.contentClass

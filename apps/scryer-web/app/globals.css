@@ -408,7 +408,6 @@ body {
   background: transparent;
 }
 
-[data-slot="settings-main-scroll"],
 [data-slot="settings-subnav-scroll"],
 [data-slot="title-list-scroll"],
 [data-slot="title-context-scroll"] {
@@ -429,6 +428,10 @@ body {
 
   [data-slot="root-main-scroll"] {
     min-height: 0;
+    overscroll-behavior: contain;
+  }
+
+  [data-slot="settings-main-scroll"] {
     overscroll-behavior: contain;
   }
 
@@ -1514,11 +1517,11 @@ h6 {
   container-type: inline-size;
 }
 .poster-grid-responsive {
-  grid-template-columns: repeat(auto-fill, clamp(150px, 12cqw, 200px));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
 }
 .cv-auto-poster {
   content-visibility: auto;
-  contain-intrinsic-size: auto 260px; /* 150-200px wide poster card at 2:3 */
+  contain-intrinsic-size: auto 260px; /* minimum 150px wide poster card at 2:3 */
 }
 
 /* PWA safe area utilities for standalone mode on notched devices */
@@ -1774,22 +1777,84 @@ h6 {
 }
 @media (max-width: 768px) {
   .fc-scryer .fc-header-toolbar {
-    align-items: stretch;
-    gap: 0.75rem;
+    align-items: center;
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    margin-bottom: 0.9rem;
   }
   .fc-scryer .fc-toolbar-chunk {
     justify-content: center;
   }
+  .fc-scryer .fc-toolbar-chunk:first-child {
+    justify-content: flex-start;
+  }
+  .fc-scryer .fc-toolbar-chunk:last-child {
+    justify-content: flex-end;
+  }
+  .fc-scryer .fc-button {
+    font-size: 0.72rem;
+    padding: 0.42rem 0.58rem;
+  }
   .fc-scryer .fc-toolbar-title {
-    font-size: 1.35rem;
+    font-size: clamp(1.05rem, 5vw, 1.25rem);
+    text-align: center;
+    white-space: nowrap;
+  }
+  .fc-scryer .fc-scrollgrid {
+    border-radius: 0.75rem;
+  }
+  .fc-scryer .fc-col-header-cell-cushion {
+    font-size: 0.61rem;
+    letter-spacing: 0.04em;
+    padding: 0.4rem 0;
   }
   .fc-scryer .fc-daygrid-day-frame {
-    min-height: 108px;
+    min-height: 82px;
+    padding: 0.32rem 0.18rem 0.38rem;
+  }
+  .fc-scryer .fc-daygrid-day-top {
+    margin-bottom: 0.18rem;
+  }
+  .fc-scryer .fc-scryer-day-pill {
+    border-radius: 0.4rem;
+    font-size: 0.67rem;
+    height: 1.45rem;
+    min-width: 1.45rem;
+    padding: 0 0.25rem;
+  }
+  .fc-scryer .fc-daygrid-body-balanced .fc-daygrid-day-events,
+  .fc-scryer .fc-daygrid-body-natural .fc-daygrid-day-events {
+    margin: 0 0.14rem 0.28rem;
+  }
+  .fc-scryer .fc-daygrid-event-harness {
+    margin-top: 0.15rem;
+  }
+  .fc-scryer .fc-scryer-event::before {
+    width: 2px;
   }
   .fc-scryer .fc-scryer-event-card {
-    padding: 0.38rem 0.46rem 0.4rem;
+    padding: 0.28rem 0.24rem 0.3rem 0.38rem;
   }
-  .fc-scryer .fc-scryer-event-badge {
+  .fc-scryer .fc-scryer-event-title {
+    display: block;
+    font-size: 0.58rem;
+    line-height: 1.15;
+    margin-bottom: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .fc-scryer .fc-scryer-event-meta {
     display: none;
+  }
+  .fc-scryer .fc-scryer-more-link {
+    font-size: 0.58rem;
+    margin-top: 0.2rem;
+    max-width: 100%;
+    overflow: hidden;
+    padding: 0.2rem 0.28rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
