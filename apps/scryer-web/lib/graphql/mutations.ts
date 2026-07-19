@@ -1151,19 +1151,6 @@ export const queueManualImportMutation = `mutation QueueManualImport($input: Que
     clientType
     importId
     removed
-    queueItem {
-      id
-      titleId
-      titleName
-      clientId
-      clientType
-      downloadClientItemId
-      state
-      importStatus
-      importErrorCode
-      importErrorMessage
-      trackedState
-    }
   }
 }`;
 

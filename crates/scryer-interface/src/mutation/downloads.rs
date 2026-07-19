@@ -210,15 +210,6 @@ impl DownloadMutations {
             )
             .await
             .map_err(to_gql_error)?;
-        let queue_item = queue_item_payload_for_action(
-            &app,
-            &actor,
-            client_id.as_deref(),
-            Some(client_type.as_str()),
-            &download_client_item_id,
-        )
-        .await?;
-
         Ok(download_queue_action_payload(DownloadQueueActionParts {
             kind: DownloadQueueActionKindValue::QueuedManualImport,
             download_client_item_id,
@@ -227,7 +218,7 @@ impl DownloadMutations {
             import_id: Some(import_id),
             command_id: None,
             removed: false,
-            queue_item,
+            queue_item: None,
         }))
     }
 

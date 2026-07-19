@@ -641,6 +641,13 @@ impl AppUseCase {
             .collect::<HashMap<_, _>>();
         let subject_resolution_ids = discovery_home_subject_resolution_item_ids(result);
         replace_discovery_home_result_items(result, &hydrated_by_id, &subject_resolution_ids);
+        if let Some(hero_item) = &mut result.hero_item {
+            replace_discovery_home_item(
+                hero_item,
+                &hydrated_by_id,
+                subject_resolution_ids.contains(&hero_item.id),
+            );
+        }
         debug!(
             operation = "discovery_home",
             stage = "selected_hydration",
@@ -1308,6 +1315,15 @@ fn resolve_discovery_home_selected_subjects(
         .map(|item| (item.id.clone(), item))
         .collect::<HashMap<_, _>>();
     replace_discovery_home_result_items(result, &resolved_by_id, &subject_resolution_ids);
+    // The resolved copies originate from section items, which on the card-only
+    // path lack presentation fields; merge only what subject resolution
+    // produced so the hero keeps its dedicated hydration.
+    if let Some(hero_item) = &mut result.hero_item {
+        if let Some(resolved) = resolved_by_id.get(&hero_item.id) {
+            hero_item.matched_subject_titles = resolved.matched_subject_titles.clone();
+            hero_item.matched_subject_count = resolved.matched_subject_count;
+        }
+    }
     Ok(())
 }
 
@@ -1339,13 +1355,12 @@ fn replace_discovery_home_result_items(
             );
         }
     }
-    if let Some(hero_item) = &mut result.hero_item {
-        replace_discovery_home_item(
-            hero_item,
-            hydrated_by_id,
-            subject_resolution_ids.contains(&hero_item.id),
-        );
-    }
+    // The hero is deliberately NOT replaced here: on the card-only path the
+    // section copies carry the lean candidate projection (NULL background_url/
+    // overview), and a wholesale replace would discard the hero's dedicated
+    // presentation hydration. Callers that want the hero swapped do it
+    // explicitly (hydrate_discovery_home_result); subject resolution merges
+    // only its own outputs into the hero (resolve_discovery_home_selected_subjects).
 }
 
 fn replace_discovery_home_item(

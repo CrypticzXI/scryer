@@ -1451,6 +1451,7 @@ mod tests {
     struct TestImportRepo {
         import_record: Option<ImportRecord>,
         import_records: Vec<ImportRecord>,
+        queue_error: Option<String>,
         status_updates: Arc<Mutex<Vec<TestImportStatusUpdate>>>,
     }
 
@@ -1553,6 +1554,9 @@ mod tests {
             _: String,
             _: String,
         ) -> AppResult<String> {
+            if let Some(message) = self.queue_error.as_ref() {
+                return Err(AppError::Repository(message.clone()));
+            }
             Ok(String::new())
         }
 
@@ -3606,6 +3610,45 @@ mod tests {
         assert!(matches!(
             result,
             Err(AppError::Validation(message)) if message.contains("source_job_failed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn queue_manual_import_propagates_persistence_failure() {
+        let mut completed_item = build_client_item();
+        completed_item.client_type = "weaver".to_string();
+        completed_item.client_name = "weaver".to_string();
+        completed_item.download_client_item_id = "job-persistence-failure".to_string();
+        completed_item.state = DownloadQueueState::Completed;
+
+        let download_client = Arc::new(TestDownloadClient {
+            recent_activity: Arc::new(Mutex::new(vec![completed_item])),
+            ..Default::default()
+        });
+        let app = build_app_with_title_repo_and_download_client(
+            Arc::new(NullTitleRepository),
+            download_client,
+            Arc::new(TestDownloadSubmissionRepo::default()),
+            Arc::new(TestImportRepo {
+                queue_error: Some("manual import persistence failed".to_string()),
+                ..Default::default()
+            }),
+        );
+
+        let result = app
+            .queue_manual_import(
+                &trigger_user(),
+                None,
+                Some("client-1".to_string()),
+                "weaver".to_string(),
+                "job-persistence-failure".to_string(),
+                None,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::Repository(message)) if message == "manual import persistence failed"
         ));
     }
 

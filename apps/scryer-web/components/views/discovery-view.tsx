@@ -645,7 +645,7 @@ function DiscoveryHero({
         </>
       ) : null}
       <div className="relative flex min-h-[340px] flex-col p-6 sm:p-8 lg:h-full">
-        <div className="max-w-[min(72%,760px)] max-lg:max-w-[82%] max-sm:max-w-full">
+        <div className="max-w-[min(78%,760px)] max-sm:max-w-full">
           <div className="mb-3.5 flex flex-wrap gap-2">
             <span className="rounded-[7px] border border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.22)] px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.04em] text-[#c3c9ff]">
               {t("discovery.featured")}
@@ -692,12 +692,12 @@ function DiscoveryHero({
             variant="hero"
           />
           {item.overview ? (
-            <p className="m-0 line-clamp-2 max-w-[620px] text-[13.5px] leading-6 text-[#b7c0dd] sm:line-clamp-3 xl:line-clamp-4">
+            <p className="m-0 line-clamp-2 max-w-[620px] text-[13.5px] leading-6 text-[#b7c0dd] sm:line-clamp-3 lg:max-2xl:hidden 2xl:line-clamp-4">
               {item.overview}
             </p>
           ) : null}
           {genres.length > 0 ? (
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-2 lg:max-2xl:hidden">
               {genres.map((genre) => (
                 <span
                   key={genre}
@@ -1654,7 +1654,7 @@ export function DiscoveryView({
         ) : null}
 
         {heroItem ? (
-          <div className="mb-7 grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-stretch gap-5 max-lg:grid-cols-1 lg:min-h-[clamp(440px,46vh,520px)]">
+          <div className="mb-7 grid grid-cols-1 items-stretch gap-5 lg:grid-cols-[minmax(0,clamp(30rem,42vw,50rem))_minmax(0,1fr)] lg:min-h-[clamp(440px,46vh,520px)]">
             <DiscoveryHero
               item={heroItem}
               canManageTitle={
