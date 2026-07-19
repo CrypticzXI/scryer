@@ -82,6 +82,7 @@ export function TitleWorkspaceActionButton({
   loading = false,
   destructive = false,
   active = false,
+  pressed,
   disabled = false,
   expanded,
   controlsId,
@@ -93,6 +94,7 @@ export function TitleWorkspaceActionButton({
   loading?: boolean;
   destructive?: boolean;
   active?: boolean;
+  pressed?: boolean;
   disabled?: boolean;
   expanded?: boolean;
   controlsId?: string;
@@ -105,6 +107,7 @@ export function TitleWorkspaceActionButton({
       id={id}
       type="button"
       aria-label={label}
+      aria-pressed={pressed}
       aria-expanded={expanded}
       aria-controls={controlsId}
       className={cn(

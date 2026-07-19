@@ -1390,9 +1390,15 @@ function TitleContextPanel({
 
         <TitleWorkspaceActionGrid>
           <TitleWorkspaceActionButton
+            id="title-overview-toggle-monitoring"
             icon={title.monitored ? EyeOff : Eye}
-            label={t("title.monitorAction")}
+            label={
+              title.monitored
+                ? t("title.unmonitorAction")
+                : t("title.monitorAction")
+            }
             active={title.monitored}
+            pressed={title.monitored}
             loading={isTogglingMonitored}
             disabled={bulkActionBusy || !onToggleMonitored}
             onClick={() => void onToggleMonitored?.(title, !title.monitored)}
