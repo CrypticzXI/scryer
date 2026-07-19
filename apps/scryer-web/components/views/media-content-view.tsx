@@ -140,7 +140,10 @@ import {
   type TitleTableSortKey,
   type TitleTableVisibleColumns,
 } from "./media-content/title-table-shared";
-import { titleOverviewViewModeId } from "@/lib/utils/dom-ids";
+import {
+  titleOverviewSearchButtonId,
+  titleOverviewViewModeId,
+} from "@/lib/utils/dom-ids";
 import {
   hasActiveTitleQuickFilters,
   TitleQuickFilterBar,
@@ -1395,6 +1398,7 @@ function TitleContextPanel({
             onClick={() => void onToggleMonitored?.(title, !title.monitored)}
           />
           <TitleWorkspaceActionButton
+            id={titleOverviewSearchButtonId(title.id)}
             icon={Zap}
             label={t("label.search")}
             loading={autoQueueLoading}

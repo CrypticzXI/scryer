@@ -76,6 +76,7 @@ export function TitleWorkspaceActionGrid({
 }
 
 export function TitleWorkspaceActionButton({
+  id,
   icon: Icon,
   label,
   loading = false,
@@ -86,6 +87,7 @@ export function TitleWorkspaceActionButton({
   controlsId,
   onClick,
 }: {
+  id?: string;
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   loading?: boolean;
@@ -100,6 +102,7 @@ export function TitleWorkspaceActionButton({
 
   return (
     <button
+      id={id}
       type="button"
       aria-label={label}
       aria-expanded={expanded}
