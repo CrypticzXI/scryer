@@ -1,0 +1,7 @@
+[test-groups.wasm-integration]
+max-threads = 2
+
+[[profile.default.overrides]]
+filter = 'package(scryer-plugins) & binary(wasm_integration)'
+test-group = 'wasm-integration'
+retries = 1
