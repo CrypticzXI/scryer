@@ -296,7 +296,6 @@ function orderedHomeSections(home: DiscoveryHomePayload | null) {
     ...WEEKLY_FOR_YOU_SECTION_TYPES.flatMap(takePersonalizedSections),
     ...takePersonalizedSections("BECAUSE_YOU_LIKE_GENRE"),
     ...takePersonalizedSections("BECAUSE_YOU_LIKE_TAG"),
-    ...takePersonalizedSections("TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY"),
   ];
   const unknownPersonalizedSections = personalizedSections.filter(
     (section) =>

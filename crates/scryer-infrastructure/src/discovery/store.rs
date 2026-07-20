@@ -2935,15 +2935,10 @@ fn home_candidate_from_row(row: &SqlRow) -> AppResult<DiscoveryHomeCandidate> {
         discovery_title_id: row.text("discovery_title_id")?,
         matched_subject_keys: Vec::new(),
         affinity_terms: Vec::new(),
-        acclaim_signals: Vec::new(),
         has_hero_backdrop: row.bool("has_hero_backdrop")?,
         rating_source_count: 0,
-        scored_rating_source_count: 0,
         best_external_rating: None,
         best_external_rating_votes: 0,
-        max_audience_rating_votes: 0,
-        best_metacritic_rating: None,
-        best_tomatometer_rating: None,
     })
 }
 
@@ -2993,29 +2988,6 @@ async fn hydrate_discovery_home_candidate_selection(
         }
     }
 
-    let acclaim_rows = fetch_child_rows(
-        datastore,
-        "SELECT discovery_title_id, term_category, term_value, sort_index
-             FROM discovery_title_terms
-             WHERE discovery_title_id IN ({})
-               AND term_kind = 'acclaim_signal'
-             ORDER BY discovery_title_id ASC, sort_index ASC, term_value ASC",
-        &title_ids,
-    )
-    .await?;
-    for row in acclaim_rows {
-        let title_id = row.text("discovery_title_id")?;
-        let Some(indexes) = title_indexes.get(&title_id) else {
-            continue;
-        };
-        let signal = row
-            .opt_text("term_category")?
-            .unwrap_or(row.text("term_value")?);
-        for index in indexes {
-            candidates[*index].acclaim_signals.push(signal.clone());
-        }
-    }
-
     let matched_rows = fetch_child_rows(
         datastore,
         "SELECT item_id, subject_key, sort_index
@@ -3058,8 +3030,6 @@ async fn hydrate_discovery_home_candidate_ratings(
     let mut title_ids = title_indexes.keys().cloned().collect::<Vec<_>>();
     title_ids.sort();
     let source_identity = rating_source_identity_sql("sources.source");
-    let scored_source_identity = rating_source_identity_sql("external.source");
-    let external_source = normalized_rating_source_sql("external.source");
     let rows = fetch_child_rows(
         datastore,
         &format!(
@@ -3078,14 +3048,6 @@ async fn hydrate_discovery_home_candidate_ratings(
                         ) sources
                         WHERE TRIM(sources.source) <> ''
                     ), 0) AS rating_source_count,
-                    COALESCE((
-                        SELECT COUNT(DISTINCT {scored_source_identity})
-                        FROM discovery_title_metadata_external_ratings external
-                        WHERE TRIM(external.source) <> ''
-                          AND external.discovery_title_id = t.id
-                          AND external.normalized IS NOT NULL
-                          AND external.normalized > 0
-                    ), 0) AS scored_rating_source_count,
                     (
                         SELECT MAX(CASE WHEN external.normalized <= 1.0
                                         THEN external.normalized * 10.0
@@ -3101,42 +3063,7 @@ async fn hydrate_discovery_home_candidate_ratings(
                         WHERE external.discovery_title_id = t.id
                           AND external.normalized IS NOT NULL
                           AND external.normalized > 0
-                    ), 0) AS best_external_rating_votes,
-                    COALESCE((
-                        SELECT MAX(COALESCE(external.votes, 0))
-                        FROM discovery_title_metadata_external_ratings external
-                        WHERE external.discovery_title_id = t.id
-                          AND external.normalized IS NOT NULL
-                          AND external.normalized > 0
-                          AND {external_source} NOT IN (
-                              'metacritic', 'metacriticcritic',
-                              'rottentomatoes', 'rottentomatoescritic',
-                              'tomatoes', 'tomatometer'
-                          )
-                    ), 0) AS max_audience_rating_votes,
-                    (
-                        SELECT MAX(CASE WHEN external.normalized <= 1.0
-                                        THEN external.normalized * 10.0
-                                        ELSE external.normalized END)
-                        FROM discovery_title_metadata_external_ratings external
-                        WHERE external.discovery_title_id = t.id
-                          AND external.normalized IS NOT NULL
-                          AND external.normalized > 0
-                          AND {external_source} IN ('metacritic', 'metacriticcritic')
-                    ) AS best_metacritic_rating,
-                    (
-                        SELECT MAX(CASE WHEN external.normalized <= 1.0
-                                        THEN external.normalized * 10.0
-                                        ELSE external.normalized END)
-                        FROM discovery_title_metadata_external_ratings external
-                        WHERE external.discovery_title_id = t.id
-                          AND external.normalized IS NOT NULL
-                          AND external.normalized > 0
-                          AND {external_source} IN (
-                              'rottentomatoes', 'rottentomatoescritic',
-                              'tomatoes', 'tomatometer'
-                          )
-                    ) AS best_tomatometer_rating
+                    ), 0) AS best_external_rating_votes
              FROM discovery_titles t
              LEFT JOIN discovery_title_metadata_rating_summaries summary
                ON summary.discovery_title_id = t.id
@@ -3153,15 +3080,9 @@ async fn hydrate_discovery_home_candidate_ratings(
         for index in indexes {
             candidates[*index].item.rating = row.opt_f64("rating")?;
             candidates[*index].rating_source_count = row.i64("rating_source_count")? as i32;
-            candidates[*index].scored_rating_source_count =
-                row.i64("scored_rating_source_count")? as i32;
             candidates[*index].best_external_rating = row.opt_f64("best_external_rating")?;
             candidates[*index].best_external_rating_votes =
                 row.i64("best_external_rating_votes")? as i32;
-            candidates[*index].max_audience_rating_votes =
-                row.i64("max_audience_rating_votes")? as i32;
-            candidates[*index].best_metacritic_rating = row.opt_f64("best_metacritic_rating")?;
-            candidates[*index].best_tomatometer_rating = row.opt_f64("best_tomatometer_rating")?;
         }
     }
     Ok(())
@@ -3754,7 +3675,6 @@ fn item_from_row(row: &SqlRow) -> AppResult<DiscoveryItemRecord> {
         relation_subtypes: Vec::new(),
         chart_signals: Vec::new(),
         provider_signals: Vec::new(),
-        acclaim_signals: Vec::new(),
         rank_components: Vec::new(),
         source_count: row.opt_i32("source_count")?,
         edge_count: row.opt_i32("edge_count")?,
@@ -3998,7 +3918,6 @@ async fn hydrate_title_terms(
                 "relation_subtype" => item.relation_subtypes.push(term_value.clone()),
                 "chart_signal" => item.chart_signals.push(term_value.clone()),
                 "provider_signal" => item.provider_signals.push(term_value.clone()),
-                "acclaim_signal" => item.acclaim_signals.push(term_value.clone()),
                 "facet_term" => item.facet_terms.push(term_value.clone()),
                 "context_term" => item.context_terms.push(term_value.clone()),
                 "studio" => item.studio_slug = Some(term_value.clone()),
@@ -4675,16 +4594,6 @@ async fn insert_title_children_tx(
         &item.provider_signals,
     )
     .await?;
-    for signal in &item.acclaim_signals {
-        insert_title_terms_tx(
-            tx,
-            discovery_title_id,
-            "acclaim_signal",
-            Some(signal),
-            std::slice::from_ref(signal),
-        )
-        .await?;
-    }
     insert_title_terms_tx(
         tx,
         discovery_title_id,
@@ -6226,7 +6135,6 @@ mod tests {
                         relation_subtypes: Vec::new(),
                         chart_signals: vec!["trending".to_string()],
                         provider_signals: Vec::new(),
-                        acclaim_signals: vec!["award_winner".to_string()],
                         rank_components: vec![DiscoveryRankComponentRecord {
                             component_index: 0,
                             component_name: Some("score".to_string()),
@@ -6307,7 +6215,6 @@ mod tests {
                         relation_subtypes: Vec::new(),
                         chart_signals: Vec::new(),
                         provider_signals: Vec::new(),
-                        acclaim_signals: Vec::new(),
                         rank_components: Vec::new(),
                         source_count: Some(1),
                         edge_count: Some(0),
@@ -6381,7 +6288,6 @@ mod tests {
         assert_eq!(read_item.canonical_tags[0].category, "genre");
         assert_eq!(read_item.canonical_tags[0].name, "Drama");
         assert_eq!(read_item.rating_sources, vec!["tmdb".to_string()]);
-        assert_eq!(read_item.acclaim_signals, vec!["award_winner".to_string()]);
         assert_eq!(read_item.external_ratings.len(), 1);
         assert_eq!(read_item.external_ratings[0].source, "imdb");
         assert_eq!(read_item.external_ratings[0].normalized, 0.82);
@@ -7210,15 +7116,10 @@ mod tests {
                 discovery_title_id,
                 matched_subject_keys: Vec::new(),
                 affinity_terms: Vec::new(),
-                acclaim_signals: Vec::new(),
                 has_hero_backdrop: false,
                 rating_source_count: 0,
-                scored_rating_source_count: 0,
                 best_external_rating: None,
                 best_external_rating_votes: 0,
-                max_audience_rating_votes: 0,
-                best_metacritic_rating: None,
-                best_tomatometer_rating: None,
             });
         }
 
@@ -7269,26 +7170,6 @@ mod tests {
         item.target_key = "tmdb:movie:10".to_string();
         item.poster_url = Some("https://example.com/poster.jpg".to_string());
         item.facet_terms = vec!["canonical:genre:drama".to_string()];
-        item.acclaim_signals = vec!["award_winner".to_string()];
-        item.rating = Some(8.3);
-        item.external_ratings = vec![
-            TitleExternalRating {
-                source: "metacritic".to_string(),
-                value: Some(82.0),
-                score: Some(82.0),
-                normalized: 0.82,
-                votes: Some(250),
-                url: String::new(),
-            },
-            TitleExternalRating {
-                source: "imdb".to_string(),
-                value: Some(8.4),
-                score: Some(8.4),
-                normalized: 0.84,
-                votes: Some(12_000),
-                url: String::new(),
-            },
-        ];
         item.library_provenance = vec![DiscoveryItemLibraryProvenanceRecord {
             subject_key: "tmdb:movie:10".to_string(),
             title_id: Some("library-title-10".to_string()),
@@ -7317,14 +7198,6 @@ mod tests {
             candidates[0].affinity_terms,
             vec!["canonical:genre:drama".to_string()]
         );
-        assert_eq!(
-            candidates[0].acclaim_signals,
-            vec!["award_winner".to_string()]
-        );
-        assert_eq!(candidates[0].scored_rating_source_count, 2);
-        assert_eq!(candidates[0].max_audience_rating_votes, 12_000);
-        assert_eq!(candidates[0].best_metacritic_rating, Some(8.2));
-        assert_eq!(candidates[0].best_tomatometer_rating, None);
 
         let _ = std::fs::remove_file(db);
     }
@@ -7472,7 +7345,6 @@ mod tests {
             relation_subtypes: Vec::new(),
             chart_signals: Vec::new(),
             provider_signals: Vec::new(),
-            acclaim_signals: Vec::new(),
             rank_components: Vec::new(),
             source_count: Some(1),
             edge_count: Some(0),

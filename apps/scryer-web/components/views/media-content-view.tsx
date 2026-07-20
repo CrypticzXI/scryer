@@ -253,6 +253,14 @@ function mediaTitleLabel(view: ViewId, t: Translate): string {
   return t("nav.series");
 }
 
+function managedStorageSummary(rawBytes: number): string {
+  const gigabytes = rawBytes / (1024 * 1024 * 1024);
+  if (gigabytes >= 2000) {
+    return `${(gigabytes / 1024).toFixed(2)} TB`;
+  }
+  return `${gigabytes.toFixed(2)} GB`;
+}
+
 
 function useMinViewportWidth(query: string) {
   const [matches, setMatches] = React.useState(() =>
@@ -2077,6 +2085,8 @@ export function MediaContentView({
     setTitleFilter,
     refreshTitles,
     titleLoading,
+    catalogTotalTitleCount,
+    catalogManagedBytes,
     catalogHasMoreTitles,
     catalogLoadingMoreTitles,
     loadMoreCatalogTitles,
@@ -2945,6 +2955,10 @@ export function MediaContentView({
     titleFilter.trim().length > 0 ||
     hasActiveTitleQuickFilters(titleQuickFilters, quickFilterView);
   const showEmptyStateActions = !hasActiveTitleDisplayFilters;
+  const knownCatalogTitleCount = Math.max(
+    titleQuickFilterCounts.all,
+    catalogTotalTitleCount,
+  );
 
   const handleDeleteCatalogTitle = React.useCallback(
     (title: TitleRecord) => {
@@ -2953,6 +2967,16 @@ export function MediaContentView({
     [deleteCatalogTitle],
   );
   const mediaTitle = mediaTitleLabel(view, t);
+  const titleSummaryNoun = (() => {
+    if (view === "movies") {
+      return knownCatalogTitleCount === 1 ? "title" : "titles";
+    }
+    return view === "series" ? "series" : "anime";
+  })();
+  const mediaSummary = [
+    `${knownCatalogTitleCount.toLocaleString()} ${titleSummaryNoun}`,
+    managedStorageSummary(Math.max(0, catalogManagedBytes)),
+  ].join(" · ");
 
   const [libraryRoutingWide, setLibraryRoutingWide] = React.useState(false);
   const [libraryCrumb, setLibraryCrumb] = React.useState<string | null>(null);
@@ -3097,6 +3121,9 @@ export function MediaContentView({
           <h1 className="text-[22px] font-bold leading-tight tracking-normal text-[var(--scry-ink2)]">
             {mediaTitle}
           </h1>
+          <p className="mt-1 hidden text-[12.5px] text-[var(--scry-muted3)] sm:block">
+            {mediaSummary}
+          </p>
         </div>
         <div
           className={cn(

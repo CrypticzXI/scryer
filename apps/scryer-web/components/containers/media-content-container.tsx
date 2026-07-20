@@ -2921,8 +2921,11 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       refreshedAt: now,
       sessionIds,
     };
-    void refreshLoadedCatalogTitlesQuietly({ firstPageOnly: true });
+    void refreshLoadedCatalogTitlesQuietly({
+      firstPageOnly: effectiveViewMode !== "poster",
+    });
   }, [
+    effectiveViewMode,
     relevantActiveLibraryScanSessions,
     refreshLoadedCatalogTitlesQuietly,
     refreshTitleCatalogFilterOptions,

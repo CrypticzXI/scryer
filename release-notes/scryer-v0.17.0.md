@@ -50,7 +50,7 @@ The old route-command palette has been replaced by one desktop/mobile Global Sea
 
 Discovery is now a persistent part of Scryer rather than a one-off metadata lookup.
 
-- The new home combines a hero with trending, upcoming, new-on-streaming, new-on-physical, personalized weekly, genre, theme/tag, acclaimed, collection-completion, and anime-aware rails.
+- The new home combines a hero with trending, upcoming, new-on-streaming, new-on-physical, personalized weekly, genre, theme/tag, collection-completion, and anime-aware rails.
 - Discovery detail and “More Like This” recommendations carry canonical identity, ratings, artwork, source context, and enough authorization information to add, request, or open the right title.
 - Server-backed filters cover content type, genre, theme/tag, studio, year, and minimum rating. Duplicate, invalid, already-managed, and facet-inappropriate items are removed before display.
 - Scryer stores Discovery snapshots, public-feed generations, incremental and pending changes, run history, acknowledgements, fingerprints, cursors, leases, and retry state so the experience survives restarts cleanly.
