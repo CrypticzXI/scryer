@@ -577,6 +577,89 @@ async fn update_non_default_library_rederives_slug_from_name() {
 }
 
 #[tokio::test]
+async fn import_paths_use_facet_scoped_rename_templates() {
+    let (app, user) = bootstrap();
+    let movie_template = "MOVIE-{title}-{quality}.{ext}";
+    let series_template = "SERIES-{title}-S{season:2}E{episode:2}-{quality}.{ext}";
+
+    for (facet, template) in [
+        (MediaFacet::Movie, movie_template),
+        (MediaFacet::Series, series_template),
+    ] {
+        app.update_media_settings(
+            &user,
+            facet,
+            UpdateMediaSettings {
+                rename_template: Some(template.to_string()),
+                ..empty_update_media_settings()
+            },
+        )
+        .await
+        .expect("facet rename template should update");
+    }
+
+    let movie = app
+        .create_title_without_hydration_in_library(
+            &user,
+            NewTitle::with_defaults("Scoped Rename Movie", MediaFacet::Movie),
+            scryer_domain::default_library_id_for_facet(&MediaFacet::Movie),
+        )
+        .await
+        .expect("movie title should be created")
+        .title;
+    let series = app
+        .create_title_without_hydration_in_library(
+            &user,
+            NewTitle::with_defaults("Scoped Rename Series", MediaFacet::Series),
+            scryer_domain::default_library_id_for_facet(&MediaFacet::Series),
+        )
+        .await
+        .expect("series title should be created")
+        .title;
+
+    let movie_paths = crate::import_workflow::resolve_import_paths(&app, &movie)
+        .await
+        .expect("movie import paths should resolve");
+    let series_paths = crate::import_workflow::resolve_import_paths(&app, &series)
+        .await
+        .expect("series import paths should resolve");
+
+    assert_eq!(movie_paths.rename_template, movie_template);
+    assert_eq!(series_paths.rename_template, series_template);
+}
+
+#[tokio::test]
+async fn rename_template_resolution_preserves_legacy_facet_fallback() {
+    let (app, _) = bootstrap();
+    let legacy_movie_template = "LEGACY-{title}-{quality}.{ext}";
+    app.services
+        .config
+        .settings
+        .upsert_setting_json(
+            SETTINGS_SCOPE_SYSTEM,
+            RENAME_TEMPLATE_MOVIE_GLOBAL_KEY,
+            None,
+            serde_json::to_string(legacy_movie_template).expect("serialize legacy template"),
+            "test",
+            None,
+        )
+        .await
+        .expect("legacy movie template should save");
+
+    let movie_template = app
+        .resolve_rename_template(&MediaFacet::Movie)
+        .await
+        .expect("movie template should resolve");
+    let series_template = app
+        .resolve_rename_template(&MediaFacet::Series)
+        .await
+        .expect("series template should resolve");
+
+    assert_eq!(movie_template, legacy_movie_template);
+    assert_ne!(series_template, legacy_movie_template);
+}
+
+#[tokio::test]
 async fn library_sidecar_settings_resolve_facet_defaults_and_library_overrides() {
     let (app, user) = bootstrap();
     let series_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);

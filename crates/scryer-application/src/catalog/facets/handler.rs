@@ -39,34 +39,26 @@ pub(crate) fn external_ids_from_hydration_metadata(
 #[derive(Clone, Copy)]
 pub struct RenameFacetSettings {
     pub scope_id: &'static str,
-    pub template_key: &'static str,
     pub collision_policy_key: &'static str,
     pub missing_metadata_policy_key: &'static str,
-    pub default_template: &'static str,
 }
 
 pub fn rename_facet_settings(facet: &MediaFacet) -> RenameFacetSettings {
     match facet {
         MediaFacet::Movie => RenameFacetSettings {
             scope_id: "movie",
-            template_key: "rename.template.movie.global",
             collision_policy_key: "rename.collision_policy.movie.global",
             missing_metadata_policy_key: "rename.missing_metadata_policy.movie.global",
-            default_template: "{title} ({year}) - {quality}.{ext}",
         },
         MediaFacet::Series => RenameFacetSettings {
             scope_id: "series",
-            template_key: "rename.template.series.global",
             collision_policy_key: "rename.collision_policy.series.global",
             missing_metadata_policy_key: "rename.missing_metadata_policy.series.global",
-            default_template: "{title} - S{season:2}E{episode:2} - {quality}.{ext}",
         },
         MediaFacet::Anime => RenameFacetSettings {
             scope_id: "anime",
-            template_key: "rename.template.anime.global",
             collision_policy_key: "rename.collision_policy.anime.global",
             missing_metadata_policy_key: "rename.missing_metadata_policy.anime.global",
-            default_template: "{title} - S{season_order:2}E{episode:2} ({absolute_episode}) - {quality}.{ext}",
         },
     }
 }
@@ -389,7 +381,6 @@ mod tests {
     fn rename_facet_settings_for_anime_use_anime_scope_and_keys() {
         let settings = rename_facet_settings(&MediaFacet::Anime);
         assert_eq!(settings.scope_id, "anime");
-        assert_eq!(settings.template_key, "rename.template.anime.global");
         assert_eq!(
             settings.collision_policy_key,
             "rename.collision_policy.anime.global"
@@ -404,7 +395,6 @@ mod tests {
     fn rename_facet_settings_for_series_remain_series_owned() {
         let settings = rename_facet_settings(&MediaFacet::Series);
         assert_eq!(settings.scope_id, "series");
-        assert_eq!(settings.template_key, "rename.template.series.global");
         assert_eq!(
             settings.collision_policy_key,
             "rename.collision_policy.series.global"

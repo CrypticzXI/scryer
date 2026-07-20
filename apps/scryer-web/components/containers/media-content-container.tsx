@@ -91,6 +91,7 @@ import {
   type CatalogRootValidationState,
   type CatalogSurfacePhase,
 } from "@/lib/utils/catalog-bootstrap-policy";
+import { isMediaSettingsSection } from "@/lib/utils/routes";
 import { useBulkDelete } from "@/lib/hooks/use-bulk-delete";
 import { useDownloadClientRouting } from "@/lib/hooks/use-download-client-routing";
 import { useIndexerRouting } from "@/lib/hooks/use-indexer-routing";
@@ -1007,10 +1008,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const shouldLoadCatalogTitles =
     isMediaView && contentSettingsSection === "overview";
   const shouldLoadMediaSettingsForSection =
-    isMediaView &&
-    (contentSettingsSection === "library" ||
-      contentSettingsSection === "general" ||
-      contentSettingsSection === "routing");
+    isMediaView && isMediaSettingsSection(contentSettingsSection);
   const refreshCatalogDiscovery = React.useCallback(async () => {
     const requestId = catalogDiscoveryRequestIdRef.current + 1;
     catalogDiscoveryRequestIdRef.current = requestId;

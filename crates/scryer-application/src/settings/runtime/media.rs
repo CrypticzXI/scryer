@@ -271,6 +271,21 @@ impl AppUseCase {
             .unwrap_or(true))
     }
 
+    pub(crate) async fn resolve_rename_template(
+        &self,
+        facet: &MediaFacet,
+    ) -> AppResult<String> {
+        let scoped = self
+            .read_setting_string_value(RENAME_TEMPLATE_KEY, Some(facet.as_str()))
+            .await?;
+        let legacy = self
+            .read_setting_string_value(rename_template_global_key(facet), None)
+            .await?;
+        Ok(scoped
+            .or(legacy)
+            .unwrap_or_else(|| default_rename_template(facet).to_string()))
+    }
+
     pub(crate) async fn resolve_import_mode(
         &self,
         library_id: Option<&str>,
@@ -469,21 +484,13 @@ impl AppUseCase {
         let root_folders = self.root_folders_for_facet(&facet).await?;
         let library_path = default_path_from_root_folders(&facet, &root_folders);
         let rename_enabled = self.resolve_rename_enabled(&facet).await?;
-        let scoped_rename_template = self
-            .read_setting_string_value(RENAME_TEMPLATE_KEY, Some(facet.as_str()))
-            .await?;
-        let global_rename_template = self
-            .read_setting_string_value(rename_template_global_key(&facet), None)
-            .await?;
+        let rename_template = self.resolve_rename_template(&facet).await?;
         let folder_template = crate::normalize_title_folder_template_or_default(
             self.read_setting_string_value(FOLDER_TEMPLATE_KEY, Some(facet.as_str()))
                 .await?,
             default_folder_template(&facet),
             facet.as_str(),
         );
-        let rename_template = scoped_rename_template
-            .or(global_rename_template)
-            .unwrap_or_else(|| default_rename_template(&facet).to_string());
         let scoped_collision_policy = self
             .read_setting_string_value(RENAME_COLLISION_POLICY_KEY, Some(facet.as_str()))
             .await?;

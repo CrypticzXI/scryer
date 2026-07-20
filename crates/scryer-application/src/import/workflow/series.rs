@@ -851,18 +851,10 @@ pub(crate) async fn resolve_import_paths(
     app: &AppUseCase,
     title: &scryer_domain::Title,
 ) -> AppResult<ImportPathSettings> {
-    let rename_settings = crate::facet_handler::rename_facet_settings(&title.facet);
     let media_root = app.title_root_folder_path_override(title).await?;
 
     let rename_enabled = app.resolve_rename_enabled(&title.facet).await?;
-    let rename_template = app
-        .read_setting_string_value_for_scope(
-            super::SETTINGS_SCOPE_SYSTEM,
-            rename_settings.template_key,
-            None,
-        )
-        .await?
-        .unwrap_or_else(|| rename_settings.default_template.to_string());
+    let rename_template = app.resolve_rename_template(&title.facet).await?;
     let folder_template = app
         .read_setting_string_value_for_scope(
             super::SETTINGS_SCOPE_SYSTEM,
