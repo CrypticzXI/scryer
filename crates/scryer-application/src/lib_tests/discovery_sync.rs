@@ -389,7 +389,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     );
     drama_two.matched_subject_keys = linked_subject_keys.clone();
     drama_two.rating = Some(8.7);
-    drama_two.status_tags = vec!["Award Winning".to_string()];
+    drama_two.acclaim_signals = vec!["award_winner".to_string()];
     let mut acclaimed_sci_fi = discovery_item_record(
         "context-run",
         "context-run",
@@ -405,6 +405,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     );
     acclaimed_sci_fi.matched_subject_keys = linked_subject_keys.clone();
     acclaimed_sci_fi.rating = Some(9.1);
+    acclaimed_sci_fi.acclaim_signals = vec!["award_winner".to_string()];
     let mut horror_item = discovery_item_record(
         "context-run",
         "context-run",
@@ -419,6 +420,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         true,
     );
     horror_item.matched_subject_keys = linked_subject_keys.clone();
+    horror_item.acclaim_signals = vec!["award_winner".to_string()];
     let mut isekai_item = discovery_item_record(
         "context-run",
         "context-run",
@@ -511,6 +513,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         true,
     );
     acclaimed_mystery.rating = Some(9.2);
+    acclaimed_mystery.acclaim_signals = vec!["award_winner".to_string()];
     let mut collection_signal_movie = discovery_item_record(
         "context-run",
         "context-run",
@@ -4991,6 +4994,8 @@ impl MetadataGateway for SnapshotMetadataGateway {
     }
 }
 
+type HomeHeroPresentation = HashMap<String, (Option<String>, Option<String>)>;
+
 #[derive(Default)]
 struct RecordingDiscoveryRepository {
     state: Mutex<Option<DiscoverySyncStateRecord>>,
@@ -5012,7 +5017,7 @@ struct RecordingDiscoveryRepository {
     // (background_url, overview). Mirrors production, where home candidates are
     // loaded with the lean projection and only the dedicated hero hydration
     // reads these columns from discovery_titles.
-    home_hero_presentation: Mutex<HashMap<String, (Option<String>, Option<String>)>>,
+    home_hero_presentation: Mutex<HomeHeroPresentation>,
     personalized_facet_calls: Mutex<usize>,
 }
 
@@ -6095,15 +6100,50 @@ fn recording_home_candidate(item: DiscoveryItemRecord) -> DiscoveryHomeCandidate
         .filter_map(|rating| rating.votes)
         .max()
         .unwrap_or_default();
+    let scored_rating_source_count = item
+        .external_ratings
+        .iter()
+        .filter(|rating| rating.normalized.is_finite() && rating.normalized > 0.0)
+        .map(|rating| rating.source.trim().to_ascii_lowercase())
+        .collect::<HashSet<_>>()
+        .len() as i32;
+    let normalized_score = |rating: &crate::TitleExternalRating| {
+        if rating.normalized <= 1.0 {
+            rating.normalized * 10.0
+        } else {
+            rating.normalized
+        }
+    };
+    let best_metacritic_rating = item
+        .external_ratings
+        .iter()
+        .filter(|rating| rating.source.eq_ignore_ascii_case("metacritic"))
+        .map(normalized_score)
+        .max_by(f64::total_cmp);
+    let best_tomatometer_rating = item
+        .external_ratings
+        .iter()
+        .filter(|rating| {
+            matches!(
+                rating.source.to_ascii_lowercase().as_str(),
+                "rottentomatoes" | "tomatoes" | "tomatometer"
+            )
+        })
+        .map(normalized_score)
+        .max_by(f64::total_cmp);
     DiscoveryHomeCandidate {
         discovery_title_id: format!("recording:{}", item.id),
         matched_subject_keys: item.matched_subject_keys.clone(),
         affinity_terms: item.facet_terms.clone(),
-        has_acclaim_signal: false,
+        acclaim_signals: item.acclaim_signals.clone(),
         has_hero_backdrop,
         rating_source_count,
+        scored_rating_source_count,
         best_external_rating,
         best_external_rating_votes,
+        max_audience_rating_votes: best_external_rating_votes,
+        best_metacritic_rating,
+        best_tomatometer_rating,
         item,
     }
 }
@@ -6521,6 +6561,7 @@ fn discovery_item_record(
             .collect(),
         chart_signals: Vec::new(),
         provider_signals: Vec::new(),
+        acclaim_signals: Vec::new(),
         rank_components: Vec::new(),
         source_count: Some(1),
         edge_count: Some(1),

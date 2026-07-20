@@ -176,7 +176,7 @@ impl AppUseCase {
         }
 
         match self
-            .resolve_manual_import_source(
+            .resolve_manual_import_source_for_queue(
                 client_id.as_deref(),
                 Some(normalized_client_type.as_str()),
                 &source_ref,
@@ -340,6 +340,7 @@ impl AppUseCase {
         )
         .await?;
 
-        crate::import_workflow::import_completed_download(self, actor, &completed).await
+        crate::import_workflow::import_completed_download_for_manual_review(self, actor, &completed)
+            .await
     }
 }

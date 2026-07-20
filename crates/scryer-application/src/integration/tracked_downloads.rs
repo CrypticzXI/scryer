@@ -3614,6 +3614,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queue_manual_import_uses_tracked_blocked_source_without_live_feedback() {
+        let mut blocked_item = build_client_item();
+        blocked_item.client_type = "weaver".to_string();
+        blocked_item.client_name = "weaver".to_string();
+        blocked_item.download_client_item_id = "job-tracked-blocked".to_string();
+        blocked_item.state = DownloadQueueState::Completed;
+
+        let app = build_app(
+            Arc::new(TestDownloadSubmissionRepo::default()),
+            Arc::new(TestImportRepo::default()),
+        );
+        app.runtime
+            .acquisition
+            .tracked_download_snapshot
+            .write()
+            .await
+            .insert(
+                "tracked-job-tracked-blocked".to_string(),
+                TrackedDownloadQueueMetadata {
+                    client_item: blocked_item,
+                    client_id: "client-1".to_string(),
+                    client_type: "weaver".to_string(),
+                    title_id: None,
+                    facet: None,
+                    source_title: None,
+                    state: TrackedDownloadState::ImportBlocked,
+                    status: TrackedDownloadStatus::Warning,
+                    status_messages: Vec::new(),
+                    match_type: TitleMatchType::Unmatched,
+                },
+            );
+
+        let result = app
+            .queue_manual_import(
+                &trigger_user(),
+                None,
+                Some("client-1".to_string()),
+                "weaver".to_string(),
+                "job-tracked-blocked".to_string(),
+                None,
+            )
+            .await;
+
+        assert!(result.is_ok(), "tracked manual import failed: {result:?}");
+    }
+
+    #[tokio::test]
     async fn queue_manual_import_propagates_persistence_failure() {
         let mut completed_item = build_client_item();
         completed_item.client_type = "weaver".to_string();

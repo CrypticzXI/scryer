@@ -3,7 +3,42 @@ pub async fn import_completed_download(
     actor: &User,
     completed: &CompletedDownload,
 ) -> AppResult<ImportResult> {
-    let request = match prepare_completed_import_request(app, completed).await? {
+    import_completed_download_with_identity_policy(
+        app,
+        actor,
+        completed,
+        CompletedImportIdentityPolicy::RequireSubmission,
+    )
+    .await
+}
+
+pub async fn import_completed_download_for_manual_review(
+    app: &AppUseCase,
+    actor: &User,
+    completed: &CompletedDownload,
+) -> AppResult<ImportResult> {
+    import_completed_download_with_identity_policy(
+        app,
+        actor,
+        completed,
+        CompletedImportIdentityPolicy::AllowUnresolved,
+    )
+    .await
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompletedImportIdentityPolicy {
+    RequireSubmission,
+    AllowUnresolved,
+}
+
+async fn import_completed_download_with_identity_policy(
+    app: &AppUseCase,
+    actor: &User,
+    completed: &CompletedDownload,
+    identity_policy: CompletedImportIdentityPolicy,
+) -> AppResult<ImportResult> {
+    let request = match prepare_completed_import_request(app, completed, identity_policy).await? {
         CompletedImportProgress::Ready(request) => request,
         CompletedImportProgress::Finished(result) => return Ok(result),
     };
@@ -29,13 +64,24 @@ enum CompletedImportProgress {
 async fn prepare_completed_import_request(
     app: &AppUseCase,
     completed: &CompletedDownload,
+    identity_policy: CompletedImportIdentityPolicy,
 ) -> AppResult<CompletedImportProgress> {
     let mut completed = completed.clone();
     remap_completed_download_for_client(app, &mut completed).await;
     let started_at = Utc::now();
     let source_identity = completed_download_identity(&completed);
-    let submission_resolution =
+    let mut submission_resolution =
         resolve_completed_download_submission(app, &completed, None).await?;
+
+    if identity_policy == CompletedImportIdentityPolicy::AllowUnresolved
+        && matches!(
+            submission_resolution,
+            CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
+                | CompletedDownloadSubmissionResolution::MissingDownloadId { .. }
+        )
+    {
+        submission_resolution = CompletedDownloadSubmissionResolution::Foreign;
+    }
 
     if let CompletedDownloadSubmissionResolution::AmbiguousDownloadId {
         download_id,

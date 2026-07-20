@@ -123,6 +123,55 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    pub(crate) async fn resolve_manual_import_source_for_queue(
+        &self,
+        client_id: Option<&str>,
+        client_type: Option<&str>,
+        download_client_item_id: &str,
+    ) -> AppResult<ManualImportSourceResolution> {
+        let source_ref = download_client_item_id.trim();
+        let tracked = self
+            .runtime
+            .acquisition
+            .tracked_download_snapshot
+            .read()
+            .await
+            .values()
+            .find(|tracked| {
+                source_identity_matches(
+                    &tracked.client_id,
+                    &tracked.client_type,
+                    &tracked.client_item.download_client_item_id,
+                    client_id,
+                    client_type,
+                    source_ref,
+                )
+            })
+            .cloned();
+
+        let Some(tracked) = tracked else {
+            return self
+                .resolve_manual_import_source(client_id, client_type, download_client_item_id)
+                .await;
+        };
+
+        match tracked.state {
+            TrackedDownloadState::ImportBlocked => {
+                Ok(ManualImportSourceResolution::Eligible { completed: None })
+            }
+            TrackedDownloadState::FailedPending | TrackedDownloadState::Failed => {
+                Ok(ManualImportSourceResolution::SourceFailed {
+                    message: source_failed_message(&tracked.client_item),
+                })
+            }
+            other => Ok(ManualImportSourceResolution::NotEligible {
+                message: format!(
+                    "download source {source_ref} is not ready for import; tracked state is {other:?}"
+                ),
+            }),
+        }
+    }
+
     pub(crate) async fn resolve_manual_import_source(
         &self,
         client_id: Option<&str>,

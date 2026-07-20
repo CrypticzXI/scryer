@@ -2949,6 +2949,74 @@ async fn try_import_completed_downloads_blocks_missing_download_id_submission() 
 }
 
 #[tokio::test]
+async fn manual_import_allows_explicit_title_for_missing_download_id_submission() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Manual Identity Override".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let mut completed = completed_download_fixture_item(
+        "manual-missing-identity",
+        &title.id,
+        "Manual.Identity.Override.2026.1080p.WEB-DL",
+        source_dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = "weaver-client".to_string();
+    completed.client_type = "weaver".to_string();
+    completed.parameters.clear();
+    completed.parameters.push((
+        "*scryer_download_id".to_string(),
+        "scryer-e2e-manual-missing".to_string(),
+    ));
+
+    let result = app
+        .trigger_manual_import(&user, &completed, Some(&title.id))
+        .await
+        .expect("manual import should honor the explicit title");
+
+    assert_eq!(result.title_id.as_deref(), Some(title.id.as_str()));
+    assert_eq!(result.skip_reason, Some(ImportSkipReason::NoVideoFiles));
+    assert_ne!(
+        result.skip_reason,
+        Some(ImportSkipReason::UnresolvedIdentity)
+    );
+    assert_eq!(import_repo.records.lock().await.len(), 1);
+    let identity_state = download_submissions
+        .get_identity_tracked_state(
+            &DownloadSubmissionIdentity {
+                download_id: Some("scryer-e2e-manual-missing".to_string()),
+            },
+            None,
+        )
+        .await
+        .expect("identity state lookup");
+    assert_eq!(identity_state, None);
+}
+
+#[tokio::test]
 async fn try_import_completed_downloads_imports_additional_series_movie_file_from_submission_scope()
 {
     let download_client = Arc::new(StubDownloadClient::default());

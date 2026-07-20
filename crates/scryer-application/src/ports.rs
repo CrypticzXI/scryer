@@ -496,6 +496,7 @@ pub struct DiscoveryItemRecord {
     pub relation_subtypes: Vec<String>,
     pub chart_signals: Vec<String>,
     pub provider_signals: Vec<String>,
+    pub acclaim_signals: Vec<String>,
     pub rank_components: Vec<DiscoveryRankComponentRecord>,
     pub source_count: Option<i32>,
     pub edge_count: Option<i32>,
@@ -533,11 +534,15 @@ pub struct DiscoveryHomeCandidate {
     pub discovery_title_id: String,
     pub matched_subject_keys: Vec<String>,
     pub affinity_terms: Vec<String>,
-    pub has_acclaim_signal: bool,
+    pub acclaim_signals: Vec<String>,
     pub has_hero_backdrop: bool,
     pub rating_source_count: i32,
+    pub scored_rating_source_count: i32,
     pub best_external_rating: Option<f64>,
     pub best_external_rating_votes: i32,
+    pub max_audience_rating_votes: i32,
+    pub best_metacritic_rating: Option<f64>,
+    pub best_tomatometer_rating: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

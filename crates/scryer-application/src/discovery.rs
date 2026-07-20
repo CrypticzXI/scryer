@@ -493,6 +493,7 @@ impl AppUseCase {
                 complete_collection_section(&complete_collection_items, include_unresolved, limit);
             personalized_sections = personalized_section_results(
                 &personalized_items,
+                &candidates_by_id,
                 &library_profile,
                 include_unresolved,
                 limit,
@@ -1240,12 +1241,7 @@ fn home_candidate_selection_item(candidate: &DiscoveryHomeCandidate) -> Discover
     let mut item = candidate.item.clone();
     item.matched_subject_keys = candidate.matched_subject_keys.clone();
     item.facet_terms = candidate.affinity_terms.clone();
-    if candidate.has_acclaim_signal {
-        // The selection path only needs the boolean outcome; use a stable
-        // signal value so the existing acclaimed-section predicate stays
-        // unchanged while full metadata remains deferred.
-        item.chart_signals.push("acclaim".to_string());
-    }
+    item.acclaim_signals = candidate.acclaim_signals.clone();
     item
 }
 
@@ -1318,11 +1314,11 @@ fn resolve_discovery_home_selected_subjects(
     // The resolved copies originate from section items, which on the card-only
     // path lack presentation fields; merge only what subject resolution
     // produced so the hero keeps its dedicated hydration.
-    if let Some(hero_item) = &mut result.hero_item {
-        if let Some(resolved) = resolved_by_id.get(&hero_item.id) {
-            hero_item.matched_subject_titles = resolved.matched_subject_titles.clone();
-            hero_item.matched_subject_count = resolved.matched_subject_count;
-        }
+    if let Some(hero_item) = &mut result.hero_item
+        && let Some(resolved) = resolved_by_id.get(&hero_item.id)
+    {
+        hero_item.matched_subject_titles = resolved.matched_subject_titles.clone();
+        hero_item.matched_subject_count = resolved.matched_subject_count;
     }
     Ok(())
 }
@@ -1764,6 +1760,7 @@ fn compare_optional_f64_desc(left: Option<f64>, right: Option<f64>) -> Ordering 
 
 fn personalized_section_results(
     items: &[DiscoveryItemRecord],
+    candidates_by_id: &HashMap<String, DiscoveryHomeCandidate>,
     library_profile: &DiscoveryLibraryAffinityProfile,
     include_unresolved: bool,
     limit: usize,
@@ -1794,9 +1791,12 @@ fn personalized_section_results(
         limit,
         &mut emitted_item_keys,
     ));
-    if let Some(section) =
-        acclaimed_not_in_library_section(&visible_items, limit, &mut emitted_item_keys)
-    {
+    if let Some(section) = acclaimed_not_in_library_section(
+        &visible_items,
+        candidates_by_id,
+        limit,
+        &mut emitted_item_keys,
+    ) {
         sections.push(section);
     }
 
@@ -1906,20 +1906,26 @@ fn label_affinity_sections(
 
 fn acclaimed_not_in_library_section(
     items: &[DiscoveryItemRecord],
+    candidates_by_id: &HashMap<String, DiscoveryHomeCandidate>,
     limit: usize,
     emitted_item_keys: &mut HashSet<String>,
 ) -> Option<DiscoverySectionResult> {
     let mut section_items = items
         .iter()
-        .filter(|item| discovery_item_is_acclaimed(item))
+        .filter(|item| {
+            discovery_item_acclaim_assessment(item, candidates_by_id.get(&item.id)).is_some()
+        })
         .cloned()
         .collect::<Vec<_>>();
     dedupe_and_sort_discovery_items(&mut section_items);
+    section_items.retain(|item| !emitted_item_keys.contains(discovery_item_identity_key(item)));
     section_items.sort_by(|left, right| {
-        discovery_item_comparable_rating(right)
-            .partial_cmp(&discovery_item_comparable_rating(left))
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| compare_discovery_items(left, right))
+        compare_acclaimed_discovery_items(
+            left,
+            candidates_by_id.get(&left.id),
+            right,
+            candidates_by_id.get(&right.id),
+        )
     });
     if section_items.len() < DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS {
         return None;
@@ -2333,28 +2339,27 @@ fn catalog_personalized_groups(
     if groups.len() < max_groups {
         let mut section_items = items
             .iter()
-            .filter(|item| discovery_item_is_acclaimed(item))
+            .filter(|item| discovery_item_acclaim_assessment(item, None).is_some())
             .cloned()
             .collect::<Vec<_>>();
         dedupe_and_sort_discovery_items(&mut section_items);
-        section_items.sort_by(|left, right| {
-            discovery_item_comparable_rating(right)
-                .partial_cmp(&discovery_item_comparable_rating(left))
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| compare_discovery_items(left, right))
-        });
-        if let Some(group) = catalog_group_excluding_emitted(
-            CatalogDiscoveryGroupDraft {
-                id: "acclaimed_not_in_library".to_string(),
-                kind: CatalogDiscoveryGroupKind::Acclaimed,
-                surface: CatalogDiscoverySurface::Personalized,
-                label_value: None,
-                total_count: None,
-            },
-            section_items,
-            limit,
-            emitted_item_keys,
-        ) {
+        section_items.retain(|item| !emitted_item_keys.contains(discovery_item_identity_key(item)));
+        section_items
+            .sort_by(|left, right| compare_acclaimed_discovery_items(left, None, right, None));
+        if section_items.len() >= DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS
+            && let Some(group) = catalog_group_excluding_emitted(
+                CatalogDiscoveryGroupDraft {
+                    id: "acclaimed_not_in_library".to_string(),
+                    kind: CatalogDiscoveryGroupKind::Acclaimed,
+                    surface: CatalogDiscoverySurface::Personalized,
+                    label_value: None,
+                    total_count: None,
+                },
+                section_items,
+                limit,
+                emitted_item_keys,
+            )
+        {
             groups.push(group);
         }
     }
@@ -2443,15 +2448,6 @@ fn catalog_group_excluding_emitted(
         items,
     })
 }
-
-const ACCLAIMED_SIGNALS: &[&str] = &[
-    "acclaim",
-    "award",
-    "best picture",
-    "top rated",
-    "favorite",
-    "critically",
-];
 
 fn discovery_item_canonical_facet_labels(item: &DiscoveryItemRecord, kind: &str) -> Vec<String> {
     let mut labels = Vec::new();
@@ -2598,54 +2594,143 @@ fn display_discovery_affinity_label(value: &str) -> String {
         .join(" ")
 }
 
-fn discovery_item_has_any_signal(item: &DiscoveryItemRecord, signals: &[&str]) -> bool {
-    discovery_item_signal_values(item).into_iter().any(|value| {
-        let value = value.to_ascii_lowercase();
-        signals.iter().any(|signal| value.contains(signal))
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum AcclaimEvidence {
+    SeasonFinal,
+    CriticalConsensus,
+    AwardWinner,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AcclaimAssessment {
+    evidence: AcclaimEvidence,
+    scryer_score: f64,
+    vote_support: i32,
+}
+
+fn discovery_item_acclaim_assessment(
+    item: &DiscoveryItemRecord,
+    candidate: Option<&DiscoveryHomeCandidate>,
+) -> Option<AcclaimAssessment> {
+    let signals = candidate
+        .map(|candidate| candidate.acclaim_signals.as_slice())
+        .unwrap_or(&item.acclaim_signals);
+    let evidence = if signals.iter().any(|signal| signal == "award_winner") {
+        AcclaimEvidence::AwardWinner
+    } else {
+        let rating_evidence = candidate
+            .map(|candidate| {
+                (
+                    candidate.scored_rating_source_count,
+                    candidate.max_audience_rating_votes,
+                    candidate.best_metacritic_rating,
+                    candidate.best_tomatometer_rating,
+                )
+            })
+            .unwrap_or_else(|| discovery_item_acclaim_rating_evidence(item));
+        let critic_consensus = rating_evidence.2.is_some_and(|score| score >= 8.0)
+            || rating_evidence.3.is_some_and(|score| score >= 9.0);
+        let independently_supported = rating_evidence.0 >= 2 || rating_evidence.1 >= 10_000;
+        if critic_consensus
+            && discovery_item_comparable_rating(item) >= 8.0
+            && independently_supported
+        {
+            AcclaimEvidence::CriticalConsensus
+        } else if signals.iter().any(|signal| signal == "season_final") {
+            AcclaimEvidence::SeasonFinal
+        } else {
+            return None;
+        }
+    };
+
+    let vote_support = candidate
+        .map(|candidate| candidate.max_audience_rating_votes)
+        .unwrap_or_else(|| discovery_item_acclaim_rating_evidence(item).1);
+    Some(AcclaimAssessment {
+        evidence,
+        scryer_score: discovery_item_comparable_rating(item),
+        vote_support,
     })
 }
 
-fn discovery_item_signal_values(item: &DiscoveryItemRecord) -> Vec<String> {
-    let mut values = Vec::new();
-    values.extend(item.status_tags.iter().cloned());
-    values.extend(source_tag_text_values(&item.source_tags));
-    values.extend(item.sources.iter().cloned());
-    values.extend(item.relation_types.iter().cloned());
-    values.extend(item.relation_subtypes.iter().cloned());
-    values.extend(item.facet_terms.iter().cloned());
-    values.extend(item.context_terms.iter().cloned());
-    values.extend(item.chart_signals.iter().cloned());
-    values.extend(item.provider_signals.iter().cloned());
-    if let Some(best_source) = item.best_source.as_deref() {
-        values.push(best_source.to_string());
+fn discovery_item_acclaim_rating_evidence(
+    item: &DiscoveryItemRecord,
+) -> (i32, i32, Option<f64>, Option<f64>) {
+    let mut scored_sources = HashSet::new();
+    let mut max_audience_votes = 0;
+    let mut best_metacritic: Option<f64> = None;
+    let mut best_tomatometer: Option<f64> = None;
+    for rating in &item.external_ratings {
+        let Some(score) = normalized_external_rating_score(rating.normalized) else {
+            continue;
+        };
+        let source = normalized_rating_source_name(&rating.source);
+        scored_sources.insert(canonical_rating_source_identity(&rating.source));
+        if matches!(source.as_str(), "metacritic" | "metacriticcritic") {
+            best_metacritic = Some(best_metacritic.map_or(score, |current| current.max(score)));
+        } else if matches!(
+            source.as_str(),
+            "rottentomatoes" | "rottentomatoescritic" | "tomatoes" | "tomatometer"
+        ) {
+            best_tomatometer = Some(best_tomatometer.map_or(score, |current| current.max(score)));
+        } else {
+            max_audience_votes = max_audience_votes.max(rating.votes.unwrap_or_default());
+        }
     }
-    if let Some(collection_name) = item.tmdb_collection_name.as_deref() {
-        values.push(collection_name.to_string());
-    }
-    values
+    (
+        scored_sources.len() as i32,
+        max_audience_votes,
+        best_metacritic,
+        best_tomatometer,
+    )
 }
 
-fn source_tag_text_values(tags: &[DiscoverySourceTagRecord]) -> Vec<String> {
-    let mut values = Vec::new();
-    for tag in tags {
-        if let Some(category) = tag.category.as_deref().map(str::trim)
-            && !category.is_empty()
-        {
-            values.push(category.to_string());
-        }
-        if let Some(name) = tag.name.as_deref().map(str::trim)
-            && !name.is_empty()
-        {
-            values.push(name.to_string());
-        }
-        values.extend(tag.values.iter().cloned());
-    }
-    values
+fn normalized_external_rating_score(normalized: f64) -> Option<f64> {
+    normalized
+        .is_finite()
+        .then_some(if normalized <= 1.0 {
+            normalized * 10.0
+        } else {
+            normalized
+        })
+        .filter(|score| *score > 0.0)
 }
 
-fn discovery_item_is_acclaimed(item: &DiscoveryItemRecord) -> bool {
-    discovery_item_comparable_rating(item) >= 8.0
-        || discovery_item_has_any_signal(item, ACCLAIMED_SIGNALS)
+fn normalized_rating_source_name(source: &str) -> String {
+    source
+        .trim()
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn compare_acclaimed_discovery_items(
+    left: &DiscoveryItemRecord,
+    left_candidate: Option<&DiscoveryHomeCandidate>,
+    right: &DiscoveryItemRecord,
+    right_candidate: Option<&DiscoveryHomeCandidate>,
+) -> Ordering {
+    let left_acclaim = discovery_item_acclaim_assessment(left, left_candidate)
+        .expect("acclaimed comparator requires qualifying items");
+    let right_acclaim = discovery_item_acclaim_assessment(right, right_candidate)
+        .expect("acclaimed comparator requires qualifying items");
+    right_acclaim
+        .evidence
+        .cmp(&left_acclaim.evidence)
+        .then_with(|| {
+            right_acclaim
+                .scryer_score
+                .total_cmp(&left_acclaim.scryer_score)
+        })
+        .then_with(|| right_acclaim.vote_support.cmp(&left_acclaim.vote_support))
+        .then_with(|| {
+            right
+                .rank_score
+                .unwrap_or_default()
+                .total_cmp(&left.rank_score.unwrap_or_default())
+        })
+        .then_with(|| discovery_item_identity_key(left).cmp(discovery_item_identity_key(right)))
 }
 
 fn discovery_item_comparable_rating(item: &DiscoveryItemRecord) -> f64 {
@@ -3787,6 +3872,7 @@ fn discovery_item_record(
         relation_subtypes: item.relation_subtypes.clone(),
         chart_signals: discovery_json_signal_values(&item.chart_signals),
         provider_signals: discovery_json_signal_values(&item.provider_signals),
+        acclaim_signals: discovery_acclaim_signals(item),
         rank_components: discovery_rank_component_records(&item.rank_components),
         source_count: Some(item.source_count),
         edge_count: Some(item.edge_count),
@@ -4260,6 +4346,73 @@ fn discovery_json_signal_values(values: &[JsonValue]) -> Vec<String> {
             }
         }
     }
+    signals
+}
+
+fn discovery_acclaim_signals(item: &DiscoveryTitle) -> Vec<String> {
+    let mut signals = HashSet::new();
+    for value in item.source_tags.iter().chain(&item.chart_signals) {
+        let Some(object) = value.as_object() else {
+            continue;
+        };
+        let field = |names: &[&str]| {
+            names.iter().find_map(|name| {
+                object
+                    .get(*name)
+                    .and_then(json_scalar_string)
+                    .map(|value| normalize_discovery_filter_value(&value))
+            })
+        };
+
+        let category = field(&["category", "term_kind", "termKind"]);
+        let signal_kind = field(&["signal_kind", "signalKind", "kind", "key"]);
+        let award_status = field(&["award_status", "awardStatus", "status"]);
+        let source_tag_name = field(&["name"]);
+        let exact_award_signal = signal_kind.as_deref().is_some_and(|value| {
+            matches!(
+                value,
+                "award_winner"
+                    | "award winner"
+                    | "award_win"
+                    | "award win"
+                    | "awards_winner"
+                    | "awards winner"
+            )
+        }) || category.as_deref().is_some_and(|value| {
+            matches!(
+                value,
+                "award_winner"
+                    | "award winner"
+                    | "award_win"
+                    | "award win"
+                    | "awards_winner"
+                    | "awards winner"
+            )
+        }) || (category
+            .as_deref()
+            .is_some_and(|value| matches!(value, "award" | "awards"))
+            && (award_status
+                .as_deref()
+                .is_some_and(|value| matches!(value, "winner" | "won"))
+                || source_tag_name.as_deref().is_some_and(|value| {
+                    matches!(value, "winner" | "won" | "award_winner" | "award winner")
+                })));
+        if exact_award_signal {
+            signals.insert("award_winner".to_string());
+        }
+
+        let source = field(&["source", "provider"]);
+        let phase = field(&["anime_signal_phase", "animeSignalPhase", "phase"]);
+        if source.as_deref() == Some("animecorner")
+            && phase.as_deref() == Some("final")
+            && matches!(signal_kind.as_deref(), Some("fan_ranking" | "fan ranking"))
+        {
+            signals.insert("season_final".to_string());
+        }
+    }
+
+    let mut signals = signals.into_iter().collect::<Vec<_>>();
+    signals.sort();
     signals
 }
 
@@ -5256,6 +5409,61 @@ mod tests {
     }
 
     #[test]
+    fn discovery_item_records_capture_only_structured_acclaim_evidence() {
+        let now = Utc.timestamp_opt(0, 0).unwrap();
+        let recognized = DiscoveryTitle {
+            target_key: "tmdb:movie:award".to_string(),
+            target_kind: "movie".to_string(),
+            resolved: true,
+            display_title: "Recognized".to_string(),
+            source_tags: vec![serde_json::json!({
+                "category": "awards",
+                "award_status": "winner",
+                "name": "Example award"
+            })],
+            chart_signals: vec![serde_json::json!({
+                "source": "animecorner",
+                "signal_kind": "fan_ranking",
+                "anime_signal_phase": "final",
+                "rank": 7
+            })],
+            ..DiscoveryTitle::default()
+        };
+        let unsafe_text = DiscoveryTitle {
+            target_key: "tmdb:movie:text".to_string(),
+            target_kind: "movie".to_string(),
+            resolved: true,
+            display_title: "Unsafe Text".to_string(),
+            source_tags: vec![serde_json::json!({
+                "category": "award",
+                "status": "nominated",
+                "name": "favorite top rated critically acclaimed"
+            })],
+            chart_signals: vec![serde_json::json!({
+                "source": "animecorner",
+                "signal_kind": "fan_ranking",
+                "anime_signal_phase": "weekly"
+            })],
+            ..DiscoveryTitle::default()
+        };
+
+        let records = snapshot_item_records(
+            "run-1",
+            "run-1",
+            &[recognized, unsafe_text],
+            &HashMap::new(),
+            now,
+        )
+        .expect("discovery item records should build");
+
+        assert_eq!(
+            records[0].acclaim_signals,
+            vec!["award_winner".to_string(), "season_final".to_string()]
+        );
+        assert!(records[1].acclaim_signals.is_empty());
+    }
+
+    #[test]
     fn discovery_item_records_wire_canonical_genre_and_theme_terms() {
         let now = Utc.timestamp_opt(0, 0).unwrap();
         let item = DiscoveryTitle {
@@ -5433,7 +5641,7 @@ mod tests {
             discovery_item("4", "Animation Match", &["Animation"], 80.0, 1),
         ];
 
-        let sections = personalized_section_results(&items, &profile, true, 10);
+        let sections = personalized_section_results(&items, &HashMap::new(), &profile, true, 10);
         let adventure = sections
             .iter()
             .find(|section| section.title == "Because You Like Adventure")
@@ -5765,6 +5973,104 @@ mod tests {
         assert_eq!(discovery_item_comparable_rating(&nan_rated), 0.0);
     }
 
+    #[test]
+    fn acclaimed_rejects_high_audience_scores_without_recognition() {
+        let mut item = test_discovery_item("audience-only", "movie", Some("movie"));
+        item.rating = Some(9.3);
+        item.external_ratings = vec![TitleExternalRating {
+            source: "imdb".to_string(),
+            value: Some(9.3),
+            score: Some(9.3),
+            normalized: 0.93,
+            votes: Some(604),
+            url: String::new(),
+        }];
+        item.status_tags = vec![
+            "award".to_string(),
+            "favorite".to_string(),
+            "top rated".to_string(),
+            "critically".to_string(),
+        ];
+
+        assert!(discovery_item_acclaim_assessment(&item, None).is_none());
+        item.external_ratings[0].votes = Some(500_000);
+        assert!(discovery_item_acclaim_assessment(&item, None).is_none());
+    }
+
+    #[test]
+    fn acclaimed_accepts_only_typed_awards_and_final_season_recognition() {
+        let mut award = test_discovery_item("award", "movie", Some("movie"));
+        award.acclaim_signals = vec!["award_winner".to_string()];
+        assert_eq!(
+            discovery_item_acclaim_assessment(&award, None).map(|value| value.evidence),
+            Some(AcclaimEvidence::AwardWinner)
+        );
+
+        let mut final_rank = test_discovery_item("final", "series", Some("anime"));
+        final_rank.acclaim_signals = vec!["season_final".to_string()];
+        assert_eq!(
+            discovery_item_acclaim_assessment(&final_rank, None).map(|value| value.evidence),
+            Some(AcclaimEvidence::SeasonFinal)
+        );
+
+        let mut weekly = test_discovery_item("weekly", "series", Some("anime"));
+        weekly.chart_signals = vec!["animecorner weekly favorite".to_string()];
+        assert!(discovery_item_acclaim_assessment(&weekly, None).is_none());
+    }
+
+    #[test]
+    fn acclaimed_critical_consensus_requires_critic_scryer_and_support() {
+        let mut consensus = test_discovery_item("consensus", "movie", Some("movie"));
+        consensus.rating = Some(8.2);
+        consensus.external_ratings = vec![
+            test_external_rating("metacritic", 0.81, 120),
+            test_external_rating("imdb", 0.84, 8_000),
+        ];
+        assert_eq!(
+            discovery_item_acclaim_assessment(&consensus, None).map(|value| value.evidence),
+            Some(AcclaimEvidence::CriticalConsensus)
+        );
+
+        consensus.rating = Some(7.9);
+        assert!(discovery_item_acclaim_assessment(&consensus, None).is_none());
+        consensus.rating = Some(8.2);
+        consensus.external_ratings[0].normalized = 0.79;
+        assert!(discovery_item_acclaim_assessment(&consensus, None).is_none());
+
+        let mut audience = test_discovery_item("popcorn", "movie", Some("movie"));
+        audience.rating = Some(9.1);
+        audience.external_ratings = vec![
+            test_external_rating("popcornmeter", 0.96, 200_000),
+            test_external_rating("imdb", 0.91, 150_000),
+        ];
+        assert!(discovery_item_acclaim_assessment(&audience, None).is_none());
+    }
+
+    #[test]
+    fn acclaimed_rail_requires_two_cards_after_cross_rail_dedupe() {
+        let mut first = test_discovery_item("first", "movie", Some("movie"));
+        first.acclaim_signals = vec!["award_winner".to_string()];
+        let mut second = test_discovery_item("second", "movie", Some("movie"));
+        second.acclaim_signals = vec!["season_final".to_string()];
+        let mut emitted = HashSet::from([first.target_key.clone()]);
+
+        assert!(
+            acclaimed_not_in_library_section(&[first, second], &HashMap::new(), 10, &mut emitted,)
+                .is_none()
+        );
+    }
+
+    fn test_external_rating(source: &str, normalized: f64, votes: i32) -> TitleExternalRating {
+        TitleExternalRating {
+            source: source.to_string(),
+            value: Some(normalized * 10.0),
+            score: Some(normalized * 10.0),
+            normalized,
+            votes: Some(votes),
+            url: String::new(),
+        }
+    }
+
     fn test_discovery_item(
         id: &str,
         target_kind: &str,
@@ -5804,6 +6110,7 @@ mod tests {
             relation_subtypes: Vec::new(),
             chart_signals: Vec::new(),
             provider_signals: Vec::new(),
+            acclaim_signals: Vec::new(),
             rank_components: Vec::new(),
             source_count: None,
             edge_count: None,
