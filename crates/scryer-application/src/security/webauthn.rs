@@ -60,6 +60,10 @@ impl AppUseCase {
             .await?
             .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
 
+        if !user.login_status().is_enabled() {
+            return Err(AppError::Unauthorized("credentials unavailable".into()));
+        }
+
         if !user.account_kind.allows_local_credentials() || user.password_hash.is_none() {
             return Err(AppError::Validation(
                 "passkeys require a password-backed account".into(),
@@ -336,7 +340,7 @@ impl AppUseCase {
                 .await?
                 .ok_or_else(invalid_username_passkey)?;
 
-            if user.password_hash.is_none() {
+            if !user.login_status().is_enabled() || user.password_hash.is_none() {
                 return Err(invalid_username_passkey());
             }
 

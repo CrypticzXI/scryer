@@ -669,7 +669,9 @@ export function SettingsDownloadClientsSection({
                 </>
               ) : null}
               {dynamicConfigFields.map((field) => {
-                const hasStoredSecretValue = storedSecretKeys.has(field.key);
+                const hasStoredSecretValue =
+                  storedSecretKeys.has(field.key)
+                  && !Object.hasOwn(downloadClientDraft.configValues, field.key);
                 return (
                   <div
                     key={field.key}
@@ -690,6 +692,15 @@ export function SettingsDownloadClientsSection({
                           configValues: {
                             ...prev.configValues,
                             [key]: value,
+                          },
+                        }))
+                      }
+                      onClearStoredSecret={(key) =>
+                        setDownloadClientDraft((prev: DownloadClientDraft) => ({
+                          ...prev,
+                          configValues: {
+                            ...prev.configValues,
+                            [key]: "",
                           },
                         }))
                       }

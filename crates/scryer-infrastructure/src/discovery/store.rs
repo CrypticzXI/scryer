@@ -2935,7 +2935,6 @@ fn home_candidate_from_row(row: &SqlRow) -> AppResult<DiscoveryHomeCandidate> {
         discovery_title_id: row.text("discovery_title_id")?,
         matched_subject_keys: Vec::new(),
         affinity_terms: Vec::new(),
-        has_acclaim_signal: false,
         has_hero_backdrop: row.bool("has_hero_backdrop")?,
         rating_source_count: 0,
         best_external_rating: None,
@@ -2968,19 +2967,6 @@ async fn hydrate_discovery_home_candidate_selection(
     let mut item_ids = item_indexes.keys().cloned().collect::<Vec<_>>();
     item_ids.sort();
 
-    for candidate in candidates.iter_mut() {
-        candidate.has_acclaim_signal = candidate
-            .item
-            .best_source
-            .as_deref()
-            .is_some_and(discovery_home_value_is_acclaim_signal)
-            || candidate
-                .item
-                .tmdb_collection_name
-                .as_deref()
-                .is_some_and(discovery_home_value_is_acclaim_signal);
-    }
-
     let affinity_rows = fetch_child_rows(
         datastore,
         "SELECT discovery_title_id, term_value, sort_index
@@ -3001,39 +2987,6 @@ async fn hydrate_discovery_home_candidate_selection(
             candidates[*index].affinity_terms.push(term_value.clone());
         }
     }
-
-    let acclaim_rows = fetch_child_rows(
-        datastore,
-        &format!(
-            "SELECT DISTINCT discovery_title_id
-             FROM discovery_title_terms
-             WHERE discovery_title_id IN ({{}})
-               AND term_kind IN ('status_tag', 'source', 'relation_type',
-                                 'relation_subtype', 'chart_signal', 'provider_signal',
-                                 'context_term')
-               AND {}",
-            discovery_home_acclaim_sql_clause("term_value")
-        ),
-        &title_ids,
-    )
-    .await?;
-    for row in acclaim_rows {
-        let title_id = row.text("discovery_title_id")?;
-        let Some(indexes) = title_indexes.get(&title_id) else {
-            continue;
-        };
-        for index in indexes {
-            candidates[*index].has_acclaim_signal = true;
-        }
-    }
-
-    mark_discovery_home_source_tag_acclaim_signals(
-        datastore,
-        candidates,
-        &title_ids,
-        &title_indexes,
-    )
-    .await?;
 
     let matched_rows = fetch_child_rows(
         datastore,
@@ -3136,9 +3089,7 @@ async fn hydrate_discovery_home_candidate_ratings(
 }
 
 fn rating_source_identity_sql(column: &str) -> String {
-    let normalized = format!(
-        "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({column}, ' ', ''), '.', ''), '-', ''), '_', ''), '/', ''))"
-    );
+    let normalized = normalized_rating_source_sql(column);
     format!(
         "CASE {normalized}
             WHEN 'rottentomatoes' THEN 'tomatoes'
@@ -3156,81 +3107,10 @@ fn rating_source_identity_sql(column: &str) -> String {
     )
 }
 
-async fn mark_discovery_home_source_tag_acclaim_signals(
-    datastore: &StoreDatastore,
-    candidates: &mut [DiscoveryHomeCandidate],
-    title_ids: &[String],
-    title_indexes: &HashMap<String, Vec<usize>>,
-) -> AppResult<()> {
-    let source_tag_rows = fetch_child_rows(
-        datastore,
-        &format!(
-            "SELECT discovery_title_id, category, name
-             FROM discovery_title_source_tags
-             WHERE discovery_title_id IN ({{}})
-               AND ({} OR {})",
-            discovery_home_acclaim_sql_clause("category"),
-            discovery_home_acclaim_sql_clause("name")
-        ),
-        title_ids,
-    )
-    .await?;
-    for row in source_tag_rows {
-        let title_id = row.text("discovery_title_id")?;
-        let Some(indexes) = title_indexes.get(&title_id) else {
-            continue;
-        };
-        for index in indexes {
-            candidates[*index].has_acclaim_signal = true;
-        }
-    }
-    let source_tag_value_rows = fetch_child_rows(
-        datastore,
-        &format!(
-            "SELECT discovery_title_id, source_tag_value
-             FROM discovery_title_source_tag_values
-             WHERE discovery_title_id IN ({{}})
-               AND {}",
-            discovery_home_acclaim_sql_clause("source_tag_value")
-        ),
-        title_ids,
-    )
-    .await?;
-    for row in source_tag_value_rows {
-        let title_id = row.text("discovery_title_id")?;
-        let Some(indexes) = title_indexes.get(&title_id) else {
-            continue;
-        };
-        for index in indexes {
-            candidates[*index].has_acclaim_signal = true;
-        }
-    }
-    Ok(())
-}
-
-fn discovery_home_acclaim_sql_clause(column: &str) -> String {
+fn normalized_rating_source_sql(column: &str) -> String {
     format!(
-        "LOWER(COALESCE({column}, '')) LIKE '%acclaim%'
-         OR LOWER(COALESCE({column}, '')) LIKE '%award%'
-         OR LOWER(COALESCE({column}, '')) LIKE '%best picture%'
-         OR LOWER(COALESCE({column}, '')) LIKE '%top rated%'
-         OR LOWER(COALESCE({column}, '')) LIKE '%favorite%'
-         OR LOWER(COALESCE({column}, '')) LIKE '%critically%'"
+        "LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({column}, ' ', ''), '.', ''), '-', ''), '_', ''), '/', ''))"
     )
-}
-
-fn discovery_home_value_is_acclaim_signal(value: &str) -> bool {
-    let value = value.to_ascii_lowercase();
-    [
-        "acclaim",
-        "award",
-        "best picture",
-        "top rated",
-        "favorite",
-        "critically",
-    ]
-    .iter()
-    .any(|signal| value.contains(signal))
 }
 
 async fn hydrate_discovery_home_candidates(
@@ -7236,7 +7116,6 @@ mod tests {
                 discovery_title_id,
                 matched_subject_keys: Vec::new(),
                 affinity_terms: Vec::new(),
-                has_acclaim_signal: false,
                 has_hero_backdrop: false,
                 rating_source_count: 0,
                 best_external_rating: None,

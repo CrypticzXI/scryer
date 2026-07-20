@@ -1080,18 +1080,6 @@ fn decide_candidate(
         };
     }
 
-    if candidate.deadline_at.is_some_and(|deadline| {
-        RateLimitRegistry::new()
-            .preview_host_rps_wait(&candidate.host_key)
-            .and_then(|wait| chrono::Duration::from_std(wait).ok())
-            .is_some_and(|wait| now + wait >= deadline)
-    }) {
-        return SchedulerAdmission::Skip {
-            candidate_id: candidate.candidate_id,
-            reason: SkipReason::HostRpsDeadline,
-        };
-    }
-
     if should_defer(&candidate, effective_quota_entry, now) {
         let reason = deferral_reason(&candidate);
         let retry_after = retry_after_for_deferral(&candidate);
@@ -1395,7 +1383,6 @@ fn skip_reason_label(reason: SkipReason) -> &'static str {
         SkipReason::LearningSuppressed => "skip:learning_suppressed",
         SkipReason::AccountQuotaExhausted => "skip:account_quota_exhausted",
         SkipReason::DestinationCooldown => "skip:destination_cooldown",
-        SkipReason::HostRpsDeadline => "skip:host_rps_deadline",
         SkipReason::HostUnavailable => "skip:host_unavailable",
     }
 }
@@ -1480,6 +1467,72 @@ mod tests {
             intent: candidate.intent,
             issued_at,
         }
+    }
+
+    fn decision_candidate_id(decision: &SchedulerAdmission) -> &SchedulerCandidateId {
+        match decision {
+            SchedulerAdmission::Admit { candidate_id, .. }
+            | SchedulerAdmission::Defer { candidate_id, .. }
+            | SchedulerAdmission::Skip { candidate_id, .. } => candidate_id,
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_decisions_are_ranked_highest_priority_first() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let low = candidate(SchedulerIntent::InteractiveSearch, 1.0);
+        let high = candidate(SchedulerIntent::InteractiveSearch, 50.0);
+        let low_id = low.candidate_id.clone();
+        let high_id = high.candidate_id.clone();
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "ranked".to_string(),
+                now: Utc::now(),
+                candidates: vec![low, high],
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert_eq!(
+            decision
+                .decisions
+                .iter()
+                .map(decision_candidate_id)
+                .collect::<Vec<_>>(),
+            vec![&high_id, &low_id]
+        );
+    }
+
+    #[tokio::test]
+    async fn equally_ranked_batch_decisions_preserve_input_order() {
+        let scheduler = InMemoryUpstreamScheduler::new();
+        let candidates = (0..3)
+            .map(|_| candidate(SchedulerIntent::InteractiveSearch, 10.0))
+            .collect::<Vec<_>>();
+        let expected_ids = candidates
+            .iter()
+            .map(|candidate| candidate.candidate_id.clone())
+            .collect::<Vec<_>>();
+
+        let decision = scheduler
+            .admit_batch(SchedulerBatchRequest {
+                batch_id: "stable".to_string(),
+                now: Utc::now(),
+                candidates,
+            })
+            .await
+            .expect("admission should succeed");
+
+        assert_eq!(
+            decision
+                .decisions
+                .iter()
+                .map(decision_candidate_id)
+                .cloned()
+                .collect::<Vec<_>>(),
+            expected_ids
+        );
     }
 
     #[test]
@@ -1985,16 +2038,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_rps_wait_past_deadline_skips_interactive_candidate() {
+    async fn host_rps_capacity_does_not_preempt_future_interactive_deadline() {
         let scheduler = InMemoryUpstreamScheduler::new();
         let host = HostKey::from(format!("host-rps-{}.example.test", Uuid::new_v4()));
         let destination = DestinationKey::from(host.to_string());
         let registry = RateLimitRegistry::new();
 
-        assert_eq!(registry.acquire_host_rps(&host).await, None);
-        assert_eq!(registry.acquire_host_rps(&host).await, None);
-        assert_eq!(registry.acquire_host_rps(&host).await, None);
-        assert!(registry.preview_host_rps_wait(&host).is_some());
+        for _ in 0..scryer_outbound_http::DEFAULT_HOST_RPS_BURST {
+            assert_eq!(registry.acquire_host_rps(&host).await, None);
+        }
 
         let now = Utc::now();
         let mut candidate = candidate(SchedulerIntent::InteractiveSearch, 1.0);
@@ -2017,10 +2069,7 @@ mod tests {
 
         assert!(matches!(
             decision.decisions.as_slice(),
-            [SchedulerAdmission::Skip {
-                reason: SkipReason::HostRpsDeadline,
-                ..
-            }]
+            [SchedulerAdmission::Admit { .. }]
         ));
     }
 

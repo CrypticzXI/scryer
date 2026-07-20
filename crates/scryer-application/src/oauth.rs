@@ -305,6 +305,18 @@ impl AppUseCase {
             .get_by_id(&grant.user_id)
             .await?
             .ok_or_else(|| AppError::Unauthorized("OAuth user no longer exists".into()))?;
+        let disabled_authless_grant_allowed = !user.login_status().is_enabled()
+            && grant.authorization_source == OAuthAuthorizationSource::Authless
+            && authless_grants_allowed
+            && Self::is_default_admin_username(&user.username);
+        if !user.login_status().is_enabled() && !disabled_authless_grant_allowed {
+            self.services
+                .identity
+                .oauth
+                .revoke_refresh_family(&grant.family_id, Utc::now(), "user_login_disabled")
+                .await?;
+            return Err(AppError::Unauthorized("refresh token is invalid".into()));
+        }
         let current_session_version = self
             .services
             .identity
@@ -452,6 +464,12 @@ impl AppUseCase {
         scope: &str,
         authorization_source: OAuthAuthorizationSource,
     ) -> AppResult<OAuthTokenPair> {
+        let disabled_authless_grant_allowed = authorization_source
+            == OAuthAuthorizationSource::Authless
+            && Self::is_default_admin_username(&user.username);
+        if !(user.login_status().is_enabled() || disabled_authless_grant_allowed) {
+            return Err(AppError::Unauthorized("credentials unavailable".into()));
+        }
         let scope = self.validate_oauth_scope(Some(scope))?;
         let auth_session_version = self
             .services

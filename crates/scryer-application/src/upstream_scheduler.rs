@@ -193,6 +193,8 @@ pub struct SchedulerBatchRequest {
 #[derive(Clone, Debug)]
 pub struct SchedulerBatchDecision {
     pub batch_id: String,
+    /// Decisions are ordered from highest to lowest dispatch priority.
+    /// Candidates with equal priority retain their input order.
     pub decisions: Vec<SchedulerAdmission>,
 }
 
@@ -236,7 +238,6 @@ pub enum SkipReason {
     LearningSuppressed,
     AccountQuotaExhausted,
     DestinationCooldown,
-    HostRpsDeadline,
     HostUnavailable,
 }
 
@@ -356,6 +357,7 @@ pub struct OutboundRateLimitSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutboundHostRpsSnapshotEntry {
     pub host_key: String,
+    pub lane: String,
     pub available_in: Duration,
     pub requests_per_second: f64,
     pub burst: u32,
@@ -376,6 +378,7 @@ impl From<scryer_outbound_http::RateLimitRegistrySnapshot> for OutboundRateLimit
                 .into_iter()
                 .map(|entry| OutboundHostRpsSnapshotEntry {
                     host_key: entry.host_key.to_string(),
+                    lane: entry.lane.to_string(),
                     available_in: entry.available_in,
                     requests_per_second: entry.profile.requests_per_second,
                     burst: entry.profile.burst,

@@ -4,12 +4,15 @@ use std::time::Duration;
 
 use crate::{AppError, AppResult};
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    HostRpsProfile, OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
     external_arr_reqwest_client, validate_operator_http_url,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
+
+pub const EXTERNAL_IMPORT_HOST_RPS_LANE: &str = "external_import";
+pub const EXTERNAL_IMPORT_HOST_RPS_PROFILE: HostRpsProfile = HostRpsProfile::limited(200.0, 200);
 
 /// Root folder discovered from a Sonarr/Radarr instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -908,6 +911,10 @@ impl ExternalArrClient {
         )
         .with_max_retries(2)
         .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
+        .with_host_rps_limit(
+            EXTERNAL_IMPORT_HOST_RPS_LANE,
+            EXTERNAL_IMPORT_HOST_RPS_PROFILE,
+        )
         .without_redirects()
     }
 }
@@ -1176,10 +1183,30 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::{
-        ArrIndexer, ExternalArrApiBucket, ExternalArrClient, detect_linked_prowlarr_proxy_indexer,
+        ArrIndexer, EXTERNAL_IMPORT_HOST_RPS_LANE, EXTERNAL_IMPORT_HOST_RPS_PROFILE,
+        ExternalArrApiBucket, ExternalArrClient, detect_linked_prowlarr_proxy_indexer,
         detect_prowlarr_proxy_indexer, map_download_client_type, map_indexer_provider_type,
         should_skip_imported_indexer, sonarr_episode_list_path,
     };
+
+    #[test]
+    fn external_arr_requests_use_importer_host_quota() {
+        let client = ExternalArrClient::for_sonarr_v4(
+            "http://127.0.0.1:8989".to_string(),
+            "api-key".to_string(),
+        )
+        .unwrap();
+        let request_override = client
+            .request_policy("series")
+            .host_rps_override
+            .expect("external Arr requests should select an importer quota");
+
+        assert_eq!(
+            request_override.lane.as_ref(),
+            EXTERNAL_IMPORT_HOST_RPS_LANE
+        );
+        assert_eq!(request_override.profile, EXTERNAL_IMPORT_HOST_RPS_PROFILE);
+    }
 
     fn json_response(body: &str) -> String {
         format!(

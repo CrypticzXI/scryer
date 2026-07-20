@@ -2735,6 +2735,7 @@ type MutationRoot {
 	setUserPassword(input: SetUserPasswordInput!): UserPayload!
 	setUserAppPermissions(input: SetUserAppPermissionsInput!): UserPayload!
 	setUserLibraryPermissions(input: SetUserLibraryPermissionsInput!): UserPayload!
+	setUserLoginEnabled(input: SetUserLoginEnabledInput!): UserPayload!
 	deleteUser(id: ID!): DeleteUserPayload!
 	resetUserMfa(id: ID!): UserPayload!
 	createExternalAccountInvite(input: CreateExternalAccountInviteInput!): LinkedAccountPayload!
@@ -3383,7 +3384,6 @@ type QueryRoot {
 	titles(facet: MediaFacetValue, libraryIds: [ID!], query: String, filter: TitleCatalogFilterInput, sort: TitleCatalogSortInput, limit: Int, offset: Int): TitleCatalogPayload!
 	titleCatalogFilterOptions(facet: MediaFacetValue, libraryIds: [ID!], rootFolderIds: [ID!]): TitleCatalogFilterOptionsPayload!
 	libraries(facet: MediaFacetValue, permission: LibraryPermissionValue): [LibraryPayload!]!
-	catalogHasValidRoot(facet: MediaFacetValue!): Boolean!
 	mediaRequests(facet: MediaFacetValue, libraryIds: [ID!], status: MediaRequestStatusValue): [MediaRequestPayload!]!
 	myMediaRequests(facet: MediaFacetValue, libraryIds: [ID!], status: MediaRequestStatusValue): [MediaRequestPayload!]!
 	librarySettings(libraryId: ID!): LibrarySettingsPayload!
@@ -4050,6 +4050,11 @@ input SetUserLibraryPermissionsInput {
 	grants: [LibraryPermissionGrantInput!]!
 }
 
+input SetUserLoginEnabledInput {
+	userId: ID!
+	enabled: Boolean!
+}
+
 input SetUserPasswordInput {
 	userId: ID!
 	password: String!
@@ -4228,6 +4233,7 @@ type SystemHealthPayload {
 }
 
 input TestDownloadClientConnectionInput {
+	id: ID
 	clientType: String!
 	config: [ProviderConfigValueInput!]!
 }
@@ -5018,6 +5024,8 @@ type UserLibraryPermissionGrantPayload {
 type UserPayload {
 	id: ID!
 	username: String!
+	loginEnabled: Boolean!
+	isDefaultAdmin: Boolean!
 	hasPassword: Boolean!
 	hasMfa: Boolean!
 	hasPasskey: Boolean!

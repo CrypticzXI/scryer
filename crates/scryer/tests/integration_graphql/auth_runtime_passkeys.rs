@@ -53,6 +53,7 @@ async fn graphql_auth_runtime_state_exposes_config_step_up_without_manage_users(
             libraries: HashMap::new(),
             default_library: LibraryPermissionMask::NONE,
             actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+            login_status: Default::default(),
             loaded: true,
         },
     };

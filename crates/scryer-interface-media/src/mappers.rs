@@ -2316,6 +2316,7 @@ pub fn from_user_with_auth_factor_status(
     user: User,
     auth_factor_status: scryer_application::UserAuthFactorStatus,
 ) -> UserPayload {
+    let login_status = user.login_status();
     let User {
         id,
         username,
@@ -2351,7 +2352,9 @@ pub fn from_user_with_auth_factor_status(
 
     UserPayload {
         id: id.into(),
+        is_default_admin: username.eq_ignore_ascii_case("admin"),
         username,
+        login_enabled: login_status.is_enabled(),
         has_password: password_hash.is_some(),
         has_mfa: auth_factor_status.has_mfa,
         has_passkey: auth_factor_status.has_passkey,

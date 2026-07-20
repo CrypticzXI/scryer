@@ -12,6 +12,8 @@ import {
   Heart,
   Loader2,
   MonitorPlay,
+  PanelRightClose,
+  PanelRightOpen,
   Plus,
   Send,
   SlidersHorizontal,
@@ -294,7 +296,6 @@ function orderedHomeSections(home: DiscoveryHomePayload | null) {
     ...WEEKLY_FOR_YOU_SECTION_TYPES.flatMap(takePersonalizedSections),
     ...takePersonalizedSections("BECAUSE_YOU_LIKE_GENRE"),
     ...takePersonalizedSections("BECAUSE_YOU_LIKE_TAG"),
-    ...takePersonalizedSections("TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY"),
   ];
   const unknownPersonalizedSections = personalizedSections.filter(
     (section) =>
@@ -472,7 +473,7 @@ function DiscoveryRailCard({
       className={cn(
         "flex-none",
         fillHeight
-          ? "aspect-[2/3] h-full"
+          ? "w-[152px] lg:aspect-[2/3] lg:h-full lg:w-auto"
           : compactSize
             ? "w-[120px]"
             : "w-[152px]",
@@ -525,7 +526,12 @@ function DiscoverySectionRail({
   const dismissLabel = t("discovery.notInterested");
 
   return (
-    <section className={cn("mb-7", fillHeight && "flex h-full min-h-0 flex-col")}>
+    <section
+      className={cn(
+        "mb-7",
+        fillHeight && "lg:flex lg:h-full lg:min-h-0 lg:flex-col",
+      )}
+    >
       <div className="mb-3.5 flex items-center justify-between gap-3">
         <h3 className="m-0 inline-flex items-center gap-2 font-[var(--font-space-grotesk)] text-lg font-semibold text-[var(--scry-ink2)]">
           {HeaderIcon ? (
@@ -544,9 +550,9 @@ function DiscoverySectionRail({
       <HorizontalScrollFade
         className={cn(
           "flex gap-3.5 overflow-x-auto pb-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
-          fillHeight && "h-full",
+          fillHeight && "lg:h-full",
         )}
-        containerClassName={cn(fillHeight && "min-h-0 flex-1")}
+        containerClassName={cn(fillHeight && "lg:min-h-0 lg:flex-1")}
         fadeClassName="to-[var(--scry-bg)]"
       >
         {items.map((item) => {
@@ -638,7 +644,7 @@ function DiscoveryHero({
         </>
       ) : null}
       <div className="relative flex min-h-[340px] flex-col p-6 sm:p-8 lg:h-full">
-        <div className="max-w-[min(72%,760px)] max-lg:max-w-[82%] max-sm:max-w-full">
+        <div className="max-w-[min(78%,760px)] max-sm:max-w-full">
           <div className="mb-3.5 flex flex-wrap gap-2">
             <span className="rounded-[7px] border border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.22)] px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.04em] text-[#c3c9ff]">
               {t("discovery.featured")}
@@ -685,12 +691,12 @@ function DiscoveryHero({
             variant="hero"
           />
           {item.overview ? (
-            <p className="m-0 line-clamp-2 max-w-[620px] text-[13.5px] leading-6 text-[#b7c0dd] sm:line-clamp-3 xl:line-clamp-4">
+            <p className="m-0 line-clamp-2 max-w-[620px] text-[13.5px] leading-6 text-[#b7c0dd] sm:line-clamp-3 lg:max-2xl:hidden 2xl:line-clamp-4">
               {item.overview}
             </p>
           ) : null}
           {genres.length > 0 ? (
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-2 lg:max-2xl:hidden">
               {genres.map((genre) => (
                 <span
                   key={genre}
@@ -819,6 +825,7 @@ function DiscoveryFilters({
   onMinimumRatingChange,
   onClear,
   onShowHidden,
+  onCollapse,
   onRequestClose,
 }: {
   variant?: "desktop" | "mobile";
@@ -841,6 +848,7 @@ function DiscoveryFilters({
   onMinimumRatingChange: (rating: number) => void;
   onClear: () => void;
   onShowHidden: () => void;
+  onCollapse?: () => void;
   onRequestClose?: () => void;
 }) {
   const t = useTranslate();
@@ -894,6 +902,17 @@ function DiscoveryFilters({
           >
             {t("discovery.clearAll")}
           </button>
+          {onCollapse ? (
+            <button
+              type="button"
+              aria-label={t("discovery.closeFilters")}
+              title={t("discovery.closeFilters")}
+              onClick={onCollapse}
+              className="flex size-7 shrink-0 items-center justify-center rounded-[7px] border border-[var(--scry-baccent)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)] transition hover:bg-[var(--scry-hover)]"
+            >
+              <PanelRightClose className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
           {onRequestClose ? (
             <button
               type="button"
@@ -1301,6 +1320,7 @@ export function DiscoveryView({
     string[]
   >([]);
   const [filtersOpen, setFiltersOpen] = React.useState(false);
+  const [filterRailCollapsed, setFilterRailCollapsed] = React.useState(false);
   const { hiddenKeys, hideItem, resetHidden } = useHiddenDiscoveryItems();
   const orderedSections = React.useMemo(
     () => orderedHomeSections(home),
@@ -1595,7 +1615,9 @@ export function DiscoveryView({
             // Always present below xl (holds the mobile filters button); on xl
             // only when the discovery data is waiting on an update.
             "flex max-xl:flex",
-            hasPendingDiscoveryChanges ? "xl:flex" : "xl:hidden",
+            hasPendingDiscoveryChanges || filterRailCollapsed
+              ? "xl:flex"
+              : "xl:hidden",
           )}
         >
           <DiscoveryPendingUpdateChip status={home?.status} />
@@ -1608,6 +1630,17 @@ export function DiscoveryView({
             <SlidersHorizontal className="h-4 w-4 text-[var(--scry-accent-text)]" />
             {t("discovery.filters")}
           </button>
+          {filterRailCollapsed ? (
+            <button
+              type="button"
+              aria-label={t("discovery.openFilters")}
+              title={t("discovery.openFilters")}
+              onClick={() => setFilterRailCollapsed(false)}
+              className="ml-auto hidden h-[2.8125rem] w-[2.8125rem] shrink-0 items-center justify-center rounded-[11px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-[var(--scry-inset)] text-[var(--scry-accent-text)] shadow-none transition hover:bg-[var(--scry-hover)] xl:inline-flex"
+            >
+              <PanelRightOpen className="h-[1.125rem] w-[1.125rem]" />
+            </button>
+          ) : null}
         </div>
 
         {error ? (
@@ -1620,7 +1653,7 @@ export function DiscoveryView({
         ) : null}
 
         {heroItem ? (
-          <div className="mb-7 grid grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-stretch gap-5 max-lg:grid-cols-1 lg:min-h-[clamp(440px,46vh,520px)]">
+          <div className="mb-7 grid grid-cols-1 items-stretch gap-5 lg:grid-cols-[minmax(0,clamp(30rem,42vw,50rem))_minmax(0,1fr)] lg:min-h-[clamp(440px,46vh,520px)]">
             <DiscoveryHero
               item={heroItem}
               canManageTitle={
@@ -1701,7 +1734,12 @@ export function DiscoveryView({
           </div>
         </div>
       ) : null}
-      <DiscoveryFilters {...filterProps} />
+      {!filterRailCollapsed ? (
+        <DiscoveryFilters
+          {...filterProps}
+          onCollapse={() => setFilterRailCollapsed(true)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -72,7 +72,7 @@ export type RegistryPluginRecord = {
 
 export type PluginInstallProgressRecord = {
   pluginId: string;
-  operationKind: "install" | "upgrade";
+  operationKind: "INSTALL" | "UPGRADE";
   state: "DOWNLOADING" | "VERIFYING" | "INSTALLING" | "SUCCEEDED" | "FAILED";
   label: string;
   stepIndex: number;
@@ -392,7 +392,7 @@ function PluginTable({
           const runningProgress = isRunningPluginProgress(progress) ? progress : undefined;
           const isBusy = mutatingPluginIds.includes(plugin.id) || plugin.installInProgress;
           const isUpgrading =
-            (runningProgress?.operationKind === "upgrade")
+            (runningProgress?.operationKind === "UPGRADE")
             || (plugin.installInProgress && showActions === "installed");
           const sourceLink = plugin.sourceRepo;
           const normalizedSourceLink = normalizePluginLink(sourceLink);

@@ -88,23 +88,69 @@ pub struct LibraryRoot {
     pub updated_at: DateTime<Utc>,
 }
 
-pub fn normalize_library_root_path(path: &str) -> String {
+fn is_windows_drive_root(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() == 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
+}
+
+fn is_unc_share_root(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    if bytes.len() < 3
+        || !matches!(bytes[0], b'/' | b'\\')
+        || !matches!(bytes[1], b'/' | b'\\')
+        || matches!(bytes[2], b'/' | b'\\')
+    {
+        return false;
+    }
+
+    path[2..]
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty())
+        .count()
+        == 2
+}
+
+pub fn trim_library_root_path(path: &str) -> String {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return String::new();
     }
 
+    if trimmed
+        .chars()
+        .all(|character| matches!(character, '/' | '\\'))
+    {
+        return trimmed.chars().next().unwrap_or('/').to_string();
+    }
+    if is_windows_drive_root(trimmed) || is_unc_share_root(trimmed) {
+        return trimmed.to_string();
+    }
+
+    trimmed.trim_end_matches(['/', '\\']).to_string()
+}
+
+pub fn normalize_library_root_path(path: &str) -> String {
+    let stored_path = trim_library_root_path(path);
+    if stored_path.is_empty() {
+        return stored_path;
+    }
+    let canonical_path = if is_unc_share_root(&stored_path) {
+        stored_path.trim_end_matches(['/', '\\'])
+    } else {
+        stored_path.as_str()
+    };
+
     #[cfg(windows)]
     {
-        trimmed
-            .replace('/', "\\")
-            .trim_end_matches('\\')
-            .to_ascii_lowercase()
+        canonical_path.replace('/', "\\").to_ascii_lowercase()
     }
 
     #[cfg(not(windows))]
     {
-        trimmed.replace('\\', "/").trim_end_matches('/').to_string()
+        canonical_path.replace('\\', "/")
     }
 }
 
@@ -531,6 +577,10 @@ pub struct UserAuthorization {
     pub default_library: LibraryPermissionMask,
     #[serde(default)]
     pub actor_capabilities: ActorCapabilityMask,
+    // Keep identity state behind `User` accessors so frozen migration-owned
+    // `User` literals never need to change when authentication state evolves.
+    #[serde(default)]
+    pub login_status: UserLoginStatus,
     pub loaded: bool,
 }
 
@@ -541,6 +591,7 @@ impl Default for UserAuthorization {
             libraries: std::collections::HashMap::new(),
             default_library: LibraryPermissionMask::NONE,
             actor_capabilities: ActorCapabilityMask::NONE,
+            login_status: UserLoginStatus::Enabled,
             loaded: false,
         }
     }
@@ -565,6 +616,7 @@ impl UserAuthorization {
                 LibraryPermission::AutoApproveRequests,
             ]),
             actor_capabilities: ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+            login_status: UserLoginStatus::Enabled,
             loaded: true,
         }
     }
@@ -3132,6 +3184,35 @@ pub enum UserAccountKind {
     ExternalAutoProvisioned,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserLoginStatus {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
+impl UserLoginStatus {
+    pub const fn as_storage_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "active",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub fn parse_storage(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Enabled),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
 impl UserAccountKind {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -3339,6 +3420,16 @@ impl UserExternalAccount {
 }
 
 impl User {
+    pub const SYSTEM_EXECUTION_ID: &'static str = "__scryer_system__";
+
+    pub const fn login_status(&self) -> UserLoginStatus {
+        self.authorization.login_status
+    }
+
+    pub fn set_login_status(&mut self, status: UserLoginStatus) {
+        self.authorization.login_status = status;
+    }
+
     pub fn new_admin(username: impl Into<String>) -> Self {
         Self {
             id: Id::new().0,
@@ -3347,6 +3438,20 @@ impl User {
             account_kind: UserAccountKind::Local,
             authorization: UserAuthorization::full_admin(),
         }
+    }
+
+    pub fn system_execution_actor() -> Self {
+        Self {
+            id: Self::SYSTEM_EXECUTION_ID.to_string(),
+            username: "System".to_string(),
+            password_hash: None,
+            account_kind: UserAccountKind::Local,
+            authorization: UserAuthorization::full_admin(),
+        }
+    }
+
+    pub fn is_system_execution_actor(&self) -> bool {
+        self.id == Self::SYSTEM_EXECUTION_ID
     }
 
     pub fn with_password_hash(

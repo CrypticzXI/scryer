@@ -250,15 +250,15 @@ export function CalendarView({
   return (
     <Card className="flex min-h-0 flex-1 flex-col rounded-none border-0 bg-transparent shadow-none">
       <CardContent className="flex min-h-0 flex-1 flex-col p-0">
-        <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="mb-4 flex flex-wrap items-center gap-3 max-sm:gap-2">
           <LibraryMultiSelect
             libraries={libraries}
             selectedLibraryIds={selectedLibraryIds}
             onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
             disabled={librariesLoading || libraries.length === 0}
-            triggerClassName="h-10 w-[188px] rounded-[11px] text-[13px]"
+            triggerClassName="h-10 w-full rounded-[11px] text-[13px] sm:w-[188px]"
           />
-          <div className="flex items-center gap-2">
+          <div className="grid w-full grid-cols-3 items-center gap-2 sm:flex sm:w-auto">
             {FACET_ORDER.map((facet) => {
               const active = facetFilter.includes(facet);
               const color = FACET_COLORS[facet];
@@ -266,6 +266,7 @@ export function CalendarView({
                 <button
                   key={facet}
                   type="button"
+                  aria-pressed={active}
                   onClick={() =>
                     handleFacetChange(
                       active
@@ -273,7 +274,7 @@ export function CalendarView({
                         : [...facetFilter, facet],
                     )
                   }
-                  className="flex h-9 items-center gap-2 rounded-[10px] border px-3.5 text-[12.5px] font-semibold transition"
+                  className="flex h-9 items-center justify-center gap-2 rounded-[10px] border px-2.5 text-[12.5px] font-semibold transition sm:px-3.5"
                   style={{
                     borderColor: active ? color : "var(--scry-border2)",
                     background: active ? "rgba(255,255,255,0.04)" : "transparent",
@@ -293,7 +294,7 @@ export function CalendarView({
               );
             })}
           </div>
-          <div className="ml-auto flex items-center gap-2 text-[12.5px] text-[var(--scry-muted3)]">
+          <div className="ml-auto flex w-full items-center justify-end gap-2 text-[12.5px] text-[var(--scry-muted3)] sm:w-auto">
             <CalendarClock className="h-[15px] w-[15px] text-[var(--scry-faint)]" />
             <span className="font-semibold text-[var(--scry-text4)]">
               {filteredEpisodes.length}
@@ -362,17 +363,17 @@ export function CalendarView({
             }
             views={{
               dayGridMonth: {
-                fixedWeekCount: true,
+                fixedWeekCount: !isMobile,
                 showNonCurrentDates: true,
-                dayMaxEvents: isMobile ? 2 : 3,
+                dayMaxEvents: isMobile ? 1 : 3,
               },
               dayGridWeek: {
                 dayMaxEvents: false,
               },
             }}
-            height="100%"
-            contentHeight="100%"
-            expandRows={true}
+            height={isMobile ? "auto" : "100%"}
+            contentHeight={isMobile ? "auto" : "100%"}
+            expandRows={!isMobile}
             eventDisplay="block"
             displayEventTime={false}
           />

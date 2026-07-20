@@ -1,6 +1,5 @@
 import * as React from "react";
 import {
-  ChevronDown,
   File as FileIcon,
   HardDrive,
   Loader2,
@@ -11,7 +10,11 @@ import {
 import { IconButton } from "@/components/ui/icon-button";
 import { TextActionButton } from "@/components/ui/text-action-button";
 import { ExternalSubtitleSection } from "@/components/common/external-subtitle-section";
-import { MediaInfoBadges, type MediaInfoFile } from "@/components/common/media-info-badges";
+import {
+  MediaInfoBadges,
+  SubtitleTracksPopover,
+  type MediaInfoFile,
+} from "@/components/common/media-info-badges";
 import { SubtitleSearchModal } from "@/components/views/subtitle-search-modal";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
@@ -50,15 +53,6 @@ function selectedTitleCodecLabel(file: MediaInfoFile): string | null {
 
 function selectedTitleAudioLabel(file: MediaInfoFile): string | null {
   return compactMediaValue(file.audioCodecParsed) ?? compactMediaValue(file.audioCodec);
-}
-
-function selectedTitleSubtitleLabel(file: MediaInfoFile): string {
-  const subtitleCount =
-    file.subtitleStreams.length ||
-    file.subtitleLanguages.length ||
-    file.subtitleCodecs.length;
-
-  return subtitleCount > 0 ? `${subtitleCount} subs` : "No subs";
 }
 
 type MediaFilesOnDiskPanelProps<TFile extends MediaFileOnDisk> = {
@@ -169,6 +163,24 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
                 label: selectedTitleAudioLabel(file) ?? unknownLabel,
               },
             ];
+            const selectedTitleSubtitleStreams =
+              file.subtitleStreams.length > 0
+                ? file.subtitleStreams
+                : Array.from(
+                    {
+                      length: Math.max(
+                        file.subtitleLanguages.length,
+                        file.subtitleCodecs.length,
+                      ),
+                    },
+                    (_, index) => ({
+                      language: file.subtitleLanguages[index] ?? null,
+                      codec: file.subtitleCodecs[index] ?? null,
+                      name: null,
+                      forced: false,
+                      default: false,
+                    }),
+                  );
 
             return (
               <div
@@ -269,10 +281,16 @@ export function MediaFilesOnDiskPanel<TFile extends MediaFileOnDisk>({
                             {badge.label}
                           </span>
                         ))}
-                        <span className="inline-flex items-center gap-1 rounded-[6px] bg-[var(--scry-chip)] px-[9px] py-[3px] text-[10.5px] font-semibold text-[var(--scry-muted2)]">
-                          {selectedTitleSubtitleLabel(file)}
-                          <ChevronDown className="h-[11px] w-[11px]" />
-                        </span>
+                        {selectedTitleSubtitleStreams.length > 0 ? (
+                          <SubtitleTracksPopover
+                            streams={selectedTitleSubtitleStreams}
+                            presentation="selected-title"
+                          />
+                        ) : (
+                          <span className="inline-flex items-center rounded-[6px] bg-[var(--scry-chip)] px-[9px] py-[3px] text-[10.5px] font-semibold text-[var(--scry-muted2)]">
+                            No subs
+                          </span>
+                        )}
                       </div>
                     ) : (
                       <MediaInfoBadges file={file} />

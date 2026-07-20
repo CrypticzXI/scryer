@@ -389,13 +389,12 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     );
     drama_two.matched_subject_keys = linked_subject_keys.clone();
     drama_two.rating = Some(8.7);
-    drama_two.status_tags = vec!["Award Winning".to_string()];
-    let mut acclaimed_sci_fi = discovery_item_record(
+    let mut high_rated_sci_fi = discovery_item_record(
         "context-run",
         "context-run",
         None,
         "tmdb:movie:304",
-        "Acclaimed Sci-Fi",
+        "High-Rated Sci-Fi",
         "movie",
         85.0,
         &["Sci-Fi"],
@@ -403,8 +402,8 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    acclaimed_sci_fi.matched_subject_keys = linked_subject_keys.clone();
-    acclaimed_sci_fi.rating = Some(9.1);
+    high_rated_sci_fi.matched_subject_keys = linked_subject_keys.clone();
+    high_rated_sci_fi.rating = Some(9.1);
     let mut horror_item = discovery_item_record(
         "context-run",
         "context-run",
@@ -497,12 +496,12 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         true,
     );
     weekly_anime_two.context_terms = top_context_terms.clone();
-    let mut acclaimed_mystery = discovery_item_record(
+    let mut high_rated_mystery = discovery_item_record(
         "context-run",
         "context-run",
         None,
         "tmdb:movie:308",
-        "Acclaimed Mystery",
+        "High-Rated Mystery",
         "movie",
         82.5,
         &["Mystery"],
@@ -510,7 +509,7 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         false,
         true,
     );
-    acclaimed_mystery.rating = Some(9.2);
+    high_rated_mystery.rating = Some(9.2);
     let mut collection_signal_movie = discovery_item_record(
         "context-run",
         "context-run",
@@ -564,10 +563,10 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
         sci_fi_two,
         drama_one,
         drama_two,
-        acclaimed_sci_fi,
+        high_rated_sci_fi,
         horror_item,
         isekai_item,
-        acclaimed_mystery,
+        high_rated_mystery,
         weekly_series_one,
         weekly_series_two,
         weekly_anime_one,
@@ -704,7 +703,6 @@ async fn discovery_home_and_items_use_local_rows_and_library_view_rbac() {
     assert!(!personalized_section_types.contains(&"TOP_ANIME_THIS_WEEK"));
     assert!(!personalized_section_types.contains(&"MORE_FROM_SOURCE"));
     assert!(personalized_section_types.contains(&"BECAUSE_YOU_LIKE_TAG"));
-    assert!(personalized_section_types.contains(&"TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY"));
     assert!(viewer_home.personalized_sections.iter().any(|section| {
         section.section_type == "BECAUSE_YOU_LIKE_GENRE"
             && section.title == "Because You Like Sci Fi"
@@ -1279,6 +1277,121 @@ async fn discovery_home_hydrates_only_selected_cards_from_large_candidate_set() 
         *discovery.personalized_facet_calls.lock().await,
         0,
         "card-only discovery home must not load unused personalized facets"
+    );
+}
+
+#[tokio::test]
+async fn discovery_home_cards_personalized_hero_keeps_presentation_hydration() {
+    let gateway = Arc::new(SnapshotMetadataGateway::default());
+    let (app, admin, titles) = bootstrap_with_metadata_gateway_and_titles(gateway);
+    let discovery = Arc::new(RecordingDiscoveryRepository::default());
+    let app = app.with_test_overrides(|builder| builder.with_discovery_store(discovery.clone()));
+    let (_viewer, viewer_actor) = create_authenticated_user(
+        &app,
+        &admin,
+        "hero-presentation-viewer",
+        "password",
+        vec![
+            TestPermissionPreset::CatalogView,
+            TestPermissionPreset::MediaRequest,
+        ],
+    )
+    .await;
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    let mut library_title = test_title(
+        "hero-presentation-library-title",
+        "Hero Presentation Library Title",
+        MediaFacet::Movie,
+        vec![("tmdb_movie", "9100")],
+    );
+    library_title.library_id = movie_library_id.clone();
+    titles.store.lock().await.push(library_title);
+    *discovery.state.lock().await = Some(DiscoverySyncStateRecord {
+        last_success_generation_id: Some("hero-presentation-run".to_string()),
+        updated_at: Utc.timestamp_opt(3_000, 0).unwrap(),
+        ..DiscoverySyncStateRecord::default()
+    });
+    discovery
+        .submitted_subjects
+        .lock()
+        .await
+        .push(DiscoverySubmittedSubjectRecord {
+            run_id: "hero-presentation-run".to_string(),
+            subject_key: "tmdb:movie:9100".to_string(),
+            title_id: Some("hero-presentation-library-title".to_string()),
+            library_id: Some(movie_library_id.clone()),
+            library_facet: Some("movie".to_string()),
+            title_kind: Some("movie".to_string()),
+            display_title: Some("Hero Presentation Library Title".to_string()),
+            external_ids_json: "[]".to_string(),
+            raw_subject_json: "{}".to_string(),
+        });
+    // Personalized hero candidate as production serves it: the lean home
+    // projection leaves overview empty (NULL AS overview) — only the dedicated
+    // hero hydration reads presentation columns from the title store.
+    let mut item = discovery_item_record(
+        "hero-presentation-run",
+        "hero-presentation-run",
+        None,
+        "tmdb:movie:9101",
+        "Hero Presentation Recommendation",
+        "movie",
+        900.0,
+        &["Animation"],
+        &[],
+        false,
+        true,
+    );
+    item.background_url =
+        Some("https://example.invalid/hero-presentation-backdrop.jpg".to_string());
+    item.matched_subject_keys = vec!["tmdb:movie:9100".to_string()];
+    item.library_provenance = vec![DiscoveryItemLibraryProvenanceRecord {
+        subject_key: "tmdb:movie:9100".to_string(),
+        title_id: Some("hero-presentation-library-title".to_string()),
+        library_id: Some(movie_library_id.clone()),
+    }];
+    let hero_item_id = item.id.clone();
+    discovery.items.lock().await.push(item);
+    discovery.home_hero_presentation.lock().await.insert(
+        hero_item_id.clone(),
+        (
+            Some("https://example.invalid/hero-presentation-backdrop.jpg".to_string()),
+            Some("A hero-grade synopsis.".to_string()),
+        ),
+    );
+
+    let card_home = app
+        .discovery_home_cards(
+            &viewer_actor,
+            DiscoveryHomeQuery {
+                include_public: false,
+                include_personalized: true,
+                include_unresolved: true,
+                limit_per_section: 5,
+                filters: DiscoveryHomeFilters::default(),
+            },
+        )
+        .await
+        .expect("discovery home cards should load");
+
+    let hero = card_home
+        .hero_item
+        .as_ref()
+        .expect("personalized hero should be selected");
+    assert_eq!(hero.id, hero_item_id);
+    assert_eq!(
+        hero.overview.as_deref(),
+        Some("A hero-grade synopsis."),
+        "subject resolution must not clobber the hero's presentation hydration"
+    );
+    assert_eq!(
+        hero.background_url.as_deref(),
+        Some("https://example.invalid/hero-presentation-backdrop.jpg")
+    );
+    assert_eq!(hero.matched_subject_count, 1);
+    assert_eq!(
+        hero.matched_subject_titles,
+        vec!["Hero Presentation Library Title".to_string()]
     );
 }
 
@@ -4876,6 +4989,8 @@ impl MetadataGateway for SnapshotMetadataGateway {
     }
 }
 
+type HomeHeroPresentation = HashMap<String, (Option<String>, Option<String>)>;
+
 #[derive(Default)]
 struct RecordingDiscoveryRepository {
     state: Mutex<Option<DiscoverySyncStateRecord>>,
@@ -4893,6 +5008,11 @@ struct RecordingDiscoveryRepository {
     generation_list_calls: Mutex<usize>,
     hydrated_home_candidate_ids: Mutex<Vec<Vec<String>>>,
     hydrated_home_hero_ids: Mutex<Vec<String>>,
+    // Title-store surrogate for hero presentation hydration, keyed by item id:
+    // (background_url, overview). Mirrors production, where home candidates are
+    // loaded with the lean projection and only the dedicated hero hydration
+    // reads these columns from discovery_titles.
+    home_hero_presentation: Mutex<HomeHeroPresentation>,
     personalized_facet_calls: Mutex<usize>,
 }
 
@@ -5482,6 +5602,16 @@ impl DiscoveryRepository for RecordingDiscoveryRepository {
             .lock()
             .await
             .push(candidate.item.id.clone());
+        if let Some((background_url, overview)) = self
+            .home_hero_presentation
+            .lock()
+            .await
+            .get(&candidate.item.id)
+            .cloned()
+        {
+            candidate.item.background_url = background_url;
+            candidate.item.overview = overview;
+        }
         Ok(())
     }
 
@@ -5969,7 +6099,6 @@ fn recording_home_candidate(item: DiscoveryItemRecord) -> DiscoveryHomeCandidate
         discovery_title_id: format!("recording:{}", item.id),
         matched_subject_keys: item.matched_subject_keys.clone(),
         affinity_terms: item.facet_terms.clone(),
-        has_acclaim_signal: false,
         has_hero_backdrop,
         rating_source_count,
         best_external_rating,

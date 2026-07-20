@@ -3315,7 +3315,12 @@ async fn uninstall_deletes_indexer_configs() {
         .push(make_installation("alpha", "1.0.0", false, true));
     {
         let mut configs = h.indexer_config_repo.store.lock().await;
-        configs.push(make_indexer_config("alpha"));
+        let parent = make_indexer_config("alpha");
+        let mut managed_child = make_indexer_config("newznab");
+        managed_child.managed_parent_config_id = Some(parent.id.clone());
+        managed_child.managed_child_key = Some("child-1".to_string());
+        configs.push(parent);
+        configs.push(managed_child);
         configs.push(make_indexer_config("alpha"));
     }
 
@@ -4305,6 +4310,19 @@ async fn reconcile_skips_when_plugin_requires_user_secret() {
 
     let configs = h.indexer_config_repo.store.lock().await;
     assert!(configs.is_empty());
+}
+
+#[tokio::test]
+async fn reconcile_removes_orphaned_managed_indexers_without_plugin_provider() {
+    let h = bootstrap_plugins(None);
+    let mut orphan = make_indexer_config("newznab");
+    orphan.managed_parent_config_id = Some("missing-prowlarr".to_string());
+    orphan.managed_child_key = Some("child-1".to_string());
+    h.indexer_config_repo.store.lock().await.push(orphan);
+
+    h.app.reconcile_indexer_configs().await.unwrap();
+
+    assert!(h.indexer_config_repo.store.lock().await.is_empty());
 }
 
 #[tokio::test]

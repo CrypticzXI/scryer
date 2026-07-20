@@ -282,19 +282,13 @@ impl AppUseCase {
         Ok(())
     }
 
-    pub(crate) async fn default_admin_uses_bootstrap_password(&self) -> AppResult<bool> {
-        let admin = self.find_or_create_default_user().await?;
-        let Some(password_hash) = admin.password_hash.as_deref() else {
-            return Ok(true);
-        };
-
-        self.validate_password("admin", password_hash)
-    }
-
     pub async fn existing_default_admin_uses_bootstrap_password(&self) -> AppResult<bool> {
         let Some(admin) = self.find_default_user().await? else {
             return Ok(false);
         };
+        if !admin.login_status().is_enabled() {
+            return Ok(false);
+        }
         let Some(password_hash) = admin.password_hash.as_deref() else {
             return Ok(false);
         };
@@ -455,7 +449,9 @@ impl AppUseCase {
             return Ok(user.clone());
         }
         let mut user = user.clone();
+        let login_status = user.login_status();
         user.authorization = self.load_user_authorization(&user).await?;
+        user.set_login_status(login_status);
         Ok(user)
     }
 
@@ -467,7 +463,9 @@ impl AppUseCase {
             .get_by_id(&user.id)
             .await?
             .ok_or_else(|| AppError::Unauthorized("token subject no longer exists".into()))?;
+        let login_status = user.login_status();
         user.authorization = self.load_user_authorization(&user).await?;
+        user.set_login_status(login_status);
         Ok(user)
     }
 
@@ -650,6 +648,13 @@ impl AppUseCase {
         oauth: Option<(String, String, OAuthAuthorizationSource)>,
     ) -> AppResult<String> {
         let actor = self.load_user_for_auth_payload(actor).await?;
+        let is_authless_oauth = matches!(
+            oauth.as_ref().map(|(_, _, source)| source),
+            Some(OAuthAuthorizationSource::Authless)
+        ) && Self::is_default_admin_username(&actor.username);
+        if !actor.login_status().is_enabled() && !is_authless_oauth {
+            return Err(AppError::Unauthorized("credentials unavailable".into()));
+        }
         let signing_seed = actor
             .password_hash
             .clone()
@@ -1127,6 +1132,11 @@ impl AppUseCase {
             return Err(AppError::Unauthorized("invalid OAuth token claims".into()));
         }
         let is_oauth = oauth_client_present && oauth_grant_present;
+        let is_authless_oauth = is_oauth
+            && matches!(
+                claims.oauth_authorization_source,
+                OAuthAuthorizationSource::Authless
+            );
         if is_oauth && !claims.app_permissions.is_empty() {
             return Err(AppError::Unauthorized(
                 "OAuth tokens cannot carry app permissions".into(),
@@ -1162,16 +1172,20 @@ impl AppUseCase {
             oauth_authorization_source: claims.oauth_authorization_source,
             actor_capabilities,
         };
-        self.services
+        let mut user = self
+            .services
             .identity
             .users
             .get_by_id(&subject)
             .await?
-            .map(|mut user| {
-                user.password_hash = None;
-                (user, token_claims)
-            })
-            .ok_or_else(|| AppError::Unauthorized("token subject no longer exists".into()))
+            .ok_or_else(|| AppError::Unauthorized("token subject no longer exists".into()))?;
+        let disabled_authless_grant_allowed =
+            is_authless_oauth && Self::is_default_admin_username(&user.username);
+        if !(user.login_status().is_enabled() || disabled_authless_grant_allowed) {
+            return Err(AppError::Unauthorized("credentials unavailable".into()));
+        }
+        user.password_hash = None;
+        Ok((user, token_claims))
     }
 
     pub async fn authenticate_credentials(
@@ -1208,6 +1222,22 @@ impl AppUseCase {
             Self::apply_login_failure_timing(LoginFailureTimingClass::FastMasked, started_at).await;
             return Err(AppError::NotFound(format!("user {username} not found")));
         };
+
+        if !user.login_status().is_enabled() {
+            if let Some(password_hash) = user.password_hash.as_deref() {
+                let _ = self.validate_password(password, password_hash);
+                Self::apply_login_failure_timing(
+                    LoginFailureTimingClass::PasswordBackedLocal,
+                    started_at,
+                )
+                .await;
+            } else {
+                self.verify_dummy_login_password(password);
+                Self::apply_login_failure_timing(LoginFailureTimingClass::FastMasked, started_at)
+                    .await;
+            }
+            return Err(AppError::Unauthorized("credentials unavailable".into()));
+        }
 
         let Some(password_hash) = user.password_hash.as_ref() else {
             self.verify_dummy_login_password(password);

@@ -34,6 +34,7 @@ import {
   isBuiltInDownloadClientType,
   normalizeDownloadClientType,
 } from "@/lib/utils/download-clients";
+import { buildDownloadClientConnectionTestInput } from "@/lib/utils/settings-mutation-inputs";
 import {
   localPathStyleFromRuntimeValue,
   type LocalPathStyle,
@@ -251,6 +252,16 @@ export function SettingsDownloadClientsContainer({
         ?.configFields ?? []
     );
   }, [availableDownloadClientTypeOptions, downloadClientDraft.clientType]);
+  const editingStoredSecretKeys = useMemo(
+    () =>
+      new Set<string>(
+        settingsDownloadClients.find(
+          (downloadClient) => downloadClient.id === editingDownloadClientId,
+        )
+          ?.storedSecretKeys ?? [],
+      ),
+    [settingsDownloadClients, editingDownloadClientId],
+  );
 
   const openCreateEditor = useCallback(() => {
     resetDownloadClientDraft();
@@ -266,7 +277,11 @@ export function SettingsDownloadClientsContainer({
       clientType: normalizeDownloadClientType(downloadClientDraft.clientType),
       host: downloadClientDraft.host.trim(),
       port: downloadClientDraft.port.trim(),
-      config: buildDownloadClientConfigValues(downloadClientDraft, selectedDownloadClientConfigFields),
+      config: buildDownloadClientConfigValues(
+        downloadClientDraft,
+        selectedDownloadClientConfigFields,
+        editingStoredSecretKeys,
+      ),
       isEnabled: downloadClientDraft.isEnabled,
     };
 
@@ -294,11 +309,12 @@ export function SettingsDownloadClientsContainer({
           run: async () => {
             const { data: testData, error: testError } = await client
               .mutation(testDownloadClientConnectionMutation, {
-                input: {
-                  clientType: payload.clientType,
-                  config: payload.config,
-                },
-            })
+                input: buildDownloadClientConnectionTestInput(
+                  editingDownloadClientId,
+                  payload.clientType,
+                  payload.config,
+                ),
+              })
               .toPromise();
             if (testError) throw testError;
             const validation = testData?.testDownloadClientConnection;
@@ -364,7 +380,11 @@ export function SettingsDownloadClientsContainer({
       clientType: normalizeDownloadClientType(downloadClientDraft.clientType),
       host: downloadClientDraft.host.trim(),
       baseUrl: buildDownloadClientBaseUrl(downloadClientDraft),
-      config: buildDownloadClientConfigValues(downloadClientDraft, selectedDownloadClientConfigFields),
+      config: buildDownloadClientConfigValues(
+        downloadClientDraft,
+        selectedDownloadClientConfigFields,
+        editingStoredSecretKeys,
+      ),
     };
 
     if (!payload.name || !payload.host) {
@@ -395,10 +415,11 @@ export function SettingsDownloadClientsContainer({
         run: async () => {
           const { data: testData, error: testError } = await client
             .mutation(testDownloadClientConnectionMutation, {
-              input: {
-                clientType: payload.clientType,
-                config: payload.config,
-              },
+              input: buildDownloadClientConnectionTestInput(
+                editingDownloadClientId,
+                payload.clientType,
+                payload.config,
+              ),
             })
             .toPromise();
           if (testError) throw testError;

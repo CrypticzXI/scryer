@@ -963,7 +963,7 @@ export function useGlobalSearch({
   );
 
   const runMetadataAutocomplete = useCallback(
-    async (query: string) => {
+    async (query: string, options?: { surfaceErrors?: boolean }) => {
       const trimmed = query.trim();
       if (!trimmed) {
         setCatalogSearchLoading(false);
@@ -978,7 +978,9 @@ export function useGlobalSearch({
         setCatalogTitlesByTvdbId((previous) =>
           Object.keys(previous).length === 0 ? previous : emptyCatalogTitlesByTvdbId,
         );
-        setGlobalStatus(t("label.ready"));
+        if (options?.surfaceErrors !== false) {
+          setGlobalStatus(t("label.ready"));
+        }
         return;
       }
 
@@ -1112,13 +1114,19 @@ export function useGlobalSearch({
 
       // Surface errors from either leg (suppress AbortError — the request
       // was intentionally cancelled by a newer autocomplete keystroke).
-      if (catalogResult.status === "rejected" && !isAbortError(catalogResult.reason)) {
+      if (
+        options?.surfaceErrors !== false &&
+        catalogResult.status === "rejected" &&
+        !isAbortError(catalogResult.reason)
+      ) {
         const msg = catalogResult.reason instanceof Error ? catalogResult.reason.message : t("status.apiError");
         setGlobalStatus(msg);
       }
       if (metadataResult.status === "rejected" && !isAbortError(metadataResult.reason)) {
-        const msg = metadataResult.reason instanceof Error ? metadataResult.reason.message : t("status.apiError");
-        setGlobalStatus(msg);
+        if (options?.surfaceErrors !== false) {
+          const msg = metadataResult.reason instanceof Error ? metadataResult.reason.message : t("status.apiError");
+          setGlobalStatus(msg);
+        }
         setMetadataSearchResults((prev) => (isMetadataEmpty(prev) ? prev : emptyMetadataSearchResults));
         setCatalogTitlesByTvdbId((previous) =>
           Object.keys(previous).length === 0 ? previous : emptyCatalogTitlesByTvdbId,
@@ -1428,8 +1436,9 @@ export function useGlobalSearch({
             { name: addData.addTitle.title.name },
           ),
         );
-        await runMetadataAutocomplete(globalSearch.trim());
-        return addData.addTitle?.title?.id?.trim() || null;
+        const titleId = addData.addTitle?.title?.id?.trim() || null;
+        void runMetadataAutocomplete(globalSearch.trim(), { surfaceErrors: false });
+        return titleId;
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));
         return null;
@@ -1487,7 +1496,7 @@ export function useGlobalSearch({
         if (error) throw error;
         setGlobalStatus(t("status.requestSubmitted", { name }));
         dispatchNavigationBadgesRefresh();
-        await runMetadataAutocomplete(globalSearch.trim());
+        void runMetadataAutocomplete(globalSearch.trim(), { surfaceErrors: false });
         return true;
       } catch (error) {
         setGlobalStatus(error instanceof Error ? error.message : t("status.queueFailed"));

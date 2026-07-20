@@ -142,14 +142,6 @@ impl ScopeIndexerCoverageRepository for NullScopeIndexerCoverageRepository {
     ) -> AppResult<Vec<crate::ScopeCoverageRow>> {
         Ok(Vec::new())
     }
-
-    async fn prune_scope(&self, _scope_key: &str) -> AppResult<()> {
-        Ok(())
-    }
-
-    async fn prune_orphaned_coverage(&self) -> AppResult<()> {
-        Ok(())
-    }
 }
 
 #[derive(Default)]
@@ -3041,6 +3033,14 @@ pub mod test_nulls {
             Ok(None)
         }
         async fn update_password_hash(&self, _: &str, _: String) -> AppResult<User> {
+            Err(AppError::Repository("not configured".into()))
+        }
+        async fn update_login_status_and_rotate_session(
+            &self,
+            _: &str,
+            _: scryer_domain::UserLoginStatus,
+            _: &str,
+        ) -> AppResult<User> {
             Err(AppError::Repository("not configured".into()))
         }
         async fn delete(&self, _: &str) -> AppResult<()> {

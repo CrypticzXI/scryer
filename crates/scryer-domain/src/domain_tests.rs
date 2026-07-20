@@ -1,6 +1,25 @@
 use super::*;
 use std::{collections::HashMap, path::Path};
 
+#[test]
+fn library_root_trimming_preserves_filesystem_roots() {
+    assert_eq!(trim_library_root_path(" / "), "/");
+    assert_eq!(trim_library_root_path("C:\\"), "C:\\");
+    assert_eq!(
+        trim_library_root_path("\\\\server\\share\\"),
+        "\\\\server\\share\\"
+    );
+    assert_eq!(trim_library_root_path("/media/movies/"), "/media/movies");
+}
+
+#[test]
+fn library_root_comparison_canonicalizes_unc_trailing_separators() {
+    assert_eq!(
+        normalize_library_root_path("\\\\server\\share\\"),
+        normalize_library_root_path("\\\\server\\share")
+    );
+}
+
 // ── is_video_file ─────────────────────────────────────────────────────────
 
 #[test]

@@ -52,12 +52,15 @@ impl AppUseCase {
             libraries,
             default_library: LibraryPermissionMask::NONE,
             actor_capabilities: ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+            login_status: actor.login_status(),
             loaded: true,
         })
     }
 
     pub async fn attach_user_authorization(&self, mut actor: User) -> AppResult<User> {
+        let login_status = actor.login_status();
         actor.authorization = self.load_user_authorization(&actor).await?;
+        actor.set_login_status(login_status);
         Ok(actor)
     }
 

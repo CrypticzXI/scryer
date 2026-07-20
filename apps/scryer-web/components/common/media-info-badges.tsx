@@ -195,9 +195,15 @@ function AudioTracksPopover({ streams }: { streams: AudioStreamDetail[] }) {
   );
 }
 
-function SubtitleTracksPopover({ streams }: { streams: SubtitleStreamDetail[] }) {
+export function SubtitleTracksPopover({
+  streams,
+  presentation = "default",
+}: {
+  streams: SubtitleStreamDetail[];
+  presentation?: "default" | "selected-title";
+}) {
   const t = useTranslate();
-  if (streams.length === 1) {
+  if (streams.length === 1 && presentation === "default") {
     return <Badge tone="info">{formatSingleSubtitleTrack(streams[0])}</Badge>;
   }
   return (
@@ -205,7 +211,11 @@ function SubtitleTracksPopover({ streams }: { streams: SubtitleStreamDetail[] })
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex cursor-pointer items-center gap-1 rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-muted dark:hover:bg-muted/80"
+          className={
+            presentation === "selected-title"
+              ? "inline-flex cursor-pointer items-center gap-1 rounded-[6px] bg-[var(--scry-chip)] px-[9px] py-[3px] text-[10.5px] font-semibold text-[var(--scry-muted2)] hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--scry-focus)]"
+              : "inline-flex cursor-pointer items-center gap-1 rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-muted dark:hover:bg-muted/80"
+          }
         >
           {t("mediaFile.subtitleCount", { count: streams.length })}
           <ChevronDown className="h-3 w-3 opacity-70" />

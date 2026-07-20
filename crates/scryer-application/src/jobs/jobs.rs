@@ -39,6 +39,21 @@ const DISCOVERY_DIRTY_REASON_SCAN_BOUNDARY: i64 = 1 << 1;
 const DISCOVERY_PUBLIC_FEED_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 const SCHEDULER_INSTANCE_ID_KEY: &str = "scheduler.instance_id";
 
+#[derive(Clone)]
+enum JobExecutionPrincipal {
+    User(User),
+    System,
+}
+
+impl JobExecutionPrincipal {
+    fn into_actor(self) -> User {
+        match self {
+            Self::User(actor) => actor,
+            Self::System => User::system_execution_actor(),
+        }
+    }
+}
+
 fn apply_library_scan_session_to_job_run(run: &mut JobRun, session: LibraryScanSession) {
     run.library_scan_progress = Some(session.clone());
     run.status = match session.status {
@@ -829,7 +844,10 @@ impl AppUseCase {
         let app = self.clone();
         let actor = actor.clone();
         tokio::spawn(async move {
-            if let Err(error) = app.run_job_run(run, Some(actor), event_actor).await {
+            if let Err(error) = app
+                .run_job_run(run, JobExecutionPrincipal::User(actor), event_actor)
+                .await
+            {
                 warn!(job_key = job_key.as_str(), error = %error, "manual job trigger failed");
             }
         });
@@ -870,8 +888,12 @@ impl AppUseCase {
                 }),
             ))
             .await;
-        self.run_job_run(run, None, DomainEventActor::system())
-            .await
+        self.run_job_run(
+            run,
+            JobExecutionPrincipal::System,
+            DomainEventActor::system(),
+        )
+        .await
     }
 
     pub async fn run_scheduled_auto_backup_job_now(
@@ -922,7 +944,6 @@ impl AppUseCase {
             )));
         }
 
-        let actor = self.find_or_create_default_user().await?;
         let mut first_error = None;
         for library in libraries {
             if let Err(error) = self.ensure_job_can_start(job_key, Some(&library.id)).await {
@@ -960,7 +981,11 @@ impl AppUseCase {
                 .await;
 
             if let Err(error) = self
-                .run_job_run(run, Some(actor.clone()), DomainEventActor::system())
+                .run_job_run(
+                    run,
+                    JobExecutionPrincipal::System,
+                    DomainEventActor::system(),
+                )
                 .await
                 && first_error.is_none()
             {
@@ -1158,10 +1183,10 @@ impl AppUseCase {
     async fn run_job_run(
         &self,
         run: JobRunRecord,
-        actor: Option<User>,
+        actor: JobExecutionPrincipal,
         event_actor: DomainEventActor,
     ) -> AppResult<()> {
-        self.run_job_run_with_auto_backup_outcome(run, actor, event_actor)
+        self.run_job_run_with_auto_backup_outcome(run, Some(actor.into_actor()), event_actor)
             .await
             .map(|_| ())
     }
@@ -1201,12 +1226,9 @@ impl AppUseCase {
     ) -> AppResult<JobExecutionOutcome> {
         let job_key = run.job_key;
         let run_id = run.id.as_str();
+        let actor = actor.unwrap_or_else(User::system_execution_actor);
         match job_key {
             JobKey::LibraryScanMovies | JobKey::LibraryScanSeries | JobKey::LibraryScanAnime => {
-                let actor = match actor {
-                    Some(actor) => actor,
-                    None => self.find_or_create_default_user().await?,
-                };
                 let facet = job_key_library_facet(job_key).expect("library scan facet");
                 let summary = self
                     .scan_library_with_tracking(
@@ -1226,10 +1248,6 @@ impl AppUseCase {
                         "background library refresh is temporarily disabled".into(),
                     ));
                 }
-                let actor = match actor {
-                    Some(actor) => actor,
-                    None => self.find_or_create_default_user().await?,
-                };
                 let summary = if let Some(library_id) = job_run_library_id(run) {
                     self.background_library_refresh_by_id_with_tracking(&actor, library_id, run_id)
                         .await?
@@ -1241,10 +1259,6 @@ impl AppUseCase {
                 Ok(JobExecutionOutcome::from_library_scan(&summary))
             }
             JobKey::ProwlarrSync => {
-                let actor = match actor {
-                    Some(actor) => actor,
-                    None => self.find_or_create_default_user().await?,
-                };
                 let (synced_count, failures) = self.sync_enabled_prowlarr_indexers(&actor).await?;
                 if failures.is_empty() {
                     Ok(JobExecutionOutcome::new(

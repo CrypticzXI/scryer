@@ -20,6 +20,10 @@ impl AppUseCase {
         Self::normalize_local_username(username).eq_ignore_ascii_case(RECOVERY_ADMIN_USERNAME)
     }
 
+    pub(crate) fn is_default_admin_username(username: &str) -> bool {
+        Self::normalize_local_username(username).eq_ignore_ascii_case(DEFAULT_ADMIN_USERNAME)
+    }
+
     pub(crate) fn is_reserved_local_username(username: &str) -> bool {
         let normalized = Self::normalize_local_username(username);
         normalized.eq_ignore_ascii_case(RECOVERY_ADMIN_USERNAME)
@@ -327,8 +331,18 @@ impl AppUseCase {
     }
 
     pub async fn usable_admin_login_exists(&self) -> AppResult<bool> {
+        self.usable_admin_login_exists_excluding(None).await
+    }
+
+    async fn usable_admin_login_exists_excluding(
+        &self,
+        excluded_user_id: Option<&str>,
+    ) -> AppResult<bool> {
         let required_permissions = Self::required_startup_admin_app_permissions();
         for user in self.services.identity.users.list_all().await? {
+            if excluded_user_id == Some(user.id.as_str()) || !user.login_status().is_enabled() {
+                continue;
+            }
             let Some(password_hash) = user.password_hash.as_deref() else {
                 continue;
             };
@@ -350,7 +364,7 @@ impl AppUseCase {
 
     pub async fn recover_reserved_admin_access(&self, password: &str) -> AppResult<User> {
         self.validate_new_local_password(password).await?;
-        let recovery_admin = if let Some(existing) = self
+        let mut recovery_admin = if let Some(existing) = self
             .services
             .identity
             .users
@@ -435,6 +449,18 @@ impl AppUseCase {
             )
             .await?;
 
+        if !recovery_admin.login_status().is_enabled() {
+            recovery_admin = self
+                .services
+                .identity
+                .users
+                .update_login_status_and_rotate_session(
+                    &recovery_admin.id,
+                    scryer_domain::UserLoginStatus::Enabled,
+                    &Id::new().0,
+                )
+                .await?;
+        }
         self.refresh_cached_jwt_signing_key(&recovery_admin).await?;
         Ok(recovery_admin)
     }
@@ -782,6 +808,100 @@ impl AppUseCase {
         Ok(user)
     }
 
+    pub async fn set_user_login_enabled(
+        &self,
+        actor: &User,
+        user_id: &str,
+        enabled: bool,
+        effective_form_login_enabled: bool,
+    ) -> AppResult<User> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
+            .await?;
+
+        let user = self
+            .services
+            .identity
+            .users
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
+        if user.id == actor.id {
+            return Err(AppError::Validation(
+                "cannot change login status for the current user".into(),
+            ));
+        }
+        if Self::is_reserved_recovery_username(&user.username) {
+            return Err(AppError::Validation(
+                "recovery-admin login is managed by the environment".into(),
+            ));
+        }
+        let user = self.attach_user_authorization(user).await?;
+
+        let status = if enabled {
+            scryer_domain::UserLoginStatus::Enabled
+        } else {
+            scryer_domain::UserLoginStatus::Disabled
+        };
+        if user.login_status() == status {
+            if !enabled {
+                self.revoke_oauth_refresh_grants_for_user(user_id, "user_login_disabled")
+                    .await?;
+            }
+            return Ok(user);
+        }
+
+        if !enabled
+            && (effective_form_login_enabled
+                || self.load_security_settings().await?.form_login_enabled)
+        {
+            let full_admin_permissions = Self::required_startup_admin_app_permissions();
+            let target_is_usable_full_admin = user.login_status().is_enabled()
+                && user.account_kind.allows_local_credentials()
+                && user
+                    .password_hash
+                    .as_deref()
+                    .is_some_and(|hash| self.validate_password("", hash).is_ok())
+                && user.authorization.app.contains(full_admin_permissions);
+            if target_is_usable_full_admin
+                && !self
+                    .usable_admin_login_exists_excluding(Some(user_id))
+                    .await?
+            {
+                return Err(AppError::Validation(
+                    "cannot disable the last usable full administrator".into(),
+                ));
+            }
+        }
+
+        let auth_session_version = Id::new().0;
+        let mut updated = self
+            .services
+            .identity
+            .users
+            .update_login_status_and_rotate_session(user_id, status, &auth_session_version)
+            .await?;
+        updated.authorization = user.authorization;
+        updated.set_login_status(status);
+        if let Err(error) = self.refresh_cached_jwt_signing_key(&updated).await {
+            tracing::warn!(user_id, %error, "failed to refresh JWT signing key after login status change");
+        }
+        if !enabled
+            && let Err(error) = self
+                .revoke_oauth_refresh_grants_for_user(user_id, "user_login_disabled")
+                .await
+        {
+            tracing::warn!(user_id, %error, "failed to revoke OAuth refresh grants after disabling user login");
+        }
+        self.emit_configuration_changed_event(
+            actor,
+            "user_login_status",
+            Some(updated.id.clone()),
+            ConfigurationChangeAction::Updated,
+        )
+        .await;
+        Ok(updated)
+    }
+
     pub async fn delete_user(&self, actor: &User, user_id: &str) -> AppResult<()> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageUsers)
             .await?;
@@ -796,6 +916,38 @@ impl AppUseCase {
 
         if user.id == actor.id {
             return Err(AppError::Validation("cannot delete current user".into()));
+        }
+
+        if Self::is_default_admin_username(&user.username) {
+            return Err(AppError::Validation(
+                "cannot delete the default admin; disable its login instead".into(),
+            ));
+        }
+
+        let full_admin_permissions = Self::required_startup_admin_app_permissions();
+        let target_is_full_admin = self
+            .attach_user_authorization(user.clone())
+            .await?
+            .authorization
+            .app
+            .contains(full_admin_permissions);
+        if target_is_full_admin {
+            let mut replacement_full_admin_exists = false;
+            for candidate in self.services.identity.users.list_all().await? {
+                if candidate.id == user.id {
+                    continue;
+                }
+                let candidate = self.attach_user_authorization(candidate).await?;
+                if candidate.authorization.app.contains(full_admin_permissions) {
+                    replacement_full_admin_exists = true;
+                    break;
+                }
+            }
+            if !replacement_full_admin_exists {
+                return Err(AppError::Validation(
+                    "cannot delete the last full administrator".into(),
+                ));
+            }
         }
 
         self.revoke_oauth_refresh_grants_for_user(user_id, "user_deleted")

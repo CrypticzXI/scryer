@@ -193,7 +193,7 @@ struct SubmissionPayload {
 #[serde(rename_all = "camelCase")]
 struct SubmissionResultPayload {
     accepted: bool,
-    item: SubmissionQueueItemPayload,
+    item: Option<SubmissionQueueItemPayload>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1132,7 +1132,15 @@ impl DownloadClient for WeaverDownloadClient {
                             "weaver submitNzb did not accept the submission",
                         ));
                     }
-                    let job_id = data.submit_nzb.item.id;
+                    let job_id = data
+                        .submit_nzb
+                        .item
+                        .ok_or_else(|| {
+                            AppError::download_submit_unavailable(
+                                "weaver submitNzb accepted the submission without a queue item",
+                            )
+                        })?
+                        .id;
 
                     debug!(
                         endpoint = self.graphql_url.as_str(),
@@ -1506,7 +1514,8 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{
-        WeaverDownloadClient, WeaverQueueItem, map_weaver_outbound_error, weaver_item_to_queue_item,
+        SubmissionPayload, WeaverDownloadClient, WeaverQueueItem, map_weaver_outbound_error,
+        weaver_item_to_queue_item,
     };
     use scryer_application::{AppError, DownloadClient};
     use scryer_domain::{DownloadClientConfig, DownloadQueueState};
@@ -1552,6 +1561,18 @@ mod tests {
             }
             other => panic!("expected temporary unavailable error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rejected_submission_allows_null_queue_item() {
+        let payload: SubmissionPayload = WeaverDownloadClient::parse_graphql_response(
+            reqwest::StatusCode::OK,
+            r#"{"data":{"submitNzb":{"accepted":false,"item":null}}}"#,
+        )
+        .expect("rejected submission should remain valid GraphQL JSON");
+
+        assert!(!payload.submit_nzb.accepted);
+        assert!(payload.submit_nzb.item.is_none());
     }
 
     #[test]

@@ -24,6 +24,10 @@ import {
 } from "@/lib/graphql/mutations";
 import { useProviderCatalogSubscription } from "@/lib/hooks/use-provider-catalog-subscription";
 import { wsClient } from "@/lib/graphql/ws-client";
+import {
+  applySuccessfulPluginOperationState,
+  claimPluginTerminalOperation,
+} from "@/lib/utils/plugin-install-state";
 
 type PluginCatalogStatusRecord = {
   refreshState: 'READY' | 'DEGRADED';
@@ -166,6 +170,7 @@ export function SettingsPluginsContainer() {
   const [upgradingAll, setUpgradingAll] = useState(false);
   const [pendingUninstall, setPendingUninstall] = useState<RegistryPluginRecord | null>(null);
   const installProgressSubscriptionsRef = useRef(new Map<string, () => void>());
+  const terminalPluginOperationsRef = useRef(new Set<string>());
   const pluginProgressRef = useRef<Record<string, PluginInstallProgressRecord>>({});
   const pluginsRefreshPromiseRef = useRef<Promise<void> | null>(null);
   const lastPluginsRefreshCompletedAtRef = useRef(0);
@@ -207,27 +212,22 @@ export function SettingsPluginsContainer() {
     }
   }, []);
 
-  const clearPluginBusyState = useCallback(
-    (pluginId: string, operationKind?: PluginInstallProgressRecord["operationKind"]) => {
-      setPlugins((current) => current.map((plugin) => {
-        if (plugin.id !== pluginId) {
-          return plugin;
-        }
-        return {
-          ...plugin,
-          installInProgress: false,
-          isInstalled: true,
-          updateAvailable:
-            operationKind === "upgrade" ? false : plugin.updateAvailable,
-          installedVersion:
-            operationKind === "upgrade"
-              ? (plugin.latestVersion ?? plugin.version)
-              : plugin.installedVersion,
-        };
-      }));
+  const applySuccessfulPluginOperation = useCallback(
+    (pluginId: string, operationKind: PluginInstallProgressRecord["operationKind"]) => {
+      setPlugins((current) => current.map((plugin) => (
+        plugin.id === pluginId
+          ? applySuccessfulPluginOperationState(plugin, operationKind)
+          : plugin
+      )));
     },
     [setPlugins],
   );
+
+  const clearPluginBusyState = useCallback((pluginId: string) => {
+    setPlugins((current) => current.map((plugin) => (
+      plugin.id === pluginId ? { ...plugin, installInProgress: false } : plugin
+    )));
+  }, [setPlugins]);
 
   const reconcilePluginOperationState = useCallback((nextPlugins: RegistryPluginRecord[]) => {
     const nextById = new Map(nextPlugins.map((plugin) => [plugin.id, plugin] as const));
@@ -266,7 +266,7 @@ export function SettingsPluginsContainer() {
     };
   }, []);
 
-  const refreshPlugins = useCallback(async () => {
+  const refreshPlugins = useCallback(async (reportErrors = true) => {
     if (pluginsRefreshPromiseRef.current) {
       return pluginsRefreshPromiseRef.current;
     }
@@ -279,7 +279,9 @@ export function SettingsPluginsContainer() {
         setCatalogStatus(data.pluginCatalogStatus || null);
         reconcilePluginOperationState(nextPlugins);
       } catch (error) {
-        setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+        if (reportErrors) {
+          setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
+        }
       } finally {
         setInitialLoading(false);
         lastPluginsRefreshCompletedAtRef.current = Date.now();
@@ -311,6 +313,7 @@ export function SettingsPluginsContainer() {
       initialSnapshot: PluginInstallProgressRecord,
     ) => {
       stopPluginInstallProgressSubscription(plugin.id);
+      terminalPluginOperationsRef.current.delete(plugin.id);
       setPluginProgress((current) => ({
         ...current,
         [plugin.id]: initialSnapshot,
@@ -332,28 +335,31 @@ export function SettingsPluginsContainer() {
             }));
 
             if (snapshot.state === "SUCCEEDED" || snapshot.state === "FAILED") {
+              if (!claimPluginTerminalOperation(terminalPluginOperationsRef.current, plugin.id)) {
+                return;
+              }
               stopPluginInstallProgressSubscription(plugin.id);
               void (async () => {
                 try {
-                  clearPluginBusyState(plugin.id, snapshot.operationKind);
-
                   if (snapshot.state === "SUCCEEDED") {
+                    applySuccessfulPluginOperation(plugin.id, snapshot.operationKind);
                     setPluginErrors((current) => {
                       const next = { ...current };
                       delete next[plugin.id];
                       return next;
                     });
                     setGlobalStatus(
-                      snapshot.operationKind === "upgrade"
+                      snapshot.operationKind === "UPGRADE"
                         ? t("status.pluginUpgraded", {
                           name: plugin.name,
-                          version: plugin.version,
+                          version: plugin.latestVersion ?? plugin.version,
                         })
                         : t("status.pluginInstalled", { name: plugin.name }),
                     );
-                    await refreshPlugins();
+                    await refreshPlugins(false);
                     dispatchNavigationBadgesRefresh();
                   } else {
+                    clearPluginBusyState(plugin.id);
                     const message = formatPluginInstallError(
                       plugin,
                       new Error(snapshot.error ?? snapshot.label),
@@ -373,6 +379,9 @@ export function SettingsPluginsContainer() {
             }
           },
           error: (error) => {
+            if (!claimPluginTerminalOperation(terminalPluginOperationsRef.current, plugin.id)) {
+              return;
+            }
             stopPluginInstallProgressSubscription(plugin.id);
             clearPluginBusyState(plugin.id);
             clearPluginProgress(plugin.id);
@@ -393,6 +402,7 @@ export function SettingsPluginsContainer() {
       installProgressSubscriptionsRef.current.set(plugin.id, unsubscribe);
     },
     [
+      applySuccessfulPluginOperation,
       clearPluginBusyState,
       clearPluginProgress,
       endPluginMutation,

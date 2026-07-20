@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::{LazyLock, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -25,6 +26,9 @@ const PQ_AUTH_NONCE_BYTES: usize = 24;
 const PQ_CRYPTO_THREAD_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
 const SMG_SCRYER_UPDATE_NOTICE_KEY: &str = "smg.scryer_update_notice";
+const SMG_ENROLLMENT_MAX_RETRIES: u32 = 3;
+const SMG_ENROLLMENT_TRANSIENT_BASE_DELAY: Duration = Duration::from_secs(1);
+const SMG_ENROLLMENT_TRANSIENT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 static SMG_ENROLLMENT_RATE_LIMITS: LazyLock<RateLimitRegistry> =
     LazyLock::new(RateLimitRegistry::new);
@@ -219,14 +223,18 @@ async fn enroll_pq_with_smg(
         "secret_id": PQ_CLIENT_FAMILY,
         "version": env!("CARGO_PKG_VERSION"),
     });
-    let challenge_response = http
-        .send(enrollment_request_policy("smg_pq_challenge"), || {
-            http.client()
+    let challenge_response = send_enrollment_request_with_retry(
+        &http,
+        "smg_pq_challenge",
+        "SMG PQ challenge request",
+        || {
+            std::future::ready(Ok(http
+                .client()
                 .post(challenge_url.clone())
-                .json(&challenge_payload)
-        })
-        .await
-        .map_err(|error| map_enrollment_outbound_error("SMG PQ challenge request", error))?;
+                .json(&challenge_payload)))
+        },
+    )
+    .await?;
 
     if !challenge_response.status().is_success() {
         return Err(registration_response_error(challenge_response, "SMG PQ challenge").await);
@@ -264,14 +272,18 @@ async fn enroll_pq_with_smg(
         "proof_signature": proof_signature,
         "bootstrap_mac": bootstrap_mac,
     });
-    let response = http
-        .send(enrollment_request_policy("smg_pq_register"), || {
-            http.client()
+    let response = send_enrollment_request_with_retry(
+        &http,
+        "smg_pq_register",
+        "SMG PQ registration request",
+        || {
+            std::future::ready(Ok(http
+                .client()
                 .post(register_key_url.clone())
-                .json(&register_payload)
-        })
-        .await
-        .map_err(|error| map_enrollment_outbound_error("SMG PQ registration request", error))?;
+                .json(&register_payload)))
+        },
+    )
+    .await?;
 
     if !response.status().is_success() {
         return Err(registration_response_error(response, "SMG PQ registration").await);
@@ -571,6 +583,70 @@ fn enrollment_request_policy(request_label: &'static str) -> RequestPolicy {
         .with_backoff(Duration::from_secs(1), Duration::from_secs(30))
 }
 
+fn is_transient_enrollment_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::BAD_GATEWAY
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    )
+}
+
+fn enrollment_transient_retry_delay(response: &reqwest::Response, attempt: u32) -> Duration {
+    let multiplier = 1u32 << attempt.min(4);
+    let fallback = SMG_ENROLLMENT_TRANSIENT_BASE_DELAY
+        .saturating_mul(multiplier)
+        .min(SMG_ENROLLMENT_TRANSIENT_MAX_DELAY);
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after)
+        .map(|(delay, _)| delay.min(SMG_ENROLLMENT_TRANSIENT_MAX_DELAY))
+        .unwrap_or(fallback)
+}
+
+async fn send_enrollment_request_with_retry<F, Fut>(
+    http: &OutboundHttpClient,
+    request_label: &'static str,
+    operation: &'static str,
+    build_request: F,
+) -> Result<reqwest::Response, EnrollmentError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<reqwest::RequestBuilder, EnrollmentError>>,
+{
+    for retry_index in 0..=SMG_ENROLLMENT_MAX_RETRIES {
+        let response = http
+            .send_async(enrollment_request_policy(request_label), &build_request)
+            .await
+            .map_err(|error| match error {
+                OutboundRequestError::Build(error) => error,
+                OutboundRequestError::Http(error) => {
+                    map_enrollment_outbound_error(operation, error)
+                }
+            })?;
+
+        if !is_transient_enrollment_status(response.status())
+            || retry_index == SMG_ENROLLMENT_MAX_RETRIES
+        {
+            return Ok(response);
+        }
+
+        let retry_after = enrollment_transient_retry_delay(&response, retry_index);
+        warn!(
+            operation,
+            status = %response.status(),
+            retry_attempt = retry_index + 1,
+            retry_after_ms = retry_after.as_millis(),
+            "SMG enrollment request returned a transient server error, retrying"
+        );
+        tokio::time::sleep(retry_after).await;
+    }
+
+    unreachable!("bounded enrollment retry loop always returns")
+}
+
 fn map_enrollment_outbound_error(operation: &str, error: OutboundHttpError) -> EnrollmentError {
     match error {
         OutboundHttpError::RateLimited(rate_limited) => EnrollmentError::RateLimited(RateLimited {
@@ -606,8 +682,10 @@ async fn send_authenticated_pq_registration_request(
     let url = url.to_string();
     let current_seed_b64 = current_seed_b64.to_string();
     let current_key_id = current_key_id.to_string();
-    http.send_async(
-        enrollment_request_policy("smg_pq_authenticated_request"),
+    send_enrollment_request_with_retry(
+        http,
+        "smg_pq_authenticated_request",
+        "SMG PQ authenticated request",
         || {
             let client = client.clone();
             let url = url.clone();
@@ -654,12 +732,6 @@ async fn send_authenticated_pq_registration_request(
         },
     )
     .await
-    .map_err(|error| match error {
-        OutboundRequestError::Build(error) => error,
-        OutboundRequestError::Http(error) => {
-            map_enrollment_outbound_error("SMG PQ authenticated request", error)
-        }
-    })
 }
 
 pub(crate) async fn registration_response_error(
@@ -983,11 +1055,151 @@ fn hex_bytes(data: &[u8]) -> String {
 mod tests {
     use super::{
         EnrollmentError, PqAuthVersion, canonical_pq_request_message_v2, canonical_request_host,
-        generate_pq_auth_nonce, generate_pq_keypair, pq_registration_proof_message,
-        sign_bootstrap_mac, sign_pq_request,
+        enrollment_outbound_http_client, generate_pq_auth_nonce, generate_pq_keypair,
+        is_transient_enrollment_status, pq_registration_proof_message,
+        send_enrollment_request_with_retry, sign_bootstrap_mac, sign_pq_request,
     };
     use scryer_outbound_http::parse_retry_after;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use std::time::Duration;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn enrollment_transient_statuses_are_narrowly_scoped() {
+        assert!(is_transient_enrollment_status(
+            reqwest::StatusCode::BAD_GATEWAY
+        ));
+        assert!(is_transient_enrollment_status(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        ));
+        assert!(is_transient_enrollment_status(
+            reqwest::StatusCode::GATEWAY_TIMEOUT
+        ));
+        assert!(!is_transient_enrollment_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(!is_transient_enrollment_status(
+            reqwest::StatusCode::BAD_REQUEST
+        ));
+    }
+
+    #[tokio::test]
+    async fn enrollment_request_retries_bad_gateway_then_succeeds() {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let responder_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .and(path("/api/register-challenge"))
+            .respond_with(move |_request: &wiremock::Request| {
+                if responder_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(502).insert_header("Retry-After", "0")
+                } else {
+                    ResponseTemplate::new(200)
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let http = enrollment_outbound_http_client();
+        let url = format!("{}/api/register-challenge", server.uri());
+        let response = send_enrollment_request_with_retry(
+            &http,
+            "test_smg_pq_challenge",
+            "test SMG PQ challenge",
+            || std::future::ready(Ok(http.client().post(url.clone()))),
+        )
+        .await
+        .expect("transient challenge should recover");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn enrollment_registration_retries_bad_gateway_then_succeeds() {
+        let server = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let responder_calls = Arc::clone(&calls);
+        Mock::given(method("POST"))
+            .and(path("/api/register-key"))
+            .respond_with(move |_request: &wiremock::Request| {
+                if responder_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(502).insert_header("Retry-After", "0")
+                } else {
+                    ResponseTemplate::new(200)
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let http = enrollment_outbound_http_client();
+        let url = format!("{}/api/register-key", server.uri());
+        let response = send_enrollment_request_with_retry(
+            &http,
+            "test_smg_pq_register_recovery",
+            "test SMG PQ registration recovery",
+            || std::future::ready(Ok(http.client().post(url.clone()))),
+        )
+        .await
+        .expect("transient registration should recover");
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn enrollment_request_returns_final_bad_gateway_after_retry_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/register-key"))
+            .respond_with(ResponseTemplate::new(502).insert_header("Retry-After", "0"))
+            .expect(4)
+            .mount(&server)
+            .await;
+
+        let http = enrollment_outbound_http_client();
+        let url = format!("{}/api/register-key", server.uri());
+        let response = send_enrollment_request_with_retry(
+            &http,
+            "test_smg_pq_register",
+            "test SMG PQ registration",
+            || std::future::ready(Ok(http.client().post(url.clone()))),
+        )
+        .await
+        .expect("HTTP failures are returned for endpoint-specific diagnostics");
+
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn enrollment_request_does_not_retry_non_transient_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/register-key"))
+            .respond_with(ResponseTemplate::new(400))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let http = enrollment_outbound_http_client();
+        let url = format!("{}/api/register-key", server.uri());
+        let response = send_enrollment_request_with_retry(
+            &http,
+            "test_smg_pq_register_rejected",
+            "test rejected SMG PQ registration",
+            || std::future::ready(Ok(http.client().post(url.clone()))),
+        )
+        .await
+        .expect("non-transient HTTP failures are returned immediately");
+
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    }
 
     #[test]
     fn canonical_retry_after_parser_reads_http_date_first() {

@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
-    SubmissionScope,
+    AppResult, AppUseCase, DownloadSourceIdentity, DownloadSubmission,
+    DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, SubmissionScope,
 };
 
 const DEFAULT_TRACKED_DOWNLOAD_CACHE_TTL_HOURS: i64 = 24;
@@ -898,7 +898,9 @@ pub enum TrackedDownloadCommand {
     },
     AssignTitle {
         id: String,
-        title_id: String,
+        title: Box<Title>,
+        submission: Box<DownloadSubmission>,
+        actor_snapshot: DownloadSubmissionActorSnapshot,
         reply: oneshot::Sender<AppResult<()>>,
     },
     Snapshot {
@@ -1018,12 +1020,20 @@ impl TrackedDownloadHandle {
         })?
     }
 
-    pub async fn assign_title(&self, id: String, title_id: String) -> AppResult<()> {
+    pub async fn assign_title(
+        &self,
+        id: String,
+        title: Title,
+        submission: DownloadSubmission,
+        actor_snapshot: DownloadSubmissionActorSnapshot,
+    ) -> AppResult<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(TrackedDownloadCommand::AssignTitle {
                 id,
-                title_id,
+                title: Box::new(title),
+                submission: Box::new(submission),
+                actor_snapshot,
                 reply: reply_tx,
             })
             .await
@@ -1441,6 +1451,7 @@ mod tests {
     struct TestImportRepo {
         import_record: Option<ImportRecord>,
         import_records: Vec<ImportRecord>,
+        queue_error: Option<String>,
         status_updates: Arc<Mutex<Vec<TestImportStatusUpdate>>>,
     }
 
@@ -1543,6 +1554,9 @@ mod tests {
             _: String,
             _: String,
         ) -> AppResult<String> {
+            if let Some(message) = self.queue_error.as_ref() {
+                return Err(AppError::Repository(message.clone()));
+            }
             Ok(String::new())
         }
 
@@ -2228,6 +2242,7 @@ mod tests {
                 libraries,
                 default_library: permissions,
                 actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+                login_status: Default::default(),
                 loaded: true,
             },
         }
@@ -3595,6 +3610,92 @@ mod tests {
         assert!(matches!(
             result,
             Err(AppError::Validation(message)) if message.contains("source_job_failed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn queue_manual_import_uses_tracked_blocked_source_without_live_feedback() {
+        let mut blocked_item = build_client_item();
+        blocked_item.client_type = "weaver".to_string();
+        blocked_item.client_name = "weaver".to_string();
+        blocked_item.download_client_item_id = "job-tracked-blocked".to_string();
+        blocked_item.state = DownloadQueueState::Completed;
+
+        let app = build_app(
+            Arc::new(TestDownloadSubmissionRepo::default()),
+            Arc::new(TestImportRepo::default()),
+        );
+        app.runtime
+            .acquisition
+            .tracked_download_snapshot
+            .write()
+            .await
+            .insert(
+                "tracked-job-tracked-blocked".to_string(),
+                TrackedDownloadQueueMetadata {
+                    client_item: blocked_item,
+                    client_id: "client-1".to_string(),
+                    client_type: "weaver".to_string(),
+                    title_id: None,
+                    facet: None,
+                    source_title: None,
+                    state: TrackedDownloadState::ImportBlocked,
+                    status: TrackedDownloadStatus::Warning,
+                    status_messages: Vec::new(),
+                    match_type: TitleMatchType::Unmatched,
+                },
+            );
+
+        let result = app
+            .queue_manual_import(
+                &trigger_user(),
+                None,
+                Some("client-1".to_string()),
+                "weaver".to_string(),
+                "job-tracked-blocked".to_string(),
+                None,
+            )
+            .await;
+
+        assert!(result.is_ok(), "tracked manual import failed: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn queue_manual_import_propagates_persistence_failure() {
+        let mut completed_item = build_client_item();
+        completed_item.client_type = "weaver".to_string();
+        completed_item.client_name = "weaver".to_string();
+        completed_item.download_client_item_id = "job-persistence-failure".to_string();
+        completed_item.state = DownloadQueueState::Completed;
+
+        let download_client = Arc::new(TestDownloadClient {
+            recent_activity: Arc::new(Mutex::new(vec![completed_item])),
+            ..Default::default()
+        });
+        let app = build_app_with_title_repo_and_download_client(
+            Arc::new(NullTitleRepository),
+            download_client,
+            Arc::new(TestDownloadSubmissionRepo::default()),
+            Arc::new(TestImportRepo {
+                queue_error: Some("manual import persistence failed".to_string()),
+                ..Default::default()
+            }),
+        );
+
+        let result = app
+            .queue_manual_import(
+                &trigger_user(),
+                None,
+                Some("client-1".to_string()),
+                "weaver".to_string(),
+                "job-persistence-failure".to_string(),
+                None,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(AppError::Repository(message)) if message == "manual import persistence failed"
         ));
     }
 

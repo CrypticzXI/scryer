@@ -533,7 +533,6 @@ pub struct DiscoveryHomeCandidate {
     pub discovery_title_id: String,
     pub matched_subject_keys: Vec<String>,
     pub affinity_terms: Vec<String>,
-    pub has_acclaim_signal: bool,
     pub has_hero_backdrop: bool,
     pub rating_source_count: i32,
     pub best_external_rating: Option<f64>,
@@ -1831,6 +1830,12 @@ pub trait UserRepository: Send + Sync {
     async fn get_by_id(&self, id: &str) -> AppResult<Option<User>>;
     async fn auth_session_version(&self, user_id: &str) -> AppResult<Option<String>>;
     async fn update_password_hash(&self, id: &str, password_hash: String) -> AppResult<User>;
+    async fn update_login_status_and_rotate_session(
+        &self,
+        id: &str,
+        status: scryer_domain::UserLoginStatus,
+        auth_session_version: &str,
+    ) -> AppResult<User>;
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
 
@@ -2320,19 +2325,6 @@ pub trait ScopeIndexerCoverageRepository: Send + Sync {
         &self,
         scope_keys: &[String],
     ) -> AppResult<Vec<ScopeCoverageRow>>;
-
-    /// Drop all coverage rows for a scope — the convergence re-open after a
-    /// failed grab, rejected import, or operator replacement. Scope keys are
-    /// globally unique across facets.
-    async fn prune_scope(&self, scope_key: &str) -> AppResult<()>;
-
-    /// Best-effort background GC (RFC 119): drop coverage rows whose id-based scope
-    /// (`episode:`/`series_movie:`/`collection:`/`title:`) or whose `indexer_id` no
-    /// longer exists. `episode_set:` packs are content-hash keys with no single entity
-    /// and are left alone (harmless — UUID member ids never re-associate). Guarded so a
-    /// transiently-empty entity/indexer table can never wipe live coverage. Runs from
-    /// the housekeeping job; coverage loss only triggers a safe re-converge.
-    async fn prune_orphaned_coverage(&self) -> AppResult<()>;
 }
 
 #[async_trait]

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
-use scryer_application::{AppError, AppResult, BACKUP_TABLE_CATALOG};
+use scryer_application::{AppError, AppResult};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,11 +34,7 @@ pub(crate) fn validate_restore_manifest_table_set(
 ) -> AppResult<()> {
     let expected_tables = export_tables.iter().cloned().collect::<BTreeSet<_>>();
     let manifest_tables = row_counts.keys().cloned().collect::<BTreeSet<_>>();
-    let catalog_tables = BACKUP_TABLE_CATALOG
-        .iter()
-        .map(|entry| entry.table.to_string())
-        .collect::<BTreeSet<_>>();
-    if expected_tables.is_subset(&manifest_tables) && manifest_tables.is_subset(&catalog_tables) {
+    if manifest_tables == expected_tables {
         return Ok(());
     }
 
@@ -47,7 +43,7 @@ pub(crate) fn validate_restore_manifest_table_set(
         .cloned()
         .collect::<Vec<_>>();
     let unexpected = manifest_tables
-        .difference(&catalog_tables)
+        .difference(&expected_tables)
         .cloned()
         .collect::<Vec<_>>();
     Err(AppError::Validation(format!(
@@ -91,7 +87,7 @@ fn normalize_import_object(
     match table {
         "settings_definitions" => normalize_settings_definition_import_object(object, now),
         "settings_values" => normalize_settings_value_import_object(object, now),
-        "titles" => normalize_title_import_object(object),
+        "titles" => normalize_title_import_object(object, now),
         _ => {}
     }
     Ok(())
@@ -198,7 +194,7 @@ fn normalize_settings_definition_import_object(
     }
 }
 
-fn normalize_title_import_object(object: &mut JsonMap<String, JsonValue>) {
+fn normalize_title_import_object(object: &mut JsonMap<String, JsonValue>, now: DateTime<Utc>) {
     let record = object
         .get("record_json")
         .and_then(JsonValue::as_object)
@@ -274,6 +270,34 @@ fn normalize_title_import_object(object: &mut JsonMap<String, JsonValue>) {
     ] {
         object.remove(generated_field);
     }
+
+    let mut requires_metadata_rehydration = false;
+    for source_field in ["poster_url", "background_url"] {
+        if object
+            .get(source_field)
+            .and_then(JsonValue::as_str)
+            .is_some_and(is_local_title_image_route)
+        {
+            object.insert(source_field.to_string(), JsonValue::Null);
+            requires_metadata_rehydration = true;
+        }
+    }
+    if requires_metadata_rehydration {
+        object.insert("metadata_fetched_at".to_string(), JsonValue::Null);
+        object.insert(
+            "metadata_hydration_next_attempt_at".to_string(),
+            JsonValue::String(now.to_rfc3339()),
+        );
+        object.insert(
+            "metadata_hydration_attempt_count".to_string(),
+            JsonValue::Number(0.into()),
+        );
+    }
+}
+
+fn is_local_title_image_route(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with('/') && value.contains("/images/titles/")
 }
 
 fn copy_title_record_field(
@@ -330,7 +354,8 @@ mod tests {
 
     use super::{
         ImportColumnKind, ImportColumnRule, normalize_import_object_for_target,
-        strip_nonportable_backup_fields, validate_restore_manifest_table_set,
+        normalize_title_import_object, strip_nonportable_backup_fields,
+        validate_restore_manifest_table_set,
     };
 
     #[test]
@@ -417,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_manifest_validation_accepts_legacy_generated_tables() {
+    fn restore_manifest_validation_rejects_non_export_catalog_tables() {
         let row_counts = BTreeMap::from_iter([
             ("settings_definitions".to_string(), 1),
             ("settings_values".to_string(), 1),
@@ -429,8 +454,10 @@ mod tests {
             "settings_values".to_string(),
         ];
 
-        validate_restore_manifest_table_set(&row_counts, &export_tables)
-            .expect("known non-export catalog tables should be ignored on restore");
+        let error = validate_restore_manifest_table_set(&row_counts, &export_tables)
+            .expect_err("non-export catalog tables should invalidate the bundle");
+        assert!(error.to_string().contains("title_image_blobs"));
+        assert!(error.to_string().contains("title_image_variants"));
     }
 
     #[test]
@@ -536,6 +563,47 @@ mod tests {
         assert!(!object.contains_key("poster_local_path"));
         assert!(!object.contains_key("background_local_path"));
         assert!(!object.contains_key("banner_local_path"));
+    }
+
+    #[test]
+    fn title_import_normalization_rehydrates_local_only_artwork_sources() {
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 5, 15, 9, 30, 0)
+            .single()
+            .expect("fixed timestamp");
+        let mut object = JsonMap::from_iter([
+            (
+                "poster_url".to_string(),
+                JsonValue::String("/scryer/images/titles/title-1/poster/w250/hash".to_string()),
+            ),
+            (
+                "background_url".to_string(),
+                JsonValue::String("https://example.invalid/fanart.jpg".to_string()),
+            ),
+            (
+                "metadata_fetched_at".to_string(),
+                JsonValue::String("2026-05-14T00:00:00Z".to_string()),
+            ),
+        ]);
+
+        normalize_title_import_object(&mut object, now);
+
+        assert_eq!(object.get("poster_url"), Some(&JsonValue::Null));
+        assert_eq!(
+            object.get("background_url"),
+            Some(&JsonValue::String(
+                "https://example.invalid/fanart.jpg".to_string()
+            ))
+        );
+        assert_eq!(object.get("metadata_fetched_at"), Some(&JsonValue::Null));
+        assert_eq!(
+            object.get("metadata_hydration_next_attempt_at"),
+            Some(&JsonValue::String(now.to_rfc3339()))
+        );
+        assert_eq!(
+            object.get("metadata_hydration_attempt_count"),
+            Some(&JsonValue::Number(0.into()))
+        );
     }
 
     #[test]

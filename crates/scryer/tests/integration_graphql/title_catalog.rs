@@ -62,6 +62,7 @@ fn catalog_view_actor(library_id: &str) -> User {
             )]),
             default_library: LibraryPermissionMask::NONE,
             actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+            login_status: Default::default(),
             loaded: true,
         },
     }
@@ -145,91 +146,6 @@ async fn stored_title_root_folder_id(ctx: &TestContext, title_id: &str) -> Strin
         .expect("title should load")
         .expect("title should exist")
         .root_folder_id
-}
-
-#[tokio::test]
-async fn graphql_catalog_has_valid_root_reports_any_valid_catalog_root() {
-    let ctx = TestContext::new().await;
-    let invalid_root_parent = tempfile::tempdir().expect("invalid root parent");
-    let valid_root = tempfile::tempdir().expect("valid root");
-    let created_library = create_title_catalog_library(
-        &ctx,
-        "ANIME",
-        "Root Health Anime",
-        &[("/root-health-initial-missing", true)],
-    )
-    .await;
-    let created_library_id = library_id(&created_library);
-
-    let anime_libraries = ctx
-        .libraries
-        .list(Some(MediaFacet::Anime))
-        .await
-        .expect("anime libraries should load");
-    for (index, library) in anime_libraries.iter().enumerate() {
-        let missing_root = invalid_root_parent
-            .path()
-            .join(format!("missing-root-{index}"));
-        ctx.libraries
-            .update(
-                &library.id,
-                library.name.clone(),
-                library.slug.clone(),
-                vec![LibraryRootDraft {
-                    path: missing_root.to_string_lossy().to_string(),
-                    is_default: true,
-                }],
-            )
-            .await
-            .expect("library roots should update");
-    }
-
-    let invalid_body = gql(
-        &ctx,
-        r#"query($facet: MediaFacetValue!) {
-            catalogHasValidRoot(facet: $facet)
-        }"#,
-        json!({ "facet": "ANIME" }),
-    )
-    .await;
-    assert_no_errors(&invalid_body);
-    assert_eq!(
-        invalid_body["data"]["catalogHasValidRoot"].as_bool(),
-        Some(false)
-    );
-
-    let created_library = ctx
-        .libraries
-        .get_by_id(&created_library_id)
-        .await
-        .expect("created library should load")
-        .expect("created library should exist");
-    ctx.libraries
-        .update(
-            &created_library_id,
-            created_library.name,
-            created_library.slug,
-            vec![LibraryRootDraft {
-                path: valid_root.path().to_string_lossy().to_string(),
-                is_default: true,
-            }],
-        )
-        .await
-        .expect("valid library root should update");
-
-    let valid_body = gql(
-        &ctx,
-        r#"query($facet: MediaFacetValue!) {
-            catalogHasValidRoot(facet: $facet)
-        }"#,
-        json!({ "facet": "ANIME" }),
-    )
-    .await;
-    assert_no_errors(&valid_body);
-    assert_eq!(
-        valid_body["data"]["catalogHasValidRoot"].as_bool(),
-        Some(true)
-    );
 }
 
 #[tokio::test]

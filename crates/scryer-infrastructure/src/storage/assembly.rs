@@ -1585,9 +1585,10 @@ mod tests {
     use super::*;
     use scryer_application::{
         BACKUP_TABLE_CATALOG, BackupBundleExportRequest, BackupExportSecrets,
-        BackupTableClassification, LogicalBackupExporter, SettingsRepository, SystemInfoProvider,
-        TitleImageKind, TitleImageRepository, TitleImageSourceResult, TitleImageVariantRecord,
-        TitleRepository, UserRepository, inspect_backup_bundle,
+        BackupTableClassification, DiscoverySyncStateRecord, LogicalBackupExporter,
+        SettingsRepository, SystemInfoProvider, TitleImageKind, TitleImageRepository,
+        TitleImageSourceResult, TitleImageVariantRecord, TitleRepository, UserRepository,
+        inspect_backup_bundle,
     };
     use scryer_domain::{ExternalId, Id, MediaFacet, Title, User};
     use sqlx::Row;
@@ -1595,6 +1596,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::SettingDefinitionSeed;
+    use crate::queries::sql_runtime::{SqlArg, SqlRuntime};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
     const DATASTORE_ENV_KEYS: &[&str] = &[
@@ -1952,7 +1954,7 @@ mod tests {
 
         let result = async {
             source.seed().await?;
-            target.seed_stale_rebuild_only_image_rows().await?;
+            target.seed_stale_ephemeral_rows().await?;
             let outcome = source.export_backup(&bundle_path, passphrase).await?;
             let inspected = inspect_backup_bundle(&bundle_path, Some(passphrase))?;
             let expected_bundle_tables = BACKUP_TABLE_CATALOG
@@ -1973,41 +1975,43 @@ mod tests {
                     .row_counts
                     .get("settings_definitions")
                     .copied(),
-                Some(1),
-                "backup should include the seeded setting definition row"
+                Some(3),
+                "backup should include the seeded setting definition rows"
             );
             assert_eq!(
                 inspected.row_counts.get("settings_definitions").copied(),
-                Some(1),
+                Some(3),
                 "inspected bundle should persist the setting definition row count"
             );
             assert_eq!(
                 inspected.row_counts.get("settings_values").copied(),
-                Some(1),
+                Some(3),
                 "inspected bundle should persist the seeded setting value row count"
             );
             assert_eq!(
                 inspected_tables, expected_bundle_tables,
                 "inspected bundle table set should match the export catalog"
             );
-            assert!(
-                !outcome
-                    .summary
-                    .row_counts
-                    .contains_key("title_image_variants"),
-                "backup should not include generated title image variant rows"
-            );
-            assert!(
-                !outcome.summary.row_counts.contains_key("title_image_blobs"),
-                "backup should not include generated title image blob rows"
-            );
-            assert!(
-                !inspected.row_counts.contains_key("title_image_variants"),
-                "inspected bundle should not include generated title image variant rows"
-            );
-            assert!(
-                !inspected.row_counts.contains_key("title_image_blobs"),
-                "inspected bundle should not include generated title image blob rows"
+            for table in [
+                "discovery_sync_state",
+                "title_more_like_this_items",
+                "title_images",
+                "title_image_variants",
+                "title_image_blobs",
+            ] {
+                assert!(
+                    !outcome.summary.row_counts.contains_key(table),
+                    "backup should omit reset-only table {table}"
+                );
+                assert!(
+                    !inspected.row_counts.contains_key(table),
+                    "inspected bundle should omit reset-only table {table}"
+                );
+            }
+            assert_eq!(
+                inspected.row_counts.get("scope_indexer_coverage").copied(),
+                Some(1),
+                "inspected bundle should persist convergence coverage"
             );
             assert!(
                 outcome.summary.row_counts.contains_key("settings_values"),
@@ -2124,12 +2128,19 @@ mod tests {
                         SettingsStore::new(datastore.clone(), services.encryption_key_state());
                     let titles = TitleStore::new(datastore.clone());
                     let images = TitleImageStore::new(datastore.clone());
-                    let users = UserStore::new(datastore);
+                    let users = UserStore::new(datastore.clone());
                     settings
-                        .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
+                        .batch_ensure_setting_definitions(backup_matrix_setting_definitions())
                         .await?;
                     seed_backup_matrix_data(&settings, &titles, &users).await?;
-                    seed_backup_matrix_title_image(&images).await
+                    seed_backup_matrix_title_image(&images).await?;
+                    seed_backup_matrix_runtime_state(
+                        &datastore,
+                        "source-fingerprint",
+                        "2026-07-17T12:34:56Z",
+                        "source-discovery-generation",
+                    )
+                    .await
                 }
                 TestBackupEngine::Postgres => {
                     let services = self.postgres.as_ref().expect("postgres source");
@@ -2138,12 +2149,19 @@ mod tests {
                         SettingsStore::new(datastore.clone(), services.encryption_key_state());
                     let titles = TitleStore::new(datastore.clone());
                     let images = TitleImageStore::new(datastore.clone());
-                    let users = UserStore::new(datastore);
+                    let users = UserStore::new(datastore.clone());
                     settings
-                        .batch_ensure_setting_definitions(vec![backup_matrix_setting_definition()])
+                        .batch_ensure_setting_definitions(backup_matrix_setting_definitions())
                         .await?;
                     seed_backup_matrix_data(&settings, &titles, &users).await?;
-                    seed_backup_matrix_title_image(&images).await
+                    seed_backup_matrix_title_image(&images).await?;
+                    seed_backup_matrix_runtime_state(
+                        &datastore,
+                        "source-fingerprint",
+                        "2026-07-17T12:34:56Z",
+                        "source-discovery-generation",
+                    )
+                    .await
                 }
             }
         }
@@ -2278,7 +2296,7 @@ mod tests {
                 }
             }
         }
-        async fn seed_stale_rebuild_only_image_rows(&self) -> AppResult<()> {
+        async fn seed_stale_ephemeral_rows(&self) -> AppResult<()> {
             match self.engine {
                 TestBackupEngine::Sqlite => {
                     let services = SqliteServices::new_with_mode(
@@ -2288,9 +2306,16 @@ mod tests {
                     .await?;
                     let datastore = services.datastore();
                     let titles = TitleStore::new(datastore.clone());
-                    let images = TitleImageStore::new(datastore);
+                    let images = TitleImageStore::new(datastore.clone());
                     TitleRepository::create(&titles, backup_matrix_title()).await?;
                     seed_backup_matrix_title_image(&images).await?;
+                    seed_backup_matrix_runtime_state(
+                        &datastore,
+                        "target-fingerprint",
+                        "2025-01-02T03:04:05Z",
+                        "target-discovery-generation",
+                    )
+                    .await?;
                     services.pool().close().await;
                 }
                 TestBackupEngine::Postgres => {
@@ -2301,9 +2326,16 @@ mod tests {
                     .await?;
                     let datastore = services.datastore();
                     let titles = TitleStore::new(datastore.clone());
-                    let images = TitleImageStore::new(datastore);
+                    let images = TitleImageStore::new(datastore.clone());
                     TitleRepository::create(&titles, backup_matrix_title()).await?;
                     seed_backup_matrix_title_image(&images).await?;
+                    seed_backup_matrix_runtime_state(
+                        &datastore,
+                        "target-fingerprint",
+                        "2025-01-02T03:04:05Z",
+                        "target-discovery-generation",
+                    )
+                    .await?;
                     services.pool().close().await;
                 }
             }
@@ -2323,8 +2355,9 @@ mod tests {
                         SettingsStore::new(datastore.clone(), services.encryption_key_state());
                     let titles = TitleStore::new(datastore.clone());
                     let images = TitleImageStore::new(datastore.clone());
-                    let users = UserStore::new(datastore);
+                    let users = UserStore::new(datastore.clone());
                     verify_backup_matrix_data(&settings, &titles, &users).await?;
+                    verify_backup_matrix_runtime_state(&datastore).await?;
                     verify_backup_matrix_title_image_restore(&images).await?;
                     verify_sqlite_title_image_restore_tables(services.pool()).await?;
                     services.pool().close().await;
@@ -2340,8 +2373,9 @@ mod tests {
                         SettingsStore::new(datastore.clone(), services.encryption_key_state());
                     let titles = TitleStore::new(datastore.clone());
                     let images = TitleImageStore::new(datastore.clone());
-                    let users = UserStore::new(datastore);
+                    let users = UserStore::new(datastore.clone());
                     verify_backup_matrix_data(&settings, &titles, &users).await?;
+                    verify_backup_matrix_runtime_state(&datastore).await?;
                     verify_backup_matrix_title_image_restore(&images).await?;
                     verify_postgres_title_image_restore_tables(services.pool()).await?;
                     services.pool().close().await;
@@ -2383,8 +2417,112 @@ mod tests {
             )
             .await?;
 
+        settings
+            .upsert_setting_json(
+                "system",
+                "acquisition.convergence_resume_after",
+                None,
+                serde_json::json!("title:backup-lattice-title").to_string(),
+                "backup_matrix_test",
+                None,
+            )
+            .await?;
+        settings
+            .upsert_setting_json(
+                "system",
+                "acquisition.convergence_seeded_at",
+                None,
+                serde_json::json!("2026-07-17T00:00:00Z").to_string(),
+                "backup_matrix_test",
+                None,
+            )
+            .await?;
+
         UserRepository::create(users, User::new_admin("backup-matrix-admin")).await?;
         TitleRepository::create(titles, backup_matrix_title()).await?;
+        Ok(())
+    }
+
+    async fn seed_backup_matrix_runtime_state(
+        datastore: &StoreDatastore,
+        coverage_fingerprint: &str,
+        coverage_searched_at: &str,
+        discovery_marker: &str,
+    ) -> AppResult<()> {
+        ScopeIndexerCoverageStore::new(datastore.clone())
+            .record_coverage(
+                "backup-lattice-title",
+                "movie",
+                "backup-indexer",
+                coverage_fingerprint,
+            )
+            .await?;
+        let coverage_searched_at = chrono::DateTime::parse_from_rfc3339(coverage_searched_at)
+            .map_err(|error| {
+                AppError::Repository(format!("invalid backup matrix coverage timestamp: {error}"))
+            })?
+            .with_timezone(&chrono::Utc);
+        SqlRuntime::execute(
+            datastore.read_exec(),
+            "UPDATE scope_indexer_coverage
+                SET searched_at = {}
+              WHERE scope_key = {} AND facet = {} AND indexer_id = {}",
+            &[
+                SqlArg::Timestamp(coverage_searched_at),
+                SqlArg::Text("backup-lattice-title".to_string()),
+                SqlArg::Text("movie".to_string()),
+                SqlArg::Text("backup-indexer".to_string()),
+            ],
+        )
+        .await?;
+
+        let discovery_state = DiscoverySyncStateRecord {
+            last_subject_fingerprint: Some(discovery_marker.to_string()),
+            ..DiscoverySyncStateRecord::default()
+        };
+        DiscoveryStore::new(datastore.clone())
+            .upsert_discovery_sync_state(&discovery_state)
+            .await
+    }
+
+    async fn verify_backup_matrix_runtime_state(datastore: &StoreDatastore) -> AppResult<()> {
+        let coverage = ScopeIndexerCoverageStore::new(datastore.clone());
+        assert_eq!(
+            coverage
+                .covered_indexers("backup-lattice-title", "movie", "source-fingerprint", None,)
+                .await?,
+            vec!["backup-indexer".to_string()],
+            "source convergence coverage should round-trip"
+        );
+        assert!(
+            coverage
+                .covered_indexers("backup-lattice-title", "movie", "target-fingerprint", None,)
+                .await?
+                .is_empty(),
+            "target convergence coverage should be replaced"
+        );
+        let coverage_rows = coverage
+            .list_coverage_for_scope_keys(&["backup-lattice-title".to_string()])
+            .await?;
+        assert_eq!(coverage_rows.len(), 1);
+        assert_eq!(
+            chrono::DateTime::parse_from_rfc3339(&coverage_rows[0].searched_at)
+                .map_err(|error| AppError::Repository(error.to_string()))?
+                .to_utc(),
+            chrono::DateTime::parse_from_rfc3339("2026-07-17T12:34:56Z")
+                .expect("fixed source coverage timestamp")
+                .to_utc(),
+            "source convergence timestamp should replace stale target state"
+        );
+
+        let default_scope = DiscoverySyncStateRecord::default().scope_key;
+        assert!(
+            DiscoveryStore::new(datastore.clone())
+                .get_discovery_sync_state(&default_scope)
+                .await?
+                .is_none(),
+            "Discovery state should be empty after restore"
+        );
         Ok(())
     }
 
@@ -2433,6 +2571,26 @@ mod tests {
         }
     }
 
+    fn backup_matrix_setting_definitions() -> Vec<SettingDefinitionSeed> {
+        vec![
+            backup_matrix_setting_definition(),
+            backup_matrix_convergence_setting_definition("acquisition.convergence_resume_after"),
+            backup_matrix_convergence_setting_definition("acquisition.convergence_seeded_at"),
+        ]
+    }
+
+    fn backup_matrix_convergence_setting_definition(key_name: &str) -> SettingDefinitionSeed {
+        SettingDefinitionSeed {
+            category: "acquisition".to_string(),
+            scope: "system".to_string(),
+            key_name: key_name.to_string(),
+            data_type: "json".to_string(),
+            default_value_json: "null".to_string(),
+            is_sensitive: false,
+            validation_json: None,
+        }
+    }
+
     async fn verify_backup_matrix_data<S, T, U>(
         settings: &S,
         titles: &T,
@@ -2451,6 +2609,20 @@ mod tests {
             .map_err(|error| AppError::Repository(format!("invalid restored JSON: {error}")))?;
         assert_eq!(decoded["plugin_descriptor"]["id"], "matrix.plugin");
         assert_eq!(decoded["encrypted_config"]["enabled"], true);
+        assert_eq!(
+            settings
+                .get_setting_json("system", "acquisition.convergence_resume_after", None)
+                .await?
+                .as_deref(),
+            Some("\"title:backup-lattice-title\"")
+        );
+        assert_eq!(
+            settings
+                .get_setting_json("system", "acquisition.convergence_seeded_at", None)
+                .await?
+                .as_deref(),
+            Some("\"2026-07-17T00:00:00Z\"")
+        );
 
         let user = UserRepository::get_by_username(users, "backup-matrix-admin").await?;
         assert!(user.is_some(), "restored admin identity should exist");
@@ -2459,6 +2631,11 @@ mod tests {
         let title = title.expect("restored title should exist");
         assert_eq!(title.external_ids[0].source, "tmdb");
         assert_eq!(title.external_ids[0].value, "424242");
+        assert_eq!(
+            title.poster_url.as_deref(),
+            Some("https://example.invalid/poster.jpg"),
+            "durable remote artwork URL should survive restore"
+        );
         Ok(())
     }
 
@@ -2512,24 +2689,13 @@ mod tests {
         assert!(poster_local_path.is_none());
         assert!(background_local_path.is_none());
 
-        let source_url: Option<String> = sqlx::query_scalar(
-            "SELECT source_url
-               FROM title_images
-              WHERE title_id = ? AND kind = ?",
-        )
-        .bind("backup-lattice-title")
-        .bind(TitleImageKind::Poster.as_str())
-        .fetch_optional(pool)
-        .await
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to load restored title image source: {error}"
-            ))
-        })?;
-        assert_eq!(
-            source_url.as_deref(),
-            Some("https://example.invalid/poster.jpg")
-        );
+        let image_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_images")
+            .fetch_one(pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to count restored title images: {error}"))
+            })?;
+        assert_eq!(image_count, 0);
 
         let variant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_variants")
             .fetch_one(pool)
@@ -2569,24 +2735,13 @@ mod tests {
         assert!(poster_local_path.is_none());
         assert!(background_local_path.is_none());
 
-        let source_url: Option<String> = sqlx::query_scalar(
-            "SELECT source_url
-               FROM title_images
-              WHERE title_id = $1 AND kind = $2",
-        )
-        .bind("backup-lattice-title")
-        .bind(TitleImageKind::Poster.as_str())
-        .fetch_optional(pool)
-        .await
-        .map_err(|error| {
-            AppError::Repository(format!(
-                "failed to load restored title image source: {error}"
-            ))
-        })?;
-        assert_eq!(
-            source_url.as_deref(),
-            Some("https://example.invalid/poster.jpg")
-        );
+        let image_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_images")
+            .fetch_one(pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to count restored title images: {error}"))
+            })?;
+        assert_eq!(image_count, 0);
 
         let variant_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_variants")
             .fetch_one(pool)

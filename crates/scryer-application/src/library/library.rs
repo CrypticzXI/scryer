@@ -446,7 +446,7 @@ pub(crate) fn normalize_library_root_drafts(
     let mut seen = HashSet::new();
     let mut saw_default = false;
     for mut root in roots.drain(..) {
-        root.path = root.path.trim().trim_end_matches('/').to_string();
+        root.path = scryer_domain::trim_library_root_path(&root.path);
         if root.path.is_empty() {
             continue;
         }

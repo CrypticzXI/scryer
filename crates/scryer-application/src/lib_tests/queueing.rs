@@ -2597,14 +2597,6 @@ impl ScopeIndexerCoverageRepository for RecordingScopeIndexerCoverageRepo {
             )
             .collect())
     }
-
-    async fn prune_scope(&self, _scope_key: &str) -> AppResult<()> {
-        Ok(())
-    }
-
-    async fn prune_orphaned_coverage(&self) -> AppResult<()> {
-        Ok(())
-    }
 }
 
 /// Build a series-movie wanted item and resolve its search subject (a

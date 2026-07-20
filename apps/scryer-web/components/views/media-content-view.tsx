@@ -140,7 +140,10 @@ import {
   type TitleTableSortKey,
   type TitleTableVisibleColumns,
 } from "./media-content/title-table-shared";
-import { titleOverviewViewModeId } from "@/lib/utils/dom-ids";
+import {
+  titleOverviewSearchButtonId,
+  titleOverviewViewModeId,
+} from "@/lib/utils/dom-ids";
 import {
   hasActiveTitleQuickFilters,
   TitleQuickFilterBar,
@@ -257,6 +260,7 @@ function managedStorageSummary(rawBytes: number): string {
   }
   return `${gigabytes.toFixed(2)} GB`;
 }
+
 
 function useMinViewportWidth(query: string) {
   const [matches, setMatches] = React.useState(() =>
@@ -1278,7 +1282,7 @@ function TitleContextPanel({
     >
       <div
         data-slot="title-context-scroll"
-        className="relative min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"
+        className="relative min-h-0 flex-1 overflow-y-auto p-4 pb-[max(5rem,calc(1rem+env(safe-area-inset-bottom)))] sm:p-5 sm:pb-5"
       >
         {titleListDisclosure ? (
           <div className="mb-3 flex items-center">{titleListDisclosure}</div>
@@ -1289,21 +1293,21 @@ function TitleContextPanel({
             closeLabel={t("label.clear")}
             onClose={onClearSelection}
           >
-          <TitleWorkspacePosterFrame>
-            <TitlePosterSlot
-              src={posterUrl}
-              sourceSrc={title.posterSourceUrl}
-              metadataFetchedAt={title.metadataFetchedAt}
-              createdAt={title.createdAt}
-              alt={t("media.posterAlt", { name: title.name })}
-              className="h-full w-full object-cover"
-              placeholderClassName="flex h-full w-full items-center justify-center px-2 text-center text-[11px] text-[var(--scry-muted3)]"
-              emptyLabel={t("label.noArt")}
-              loading="lazy"
-              decoding="async"
-            />
-          </TitleWorkspacePosterFrame>
-            <div className="flex min-w-0 flex-1 flex-col">
+            <TitleWorkspacePosterFrame>
+              <TitlePosterSlot
+                src={posterUrl}
+                sourceSrc={title.posterSourceUrl}
+                metadataFetchedAt={title.metadataFetchedAt}
+                createdAt={title.createdAt}
+                alt={t("media.posterAlt", { name: title.name })}
+                className="h-full w-full object-cover"
+                placeholderClassName="flex h-full w-full items-center justify-center px-2 text-center text-[11px] text-[var(--scry-muted3)]"
+                emptyLabel={t("label.noArt")}
+                loading="lazy"
+                decoding="async"
+              />
+            </TitleWorkspacePosterFrame>
+            <div className="flex w-full min-w-0 flex-1 flex-col sm:w-auto">
               <h2 className="text-[21px] font-bold leading-[1.1] tracking-normal text-white">
                 {title.name}
                 {yearLabel ? (
@@ -1360,7 +1364,7 @@ function TitleContextPanel({
                   ))}
                 </div>
               ) : null}
-              <div className="mt-3 min-h-10">
+              <div className="mt-3 hidden min-h-10 sm:block">
                 <TitleRatingsStrip ratings={title.ratings} variant="hero" />
               </div>
               <p className="mt-3 min-h-[6.25rem] line-clamp-5 text-[12.5px] leading-5 text-[#b7c0dd]">
@@ -1368,7 +1372,7 @@ function TitleContextPanel({
               </p>
               <div className="mt-auto flex min-h-11 flex-wrap items-center gap-2 pt-3 text-[11px] text-[var(--scry-faint2)]">
                 {hasExternalLinks ? (
-                  <div className="flex flex-wrap items-center gap-2 [&_a]:h-8 [&_a]:rounded-[8px] [&_a]:border-white/10 [&_a]:bg-white/[0.07] [&_a]:px-2.5 [&_a]:py-1 [&_a]:text-[11px] [&_a]:text-[#dbe4fb] [&_a:hover]:bg-white/[0.12] [&_img]:h-4 [&_img]:w-4 [&_span]:text-[#dbe4fb]">
+                  <div className="hidden flex-wrap items-center gap-2 sm:flex [&_a]:h-8 [&_a]:rounded-[8px] [&_a]:border-white/10 [&_a]:bg-white/[0.07] [&_a]:px-2.5 [&_a]:py-1 [&_a]:text-[11px] [&_a]:text-[#dbe4fb] [&_a:hover]:bg-white/[0.12] [&_img]:h-4 [&_img]:w-4 [&_span]:text-[#dbe4fb]">
                     <ImdbExternalLink imdbId={imdbId} />
                     {view === "movies" ? (
                       <TvdbMovieExternalLink tvdbId={tvdbId} slug={title.slug} />
@@ -1394,14 +1398,21 @@ function TitleContextPanel({
 
         <TitleWorkspaceActionGrid>
           <TitleWorkspaceActionButton
+            id="title-overview-toggle-monitoring"
             icon={title.monitored ? EyeOff : Eye}
-            label={t("title.monitorAction")}
+            label={
+              title.monitored
+                ? t("title.unmonitorAction")
+                : t("title.monitorAction")
+            }
             active={title.monitored}
+            pressed={title.monitored}
             loading={isTogglingMonitored}
             disabled={bulkActionBusy || !onToggleMonitored}
             onClick={() => void onToggleMonitored?.(title, !title.monitored)}
           />
           <TitleWorkspaceActionButton
+            id={titleOverviewSearchButtonId(title.id)}
             icon={Zap}
             label={t("label.search")}
             loading={autoQueueLoading}
@@ -1907,6 +1918,7 @@ export function MediaContentView({
     librariesLoading: boolean;
     rootValidationLibraries: LibraryRecord[];
     rootValidationLibrariesLoading: boolean;
+    rootValidationUnavailable: boolean;
     invalidRootPathsByLibraryId: Record<string, string[]>;
     selectedLibraryIds: string[];
     allLibrariesValue: string;
@@ -2138,6 +2150,7 @@ export function MediaContentView({
     libraryDownloadClientsLoading,
     rootValidationLibraries,
     rootValidationLibrariesLoading,
+    rootValidationUnavailable,
     invalidRootPathsByLibraryId,
     selectedLibraryIds,
     allLibrariesValue,
@@ -2954,17 +2967,15 @@ export function MediaContentView({
     [deleteCatalogTitle],
   );
   const mediaTitle = mediaTitleLabel(view, t);
-  const totalTitleCount = knownCatalogTitleCount;
   const titleSummaryNoun = (() => {
     if (view === "movies") {
-      return totalTitleCount === 1 ? "title" : "titles";
+      return knownCatalogTitleCount === 1 ? "title" : "titles";
     }
     return view === "series" ? "series" : "anime";
   })();
-  const totalManagedBytes = Math.max(0, catalogManagedBytes);
   const mediaSummary = [
-    `${totalTitleCount.toLocaleString()} ${titleSummaryNoun}`,
-    managedStorageSummary(totalManagedBytes),
+    `${knownCatalogTitleCount.toLocaleString()} ${titleSummaryNoun}`,
+    managedStorageSummary(Math.max(0, catalogManagedBytes)),
   ].join(" · ");
 
   const [libraryRoutingWide, setLibraryRoutingWide] = React.useState(false);
@@ -2979,19 +2990,18 @@ export function MediaContentView({
       : null;
 
   const titleTableViewControls = (
-    <div className="flex w-full min-w-0 flex-col gap-3.5 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+    <div className="flex w-auto min-w-0 items-center justify-end gap-1.5">
       {showTitleTableColumnControls ? (
         <Popover>
           <PopoverTrigger asChild>
             <Button
               type="button"
               variant="outline"
-              className="h-[2.8125rem] w-full rounded-[11px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-[var(--scry-inset)] px-4 text-[15px] text-[var(--scry-muted2)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:w-[2.8125rem] sm:px-0"
+              className="h-9 w-9 rounded-[10px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-[var(--scry-inset)] px-0 text-[var(--scry-muted2)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
               aria-label={t("title.columns")}
               title={t("title.columns")}
             >
-              <Columns3 className="!size-[1.125rem]" />
-              <span className="sm:hidden">{t("title.columns")}</span>
+              <Columns3 className="!size-4" />
             </Button>
           </PopoverTrigger>
           <PopoverContent
@@ -3051,7 +3061,7 @@ export function MediaContentView({
         }}
         size="sm"
         aria-label={t("title.viewModeToggle")}
-        className="h-[2.8125rem] w-full shrink-0 justify-center gap-[0.1875rem] rounded-[11px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-[var(--scry-inset)] p-[0.28125rem] shadow-none sm:w-auto"
+        className="h-[2.8125rem] w-auto shrink-0 justify-center gap-[0.1875rem] rounded-[11px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-[var(--scry-inset)] p-[0.28125rem] shadow-none"
       >
         <ToggleGroupItem
           id={titleOverviewViewModeId(view, "compact")}
@@ -3105,24 +3115,26 @@ export function MediaContentView({
   const keepCatalogHeaderOutsideWorkspace =
     selectedTitleCompactLayoutActive && !selectedTitleListInlineActive;
   const catalogHeader = (
-    <div className="relative min-h-[4.5rem] shrink-0 px-4 pb-0 pt-2 sm:px-5 lg:px-6">
-      <div className="min-w-0">
-        <h1 className="text-[22px] font-bold leading-tight tracking-normal text-[var(--scry-ink2)]">
-          {mediaTitle}
-        </h1>
-        <p className="mt-1 text-[12.5px] text-[var(--scry-muted3)]">
-          {mediaSummary}
-        </p>
-      </div>
-      <div
-        className={cn(
-          "absolute right-3 z-10 hidden sm:block sm:right-4 lg:right-5",
-          showTitleBulkSelectionBar
-            ? "top-3"
-            : "top-1/2 -translate-y-1/2",
-        )}
-      >
-        {titleTableViewControls}
+    <div className="relative min-h-[3.25rem] shrink-0 px-4 pb-0 pt-2 sm:min-h-[4.5rem] sm:px-5 lg:px-6">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-[22px] font-bold leading-tight tracking-normal text-[var(--scry-ink2)]">
+            {mediaTitle}
+          </h1>
+          <p className="mt-1 hidden text-[12.5px] text-[var(--scry-muted3)] sm:block">
+            {mediaSummary}
+          </p>
+        </div>
+        <div
+          className={cn(
+            "shrink-0 sm:absolute sm:right-4 sm:z-10 lg:right-5",
+            showTitleBulkSelectionBar
+              ? "sm:top-3"
+              : "sm:top-1/2 sm:-translate-y-1/2",
+          )}
+        >
+          {titleTableViewControls}
+        </div>
       </div>
       {showTitleBulkSelectionBar ? (
         <div className="mt-4">
@@ -3316,6 +3328,7 @@ export function MediaContentView({
             onActiveLibraryNameChange={setLibraryCrumb}
             rootValidationLibraries={rootValidationLibraries}
             rootValidationLibrariesLoading={rootValidationLibrariesLoading}
+            rootValidationUnavailable={rootValidationUnavailable}
             invalidRootPathsByLibraryId={invalidRootPathsByLibraryId}
             preferredLibraryId={
               selectedLibraryIds.length === 1
@@ -3381,7 +3394,7 @@ export function MediaContentView({
       ) : view === "movies" || view === "series" || view === "anime" ? (
         <Card
           id={`media-overview-${view}`}
-          className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-none border-0 bg-transparent p-0 shadow-none"
+          className="flex min-h-0 flex-1 flex-col overflow-visible rounded-none border-0 bg-transparent p-0 shadow-none sm:overflow-hidden"
         >
           <CardContent className="flex min-h-0 flex-1 flex-col space-y-0 p-0">
             {keepCatalogHeaderOutsideWorkspace ? catalogHeader : null}
@@ -3391,7 +3404,7 @@ export function MediaContentView({
                 selectedTitleLayoutActive
                   ? "overflow-hidden"
                   : collectionViewMode === "poster"
-                    ? "overflow-hidden"
+                    ? "overflow-visible sm:overflow-hidden"
                     : undefined,
               )}
             >
@@ -3404,19 +3417,16 @@ export function MediaContentView({
                     : ("series" as const);
                 const titleCatalogControlBar = (
                   <>
-                    <div className="mb-3 sm:hidden">
-                      {titleTableViewControls}
-                    </div>
                     {catalogDiscoveryFlyoutAvailable ? (
-                      <div className="mb-3 flex shrink-0 justify-end">
-                        <div className="flex min-w-0 flex-[999_1_28rem] flex-col gap-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+                      <div className="my-3 flex shrink-0 justify-end">
+                        <div className="flex min-w-0 flex-[999_1_28rem] overflow-hidden rounded-[11px] border !border-[rgba(var(--scry-accent-rgb),0.55)] bg-[var(--scry-inset)] shadow-none">
                       {catalogDiscoveryFlyoutAvailable ? (
                         <Sheet>
                           <SheetTrigger asChild>
                             <Button
                               type="button"
                               variant="outline"
-                              className="h-10 w-full shrink-0 gap-2 rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:w-auto"
+                              className="h-10 min-w-0 flex-1 shrink-0 gap-2 rounded-none border-0 bg-transparent px-3 text-[13px] text-[var(--scry-body)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
                             >
                               <SlidersHorizontal className="h-4 w-4 text-[var(--scry-accent-text)]" />
                               <span>{t("discovery.filters")}</span>
@@ -3463,7 +3473,7 @@ export function MediaContentView({
                             <Button
                               type="button"
                               variant="outline"
-                              className="h-10 w-full shrink-0 gap-2 rounded-[10px] border-[var(--scry-border2)] bg-[var(--scry-inset)] px-3 text-[13px] text-[var(--scry-body)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)] sm:w-auto"
+                              className="h-10 min-w-0 flex-1 shrink-0 gap-2 rounded-none border-0 border-l border-[var(--scry-border2)] bg-transparent px-3 text-[13px] text-[var(--scry-body)] shadow-none transition hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]"
                             >
                               <Sparkles className="h-4 w-4 text-[var(--scry-accent-text)]" />
                               <span>{t("title.contextForYouTitle")}</span>
@@ -3683,7 +3693,7 @@ export function MediaContentView({
                     ? "minmax(0,1fr) minmax(23rem,30rem)"
                     : undefined;
                 const selectedTitleGridTemplateColumns =
-                  selectedTitleListInlineActive || selectedTitlePosterLayoutActive
+                  selectedTitleListInlineActive || selectedTitlePosterInlineActive
                     ? "minmax(0,1fr) clamp(700px,50%,1030px)"
                     : undefined;
                 const titleListDisclosure =
@@ -3717,7 +3727,7 @@ export function MediaContentView({
                 const titleOverviewPaneClassName =
                   selectedTitleLayoutActive
                     ? selectedTitleListInlineActive ||
-                      selectedTitlePosterLayoutActive
+                      selectedTitlePosterInlineActive
                       ? "flex h-full min-h-0"
                       : "flex min-h-0 flex-1"
                     : contextPanelAvailable
@@ -3805,7 +3815,7 @@ export function MediaContentView({
                     >
                       <div
                         data-slot="title-context-scroll"
-                        className="relative min-h-0 flex-1 overflow-y-auto p-4 sm:p-5"
+                        className="relative min-h-0 flex-1 overflow-y-auto p-4 pb-[max(5rem,calc(1rem+env(safe-area-inset-bottom)))] sm:p-5 sm:pb-5"
                       >
                         {titleListDisclosure ? (
                           <div className="mb-3 flex items-center">
@@ -3910,14 +3920,14 @@ export function MediaContentView({
                         ? cn(
                             "relative min-h-0 gap-4",
                             selectedTitleListInlineActive ||
-                              selectedTitlePosterLayoutActive
+                              selectedTitlePosterInlineActive
                               ? "grid h-full items-stretch"
                               : "flex min-h-0 flex-1 flex-col overflow-hidden",
                           )
                         : "grid min-h-0 gap-4",
                       !selectedTitleLayoutActive &&
                         (collectionViewMode === "poster"
-                          ? "h-full items-stretch"
+                          ? "items-stretch sm:h-full"
                           : "h-full"),
                     )}
                     style={
@@ -3959,7 +3969,7 @@ export function MediaContentView({
                             ? "h-full min-h-0 overflow-y-auto pr-1"
                             : selectedTitleLayoutActive
                               ? ""
-                              : "flex h-full min-h-0 flex-col"
+                              : "flex min-h-0 flex-col sm:h-full"
                           : "flex min-h-0 flex-col",
                         selectedTitleCompactLayoutActive &&
                           (selectedTitleListInlineActive

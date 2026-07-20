@@ -31,7 +31,6 @@ use std::time::Instant;
 use tracing::{debug, warn};
 
 pub(crate) const DISCOVERY_CONTEXT_CHANGES_MAX_CHANGED_SUBJECTS: usize = 250;
-const DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS: usize = 2;
 const DISCOVERY_HOME_MIN_CANDIDATES: usize = 500;
 const DISCOVERY_HOME_MAX_CANDIDATES: usize = 2_000;
 const DISCOVERY_COMPLETE_COLLECTION_MIN_CANDIDATES: usize = 100;
@@ -641,6 +640,13 @@ impl AppUseCase {
             .collect::<HashMap<_, _>>();
         let subject_resolution_ids = discovery_home_subject_resolution_item_ids(result);
         replace_discovery_home_result_items(result, &hydrated_by_id, &subject_resolution_ids);
+        if let Some(hero_item) = &mut result.hero_item {
+            replace_discovery_home_item(
+                hero_item,
+                &hydrated_by_id,
+                subject_resolution_ids.contains(&hero_item.id),
+            );
+        }
         debug!(
             operation = "discovery_home",
             stage = "selected_hydration",
@@ -1233,12 +1239,6 @@ fn home_candidate_selection_item(candidate: &DiscoveryHomeCandidate) -> Discover
     let mut item = candidate.item.clone();
     item.matched_subject_keys = candidate.matched_subject_keys.clone();
     item.facet_terms = candidate.affinity_terms.clone();
-    if candidate.has_acclaim_signal {
-        // The selection path only needs the boolean outcome; use a stable
-        // signal value so the existing acclaimed-section predicate stays
-        // unchanged while full metadata remains deferred.
-        item.chart_signals.push("acclaim".to_string());
-    }
     item
 }
 
@@ -1308,6 +1308,15 @@ fn resolve_discovery_home_selected_subjects(
         .map(|item| (item.id.clone(), item))
         .collect::<HashMap<_, _>>();
     replace_discovery_home_result_items(result, &resolved_by_id, &subject_resolution_ids);
+    // The resolved copies originate from section items, which on the card-only
+    // path lack presentation fields; merge only what subject resolution
+    // produced so the hero keeps its dedicated hydration.
+    if let Some(hero_item) = &mut result.hero_item
+        && let Some(resolved) = resolved_by_id.get(&hero_item.id)
+    {
+        hero_item.matched_subject_titles = resolved.matched_subject_titles.clone();
+        hero_item.matched_subject_count = resolved.matched_subject_count;
+    }
     Ok(())
 }
 
@@ -1339,13 +1348,12 @@ fn replace_discovery_home_result_items(
             );
         }
     }
-    if let Some(hero_item) = &mut result.hero_item {
-        replace_discovery_home_item(
-            hero_item,
-            hydrated_by_id,
-            subject_resolution_ids.contains(&hero_item.id),
-        );
-    }
+    // The hero is deliberately NOT replaced here: on the card-only path the
+    // section copies carry the lean candidate projection (NULL background_url/
+    // overview), and a wholesale replace would discard the hero's dedicated
+    // presentation hydration. Callers that want the hero swapped do it
+    // explicitly (hydrate_discovery_home_result); subject resolution merges
+    // only its own outputs into the hero (resolve_discovery_home_selected_subjects).
 }
 
 fn replace_discovery_home_item(
@@ -1779,12 +1787,6 @@ fn personalized_section_results(
         limit,
         &mut emitted_item_keys,
     ));
-    if let Some(section) =
-        acclaimed_not_in_library_section(&visible_items, limit, &mut emitted_item_keys)
-    {
-        sections.push(section);
-    }
-
     let section_specs = [
         ("FOR_YOU", "For You", None, 1usize),
         ("MOVIES_FOR_YOU", "Movies For You", Some("movie"), 6usize),
@@ -1887,37 +1889,6 @@ fn label_affinity_sections(
         }
     }
     sections
-}
-
-fn acclaimed_not_in_library_section(
-    items: &[DiscoveryItemRecord],
-    limit: usize,
-    emitted_item_keys: &mut HashSet<String>,
-) -> Option<DiscoverySectionResult> {
-    let mut section_items = items
-        .iter()
-        .filter(|item| discovery_item_is_acclaimed(item))
-        .cloned()
-        .collect::<Vec<_>>();
-    dedupe_and_sort_discovery_items(&mut section_items);
-    section_items.sort_by(|left, right| {
-        discovery_item_comparable_rating(right)
-            .partial_cmp(&discovery_item_comparable_rating(left))
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| compare_discovery_items(left, right))
-    });
-    if section_items.len() < DISCOVERY_DERIVED_SECTION_MINIMUM_ITEMS {
-        return None;
-    }
-    section_result_excluding_emitted(
-        "acclaimed_not_in_library".to_string(),
-        "TOP_RATED_ACCLAIMED_NOT_IN_LIBRARY".to_string(),
-        "Acclaimed - Not in Your Library".to_string(),
-        "personalized".to_string(),
-        section_items,
-        limit,
-        emitted_item_keys,
-    )
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2318,35 +2289,6 @@ fn catalog_personalized_groups(
     if groups.len() < max_groups {
         let mut section_items = items
             .iter()
-            .filter(|item| discovery_item_is_acclaimed(item))
-            .cloned()
-            .collect::<Vec<_>>();
-        dedupe_and_sort_discovery_items(&mut section_items);
-        section_items.sort_by(|left, right| {
-            discovery_item_comparable_rating(right)
-                .partial_cmp(&discovery_item_comparable_rating(left))
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| compare_discovery_items(left, right))
-        });
-        if let Some(group) = catalog_group_excluding_emitted(
-            CatalogDiscoveryGroupDraft {
-                id: "acclaimed_not_in_library".to_string(),
-                kind: CatalogDiscoveryGroupKind::Acclaimed,
-                surface: CatalogDiscoverySurface::Personalized,
-                label_value: None,
-                total_count: None,
-            },
-            section_items,
-            limit,
-            emitted_item_keys,
-        ) {
-            groups.push(group);
-        }
-    }
-
-    if groups.len() < max_groups {
-        let mut section_items = items
-            .iter()
             .filter(|item| discovery_item_has_collection_signal(item))
             .cloned()
             .collect::<Vec<_>>();
@@ -2428,15 +2370,6 @@ fn catalog_group_excluding_emitted(
         items,
     })
 }
-
-const ACCLAIMED_SIGNALS: &[&str] = &[
-    "acclaim",
-    "award",
-    "best picture",
-    "top rated",
-    "favorite",
-    "critically",
-];
 
 fn discovery_item_canonical_facet_labels(item: &DiscoveryItemRecord, kind: &str) -> Vec<String> {
     let mut labels = Vec::new();
@@ -2581,56 +2514,6 @@ fn display_discovery_affinity_label(value: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn discovery_item_has_any_signal(item: &DiscoveryItemRecord, signals: &[&str]) -> bool {
-    discovery_item_signal_values(item).into_iter().any(|value| {
-        let value = value.to_ascii_lowercase();
-        signals.iter().any(|signal| value.contains(signal))
-    })
-}
-
-fn discovery_item_signal_values(item: &DiscoveryItemRecord) -> Vec<String> {
-    let mut values = Vec::new();
-    values.extend(item.status_tags.iter().cloned());
-    values.extend(source_tag_text_values(&item.source_tags));
-    values.extend(item.sources.iter().cloned());
-    values.extend(item.relation_types.iter().cloned());
-    values.extend(item.relation_subtypes.iter().cloned());
-    values.extend(item.facet_terms.iter().cloned());
-    values.extend(item.context_terms.iter().cloned());
-    values.extend(item.chart_signals.iter().cloned());
-    values.extend(item.provider_signals.iter().cloned());
-    if let Some(best_source) = item.best_source.as_deref() {
-        values.push(best_source.to_string());
-    }
-    if let Some(collection_name) = item.tmdb_collection_name.as_deref() {
-        values.push(collection_name.to_string());
-    }
-    values
-}
-
-fn source_tag_text_values(tags: &[DiscoverySourceTagRecord]) -> Vec<String> {
-    let mut values = Vec::new();
-    for tag in tags {
-        if let Some(category) = tag.category.as_deref().map(str::trim)
-            && !category.is_empty()
-        {
-            values.push(category.to_string());
-        }
-        if let Some(name) = tag.name.as_deref().map(str::trim)
-            && !name.is_empty()
-        {
-            values.push(name.to_string());
-        }
-        values.extend(tag.values.iter().cloned());
-    }
-    values
-}
-
-fn discovery_item_is_acclaimed(item: &DiscoveryItemRecord) -> bool {
-    discovery_item_comparable_rating(item) >= 8.0
-        || discovery_item_has_any_signal(item, ACCLAIMED_SIGNALS)
 }
 
 fn discovery_item_comparable_rating(item: &DiscoveryItemRecord) -> f64 {

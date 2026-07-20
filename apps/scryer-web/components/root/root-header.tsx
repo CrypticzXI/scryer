@@ -1787,8 +1787,8 @@ export const RootHeader = React.memo(function RootHeader({
       {isMobile ? (
         <div
           aria-hidden="true"
-          className="shrink-0 transition-[height] duration-200 ease-out"
-          style={{ height: isMobileHeaderVisible ? mobileHeaderHeight : 0 }}
+          className="shrink-0"
+          style={{ height: mobileHeaderHeight }}
         />
       ) : null}
       {isGlobalSearchPanelOpen && isMobile ? (

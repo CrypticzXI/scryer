@@ -17,6 +17,7 @@ import {
   mergeTrustedCertificateEntries,
   readTrustedCertificateEntriesFromFiles,
 } from "@/lib/utils/certificates";
+import { parseUiDateTimeFormat } from "@/lib/utils/settings-mutation-inputs";
 import type {
   GeneralSettings,
   TrustedCertificateEntry,
@@ -156,17 +157,22 @@ export function SettingsOverviewSection({
         label={t("settings.dateTimeFormatLabel")}
         value={dateTimeFormat}
         disabled={dateTimeFormatLoading || dateTimeFormatSaving}
-        onValueChange={(value) => onDateTimeFormatChange(value as UiDateTimeFormat)}
+        onValueChange={(value) => {
+          const format = parseUiDateTimeFormat(value);
+          if (format) {
+            onDateTimeFormatChange(format);
+          }
+        }}
         placeholder={t("settings.dateTimeFormatLabel")}
         description={t("settings.dateTimeFormatHelp")}
         triggerClassName="w-64"
         options={[
           {
-            value: "locale",
+            value: "LOCALE",
             label: t("settings.dateTimeFormatLocale"),
           },
           {
-            value: "iso24h",
+            value: "ISO24H",
             label: t("settings.dateTimeFormatIso24h"),
           },
         ]}

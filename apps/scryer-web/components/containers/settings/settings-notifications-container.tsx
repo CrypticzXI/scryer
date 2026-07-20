@@ -6,9 +6,9 @@ import { FilteredPluginList } from "@/components/views/settings/filtered-plugin-
 import { SettingsNotificationsSection } from "@/components/views/settings/settings-notifications-section";
 import { SETTINGS_REFERENCE_SLOT_ID } from "@/components/containers/settings/settings-container";
 import { useClient } from "urql";
-import { toast } from "sonner";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { runConnectionFeedback } from "@/lib/utils/connection-feedback";
 import {
   providerConfigRecordToValues,
   providerConfigValuesToRecord,
@@ -683,20 +683,24 @@ export function SettingsNotificationsContainer({
   const testChannel = useCallback(async (channel: NotificationChannel) => {
     setTestingChannelId(channel.id);
     try {
-      const { data, error } = await client.mutation(testNotificationChannelMutation, {
-        id: channel.id,
-      }).toPromise();
-      if (error) throw error;
-      const validation = data?.testNotificationChannel;
-      if (validation?.status === "ok") {
-        const message = t("settings.notificationTestSuccess");
-        setGlobalStatus(message);
-        toast.success(message);
-      } else {
-        setGlobalStatus(validation?.message ?? t("settings.notificationTestFailed"));
-      }
-    } catch (error) {
-      setGlobalStatus(error instanceof Error ? error.message : t("settings.notificationTestFailed"));
+      await runConnectionFeedback({
+        setGlobalStatus,
+        successMessage: t("settings.notificationTestSuccess"),
+        failureFallbackMessage: t("settings.notificationTestFailed"),
+        run: async () => {
+          const { data, error } = await client.mutation(testNotificationChannelMutation, {
+            id: channel.id,
+          }).toPromise();
+          if (error) throw error;
+          const validation = data?.testNotificationChannel;
+          if (validation?.status !== "ok") {
+            throw new Error(validation?.message ?? t("settings.notificationTestFailed"));
+          }
+          return validation.message ?? t("settings.notificationTestSuccess");
+        },
+      });
+    } catch {
+      // Shared connection feedback already surfaced the failure.
     } finally {
       setTestingChannelId(null);
     }

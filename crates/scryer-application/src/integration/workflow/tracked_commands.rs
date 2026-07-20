@@ -285,42 +285,21 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ResolveImports,
         )
         .await?;
-        self.services
-            .workflow
-            .download_submissions
-            .record_submission(DownloadSubmission {
-                title_id: title.id.clone(),
-                purpose: crate::DownloadSubmissionPurpose::Standard,
-                facet: title.facet.as_str().to_string(),
-                download_client_id: client_id.map(str::to_string),
-                download_client_type: client_type.to_string(),
-                download_client_item_id: download_client_item_id.to_string(),
-                source_hint: None,
-                source_kind: None,
-                source_title: Some(title.name.clone()),
-                request_signature: None,
-                scope,
-            })
-            .await?;
-        let source_identity =
-            DownloadSourceIdentity::new(client_id, client_type, download_client_item_id);
+        let submission = DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: title.facet.as_str().to_string(),
+            download_client_id: client_id.map(str::to_string),
+            download_client_type: client_type.to_string(),
+            download_client_item_id: download_client_item_id.to_string(),
+            source_hint: None,
+            source_kind: None,
+            source_title: Some(title.name.clone()),
+            request_signature: None,
+            scope,
+        };
         let actor_snapshot = crate::domain_events::DomainEventActor::from(actor)
             .into_download_submission_actor_snapshot();
-        if let Err(error) = self
-            .services
-            .workflow
-            .download_submissions
-            .record_submission_actor_snapshot(&source_identity, actor_snapshot)
-            .await
-        {
-            tracing::warn!(
-                error = %error,
-                client_id = ?client_id,
-                client_type,
-                download_client_item_id,
-                "download_submission_actor_snapshot_persistence_failed"
-            );
-        }
         let handle = self
             .runtime
             .acquisition
@@ -334,7 +313,9 @@ impl AppUseCase {
                     client_type,
                     download_client_item_id,
                 ),
-                title.id,
+                title,
+                submission,
+                actor_snapshot,
             )
             .await?;
         Ok(())
@@ -676,13 +657,7 @@ pub async fn start_download_queue_poller_with_options(
 ) {
     use crate::tracked_downloads::publish_runtime_tracked_download_snapshot_cache;
 
-    let actor = match app.find_or_create_default_user().await {
-        Ok(actor) => actor,
-        Err(error) => {
-            tracing::warn!(error = %error, "download queue poller failed to resolve actor");
-            return;
-        }
-    };
+    let actor = User::system_execution_actor();
 
     let mut runtime = TrackedDownloadRuntimeState::new();
     let (tracked_work_result_tx, mut tracked_work_result_rx) =
@@ -831,6 +806,56 @@ fn resolve_tracked_command_id(
     tracker
         .resolve_cached_id(requested_id)
         .unwrap_or_else(|| requested_id.to_string())
+}
+pub(crate) async fn assign_tracked_download_title_command(
+    app: &AppUseCase,
+    tracker: &mut crate::tracked_downloads::TrackedDownloadService,
+    tracked_work_in_flight: &HashSet<String>,
+    requested_id: String,
+    title: scryer_domain::Title,
+    submission: DownloadSubmission,
+    actor_snapshot: crate::DownloadSubmissionActorSnapshot,
+) -> AppResult<()> {
+    let id = resolve_tracked_command_id(tracker, &requested_id);
+    if tracked_work_in_flight.contains(&id) {
+        return Err(AppError::Validation(format!(
+            "tracked download {requested_id} is busy processing"
+        )));
+    }
+    if tracker.find(&id).is_none() {
+        return Err(AppError::NotFound(format!(
+            "tracked download {requested_id}"
+        )));
+    }
+
+    let source_identity = DownloadSourceIdentity::from_submission(&submission);
+    app.services
+        .workflow
+        .download_submissions
+        .record_submission(submission)
+        .await?;
+    if let Err(error) = app
+        .services
+        .workflow
+        .download_submissions
+        .record_submission_actor_snapshot(&source_identity, actor_snapshot)
+        .await
+    {
+        tracing::warn!(
+            error = %error,
+            client_id = ?source_identity.client_id,
+            client_type = %source_identity.client_type,
+            download_client_item_id = %source_identity.item_id,
+            "download_submission_actor_snapshot_persistence_failed"
+        );
+    }
+
+    let tracked = tracker
+        .find_mut(&id)
+        .expect("serialized tracked download disappeared during title assignment");
+    crate::tracked_downloads::assign_title_to_tracked_download(app, tracked, &title).await;
+    publish_runtime_tracked_download_snapshot_cache(app, tracker).await;
+    Ok(())
 }
 async fn handle_tracked_download_command(
     app: &AppUseCase,
@@ -985,40 +1010,21 @@ async fn handle_tracked_download_command(
         }
         TrackedDownloadCommand::AssignTitle {
             id,
-            title_id,
+            title,
+            submission,
+            actor_snapshot,
             reply,
         } => {
-            let requested_id = id;
-            let id = resolve_tracked_command_id(tracker, &requested_id);
-            if tracked_work_in_flight.contains(&id) {
-                let _ = reply.send(Err(AppError::Validation(format!(
-                    "tracked download {requested_id} is busy processing"
-                ))));
-                return;
-            }
-            let title = match app.services.catalog.titles.get_by_id(&title_id).await {
-                Ok(Some(title)) => title,
-                Ok(None) => {
-                    let _ = reply.send(Err(AppError::NotFound(format!("title {title_id}"))));
-                    return;
-                }
-                Err(error) => {
-                    let _ = reply.send(Err(error));
-                    return;
-                }
-            };
-
-            let result = if let Some(td) = tracker.find_mut(&id) {
-                crate::tracked_downloads::assign_title_to_tracked_download(app, td, &title).await;
-                Ok(())
-            } else {
-                Err(AppError::NotFound(format!(
-                    "tracked download {requested_id}"
-                )))
-            };
-            if result.is_ok() {
-                publish_runtime_tracked_download_snapshot_cache(app, tracker).await;
-            }
+            let result = assign_tracked_download_title_command(
+                app,
+                tracker,
+                tracked_work_in_flight,
+                id,
+                *title,
+                *submission,
+                actor_snapshot,
+            )
+            .await;
             let _ = reply.send(result);
         }
         TrackedDownloadCommand::Snapshot { ids, reply } => {

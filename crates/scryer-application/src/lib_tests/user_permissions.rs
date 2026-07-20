@@ -232,3 +232,290 @@ async fn delete_other_user_removes_user() {
     let users = app.list_users(&user).await.expect("list users");
     assert!(!users.iter().any(|entry| entry.id == created.id));
 }
+
+#[tokio::test]
+async fn delete_user_rejects_removing_last_full_administrator() {
+    let (app, actor) = bootstrap();
+    let bootstrap_admin = app
+        .find_or_create_default_user()
+        .await
+        .expect("create bootstrap admin");
+
+    let result = app.delete_user(&actor, &bootstrap_admin.id).await;
+
+    assert!(matches!(
+        result,
+        Err(AppError::Validation(message))
+            if message == "cannot delete the default admin; disable its login instead"
+    ));
+}
+
+#[tokio::test]
+async fn delete_user_rejects_removing_bootstrap_admin_after_replacement_exists() {
+    let (app, actor) = bootstrap();
+    let bootstrap_admin = app
+        .find_or_create_default_user()
+        .await
+        .expect("create bootstrap admin");
+    app.create_user(
+        &actor,
+        "replacement-admin".to_string(),
+        "password123".to_string(),
+        scryer_domain::UserAuthorization::full_admin().app,
+        vec![],
+    )
+    .await
+    .expect("create replacement full admin");
+
+    let result = app.delete_user(&actor, &bootstrap_admin.id).await;
+
+    assert!(matches!(
+        result,
+        Err(AppError::Validation(message))
+            if message == "cannot delete the default admin; disable its login instead"
+    ));
+    assert!(app.find_default_user().await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn disabling_user_revokes_login_and_reenable_preserves_credentials() {
+    let (app, actor) = bootstrap();
+    let user = create_user_with_permissions(
+        &app,
+        &actor,
+        "suspended-user",
+        "password123",
+        vec![TestPermissionPreset::CatalogView],
+    )
+    .await
+    .expect("create user");
+    let password_hash = user.password_hash.clone();
+    let old_token = app.issue_access_token(&user).await.expect("issue token");
+
+    let disabled = app
+        .set_user_login_enabled(&actor, &user.id, false, false)
+        .await
+        .expect("disable login");
+    assert_eq!(
+        disabled.login_status(),
+        scryer_domain::UserLoginStatus::Disabled
+    );
+    assert_eq!(disabled.password_hash, password_hash);
+    assert!(
+        app.services
+            .identity
+            .users
+            .auth_session_version(&user.id)
+            .await
+            .expect("load session version")
+            .is_some()
+    );
+    assert!(
+        app.authenticate_credentials("suspended-user", "password123")
+            .await
+            .is_err()
+    );
+    assert!(app.authenticate_token(&old_token).await.is_err());
+    assert!(
+        app.issue_oauth_access_token_with_source(
+            &disabled,
+            "authless-client",
+            "authless-grant",
+            OAuthAuthorizationSource::Authless,
+        )
+        .await
+        .is_err()
+    );
+
+    let enabled = app
+        .set_user_login_enabled(&actor, &user.id, true, false)
+        .await
+        .expect("enable login");
+    assert_eq!(
+        enabled.login_status(),
+        scryer_domain::UserLoginStatus::Enabled
+    );
+    assert_eq!(enabled.password_hash, password_hash);
+    assert!(
+        app.authenticate_credentials("suspended-user", "password123")
+            .await
+            .is_ok()
+    );
+    assert!(app.authenticate_token(&old_token).await.is_err());
+}
+
+#[tokio::test]
+async fn login_status_changes_reject_self_and_recovery_admin() {
+    let (app, actor) = bootstrap();
+    let stored_admin = app
+        .find_or_create_default_user()
+        .await
+        .expect("create stored admin");
+    let self_result = app
+        .set_user_login_enabled(&stored_admin, &stored_admin.id, false, false)
+        .await;
+    assert!(matches!(self_result, Err(AppError::Validation(_))));
+
+    let recovery = app
+        .recover_reserved_admin_access("recovery-password")
+        .await
+        .expect("create recovery admin");
+    let recovery_result = app
+        .set_user_login_enabled(&actor, &recovery.id, false, false)
+        .await;
+    assert!(matches!(
+        recovery_result,
+        Err(AppError::Validation(message))
+            if message == "recovery-admin login is managed by the environment"
+    ));
+}
+
+#[tokio::test]
+async fn form_login_prevents_disabling_last_usable_full_admin() {
+    let (app, actor) = bootstrap();
+    let full_admin = app
+        .create_user(
+            &actor,
+            "only-login-admin".to_string(),
+            "password123".to_string(),
+            scryer_domain::UserAuthorization::full_admin().app,
+            vec![],
+        )
+        .await
+        .expect("create full admin");
+    app.update_security_settings(
+        &actor,
+        UpdateSecuritySettings {
+            form_login_enabled: true,
+            password_min_length: 8,
+            skip_login_for_local_ips: false,
+            mfa_require_config_step_up: false,
+            mfa_require_password_login: false,
+            totp_require_jellyfin_login: false,
+        },
+    )
+    .await
+    .expect("enable form login");
+
+    let result = app
+        .set_user_login_enabled(&actor, &full_admin.id, false, true)
+        .await;
+    assert!(matches!(
+        result,
+        Err(AppError::Validation(message))
+            if message == "cannot disable the last usable full administrator"
+    ));
+}
+
+#[tokio::test]
+async fn form_login_transition_requires_usable_admin_and_repairs_default_identity() {
+    let (app, actor) = bootstrap();
+    let settings = |form_login_enabled| UpdateSecuritySettings {
+        form_login_enabled,
+        password_min_length: 8,
+        skip_login_for_local_ips: false,
+        mfa_require_config_step_up: false,
+        mfa_require_password_login: false,
+        totp_require_jellyfin_login: false,
+    };
+
+    assert!(
+        app.update_security_settings(&actor, settings(true))
+            .await
+            .is_err()
+    );
+    app.create_user(
+        &actor,
+        "replacement-login-admin".to_string(),
+        "password123".to_string(),
+        scryer_domain::UserAuthorization::full_admin().app,
+        vec![],
+    )
+    .await
+    .expect("create replacement admin");
+    app.update_security_settings(&actor, settings(true))
+        .await
+        .expect("enable form login");
+    assert!(app.find_default_user().await.unwrap().is_none());
+
+    app.update_security_settings(&actor, settings(false))
+        .await
+        .expect("disable form login");
+    let default_admin = app
+        .find_default_user()
+        .await
+        .expect("load default admin")
+        .expect("default admin repaired");
+    let default_admin = app
+        .services
+        .identity
+        .users
+        .update_password_hash(
+            &default_admin.id,
+            app.hash_password("admin").expect("hash bootstrap password"),
+        )
+        .await
+        .expect("seed bootstrap password");
+    app.set_user_login_enabled(&actor, &default_admin.id, false, false)
+        .await
+        .expect("disable default admin login");
+
+    app.update_security_settings(&actor, settings(true))
+        .await
+        .expect("disabled bootstrap admin should not block form login");
+    assert_eq!(
+        app.find_default_user()
+            .await
+            .expect("load default admin")
+            .expect("default admin exists")
+            .login_status(),
+        scryer_domain::UserLoginStatus::Disabled
+    );
+}
+
+#[tokio::test]
+async fn disabled_default_admin_remains_available_only_for_authless_oauth() {
+    let (app, actor) = bootstrap();
+    let admin = app
+        .find_or_create_default_user()
+        .await
+        .expect("create default admin");
+    app.set_user_login_enabled(&actor, &admin.id, false, false)
+        .await
+        .expect("disable default admin login");
+
+    let repaired = app
+        .find_or_create_default_user()
+        .await
+        .expect("load default admin");
+    assert_eq!(
+        repaired.login_status(),
+        scryer_domain::UserLoginStatus::Disabled
+    );
+    let repaired = app
+        .attach_user_authorization(repaired)
+        .await
+        .expect("attach default admin permissions");
+    assert!(
+        repaired
+            .authorization
+            .app
+            .contains(scryer_domain::UserAuthorization::full_admin().app)
+    );
+    assert!(app.issue_access_token(&repaired).await.is_err());
+
+    let token = app
+        .issue_oauth_access_token_with_source(
+            &repaired,
+            "authless-client",
+            "authless-grant",
+            OAuthAuthorizationSource::Authless,
+        )
+        .await
+        .expect("issue authless OAuth token");
+    let authenticated = app
+        .authenticate_token(&token)
+        .await
+        .expect("authenticate authless OAuth token");
+    assert_eq!(authenticated.id, repaired.id);
+}

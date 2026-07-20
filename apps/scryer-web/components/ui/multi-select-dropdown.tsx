@@ -88,6 +88,7 @@ type MultiSelectOptionListProps = {
   optionIdPrefix?: string;
   className?: string;
   groupLabelClassName?: string;
+  allOptionClassName?: string;
   optionClassName?: string;
   optionLabelClassName?: string;
   maxHeightClassName?: string;
@@ -106,6 +107,7 @@ function MultiSelectOptionList({
   optionIdPrefix,
   className,
   groupLabelClassName,
+  allOptionClassName,
   optionClassName,
   optionLabelClassName,
   maxHeightClassName = "max-h-72",
@@ -154,6 +156,7 @@ function MultiSelectOptionList({
             "flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-sm text-[var(--scry-ink2)] transition-colors",
             "hover:bg-[var(--scry-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--scry-accent-rgb),0.32)]",
             "disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-transparent",
+            allOptionClassName,
             optionClassName,
           )}
         >

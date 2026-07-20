@@ -12,6 +12,7 @@ import {
   resetUserMfaMutation,
   setUserAppPermissionsMutation,
   setUserLibraryPermissionsMutation,
+  setUserLoginEnabledMutation,
   setUserPasswordMutation,
 } from "@/lib/graphql/mutations";
 import { librariesQuery, usersQuery } from "@/lib/graphql/queries";
@@ -43,16 +44,6 @@ function grantsToDrafts(
   );
 }
 
-function togglePermission(current: string[], value: string): string[] {
-  const existing = new Set(current);
-  if (existing.has(value)) {
-    existing.delete(value);
-  } else {
-    existing.add(value);
-  }
-  return Array.from(existing);
-}
-
 export function SettingsUsersContainer() {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -69,6 +60,7 @@ export function SettingsUsersContainer() {
   const [userLibraryPermissionDrafts, setUserLibraryPermissionDrafts] = useState<Record<string, LibraryGrantDrafts>>({});
   const [mutatingUserId, setMutatingUserId] = useState<string | null>(null);
   const [pendingDeleteUser, setPendingDeleteUser] = useState<UserRecord | null>(null);
+  const [pendingDisableUser, setPendingDisableUser] = useState<UserRecord | null>(null);
   const [pendingResetMfaUser, setPendingResetMfaUser] = useState<UserRecord | null>(null);
   const canManagePermissions =
     currentUser?.appPermissions?.includes(APP_PERMISSIONS.managePermissions) ?? false;
@@ -77,32 +69,31 @@ export function SettingsUsersContainer() {
     setUserPasswordDrafts((previous) => ({ ...previous, [userId]: value }));
   }, []);
 
-  const toggleNewAppPermission = useCallback((value: string) => {
-    setNewAppPermissions((previous) => togglePermission(previous, value));
-  }, []);
-
-  const toggleNewLibraryPermission = useCallback((libraryId: string, value: string) => {
+  const updateNewLibraryPermissions = useCallback((changes: LibraryGrantDrafts) => {
     setNewLibraryPermissionDrafts((previous) => ({
       ...previous,
-      [libraryId]: togglePermission(previous[libraryId] ?? [], value),
+      ...changes,
     }));
   }, []);
 
-  const toggleUserAppPermission = useCallback((userId: string, value: string) => {
+  const updateUserAppPermissionDraft = useCallback((userId: string, permissions: string[]) => {
     setUserAppPermissionDrafts((previous) => ({
       ...previous,
-      [userId]: togglePermission(previous[userId] ?? [], value),
+      [userId]: permissions,
     }));
   }, []);
 
-  const toggleUserLibraryPermission = useCallback((userId: string, libraryId: string, value: string) => {
+  const updateUserLibraryPermissionDrafts = useCallback((
+    userId: string,
+    changes: LibraryGrantDrafts,
+  ) => {
     setUserLibraryPermissionDrafts((previous) => {
       const grants = previous[userId] ?? {};
       return {
         ...previous,
         [userId]: {
           ...grants,
-          [libraryId]: togglePermission(grants[libraryId] ?? [], value),
+          ...changes,
         },
       };
     });
@@ -243,8 +234,7 @@ export function SettingsUsersContainer() {
 
   const setUserLibraryPermissions = async (
     userId: string,
-    libraryId: string,
-    permissions?: string[],
+    changes?: LibraryGrantDrafts,
   ) => {
     if (!canManagePermissions) {
       setGlobalStatus(t("status.managePermissionsRequired"));
@@ -254,7 +244,12 @@ export function SettingsUsersContainer() {
     const currentDrafts = userLibraryPermissionDrafts[userId] ?? {};
     const nextDrafts = {
       ...currentDrafts,
-      [libraryId]: normalizePermissions(permissions ?? currentDrafts[libraryId]),
+      ...Object.fromEntries(
+        Object.entries(changes ?? {}).map(([libraryId, permissions]) => [
+          libraryId,
+          normalizePermissions(permissions),
+        ]),
+      ),
     };
     const grants = Object.entries(nextDrafts)
       .map(([grantLibraryId, grantPermissions]) => ({
@@ -275,6 +270,40 @@ export function SettingsUsersContainer() {
     } finally {
       setMutatingUserId(null);
     }
+  };
+
+  const applyUserLoginStatus = async (user: UserRecord, enabled: boolean) => {
+    setMutatingUserId(user.id);
+    try {
+      const { error } = await client.mutation(setUserLoginEnabledMutation, {
+        input: { userId: user.id, enabled },
+      }).toPromise();
+      if (error) throw error;
+      setGlobalStatus(
+        t(enabled ? "status.userLoginEnabled" : "status.userLoginDisabled", {
+          name: user.username,
+        }),
+      );
+      await refreshUsers();
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+    } finally {
+      setMutatingUserId(null);
+    }
+  };
+
+  const setUserLoginEnabled = async (user: UserRecord) => {
+    if (user.loginEnabled) {
+      setPendingDisableUser(user);
+      return;
+    }
+    await applyUserLoginStatus(user, true);
+  };
+
+  const confirmDisableUser = async () => {
+    if (!pendingDisableUser) return;
+    await applyUserLoginStatus(pendingDisableUser, false);
+    setPendingDisableUser(null);
   };
 
   const deleteUser = async (user: UserRecord) => {
@@ -357,22 +386,40 @@ export function SettingsUsersContainer() {
         newAppPermissions={newAppPermissions}
         newLibraryPermissionDrafts={newLibraryPermissionDrafts}
         canManagePermissions={canManagePermissions}
-        toggleNewAppPermission={toggleNewAppPermission}
-        toggleNewLibraryPermission={toggleNewLibraryPermission}
+        setNewAppPermissions={setNewAppPermissions}
+        updateNewLibraryPermissions={updateNewLibraryPermissions}
         createUser={createUser}
         userPasswordDrafts={userPasswordDrafts}
         userAppPermissionDrafts={userAppPermissionDrafts}
         userLibraryPermissionDrafts={userLibraryPermissionDrafts}
         updateUserPasswordDraft={updateUserPasswordDraft}
-        toggleUserAppPermission={toggleUserAppPermission}
-        toggleUserLibraryPermission={toggleUserLibraryPermission}
+        updateUserAppPermissionDraft={updateUserAppPermissionDraft}
+        updateUserLibraryPermissionDrafts={updateUserLibraryPermissionDrafts}
         mutatingUserId={mutatingUserId}
         setUserPassword={setUserPassword}
         setUserAppPermissions={setUserAppPermissions}
         setUserLibraryPermissions={setUserLibraryPermissions}
+        setUserLoginEnabled={setUserLoginEnabled}
         deleteUser={deleteUser}
         resetUserMfa={resetUserMfa}
         currentUserId={currentUser?.id ?? null}
+      />
+      <ConfirmDialog
+        open={pendingDisableUser !== null}
+        contentId="settings-user-disable-login-dialog"
+        title={t("settings.disableLogin")}
+        description={
+          pendingDisableUser
+            ? t("settings.disableLoginConfirm", { name: pendingDisableUser.username })
+            : ""
+        }
+        confirmLabel={t("settings.disableLogin")}
+        cancelLabel={t("label.cancel")}
+        confirmButtonId="settings-user-disable-login-confirm"
+        cancelButtonId="settings-user-disable-login-cancel"
+        isBusy={mutatingUserId !== null}
+        onConfirm={confirmDisableUser}
+        onCancel={() => setPendingDisableUser(null)}
       />
       <ConfirmDialog
         open={pendingDeleteUser !== null}

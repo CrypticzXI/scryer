@@ -76,15 +76,6 @@ fn browse_path_read_dir(path: &str) -> Result<fs::ReadDir, AppError> {
     fs::read_dir(target).map_err(|error| browse_path_io_error(path, error))
 }
 
-fn library_root_path_is_valid(path: &str) -> bool {
-    let target = Path::new(path.trim());
-    if !target.is_absolute() {
-        return false;
-    }
-
-    fs::read_dir(target).is_ok()
-}
-
 fn browse_path_io_error(path: &str, error: io::Error) -> AppError {
     let message = match error.kind() {
         io::ErrorKind::NotFound => format!("Directory does not exist: {path}"),
@@ -684,40 +675,6 @@ impl CatalogQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(libraries.into_iter().map(from_library).collect())
-    }
-
-    async fn catalog_has_valid_root(
-        &self,
-        ctx: &Context<'_>,
-        facet: MediaFacetValue,
-    ) -> GqlResult<bool> {
-        require_library_settings_permission(ctx).await?;
-        let app = app_from_ctx(ctx)?;
-        let actor = actor_from_ctx(ctx)?;
-        let libraries = app
-            .list_libraries_for_permission(
-                &actor,
-                Some(facet.into_domain()),
-                LibraryPermission::ManageLibrary,
-            )
-            .await
-            .map_err(to_gql_error)?;
-        let root_paths = libraries
-            .into_iter()
-            .flat_map(|library| library.roots.into_iter().map(|root| root.path))
-            .collect::<Vec<_>>();
-        let has_valid_root = tokio::task::spawn_blocking(move || {
-            root_paths
-                .iter()
-                .any(|path| library_root_path_is_valid(path))
-        })
-        .await
-        .map_err(|error| {
-            to_gql_error(AppError::Repository(format!(
-                "catalog root validation task failed: {error}"
-            )))
-        })?;
-        Ok(has_valid_root)
     }
 
     async fn media_requests(

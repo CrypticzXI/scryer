@@ -10,6 +10,26 @@ async fn graphql_me_query() {
 }
 
 #[tokio::test]
+async fn graphql_authless_mode_uses_disabled_default_admin() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    UserRepository::update_login_status_and_rotate_session(
+        &ctx.users,
+        &admin.id,
+        scryer_domain::UserLoginStatus::Disabled,
+        &Id::new().0,
+    )
+    .await
+    .expect("disable default admin login");
+
+    let body = gql(&ctx, "{ me { id username } }", json!({})).await;
+
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["me"]["id"], admin.id);
+    assert_eq!(body["data"]["me"]["username"], "admin");
+}
+
+#[tokio::test]
 async fn recovery_admin_token_resolves_while_form_login_enabled_and_resets_other_user_password() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
@@ -424,6 +444,14 @@ async fn graphql_authless_oauth_token_is_anonymous_while_auth_disabled() {
     let ctx = TestContext::new().await;
     ctx.auth_runtime.apply_saved_security_settings(false, false);
     let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let user = UserRepository::update_login_status_and_rotate_session(
+        &ctx.users,
+        &user.id,
+        scryer_domain::UserLoginStatus::Disabled,
+        &Id::new().0,
+    )
+    .await
+    .expect("disable default admin login");
     let oauth_token = ctx
         .app
         .issue_oauth_access_token_with_source(
@@ -1276,7 +1304,7 @@ async fn graphql_users_query_exposes_auth_factor_status_with_manage_users() {
 
     let body = schema_exec(
         &ctx,
-        "{ users { id username hasMfa hasPasskey } }",
+        "{ users { id username loginEnabled isDefaultAdmin hasMfa hasPasskey } }",
         Some(manage_users_actor("user-manager")),
     )
     .await;
@@ -1288,6 +1316,8 @@ async fn graphql_users_query_exposes_auth_factor_status_with_manage_users() {
         .expect("user with factors in users query");
     assert_eq!(row_with_factors["hasMfa"], true);
     assert_eq!(row_with_factors["hasPasskey"], true);
+    assert_eq!(row_with_factors["loginEnabled"], true);
+    assert_eq!(row_with_factors["isDefaultAdmin"], false);
 
     let row_without_factors = users
         .iter()
@@ -1295,6 +1325,41 @@ async fn graphql_users_query_exposes_auth_factor_status_with_manage_users() {
         .expect("user without factors in users query");
     assert_eq!(row_without_factors["hasMfa"], false);
     assert_eq!(row_without_factors["hasPasskey"], false);
+}
+
+#[tokio::test]
+async fn graphql_set_user_login_enabled_updates_status_and_auth_epoch() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+    let target = ctx
+        .app
+        .create_user(
+            &admin,
+            "graphql-suspended-user".to_string(),
+            "s3cr3t!!".to_string(),
+            AppPermissionMask::NONE,
+            vec![],
+        )
+        .await
+        .expect("create target user");
+    let previous_epoch = ctx.auth_runtime.snapshot().epoch;
+
+    let body = schema_exec(
+        &ctx,
+        &format!(
+            r#"mutation {{ setUserLoginEnabled(input: {{ userId: "{}", enabled: false }}) {{ id loginEnabled isDefaultAdmin hasPassword }} }}"#,
+            target.id
+        ),
+        Some(manage_users_actor("login-status-manager")),
+    )
+    .await;
+    assert_no_errors(&body);
+    let payload = &body["data"]["setUserLoginEnabled"];
+    assert_eq!(payload["id"], target.id);
+    assert_eq!(payload["loginEnabled"], false);
+    assert_eq!(payload["isDefaultAdmin"], false);
+    assert_eq!(payload["hasPassword"], true);
+    assert_eq!(ctx.auth_runtime.snapshot().epoch, previous_epoch + 1);
 }
 
 #[tokio::test]
@@ -1459,6 +1524,7 @@ async fn graphql_reset_user_mfa_requires_manage_users_and_rejects_self() {
                 libraries: HashMap::new(),
                 default_library: LibraryPermissionMask::NONE,
                 actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+                login_status: Default::default(),
                 loaded: true,
             },
         }),
@@ -1478,6 +1544,7 @@ async fn graphql_reset_user_mfa_requires_manage_users_and_rejects_self() {
         libraries: HashMap::new(),
         default_library: LibraryPermissionMask::NONE,
         actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+        login_status: Default::default(),
         loaded: true,
     };
     let self_reset = schema_exec(&ctx, &mutation, Some(self_actor)).await;
@@ -1610,6 +1677,7 @@ async fn graphql_external_account_invites_expose_last_login() {
             libraries: HashMap::new(),
             default_library: LibraryPermissionMask::NONE,
             actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+            login_status: Default::default(),
             loaded: true,
         },
     };
@@ -1893,6 +1961,7 @@ async fn delete_media_file_honors_custom_library_permissions_after_library_refac
             )]),
             default_library: LibraryPermissionMask::NONE,
             actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+            login_status: Default::default(),
             loaded: true,
         },
     };

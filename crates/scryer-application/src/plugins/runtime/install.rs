@@ -247,17 +247,23 @@ impl AppUseCase {
                 .integrations
                 .indexer_configs
                 .list(Some(installation.provider_type.clone()))
-                .await
-                .unwrap_or_default();
+                .await?;
             for config in configs {
-                if let Err(e) = self
+                if self
                     .services
                     .integrations
                     .indexer_configs
-                    .delete(&config.id)
-                    .await
+                    .get_by_id(&config.id)
+                    .await?
+                    .is_some()
                 {
-                    tracing::warn!(error = %e, indexer = config.name, "failed to delete indexer config during plugin uninstall");
+                    self.delete_indexer_config_tree(
+                        &config.id,
+                        true,
+                        "plugin_uninstall",
+                        Some(actor.id.clone()),
+                    )
+                    .await?;
                 }
             }
         }

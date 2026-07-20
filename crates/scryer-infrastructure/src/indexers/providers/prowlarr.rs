@@ -13,6 +13,7 @@ use scryer_application::{
     IndexerPluginProvider, IndexerRoutingPlan, IndexerSearchResponse, IndexerSyncPlan,
     IndexerValidationResult, ManagedIndexerChildPlan, ManagedIndexerRoutingScope,
     RateLimitCooldownAction, RuntimePluginLoad, SearchMode,
+    external_import::{EXTERNAL_IMPORT_HOST_RPS_LANE, EXTERNAL_IMPORT_HOST_RPS_PROFILE},
 };
 use scryer_domain::{
     ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource,
@@ -597,6 +598,10 @@ impl ProwlarrManagementClient {
         )
         .with_max_retries(2)
         .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
+        .with_host_rps_limit(
+            EXTERNAL_IMPORT_HOST_RPS_LANE,
+            EXTERNAL_IMPORT_HOST_RPS_PROFILE,
+        )
     }
 }
 
@@ -1240,6 +1245,22 @@ mod tests {
     use serde_json::json;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn prowlarr_management_requests_use_importer_host_quota() {
+        let config = test_indexer_config("http://127.0.0.1:9696");
+        let client = ProwlarrManagementClient::new(&config);
+        let request_override = client
+            .request_policy("/api/v1/indexer")
+            .host_rps_override
+            .expect("Prowlarr management requests should select an importer quota");
+
+        assert_eq!(
+            request_override.lane.as_ref(),
+            EXTERNAL_IMPORT_HOST_RPS_LANE
+        );
+        assert_eq!(request_override.profile, EXTERNAL_IMPORT_HOST_RPS_PROFILE);
+    }
 
     fn test_indexer_config(base_url: &str) -> IndexerConfig {
         IndexerConfig {

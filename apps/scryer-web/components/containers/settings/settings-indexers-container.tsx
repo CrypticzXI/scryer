@@ -24,6 +24,10 @@ import type {
 } from "@/lib/types";
 import { runConnectionFeedback } from "@/lib/utils/connection-feedback";
 import {
+  buildCreateIndexerProxyInput,
+  buildUpdateIndexerProxyInput,
+} from "@/lib/utils/settings-mutation-inputs";
+import {
   indexerProviderTypesQuery,
   indexerProxyConfigsQuery,
   indexersInitQuery,
@@ -786,24 +790,19 @@ export function SettingsIndexersContainer({
 
     setMutatingProxyId(editingProxyId || "new");
     try {
-      const input = {
-        name,
-        providerType: "byparr",
-        baseUrl,
-        requestTimeoutSeconds: indexerProxyDraft.requestTimeoutSeconds,
-        isEnabled: indexerProxyDraft.isEnabled,
-      };
       if (editingProxyId) {
         const { error } = await client
           .mutation(updateIndexerProxyConfigMutation, {
-            input: { id: editingProxyId, ...input },
+            input: buildUpdateIndexerProxyInput(editingProxyId, indexerProxyDraft),
           })
           .toPromise();
         if (error) throw error;
         setGlobalStatus("Indexer proxy updated");
       } else {
         const { error } = await client
-          .mutation(createIndexerProxyConfigMutation, { input })
+          .mutation(createIndexerProxyConfigMutation, {
+            input: buildCreateIndexerProxyInput(indexerProxyDraft),
+          })
           .toPromise();
         if (error) throw error;
         setGlobalStatus("Indexer proxy created");

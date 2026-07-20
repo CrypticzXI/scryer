@@ -123,7 +123,7 @@ export const PosterGrid = React.memo(function PosterGrid({
       data-catalog-scroll-root={scrollContainer ? "true" : undefined}
       className={
         scrollContainer
-          ? "poster-grid-container h-full min-h-0 overflow-y-auto"
+          ? "poster-grid-container min-h-0 sm:h-full sm:overflow-y-auto"
           : "poster-grid-container"
       }
     >

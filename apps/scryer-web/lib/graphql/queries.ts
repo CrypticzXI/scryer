@@ -2013,6 +2013,8 @@ export const usersQuery = `query Users {
   users {
     id
     username
+    loginEnabled
+    isDefaultAdmin
     hasPassword
     hasMfa
     hasPasskey
@@ -3468,10 +3470,6 @@ export const browsePathQuery = `query BrowsePath($path: String!, $includeFiles: 
     path
     isDirectory
   }
-}`;
-
-export const catalogHasValidRootQuery = `query CatalogHasValidRoot($facet: MediaFacetValue!) {
-  catalogHasValidRoot(facet: $facet)
 }`;
 
 export const postProcessingScriptsQuery = `query PostProcessingScripts {

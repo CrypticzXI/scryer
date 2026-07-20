@@ -479,7 +479,7 @@ impl AppUseCase {
         self.ensure_indexer_routing_entry_for_indexer(actor, &created.id)
             .await?;
         if management_capabilities.supports_managed_children_sync && created.is_enabled {
-            self.queue_managed_indexer_sync(&created.id);
+            self.queue_managed_indexer_sync(actor, &created.id);
         }
         self.publish_indexers_changed();
         Ok(created)
@@ -699,7 +699,7 @@ impl AppUseCase {
         }
         if should_sync_managed_children {
             if updated.is_enabled {
-                self.queue_managed_indexer_sync(&updated.id);
+                self.queue_managed_indexer_sync(actor, &updated.id);
             } else if existing.is_enabled != updated.is_enabled
                 && let Err(error) = self
                     .set_managed_child_indexers_enabled_state(&updated.id, false)
@@ -717,6 +717,18 @@ impl AppUseCase {
     pub async fn delete_indexer_config(&self, actor: &User, config_id: &str) -> AppResult<()> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
+        self.delete_indexer_config_tree(config_id, false, "admin_graphql", Some(actor.id.clone()))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_indexer_config_tree(
+        &self,
+        config_id: &str,
+        allow_managed_child: bool,
+        source: &str,
+        updated_by_user_id: Option<String>,
+    ) -> AppResult<Vec<String>> {
         let config_id = config_id.trim();
         let config = self
             .services
@@ -725,43 +737,120 @@ impl AppUseCase {
             .get_by_id(config_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("indexer config '{config_id}' not found")))?;
-        if config.managed_parent_config_id.is_some() {
+        if config.managed_parent_config_id.is_some() && !allow_managed_child {
             return Err(AppError::Validation(
                 "managed child indexers are controlled by their parent sync".into(),
             ));
         }
 
-        let children = self
+        let configs = self
             .services
             .integrations
             .indexer_configs
             .list(None)
-            .await?
-            .into_iter()
-            .filter(|candidate| {
-                candidate.managed_parent_config_id.as_deref() == Some(config.id.as_str())
-            })
-            .map(|candidate| candidate.id)
+            .await?;
+        let mut deletion_layers = vec![vec![config.id.clone()]];
+        loop {
+            let parent_ids = deletion_layers.last().expect("deletion tree has a root");
+            let next_layer = configs
+                .iter()
+                .filter(|candidate| {
+                    candidate
+                        .managed_parent_config_id
+                        .as_ref()
+                        .is_some_and(|parent_id| parent_ids.contains(parent_id))
+                })
+                .map(|candidate| candidate.id.clone())
+                .collect::<Vec<_>>();
+            if next_layer.is_empty() {
+                break;
+            }
+            deletion_layers.push(next_layer);
+        }
+
+        let deleted_ids = deletion_layers
+            .iter()
+            .rev()
+            .flatten()
+            .cloned()
             .collect::<Vec<_>>();
-        let mut routing_by_scope = self.load_indexer_routing_by_scope(actor).await?;
-        for child_id in &children {
+        let (root_id, descendant_ids) = deleted_ids
+            .split_last()
+            .expect("deletion tree always contains its root");
+        for id in descendant_ids {
             self.services
                 .integrations
                 .indexer_configs
-                .delete(child_id)
+                .delete(id)
                 .await?;
-            remove_indexer_routing_entries(&mut routing_by_scope, child_id);
         }
+        self.remove_indexer_routing_entries_internal(&deleted_ids, source, updated_by_user_id)
+            .await?;
         self.services
             .integrations
             .indexer_configs
-            .delete(&config.id)
-            .await?;
-        remove_indexer_routing_entries(&mut routing_by_scope, &config.id);
-        self.save_indexer_routing_by_scope(actor, routing_by_scope)
+            .delete(root_id)
             .await?;
         self.publish_indexers_changed();
-        Ok(())
+        Ok(deleted_ids)
+    }
+
+    pub async fn reconcile_orphaned_managed_indexer_configs(&self) -> AppResult<u32> {
+        let configs = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await?;
+        let known_ids = configs
+            .iter()
+            .map(|config| config.id.as_str())
+            .collect::<Vec<_>>();
+        let mut orphan_ids = configs
+            .iter()
+            .filter_map(|config| {
+                let parent_id = config.managed_parent_config_id.as_deref()?;
+                (!known_ids.contains(&parent_id)).then(|| config.id.clone())
+            })
+            .collect::<Vec<_>>();
+
+        loop {
+            let mut added = false;
+            for config in &configs {
+                if orphan_ids.contains(&config.id) {
+                    continue;
+                }
+                if config
+                    .managed_parent_config_id
+                    .as_ref()
+                    .is_some_and(|parent_id| orphan_ids.contains(parent_id))
+                {
+                    orphan_ids.push(config.id.clone());
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+
+        self.remove_indexer_routing_entries_internal(&orphan_ids, "startup_orphan_reconcile", None)
+            .await?;
+        for orphan_id in orphan_ids.iter().rev() {
+            self.services
+                .integrations
+                .indexer_configs
+                .delete(orphan_id)
+                .await?;
+        }
+        if !orphan_ids.is_empty() {
+            tracing::info!(
+                deleted = orphan_ids.len(),
+                "removed orphaned managed indexer configs"
+            );
+            self.publish_indexers_changed();
+        }
+        Ok(orphan_ids.len() as u32)
     }
 }
 impl AppUseCase {

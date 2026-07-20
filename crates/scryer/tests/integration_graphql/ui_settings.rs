@@ -11,6 +11,7 @@ fn ui_settings_test_user(username: &str) -> User {
             libraries: HashMap::new(),
             default_library: LibraryPermissionMask::NONE,
             actor_capabilities: scryer_domain::ActorCapabilityMask::MANAGE_OWN_ACCOUNT,
+            login_status: Default::default(),
             loaded: true,
         },
     }

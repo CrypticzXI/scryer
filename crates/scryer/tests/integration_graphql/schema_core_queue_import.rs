@@ -1987,7 +1987,7 @@ async fn graphql_introspection_exposes_queue_action_payloads() {
 }
 
 #[tokio::test]
-async fn graphql_queue_manual_import_returns_ok_and_persists_pending_request() {
+async fn graphql_queue_manual_import_returns_without_post_write_feedback() {
     let ctx = TestContext::new().await;
     let title_id = add_test_title(&ctx, "Queued Manual Import Movie", "MOVIE").await;
 
@@ -1997,6 +1997,7 @@ async fn graphql_queue_manual_import_returns_ok_and_persists_pending_request() {
         .respond_with(
             ResponseTemplate::new(200).set_body_string(load_fixture("nzbget/listgroups.json")),
         )
+        .expect(1)
         .mount(&ctx.nzbget_server)
         .await;
     Mock::given(method("POST"))
@@ -2079,6 +2080,7 @@ async fn graphql_queue_manual_import_returns_ok_and_persists_pending_request() {
         body["data"]["queueManualImport"]["kind"],
         json!("QUEUED_MANUAL_IMPORT")
     );
+    assert_eq!(body["data"]["queueManualImport"]["queueItem"], Value::Null);
 
     let history_body = gql(
         &ctx,
@@ -2101,11 +2103,68 @@ async fn graphql_queue_manual_import_returns_ok_and_persists_pending_request() {
         .as_array()
         .expect("import history should be an array")
         .iter()
-        .find(|entry| entry["id"].as_str() == Some(import_id))
-        .expect("queued manual import should be present in history");
+        .filter(|entry| {
+            entry["sourceRef"] == json!("999") && entry["importType"] == json!("MANUAL_IMPORT")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(queued.len(), 1, "manual import should be persisted once");
+    let queued = queued[0];
+    assert_eq!(queued["id"], json!(import_id));
     assert_eq!(queued["sourceRef"], json!("999"));
     assert_eq!(queued["importType"], json!("MANUAL_IMPORT"));
     assert_eq!(queued["status"], json!("PENDING"));
+}
+
+#[tokio::test]
+async fn graphql_queue_manual_import_preserves_validation_and_authorization_errors() {
+    let ctx = TestContext::new().await;
+    let mutation = r#"
+        mutation QueueManualImport($input: QueueManualImportInput!) {
+          queueManualImport(input: $input) { importId }
+        }
+    "#;
+
+    let invalid = gql(
+        &ctx,
+        mutation,
+        json!({
+            "input": {
+                "clientType": "nzbget",
+                "downloadClientItemId": " "
+            }
+        }),
+    )
+    .await;
+    assert!(
+        invalid["errors"]
+            .as_array()
+            .is_some_and(|errors| errors.iter().any(|error| {
+                error["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("download client item id is required"))
+            })),
+        "expected manual import validation error: {invalid}"
+    );
+
+    let unauthorized = schema_exec(
+        &ctx,
+        r#"
+        mutation {
+          queueManualImport(input: {
+            clientType: "nzbget"
+            downloadClientItemId: "999"
+          }) { importId }
+        }
+        "#,
+        None,
+    )
+    .await;
+    assert!(
+        unauthorized["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty()),
+        "expected manual import authorization error: {unauthorized}"
+    );
 }
 
 #[tokio::test]
