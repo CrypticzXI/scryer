@@ -2956,6 +2956,11 @@ const en: LocaleDictionary = {
   "setup.animePath": "Anime path",
   "setup.optional": "(optional)",
   "setup.browse": "Browse",
+  "setup.mediaPathNotReachable": "Not reachable yet",
+  "setup.mediaPathsNotReachableWarning":
+    "Some media paths are not reachable yet. They were saved and can be changed later in Settings.",
+  "setup.mediaPathsVerificationUnavailable":
+    "Could not verify these paths. You can continue and change them later in Settings.",
 
   "setup.downloadClientTitle": "Add a download client",
   "setup.downloadClientDescription":

@@ -19,6 +19,45 @@ type CatalogSurfacePhaseInput = {
   rootValidationState: CatalogRootValidationState;
 };
 
+type CatalogLibraryRootState = {
+  isBootstrapDefaultRootSet?: boolean;
+  roots: readonly { path: string }[];
+};
+
+export function configuredCatalogLibraries<T extends CatalogLibraryRootState>(
+  libraries: readonly T[],
+  invalidPaths: readonly string[] = [],
+): T[] {
+  const invalidPathSet = new Set(invalidPaths);
+
+  return libraries.filter((library) => {
+    const rootPaths = library.roots
+      .map((root) => root.path.trim())
+      .filter((path) => path.length > 0);
+    if (rootPaths.length === 0) {
+      return false;
+    }
+    return !(
+      library.isBootstrapDefaultRootSet === true &&
+      rootPaths.every((path) => invalidPathSet.has(path))
+    );
+  });
+}
+
+export function catalogRootValidationState(result: {
+  validPaths: readonly string[];
+  invalidPaths: readonly string[];
+  unavailable: boolean;
+}): CatalogRootValidationState {
+  if (result.validPaths.length > 0) {
+    return "valid";
+  }
+  if (result.unavailable) {
+    return "unavailable";
+  }
+  return result.invalidPaths.length > 0 ? "invalid" : "valid";
+}
+
 export function resolveCatalogSurfacePhase({
   canManageLibrarySettings,
   hasConfiguredRoots,

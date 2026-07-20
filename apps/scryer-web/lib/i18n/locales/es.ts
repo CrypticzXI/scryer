@@ -1894,6 +1894,11 @@ const es: LocaleDictionary = {
   "setup.animePath": "Ruta de anime",
   "setup.optional": "(opcional)",
   "setup.browse": "Explorar",
+  "setup.mediaPathNotReachable": "Aún no accesible",
+  "setup.mediaPathsNotReachableWarning":
+    "Algunas rutas de medios aún no son accesibles. Se guardaron y pueden cambiarse después en Ajustes.",
+  "setup.mediaPathsVerificationUnavailable":
+    "No se pudieron verificar estas rutas. Puedes continuar y cambiarlas después en Ajustes.",
   "setup.downloadClientTitle": "Añadir un cliente de descarga",
   "setup.downloadClientDescription":
     "Scryer envía las descargas a tu cliente preferido. Los plugins instalados en el paso anterior aparecerán aquí.",

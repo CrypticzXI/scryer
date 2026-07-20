@@ -6,6 +6,10 @@ import { IconButton } from "@/components/ui/icon-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { FolderBrowserDialog } from "./folder-browser-dialog";
+import type {
+  InvalidSetupMediaPathFields,
+  SetupMediaPathField,
+} from "@/lib/utils/setup-media-paths";
 import {
   SetupBackButton,
   SetupPanel,
@@ -13,7 +17,7 @@ import {
   SetupStepHeader,
 } from "./setup-chrome";
 
-type MediaPathField = "movies" | "series" | "anime";
+type MediaPathField = SetupMediaPathField;
 
 interface SetupMediaPathsViewProps {
   t: (key: string) => string;
@@ -28,22 +32,23 @@ interface SetupMediaPathsViewProps {
   onSkip?: () => void;
   saving: boolean;
   error: string | null;
-  invalidPathFields?: Partial<Record<MediaPathField, boolean>>;
+  invalidPathFields?: InvalidSetupMediaPathFields;
+  validationUnavailable?: boolean;
 }
 
 type BrowseTarget = MediaPathField | null;
 
-function InvalidPathPill({ show }: { show: boolean }) {
+function InvalidPathPill({ show, label }: { show: boolean; label: string }) {
   if (!show) {
     return null;
   }
 
   return (
     <Badge
-      tone="negative"
+      tone="warning"
       className="ml-2 align-middle text-[10px] font-bold uppercase tracking-[0.08em]"
     >
-      INVALID PATH
+      {label}
     </Badge>
   );
 }
@@ -62,9 +67,9 @@ export function SetupMediaPathsView({
   saving,
   error,
   invalidPathFields = {},
+  validationUnavailable = false,
 }: SetupMediaPathsViewProps) {
   const [browseTarget, setBrowseTarget] = useState<BrowseTarget>(null);
-  const canProceed = !Object.values(invalidPathFields).some(Boolean);
 
   const browseInitialPath =
     browseTarget === "movies"
@@ -106,7 +111,10 @@ export function SetupMediaPathsView({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">
               {t("setup.optional")}
             </span>
-            <InvalidPathPill show={invalidPathFields.movies === true} />
+            <InvalidPathPill
+              show={invalidPathFields.movies === true}
+              label={t("setup.mediaPathNotReachable")}
+            />
           </Label>
           <div className="flex gap-2">
             <Input
@@ -144,7 +152,10 @@ export function SetupMediaPathsView({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">
               {t("setup.optional")}
             </span>
-            <InvalidPathPill show={invalidPathFields.series === true} />
+            <InvalidPathPill
+              show={invalidPathFields.series === true}
+              label={t("setup.mediaPathNotReachable")}
+            />
           </Label>
           <div className="flex gap-2">
             <Input
@@ -182,7 +193,10 @@ export function SetupMediaPathsView({
             <span className="ml-1.5 text-xs font-normal text-muted-foreground">
               {t("setup.optional")}
             </span>
-            <InvalidPathPill show={invalidPathFields.anime === true} />
+            <InvalidPathPill
+              show={invalidPathFields.anime === true}
+              label={t("setup.mediaPathNotReachable")}
+            />
           </Label>
           <div className="flex gap-2">
             <Input
@@ -219,6 +233,11 @@ export function SetupMediaPathsView({
             {error}
           </p>
         )}
+        {validationUnavailable && !error ? (
+          <p className="text-sm text-[var(--scry-warning-text)]">
+            {t("setup.mediaPathsVerificationUnavailable")}
+          </p>
+        ) : null}
       </div>
       <div className="flex items-center justify-between pt-2">
         <SetupBackButton id="setup-media-paths-back" onClick={onBack}>
@@ -230,7 +249,7 @@ export function SetupMediaPathsView({
               {t("setup.skip")}
             </Button>
           )}
-          <SetupPrimaryButton id="setup-media-paths-next" onClick={onNext} disabled={!canProceed || saving}>
+          <SetupPrimaryButton id="setup-media-paths-next" onClick={onNext} disabled={saving}>
             {saving ? t("label.saving") : t("setup.next")}
           </SetupPrimaryButton>
         </div>

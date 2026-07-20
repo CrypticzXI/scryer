@@ -1355,12 +1355,15 @@ pub fn from_media_request(request: MediaRequest) -> MediaRequestPayload {
 }
 
 pub fn from_library(library: Library) -> LibraryPayload {
+    let is_bootstrap_default_root_set =
+        scryer_application::is_bootstrap_default_library_root_set(&library);
     LibraryPayload {
         id: library.id.into(),
         facet: MediaFacetValue::from_domain(library.facet),
         name: library.name,
         slug: library.slug,
         is_default: library.is_default,
+        is_bootstrap_default_root_set,
         roots: library
             .roots
             .into_iter()

@@ -226,6 +226,7 @@ export type LibraryRecord = {
   name: string;
   slug: string;
   isDefault: boolean;
+  isBootstrapDefaultRootSet?: boolean;
   roots: LibraryRootRecord[];
   qualityProfileId?: string | null;
   requestQualityProfileIds?: string[];

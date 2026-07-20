@@ -546,6 +546,7 @@ const LIBRARY_FIELDS = `
     name
     slug
     isDefault
+    isBootstrapDefaultRootSet
     roots {
       id
       path

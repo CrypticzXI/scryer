@@ -1824,6 +1824,11 @@ const ja: LocaleDictionary = {
   "setup.animePath": "アニメパス",
   "setup.optional": "（任意）",
   "setup.browse": "参照",
+  "setup.mediaPathNotReachable": "まだアクセスできません",
+  "setup.mediaPathsNotReachableWarning":
+    "一部のメディアパスにはまだアクセスできません。保存済みのため、後で設定から変更できます。",
+  "setup.mediaPathsVerificationUnavailable":
+    "これらのパスを確認できませんでした。続行して、後で設定から変更できます。",
   "setup.downloadClientTitle": "ダウンロードクライアントを追加",
   "setup.downloadClientDescription":
     "Scryerは選択したクライアントにダウンロードを送信します。前のステップでインストールしたプラグインがここに表示されます。",

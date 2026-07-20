@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
 import { useClient } from "urql";
 
 import {
@@ -21,6 +22,11 @@ import {
 } from "@/lib/hooks/use-indexer-setup";
 import { usePluginManagement } from "@/lib/hooks/use-plugin-management";
 import { localPathStyleFromRuntimeValue } from "@/lib/utils/local-path-style";
+import {
+  runAdvisorySetupMediaPathSave,
+  type InvalidSetupMediaPathFields,
+  type SetupMediaPathField,
+} from "@/lib/utils/setup-media-paths";
 import {
   qualityProfileSettingsToEntries,
   qualityProfileEntryToMutationInput,
@@ -45,9 +51,6 @@ import { SetupPluginsView } from "./setup-plugins-view";
 import { SetupRestoreView } from "./setup-restore-view";
 
 const FALLBACK_PROVIDER_OPTIONS: SetupIndexerProviderOption[] = [];
-
-type SetupMediaPathField = "movies" | "series" | "anime";
-type InvalidMediaPathFields = Partial<Record<SetupMediaPathField, boolean>>;
 
 interface SetupWizardContainerProps {
   t: (
@@ -180,11 +183,13 @@ export function SetupWizardContainer({
   // ── Step 2 (fresh): Media Paths ─────────────────────────────────────
   const [moviesPath, setMoviesPath] = useState("/data/movies");
   const [seriesPath, setSeriesPath] = useState("/data/series");
-  const [animePath, setAnimePath] = useState("");
+  const [animePath, setAnimePath] = useState("/data/anime");
   const [mediaPathsSaving, setMediaPathsSaving] = useState(false);
   const [mediaPathsError, setMediaPathsError] = useState<string | null>(null);
   const [invalidMediaPathFields, setInvalidMediaPathFields] =
-    useState<InvalidMediaPathFields>({});
+    useState<InvalidSetupMediaPathFields>({});
+  const [mediaPathValidationUnavailable, setMediaPathValidationUnavailable] =
+    useState(false);
 
   // ── Step 4 (fresh): Download Client ─────────────────────────────────
   const {
@@ -381,6 +386,7 @@ export function SetupWizardContainer({
   // ── Media paths save ────────────────────────────────────────────────
   const clearInvalidMediaPathField = useCallback(
     (field: SetupMediaPathField) => {
+      setMediaPathValidationUnavailable(false);
       setInvalidMediaPathFields((current) => {
         if (current[field] !== true) {
           return current;
@@ -417,46 +423,6 @@ export function SetupWizardContainer({
     [clearInvalidMediaPathField],
   );
 
-  const validateMediaPaths = useCallback(async () => {
-    const pathCandidates: Array<{ field: SetupMediaPathField; path: string }> = [
-      { field: "movies", path: moviesPath.trim() },
-      { field: "series", path: seriesPath.trim() },
-      { field: "anime", path: animePath.trim() },
-    ];
-    const candidates = pathCandidates.filter(({ path }) => path.length > 0);
-
-    if (candidates.length === 0) {
-      setInvalidMediaPathFields({});
-      return true;
-    }
-
-    const results = await Promise.all(
-      candidates.map(async ({ field, path }) => {
-        try {
-          const { error } = await client
-            .query(
-              browsePathQuery,
-              { path },
-              { requestPolicy: "network-only" },
-            )
-            .toPromise();
-          return { field, valid: !error };
-        } catch {
-          return { field, valid: false };
-        }
-      }),
-    );
-
-    const nextInvalidFields: InvalidMediaPathFields = {};
-    results.forEach(({ field, valid }) => {
-      if (!valid) {
-        nextInvalidFields[field] = true;
-      }
-    });
-    setInvalidMediaPathFields(nextInvalidFields);
-    return results.every(({ valid }) => valid);
-  }, [animePath, client, moviesPath, seriesPath]);
-
   const saveMediaPaths = useCallback(async () => {
     setMediaPathsSaving(true);
     setMediaPathsError(null);
@@ -466,24 +432,45 @@ export function SetupWizardContainer({
       const trimmedAnime = animePath.trim();
       if (!trimmedMovies && !trimmedSeries && !trimmedAnime) {
         setInvalidMediaPathFields({});
+        setMediaPathValidationUnavailable(false);
         goToStep(3);
         return;
       }
-      const pathsAreValid = await validateMediaPaths();
-      if (!pathsAreValid) {
-        return;
-      }
-      const { error } = await client
-        .mutation(updateLibraryPathsMutation, {
-          input: {
-            moviePath: trimmedMovies,
-            seriesPath: trimmedSeries,
-            animePath: trimmedAnime.length > 0 ? trimmedAnime : null,
-          },
-        })
-        .toPromise();
-      if (error) throw error;
-      goToStep(3);
+      await runAdvisorySetupMediaPathSave({
+        input: {
+          moviePath: trimmedMovies,
+          seriesPath: trimmedSeries,
+          animePath: trimmedAnime.length > 0 ? trimmedAnime : null,
+        },
+        validatePath: async (path) => {
+          const { error } = await client
+            .query(
+              browsePathQuery,
+              { path },
+              { requestPolicy: "network-only" },
+            )
+            .toPromise();
+          return error;
+        },
+        onValidation: ({ invalidPathFields, unavailable }) => {
+          setInvalidMediaPathFields(invalidPathFields);
+          setMediaPathValidationUnavailable(unavailable);
+        },
+        savePaths: async (input) => {
+          const { error } = await client
+            .mutation(updateLibraryPathsMutation, { input })
+            .toPromise();
+          if (error) throw error;
+        },
+        onSaved: ({ invalidPathFields, unavailable }) => {
+          if (Object.values(invalidPathFields).some(Boolean)) {
+            toast.warning(t("setup.mediaPathsNotReachableWarning"));
+          } else if (unavailable) {
+            toast.warning(t("setup.mediaPathsVerificationUnavailable"));
+          }
+          goToStep(3);
+        },
+      });
     } catch (err) {
       setMediaPathsError(err instanceof Error ? err.message : "Failed to save");
     } finally {
@@ -495,7 +482,7 @@ export function SetupWizardContainer({
     goToStep,
     moviesPath,
     seriesPath,
-    validateMediaPaths,
+    t,
   ]);
 
   // ── Complete setup ──────────────────────────────────────────────────
@@ -616,6 +603,7 @@ export function SetupWizardContainer({
           saving={mediaPathsSaving}
           error={mediaPathsError}
           invalidPathFields={invalidMediaPathFields}
+          validationUnavailable={mediaPathValidationUnavailable}
         />
       )}
 

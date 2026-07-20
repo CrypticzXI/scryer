@@ -1698,6 +1698,11 @@ const zh_CN: LocaleDictionary = {
   "setup.animePath": "动漫路径",
   "setup.optional": "（可选）",
   "setup.browse": "浏览",
+  "setup.mediaPathNotReachable": "尚不可访问",
+  "setup.mediaPathsNotReachableWarning":
+    "部分媒体路径尚不可访问。路径已保存，稍后可在设置中更改。",
+  "setup.mediaPathsVerificationUnavailable":
+    "无法验证这些路径。您可以继续，稍后在设置中更改。",
   "setup.downloadClientTitle": "添加下载客户端",
   "setup.downloadClientDescription":
     "Scryer 将下载发送到您首选的客户端。上一步安装的插件将显示在此处。",

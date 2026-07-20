@@ -25,6 +25,7 @@ The web application has been redesigned around one responsive shell and visual s
 - Administrators can suspend and re-enable a user's login without deleting the account or its password, passkeys, MFA enrollment, external-account links, or permissions. Suspending access revokes active sessions and OAuth refresh grants and blocks password, passkey, and external-provider sign-in.
 - Scryer prevents an administrator from suspending their own login or the last usable full administrator. The built-in `admin` account can be suspended but not deleted, and recovery-admin access remains controlled by the environment.
 - User and media-server permission editors add select-all and clear-all actions across application permissions, facets, and libraries.
+- Scheduled jobs and the download-queue poller run under an internal System principal, so background work no longer depends on whichever administrator happened to start or configure it.
 
 ### Unified catalogs and title workspaces
 
@@ -182,7 +183,7 @@ The 0.17 database upgrade is materially heavier than a typical patch migration. 
 
 0.17 intentionally changes the GraphQL contract. Do not pair the 0.17 frontend with a 0.16 server, and regenerate/update custom API clients and browser extensions.
 
-This is a large contract change: the repository checker reports 559 breaking and 396 dangerous changes. Most come from the uppercase enum cutover (350 removed and 376 added enum values), followed by 142 removed fields and 47 field-kind changes. The remainder includes seven required inputs, six removed arguments, six removed types, one type-kind change, 17 optional inputs, and three optional arguments.
+This is a large contract change, dominated by the uppercase enum cutover, removed legacy fields and arguments, semantic payload replacements, and fields that changed from strings to typed enums, unions, or JSON scalars.
 
 Major migrations include:
 
@@ -195,7 +196,10 @@ Major migrations include:
 - Sonarr/Radarr-specific monitor warmup inputs to typed Arr sources, warmup sessions, mappings, connection validation, and secret drafts;
 - `cutoffUnmetTitles` to paged `cutoffUnmetTitlesPage`;
 - removal/replacement of `libraryScanSession`, singular `mediaServerConnection`, and older monitor-warmup roots;
-- new Discovery, catalog filter, indexer proxy, UI settings, user-login suspension, episode/collection, and pending-import operations.
+- removal of `catalogHasValidRoot`; catalog bootstrap now derives configured-root state from libraries and validates paths only when an empty catalog needs diagnosis;
+- new Discovery, catalog filter, indexer proxy, UI settings, episode/collection, and pending-import operations;
+- `setUserLoginEnabled`, plus `UserPayload.loginEnabled` and `UserPayload.isDefaultAdmin` for login suspension; and
+- an optional download-client ID on connection tests so the server can reuse an existing client's stored secrets without returning those secrets to the browser.
 
 The full compatibility output is retained with the release-note audit evidence.
 
@@ -312,6 +316,7 @@ Temporary external-import secret drafts and upstream quota/cooldown/RSS cadence 
 - Media requests hydrate missing external identity, facet, artwork, and year before duplicate checks, preventing partial identifiers from bypassing existing-library/request detection.
 - Duplicate external title rematches are rejected.
 - Catalog sort and filter state respects library-view permissions and handles multilingual titles, CJK width, source ratings, and root validity consistently.
+- Opening a title workspace refreshes “More Like This” recommendations even when an older set is already loaded; a failed refresh no longer replaces the current recommendations with an empty result.
 
 ### Authentication and authorization
 
@@ -364,6 +369,7 @@ Temporary external-import secret drafts and upstream quota/cooldown/RSS cadence 
 - Setup path selection distinguishes files from folders, validates fresh media paths before continuing, allows revisiting completed steps, and presents clearer restore/setup recovery state.
 - Title actions expose the correct Monitor or Unmonitor label and pressed state, while on-disk subtitle badges open the actual track list instead of showing a non-functional count.
 - Settings connection tests emit one result notification, profile passkeys wait for effective authentication settings and ignore stale responses, and plugin install/upgrade cards settle once without duplicate terminal feedback.
+- Removing the last local/remote path mapping now saves an empty mapping instead of leaving a stale serialized row behind.
 
 ## Audit scope
 

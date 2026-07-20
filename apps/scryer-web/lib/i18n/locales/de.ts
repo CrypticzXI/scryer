@@ -1859,6 +1859,11 @@ const de: LocaleDictionary = {
   "setup.animePath": "Animepfad",
   "setup.optional": "(optional)",
   "setup.browse": "Durchsuchen",
+  "setup.mediaPathNotReachable": "Noch nicht erreichbar",
+  "setup.mediaPathsNotReachableWarning":
+    "Einige Medienpfade sind noch nicht erreichbar. Sie wurden gespeichert und können später in den Einstellungen geändert werden.",
+  "setup.mediaPathsVerificationUnavailable":
+    "Diese Pfade konnten nicht überprüft werden. Du kannst fortfahren und sie später in den Einstellungen ändern.",
   "setup.downloadClientTitle": "Download-Client hinzufügen",
   "setup.downloadClientDescription":
     "Scryer sendet Downloads an deinen bevorzugten Client. Plugins, die im vorherigen Schritt installiert wurden, erscheinen hier.",

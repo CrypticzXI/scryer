@@ -1893,6 +1893,11 @@ const fr: LocaleDictionary = {
   "setup.animePath": "Chemin des anime",
   "setup.optional": "(optionnel)",
   "setup.browse": "Parcourir",
+  "setup.mediaPathNotReachable": "Pas encore accessible",
+  "setup.mediaPathsNotReachableWarning":
+    "Certains chemins de médias ne sont pas encore accessibles. Ils ont été enregistrés et peuvent être modifiés plus tard dans les Paramètres.",
+  "setup.mediaPathsVerificationUnavailable":
+    "Ces chemins n'ont pas pu être vérifiés. Vous pouvez continuer et les modifier plus tard dans les Paramètres.",
   "setup.downloadClientTitle": "Ajouter un client de téléchargement",
   "setup.downloadClientDescription":
     "Scryer envoie les téléchargements à votre client préféré. Les plugins installés à l'étape précédente apparaîtront ici.",

@@ -69,8 +69,9 @@ import {
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
 import {
+  findConflictingLibraryNamesByRootPath,
   normalizeComparableLibraryRootPath,
-  trimLibraryRootPath,
+  normalizeLibraryRootDrafts,
 } from "@/lib/utils/library-root-validation";
 import {
   FILE_CHMOD_PRESETS,
@@ -193,35 +194,20 @@ function rootsFromLibrary(library: LibraryRecord | null): RootFolderOption[] {
   }));
 }
 
-function normalizeRoots(roots: RootFolderOption[]): RootFolderOption[] {
-  const seen = new Set<string>();
-  let hasDefault = false;
-  const next: RootFolderOption[] = [];
-
-  roots.forEach((root) => {
-    const path = trimLibraryRootPath(root.path);
-    const comparablePath = normalizeComparableLibraryRootPath(path);
-    if (!path || seen.has(comparablePath)) {
-      return;
-    }
-    seen.add(comparablePath);
-    const isDefault = root.isDefault && !hasDefault;
-    if (isDefault) {
-      hasDefault = true;
-    }
-    next.push({ id: root.id, path, isDefault });
-  });
-
-  if (next.length > 0 && !hasDefault) {
-    next[0] = { ...next[0], isDefault: true };
-  }
-
-  return next;
+function normalizeRoots(
+  roots: RootFolderOption[],
+  pathStyle?: LocalPathStyle,
+): RootFolderOption[] {
+  return normalizeLibraryRootDrafts(roots, pathStyle);
 }
 
-function rootsEqual(left: RootFolderOption[], right: RootFolderOption[]): boolean {
-  const normalizedLeft = normalizeRoots(left);
-  const normalizedRight = normalizeRoots(right);
+function rootsEqual(
+  left: RootFolderOption[],
+  right: RootFolderOption[],
+  pathStyle?: LocalPathStyle,
+): boolean {
+  const normalizedLeft = normalizeRoots(left, pathStyle);
+  const normalizedRight = normalizeRoots(right, pathStyle);
   if (normalizedLeft.length !== normalizedRight.length) {
     return false;
   }
@@ -533,47 +519,24 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   ]);
 
   const normalizedDraftRoots = React.useMemo(
-    () => normalizeRoots(draftRoots),
-    [draftRoots],
+    () => normalizeRoots(draftRoots, localPathStyle),
+    [draftRoots, localPathStyle],
   );
   const conflictingLibraryNamesByRootPath = React.useMemo(() => {
-    const otherLibrariesByRootPath = new Map<string, string[]>();
     const currentLibraryId = mode === "existing" ? activeLibrary?.id ?? null : null;
-
-    rootValidationLibraries.forEach((library) => {
-      if (library.id === currentLibraryId) {
-        return;
-      }
-
-      library.roots.forEach((root) => {
-        const normalizedPath = normalizeComparableLibraryRootPath(root.path);
-        if (!normalizedPath) {
-          return;
-        }
-
-        const existingNames = otherLibrariesByRootPath.get(normalizedPath);
-        if (existingNames) {
-          if (!existingNames.includes(library.name)) {
-            existingNames.push(library.name);
-          }
-          return;
-        }
-
-        otherLibrariesByRootPath.set(normalizedPath, [library.name]);
-      });
-    });
-
-    const conflicts = new Map<string, string[]>();
-    normalizedDraftRoots.forEach((root) => {
-      const normalizedPath = normalizeComparableLibraryRootPath(root.path);
-      const libraryNames = otherLibrariesByRootPath.get(normalizedPath);
-      if (libraryNames?.length) {
-        conflicts.set(root.path, libraryNames);
-      }
-    });
-
-    return conflicts;
-  }, [activeLibrary?.id, mode, normalizedDraftRoots, rootValidationLibraries]);
+    return findConflictingLibraryNamesByRootPath(
+      normalizedDraftRoots,
+      rootValidationLibraries,
+      currentLibraryId,
+      localPathStyle,
+    );
+  }, [
+    activeLibrary?.id,
+    localPathStyle,
+    mode,
+    normalizedDraftRoots,
+    rootValidationLibraries,
+  ]);
   const sortedFolders = React.useMemo(
     () =>
       normalizedDraftRoots
@@ -597,10 +560,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     }
     return new Set(
       (invalidRootPathsByLibraryId[activeLibrary.id] ?? []).map(
-        normalizeComparableLibraryRootPath,
+        (path) => normalizeComparableLibraryRootPath(path, localPathStyle),
       ),
     );
-  }, [activeLibrary?.id, invalidRootPathsByLibraryId]);
+  }, [activeLibrary?.id, invalidRootPathsByLibraryId, localPathStyle]);
   const hasInvalidRootFolderPaths = invalidRootFolderPaths.size > 0;
   const actionBusy = loading || librariesLoading || rootValidationLibrariesLoading || saving;
   const settingsBusy = actionBusy || settingsLoading;
@@ -746,7 +709,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
   const hasDraftChanges =
     mode === "new" ||
     draftName.trim() !== (activeLibrary?.name ?? "") ||
-    !rootsEqual(draftRoots, savedRoots) ||
+    !rootsEqual(draftRoots, savedRoots, localPathStyle) ||
     hasSettingsChanges;
   const shouldBlockNavigation = hasDraftChanges && !saving;
   const libraryNavigationBlocker = useBlocker(shouldBlockNavigation);
@@ -819,7 +782,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       if (current.some((rf) => rf.path === trimmed)) {
         return current;
       }
-      return normalizeRoots([...current, { path: trimmed, isDefault: current.length === 0 }]);
+      return normalizeRoots(
+        [...current, { path: trimmed, isDefault: current.length === 0 }],
+        localPathStyle,
+      );
     });
   };
 
@@ -832,17 +798,23 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
       }
       return normalizeRoots(
         current.map((rf, i) => (i === index ? { ...rf, path: trimmed } : rf)),
+        localPathStyle,
       );
     });
   };
 
   const handleRemovePath = (index: number) => {
-    setDraftRoots((current) => normalizeRoots(current.filter((_, i) => i !== index)));
+    setDraftRoots((current) =>
+      normalizeRoots(current.filter((_, i) => i !== index), localPathStyle),
+    );
   };
 
   const handleSetDefault = (index: number) => {
     setDraftRoots((current) =>
-      normalizeRoots(current.map((rf, i) => ({ ...rf, isDefault: i === index }))),
+      normalizeRoots(
+        current.map((rf, i) => ({ ...rf, isDefault: i === index })),
+        localPathStyle,
+      ),
     );
   };
 
@@ -966,7 +938,7 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
     if (!name) {
       return null;
     }
-    const roots = normalizeRoots(draftRoots);
+    const roots = normalizeRoots(draftRoots, localPathStyle);
     setDraftRoots(roots);
     if (mode === "new") {
       if (!canCreateLibrary) {
@@ -1206,7 +1178,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                     const pathFormatIsInvalid = invalidRootFolderPaths.has(rf.path);
                     const pathValidationIsInvalid =
                       validatedInvalidRootPathKeys.has(
-                        normalizeComparableLibraryRootPath(rf.path),
+                        normalizeComparableLibraryRootPath(
+                          rf.path,
+                          localPathStyle,
+                        ),
                       );
                     const pathIsInvalid =
                       pathFormatIsInvalid || pathValidationIsInvalid;

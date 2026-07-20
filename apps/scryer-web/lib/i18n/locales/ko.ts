@@ -1780,6 +1780,11 @@ const ko: LocaleDictionary = {
   "setup.animePath": "애니메이션 경로",
   "setup.optional": "(선택 사항)",
   "setup.browse": "찾아보기",
+  "setup.mediaPathNotReachable": "아직 접근할 수 없음",
+  "setup.mediaPathsNotReachableWarning":
+    "일부 미디어 경로에 아직 접근할 수 없습니다. 저장되었으며 나중에 설정에서 변경할 수 있습니다.",
+  "setup.mediaPathsVerificationUnavailable":
+    "이 경로를 확인할 수 없습니다. 계속 진행하고 나중에 설정에서 변경할 수 있습니다.",
   "setup.downloadClientTitle": "다운로드 클라이언트 추가",
   "setup.downloadClientDescription":
     "Scryer가 선호하는 클라이언트로 다운로드를 전송합니다. 이전 단계에서 설치한 플러그인이 여기에 표시됩니다.",
