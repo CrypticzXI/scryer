@@ -1875,6 +1875,11 @@ const pt_BR: LocaleDictionary = {
   "setup.animePath": "Caminho de anime",
   "setup.optional": "(opcional)",
   "setup.browse": "Navegar",
+  "setup.mediaPathNotReachable": "Ainda não acessível",
+  "setup.mediaPathsNotReachableWarning":
+    "Alguns caminhos de mídia ainda não estão acessíveis. Eles foram salvos e podem ser alterados depois em Configurações.",
+  "setup.mediaPathsVerificationUnavailable":
+    "Não foi possível verificar estes caminhos. Você pode continuar e alterá-los depois em Configurações.",
   "setup.downloadClientTitle": "Adicionar um cliente de download",
   "setup.downloadClientDescription":
     "O Scryer envia os downloads para o seu cliente preferido. Os plugins instalados no passo anterior aparecerão aqui.",

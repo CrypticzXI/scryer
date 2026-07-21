@@ -1399,6 +1399,7 @@ export const librariesQuery = `query Libraries($facet: MediaFacetValue, $permiss
     name
     slug
     isDefault
+    isBootstrapDefaultRootSet
     roots {
       id
       path

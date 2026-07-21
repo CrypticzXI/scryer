@@ -485,6 +485,7 @@ pub use settings::keys::{
     TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY, TLS_KEY_PATH_KEY,
     TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
 };
+pub use settings::runtime::is_bootstrap_default_library_root_set;
 pub(crate) use types::JwtClaims;
 #[cfg(test)]
 pub(crate) use types::ReleaseCandidateTokenClaims;

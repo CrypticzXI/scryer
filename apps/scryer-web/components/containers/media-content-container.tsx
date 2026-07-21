@@ -85,10 +85,13 @@ import {
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { validateLibraryRootPaths } from "@/lib/utils/library-root-validation";
 import {
+  catalogRootValidationState,
+  configuredCatalogLibraries,
   resolveCatalogSurfacePhase,
   type CatalogRootValidationState,
   type CatalogSurfacePhase,
 } from "@/lib/utils/catalog-bootstrap-policy";
+import { isMediaSettingsSection } from "@/lib/utils/routes";
 import { useBulkDelete } from "@/lib/hooks/use-bulk-delete";
 import { useDownloadClientRouting } from "@/lib/hooks/use-download-client-routing";
 import { useIndexerRouting } from "@/lib/hooks/use-indexer-routing";
@@ -1005,10 +1008,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   const shouldLoadCatalogTitles =
     isMediaView && contentSettingsSection === "overview";
   const shouldLoadMediaSettingsForSection =
-    isMediaView &&
-    (contentSettingsSection === "library" ||
-      contentSettingsSection === "general" ||
-      contentSettingsSection === "routing");
+    isMediaView && isMediaSettingsSection(contentSettingsSection);
   const refreshCatalogDiscovery = React.useCallback(async () => {
     const requestId = catalogDiscoveryRequestIdRef.current + 1;
     catalogDiscoveryRequestIdRef.current = requestId;
@@ -4889,9 +4889,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             : nextLibraries.filter((library) =>
                 normalizedSelectedLibraryIds.includes(library.id),
               );
-          const hasConfiguredRoots = scopedLibraries.some((library) =>
-            library.roots.some((root) => root.path.trim().length > 0),
-          );
+          const configuredLibraries =
+            configuredCatalogLibraries(scopedLibraries);
+          let hasConfiguredRoots = configuredLibraries.length > 0;
 
           const rootConfigurationPhase = resolveCatalogSurfacePhase({
             canManageLibrarySettings,
@@ -4923,7 +4923,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           if (canManageLibrarySettings && nextTitles.length === 0) {
             const configuredRootPaths = [
               ...new Set(
-                scopedLibraries.flatMap((library) =>
+                configuredLibraries.flatMap((library) =>
                   library.roots
                     .map((root) => root.path.trim())
                     .filter((path) => path.length > 0),
@@ -4946,12 +4946,12 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             if (catalogBootstrapRequestSeqRef.current !== requestSeq) {
               return;
             }
-            rootValidationState =
-              validation.invalidPaths.length > 0
-                ? "invalid"
-                : validation.unavailable
-                  ? "unavailable"
-                  : "valid";
+            rootValidationState = catalogRootValidationState(validation);
+            hasConfiguredRoots =
+              configuredCatalogLibraries(
+                scopedLibraries,
+                validation.invalidPaths,
+              ).length > 0;
           }
 
           commitBootstrapState(

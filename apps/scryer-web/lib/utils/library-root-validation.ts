@@ -1,3 +1,5 @@
+import type { LocalPathStyle } from "./local-path-style.ts";
+
 type GraphQlErrorLike = {
   extensions?: Record<string, unknown> | null;
 };
@@ -7,6 +9,7 @@ type CombinedErrorLike = {
 };
 
 export type LibraryRootValidationResult = {
+  validPaths: string[];
   invalidPaths: string[];
   unavailable: boolean;
 };
@@ -28,12 +31,96 @@ export function trimLibraryRootPath(path: string): string {
   return trimmed.replace(/[\\/]+$/u, "");
 }
 
-export function normalizeComparableLibraryRootPath(path: string): string {
+export function normalizeComparableLibraryRootPath(
+  path: string,
+  pathStyle?: LocalPathStyle,
+): string {
   const storedPath = trimLibraryRootPath(path);
   const canonicalPath = isUncShareRoot(storedPath)
     ? storedPath.replace(/[\\/]+$/u, "")
     : storedPath;
-  return canonicalPath.replaceAll("\\", "/").toLowerCase();
+  const normalizedPath = canonicalPath.replaceAll("\\", "/");
+  return pathStyle === "windows" ? normalizedPath.toLowerCase() : normalizedPath;
+}
+
+type LibraryRootDraftLike = {
+  path: string;
+  isDefault: boolean;
+};
+
+type LibraryRootCollectionLike = {
+  id: string;
+  name: string;
+  roots: readonly { path: string }[];
+};
+
+export function normalizeLibraryRootDrafts<T extends LibraryRootDraftLike>(
+  roots: readonly T[],
+  pathStyle?: LocalPathStyle,
+): T[] {
+  const seen = new Set<string>();
+  let hasDefault = false;
+  const normalized: T[] = [];
+
+  roots.forEach((root) => {
+    const path = trimLibraryRootPath(root.path);
+    const comparablePath = normalizeComparableLibraryRootPath(path, pathStyle);
+    if (!path || seen.has(comparablePath)) {
+      return;
+    }
+    seen.add(comparablePath);
+    const isDefault = root.isDefault && !hasDefault;
+    hasDefault ||= isDefault;
+    normalized.push({ ...root, path, isDefault });
+  });
+
+  if (normalized.length > 0 && !hasDefault) {
+    normalized[0] = { ...normalized[0], isDefault: true };
+  }
+
+  return normalized;
+}
+
+export function findConflictingLibraryNamesByRootPath(
+  draftRoots: readonly { path: string }[],
+  libraries: readonly LibraryRootCollectionLike[],
+  currentLibraryId: string | null,
+  pathStyle?: LocalPathStyle,
+): Map<string, string[]> {
+  const otherLibrariesByRootPath = new Map<string, string[]>();
+
+  libraries.forEach((library) => {
+    if (library.id === currentLibraryId) {
+      return;
+    }
+    library.roots.forEach((root) => {
+      const comparablePath = normalizeComparableLibraryRootPath(
+        root.path,
+        pathStyle,
+      );
+      if (!comparablePath) {
+        return;
+      }
+      const names = otherLibrariesByRootPath.get(comparablePath) ?? [];
+      if (!names.includes(library.name)) {
+        names.push(library.name);
+      }
+      otherLibrariesByRootPath.set(comparablePath, names);
+    });
+  });
+
+  const conflicts = new Map<string, string[]>();
+  draftRoots.forEach((root) => {
+    const comparablePath = normalizeComparableLibraryRootPath(
+      root.path,
+      pathStyle,
+    );
+    const names = otherLibrariesByRootPath.get(comparablePath);
+    if (names?.length) {
+      conflicts.set(root.path, names);
+    }
+  });
+  return conflicts;
 }
 
 export function isExplicitPathValidationError(error: unknown): boolean {
@@ -49,6 +136,7 @@ export async function validateLibraryRootPaths(
   validate: (path: string) => Promise<unknown | null | undefined>,
   concurrency = 4,
 ): Promise<LibraryRootValidationResult> {
+  const validPaths: string[] = [];
   const invalidPaths: string[] = [];
   let unavailable = false;
   let nextIndex = 0;
@@ -62,7 +150,10 @@ export async function validateLibraryRootPaths(
 
       try {
         const error = await validate(path);
-        if (!error) continue;
+        if (!error) {
+          validPaths.push(path);
+          continue;
+        }
         if (isExplicitPathValidationError(error)) {
           invalidPaths.push(path);
         } else {
@@ -76,5 +167,5 @@ export async function validateLibraryRootPaths(
 
   const workerCount = Math.min(Math.max(1, concurrency), paths.length);
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
-  return { invalidPaths, unavailable };
+  return { validPaths, invalidPaths, unavailable };
 }

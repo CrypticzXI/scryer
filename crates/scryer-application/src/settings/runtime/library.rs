@@ -133,6 +133,41 @@ fn is_bootstrap_default_root_set(facet: &MediaFacet, root_folders: &[RootFolderE
         && normalize_root_path_for_compare(&root_folders[0].path)
             == normalize_root_path_for_compare(default_library_path(facet))
 }
+
+pub fn is_bootstrap_default_library_root_set(library: &scryer_domain::Library) -> bool {
+    is_bootstrap_default_root_set(
+        &library.facet,
+        &root_folder_entries_from_library_roots(&library.roots),
+    )
+}
+
+#[cfg(test)]
+mod bootstrap_default_root_tests {
+    use super::*;
+
+    #[test]
+    fn exact_default_path_is_bootstrap() {
+        assert!(is_bootstrap_default_root_set(
+            &MediaFacet::Movie,
+            &[RootFolderEntry {
+                path: DEFAULT_MOVIE_LIBRARY_PATH.to_string(),
+                is_default: true,
+            }],
+        ));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_bootstrap_path_comparison_preserves_case() {
+        assert!(!is_bootstrap_default_root_set(
+            &MediaFacet::Movie,
+            &[RootFolderEntry {
+                path: "/data/Movies".to_string(),
+                is_default: true,
+            }],
+        ));
+    }
+}
 pub(crate) fn effective_scan_roots_from_root_folders(
     root_folders: &[RootFolderEntry],
 ) -> Vec<String> {

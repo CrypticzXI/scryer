@@ -2,7 +2,7 @@
 // Do not edit by hand.
 
 #[allow(dead_code)]
-pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-07-07";
+pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-07-20";
 
 pub static GROUP_RULES: &[GroupRule] = &[
     GroupRule {
@@ -5356,6 +5356,16 @@ pub static GROUP_RULES: &[GroupRule] = &[
         },
     },
     GroupRule {
+        matcher: "RandomBytes",
+        match_kind: GroupMatchKind::Exact,
+        entry: GroupEntry {
+            name: "RandomBytes",
+            tier: GroupTier::Silver,
+            facet: RuleFacet::Movie,
+            source_context: SourceContext::UhdBluRay,
+        },
+    },
+    GroupRule {
         matcher: "Ranger",
         match_kind: GroupMatchKind::Exact,
         entry: GroupEntry {
@@ -7926,6 +7936,16 @@ pub static GROUP_RULES: &[GroupRule] = &[
         },
     },
     GroupRule {
+        matcher: "nekotan",
+        match_kind: GroupMatchKind::Exact,
+        entry: GroupEntry {
+            name: "nekotan",
+            tier: GroupTier::Bronze,
+            facet: RuleFacet::Anime,
+            source_context: SourceContext::Anime,
+        },
+    },
+    GroupRule {
         matcher: "neoHEVC",
         match_kind: GroupMatchKind::Exact,
         entry: GroupEntry {
@@ -10228,12 +10248,38 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         tier: GroupTier::Silver,
         facet: RuleFacet::Anime,
         source_context: SourceContext::Anime,
+        app: "radarr",
+        stem: "anime-web-tier-02",
+        trash_id: "8526c54e36b4962d340fce52ef030e76",
+        cf_name: "Anime Web Tier 02",
+        spec_name: "BlackRose",
+        source_path: "docs/json/radarr/cf/anime-web-tier-02.json",
+    },
+    TrashGuideRuleMetadata {
+        matcher: "BlackRose",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Silver,
+        facet: RuleFacet::Anime,
+        source_context: SourceContext::Anime,
         app: "sonarr",
         stem: "anime-bd-tier-02",
         trash_id: "ed7f1e315e000aef424a58517fa48727",
         cf_name: "Anime BD Tier 02",
         spec_name: "BlackRose",
         source_path: "docs/json/sonarr/cf/anime-bd-tier-02.json",
+    },
+    TrashGuideRuleMetadata {
+        matcher: "BlackRose",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Silver,
+        facet: RuleFacet::Anime,
+        source_context: SourceContext::Anime,
+        app: "sonarr",
+        stem: "anime-web-tier-02",
+        trash_id: "19180499de5ef2b84b6ec59aae444696",
+        cf_name: "Anime Web Tier 02",
+        spec_name: "BlackRose",
+        source_path: "docs/json/sonarr/cf/anime-web-tier-02.json",
     },
     TrashGuideRuleMetadata {
         matcher: "BlueLobster",
@@ -18374,6 +18420,19 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         source_path: "docs/json/sonarr/cf/anime-lq-groups.json",
     },
     TrashGuideRuleMetadata {
+        matcher: "RandomBytes",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Silver,
+        facet: RuleFacet::Movie,
+        source_context: SourceContext::UhdBluRay,
+        app: "radarr",
+        stem: "uhd-bluray-tier-02",
+        trash_id: "a58f517a70193f8e578056642178419d",
+        cf_name: "UHD Bluray Tier 02",
+        spec_name: "RandomBytes",
+        source_path: "docs/json/radarr/cf/uhd-bluray-tier-02.json",
+    },
+    TrashGuideRuleMetadata {
         matcher: "Ranger",
         match_kind: GroupMatchKind::Exact,
         tier: GroupTier::Banned,
@@ -23117,6 +23176,32 @@ pub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &[
         cf_name: "Anime BD Tier 04",
         spec_name: "neko-kBaraka",
         source_path: "docs/json/sonarr/cf/anime-bd-tier-04.json",
+    },
+    TrashGuideRuleMetadata {
+        matcher: "nekotan",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Bronze,
+        facet: RuleFacet::Anime,
+        source_context: SourceContext::Anime,
+        app: "radarr",
+        stem: "anime-bd-tier-03",
+        trash_id: "fa857662bad28d5ff21a6e611869a0ff",
+        cf_name: "Anime BD Tier 03",
+        spec_name: "nekotan",
+        source_path: "docs/json/radarr/cf/anime-bd-tier-03.json",
+    },
+    TrashGuideRuleMetadata {
+        matcher: "nekotan",
+        match_kind: GroupMatchKind::Exact,
+        tier: GroupTier::Bronze,
+        facet: RuleFacet::Anime,
+        source_context: SourceContext::Anime,
+        app: "sonarr",
+        stem: "anime-bd-tier-03",
+        trash_id: "096e406c92baa713da4a72d88030b815",
+        cf_name: "Anime BD Tier 03",
+        spec_name: "nekotan",
+        source_path: "docs/json/sonarr/cf/anime-bd-tier-03.json",
     },
     TrashGuideRuleMetadata {
         matcher: "neoHEVC",

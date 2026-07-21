@@ -285,6 +285,7 @@ pub struct LibraryPayload {
     pub name: String,
     pub slug: String,
     pub is_default: bool,
+    pub is_bootstrap_default_root_set: bool,
     pub roots: Vec<LibraryRootPayload>,
 }
 

@@ -2,7 +2,7 @@
 
 Scryer 0.17.0 is a major release centered on a new responsive web experience, personalized Discovery, smarter acquisition through indexer convergence, restartable multi-instance Arr imports, faster library workflows, and a much more capable plugin platform. It also includes a broad cleanup of the GraphQL API.
 
-The release comparison is `scryer-v0.16.8..release-0.17.0`: 190 commits across 827 files, with 181,816 insertions and 46,556 deletions.
+These notes cover the complete change from `scryer-v0.16.8`, including the final release-candidate stabilization pass merged after the original `release-0.17.0` branch.
 
 ## Headliner features
 
@@ -15,9 +15,17 @@ The web application has been redesigned around one responsive shell and visual s
 - Activity now uses responsive, action-complete queue rows with pause/resume, manual import, title assignment, ignore, failure/retry, and removal actions.
 - Requests is a poster-backed triage surface with separate administrator and requester workflows, facet/status filtering, requester/library/profile/monitor context, and responsive approval, dismissal, modification, and cancellation actions.
 - Calendar defaults to a redesigned month view at every breakpoint, adds month/week switching and a Today action, and presents facet-colored events, air times, filters, and event counts more clearly.
+- Calendar is now available on phones, with compact controls and event density, notch-safe spacing, and natural page scrolling. Catalog view choices also remain available on mobile instead of being forced back to posters.
 - System administration is divided into focused overview, service-log, audit-log, jobs, and recycle-bin experiences. The overview includes readiness/version, title and monitored counts, users, datastore/schema migration state, facet totals, recent events, and indexer activity.
 - Settings has permission-aware subnavigation, breadcrumbs, consistent page headers, responsive edit rails, and integration-specific plugin management. Indexer, download-client, notification, and subtitle pages can install, enable, disable, upgrade, update-all, and uninstall the relevant provider plugins without leaving the page.
 - A general CodeMirror-based editor now supports Rego, shell, JavaScript, and plain text, with diagnostics, readonly/auto-height modes, dark/light styling, and a textarea fallback while the editor chunk loads.
+
+### Safer account administration
+
+- Administrators can suspend and re-enable a user's login without deleting the account or its password, passkeys, MFA enrollment, external-account links, or permissions. Suspending access revokes active sessions and OAuth refresh grants and blocks password, passkey, and external-provider sign-in.
+- Scryer prevents an administrator from suspending their own login or the last usable full administrator. The built-in `admin` account can be suspended but not deleted, and recovery-admin access remains controlled by the environment.
+- User and media-server permission editors add select-all and clear-all actions across application permissions, facets, and libraries.
+- Scheduled jobs and the download-queue poller run under an internal System principal, so background work no longer depends on whichever administrator happened to start or configure it.
 
 ### Unified catalogs and title workspaces
 
@@ -28,6 +36,7 @@ Movies, series, and anime now share a richer catalog and title-management model.
 - The workspace brings monitoring, automatic and interactive search, refresh/scan, rename, history, blocklist, on-disk file inspection, primary-file selection, external subtitles, deletion previews, and external metadata links into one place.
 - Bulk selection supports monitor, unmonitor, edit, and previewed deletion, including optional on-disk deletion and resumable job state.
 - Catalogs use server-side cursor pagination, projection-aware queries, abortable in-flight requests, infinite loading, stable row identity, and virtualized scroll restoration. The initial page is deliberately smaller instead of eagerly fetching hundreds of records.
+- Catalog headers report the full title count and managed storage size. After a scan, poster catalogs refresh every loaded page instead of refreshing only the first page and leaving older cards stale.
 - Filters cover monitored state, continuing/ended status, library, root, genre, theme/tag, year, and minimum rating. Server-provided option counts and ranges are retryable and debounced.
 - Configurable columns and sort keys include added date, year, runtime, status, root, popularity, resolution, HDR, audio codec, size, episode progress, and source-specific ratings.
 - Title sorting uses persisted ICU/CLDR collation keys with multilingual article stripping, Unicode normalization, and CJK width normalization for stable locale-aware pagination.
@@ -53,6 +62,7 @@ Discovery is now a persistent part of Scryer rather than a one-off metadata look
 - The new home combines a hero with trending, upcoming, new-on-streaming, new-on-physical, personalized weekly, genre, theme/tag, collection-completion, and anime-aware rails.
 - Discovery detail and “More Like This” recommendations carry canonical identity, ratings, artwork, source context, and enough authorization information to add, request, or open the right title.
 - Server-backed filters cover content type, genre, theme/tag, studio, year, and minimum rating. Duplicate, invalid, already-managed, and facet-inappropriate items are removed before display.
+- Hero cards retain their full backdrop and overview after personalized subject resolution, and the desktop filter rail can be collapsed when more room is needed for recommendations.
 - Scryer stores Discovery snapshots, public-feed generations, incremental and pending changes, run history, acknowledgements, fingerprints, cursors, leases, and retry state so the experience survives restarts cleanly.
 - Domain events are coalesced; large or ambiguous change sets escalate to a full snapshot. Public-feed work can continue while personalized context work is backed off or blocked by a scan.
 - Discovery sync now handles paged ingest, acknowledgement recovery, full queues, terminal and transient failures, manual cooldowns, daily backstops, quiet startup periods, and stable per-installation jitter.
@@ -93,6 +103,7 @@ Indexers can reference a managed Byparr challenge-solving proxy.
 External import is now a five-step Connect, Libraries, Quality, Sources, and Summary workflow.
 
 - Multiple Sonarr and Radarr instances plus Prowlarr can be connected and validated independently. Arr warmups run concurrently, Sonarr episode loading is bounded to 16 requests per instance and two active instances at once, and duplicate clients/indexers are merged across direct and Arr-linked sources.
+- Arr and Prowlarr setup traffic uses its own bounded host-quota lane so a large import cannot consume the capacity reserved for normal indexer and metadata traffic.
 - Source roots can be dragged or assigned into new Scryer libraries, returned to the unassigned pool, supplemented with manual roots, and remapped from the source-visible path to the path visible on the Scryer host while retaining provenance.
 - Each mapped library receives a quality profile and scoring persona before imported clients/indexers are selected and finalization begins.
 - Imported configuration can include roots, clients, indexers, titles, naming, media-management permissions, metadata providers, quality/request profiles, title quality/availability/language/tags, monitoring, NFO/Plexmatch behavior, anime-special handling, and Linux chmod/chown settings.
@@ -172,7 +183,7 @@ The 0.17 database upgrade is materially heavier than a typical patch migration. 
 
 0.17 intentionally changes the GraphQL contract. Do not pair the 0.17 frontend with a 0.16 server, and regenerate/update custom API clients and browser extensions.
 
-This is a large contract change: the repository checker reports 559 breaking and 396 dangerous changes. Most come from the uppercase enum cutover (350 removed and 376 added enum values), followed by 142 removed fields and 47 field-kind changes. The remainder includes seven required inputs, six removed arguments, six removed types, one type-kind change, 17 optional inputs, and three optional arguments.
+This is a large contract change, dominated by the uppercase enum cutover, removed legacy fields and arguments, semantic payload replacements, and fields that changed from strings to typed enums, unions, or JSON scalars.
 
 Major migrations include:
 
@@ -185,7 +196,10 @@ Major migrations include:
 - Sonarr/Radarr-specific monitor warmup inputs to typed Arr sources, warmup sessions, mappings, connection validation, and secret drafts;
 - `cutoffUnmetTitles` to paged `cutoffUnmetTitlesPage`;
 - removal/replacement of `libraryScanSession`, singular `mediaServerConnection`, and older monitor-warmup roots;
-- new Discovery, catalog filter, indexer proxy, UI settings, episode/collection, and pending-import search operations.
+- removal of `catalogHasValidRoot`; catalog bootstrap now derives configured-root state from libraries and validates paths only when an empty catalog needs diagnosis;
+- new Discovery, catalog filter, indexer proxy, UI settings, episode/collection, and pending-import operations;
+- `setUserLoginEnabled`, plus `UserPayload.loginEnabled` and `UserPayload.isDefaultAdmin` for login suspension; and
+- an optional download-client ID on connection tests so the server can reuse an existing client's stored secrets without returning those secrets to the browser.
 
 The full compatibility output is retained with the release-note audit evidence.
 
@@ -195,7 +209,7 @@ The full compatibility output is retained with the release-note audit evidence.
 - `acquisition.long_tail_backfill_max_scopes_per_cycle` defaults to `500`; it limits evaluated scopes per cycle rather than acting as an HTTP rate limiter.
 - `acquisition.long_tail_reconverge_days` defaults to `0` (off) and is a break-glass stale-coverage backstop.
 - `acquisition.poll_interval_seconds` remains.
-- The cutover performs a best-effort, idempotent seed that treats legacy searches from the prior 14 days as covered across their routed indexers. This avoids an immediate full-library search storm; coverage reopens when requirements change or a failed search/download needs retry.
+- The cutover performs a best-effort, idempotent seed that treats legacy searches from the prior 14 days as covered across their routed indexers. This avoids an immediate full-library search storm. Coverage is reconsidered when current routing or requirements change; searches that never fired do not count, while a later download or import failure does not erase the external searches already observed.
 - Metadata Refresh and Wanted Sync jobs are removed. Discovery Sync has startup/dynamic behavior plus a daily backstop; RSS is scheduler-paced per indexer; background library refresh changes from hourly to every two hours.
 - Metadata refresh is now lifecycle-driven: monitored active episodic titles and prerelease movies are due after 12 hours; active unmonitored titles and recently released movies after 24 hours; inactive episodic titles after 14 days; and older movies after 30 days. Background passes cap work at 100 titles, while user-forced refresh is uncapped.
 
@@ -203,7 +217,7 @@ The full compatibility output is retained with the release-note audit evidence.
 
 Only one new environment variable is intended as a normal production tuning control:
 
-- `SCRYER_OUTBOUND_HOST_RPS` is a new operator-facing override for the positive finite public-host request rate. The public burst remains 2; local/managed and loopback profiles are unchanged.
+- `SCRYER_OUTBOUND_HOST_RPS` is a new operator-facing override for the positive finite public-host request rate. The public default is 20 requests per second with a burst of 20; local/managed and loopback profiles are unchanged.
 
 The remaining changes are specialized or internal:
 
@@ -216,6 +230,8 @@ The remaining changes are specialized or internal:
 Scryer no longer creates an implicit NZBGet client from legacy service settings. If no download client is configured, the queue is empty instead of silently falling back to NZBGet.
 
 Legacy routing/category values are copied into their current settings when the current value is absent, but operators who relied only on the implicit fallback should verify an enabled download client before upgrading.
+
+qBittorrent API-key configurations are supported by the generic download-client settings flow. Existing saved keys are reused for connection tests without being exposed to the browser, and the editor provides an explicit way to clear a stored key.
 
 ### Plugin compatibility and archive extraction
 
@@ -252,13 +268,16 @@ Temporary external-import secret drafts and upstream quota/cooldown/RSS cadence 
 - API errors now distinguish rejected, ambiguous, unavailable, plugin-required, canceled, and temporarily unavailable operations; temporary deferrals can include `Retry-After`.
 - Release queue actions use typed episode, episode-set, collection, series-movie, or title scope. Orphan scopes cannot be converted into a lossy queue request.
 - Pending force-grab no longer claims success when the server returns `grabbed: false`.
+- Manual imports are persisted once and now surface persistence failures instead of reporting success. An import-blocked item can still be sent to manual review from Scryer's tracked snapshot when it has already disappeared from the download client's live queue, and manual review can resolve an item whose original submission identity is unavailable.
+- Weaver rejections with no queue item are handled as real rejections instead of malformed responses; an accepted response that omits the queue item is reported as temporarily unavailable.
 
 ### Acquisition targeting and recovery
 
 - RSS evaluates the current derived target at match time and materializes state only for an anchored decision/grab. Completed submissions suppress an initial missing search without incorrectly suppressing a scored upgrade; active submissions suppress both.
 - Season packs are attempted only when at least two selected episodes share a season. A viable/pending pack prevents redundant episode searches, while a failed pack reopens and falls back to the episode scopes.
-- Failed downloads reopen convergence. Standby candidates survive client snapshots and can be recovered; replacement, conflict, manual reopen, cancellation, diagnostics, and mismatch recovery no longer depend on legacy wanted rows.
+- Failed downloads, rejected imports, replacements, and manual reopen events no longer delete convergence coverage. That ledger records durable external searches; current targets, routing, fingerprints, and optional age expiry decide whether the stored observations are still usable. Standby candidates survive client snapshots and can be recovered without legacy wanted rows.
 - Automatic episode fan-out deduplicates structured *nab shapes only when semantically equivalent, while text indexers retain distinct absolute-number, `SxxEyy`, and season searches. Cancellation propagates and callers can restrict work to uncovered indexers.
+- Indexer candidates share one deadline across scheduler admission, concurrency waits, rate limiting, primary queries, and fallbacks. Cancellation and timeout are honored before dispatch, and an indexer that never actually fired is reported as skipped and receives no convergence credit.
 - Anime movie/series-movie searches use the owning title's tags and language context, fixing dual-audio inference, and Discovery excludes series-movie results already present in the library.
 
 ### Library scans, files, and imports
@@ -276,6 +295,7 @@ Temporary external-import secret drafts and upstream quota/cooldown/RSS cadence 
 - Title create-or-get and pending-import binding are transactional, preserve identical external identities independently per library, and restrict linked series-movie lookup to the parent title's permitted libraries.
 - Stale pending-import rows and missing loose files no longer clear an existing title's valid folder path.
 - Invalid rename-template tokens are rejected before save; upgrade housekeeping correctly handles encoded media roots and staged replacement cleanup.
+- Library roots preserve Unix `/`, Windows drive roots, and UNC share roots while still normalizing ordinary trailing separators. Empty catalogs now distinguish missing or invalid roots from a temporary validation outage, and existing catalog content remains visible even when a configured root is offline.
 
 ### Post-download validation, audio, and subtitles
 
@@ -288,7 +308,7 @@ Temporary external-import secret drafts and upstream quota/cooldown/RSS cadence 
 
 ### Search, catalog, metadata, and media requests
 
-- Search avoids stale/duplicate results after authorization changes and filters metadata identities already represented by any owner copy.
+- Search avoids stale/duplicate results after authorization changes and filters metadata identities already represented by any owner copy. Adding or requesting a title refreshes autocomplete in the background without delaying the successful action or replacing it with a later refresh error.
 - Poster failures degrade to a deterministic generated treatment instead of broken/unstable image slots.
 - Artwork refreshes normalize relative/duplicate-separator URLs and commit processed bytes only if the title still points to the requested source. Content-addressed blobs deduplicate identical images, reject digest conflicts, wait for the last reference before collection, and repair polluted local URLs or invalid variants through remote fallback/reprocessing.
 - Local/TMDB poster and backdrop URLs select appropriate variants while preserving cache-version behavior.
@@ -296,6 +316,7 @@ Temporary external-import secret drafts and upstream quota/cooldown/RSS cadence 
 - Media requests hydrate missing external identity, facet, artwork, and year before duplicate checks, preventing partial identifiers from bypassing existing-library/request detection.
 - Duplicate external title rematches are rejected.
 - Catalog sort and filter state respects library-view permissions and handles multilingual titles, CJK width, source ratings, and root validity consistently.
+- Opening a title workspace refreshes “More Like This” recommendations even when an older set is already loaded; a failed refresh no longer replaces the current recommendations with an empty result.
 
 ### Authentication and authorization
 
@@ -310,15 +331,19 @@ Temporary external-import secret drafts and upstream quota/cooldown/RSS cadence 
 
 ### Plugins and integrations
 
-- Descriptor-owned username, password, and API-key values no longer get overwritten by empty legacy fields. Blank optional secrets are omitted and typed number/boolean/tag values preserve their type.
+- Descriptor-owned username, password, and API-key values no longer get overwritten by empty legacy fields. Connection tests reuse omitted saved secrets, stored secrets can be cleared deliberately, and typed number/boolean/tag values preserve their type.
 - Plugin installation reports checksum, SDK metadata, compatibility, and other structured errors with actionable messages.
 - Registry refreshes are coalesced and briefly suppressed after completion so subscriptions do not launch redundant refresh work.
 - Download-client drafts deep-clone dynamic config and save only against the selected provider's declared fields.
 - Disk-space health checks are correctly Unix-only, and multi-library health roots are deduplicated by normalized path.
+- Deleting a managed indexer parent or uninstalling its provider now removes the full child tree and its routing entries. Startup also removes orphaned managed children left by an interrupted or older uninstall.
+- SMG enrollment retries narrowly defined transient gateway failures (`502`, `503`, and `504`), honors bounded `Retry-After` delays, and still returns permanent failures immediately.
 
 ### Storage and restart recovery
 
 - Daily SQLite maintenance runs a full `VACUUM` only when at least 2,000 pages and 10% of the database are free, avoiding a costly no-op on every maintenance tick. Unreferenced image blobs are pruned in bounded batches.
+- SQLite can read timestamps written by `CURRENT_TIMESTAMP`, including fractional seconds. Busy retries now match only the real `SQLITE_BUSY` and `SQLITE_LOCKED` code families instead of delaying unrelated I/O, constraint, or transaction errors whose numbers happen to start with the same digit.
+- SQLite restore now clears portable and reset-only tables, imports the bundle, validates foreign keys and row counts, and commits as one immediate transaction. PostgreSQL uses the same dependency-ordered reset and import model.
 - Startup ownership repair continues past vanished entries, unreadable submounts, metadata failures, and individual chown failures, then reports the aggregate count and first error instead of abandoning later siblings.
 - Job-backed workflow rows left queued/running/discovering by a process restart are marked failed with an interruption reason and completion time, and stale progress is cleared so jobs and acquisition views cannot remain active forever.
 
@@ -342,7 +367,10 @@ Temporary external-import secret drafts and upstream quota/cooldown/RSS cadence 
 - Rego diagnostics compensate for the hidden import line, and post-processing scripts receive the correct shell-language editor.
 - Rename templates preserve escaped literal braces and apply `truncate:N` and chained whitespace/padding filters in the documented order.
 - Setup path selection distinguishes files from folders, validates fresh media paths before continuing, allows revisiting completed steps, and presents clearer restore/setup recovery state.
+- Title actions expose the correct Monitor or Unmonitor label and pressed state, while on-disk subtitle badges open the actual track list instead of showing a non-functional count.
+- Settings connection tests emit one result notification, profile passkeys wait for effective authentication settings and ignore stale responses, and plugin install/upgrade cards settle once without duplicate terminal feedback.
+- Removing the last local/remote path mapping now saves an empty mapping instead of leaving a stale serialized row behind.
 
 ## Audit scope
 
-These notes were built from an exhaustive path-partitioned audit of the complete `scryer-v0.16.8..release-0.17.0` diff. Generated baselines, contracts, assets, fixtures, tests, deleted implementations, and internal refactors were included in the accounting rather than filtered out by perceived risk.
+These notes were built from an exhaustive path-partitioned audit beginning at `scryer-v0.16.8` and include the final release-candidate stabilization merge. Generated baselines, contracts, assets, fixtures, tests, deleted implementations, and internal refactors were included in the accounting rather than filtered out by perceived risk.

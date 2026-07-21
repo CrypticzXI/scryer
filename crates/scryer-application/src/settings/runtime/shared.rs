@@ -24,7 +24,16 @@ fn plexmatch_write_on_import_key(facet: &MediaFacet) -> Option<&'static str> {
     }
 }
 fn normalize_root_path_for_compare(path: &str) -> String {
-    path.trim().trim_end_matches('/').to_ascii_lowercase()
+    let normalized = path.trim().trim_end_matches(['/', '\\']);
+
+    #[cfg(windows)]
+    {
+        normalized.replace('/', "\\").to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        normalized.to_string()
+    }
 }
 fn normalize_effective_scan_root(path: &str) -> Option<String> {
     let trimmed = path.trim();

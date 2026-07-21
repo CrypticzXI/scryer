@@ -6,6 +6,7 @@ import {
   resolveAppRoute,
   type ParsedAppRoute,
 } from "./routing.ts";
+import { isMediaSettingsSection } from "./routes.ts";
 
 function canonical(path: string): ParsedAppRoute {
   const resolution = resolveAppRoute(path);
@@ -19,6 +20,16 @@ function canonical(path: string): ParsedAppRoute {
 function redirects(from: string, to: string): void {
   assert.deepEqual(resolveAppRoute(from), { kind: "redirect", to });
 }
+
+test("facet settings sections that consume media settings trigger loading", () => {
+  for (const section of ["library", "general", "quality", "renaming", "routing"] as const) {
+    assert.equal(isMediaSettingsSection(section), true, section);
+  }
+
+  for (const section of ["overview", "import"] as const) {
+    assert.equal(isMediaSettingsSection(section), false, section);
+  }
+});
 
 test("canonical route families resolve to typed application state", () => {
   for (const path of [

@@ -193,7 +193,6 @@ impl LibraryRenamer for NullLibraryRenamer {
     }
 }
 
-const RENAME_TEMPLATE_KEY: &str = "rename.template";
 const RENAME_COLLISION_POLICY_KEY: &str = "rename.collision_policy";
 const RENAME_COLLISION_POLICY_GLOBAL_KEY: &str = "rename.collision_policy.global";
 const RENAME_MISSING_METADATA_POLICY_KEY: &str = "rename.missing_metadata_policy";
@@ -256,9 +255,7 @@ impl AppUseCase {
             return Err(AppError::Validation("renamer_disabled".into()));
         }
 
-        let settings = self
-            .read_rename_plan_settings(rename_facet_settings(&facet))
-            .await?;
+        let settings = self.read_rename_plan_settings(&facet).await?;
         self.build_rename_plan_for_titles(
             title.facet.clone(),
             std::slice::from_ref(&title),
@@ -279,9 +276,7 @@ impl AppUseCase {
             return Err(AppError::Validation("renamer_disabled".into()));
         }
 
-        let settings = self
-            .read_rename_plan_settings(rename_facet_settings(&facet))
-            .await?;
+        let settings = self.read_rename_plan_settings(&facet).await?;
         let mut titles = self
             .services
             .catalog
@@ -400,12 +395,10 @@ impl AppUseCase {
         Ok(())
     }
 
-    async fn read_rename_plan_settings(
-        &self,
-        facet_settings: RenameFacetSettings,
-    ) -> AppResult<RenamePlanSettings> {
+    async fn read_rename_plan_settings(&self, facet: &MediaFacet) -> AppResult<RenamePlanSettings> {
+        let facet_settings = rename_facet_settings(facet);
         Ok(RenamePlanSettings {
-            template: self.read_rename_template(facet_settings).await?,
+            template: self.resolve_rename_template(facet).await?,
             folder_template: self.read_folder_template(facet_settings).await?,
             collision_policy: self.read_collision_policy(facet_settings).await?,
             missing_metadata_policy: self.read_missing_metadata_policy(facet_settings).await?,
@@ -904,26 +897,6 @@ impl AppUseCase {
         }
 
         Ok(out)
-    }
-
-    async fn read_rename_template(&self, facet_settings: RenameFacetSettings) -> AppResult<String> {
-        if let Some(scoped) = self
-            .read_setting_string_value(RENAME_TEMPLATE_KEY, Some(facet_settings.scope_id))
-            .await?
-            .filter(|value| !value.trim().is_empty())
-        {
-            return Ok(scoped);
-        }
-
-        if let Some(global) = self
-            .read_setting_string_value(facet_settings.template_key, None)
-            .await?
-            .filter(|value| !value.trim().is_empty())
-        {
-            return Ok(global);
-        }
-
-        Ok(facet_settings.default_template.to_string())
     }
 
     async fn read_folder_template(&self, facet_settings: RenameFacetSettings) -> AppResult<String> {
