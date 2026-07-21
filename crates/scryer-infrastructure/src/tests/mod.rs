@@ -39,6 +39,7 @@ mod permissions_users_shows;
 mod plugins;
 mod scope_indexer_coverage;
 mod settings_and_writer;
+mod sql_runtime_gated_write;
 mod stores_migrations_regressions;
 mod title_images;
 mod titles_metadata;

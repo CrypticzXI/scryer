@@ -187,8 +187,9 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
         key: &IndexerSearchLearningKey,
         suppressed: bool,
     ) -> AppResult<()> {
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "set_indexer_search_learning_suppressed",
             "UPDATE indexer_search_learning
              SET suppressed = {}, updated_at = {}
              WHERE indexer_id = {} AND title_id = {} AND facet = {} AND strategy_key = {}",
@@ -213,8 +214,9 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
         let now = Utc::now();
         let rows = match &self.datastore {
             StoreDatastore::Sqlite { .. } => {
-                SqlRuntime::execute(
-                    self.datastore.read_exec(),
+                SqlRuntime::execute_write(
+                    &self.datastore,
+                    "claim_suppressed_indexer_search_reprobe",
                     "UPDATE indexer_search_learning
                      SET updated_at = {}
                      WHERE indexer_id = {}
@@ -240,8 +242,9 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
                 .await?
             }
             StoreDatastore::Postgres { .. } => {
-                SqlRuntime::execute(
-                    self.datastore.read_exec(),
+                SqlRuntime::execute_write(
+                    &self.datastore,
+                    "claim_suppressed_indexer_search_reprobe",
                     "UPDATE indexer_search_learning
                      SET updated_at = {}
                      WHERE indexer_id = {}

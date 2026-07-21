@@ -123,6 +123,10 @@ impl SqliteServices {
         if !is_memory {
             connect_opts = connect_opts
                 .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                // WAL pairs with synchronous=NORMAL to skip one fsync per commit;
+                // power loss may drop the last commit(s), never corrupts; needs
+                // product sign-off to enable.
+                // .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
                 .busy_timeout(std::time::Duration::from_millis(10_000));
         }
 

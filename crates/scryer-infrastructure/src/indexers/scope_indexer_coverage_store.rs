@@ -33,8 +33,9 @@ impl ScopeIndexerCoverageRepository for ScopeIndexerCoverageStore {
         indexer_id: &str,
         fingerprint: &str,
     ) -> AppResult<()> {
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "record_scope_indexer_coverage",
             "INSERT INTO scope_indexer_coverage (scope_key, facet, indexer_id, fingerprint, searched_at)
              VALUES ({}, {}, {}, {}, {})
              ON CONFLICT (scope_key, facet, indexer_id)
