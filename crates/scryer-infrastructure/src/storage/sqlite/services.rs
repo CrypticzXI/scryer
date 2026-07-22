@@ -39,10 +39,7 @@ impl SqliteServices {
     }
 
     pub fn datastore(&self) -> StoreDatastore {
-        StoreDatastore::Sqlite {
-            pool: self.pool.clone(),
-            writer_gate: self.writer_gate.clone(),
-        }
+        StoreDatastore::sqlite(self.pool.clone(), self.writer_gate.clone())
     }
 
     pub async fn new(path: impl AsRef<str>) -> Result<Self, AppError> {

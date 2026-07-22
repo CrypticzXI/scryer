@@ -5,15 +5,15 @@ use chrono::Utc;
 use scryer_application::{AppError, LoginFailureTimingClass};
 use scryer_domain::AppPermission;
 
-use crate::context::{
+use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, require_config_app_permission,
     to_gql_error, to_login_gql_error_after_timing,
 };
-use crate::mappers::{from_linked_account, from_user_with_auth_factor_status};
-use crate::types::*;
+use scryer_interface_media::mappers::{from_linked_account, from_user_with_auth_factor_status};
+use scryer_interface_media::types::*;
 
 #[derive(Default)]
-pub(crate) struct UserMutations;
+pub struct UserMutations;
 
 async fn user_payload_from_user(
     app: &scryer_application::AppUseCase,

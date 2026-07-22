@@ -6,6 +6,7 @@ const ja: LocaleDictionary = {
   "label.search": "検索",
   "label.autoSearch": "自動検索",
   "label.interactiveSearch": "手動検索",
+  "label.interactive": "手動",
   "label.searching": "検索中",
   "help.autoSearchTooltip":
     "このアイテムに最適なリリースを自動検索してキューに追加します。",

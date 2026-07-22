@@ -13,6 +13,12 @@ use crate::base_path::BasePath;
 use crate::middleware::index_page;
 
 mod embedded_ui_assets {
+    pub struct EmbeddedWebAsset {
+        pub path: &'static str,
+        pub offset: usize,
+        pub length: usize,
+    }
+
     include!(concat!(env!("OUT_DIR"), "/embedded_ui_assets.rs"));
 }
 
@@ -252,7 +258,16 @@ pub(crate) fn embedded_ui_asset(path: &str) -> Option<&'static [u8]> {
     static INDEX: LazyLock<HashMap<&'static str, &'static [u8]>> = LazyLock::new(|| {
         embedded_ui_assets::EMBEDDED_WEB_FILES
             .iter()
-            .copied()
+            .map(|asset| {
+                let end = asset
+                    .offset
+                    .checked_add(asset.length)
+                    .expect("embedded UI descriptor range overflow");
+                let bytes = embedded_ui_assets::EMBEDDED_WEB_BLOB
+                    .get(asset.offset..end)
+                    .expect("embedded UI descriptor outside packed blob");
+                (asset.path, bytes)
+            })
             .collect()
     });
     let normalized_path = path.trim_start_matches('/');
@@ -673,12 +688,35 @@ fn render_index_html(index_html: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        UiContentEncoding, cache_control_for_asset, infer_content_type,
-        looks_like_static_asset_request, negotiated_quality, preferred_content_encoding,
-        serve_fallback_ui, should_serve_spa_index,
+        UiContentEncoding, cache_control_for_asset, embedded_ui_asset, embedded_ui_assets,
+        infer_content_type, looks_like_static_asset_request, negotiated_quality,
+        preferred_content_encoding, serve_fallback_ui, should_serve_spa_index,
     };
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
     use std::path::Path;
+
+    #[test]
+    fn embedded_descriptors_are_sorted_packed_and_resolvable() {
+        let mut expected_offset = 0;
+        let mut previous_path: Option<&str> = None;
+        for asset in embedded_ui_assets::EMBEDDED_WEB_FILES {
+            if let Some(previous_path) = previous_path {
+                assert!(
+                    previous_path < asset.path,
+                    "descriptors must be path-sorted"
+                );
+            }
+            assert_eq!(asset.offset, expected_offset, "descriptors must be packed");
+            let end = asset.offset + asset.length;
+            assert_eq!(
+                embedded_ui_asset(asset.path),
+                Some(&embedded_ui_assets::EMBEDDED_WEB_BLOB[asset.offset..end])
+            );
+            expected_offset = end;
+            previous_path = Some(asset.path);
+        }
+        assert_eq!(expected_offset, embedded_ui_assets::EMBEDDED_WEB_BLOB.len());
+    }
 
     #[test]
     fn spa_index_is_served_for_catalog_routes() {

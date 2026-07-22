@@ -1198,7 +1198,7 @@ impl DatastoreAssembly {
     pub fn indexer_stats_tracker(&self) -> Arc<dyn IndexerStatsTracker> {
         match &self.stores {
             DatastoreStores::Sqlite { db, .. } => {
-                Arc::new(InMemoryIndexerStatsTracker::new(Some(db.pool().clone())))
+                Arc::new(InMemoryIndexerStatsTracker::new(Some(db.datastore())))
             }
             DatastoreStores::Postgres { .. } => Arc::new(InMemoryIndexerStatsTracker::new(None)),
         }

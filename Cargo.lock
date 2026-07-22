@@ -5834,6 +5834,7 @@ dependencies = [
  "uuid",
  "weaver-par2",
  "whatlang",
+ "windows-sys 0.61.2",
  "wiremock",
  "x509-cert",
  "zstd",
@@ -5914,18 +5915,33 @@ dependencies = [
  "chrono",
  "scryer-application",
  "scryer-domain",
+ "scryer-interface-acquisition",
  "scryer-interface-core",
+ "scryer-interface-import",
  "scryer-interface-media",
  "scryer-interface-metadata",
+ "scryer-interface-query",
+ "scryer-interface-security",
  "scryer-interface-settings",
- "scryer-rules",
- "serde",
+ "scryer-interface-subscription",
+ "scryer-interface-system",
  "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
- "url",
  "wiremock",
+]
+
+[[package]]
+name = "scryer-interface-acquisition"
+version = "0.17.0"
+dependencies = [
+ "async-graphql",
+ "chrono",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-interface-core",
+ "scryer-interface-media",
 ]
 
 [[package]]
@@ -5937,6 +5953,23 @@ dependencies = [
  "scryer-domain",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "scryer-interface-import"
+version = "0.17.0"
+dependencies = [
+ "async-graphql",
+ "chrono",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-interface-core",
+ "scryer-interface-media",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -5976,6 +6009,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "scryer-interface-query"
+version = "0.17.0"
+dependencies = [
+ "async-graphql",
+ "chrono",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-interface-core",
+ "scryer-interface-media",
+ "scryer-interface-metadata",
+ "scryer-interface-settings",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "scryer-interface-security"
+version = "0.17.0"
+dependencies = [
+ "async-graphql",
+ "chrono",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-interface-core",
+ "scryer-interface-media",
+]
+
+[[package]]
 name = "scryer-interface-settings"
 version = "0.17.0"
 dependencies = [
@@ -5986,6 +6047,33 @@ dependencies = [
  "scryer-interface-core",
  "scryer-interface-media",
  "serde_json",
+]
+
+[[package]]
+name = "scryer-interface-subscription"
+version = "0.17.0"
+dependencies = [
+ "async-graphql",
+ "chrono",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-interface-core",
+ "scryer-interface-media",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "scryer-interface-system"
+version = "0.17.0"
+dependencies = [
+ "async-graphql",
+ "chrono",
+ "scryer-application",
+ "scryer-domain",
+ "scryer-interface-core",
+ "scryer-interface-media",
+ "tokio",
 ]
 
 [[package]]
@@ -7919,7 +8007,6 @@ dependencies = [
  "wasmtime-internal-jit-icache-coherence",
  "wasmtime-internal-unwinder",
  "wasmtime-internal-versioned-export-macros",
- "wat",
  "windows-sys 0.61.2",
 ]
 

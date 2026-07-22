@@ -188,7 +188,7 @@ impl DiscoveryRepository for DiscoveryStore {
                 &split_columns(DISCOVERY_SYNC_STATE_COLUMNS),
                 &["scope_key"],
             ),
-            &args,
+            args,
         )
         .await?;
         Ok(())
@@ -215,7 +215,7 @@ impl DiscoveryRepository for DiscoveryStore {
                 OR discovery_sync_state.lease_expires_at IS NULL
                 OR discovery_sync_state.lease_expires_at <= {}
                 OR discovery_sync_state.lease_owner_id = {}",
-            &[
+            vec![
                 SqlArg::Text(scope_key.to_string()),
                 SqlArg::Text(owner_id.to_string()),
                 SqlArg::Timestamp(lease_expires_at),
@@ -241,7 +241,7 @@ impl DiscoveryRepository for DiscoveryStore {
             "UPDATE discovery_sync_state
              SET lease_expires_at = {}, updated_at = {}
              WHERE scope_key = {} AND lease_owner_id = {}",
-            &[
+            vec![
                 SqlArg::Timestamp(lease_expires_at),
                 SqlArg::Timestamp(now),
                 SqlArg::Text(scope_key.to_string()),
@@ -264,7 +264,7 @@ impl DiscoveryRepository for DiscoveryStore {
             "UPDATE discovery_sync_state
              SET lease_owner_id = NULL, lease_expires_at = NULL, updated_at = {}
              WHERE scope_key = {} AND lease_owner_id = {}",
-            &[
+            vec![
                 SqlArg::Timestamp(now),
                 SqlArg::Text(scope_key.to_string()),
                 SqlArg::Text(owner_id.to_string()),
@@ -334,7 +334,7 @@ impl DiscoveryRepository for DiscoveryStore {
             &self.datastore,
             "upsert_discovery_sync_run",
             &upsert_sql("discovery_sync_runs", &columns, &["id"]),
-            &sync_run_args(&self.datastore, run)?,
+            sync_run_args(&self.datastore, run)?,
         )
         .await?;
         Ok(())
@@ -578,7 +578,7 @@ impl DiscoveryRepository for DiscoveryStore {
                 &split_columns(PENDING_CONTEXT_CHANGE_COLUMNS),
                 &["id"],
             ),
-            &pending_context_change_args(&self.datastore, change)?,
+            pending_context_change_args(&self.datastore, change)?,
         )
         .await?;
         Ok(())
@@ -608,7 +608,7 @@ impl DiscoveryRepository for DiscoveryStore {
             &self.datastore,
             "delete_pending_discovery_context_change",
             "DELETE FROM discovery_pending_context_changes WHERE id = {}",
-            &[SqlArg::Text(id.to_string())],
+            vec![SqlArg::Text(id.to_string())],
         )
         .await
     }
@@ -674,7 +674,7 @@ impl DiscoveryRepository for DiscoveryStore {
              WHERE scope_key = {}
                AND last_seen_sequence IS NOT NULL
                AND last_seen_sequence <= {}",
-            &[
+            vec![
                 SqlArg::Text(scope_key.to_string()),
                 SqlArg::I64(last_seen_sequence),
             ],

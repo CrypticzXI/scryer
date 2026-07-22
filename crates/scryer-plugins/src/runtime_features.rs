@@ -3,45 +3,35 @@ use std::collections::HashSet;
 pub const PLUGIN_REQUIRED_FEATURE_SIMD128: &str = "simd128";
 pub const PLUGIN_REQUIRED_FEATURE_RELAXED_SIMD: &str = "relaxed-simd";
 
-const SIMD128_PROBE_WAT: &str = r#"(module
-  (func (export "probe") (result i32)
-    (i32x4.extract_lane 0
-      (v128.const i32x4 0 0 0 0))))
-"#;
-
-const RELAXED_SIMD_PROBE_WAT: &str = r#"(module
-  (func (export "probe") (result i32)
-    (i8x16.extract_lane_u 0
-      (i8x16.relaxed_swizzle
-        (v128.const i8x16 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15)
-        (v128.const i8x16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)))))
-"#;
+const SIMD128_PROBE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/simd128_probe.wasm"));
+const RELAXED_SIMD_PROBE_WASM: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/relaxed_simd_probe.wasm"));
 
 pub fn detect_supported_plugin_required_features() -> HashSet<String> {
     detect_supported_plugin_required_features_with(supports_plugin_module)
 }
 
 fn detect_supported_plugin_required_features_with(
-    mut supports: impl FnMut(&str) -> bool,
+    mut supports: impl FnMut(&[u8]) -> bool,
 ) -> HashSet<String> {
     let mut features = HashSet::new();
-    if !supports(SIMD128_PROBE_WAT) {
+    if !supports(SIMD128_PROBE_WASM) {
         return features;
     }
 
     features.insert(PLUGIN_REQUIRED_FEATURE_SIMD128.to_string());
-    if supports(RELAXED_SIMD_PROBE_WAT) {
+    if supports(RELAXED_SIMD_PROBE_WASM) {
         features.insert(PLUGIN_REQUIRED_FEATURE_RELAXED_SIMD.to_string());
     }
     features
 }
 
-fn supports_plugin_module(wat: &str) -> bool {
-    compile_plugin_module(wat).is_ok()
+fn supports_plugin_module(wasm: &[u8]) -> bool {
+    compile_plugin_module(wasm).is_ok()
 }
 
-fn compile_plugin_module(wat: &str) -> wasmtime::Result<()> {
-    wasmtime::Module::new(crate::wasmtime_host::engine::shared_engine(), wat).map(|_| ())
+fn compile_plugin_module(wasm: &[u8]) -> wasmtime::Result<()> {
+    wasmtime::Module::new(crate::wasmtime_host::engine::shared_engine(), wasm).map(|_| ())
 }
 
 #[cfg(test)]
@@ -91,8 +81,8 @@ mod tests {
 
     #[test]
     fn wasmtime_runtime_accepts_probe_modules() {
-        compile_plugin_module(SIMD128_PROBE_WAT).expect("simd128 probe should compile");
-        compile_plugin_module(RELAXED_SIMD_PROBE_WAT).expect("relaxed-simd probe should compile");
+        compile_plugin_module(SIMD128_PROBE_WASM).expect("simd128 probe should compile");
+        compile_plugin_module(RELAXED_SIMD_PROBE_WASM).expect("relaxed-simd probe should compile");
     }
 
     #[test]

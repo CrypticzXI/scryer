@@ -1,11 +1,11 @@
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use scryer_application::WantedSearchOutcome;
 
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
-use crate::types::*;
+use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
+use scryer_interface_media::types::*;
 
 #[derive(Default)]
-pub(crate) struct WantedMutations;
+pub struct WantedMutations;
 
 /// Shared builder for the media-request approval search outcome. The RFC 119
 /// cutover removed the per-item `trigger*WantedSearch` mutations (the convergence

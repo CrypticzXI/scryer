@@ -3,14 +3,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::context::{
-    app_from_ctx, require_config_app_permission, restore_context_from_ctx, to_gql_error,
-};
-use crate::mappers::from_backup_info;
-use crate::types::{
-    BackupInfoPayload, BackupRowCountPayload, CreateBackupInput, DeleteBackupInput,
-    DeleteBackupPayload, Long, PrepareBackupDownloadInput,
-};
 use async_graphql::{Context, ID, Object, Result as GqlResult, SimpleObject, Upload};
 use chrono::{DateTime, Utc};
 use scryer_application::{
@@ -19,8 +11,16 @@ use scryer_application::{
 };
 use scryer_domain::AppPermission;
 use scryer_interface_core::{
-    RestoreDatastoreConfig, RestoreDatastoreEngine, RestoreDatastoreHandle,
+    RestoreContext, RestoreDatastoreConfig, RestoreDatastoreEngine, RestoreDatastoreHandle,
     RestoreSqliteDatastoreRequest,
+};
+use scryer_interface_core::{
+    app_from_ctx, require_config_app_permission, restore_context_from_ctx, to_gql_error,
+};
+use scryer_interface_media::mappers::from_backup_info;
+use scryer_interface_media::types::{
+    BackupInfoPayload, BackupRowCountPayload, CreateBackupInput, DeleteBackupInput,
+    DeleteBackupPayload, Long, PrepareBackupDownloadInput,
 };
 
 const INSTANCE_SECRETS_ENV_FILENAME: &str = "instance-secrets.env";
@@ -251,7 +251,7 @@ fn encode_path_segment(value: &str) -> String {
 }
 
 fn finish_restore_apply(
-    restore: &crate::context::RestoreContext,
+    restore: &RestoreContext,
     summary: RestoreSummaryPayload,
 ) -> Result<RestoreApplyPayload, AppError> {
     restore.restart.schedule_restart();
@@ -259,7 +259,7 @@ fn finish_restore_apply(
 }
 
 fn finish_restore_apply_result(
-    restore: &crate::context::RestoreContext,
+    restore: &RestoreContext,
     result: Result<RestoreSummaryPayload, AppError>,
 ) -> Result<RestoreApplyPayload, AppError> {
     match result {
@@ -568,7 +568,7 @@ fn write_owner_only_file_atomically(path: &Path, contents: &str) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RestoreRestartHandle;
+    use scryer_interface_core::RestoreRestartHandle;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -593,7 +593,7 @@ mod tests {
     fn finish_restore_apply_schedules_restart_on_success() {
         let restart_calls = Arc::new(AtomicUsize::new(0));
         let restart_calls_handle = restart_calls.clone();
-        let restore = crate::context::RestoreContext {
+        let restore = RestoreContext {
             data_dir: PathBuf::from("/tmp/scryer"),
             datastore_config: RestoreDatastoreConfig {
                 engine: RestoreDatastoreEngine::Sqlite,
@@ -616,7 +616,7 @@ mod tests {
     fn finish_restore_apply_result_does_not_schedule_restart_on_error() {
         let restart_calls = Arc::new(AtomicUsize::new(0));
         let restart_calls_handle = restart_calls.clone();
-        let restore = crate::context::RestoreContext {
+        let restore = RestoreContext {
             data_dir: PathBuf::from("/tmp/scryer"),
             datastore_config: RestoreDatastoreConfig {
                 engine: RestoreDatastoreEngine::Sqlite,

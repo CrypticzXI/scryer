@@ -6,6 +6,7 @@ const zh_CN: LocaleDictionary = {
   "label.search": "搜索",
   "label.autoSearch": "自动搜索",
   "label.interactiveSearch": "手动搜索",
+  "label.interactive": "手动",
   "label.searching": "搜索中",
   "help.autoSearchTooltip": "自动搜索并将此项目的最新匹配版本加入队列。",
   "help.interactiveSearchTooltip":

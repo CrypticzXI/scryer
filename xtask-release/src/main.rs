@@ -60,10 +60,16 @@ const SCRYER_CI_CLIPPY_PACKAGES: &[&str] = &[
     "scryer-domain",
     "scryer-infrastructure",
     "scryer-interface",
+    "scryer-interface-acquisition",
     "scryer-interface-core",
+    "scryer-interface-import",
     "scryer-interface-media",
     "scryer-interface-metadata",
+    "scryer-interface-query",
+    "scryer-interface-security",
     "scryer-interface-settings",
+    "scryer-interface-subscription",
+    "scryer-interface-system",
     "scryer-mediainfo",
     "scryer-plugins",
     "scryer-release-parser",
@@ -3450,6 +3456,30 @@ mod tests {
     use super::*;
 
     const TIMED_COMMAND_CHILD_ENV: &str = "SCRYER_XTASK_TIMED_COMMAND_CHILD";
+
+    #[test]
+    fn release_version_bump_targets_include_split_interface_crates() {
+        let ctx = TaskContext::new();
+        let members = scryer_release_member_tomls(&ctx)
+            .expect("resolve release workspace members")
+            .into_iter()
+            .map(|path| package_name(&path).expect("read release package name"))
+            .collect::<BTreeSet<_>>();
+
+        for expected in [
+            "scryer-interface-acquisition",
+            "scryer-interface-import",
+            "scryer-interface-query",
+            "scryer-interface-security",
+            "scryer-interface-subscription",
+            "scryer-interface-system",
+        ] {
+            assert!(
+                members.contains(expected),
+                "release workspace members must include {expected}"
+            );
+        }
+    }
 
     #[test]
     fn timed_command_reports_success_and_failure() {

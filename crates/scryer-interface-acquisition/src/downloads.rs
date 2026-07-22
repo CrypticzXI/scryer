@@ -4,11 +4,11 @@ use scryer_application::{
 };
 use scryer_domain::User;
 
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
-use crate::types::*;
+use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
+use scryer_interface_media::{mappers, types::*};
 
 #[derive(Default)]
-pub(crate) struct DownloadMutations;
+pub struct DownloadMutations;
 
 async fn queue_item_payload_for_action(
     app: &AppUseCase,
@@ -21,7 +21,7 @@ async fn queue_item_payload_for_action(
         .find_download_queue_item(actor, client_id, client_type, download_client_item_id)
         .await
         .map_err(to_gql_error)?;
-    Ok(item.map(crate::mappers::from_download_queue_item))
+    Ok(item.map(mappers::from_download_queue_item))
 }
 
 struct DownloadQueueActionParts {
@@ -61,7 +61,7 @@ pub(crate) fn queue_download_conflict_payload(
         source_kind: conflict
             .source_kind
             .map(DownloadSourceKindValue::from_application),
-        scope: crate::mappers::from_submission_scope(conflict.scope),
+        scope: mappers::from_submission_scope(conflict.scope),
         state: conflict.state.map(DownloadQueueStateValue::from_domain),
         replaceable: conflict.replaceable,
     }

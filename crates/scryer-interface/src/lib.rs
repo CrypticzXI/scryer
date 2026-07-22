@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! GraphQL API module boundaries.
 //!
 //! The monolithic `lib.rs` implementation was split into focused modules to align
@@ -6,12 +8,12 @@
 
 pub mod context;
 pub mod mutation;
-pub mod query;
-pub mod subscription;
 pub mod utils;
 
 pub use scryer_interface_core::loaders::RequestLoaders;
 pub use scryer_interface_media::{mappers, types};
+pub use scryer_interface_query as query;
+pub use scryer_interface_subscription as subscription;
 
 pub use context::{
     ApiContext, ApiSchema, LogBuffer, RestoreContext, RestoreRestartHandle, build_schema,

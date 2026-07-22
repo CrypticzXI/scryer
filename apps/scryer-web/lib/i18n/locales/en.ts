@@ -3136,6 +3136,15 @@ const en: LocaleDictionary = {
   "setup.remapScryerHostPath": "Path on Scryer host",
   "setup.remapResetToSource": "Reset to source",
   "setup.remapSave": "Save remap",
+  "setup.mappedPathValidationChecking":
+    "Checking that Scryer can access every mapped source path…",
+  "setup.invalidMappedPathTitle":
+    "Scryer can’t access this mapped source path",
+  "setup.invalidMappedPathsTitle":
+    "Scryer can’t access {{count}} mapped source paths",
+  "setup.invalidMappedPathsHelp":
+    "These roots are assigned, but their paths are not visible to Scryer. Remap each one to the equivalent folder on the Scryer host before continuing.",
+  "setup.remapInvalidRootAria": "Remap {{name}} from {{path}}",
   "setup.noPath": "(no path)",
   // Quality & persona
   "setup.library": "Library",

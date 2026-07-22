@@ -446,9 +446,9 @@ struct ImportFileOptions {
     force_transient_copy_failures: u8,
     #[cfg(test)]
     force_non_transient_copy_failure: bool,
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     force_foreign_source_uid: bool,
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     force_destination_uid_mismatch: bool,
 }
 
@@ -512,22 +512,22 @@ fn force_copy_attempt_error(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn force_foreign_source_uid(options: &ImportFileOptions) -> bool {
     options.force_foreign_source_uid
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), unix))]
 fn force_foreign_source_uid(_: &ImportFileOptions) -> bool {
     false
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn force_destination_uid_mismatch(options: &ImportFileOptions) -> bool {
     options.force_destination_uid_mismatch
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), unix))]
 fn force_destination_uid_mismatch(_: &ImportFileOptions) -> bool {
     false
 }

@@ -6,6 +6,7 @@ const it: LocaleDictionary = {
   "label.search": "Ricerca",
   "label.autoSearch": "Ricerca automatica",
   "label.interactiveSearch": "Ricerca interattiva",
+  "label.interactive": "Interattiva",
   "label.searching": "Ricerca in corso",
   "help.autoSearchTooltip":
     "Cerca automaticamente e accoda l'ultima release corrispondente per questo elemento.",

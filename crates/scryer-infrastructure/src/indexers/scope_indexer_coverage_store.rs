@@ -40,7 +40,7 @@ impl ScopeIndexerCoverageRepository for ScopeIndexerCoverageStore {
              VALUES ({}, {}, {}, {}, {})
              ON CONFLICT (scope_key, facet, indexer_id)
              DO UPDATE SET fingerprint = excluded.fingerprint, searched_at = excluded.searched_at",
-            &[
+            vec![
                 SqlArg::Text(scope_key.to_string()),
                 SqlArg::Text(facet.to_string()),
                 SqlArg::Text(indexer_id.to_string()),

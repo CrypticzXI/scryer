@@ -452,13 +452,18 @@ mod tests {
     /// A guest demanding 100 pages (6.4 MiB) of initial memory — for the cap.
     const BIG_MEM_WAT: &str = r#"(module (memory (export "memory") 100))"#;
 
+    fn module_from_wat(engine: &Engine, wat: &str, context: &str) -> Module {
+        let wasm = wat::parse_str(wat).unwrap_or_else(|error| panic!("{context}: {error}"));
+        Module::new(engine, wasm).unwrap_or_else(|error| panic!("{context}: {error}"))
+    }
+
     /// RFC §13.2 PROTOCOL GATE: request-on-stdin / response-on-stdout capture
     /// under wasmtime-wasi p1 with a `Store<HostCtx>`. If this fails, the host
     /// (and the PDK) must fall back to control files (RFC §7.2.5).
     #[test]
     fn stdin_stdout_round_trips_under_wasi_p1() {
         let engine = Engine::default();
-        let module = Module::new(&engine, ECHO_WAT).expect("compile echo guest");
+        let module = module_from_wat(&engine, ECHO_WAT, "compile echo guest");
         let mut linker: Linker<HostCtx> = Linker::new(&engine);
         wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi)
             .unwrap();
@@ -496,7 +501,7 @@ mod tests {
     #[test]
     fn spinning_guest_hits_epoch_deadline() {
         let engine = engine::shared_engine();
-        let module = Module::new(engine, SPIN_WAT).expect("compile spin guest");
+        let module = module_from_wat(engine, SPIN_WAT, "compile spin guest");
         let linker: Linker<()> = Linker::new(engine);
         let mut store = Store::new(engine, ());
         // One tick: the ~100ms background ticker advances the epoch and fires.
@@ -564,7 +569,7 @@ mod tests {
     #[test]
     fn oversized_guest_is_denied_by_memory_cap() {
         let engine = Engine::default();
-        let module = Module::new(&engine, BIG_MEM_WAT).expect("compile big-mem guest");
+        let module = module_from_wat(&engine, BIG_MEM_WAT, "compile big-mem guest");
         let mut store = Store::new(&engine, HostLimits::new(Some(1024 * 1024)));
         store.limiter(|limits: &mut HostLimits| limits);
         let linker: Linker<HostLimits> = Linker::new(&engine);

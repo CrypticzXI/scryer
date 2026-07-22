@@ -1,0 +1,16 @@
+[package]
+name = "scryer-interface-subscription"
+version = "0.17.0"
+edition.workspace = true
+
+[dependencies]
+scryer-application = { path = "../scryer-application" }
+scryer-domain = { path = "../scryer-domain" }
+scryer-interface-core = { path = "../scryer-interface-core" }
+scryer-interface-media = { path = "../scryer-interface-media" }
+async-graphql = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }

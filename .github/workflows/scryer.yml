@@ -138,11 +138,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-clippy-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-rust-clippy-${{ github.run_id }}
+          key: gha-sccache-v3-rust-check-linux-x86_64-musl-${{ steps.rust-clippy-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-rust-clippy-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-clippy-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-clippy-sccache-metadata.outputs.version_line }}-
-            gha-sccache-v2-rust-check-linux-x86_64-musl-
+            gha-sccache-v3-rust-check-linux-x86_64-musl-${{ steps.rust-clippy-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-
+            gha-sccache-v3-rust-check-linux-x86_64-musl-${{ steps.rust-clippy-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v3-rust-check-linux-x86_64-musl-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -165,6 +165,20 @@ jobs:
           df -h | tee rust-clippy-disk-start.txt
           du -sh target "$CARGO_HOME" "$SCCACHE_DIR" 2>/dev/null | tee -a rust-clippy-disk-start.txt || true
 
+      - name: Verify Wasmtime runtime feature surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo tree -p scryer-plugins -e features --locked | tee wasmtime-feature-tree.txt
+          if ! grep -Fq 'wasmtime feature "threads"' wasmtime-feature-tree.txt; then
+            echo "required Wasmtime threads feature is not enabled" >&2
+            exit 1
+          fi
+          if grep -Eq 'wasmtime feature "(gc|gc-null|wat)"' wasmtime-feature-tree.txt; then
+            echo "forbidden Wasmtime runtime feature was enabled" >&2
+            exit 1
+          fi
+
       - name: Run clippy for production binary packages
         shell: bash
         run: |
@@ -180,10 +194,16 @@ jobs:
             -p scryer-domain \
             -p scryer-infrastructure \
             -p scryer-interface \
+            -p scryer-interface-acquisition \
             -p scryer-interface-core \
+            -p scryer-interface-import \
             -p scryer-interface-media \
             -p scryer-interface-metadata \
+            -p scryer-interface-query \
+            -p scryer-interface-security \
             -p scryer-interface-settings \
+            -p scryer-interface-subscription \
+            -p scryer-interface-system \
             -p scryer-mediainfo \
             -p scryer-plugins \
             -p scryer-release-parser \
@@ -219,11 +239,12 @@ jobs:
             rust-clippy-disk-start.txt
             rust-clippy-disk-end.txt
             rust-clippy-sccache-stats.txt
+            wasmtime-feature-tree.txt
           if-no-files-found: error
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.rust-clippy-sccache-restore.outcome == 'success'
+        if: always() && (env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && steps.rust-clippy-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.cache/sccache
@@ -284,11 +305,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-nextest-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-rust-nextest-${{ github.run_id }}
+          key: gha-sccache-v3-rust-check-linux-x86_64-musl-${{ steps.rust-nextest-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-rust-nextest-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-nextest-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'apps/scryer-web/package-lock.json') }}-
-            gha-sccache-v2-rust-check-linux-x86_64-musl-${{ steps.rust-nextest-sccache-metadata.outputs.version_line }}-
-            gha-sccache-v2-rust-check-linux-x86_64-musl-
+            gha-sccache-v3-rust-check-linux-x86_64-musl-${{ steps.rust-nextest-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-
+            gha-sccache-v3-rust-check-linux-x86_64-musl-${{ steps.rust-nextest-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v3-rust-check-linux-x86_64-musl-
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -363,7 +384,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.rust-nextest-sccache-restore.outcome == 'success'
+        if: always() && (env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && steps.rust-nextest-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.cache/sccache
@@ -393,13 +414,18 @@ jobs:
       CARGO_HOME: /home/runner/.cargo
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
-      RUSTC_WRAPPER: sccache
-      SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
-      SCCACHE_CACHE_SIZE: 10G
-      SCCACHE_DIR: /home/runner/.cache/sccache
-      SCCACHE_IDLE_TIMEOUT: "0"
+      COLD_TARGET_NAME: scryer-launcher-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure build target
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            echo "CARGO_TARGET_DIR=${GITHUB_WORKSPACE}/target" >> "$GITHUB_ENV"
+          else
+            echo "CARGO_TARGET_DIR=${RUNNER_TEMP}/${COLD_TARGET_NAME}" >> "$GITHUB_ENV"
+          fi
 
       - uses: dtolnay/rust-toolchain@v1
         with:
@@ -412,6 +438,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Resolve sccache lane metadata
+        if: ${{ github.event_name == 'pull_request' }}
         id: launcher-sccache-metadata
         shell: bash
         run: |
@@ -431,44 +458,95 @@ jobs:
           echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
 
       - name: Restore sccache directory
+        if: ${{ github.event_name == 'pull_request' }}
         id: launcher-sccache-restore
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.launcher-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
+          key: gha-sccache-v3-${{ matrix.sccache_lane }}-release-launcher-${{ steps.launcher-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.launcher-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-${{ steps.launcher-sccache-metadata.outputs.version_line }}-
-            gha-sccache-v2-${{ matrix.sccache_lane }}-
+            gha-sccache-v3-${{ matrix.sccache_lane }}-release-launcher-${{ steps.launcher-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-
+            gha-sccache-v3-${{ matrix.sccache_lane }}-release-launcher-${{ steps.launcher-sccache-metadata.outputs.version_line }}-
+            gha-sccache-v3-${{ matrix.sccache_lane }}-release-launcher-
 
       - name: Install sccache
+        if: ${{ github.event_name == 'pull_request' }}
         uses: mozilla-actions/sccache-action@v0.0.10
 
+      - name: Configure sccache
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}"
+            echo "SCCACHE_CACHE_SIZE=10G"
+            echo "SCCACHE_DIR=/home/runner/.cache/sccache"
+            echo "SCCACHE_IDLE_TIMEOUT=0"
+          } >> "$GITHUB_ENV"
+
       - name: Prime sccache server
+        if: ${{ github.event_name == 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
           sccache --start-server || true
           sccache --zero-stats || true
 
-      - name: Run launcher tests
+      - name: Run launcher tests (PR fast feedback; tags use workspace nextest)
+        if: ${{ github.event_name == 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
           cargo test -p scryer-launcher --locked 2>&1 | tee "${{ matrix.artifact_name }}-test.log"
 
-      - name: Build launcher
+      - name: Prepare cold release target
+        if: ${{ github.event_name != 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
-          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
-          cargo build -p scryer-launcher --profile release-launcher --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+          if [ -e "$CARGO_TARGET_DIR" ]; then
+            echo "cold release target already exists: $CARGO_TARGET_DIR" >&2
+            exit 1
+          fi
+          mkdir -p "$CARGO_TARGET_DIR"
+          test -z "$(ls -A "$CARGO_TARGET_DIR")"
+          echo "cold release target contents at start:"
+          ls -la "$CARGO_TARGET_DIR"
+
+      - name: Build launcher
+        id: launcher-cargo-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold -D warnings"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            cargo build --timings -p scryer-launcher --profile release-launcher --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+          else
+            python3 .github/scripts/build_heartbeat.py \
+              --output "${{ matrix.artifact_name }}-heartbeat.log" \
+              --build-log "${{ matrix.artifact_name }}-build.log" \
+              --status-file "${{ matrix.artifact_name }}-build-status.json" \
+              --timeout-seconds 2100 \
+              -- cargo build --timings -p scryer-launcher --profile release-launcher --locked --target "${{ matrix.target }}"
+          fi
+
+      - name: Validate release build diagnostics
+        if: ${{ always() && github.event_name != 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "${{ matrix.artifact_name }}-heartbeat.log"
+          test -s "${{ matrix.artifact_name }}-build-status.json"
+          if [ "${{ steps.launcher-cargo-build.outcome }}" = "success" ]; then
+            compgen -G "$CARGO_TARGET_DIR/cargo-timings/*" >/dev/null
+          fi
 
       - name: Package launcher tarball
-        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C target/${{ matrix.target }}/release-launcher scryer-launcher
+        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C "$CARGO_TARGET_DIR/${{ matrix.target }}/release-launcher" scryer-launcher
 
       - name: Show sccache stats
-        if: always()
+        if: ${{ always() && github.event_name == 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -479,6 +557,7 @@ jobs:
           fi
 
       - name: Upload launcher artifacts
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}-${{ github.run_id }}
@@ -487,11 +566,14 @@ jobs:
             ${{ matrix.artifact_name }}-test.log
             ${{ matrix.artifact_name }}-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
+            ${{ matrix.artifact_name }}-heartbeat.log
+            ${{ matrix.artifact_name }}-build-status.json
+            ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: error
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' && steps.launcher-sccache-restore.outcome == 'success'
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.launcher-sccache-restore.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: /home/runner/.cache/sccache
@@ -511,9 +593,22 @@ jobs:
             build_lane: portable
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
-            sccache_lane: scryer-linux-x86_64-musl
-            sccache_writer_id: scryer-linux-x86_64-portable
+            sccache_lane: pr-linux-x86_64-wgpu
             artifact_name: scryer-linux-x86_64-portable
+            archive_name: scryer-linux-x86_64-portable.tar.gz
+            cargo_feature_args: --features par2-wgpu
+            release_profile: release
+            install_nasm: true
+            extra_rustflags: ""
+          - arch: x86_64
+            variant: cpu
+            build_lane: portable
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            sccache_lane: pr-linux-x86_64-cpu
+            artifact_name: scryer-linux-x86_64-docker-cpu
+            archive_name: docker-scryer-linux-x86_64-cpu.tar.gz
+            cargo_feature_args: --no-default-features
             release_profile: release
             install_nasm: true
             extra_rustflags: ""
@@ -522,9 +617,22 @@ jobs:
             build_lane: portable
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            sccache_lane: scryer-linux-arm64-musl
-            sccache_writer_id: scryer-linux-arm64-portable
+            sccache_lane: pr-linux-arm64-wgpu
             artifact_name: scryer-linux-arm64-portable
+            archive_name: scryer-linux-arm64-portable.tar.gz
+            cargo_feature_args: --features par2-wgpu
+            release_profile: release
+            install_nasm: false
+            extra_rustflags: ""
+          - arch: arm64
+            variant: cpu
+            build_lane: portable
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            sccache_lane: pr-linux-arm64-cpu
+            artifact_name: scryer-linux-arm64-docker-cpu
+            archive_name: docker-scryer-linux-arm64-cpu.tar.gz
+            cargo_feature_args: --no-default-features
             release_profile: release
             install_nasm: false
             extra_rustflags: ""
@@ -532,15 +640,19 @@ jobs:
       CARGO_HOME: /home/runner/.cargo
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
-      RUSTC_WRAPPER: sccache
-      SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
-      SCCACHE_CACHE_SIZE: 10G
-      SCCACHE_DIR: /home/runner/.cache/sccache
-      SCCACHE_IDLE_TIMEOUT: "0"
+      COLD_TARGET_NAME: scryer-linux-${{ matrix.arch }}-${{ matrix.variant }}
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
-      SCRYER_SCCACHE_BUILD_FLAVOR: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure build target
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            echo "CARGO_TARGET_DIR=${GITHUB_WORKSPACE}/target" >> "$GITHUB_ENV"
+          else
+            echo "CARGO_TARGET_DIR=${RUNNER_TEMP}/${COLD_TARGET_NAME}" >> "$GITHUB_ENV"
+          fi
 
       - uses: dtolnay/rust-toolchain@v1
         with:
@@ -560,17 +672,31 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Restore sccache directory
+        if: ${{ github.event_name == 'pull_request' }}
         id: linux-sccache-restore
         uses: actions/cache/restore@v4
         with:
           path: /home/runner/.cache/sccache
-          key: gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ github.run_id }}
+          key: gha-sccache-v5-${{ matrix.sccache_lane }}-rc-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
-            gha-sccache-v4-${{ matrix.sccache_lane }}-
+            gha-sccache-v5-${{ matrix.sccache_lane }}-rc-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-
+            gha-sccache-v5-${{ matrix.sccache_lane }}-rc-
 
       - name: Install sccache
+        if: ${{ github.event_name == 'pull_request' }}
         uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Configure sccache
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}"
+            echo "SCCACHE_CACHE_SIZE=10G"
+            echo "SCCACHE_DIR=/home/runner/.cache/sccache"
+            echo "SCCACHE_IDLE_TIMEOUT=0"
+          } >> "$GITHUB_ENV"
 
       - name: Download embedded web artifact
         uses: actions/download-artifact@v8
@@ -579,11 +705,27 @@ jobs:
           path: scryer-web-out
 
       - name: Prime sccache server
+        if: ${{ github.event_name == 'pull_request' }}
         run: |
           sccache --start-server || true
           sccache --zero-stats || true
 
-      - name: Build scryer with sccache
+      - name: Prepare cold release target
+        if: ${{ github.event_name != 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e "$CARGO_TARGET_DIR" ]; then
+            echo "cold release target already exists: $CARGO_TARGET_DIR" >&2
+            exit 1
+          fi
+          mkdir -p "$CARGO_TARGET_DIR"
+          test -z "$(ls -A "$CARGO_TARGET_DIR")"
+          echo "cold release target contents at start:"
+          ls -la "$CARGO_TARGET_DIR"
+
+      - name: Build scryer
+        id: linux-cargo-build
         shell: bash
         run: |
           set -euo pipefail
@@ -592,23 +734,42 @@ jobs:
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
           target_cc_var="CC_$(printf '%s' "${{ matrix.target }}" | tr '-' '_')"
-          export "${target_cc_var}=sccache musl-gcc"
-          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            export "${target_cc_var}=sccache musl-gcc"
+          else
+            export "${target_cc_var}=musl-gcc"
+          fi
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -C link-arg=-fuse-ld=mold -D warnings"
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" --no-default-features 2>&1 | tee "${{ matrix.artifact_name }}-docker-build.log"
-          mkdir -p docker-cpu
-          install -m 0755 "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}/scryer" docker-cpu/scryer
-          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" --features par2-wgpu 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" ${{ matrix.cargo_feature_args }} 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+          else
+            python3 .github/scripts/build_heartbeat.py \
+              --output "${{ matrix.artifact_name }}-heartbeat.log" \
+              --build-log "${{ matrix.artifact_name }}-build.log" \
+              --status-file "${{ matrix.artifact_name }}-build-status.json" \
+              --timeout-seconds 3300 \
+              -- cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" ${{ matrix.cargo_feature_args }}
+          fi
+
+      - name: Validate release build diagnostics
+        if: ${{ always() && github.event_name != 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "${{ matrix.artifact_name }}-heartbeat.log"
+          test -s "${{ matrix.artifact_name }}-build-status.json"
+          if [ "${{ steps.linux-cargo-build.outcome }}" = "success" ]; then
+            compgen -G "$CARGO_TARGET_DIR/cargo-timings/*" >/dev/null
+          fi
 
       - name: Package tarball
-        run: |
-          tar -czf ${{ matrix.artifact_name }}.tar.gz -C "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}" scryer
-          tar -czf docker-scryer-linux-${{ matrix.arch }}-cpu.tar.gz -C docker-cpu scryer
+        run: tar -czf ${{ matrix.archive_name }} -C "$CARGO_TARGET_DIR/${{ matrix.target }}/$SCRYER_CARGO_PROFILE" scryer
 
       - name: Show sccache stats
-        if: always()
+        if: ${{ always() && github.event_name == 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -619,15 +780,17 @@ jobs:
           fi
 
       - name: Upload build artifacts
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}-${{ github.run_id }}
           path: |
-            ${{ matrix.artifact_name }}.tar.gz
+            ${{ matrix.archive_name }}
             ${{ matrix.artifact_name }}-build.log
-            ${{ matrix.artifact_name }}-docker-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
-            docker-scryer-linux-${{ matrix.arch }}-cpu.tar.gz
+            ${{ matrix.artifact_name }}-heartbeat.log
+            ${{ matrix.artifact_name }}-build-status.json
+            ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: error
           retention-days: 14
 
@@ -672,15 +835,19 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
-      RUSTC_WRAPPER: sccache
-      SCCACHE_BASEDIRS: /Users/runner/work/scryer/scryer
-      SCCACHE_CACHE_SIZE: 10G
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_IDLE_TIMEOUT: "0"
+      COLD_TARGET_NAME: scryer-macos-${{ matrix.arch }}
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
-      SCRYER_SCCACHE_BUILD_FLAVOR: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure build target
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            echo "CARGO_TARGET_DIR=${GITHUB_WORKSPACE}/target" >> "$GITHUB_ENV"
+          else
+            echo "CARGO_TARGET_DIR=${RUNNER_TEMP}/${COLD_TARGET_NAME}" >> "$GITHUB_ENV"
+          fi
 
       - uses: dtolnay/rust-toolchain@v1
         with:
@@ -688,17 +855,31 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Restore sccache directory
+        if: ${{ github.event_name == 'pull_request' }}
         id: macos-sccache-restore
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.sccache
-          key: gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ github.run_id }}
+          key: gha-sccache-v5-${{ matrix.sccache_lane }}-rc-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
-            gha-sccache-v4-${{ matrix.sccache_lane }}-
+            gha-sccache-v5-${{ matrix.sccache_lane }}-rc-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-
+            gha-sccache-v5-${{ matrix.sccache_lane }}-rc-
 
       - name: Install sccache
+        if: ${{ github.event_name == 'pull_request' }}
         uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Configure sccache
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}"
+            echo "SCCACHE_CACHE_SIZE=10G"
+            echo "SCCACHE_DIR=${GITHUB_WORKSPACE}/.sccache"
+            echo "SCCACHE_IDLE_TIMEOUT=0"
+          } >> "$GITHUB_ENV"
 
       - name: Download embedded web artifact
         uses: actions/download-artifact@v8
@@ -719,13 +900,29 @@ jobs:
           fi
 
       - name: Prime sccache server
+        if: ${{ github.event_name == 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
           sccache --start-server || true
           sccache --zero-stats || true
 
-      - name: Build scryer with sccache
+      - name: Prepare cold release target
+        if: ${{ github.event_name != 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e "$CARGO_TARGET_DIR" ]; then
+            echo "cold release target already exists: $CARGO_TARGET_DIR" >&2
+            exit 1
+          fi
+          mkdir -p "$CARGO_TARGET_DIR"
+          test -z "$(ls -A "$CARGO_TARGET_DIR")"
+          echo "cold release target contents at start:"
+          ls -la "$CARGO_TARGET_DIR"
+
+      - name: Build scryer
+        id: macos-cargo-build
         shell: bash
         run: |
           set -euo pipefail
@@ -733,17 +930,42 @@ jobs:
           export SCRYER_BUILD_LANE="${{ matrix.build_lane }}"
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
-          export CC="sccache clang"
-          export CXX="sccache clang++"
           export CMAKE_C_COMPILER="clang"
           export CMAKE_CXX_COMPILER="clang++"
-          export CMAKE_C_COMPILER_LAUNCHER="sccache"
-          export CMAKE_CXX_COMPILER_LAUNCHER="sccache"
-          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=."
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            export CC="sccache clang"
+            export CXX="sccache clang++"
+            export CMAKE_C_COMPILER_LAUNCHER="sccache"
+            export CMAKE_CXX_COMPILER_LAUNCHER="sccache"
+          else
+            export CC="clang"
+            export CXX="clang++"
+          fi
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -D warnings"
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
-          cargo build -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" --features par2-metal 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" --features par2-metal 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+          else
+            python3 .github/scripts/build_heartbeat.py \
+              --output "${{ matrix.artifact_name }}-heartbeat.log" \
+              --build-log "${{ matrix.artifact_name }}-build.log" \
+              --status-file "${{ matrix.artifact_name }}-build-status.json" \
+              --timeout-seconds 3300 \
+              -- cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" --features par2-metal
+          fi
+
+      - name: Validate release build diagnostics
+        if: ${{ always() && github.event_name != 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "${{ matrix.artifact_name }}-heartbeat.log"
+          test -s "${{ matrix.artifact_name }}-build-status.json"
+          if [ "${{ steps.macos-cargo-build.outcome }}" = "success" ]; then
+            test -n "$(find "${CARGO_TARGET_DIR}/cargo-timings" -type f -print -quit 2>/dev/null)"
+          fi
 
       - name: Codesign binary
         if: ${{ github.event_name != 'pull_request' }}
@@ -764,16 +986,16 @@ jobs:
           security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN"
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
-          codesign --sign "Scryer Media Signing" --identifier media.scryer.app --force "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}/scryer"
-          codesign --verify --verbose "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}/scryer"
+          codesign --sign "Scryer Media Signing" --identifier media.scryer.app --force "$CARGO_TARGET_DIR/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}/scryer"
+          codesign --verify --verbose "$CARGO_TARGET_DIR/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}/scryer"
           rm /tmp/cert.p12
           security delete-keychain "$KEYCHAIN"
 
       - name: Package tarball
-        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C "target/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}" scryer
+        run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C "$CARGO_TARGET_DIR/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}" scryer
 
       - name: Show sccache stats
-        if: always()
+        if: ${{ always() && github.event_name == 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -784,6 +1006,7 @@ jobs:
           fi
 
       - name: Upload build artifacts
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}-${{ github.run_id }}
@@ -791,6 +1014,9 @@ jobs:
             ${{ matrix.artifact_name }}.tar.gz
             ${{ matrix.artifact_name }}-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
+            ${{ matrix.artifact_name }}-heartbeat.log
+            ${{ matrix.artifact_name }}-build-status.json
+            ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: error
           retention-days: 14
 
@@ -835,32 +1061,49 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
-      RUSTC_WRAPPER: sccache
-      SCCACHE_BASEDIRS: ${{ github.workspace }}
-      SCCACHE_CACHE_SIZE: 10G
-      SCCACHE_DIR: ${{ github.workspace }}\.sccache
-      SCCACHE_IDLE_TIMEOUT: "0"
+      COLD_TARGET_NAME: scryer-windows-${{ matrix.arch }}
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
-      SCRYER_SCCACHE_BUILD_FLAVOR: ${{ github.event_name == 'pull_request' && 'rc' || 'release' }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Configure build target
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq "pull_request") {
+            $targetDir = Join-Path $env:GITHUB_WORKSPACE 'target'
+          } else {
+            $targetDir = Join-Path $env:RUNNER_TEMP $env:COLD_TARGET_NAME
+          }
+          "CARGO_TARGET_DIR=$targetDir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ matrix.toolchain }}
 
       - name: Restore sccache directory
+        if: ${{ github.event_name == 'pull_request' }}
         id: windows-sccache-restore
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}\.sccache
-          key: gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-${{ github.run_id }}
+          key: gha-sccache-v5-${{ matrix.sccache_lane }}-rc-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-${{ github.run_id }}
           restore-keys: |
-            gha-sccache-v4-${{ matrix.sccache_lane }}-${{ env.SCRYER_SCCACHE_BUILD_FLAVOR }}-
-            gha-sccache-v4-${{ matrix.sccache_lane }}-
+            gha-sccache-v5-${{ matrix.sccache_lane }}-rc-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-
+            gha-sccache-v5-${{ matrix.sccache_lane }}-rc-
 
       - name: Install sccache
+        if: ${{ github.event_name == 'pull_request' }}
         uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Configure sccache
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: pwsh
+        run: |
+          "RUSTC_WRAPPER=sccache" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "SCCACHE_BASEDIRS=$env:GITHUB_WORKSPACE" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "SCCACHE_CACHE_SIZE=10G" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "SCCACHE_DIR=$env:GITHUB_WORKSPACE\.sccache" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "SCCACHE_IDLE_TIMEOUT=0" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
       - name: Download embedded web artifact
         uses: actions/download-artifact@v8
@@ -886,16 +1129,48 @@ jobs:
 
       - name: Exclude build dir from Windows Defender
         shell: pwsh
-        run: Add-MpPreference -ExclusionPath "${{ github.workspace }}"
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}"
+          Add-MpPreference -ExclusionPath $env:CARGO_TARGET_DIR
 
       - name: Prime sccache server
+        if: ${{ github.event_name == 'pull_request' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           sccache --start-server
           sccache --zero-stats
 
-      - name: Build scryer with sccache
+      - name: Compile Windows-only test targets
+        if: ${{ github.event_name == 'pull_request' && matrix.arch == 'x86_64' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=. -C target-feature=+crt-static -D warnings"
+          if ("${{ matrix.use_lld_link }}" -eq "true") {
+            $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
+          }
+          cargo check --tests --locked --target ${{ matrix.target }} `
+            -p scryer-application `
+            -p scryer-infrastructure
+
+      - name: Prepare cold release target
+        if: ${{ github.event_name != 'pull_request' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Test-Path $env:CARGO_TARGET_DIR) {
+            throw "cold release target already exists: $env:CARGO_TARGET_DIR"
+          }
+          New-Item -ItemType Directory -Path $env:CARGO_TARGET_DIR | Out-Null
+          if (Get-ChildItem -Force $env:CARGO_TARGET_DIR) {
+            throw "cold release target is not empty: $env:CARGO_TARGET_DIR"
+          }
+          Write-Host "cold release target contents at start:"
+          Get-ChildItem -Force $env:CARGO_TARGET_DIR | Format-Table
+
+      - name: Build scryer
+        id: windows-cargo-build
         shell: pwsh
         env:
           USE_CLANG_CL: ${{ matrix.use_clang_cl }}
@@ -905,7 +1180,7 @@ jobs:
           $env:SCRYER_EMBED_UI_DIR = Join-Path $env:GITHUB_WORKSPACE 'scryer-web-out'
           $env:SCRYER_SMG_REGISTRATION_SECRET = "${{ secrets.SMG_REGISTRATION_SECRET }}"
           $env:SCRYER_SMG_GRAPHQL_URL = "https://smg.scryer.media/graphql"
-          $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=. -C target-feature=+crt-static"
+          $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=. -C target-feature=+crt-static -D warnings"
           if ($env:USE_CLANG_CL -eq "true") {
             $env:CC = "clang-cl"
             $env:CXX = "clang-cl"
@@ -913,16 +1188,45 @@ jobs:
           if ($env:USE_LLD_LINK -eq "true") {
             $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
           }
-          cargo build -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} --features par2-wgpu 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+          if ($env:GITHUB_EVENT_NAME -eq "pull_request") {
+            cargo build --timings -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} --features par2-wgpu 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
+            $cargoExitCode = $LASTEXITCODE
+          } else {
+            & python .github/scripts/build_heartbeat.py `
+              --output "${{ matrix.artifact_name }}-heartbeat.log" `
+              --build-log "${{ matrix.artifact_name }}-build.log" `
+              --status-file "${{ matrix.artifact_name }}-build-status.json" `
+              --timeout-seconds 3300 `
+              -- cargo build --timings -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} --features par2-wgpu
+            $cargoExitCode = $LASTEXITCODE
+          }
+          if ($cargoExitCode -ne 0) {
+            exit $cargoExitCode
+          }
+
+      - name: Validate release build diagnostics
+        if: ${{ always() && github.event_name != 'pull_request' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not (Test-Path "${{ matrix.artifact_name }}-heartbeat.log" -PathType Leaf)) {
+            throw "release heartbeat log was not created"
+          }
+          if (-not (Test-Path "${{ matrix.artifact_name }}-build-status.json" -PathType Leaf)) {
+            throw "release build status was not created"
+          }
+          if ("${{ steps.windows-cargo-build.outcome }}" -eq "success") {
+            $timing = Get-ChildItem -Path (Join-Path $env:CARGO_TARGET_DIR "cargo-timings") -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $timing) {
+              throw "successful release build did not produce Cargo timing output"
+            }
           }
 
       - name: Verify embedded Windows manifest
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $exe = "target\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer.exe"
+          $exe = "$env:CARGO_TARGET_DIR\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer.exe"
           $mt = (Get-Command mt.exe -ErrorAction SilentlyContinue).Source
           if (-not $mt) {
             $mt = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter mt.exe |
@@ -1003,10 +1307,10 @@ jobs:
 
       - name: Package zip
         shell: pwsh
-        run: Compress-Archive -Path "target\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer.exe",README.txt -DestinationPath "${{ matrix.artifact_name }}.zip"
+        run: Compress-Archive -Path "$env:CARGO_TARGET_DIR\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer.exe",README.txt -DestinationPath "${{ matrix.artifact_name }}.zip"
 
       - name: Show sccache stats
-        if: always()
+        if: ${{ always() && github.event_name == 'pull_request' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -1017,6 +1321,7 @@ jobs:
           }
 
       - name: Upload build artifacts
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}-${{ github.run_id }}
@@ -1024,6 +1329,9 @@ jobs:
             ${{ matrix.artifact_name }}.zip
             ${{ matrix.artifact_name }}-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
+            ${{ matrix.artifact_name }}-heartbeat.log
+            ${{ matrix.artifact_name }}-build-status.json
+            ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: error
           retention-days: 14
 
@@ -1069,6 +1377,18 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: scryer-linux-arm64-portable-${{ github.run_id }}
+          path: artifacts
+
+      - name: Download linux amd64 CPU artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: scryer-linux-x86_64-docker-cpu-${{ github.run_id }}
+          path: artifacts
+
+      - name: Download linux arm64 CPU artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: scryer-linux-arm64-docker-cpu-${{ github.run_id }}
           path: artifacts
 
       - name: Download launcher amd64 artifact
@@ -1147,6 +1467,18 @@ jobs:
           name: scryer-linux-arm64-portable-${{ github.run_id }}
           path: artifacts
 
+      - name: Download linux amd64 CPU artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: scryer-linux-x86_64-docker-cpu-${{ github.run_id }}
+          path: artifacts
+
+      - name: Download linux arm64 CPU artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: scryer-linux-arm64-docker-cpu-${{ github.run_id }}
+          path: artifacts
+
       - name: Download launcher amd64 artifact
         uses: actions/download-artifact@v8
         with:
@@ -1222,6 +1554,18 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: scryer-linux-arm64-portable-${{ github.run_id }}
+          path: artifacts
+
+      - name: Download linux amd64 CPU artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: scryer-linux-x86_64-docker-cpu-${{ github.run_id }}
+          path: artifacts
+
+      - name: Download linux arm64 CPU artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: scryer-linux-arm64-docker-cpu-${{ github.run_id }}
           path: artifacts
 
       - name: Download launcher amd64 artifact

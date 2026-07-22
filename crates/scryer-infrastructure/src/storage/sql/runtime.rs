@@ -36,6 +36,10 @@ pub enum StoreDatastore {
 }
 
 impl StoreDatastore {
+    pub(crate) fn sqlite(pool: SqlitePool, writer_gate: Arc<Mutex<()>>) -> Self {
+        Self::Sqlite { pool, writer_gate }
+    }
+
     /// Read-only executor. On sqlite it bypasses the writer gate and busy
     /// retries, so writes must go through `SqlRuntime::execute_write`,
     /// `run_in_transaction`, or `run_serialized_sqlite` instead.
@@ -150,14 +154,16 @@ impl SqlRuntime {
         datastore: &StoreDatastore,
         op_name: &'static str,
         template: &str,
-        args: &[SqlArg],
+        args: Vec<SqlArg>,
     ) -> AppResult<u64> {
-        let template = template.to_string();
-        let args = args.to_vec();
+        let template: Arc<str> = Arc::from(template);
+        let args: Arc<[SqlArg]> = Arc::from(args);
         Self::run_in_transaction(datastore, op_name, move |tx| {
-            let template = template.clone();
-            let args = args.clone();
-            Box::pin(async move { Self::execute(SqlExec::Tx(tx), &template, &args).await })
+            let template = Arc::clone(&template);
+            let args = Arc::clone(&args);
+            Box::pin(async move {
+                Self::execute(SqlExec::Tx(tx), template.as_ref(), args.as_ref()).await
+            })
         })
         .await
     }
@@ -627,9 +633,9 @@ fn render_sql(template: &str, dialect: PlaceholderDialect, bind_count: usize) ->
 /// Per-statement bind cap for [`SqlRuntime::execute_batch_insert`]. Postgres
 /// refuses more than 65535 bind parameters in one statement (the u16 protocol
 /// wire limit) and sqlite caps variables at `SQLITE_MAX_VARIABLE_NUMBER`
-/// (historically 999, 32766 in newer builds); 1000 stays comfortably under both
+/// (historically 999, 32766 in newer builds); 999 stays at or below both
 /// while still collapsing hundreds of single-row inserts into one round trip.
-const BATCH_INSERT_MAX_BINDS: usize = 1000;
+const BATCH_INSERT_MAX_BINDS: usize = 999;
 
 /// Rows per batched statement: as many `row_width`-wide rows as fit under
 /// [`BATCH_INSERT_MAX_BINDS`], but never fewer than one — a single row wider
@@ -1019,7 +1025,7 @@ mod tests {
     #[test]
     fn batch_rows_per_chunk_divides_by_width_and_clamps() {
         assert_eq!(batch_rows_per_chunk(1), BATCH_INSERT_MAX_BINDS);
-        assert_eq!(batch_rows_per_chunk(2), 500);
+        assert_eq!(batch_rows_per_chunk(2), 499);
         assert_eq!(batch_rows_per_chunk(3), 333);
         // A row exactly as wide as the cap still yields one row per statement.
         assert_eq!(batch_rows_per_chunk(BATCH_INSERT_MAX_BINDS), 1);
@@ -1030,11 +1036,11 @@ mod tests {
     #[test]
     fn batch_chunk_count_boundaries() {
         let per = batch_rows_per_chunk(2);
-        assert_eq!(per, 500);
+        assert_eq!(per, 499);
         // rows * width exactly at the cap => a single chunk.
-        assert_eq!(500usize.div_ceil(per), 1);
+        assert_eq!(499usize.div_ceil(per), 1);
         // one row over the cap => two chunks.
-        assert_eq!(501usize.div_ceil(per), 2);
+        assert_eq!(500usize.div_ceil(per), 2);
         // the round-trip test's 700-row / 2-col shape => two chunks.
         assert_eq!(700usize.div_ceil(per), 2);
         // row_width > cap clamps to one row per chunk => one chunk per row.
@@ -1120,7 +1126,7 @@ mod tests {
             .await
             .expect("create scratch table");
 
-        // 700 rows x 2 cols, cap 1000 => 500 rows/chunk => exactly two chunks.
+        // 700 rows x 2 cols, cap 999 => 499 rows/chunk => exactly two chunks.
         let row_count = 700usize;
         assert_eq!(
             row_count.div_ceil(batch_rows_per_chunk(2)),

@@ -32,6 +32,7 @@ import { FolderBrowserDialog } from "./folder-browser-dialog";
 import { ImportAssignSheet } from "./import/import-assign-sheet";
 import { ImportRemapDialog } from "./import/import-remap-dialog";
 import { ImportRootChip } from "./import/import-root-chip";
+import { ImportRootValidationNotice } from "./import/import-root-validation-notice";
 import {
   facetLabelKey,
   facetPillStyle,
@@ -85,6 +86,7 @@ export default function SetupImportLibrariesView({
     removeLibrary,
     setRootRemap,
     invalidAssignedRootIds,
+    assignedRootPathValidationLoading,
     rootById,
   } = wizard;
 
@@ -92,6 +94,24 @@ export default function SetupImportLibrariesView({
   const invalidAssignedRootIdSet = useMemo(
     () => new Set(invalidAssignedRootIds),
     [invalidAssignedRootIds],
+  );
+  const invalidAssignedRoots = useMemo(
+    () =>
+      invalidAssignedRootIds.flatMap((rootId) => {
+        const root = rootById(rootId);
+        if (!root) return [];
+        const libraryName =
+          libraries.find((library) => library.id === assign[root.id])?.name ??
+          root.instanceLabel;
+        return [
+          {
+            id: root.id,
+            name: libraryName,
+            path: effectiveRootPath(root),
+          },
+        ];
+      }),
+    [assign, invalidAssignedRootIds, libraries, rootById],
   );
 
   // ── Local UI state ─────────────────────────────────────────────────────────
@@ -688,6 +708,13 @@ export default function SetupImportLibrariesView({
           />
         )}
       </div>
+
+      <ImportRootValidationNotice
+        checking={assignedRootPathValidationLoading}
+        invalidRoots={invalidAssignedRoots}
+        onRemap={setRemapRootId}
+        t={t}
+      />
 
       {/* ── Remap dialog ── */}
       <ImportRemapDialog

@@ -32,15 +32,15 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::context::{
+use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, require_app_permission, require_config_app_permission,
     to_gql_error,
 };
-use crate::mappers::from_external_import_monitor_warmup_progress;
-use crate::types::*;
+use scryer_interface_media::mappers::from_external_import_monitor_warmup_progress;
+use scryer_interface_media::types::*;
 
 #[derive(Default)]
-pub(crate) struct ExternalImportMutations;
+pub struct ExternalImportMutations;
 
 const SONARR_EPISODE_FETCH_CONCURRENCY_PER_INSTANCE: usize = 16;
 const SONARR_ACTIVE_EPISODE_INSTANCE_CONCURRENCY: usize = 2;

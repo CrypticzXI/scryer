@@ -303,9 +303,14 @@ mod tests {
           (memory (export "memory") 1))
     "#;
 
+    fn module_from_wat(engine: &Engine, wat: &str, context: &str) -> Module {
+        let wasm = wat::parse_str(wat).unwrap_or_else(|error| panic!("{context}: {error}"));
+        Module::new(engine, wasm).unwrap_or_else(|error| panic!("{context}: {error}"))
+    }
+
     fn crypto_guest() -> (Store<()>, wasmtime::Instance) {
         let engine = Engine::default();
-        let module = Module::new(&engine, CRYPTO_GUEST_WAT).expect("compile crypto guest");
+        let module = module_from_wat(&engine, CRYPTO_GUEST_WAT, "compile crypto guest");
         let mut linker: Linker<()> = Linker::new(&engine);
         add_to_linker(&mut linker).expect("register crypto host fns");
         let mut store = Store::new(&engine, ());
@@ -318,7 +323,7 @@ mod tests {
     #[test]
     fn legacy_crypto_import_aliases_still_instantiate() {
         let engine = Engine::default();
-        let module = Module::new(&engine, LEGACY_CRYPTO_GUEST_WAT).expect("compile legacy guest");
+        let module = module_from_wat(&engine, LEGACY_CRYPTO_GUEST_WAT, "compile legacy guest");
         let mut linker: Linker<()> = Linker::new(&engine);
         add_to_linker(&mut linker).expect("register crypto host fns");
         let mut store = Store::new(&engine, ());
@@ -461,7 +466,7 @@ mod tests {
     #[test]
     fn host_reports_missing_memory_export() {
         let engine = Engine::default();
-        let module = Module::new(&engine, NO_MEMORY_GUEST_WAT).expect("compile no-memory guest");
+        let module = module_from_wat(&engine, NO_MEMORY_GUEST_WAT, "compile no-memory guest");
         let mut linker: Linker<()> = Linker::new(&engine);
         add_to_linker(&mut linker).unwrap();
         let mut store = Store::new(&engine, ());

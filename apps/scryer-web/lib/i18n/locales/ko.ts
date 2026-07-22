@@ -6,6 +6,7 @@ const ko: LocaleDictionary = {
   "label.search": "검색",
   "label.autoSearch": "자동 검색",
   "label.interactiveSearch": "수동 검색",
+  "label.interactive": "수동",
   "label.searching": "검색 중",
   "help.autoSearchTooltip":
     "이 항목에 대해 최신 릴리스를 자동으로 검색하고 대기열에 추가합니다.",

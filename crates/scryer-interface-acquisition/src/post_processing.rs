@@ -4,11 +4,11 @@ use scryer_application::AppError;
 use scryer_domain::{AppPermission, ExecutionMode, Id, PostProcessingScript, ScriptType};
 use std::path::Path;
 
-use crate::context::{app_from_ctx, require_config_app_permission, to_gql_error};
-use crate::types::*;
+use scryer_interface_core::{app_from_ctx, require_config_app_permission, to_gql_error};
+use scryer_interface_media::{mappers, types::*};
 
 #[derive(Default)]
-pub(crate) struct PostProcessingMutations;
+pub struct PostProcessingMutations;
 
 fn parse_script_type(value: &str) -> GqlResult<ScriptType> {
     ScriptType::parse(value).ok_or_else(|| {
@@ -88,7 +88,7 @@ impl PostProcessingMutations {
             .await
             .map_err(to_gql_error)?;
 
-        Ok(crate::mappers::from_pp_script(created))
+        Ok(mappers::from_pp_script(created))
     }
 
     async fn update_post_processing_script(
@@ -167,7 +167,7 @@ impl PostProcessingMutations {
             .await
             .map_err(to_gql_error)?;
 
-        Ok(crate::mappers::from_pp_script(updated))
+        Ok(mappers::from_pp_script(updated))
     }
 
     async fn delete_post_processing_script(
@@ -211,6 +211,6 @@ impl PostProcessingMutations {
             .await
             .map_err(to_gql_error)?;
 
-        Ok(crate::mappers::from_pp_script(updated))
+        Ok(mappers::from_pp_script(updated))
     }
 }

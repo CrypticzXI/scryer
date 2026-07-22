@@ -31,8 +31,9 @@ libc = "0.2"
 wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
 
+[build-dependencies]
+wat = "1"
+
 [dev-dependencies]
-# WAT guests are authored inline: `wasmtime::Module::new` compiles text directly
-# (wasmtime's default `wat` feature), and `wat::parse_str` yields raw wasm bytes
-# for tests that feed the descriptor-shape classifier.
+# Tests keep readable inline WAT and explicitly translate it to bytes.
 wat = "1"

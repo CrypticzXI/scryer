@@ -40,7 +40,7 @@ async fn execute_write_is_gated_and_rejects_arity_mismatch() {
             &write_datastore,
             "insert_gated_write_probe",
             "INSERT INTO gated_write_probe (id, note) VALUES ({}, {})",
-            &[
+            vec![
                 SqlArg::Text("row-1".to_string()),
                 SqlArg::Text("hello".to_string()),
             ],
@@ -97,7 +97,7 @@ async fn execute_write_is_gated_and_rejects_arity_mismatch() {
             &datastore,
             "arity_mismatch_probe",
             "INSERT INTO gated_write_probe (id, note) VALUES ({}, {})",
-            &[SqlArg::Text("only-one".to_string())],
+            vec![SqlArg::Text("only-one".to_string())],
         ),
     )
     .await

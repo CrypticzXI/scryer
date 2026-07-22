@@ -193,7 +193,7 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
             "UPDATE indexer_search_learning
              SET suppressed = {}, updated_at = {}
              WHERE indexer_id = {} AND title_id = {} AND facet = {} AND strategy_key = {}",
-            &[
+            vec![
                 SqlArg::Bool(suppressed),
                 SqlArg::Timestamp(Utc::now()),
                 SqlArg::Text(key.indexer_id.clone()),
@@ -229,7 +229,7 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
                             OR strftime('%s', updated_at) IS NULL
                             OR updated_at < {}
                        )",
-                    &[
+                    vec![
                         SqlArg::Text(sqlite_timestamp(now)),
                         SqlArg::Text(key.indexer_id.clone()),
                         SqlArg::Text(key.title_id.clone()),
@@ -253,7 +253,7 @@ impl IndexerSearchLearningRepository for IndexerSearchLearningStore {
                        AND strategy_key = {}
                        AND suppressed = {}
                        AND (updated_at IS NULL OR updated_at < {})",
-                    &[
+                    vec![
                         SqlArg::Timestamp(now),
                         SqlArg::Text(key.indexer_id.clone()),
                         SqlArg::Text(key.title_id.clone()),

@@ -1,11 +1,11 @@
 use async_graphql::{Context, Object, Result as GqlResult};
 
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
-use crate::mappers::from_job_run;
-use crate::types::{IntoApplication, JobKeyValue, JobRunPayload};
+use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
+use scryer_interface_media::mappers::from_job_run;
+use scryer_interface_media::types::{IntoApplication, JobKeyValue, JobRunPayload};
 
 #[derive(Default)]
-pub(crate) struct JobMutations;
+pub struct JobMutations;
 
 #[Object]
 impl JobMutations {

@@ -104,7 +104,7 @@ export function OverviewControlPanel({
   const hasInteractiveSearch = Boolean(interactiveSearchPanel);
   const showPersistentSearchNotice = Boolean(searchNotice) && expandedPanel !== "interactive";
   const resolvedSearchMonitoredLabel =
-    searchMonitoredLabel ?? t("title.searchMonitoredAction");
+    searchMonitoredLabel ?? t("label.search");
 
   const handleToggleSettings = React.useCallback(() => {
     setExpandedPanel((current) => (current === "settings" ? null : "settings"));
@@ -150,7 +150,7 @@ export function OverviewControlPanel({
           {hasInteractiveSearch ? (
             <ActionButton
               id="title-overview-interactive-search"
-              label={t("label.interactiveSearch")}
+              label={t("label.interactive")}
               icon={Search}
               active={expandedPanel === "interactive"}
               loading={interactiveSearchLoading}
@@ -160,7 +160,7 @@ export function OverviewControlPanel({
           ) : null}
           <ActionButton
             id="title-overview-refresh-and-scan"
-            label={t("title.refreshAndScanAction")}
+            label={t("label.refresh")}
             icon={RefreshCw}
             loading={refreshAndScanLoading}
             disabled={!onRefreshAndScan}

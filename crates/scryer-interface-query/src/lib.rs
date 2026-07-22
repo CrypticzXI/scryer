@@ -16,12 +16,14 @@ use scryer_interface_metadata::MetadataQueries;
 use scryer_interface_settings::SettingsQueries;
 use std::{fs, io, path::Path};
 
-use crate::context::{
+use scryer_interface_core as context;
+use scryer_interface_core::{
     actor_from_ctx, actor_has_any_library_permission, actor_has_app_permission, app_from_ctx,
     current_user_from_ctx, mfa_verification_from_ctx, require_app_permission,
     require_config_app_permission, to_gql_error,
 };
-use crate::mappers::{
+use scryer_interface_media::mappers;
+use scryer_interface_media::mappers::{
     catalog_discovery_query_from_input, discovery_home_filter_options_query_from_input,
     discovery_home_query_from_input, discovery_item_detail_query_from_input,
     discovery_items_query_from_input, from_activity_event, from_backup_info,
@@ -38,7 +40,7 @@ use crate::mappers::{
     from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
     from_wanted_scope_view,
 };
-use crate::types::*;
+use scryer_interface_media::types::*;
 
 fn from_metadata_search_item(
     item: scryer_application::RichMetadataSearchItem,

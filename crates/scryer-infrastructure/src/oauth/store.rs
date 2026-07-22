@@ -31,7 +31,7 @@ impl OAuthRepository for OAuthStore {
                 (id, code_hash, client_id, user_id, redirect_uri, scope, code_challenge,
                  code_challenge_method, authorization_source, created_at, expires_at, consumed_at)
              VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
-            &[
+            vec![
                 SqlArg::Text(record.id.clone()),
                 SqlArg::Text(record.code_hash.clone()),
                 SqlArg::Text(record.client_id.clone()),
@@ -69,7 +69,7 @@ impl OAuthRepository for OAuthStore {
                 SET consumed_at = {}
               WHERE id = {}
                 AND consumed_at IS NULL",
-            &[SqlArg::Timestamp(consumed_at), SqlArg::Text(id.to_string())],
+            vec![SqlArg::Timestamp(consumed_at), SqlArg::Text(id.to_string())],
         )
         .await?;
         Ok(rows > 0)
@@ -186,7 +186,7 @@ impl OAuthRepository for OAuthStore {
               WHERE id = {}
                 AND user_id = {}
                 AND revoked_at IS NULL",
-            &[
+            vec![
                 SqlArg::Timestamp(revoked_at),
                 SqlArg::Text(reason.to_string()),
                 SqlArg::Timestamp(revoked_at),
@@ -353,7 +353,7 @@ impl OAuthRepository for OAuthStore {
               WHERE id = {}
                 AND client_id = {}
                 AND revoked_at IS NULL",
-            &[
+            vec![
                 SqlArg::Timestamp(used_at),
                 SqlArg::Timestamp(used_at),
                 SqlArg::Text(grant_id.to_string()),
