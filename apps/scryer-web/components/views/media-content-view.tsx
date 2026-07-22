@@ -1296,7 +1296,6 @@ function TitleContextPanel({
             <TitleWorkspacePosterFrame>
               <TitlePosterSlot
                 src={posterUrl}
-                sourceSrc={title.posterSourceUrl}
                 metadataFetchedAt={title.metadataFetchedAt}
                 createdAt={title.createdAt}
                 alt={t("media.posterAlt", { name: title.name })}

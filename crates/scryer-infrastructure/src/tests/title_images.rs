@@ -115,31 +115,9 @@ async fn title_image_refresh_work_uses_global_variant_priorities() {
         .list_title_image_refresh_work(10, &[])
         .await
         .expect("priority work should list");
-    assert_eq!(fourth[0].title_id, poster.id);
-    assert_variant_target(&fourth[0], TitleImageKind::Poster, "w500");
-
-    title_images
-        .upsert_title_image_source_result(
-            &poster.id,
-            test_title_image_source_result(
-                TitleImageKind::Poster,
-                poster_source,
-                "w500",
-                500,
-                750,
-                "44444444444444444444444444444444",
-            ),
-            None,
-        )
-        .await
-        .expect("w500 should upsert");
-    let updated_poster = TitleRepository::get_by_id(&catalog, &poster.id)
-        .await
-        .expect("poster title should load")
-        .expect("poster title should exist");
-    assert_eq!(
-        updated_poster.poster_url.as_deref(),
-        Some(expected_w250_url.as_str())
+    assert!(
+        fourth.is_empty(),
+        "supported variants should leave no w500 refresh work"
     );
 
     let _ = std::fs::remove_file(db);

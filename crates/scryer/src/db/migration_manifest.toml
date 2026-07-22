@@ -684,6 +684,40 @@ file = "postgres/migrations/0146_drop_event_outboxes.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 147
+description = "retire w500 title image variants"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0147_retire_w500_title_image_variants.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0147_retire_w500_title_image_variants.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 148
+description = "image proxy source registry and cache metadata"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0148_image_proxy_registry.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0148_image_proxy_registry.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

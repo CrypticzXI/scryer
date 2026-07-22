@@ -945,6 +945,71 @@ impl TitleImageRepository for NullTitleImageRepository {
 }
 
 #[derive(Default)]
+pub struct NullImageProxyRepository;
+
+#[async_trait]
+impl ImageProxyRepository for NullImageProxyRepository {
+    fn register_image_source(&self, registration: ImageProxyRegistration) -> String {
+        let token_input = format!(
+            "v1\0{}\0{}\0{}\0{}",
+            registration.upstream_url.as_deref().unwrap_or("fallback"),
+            registration.owner_type.as_deref().unwrap_or_default(),
+            registration.owner_id.as_deref().unwrap_or_default(),
+            registration.image_kind.as_str(),
+        );
+        let token = blake3::hash(token_input.as_bytes()).to_hex();
+        format!(
+            "/images/media/{token}/{}",
+            registration.default_variant
+        )
+    }
+
+    async fn get_image_proxy_source(
+        &self,
+        _token: &str,
+    ) -> AppResult<Option<ImageProxySourceRecord>> {
+        Ok(None)
+    }
+
+    async fn get_image_proxy_cache_entry(
+        &self,
+        _token: &str,
+        _variant: &str,
+    ) -> AppResult<Option<ImageProxyCacheEntryRecord>> {
+        Ok(None)
+    }
+
+    async fn upsert_image_proxy_cache_entry(
+        &self,
+        _entry: &ImageProxyCacheEntryRecord,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_image_proxy_cache_entry(
+        &self,
+        _token: &str,
+        _variant: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_image_proxy_cache_entries_lru(
+        &self,
+    ) -> AppResult<Vec<ImageProxyCacheEntryRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn clear_image_proxy_cache_entries(&self) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn prune_image_proxy_sources_before(&self, _cutoff: &str) -> AppResult<u64> {
+        Ok(0)
+    }
+}
+
+#[derive(Default)]
 pub struct NullTitleImageProcessor;
 
 #[async_trait]

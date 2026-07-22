@@ -60,7 +60,6 @@ export type TitleCardProps = {
   /** Override the badge text (already localized). Defaults to the facet label. */
   facetLabel?: string | null;
   posterUrl?: string | null;
-  posterSourceUrl?: string | null;
   /** Hydration hints so a still-fetching poster shows a brief spinner, not empty art. */
   metadataFetchedAt?: string | null;
   createdAt?: string | null;
@@ -127,7 +126,6 @@ function TitleCardImpl({
   facet,
   facetLabel,
   posterUrl,
-  posterSourceUrl,
   metadataFetchedAt,
   createdAt,
   emptyLabel,
@@ -154,7 +152,7 @@ function TitleCardImpl({
     : "bg-[rgba(4,6,12,0.82)] text-[var(--scry-muted2)]";
   const BadgeIcon = facetBadgeIcon(facet);
   const hasYear = year != null && `${year}`.trim() !== "";
-  const hasPosterArt = Boolean(posterUrl || posterSourceUrl);
+  const hasPosterArt = Boolean(posterUrl);
   const revealBaseTextOnHover = revealTextOnHover && hasPosterArt;
 
   // Exactly one action available → the whole card triggers it.
@@ -206,7 +204,6 @@ function TitleCardImpl({
       <div className="absolute inset-0">
         <TitlePosterSlot
           src={posterUrl}
-          sourceSrc={posterSourceUrl}
           metadataFetchedAt={metadataFetchedAt}
           createdAt={createdAt}
           alt={title}

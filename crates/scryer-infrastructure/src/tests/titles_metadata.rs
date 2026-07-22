@@ -2305,7 +2305,7 @@ async fn replace_title_image_and_append_event_commits_image_and_event_atomically
 }
 
 #[tokio::test]
-async fn title_queries_fall_back_to_original_when_w500_variant_is_missing() {
+async fn title_queries_fall_back_to_original_when_preferred_local_variant_is_missing() {
     let db = std::env::temp_dir().join(format!(
         "scryer_title_poster_incomplete_{}.db",
         chrono::Utc::now().timestamp_micros()

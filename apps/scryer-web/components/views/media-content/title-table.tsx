@@ -627,7 +627,6 @@ export const TitleTable = React.memo(function TitleTable({
               >
                 <TitlePosterSlot
                   src={posterThumbUrl}
-                  sourceSrc={item.posterSourceUrl}
                   metadataFetchedAt={item.metadataFetchedAt}
                   createdAt={item.createdAt}
                   alt=""

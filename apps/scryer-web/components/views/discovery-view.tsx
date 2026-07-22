@@ -34,7 +34,10 @@ import {
   usefulDiscoveryTitle,
 } from "@/lib/utils/discovery-display";
 import { discoveryItemFacet } from "@/lib/utils/discovery-actions";
-import { selectBackdropVariantUrl } from "@/lib/utils/poster-images";
+import {
+  selectBackdropVariantUrl,
+  selectPosterVariantUrl,
+} from "@/lib/utils/poster-images";
 import { cn } from "@/lib/utils";
 import type {
   DiscoveryHomePayload,
@@ -484,7 +487,7 @@ function DiscoveryRailCard({
         year={subtitle}
         facet={facet}
         facetLabel={itemTypeLabel(item)}
-        posterUrl={item.posterUrl}
+        posterUrl={selectPosterVariantUrl(item.posterUrl, "w250")}
         addable={addable}
         requestable={requestable}
         compact={!fillHeight}

@@ -417,7 +417,8 @@ pub use ports::{
     SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
     TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
     UserRepository, VerifiedExternalIdentity, WebauthnRepository, WorkflowOperationInfo,
-    WorkflowOperationRepository,
+    WorkflowOperationRepository, ImageProxyCacheEntryRecord, ImageProxyKind,
+    ImageProxyRegistration, ImageProxyRepository, ImageProxySourceRecord,
 };
 pub use quality::release_parser::{
     AudioCodec, ExternalIdSource, ParsedEpisodeMetadata, ParsedEpisodeReleaseType,

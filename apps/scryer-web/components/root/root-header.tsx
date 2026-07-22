@@ -1095,7 +1095,6 @@ export const RootHeader = React.memo(function RootHeader({
               title.monitored ? t("search.monitored") : t("search.unmonitored")
             }
             posterAlt={t("media.posterAlt", { name: title.name })}
-            posterSourceUrl={title.posterSourceUrl}
             posterUrl={posterUrl}
             resultAttribute="data-global-search-result"
             secondaryParts={secondaryParts}

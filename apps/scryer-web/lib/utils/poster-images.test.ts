@@ -3,8 +3,29 @@ import test from "node:test";
 
 import {
   selectBackdropVariantUrl,
+  selectMediaImageVariantUrl,
   selectPosterVariantUrl,
 } from "./poster-images.ts";
+
+test("rewriting an opaque media-image route preserves its token and base path", () => {
+  assert.equal(
+    selectMediaImageVariantUrl(
+      "/scryer/images/media/opaque-token/w250?cache=1#poster",
+      "w70",
+    ),
+    "/scryer/images/media/opaque-token/w70?cache=1#poster",
+  );
+});
+
+test("rewriting an absolute opaque media-image route preserves its origin", () => {
+  assert.equal(
+    selectPosterVariantUrl(
+      "https://scryer.example/base/images/media/opaque-token/original",
+      "w250",
+    ),
+    "https://scryer.example/base/images/media/opaque-token/w250",
+  );
+});
 
 test("rewriting a local poster variant drops the source variant version token", () => {
   assert.equal(
@@ -20,6 +41,16 @@ test("selecting the current local poster variant preserves its version token", (
   assert.equal(
     selectPosterVariantUrl("/images/titles/title-1/poster/w250?v=posterw250digest", "w250"),
     "/images/titles/title-1/poster/w250?v=posterw250digest",
+  );
+});
+
+test("rewriting a legacy local w500 poster selects a supported variant", () => {
+  assert.equal(
+    selectPosterVariantUrl(
+      "/images/titles/title-1/poster/w500?v=posterw500digest",
+      "w250",
+    ),
+    "/images/titles/title-1/poster/w250",
   );
 });
 

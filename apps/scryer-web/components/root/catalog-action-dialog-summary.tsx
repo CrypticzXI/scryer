@@ -10,7 +10,10 @@ import {
 import { TitleRatingsStrip } from "@/components/views/title-ratings-strip";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { Facet } from "@/lib/types";
-import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
+import {
+  selectBackdropVariantUrl,
+  selectPosterVariantUrl,
+} from "@/lib/utils/poster-images";
 
 type CatalogActionDialogSummaryProps = {
   result: MetadataTvdbSearchItem;
@@ -216,9 +219,9 @@ export function CatalogActionDialogSummary({
   facet,
 }: CatalogActionDialogSummaryProps) {
   const posterUrl = selectPosterVariantUrl(result.posterUrl, "w250");
-  const posterSourceUrl = selectPosterVariantUrl(result.posterUrl, "original");
   const backgroundUrl =
-    selectPosterVariantUrl(result.backgroundUrl, "original") ?? posterSourceUrl;
+    selectBackdropVariantUrl(result.backgroundUrl, "original") ??
+    selectPosterVariantUrl(result.posterUrl, "original");
   const links = externalLinks(result, facet);
   const runtime = runtimeLabel(result.runtimeMinutes);
   const ratingSources = [
@@ -247,7 +250,6 @@ export function CatalogActionDialogSummary({
           {posterUrl ? (
             <TitlePoster
               src={posterUrl}
-              sourceSrc={posterSourceUrl}
               alt={result.name}
               className="h-full w-full object-cover"
             />

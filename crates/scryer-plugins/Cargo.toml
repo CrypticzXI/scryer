@@ -28,6 +28,7 @@ zstd = { version = "0.13", default-features = false }
 tempfile = "3"
 libc = "0.2"
 # RFC 123 WP1: native wasmtime archive host (crypto ABI + command protocol).
+wasmparser = "0.251"
 wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
 

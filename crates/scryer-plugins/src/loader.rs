@@ -3,6 +3,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
+use std::time::Instant;
 
 use scryer_application::{
     AppError, AppResult, ArchiveExtractorClient, ArchiveExtractorPluginProvider, DownloadClient,
@@ -18,6 +19,7 @@ use tracing::{debug, info, warn};
 
 use crate::archive_adapter::WasmArchiveExtractorClient;
 use crate::download_client_adapter::WasmDownloadClient;
+use crate::embedded_descriptor::embedded_descriptor_from_wasm;
 use crate::indexer_adapter::WasmIndexerClient;
 use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec};
 use crate::notification_adapter::WasmNotificationClient;
@@ -2916,7 +2918,37 @@ fn validate_required_exports(
 }
 
 fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), String> {
+    let started_at = Instant::now();
     let bytes = wasm_bytes.to_vec();
+
+    if let Some(embedded) = embedded_descriptor_from_wasm(&bytes)? {
+        match PluginRuntimeBacking::for_descriptor(&embedded.descriptor) {
+            PluginRuntimeBacking::LegacyReactor => {
+                let missing = embedded.missing_function_exports(required_exports_for_descriptor(
+                    &embedded.descriptor,
+                ));
+                if !missing.is_empty() {
+                    return Err(format!(
+                        "{} ({}) is missing required export(s): {}",
+                        embedded.descriptor.id,
+                        embedded.descriptor.plugin_type(),
+                        missing.join(", ")
+                    ));
+                }
+            }
+            PluginRuntimeBacking::WasmtimeArchive | PluginRuntimeBacking::WasmtimeSubtitleSync => {
+                embedded.require_command_exports()?;
+            }
+        }
+        let descriptor = embedded.descriptor;
+        debug!(
+            descriptor_source = "embedded",
+            descriptor_load_ms = started_at.elapsed().as_millis() as u64,
+            plugin_id = descriptor.id.as_str(),
+            "loaded plugin descriptor"
+        );
+        return Ok((descriptor, bytes));
+    }
 
     // Command-model artifacts (wasip1 command: `_start` + `memory`, no
     // `scryer_describe` export) self-describe via argv ["describe"] on the
@@ -2925,7 +2957,14 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
     // the classifier), not legacy reactor exports. Legacy fleet plugins fall
     // through to the unchanged describe path below.
     if let Some(result) = crate::wasmtime_host::command_model_describe(&bytes) {
-        return result.map(|descriptor| (descriptor, bytes));
+        let descriptor = result?;
+        debug!(
+            descriptor_source = "command",
+            descriptor_load_ms = started_at.elapsed().as_millis() as u64,
+            plugin_id = descriptor.id.as_str(),
+            "loaded plugin descriptor"
+        );
+        return Ok((descriptor, bytes));
     }
 
     // Descriptor extraction for legacy fleet plugins still calls the
@@ -2951,6 +2990,13 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
     }
 
     validate_required_exports(&mut plugin, &descriptor)?;
+
+    debug!(
+        descriptor_source = "legacy_reactor",
+        descriptor_load_ms = started_at.elapsed().as_millis() as u64,
+        plugin_id = descriptor.id.as_str(),
+        "loaded plugin descriptor"
+    );
 
     Ok((descriptor, bytes))
 }
@@ -3724,6 +3770,48 @@ mod tests {
                 provider.allowed_hosts = allowed_hosts
             }
         }
+    }
+
+    #[test]
+    fn embedded_descriptor_avoids_guest_descriptor_execution() {
+        fn encode_u32_leb(mut value: u32, output: &mut Vec<u8>) {
+            loop {
+                let mut byte = (value & 0x7f) as u8;
+                value >>= 7;
+                if value != 0 {
+                    byte |= 0x80;
+                }
+                output.push(byte);
+                if value == 0 {
+                    break;
+                }
+            }
+        }
+
+        let mut wasm = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "scryer_describe") unreachable)
+                (func (export "scryer_indexer_search") unreachable))"#,
+        )
+        .unwrap();
+        let descriptor_json = serde_json::to_vec(&descriptor("indexer")).unwrap();
+        let section_name = crate::embedded_descriptor::PLUGIN_DESCRIPTOR_CUSTOM_SECTION_V1;
+        let mut section = Vec::new();
+        encode_u32_leb(section_name.len() as u32, &mut section);
+        section.extend_from_slice(section_name.as_bytes());
+        section.extend_from_slice(&descriptor_json);
+        wasm.push(0);
+        encode_u32_leb(section.len() as u32, &mut wasm);
+        wasm.extend_from_slice(&section);
+
+        let (loaded_descriptor, loaded_wasm) = load_from_bytes(&wasm).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(loaded_descriptor).unwrap(),
+            serde_json::to_value(descriptor("indexer")).unwrap()
+        );
+        assert_eq!(loaded_wasm, wasm);
     }
 
     fn runtime_plugin_load(

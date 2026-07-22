@@ -218,7 +218,6 @@ type SearchCatalogResultButtonProps = {
   onClick: () => void;
   onKeyDown: React.KeyboardEventHandler<HTMLButtonElement>;
   posterAlt: string;
-  posterSourceUrl?: string | null;
   posterUrl?: string | null;
   resultAttribute: SearchResultDataAttribute;
   secondaryParts: Array<string | null | undefined>;
@@ -242,7 +241,6 @@ export function SearchCatalogResultButton({
   onClick,
   onKeyDown,
   posterAlt,
-  posterSourceUrl,
   posterUrl,
   resultAttribute,
   secondaryParts,
@@ -285,7 +283,6 @@ export function SearchCatalogResultButton({
       <div className="relative h-16 w-11 flex-none overflow-hidden rounded-[7px] border border-[var(--scry-border2)] bg-muted">
         <TitlePosterSlot
           src={posterUrl}
-          sourceSrc={posterSourceUrl}
           metadataFetchedAt={metadataFetchedAt}
           createdAt={createdAt}
           alt={posterAlt}

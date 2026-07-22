@@ -170,10 +170,6 @@ const PosterCard = React.memo(function PosterCard({
   const location = useLocation();
   const t = useTranslate();
   const posterUrl = selectPosterVariantUrl(title.posterUrl, "w250");
-  const posterSourceUrl = selectPosterVariantUrl(
-    title.posterSourceUrl,
-    "w250",
-  );
   const contextPanelControlsId =
     selected && onSelectTitle ? contextPanelId : undefined;
   const handleActivate = React.useCallback(() => {
@@ -198,7 +194,6 @@ const PosterCard = React.memo(function PosterCard({
         title={title.name}
         year={title.year ?? null}
         posterUrl={posterUrl}
-        posterSourceUrl={posterSourceUrl}
         metadataFetchedAt={title.metadataFetchedAt}
         createdAt={title.createdAt}
         monitored={title.monitored}

@@ -674,6 +674,438 @@ async fn migration_0146_drops_retired_event_outboxes() {
 }
 
 #[tokio::test]
+async fn migration_0147_retires_w500_variants_and_0148_adds_extensible_proxy_tables() {
+    crate::spellfix::register_spellfix_auto_extension()
+        .expect("spellfix auto-extension should register");
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0147_w500_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
+        .await
+        .expect("pre-0147 database should open");
+    crate::migrations::replay_source_catalog_for_fresh_install(&pool, Some(146), true)
+        .await
+        .expect("migrations through 0146 should apply");
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let library_id = scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Movie);
+    let root_folder_id: String = sqlx::query_scalar(
+        "SELECT id FROM library_roots
+          WHERE library_id = ?1
+          ORDER BY is_default DESC, path
+          LIMIT 1",
+    )
+    .bind(&library_id)
+    .fetch_one(&pool)
+    .await
+    .expect("default movie root should exist");
+    for (id, poster_url, local_path) in [
+        (
+            "title-w500-only",
+            "https://image.tmdb.org/t/p/w500/only.jpg",
+            "/images/titles/title-w500-only/poster/w500?v=legacy",
+        ),
+        (
+            "title-shared",
+            "https://image.tmdb.org/t/p/w500/shared.jpg",
+            "/images/titles/title-shared/poster/w500?v=legacy",
+        ),
+        (
+            "title-supported",
+            "https://image.tmdb.org/t/p/w300/supported.jpg",
+            "/images/titles/title-supported/poster/w250?v=legacy",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO titles (
+                id, name, name_normalized, library_id, root_folder_id, facet,
+                created_at, poster_url, poster_local_path
+             ) VALUES (?1, ?1, ?1, ?2, ?3, 'movie', ?4, ?5, ?6)",
+        )
+        .bind(id)
+        .bind(&library_id)
+        .bind(&root_folder_id)
+        .bind(&now)
+        .bind(poster_url)
+        .bind(local_path)
+        .execute(&pool)
+        .await
+        .expect("title fixture should insert");
+        sqlx::query(
+            "INSERT INTO title_images (
+                id, title_id, provider, kind, source_url, source_format,
+                source_width, source_height, created_at, updated_at
+             ) VALUES (?1, ?2, 'tmdb', 'poster', ?3, 'jpeg', 500, 750, ?4, ?4)",
+        )
+        .bind(format!("image-{id}"))
+        .bind(id)
+        .bind(poster_url)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("title image fixture should insert");
+    }
+
+    let w500_only_digest = format!("blake3:{}", "a".repeat(64));
+    let supported_digest = format!("blake3:{}", "b".repeat(64));
+    let shared_digest = format!("blake3:{}", "c".repeat(64));
+    for (digest, bytes) in [
+        (&w500_only_digest, vec![1_u8]),
+        (&supported_digest, vec![2_u8]),
+        (&shared_digest, vec![3_u8]),
+    ] {
+        sqlx::query(
+            "INSERT INTO title_image_blobs (
+                digest, format, width, height, bytes, created_at, updated_at
+             ) VALUES (?1, 'avif', 250, 375, ?2, ?3, ?3)",
+        )
+        .bind(digest)
+        .bind(bytes)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("title image blob fixture should insert");
+    }
+    for (id, image_id, variant, digest) in [
+        (
+            "variant-w500-only",
+            "image-title-w500-only",
+            "w500",
+            &w500_only_digest,
+        ),
+        (
+            "variant-shared-w500",
+            "image-title-shared",
+            "w500",
+            &shared_digest,
+        ),
+        (
+            "variant-shared-w250",
+            "image-title-shared",
+            "w250",
+            &shared_digest,
+        ),
+        (
+            "variant-supported-w250",
+            "image-title-supported",
+            "w250",
+            &supported_digest,
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO title_image_variants (
+                id, title_image_id, variant_key, blob_digest, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+        )
+        .bind(id)
+        .bind(image_id)
+        .bind(variant)
+        .bind(digest)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("title image variant fixture should insert");
+    }
+    pool.close().await;
+
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("0147 and 0148 should apply");
+    let w500_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM title_image_variants WHERE variant_key = 'w500'")
+            .fetch_one(&services.pool)
+            .await
+            .expect("retired variant count should load");
+    assert_eq!(w500_count, 0);
+
+    let remaining_digests: Vec<String> =
+        sqlx::query_scalar("SELECT digest FROM title_image_blobs ORDER BY digest")
+            .fetch_all(&services.pool)
+            .await
+            .expect("remaining blob digests should load");
+    assert_eq!(remaining_digests, vec![supported_digest, shared_digest]);
+
+    let local_paths: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT id, poster_local_path
+           FROM titles
+          WHERE id IN ('title-shared', 'title-w500-only')
+          ORDER BY id",
+    )
+    .fetch_all(&services.pool)
+    .await
+    .expect("migrated local paths should load");
+    assert_eq!(
+        local_paths,
+        vec![
+            (
+                "title-shared".to_string(),
+                Some("/images/titles/title-shared/poster/w250?v=cccccccccccccccc".to_string()),
+            ),
+            ("title-w500-only".to_string(), None),
+        ]
+    );
+    let retained_source_url: String =
+        sqlx::query_scalar("SELECT poster_url FROM titles WHERE id = 'title-w500-only'")
+            .fetch_one(&services.pool)
+            .await
+            .expect("source URL should load");
+    assert_eq!(
+        retained_source_url,
+        "https://image.tmdb.org/t/p/w500/only.jpg"
+    );
+
+    sqlx::query(
+        "INSERT INTO image_proxy_sources (
+            token, upstream_url, owner_type, owner_id, image_kind, fallback_class, last_seen_at
+         ) VALUES ('person-token', NULL, 'person', 'person-1', 'person', 'portrait', ?1)",
+    )
+    .bind(&now)
+    .execute(&services.pool)
+    .await
+    .expect("future image kind should fit generic source table");
+    sqlx::query(
+        "INSERT INTO image_proxy_cache_entries (
+            token, variant, content_type, byte_size, fetched_at, last_accessed_at
+         ) VALUES ('person-token', 'profile', 'image/jpeg', 12, ?1, ?1)",
+    )
+    .bind(&now)
+    .execute(&services.pool)
+    .await
+    .expect("future variant should fit generic cache table");
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn migration_0147_postgres_retires_w500_and_adds_proxy_tables_from_env() -> AppResult<()> {
+    let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(());
+    };
+    let admin_pool = sqlx::PgPool::connect(&raw_url)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to connect to postgres: {error}")))?;
+    let schema = format!(
+        "scryer_w500_migration_{}",
+        chrono::Utc::now().timestamp_micros()
+    );
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin_pool)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to create postgres test schema: {error}"))
+        })?;
+    let mut schema_url = url::Url::parse(&raw_url)
+        .map_err(|error| AppError::Validation(format!("invalid postgres test URL: {error}")))?;
+    schema_url
+        .query_pairs_mut()
+        .append_pair("options", &format!("-csearch_path={schema}"));
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(schema_url.as_str())
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!("failed to open postgres test schema: {error}"))
+        })?;
+
+    let result = async {
+        crate::postgres::replay_source_catalog_for_fresh_install(&pool, Some(146)).await?;
+        let library_id =
+            scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Movie);
+        let root_folder_id: String = sqlx::query_scalar(
+            "SELECT id FROM library_roots
+              WHERE library_id = $1
+              ORDER BY is_default DESC, path
+              LIMIT 1",
+        )
+        .bind(&library_id)
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let now = chrono::Utc::now();
+
+        for (id, poster_url, local_path) in [
+            (
+                "pg-title-w500-only",
+                "https://image.tmdb.org/t/p/w500/only.jpg",
+                "/images/titles/pg-title-w500-only/poster/w500?v=legacy",
+            ),
+            (
+                "pg-title-shared",
+                "https://image.tmdb.org/t/p/w500/shared.jpg",
+                "/images/titles/pg-title-shared/poster/w500?v=legacy",
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO titles (
+                    id, name, name_normalized, library_id, facet, monitored, status,
+                    tags, external_ids, root_folder_id, genres, year, overview, created_at,
+                    poster_url, poster_local_path
+                 ) VALUES (
+                    $1, $1, $1, $2, 'movie', TRUE, 'active', '[]', '[]', $3, '[]', 2024,
+                    '', $4, $5, $6
+                 )",
+            )
+            .bind(id)
+            .bind(&library_id)
+            .bind(&root_folder_id)
+            .bind(now)
+            .bind(poster_url)
+            .bind(local_path)
+            .execute(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+            sqlx::query(
+                "INSERT INTO title_images (
+                    id, title_id, provider, kind, source_url, source_format,
+                    source_width, source_height, created_at, updated_at
+                 ) VALUES ($1, $2, 'tmdb', 'poster', $3, 'jpeg', 500, 750, $4, $4)",
+            )
+            .bind(format!("image-{id}"))
+            .bind(id)
+            .bind(poster_url)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        }
+
+        let w500_only_digest = format!("blake3:{}", "d".repeat(64));
+        let shared_digest = format!("blake3:{}", "e".repeat(64));
+        for (digest, bytes) in [
+            (&w500_only_digest, vec![4_u8]),
+            (&shared_digest, vec![5_u8]),
+        ] {
+            sqlx::query(
+                "INSERT INTO title_image_blobs (
+                    digest, format, width, height, bytes, created_at, updated_at
+                 ) VALUES ($1, 'avif', 250, 375, $2, $3, $3)",
+            )
+            .bind(digest)
+            .bind(bytes)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        }
+        for (id, image_id, variant, digest) in [
+            (
+                "pg-variant-w500-only",
+                "image-pg-title-w500-only",
+                "w500",
+                &w500_only_digest,
+            ),
+            (
+                "pg-variant-shared-w500",
+                "image-pg-title-shared",
+                "w500",
+                &shared_digest,
+            ),
+            (
+                "pg-variant-shared-w250",
+                "image-pg-title-shared",
+                "w250",
+                &shared_digest,
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO title_image_variants (
+                    id, title_image_id, variant_key, blob_digest, created_at, updated_at
+                 ) VALUES ($1, $2, $3, $4, $5, $5)",
+            )
+            .bind(id)
+            .bind(image_id)
+            .bind(variant)
+            .bind(digest)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        }
+
+        let migrated_services = PostgresServices::new_with_mode(
+            schema_url.as_str(),
+            crate::types::MigrationMode::Apply,
+        )
+        .await?;
+        let w500_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM title_image_variants WHERE variant_key = 'w500'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        let remaining_digests: Vec<String> =
+            sqlx::query_scalar("SELECT digest FROM title_image_blobs ORDER BY digest")
+                .fetch_all(&pool)
+                .await
+                .map_err(|error| AppError::Repository(error.to_string()))?;
+        let local_paths: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT id, poster_local_path
+               FROM titles
+              WHERE id IN ('pg-title-shared', 'pg-title-w500-only')
+              ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        assert_eq!(w500_count, 0);
+        assert_eq!(remaining_digests, vec![shared_digest]);
+        assert_eq!(
+            local_paths,
+            vec![
+                (
+                    "pg-title-shared".to_string(),
+                    Some(
+                        "/images/titles/pg-title-shared/poster/w250?v=eeeeeeeeeeeeeeee".to_string()
+                    ),
+                ),
+                ("pg-title-w500-only".to_string(), None),
+            ]
+        );
+
+        sqlx::query(
+            "INSERT INTO image_proxy_sources (
+                token, upstream_url, owner_type, owner_id, image_kind, fallback_class,
+                last_seen_at
+             ) VALUES ('pg-person-token', NULL, 'person', 'person-1', 'person', 'portrait', $1)",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO image_proxy_cache_entries (
+                token, variant, content_type, byte_size, fetched_at, last_accessed_at
+             ) VALUES ('pg-person-token', 'profile', 'image/jpeg', 12, $1, $1)",
+        )
+        .bind(now)
+        .execute(&pool)
+        .await
+        .map_err(|error| AppError::Repository(error.to_string()))?;
+
+        migrated_services.pool().close().await;
+        Ok::<_, AppError>(())
+    }
+    .await;
+
+    pool.close().await;
+    let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(&admin_pool)
+        .await
+        .map_err(|error| AppError::Repository(format!("failed to drop test schema: {error}")));
+    admin_pool.close().await;
+    cleanup?;
+    result
+}
+
+#[tokio::test]
 async fn migration_0140_upgrades_v0_16_8_title_metadata_and_media_in_place() {
     crate::spellfix::register_spellfix_auto_extension()
         .expect("spellfix auto-extension should register");

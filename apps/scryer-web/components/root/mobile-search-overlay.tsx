@@ -749,7 +749,6 @@ export function MobileSearchOverlay({
             title.monitored ? t("search.monitored") : t("search.unmonitored")
           }
           posterAlt={t("media.posterAlt", { name: title.name })}
-          posterSourceUrl={title.posterSourceUrl}
           posterUrl={posterUrl}
           resultAttribute="data-mobile-global-search-result"
           secondaryParts={secondaryParts}

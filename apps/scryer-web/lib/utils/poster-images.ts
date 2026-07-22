@@ -1,15 +1,46 @@
-export type LocalPosterVariant = "original" | "w500" | "w250" | "w70";
+export type LocalPosterVariant = "original" | "w250" | "w70";
 export type LocalBackdropVariant = "original" | "w1280";
+export type MediaImageVariant = LocalPosterVariant | LocalBackdropVariant;
 
+const PROXIED_MEDIA_IMAGE_PATH_RE = /^(.*\/images\/media\/[^/]+\/)([^/]+)$/;
 const LOCAL_TITLE_POSTER_PATH_RE = /^(.*\/images\/titles\/[^/]+\/poster\/)(original|w500|w250|w70)$/;
 const LOCAL_TITLE_BACKDROP_PATH_RE = /^(.*\/images\/titles\/[^/]+\/fanart\/)(original|w\d+)$/;
 const TMDB_IMAGE_PATH_RE = /^(\/t\/p\/)(original|w\d+)(\/.+)$/;
 const TMDB_POSTER_VARIANT_BY_LOCAL_VARIANT: Record<LocalPosterVariant, string> = {
   original: "original",
-  w500: "w500",
   w250: "w300",
   w70: "w92",
 };
+
+/** Selects a variant on Scryer's opaque media-image route. */
+export function selectMediaImageVariantUrl(
+  imageUrl: string | null | undefined,
+  desiredVariant: MediaImageVariant,
+): string | null | undefined {
+  if (!imageUrl) {
+    return imageUrl;
+  }
+
+  try {
+    const parsed = new URL(imageUrl, "http://scryer.local");
+    const match = parsed.pathname.match(PROXIED_MEDIA_IMAGE_PATH_RE);
+    if (!match) {
+      return imageUrl;
+    }
+
+    const [, prefix, currentVariant] = match;
+    if (currentVariant === desiredVariant) {
+      return imageUrl;
+    }
+
+    parsed.pathname = `${prefix}${desiredVariant}`;
+    return isRelativeUrl(imageUrl)
+      ? `${parsed.pathname}${parsed.search}${parsed.hash}`
+      : parsed.toString();
+  } catch {
+    return imageUrl;
+  }
+}
 
 export function selectPosterVariantUrl(
   posterUrl: string | null | undefined,
@@ -17,6 +48,11 @@ export function selectPosterVariantUrl(
 ): string | null | undefined {
   if (!posterUrl) {
     return posterUrl;
+  }
+
+  const proxiedUrl = selectMediaImageVariantUrl(posterUrl, desiredVariant);
+  if (proxiedUrl !== posterUrl) {
+    return proxiedUrl;
   }
 
   try {
@@ -64,6 +100,11 @@ export function selectBackdropVariantUrl(
 ): string | null | undefined {
   if (!backdropUrl) {
     return backdropUrl;
+  }
+
+  const proxiedUrl = selectMediaImageVariantUrl(backdropUrl, desiredVariant);
+  if (proxiedUrl !== backdropUrl) {
+    return proxiedUrl;
   }
 
   try {

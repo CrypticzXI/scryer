@@ -2,6 +2,7 @@ mod archive_adapter;
 mod blocking;
 pub mod builtins;
 mod download_client_adapter;
+mod embedded_descriptor;
 mod indexer_adapter;
 mod legacy_runtime;
 mod loader;

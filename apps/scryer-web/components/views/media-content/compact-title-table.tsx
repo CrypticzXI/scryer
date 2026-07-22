@@ -676,7 +676,6 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
               <span className="relative h-[50px] w-[34px] shrink-0 overflow-hidden rounded-[5px] border border-[var(--scry-border2)] bg-[var(--scry-card2)]">
                 <TitlePosterSlot
                   src={posterUrl}
-                  sourceSrc={item.posterSourceUrl}
                   metadataFetchedAt={item.metadataFetchedAt}
                   createdAt={item.createdAt}
                   alt={t("media.posterAlt", { name: item.name })}

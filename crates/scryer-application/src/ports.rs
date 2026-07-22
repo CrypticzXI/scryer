@@ -1653,6 +1653,91 @@ pub trait TitleImageRepository: Send + Sync {
     ) -> AppResult<Option<TitleImageBlob>>;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImageProxyKind {
+    Poster,
+    Fanart,
+    EpisodeStill,
+    Person,
+}
+
+impl ImageProxyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Poster => "poster",
+            Self::Fanart => "fanart",
+            Self::EpisodeStill => "episode_still",
+            Self::Person => "person",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageProxyRegistration {
+    pub upstream_url: Option<String>,
+    pub owner_type: Option<String>,
+    pub owner_id: Option<String>,
+    pub image_kind: ImageProxyKind,
+    pub fallback_class: String,
+    pub default_variant: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageProxySourceRecord {
+    pub token: String,
+    pub upstream_url: Option<String>,
+    pub owner_type: Option<String>,
+    pub owner_id: Option<String>,
+    pub image_kind: String,
+    pub fallback_class: String,
+    pub last_seen_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageProxyCacheEntryRecord {
+    pub token: String,
+    pub variant: String,
+    pub content_type: String,
+    pub byte_size: i64,
+    pub upstream_etag: Option<String>,
+    pub upstream_last_modified: Option<String>,
+    pub fetched_at: String,
+    pub last_accessed_at: String,
+}
+
+#[async_trait]
+pub trait ImageProxyRepository: Send + Sync {
+    /// Registers a server-approved image source and returns its Scryer-owned URL.
+    /// Implementations must never accept registrations from the HTTP image route.
+    fn register_image_source(&self, registration: ImageProxyRegistration) -> String;
+
+    async fn get_image_proxy_source(
+        &self,
+        token: &str,
+    ) -> AppResult<Option<ImageProxySourceRecord>>;
+
+    async fn get_image_proxy_cache_entry(
+        &self,
+        token: &str,
+        variant: &str,
+    ) -> AppResult<Option<ImageProxyCacheEntryRecord>>;
+
+    async fn upsert_image_proxy_cache_entry(
+        &self,
+        entry: &ImageProxyCacheEntryRecord,
+    ) -> AppResult<()>;
+
+    async fn delete_image_proxy_cache_entry(&self, token: &str, variant: &str) -> AppResult<()>;
+
+    async fn list_image_proxy_cache_entries_lru(
+        &self,
+    ) -> AppResult<Vec<ImageProxyCacheEntryRecord>>;
+
+    async fn clear_image_proxy_cache_entries(&self) -> AppResult<()>;
+
+    async fn prune_image_proxy_sources_before(&self, cutoff: &str) -> AppResult<u64>;
+}
+
 #[async_trait]
 pub trait TitleImageProcessor: Send + Sync {
     async fn fetch_and_process_image(

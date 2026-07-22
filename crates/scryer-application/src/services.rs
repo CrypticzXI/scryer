@@ -1291,6 +1291,7 @@ pub struct AppLibraryServices {
     pub(crate) media_files: Arc<dyn MediaFileRepository>,
     pub(crate) media_analyzer: Arc<dyn MediaAnalyzer>,
     pub(crate) title_images: Arc<dyn TitleImageRepository>,
+    pub(crate) image_proxy: Arc<dyn ImageProxyRepository>,
     pub(crate) title_image_processor: Arc<dyn TitleImageProcessor>,
     pub(crate) library_probe_signatures: Arc<dyn LibraryProbeRepository>,
     pub(crate) library_scan_unmatched_items: Arc<dyn LibraryScanUnmatchedItemRepository>,
@@ -1519,6 +1520,7 @@ impl AppServices {
                 media_files: Arc::new(NullMediaFileRepository),
                 media_analyzer: Arc::new(NativeMediaAnalyzer),
                 title_images: Arc::new(NullTitleImageRepository),
+                image_proxy: Arc::new(null_repositories::NullImageProxyRepository),
                 title_image_processor: Arc::new(NullTitleImageProcessor),
                 library_probe_signatures: Arc::new(null_repositories::NullLibraryProbeRepository),
                 library_scan_unmatched_items: Arc::new(
@@ -2076,6 +2078,11 @@ impl AppServicesBuilder {
         library.title_images,
         title_images,
         Arc<dyn TitleImageRepository>
+    );
+    app_services_builder_setter!(
+        with_image_proxy,
+        library.image_proxy,
+        Arc<dyn ImageProxyRepository>
     );
     app_services_builder_setter!(
         with_title_image_processor,

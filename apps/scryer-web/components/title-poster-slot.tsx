@@ -12,7 +12,6 @@ type PosterFallbackTone = "MOVIE" | "SERIES" | "ANIME" | "neutral";
 
 type TitlePosterSlotProps = Omit<ComponentProps<"img">, "src"> & {
   src?: string | null;
-  sourceSrc?: string | null;
   metadataFetchedAt?: string | null;
   createdAt?: string | null;
   emptyLabel: string;
@@ -221,7 +220,6 @@ function TitlePosterFallback({
 
 export function TitlePosterSlot({
   src,
-  sourceSrc,
   metadataFetchedAt,
   createdAt,
   emptyLabel,
@@ -235,10 +233,10 @@ export function TitlePosterSlot({
   onError,
   ...props
 }: TitlePosterSlotProps) {
-  const hasPoster = Boolean(src || sourceSrc);
+  const hasPoster = Boolean(src);
   const posterRenderKey = React.useMemo(
-    () => [src ?? "", sourceSrc ?? "", metadataFetchedAt ?? ""].join("|"),
-    [metadataFetchedAt, sourceSrc, src],
+    () => [src ?? "", metadataFetchedAt ?? ""].join("|"),
+    [metadataFetchedAt, src],
   );
   const [posterFailed, setPosterFailed] = React.useState(false);
   const showHydrationSpinner = useHydrationPosterGrace(
@@ -256,7 +254,6 @@ export function TitlePosterSlot({
       <TitlePoster
         key={posterRenderKey}
         src={src}
-        sourceSrc={sourceSrc}
         alt={alt}
         className={className}
         onError={(event) => {

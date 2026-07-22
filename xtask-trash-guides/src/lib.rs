@@ -477,7 +477,6 @@ struct DistilledCatalog {
     fact_rules: Vec<FactRuleRecord>,
     locale_group_fact_rules: Vec<LocaleGroupFactRuleRecord>,
     no_release_group_facets: Vec<DistilledFacet>,
-    source_records: Vec<MetadataRuleRecord>,
     inactive_records: Vec<MetadataRuleRecord>,
     ignored_records: Vec<MetadataRuleRecord>,
 }
@@ -873,10 +872,6 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
     let mut no_release_group_facets = BTreeSet::<DistilledFacet>::new();
     let mut inactive_records = BTreeSet::<MetadataRuleRecord>::new();
     let mut ignored_records = BTreeSet::<MetadataRuleRecord>::new();
-    let source_records = records
-        .iter()
-        .map(|record| metadata_record(record, classify_stem(&record.stem).reason))
-        .collect::<Vec<_>>();
 
     for record in records {
         if let Some(group_target) = classify_active_group_stem(&record.stem) {
@@ -1294,7 +1289,6 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
             .map(|(key, provenance)| LocaleGroupFactRuleRecord { key, provenance })
             .collect(),
         no_release_group_facets: no_release_group_facets.into_iter().collect(),
-        source_records,
         inactive_records: inactive_records.into_iter().collect(),
         ignored_records: ignored_records
             .into_iter()
@@ -2633,13 +2627,6 @@ fn render_parser_output(
         &catalog.ignored_records,
         None,
     )?;
-    writeln!(output)?;
-    render_metadata_rules(
-        &mut output,
-        "UPSTREAM_RECORDS",
-        &catalog.source_records,
-        None,
-    )?;
 
     Ok(output)
 }
@@ -2662,7 +2649,7 @@ fn render_metadata_rules(
         }
         writeln!(
             output,
-            "    MetadataRuleRecord {{ app: {}, facet: RuleFacet::{}, stem: {}, trash_id: {}, cf_name: {}, spec_name: {}, implementation: {}, value: {}, trash_scores_json: {}, required_json: {}, negate_json: {}, complete_json: {}, reason: {}, source_path: {} }},",
+            "    MetadataRuleRecord {{ app: {}, facet: RuleFacet::{}, stem: {}, trash_id: {}, cf_name: {}, spec_name: {}, implementation: {}, value: {}, reason: {}, source_path: {} }},",
             rust_str(&record.app),
             render_facet(record.facet),
             rust_str(&record.stem),
@@ -2671,10 +2658,6 @@ fn render_metadata_rules(
             rust_str(&record.spec_name),
             rust_str(&record.implementation),
             rust_str(&record.value),
-            rust_str(&record.trash_scores_json),
-            rust_str(&record.required_json),
-            rust_str(&record.negate_json),
-            rust_str(&record.complete_json),
             rust_str(&record.reason),
             rust_str(&record.source_path),
         )?;

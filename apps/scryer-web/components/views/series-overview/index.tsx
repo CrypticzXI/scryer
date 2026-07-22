@@ -834,7 +834,6 @@ export function SeriesOverviewView({
             <div className="mx-auto shrink-0 sm:mx-0">
               <TitlePosterSlot
                 src={title.posterUrl}
-                sourceSrc={title.posterSourceUrl}
                 metadataFetchedAt={title.metadataFetchedAt}
                 createdAt={title.createdAt}
                 alt={title.name}
