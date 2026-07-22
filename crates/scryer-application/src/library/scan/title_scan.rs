@@ -355,7 +355,7 @@ fn score_movie_media_file_for_primary(
     file: &TitleMediaFile,
 ) -> i32 {
     let parsed = parsed_release_for_movie_media_file(file);
-    crate::post_download_gate::build_import_profile_decision(
+    let mut decision = crate::post_download_gate::build_import_profile_decision(
         profile,
         required_audio_languages,
         persona,
@@ -364,8 +364,9 @@ fn score_movie_media_file_for_primary(
         title.runtime_minutes,
         Some(file.size_bytes),
         false,
-    )
-    .preference_score
+    );
+    crate::quality_profile::apply_min_score_gate(profile, &mut decision);
+    decision.preference_score
 }
 
 async fn normalize_movie_file_roles_after_scan(

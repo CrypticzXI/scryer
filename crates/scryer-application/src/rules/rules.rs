@@ -9,6 +9,13 @@ fn format_rule_validation_errors(validation: &ValidationResult) -> String {
     )
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ManagedRuleReconciliation {
+    pub created: usize,
+    pub updated: usize,
+    pub removed: usize,
+}
+
 impl AppUseCase {
     pub async fn list_rule_sets(&self, actor: &User) -> AppResult<Vec<RuleSet>> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
@@ -30,6 +37,7 @@ impl AppUseCase {
         rego_source: String,
         applied_facets: Vec<MediaFacet>,
         priority: i32,
+        enabled: Option<bool>,
     ) -> AppResult<RuleSet> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
@@ -54,7 +62,7 @@ impl AppUseCase {
             name,
             description,
             rego_source: rewritten_source.clone(),
-            enabled: true,
+            enabled: enabled.unwrap_or(true),
             priority,
             applied_facets,
             created_at: now,
@@ -413,7 +421,167 @@ impl AppUseCase {
         Ok(())
     }
 
+    /// Seed, update, and prune compiled TRaSH locale packs.
+    ///
+    /// Callers choose whether reconciliation should rebuild the in-memory engine.
+    /// Startup wiring can therefore reconcile before its normal engine rebuild.
+    pub async fn reconcile_managed_trash_rule_packs(
+        &self,
+        rebuild_engine: bool,
+    ) -> AppResult<ManagedRuleReconciliation> {
+        self.reconcile_managed_trash_rule_packs_from_registry(
+            managed_trash::managed_trash_rule_packs(),
+            rebuild_engine,
+        )
+        .await
+    }
+
+    /// Load a safe engine without managed TRaSH packs before reconciliation, so
+    /// neither a current failure nor partial rows from an earlier process can be
+    /// activated. Successful reconciliation replaces it with the complete set.
+    pub async fn reconcile_and_activate_managed_trash_rule_packs(
+        &self,
+    ) -> AppResult<ManagedRuleReconciliation> {
+        self.rebuild_user_rules_engine_filtered(true).await?;
+        let reconciliation = self.reconcile_managed_trash_rule_packs(false).await?;
+        self.rebuild_user_rules_engine().await?;
+        Ok(reconciliation)
+    }
+
+    async fn reconcile_managed_trash_rule_packs_from_registry(
+        &self,
+        packs: &[managed_trash::ManagedTrashRulePack],
+        rebuild_engine: bool,
+    ) -> AppResult<ManagedRuleReconciliation> {
+        validate_managed_trash_rule_packs(packs)?;
+        let expected_keys = packs
+            .iter()
+            .map(|pack| pack.key)
+            .collect::<std::collections::HashSet<_>>();
+        let mut reconciliation = ManagedRuleReconciliation::default();
+
+        for pack in packs {
+            match self
+                .services
+                .customization
+                .rule_sets
+                .get_rule_set_by_managed_key(pack.key)
+                .await?
+            {
+                Some(mut rule_set) => {
+                    let source =
+                        scryer_rules::rewrite_package_declaration(&pack.source(), &rule_set.id);
+                    let changed = rule_set.name != pack.name
+                        || rule_set.description != pack.description
+                        || rule_set.rego_source != source
+                        || rule_set.priority != 0
+                        || rule_set.applied_facets != pack.applied_facets
+                        || !rule_set.is_managed;
+                    if changed {
+                        rule_set.name = pack.name.to_string();
+                        rule_set.description = pack.description.to_string();
+                        rule_set.rego_source = source;
+                        rule_set.priority = 0;
+                        rule_set.applied_facets = pack.applied_facets.to_vec();
+                        rule_set.is_managed = true;
+                        rule_set.updated_at = Utc::now();
+                        self.services
+                            .customization
+                            .rule_sets
+                            .update_rule_set(&rule_set)
+                            .await?;
+                        self.services
+                            .customization
+                            .rule_sets
+                            .record_rule_set_history(
+                                &rule_set.id,
+                                "managed_updated",
+                                Some(&rule_set.rego_source),
+                                None,
+                            )
+                            .await?;
+                        reconciliation.updated += 1;
+                    }
+                }
+                None => {
+                    let now = Utc::now();
+                    let id = Id::new_rego_safe().0;
+                    let source = scryer_rules::rewrite_package_declaration(&pack.source(), &id);
+                    let rule_set = RuleSet {
+                        id,
+                        name: pack.name.to_string(),
+                        description: pack.description.to_string(),
+                        rego_source: source,
+                        enabled: true,
+                        priority: 0,
+                        applied_facets: pack.applied_facets.to_vec(),
+                        created_at: now,
+                        updated_at: now,
+                        is_managed: true,
+                        managed_key: Some(pack.key.to_string()),
+                    };
+                    self.services
+                        .customization
+                        .rule_sets
+                        .create_rule_set(&rule_set)
+                        .await?;
+                    self.services
+                        .customization
+                        .rule_sets
+                        .record_rule_set_history(
+                            &rule_set.id,
+                            "managed_created",
+                            Some(&rule_set.rego_source),
+                            None,
+                        )
+                        .await?;
+                    reconciliation.created += 1;
+                }
+            }
+        }
+
+        for stale in self
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets_by_managed_key_prefix(managed_trash::MANAGED_TRASH_KEY_PREFIX)
+            .await?
+            .into_iter()
+            .filter(|rule_set| {
+                rule_set
+                    .managed_key
+                    .as_deref()
+                    .is_some_and(|key| !expected_keys.contains(key))
+            })
+        {
+            self.services
+                .customization
+                .rule_sets
+                .record_rule_set_history(&stale.id, "managed_removed", None, None)
+                .await?;
+            self.services
+                .customization
+                .rule_sets
+                .delete_rule_set_by_managed_key(stale.managed_key.as_deref().unwrap_or_default())
+                .await?;
+            reconciliation.removed += 1;
+        }
+
+        if rebuild_engine {
+            self.rebuild_user_rules_engine().await?;
+        }
+
+        Ok(reconciliation)
+    }
+
     pub async fn rebuild_user_rules_engine(&self) -> AppResult<()> {
+        self.rebuild_user_rules_engine_filtered(false).await
+    }
+
+    async fn rebuild_user_rules_engine_filtered(
+        &self,
+        exclude_managed_trash: bool,
+    ) -> AppResult<()> {
         let enabled = self
             .services
             .customization
@@ -423,10 +591,22 @@ impl AppUseCase {
 
         let mut policies: Vec<scryer_rules::UserPolicy> = enabled
             .iter()
+            .filter(|rule_set| {
+                !exclude_managed_trash
+                    || !rule_set
+                        .managed_key
+                        .as_deref()
+                        .is_some_and(|key| key.starts_with(managed_trash::MANAGED_TRASH_KEY_PREFIX))
+            })
             .map(|rs| scryer_rules::UserPolicy {
                 id: rs.id.clone(),
                 name: rs.name.clone(),
                 rego_source: rs.rego_source.clone(),
+                origin: if rs.is_managed {
+                    scryer_rules::PolicyOrigin::System
+                } else {
+                    scryer_rules::PolicyOrigin::User
+                },
                 applied_facets: rs
                     .applied_facets
                     .iter()
@@ -473,6 +653,28 @@ impl AppUseCase {
         );
         Ok(())
     }
+}
+
+fn validate_managed_trash_rule_packs(
+    packs: &[managed_trash::ManagedTrashRulePack],
+) -> AppResult<()> {
+    for (index, pack) in packs.iter().enumerate() {
+        let id = format!("managed_trash_validation_{index}");
+        let source = scryer_rules::rewrite_package_declaration(&pack.source(), &id);
+        let validation =
+            scryer_rules::validation::validate_managed_rule(&source, &id).map_err(|error| {
+                AppError::Validation(format!("managed rule validation failed: {error}"))
+            })?;
+        if !validation.valid {
+            return Err(AppError::Validation(format!(
+                "managed rule pack {} is invalid: {}",
+                pack.key,
+                validation.errors.join("; ")
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 // ── Helper functions ─────────────────────────────────────────────────────────
@@ -593,15 +795,38 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct RuleSetMutationCounts {
+        creates: usize,
+        updates: usize,
+        deletes: usize,
+    }
+
     struct TestRuleSetRepo {
         rules: Mutex<Vec<RuleSet>>,
+        mutations: Mutex<RuleSetMutationCounts>,
+        fail_on_create: Option<usize>,
     }
 
     impl TestRuleSetRepo {
         fn new(rules: Vec<RuleSet>) -> Self {
             Self {
                 rules: Mutex::new(rules),
+                mutations: Mutex::new(RuleSetMutationCounts::default()),
+                fail_on_create: None,
             }
+        }
+
+        fn failing_on_create(rules: Vec<RuleSet>, create_number: usize) -> Self {
+            Self {
+                rules: Mutex::new(rules),
+                mutations: Mutex::new(RuleSetMutationCounts::default()),
+                fail_on_create: Some(create_number),
+            }
+        }
+
+        async fn mutation_counts(&self) -> RuleSetMutationCounts {
+            self.mutations.lock().await.clone()
         }
     }
 
@@ -633,11 +858,22 @@ mod tests {
         }
 
         async fn create_rule_set(&self, rule_set: &RuleSet) -> AppResult<()> {
+            let create_number = {
+                let mut mutations = self.mutations.lock().await;
+                mutations.creates += 1;
+                mutations.creates
+            };
+            if self.fail_on_create == Some(create_number) {
+                return Err(AppError::Repository(format!(
+                    "injected create failure #{create_number}"
+                )));
+            }
             self.rules.lock().await.push(rule_set.clone());
             Ok(())
         }
 
         async fn update_rule_set(&self, rule_set: &RuleSet) -> AppResult<()> {
+            self.mutations.lock().await.updates += 1;
             let mut rules = self.rules.lock().await;
             let existing = rules
                 .iter_mut()
@@ -648,6 +884,7 @@ mod tests {
         }
 
         async fn delete_rule_set(&self, id: &str) -> AppResult<()> {
+            self.mutations.lock().await.deletes += 1;
             self.rules.lock().await.retain(|rule| rule.id != id);
             Ok(())
         }
@@ -673,6 +910,7 @@ mod tests {
         }
 
         async fn delete_rule_set_by_managed_key(&self, key: &str) -> AppResult<()> {
+            self.mutations.lock().await.deletes += 1;
             self.rules
                 .lock()
                 .await
@@ -700,6 +938,22 @@ mod tests {
     }
 
     fn build_test_app(profiles: Vec<QualityProfile>, rules: Vec<RuleSet>) -> AppUseCase {
+        build_test_app_with_rule_repo(profiles, rules).0
+    }
+
+    fn build_test_app_with_rule_repo(
+        profiles: Vec<QualityProfile>,
+        rules: Vec<RuleSet>,
+    ) -> (AppUseCase, Arc<TestRuleSetRepo>) {
+        let rule_sets = Arc::new(TestRuleSetRepo::new(rules));
+        let app = build_test_app_with_existing_rule_repo(profiles, rule_sets.clone());
+        (app, rule_sets)
+    }
+
+    fn build_test_app_with_existing_rule_repo(
+        profiles: Vec<QualityProfile>,
+        rule_sets: Arc<TestRuleSetRepo>,
+    ) -> AppUseCase {
         let services = AppServices::builder(
             Arc::new(NullTitleRepository),
             Arc::new(NullShowRepository),
@@ -713,7 +967,7 @@ mod tests {
             Arc::new(TestQualityProfileRepo { profiles }),
             String::new(),
         )
-        .with_rule_sets(Arc::new(TestRuleSetRepo::new(rules)))
+        .with_rule_sets(rule_sets.clone())
         .build_partial_for_tests();
 
         AppUseCase::new(
@@ -811,6 +1065,7 @@ mod tests {
                 age_days: Some(5),
                 thumbs_up: None,
                 thumbs_down: None,
+                guide_facts: vec![],
                 extra: Default::default(),
             },
             profile: scryer_rules::ProfileDoc {
@@ -1047,6 +1302,248 @@ mod tests {
     }
 
     #[test]
+    fn managed_locale_packs_match_exact_namespaced_guide_facts() {
+        let cases = [
+            (
+                "trash-guides:locale:french",
+                &["fra" as &str][..],
+                &[][..],
+                &[
+                    "trash.locale.french.group.tier1",
+                    "trash.locale.french.marker.vff",
+                    "trash.locale.french.marker.vfi",
+                    "trash.locale.french.marker.vof",
+                    "trash.locale.french.marker.vfq",
+                    "trash.locale.french.marker.vq",
+                    "trash.locale.french.marker.voq",
+                    "trash.locale.french.marker.vostfr",
+                ][..],
+                &[("trash_tier_1", 120), ("trash_french_vostfr", -100)][..],
+            ),
+            (
+                "trash-guides:locale:french",
+                &["fr-fr" as &str][..],
+                &[][..],
+                &[
+                    "trash.locale.french.marker.vff",
+                    "trash.locale.french.marker.vfi",
+                    "trash.locale.french.marker.vof",
+                    "trash.locale.french.marker.vfq",
+                    "trash.locale.french.marker.vq",
+                    "trash.locale.french.marker.voq",
+                ][..],
+                &[
+                    ("trash_french_fr_fr_reference", 40),
+                    ("trash_french_fr_fr_quebec", -20),
+                ][..],
+            ),
+            (
+                "trash-guides:locale:french",
+                &[][..],
+                &["locale:fr-ca"][..],
+                &[
+                    "trash.locale.french.marker.vff",
+                    "trash.locale.french.marker.vfi",
+                    "trash.locale.french.marker.vof",
+                    "trash.locale.french.marker.vfq",
+                    "trash.locale.french.marker.vq",
+                    "trash.locale.french.marker.voq",
+                ][..],
+                &[
+                    ("trash_french_fr_ca_reference", -20),
+                    ("trash_french_fr_ca_quebec", 40),
+                ][..],
+            ),
+            (
+                "trash-guides:locale:german",
+                &["deu" as &str][..],
+                &[][..],
+                &[
+                    "trash.locale.german.group.tier2",
+                    "trash.locale.german.marker.subbed",
+                ][..],
+                &[("trash_tier_2", 60), ("trash_german_subbed", -100)][..],
+            ),
+            (
+                "trash-guides:locale:asian",
+                &[][..],
+                &["locale:asian"][..],
+                &["trash.locale.asian.group.tier3", "trash.locale.asian.lq"][..],
+                &[("trash_lq", -150), ("trash_tier_3", 20)][..],
+            ),
+        ];
+
+        for (key, languages, tags, facts, expected) in cases {
+            let pack = managed_trash::managed_trash_rule_packs()
+                .iter()
+                .find(|pack| pack.key == key)
+                .unwrap();
+            let id = key.replace([':', '-'], "_");
+            let policy = scryer_rules::UserPolicy {
+                id: id.clone(),
+                name: pack.name.to_string(),
+                rego_source: scryer_rules::rewrite_package_declaration(&pack.source(), &id),
+                origin: scryer_rules::PolicyOrigin::System,
+                applied_facets: vec![],
+            };
+            let mut input = multi_audio_rule_input("locale-profile", false, false);
+            input.profile.required_audio_languages =
+                languages.iter().map(|value| (*value).to_string()).collect();
+            input.context.tags = tags.iter().map(|value| (*value).to_string()).collect();
+            input.release.guide_facts = facts.iter().map(|value| (*value).to_string()).collect();
+
+            let mut evaluator = scryer_rules::UserRulesEngine::build(&[policy])
+                .unwrap()
+                .evaluator();
+            let result = evaluator.evaluate(&input, "movie").unwrap();
+            assert!(result.errors.is_empty(), "{key}: {result:?}");
+            let mut actual = result
+                .entries
+                .iter()
+                .map(|entry| (entry.code.as_str(), entry.delta))
+                .collect::<Vec<_>>();
+            actual.sort_unstable();
+            let mut expected = expected.to_vec();
+            expected.sort_unstable();
+            assert_eq!(actual, expected, "{key}");
+            assert!(
+                result
+                    .entries
+                    .iter()
+                    .all(|entry| entry.origin == scryer_rules::PolicyOrigin::System)
+            );
+        }
+
+        let french = &managed_trash::managed_trash_rule_packs()[0];
+        let id = "locale_no_intent";
+        let policy = scryer_rules::UserPolicy {
+            id: id.to_string(),
+            name: french.name.to_string(),
+            rego_source: scryer_rules::rewrite_package_declaration(&french.source(), id),
+            origin: scryer_rules::PolicyOrigin::System,
+            applied_facets: vec![],
+        };
+        let mut input = multi_audio_rule_input("locale-profile", false, false);
+        input.release.guide_facts = vec!["trash.locale.french.group.tier1".to_string()];
+        let result = scryer_rules::UserRulesEngine::build(&[policy])
+            .unwrap()
+            .evaluator()
+            .evaluate(&input, "movie")
+            .unwrap();
+        assert!(result.entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reconcile_managed_locale_packs_preserves_disabled_rows_and_prunes_stale_keys() {
+        let now = Utc::now();
+        let existing = RuleSet {
+            id: "preserved-french".to_string(),
+            name: "Old French".to_string(),
+            description: "old".to_string(),
+            rego_source: "old".to_string(),
+            enabled: false,
+            priority: 99,
+            applied_facets: vec![MediaFacet::Movie],
+            created_at: now,
+            updated_at: now,
+            is_managed: true,
+            managed_key: Some("trash-guides:locale:french".to_string()),
+        };
+        let stale =
+            legacy_managed_rule("stale-pack", "trash-guides:locale:obsolete", "Stale", "old");
+        let app = build_test_app(vec![], vec![existing, stale]);
+
+        let reconciliation = app.reconcile_managed_trash_rule_packs(false).await.unwrap();
+        assert_eq!(reconciliation.created, 2);
+        assert_eq!(reconciliation.updated, 1);
+        assert_eq!(reconciliation.removed, 1);
+
+        let rules = app
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets()
+            .await
+            .unwrap();
+        assert_eq!(rules.len(), 3);
+        let french = rules
+            .iter()
+            .find(|rule| rule.managed_key.as_deref() == Some("trash-guides:locale:french"))
+            .unwrap();
+        assert_eq!(french.id, "preserved-french");
+        assert_eq!(french.created_at, now);
+        assert!(!french.enabled);
+        assert!(
+            french
+                .rego_source
+                .contains("MANAGED_TRASH_REGISTRY_VERSION=managed-trash-registry-v1")
+        );
+        assert!(!rules.iter().any(|rule| rule.id == "stale-pack"));
+    }
+
+    #[tokio::test]
+    async fn invalid_managed_pack_prevents_all_reconciliation_mutations() {
+        fn invalid_source() -> String {
+            r#"score_entry["blocked"] := scryer.block_score()"#.to_string()
+        }
+
+        let (app, rule_sets) = build_test_app_with_rule_repo(vec![], vec![]);
+        let packs = [managed_trash::ManagedTrashRulePack {
+            key: "trash-guides:locale:invalid",
+            name: "Invalid",
+            description: "Invalid managed fixture.",
+            applied_facets: &[],
+            source: invalid_source,
+        }];
+
+        let error = app
+            .reconcile_managed_trash_rule_packs_from_registry(&packs, false)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("managed rule pack"));
+        assert_eq!(
+            rule_sets.mutation_counts().await,
+            RuleSetMutationCounts::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_startup_reconciliation_never_activates_partial_managed_packs() {
+        let partial = legacy_managed_rule(
+            "partial-french",
+            "trash-guides:locale:french",
+            "Partial French",
+            "old source",
+        );
+        let rule_sets = Arc::new(TestRuleSetRepo::failing_on_create(vec![partial], 2));
+        let app = build_test_app_with_existing_rule_repo(vec![], rule_sets.clone());
+
+        let error = app
+            .reconcile_and_activate_managed_trash_rule_packs()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("injected create failure"));
+        assert_eq!(rule_sets.mutation_counts().await.creates, 2);
+
+        let mut input = multi_audio_rule_input("locale-profile", false, false);
+        input.profile.required_audio_languages = vec!["fra".to_string()];
+        input.release.guide_facts = vec!["trash.locale.french.group.tier1".to_string()];
+        let engine = app
+            .services
+            .customization
+            .user_rules
+            .read()
+            .expect("rules engine lock");
+        let result = engine.evaluator().evaluate(&input, "movie").unwrap();
+        assert!(
+            result
+                .entries
+                .iter()
+                .all(|entry| entry.code != "trash_tier_1")
+        );
+    }
+
+    #[test]
     fn migrated_multi_audio_rule_scores_once_when_both_release_and_file_match() {
         let policy = scryer_rules::UserPolicy {
             id: "legacy_multi_audio".to_string(),
@@ -1055,6 +1552,7 @@ mod tests {
                 &generate_profile_prefer_multi_audio_rego("profile-1"),
                 "legacy_multi_audio",
             ),
+            origin: scryer_rules::PolicyOrigin::User,
             applied_facets: vec![],
         };
 

@@ -742,7 +742,9 @@ async fn post_download_score_uses_rescored_quality_and_records_negative_audit() 
             .as_array()
             .expect("rescore changes should be an array")
             .iter()
-            .any(|change| change.as_str().is_some_and(|value| value.contains("resolution")))
+            .any(|change| change
+                .as_str()
+                .is_some_and(|value| value.contains("resolution")))
     );
 }
 
@@ -792,7 +794,9 @@ async fn post_download_score_preserves_prepared_rescore_changes_when_parsed_alre
             .as_array()
             .expect("rescore changes should be an array")
             .iter()
-            .any(|change| change.as_str().is_some_and(|value| value.contains("resolution")))
+            .any(|change| change
+                .as_str()
+                .is_some_and(|value| value.contains("resolution")))
     );
 }
 
@@ -815,10 +819,11 @@ score_entry["dv_profile_bonus"] := 123 if {
 "#,
             "dv_profile",
         ),
+        origin: scryer_rules::PolicyOrigin::User,
         applied_facets: vec!["movie".to_string()],
     };
-    let engine = scryer_rules::UserRulesEngine::build(&[policy])
-        .expect("user rule engine should compile");
+    let engine =
+        scryer_rules::UserRulesEngine::build(&[policy]).expect("user rule engine should compile");
     *app.services
         .customization
         .user_rules
@@ -1360,9 +1365,13 @@ fn build_episode_upgrade_plan_allows_pack_to_replace_singles_when_it_beats_all_o
         ),
     ];
 
-    let plan =
-        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string(), "ep-2".to_string()], 900, false)
-            .expect("season pack should replace lower-scored singles");
+    let plan = build_episode_upgrade_plan(
+        &incumbents,
+        &["ep-1".to_string(), "ep-2".to_string()],
+        900,
+        false,
+    )
+    .expect("season pack should replace lower-scored singles");
 
     assert_eq!(plan.previous_best_score, 450);
     assert_eq!(plan.additional_superseded.len(), 1);

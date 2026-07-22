@@ -540,6 +540,7 @@ input CreateRuleSetInput {
 	regoSource: String!
 	appliedFacets: [String!]
 	priority: Int
+	enabled: Boolean
 }
 
 input CreateSubtitleProviderConfigInput {

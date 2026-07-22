@@ -471,6 +471,20 @@ pub fn validate_user_rule(
     }
 }
 
+/// Validate a system-managed score-only policy.
+pub fn validate_managed_rule(
+    rego_source: &str,
+    rule_set_id: &str,
+) -> Result<ValidationResult, RulesError> {
+    if rego_source.contains("scryer.block_score()") {
+        return Ok(ValidationResult::invalid(
+            "managed policies cannot call scryer.block_score()",
+        ));
+    }
+
+    validate_user_rule(rego_source, rule_set_id)
+}
+
 /// Verify that the evaluation result is a map of string → integer.
 /// Floats and out-of-range values are rejected.
 fn validate_score_entry_shape(value: &Value) -> Result<(), String> {
@@ -558,6 +572,7 @@ fn synthetic_test_input() -> UserRuleInput {
             age_days: Some(5),
             thumbs_up: Some(10),
             thumbs_down: Some(0),
+            guide_facts: vec![],
             extra: Default::default(),
         },
         profile: ProfileDoc {
@@ -706,6 +721,7 @@ mod tests {
             id: policy_id,
             name: template_id.to_string(),
             rego_source,
+            origin: crate::PolicyOrigin::User,
             applied_facets: Vec::new(),
         }])
         .expect("template policy should compile");
@@ -725,6 +741,19 @@ mod tests {
         "#;
         let result = validate_user_rule(source, "test_rule").unwrap();
         assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn managed_rule_rejects_block_score_builtin() {
+        let source = r#"
+            package scryer.rules.user.managed_rule
+            import rego.v1
+            score_entry["blocked"] := scryer.block_score()
+        "#;
+
+        let result = validate_managed_rule(source, "managed_rule").unwrap();
+        assert!(!result.valid);
+        assert!(result.errors[0].contains("cannot call scryer.block_score"));
     }
 
     #[test]

@@ -210,6 +210,11 @@
           "descKey": "settings.refReleaseThumbsDown"
         },
         {
+          "field": "guide_facts",
+          "type": "string[]",
+          "descKey": "settings.refReleaseGuideFacts"
+        },
+        {
           "field": "extra",
           "type": "object",
           "descKey": "settings.refReleaseExtra"

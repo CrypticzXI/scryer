@@ -2,6 +2,7 @@ import * as React from "react";
 import {
   BookOpen,
   ChevronDown,
+  Copy,
   Edit,
   Library,
   Plus,
@@ -52,6 +53,7 @@ import type {
 } from "@/lib/types/rule-sets";
 import ruleInputContract from "@/lib/contracts/rule-input-contract.json";
 import { selectorId } from "@/lib/utils/dom-ids";
+import { isUserOwnedRuleSet } from "@/lib/utils/rule-sets";
 
 type SettingsRulesSectionProps = {
   isEditorOpen: boolean;
@@ -66,6 +68,7 @@ type SettingsRulesSectionProps = {
   resetRuleSetDraft: () => void;
   startCreateRuleSet: () => void;
   ruleSetRecords: RuleSetRecord[];
+  copyRuleSet: (record: RuleSetRecord) => void;
   editRuleSet: (record: RuleSetRecord) => void;
   toggleRuleSetEnabled: (record: RuleSetRecord) => Promise<void> | void;
   deleteRuleSet: (record: RuleSetRecord) => Promise<void> | void;
@@ -761,6 +764,7 @@ export function SettingsRulesSection({
   resetRuleSetDraft,
   startCreateRuleSet,
   ruleSetRecords,
+  copyRuleSet,
   editRuleSet,
   toggleRuleSetEnabled,
   deleteRuleSet,
@@ -848,7 +852,16 @@ export function SettingsRulesSection({
                       >
                         <Power className="h-4 w-4" />
                       </IconButton>
-                      {!record.isManaged ? (
+                      {record.isManaged ? (
+                        <IconButton
+                          id={selectorId("settings-rule-copy", record.id)}
+                          label={t("settings.ruleCopyAsCustom")}
+                          tone="neutral"
+                          onClick={() => copyRuleSet(record)}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </IconButton>
+                      ) : isUserOwnedRuleSet(record) ? (
                         <>
                           <IconButton
                             id={selectorId("settings-rule-edit", record.id)}

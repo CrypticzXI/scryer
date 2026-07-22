@@ -109,6 +109,11 @@ pub(crate) fn build_rule_input(
                 .map(|value| (chrono::Utc::now() - value.with_timezone(&chrono::Utc)).num_days()),
             thumbs_up: release_runtime.thumbs_up,
             thumbs_down: release_runtime.thumbs_down,
+            guide_facts: parsed
+                .guide_facts
+                .iter()
+                .map(|fact| fact.code.clone())
+                .collect(),
             extra: release_runtime.extra.cloned().unwrap_or_default(),
         },
         profile: ProfileDoc {

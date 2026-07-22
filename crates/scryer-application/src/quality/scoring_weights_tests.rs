@@ -55,6 +55,23 @@ fn balanced_features_match_current_defaults() {
 }
 
 #[test]
+fn guide_fact_penalties_follow_persona_scale() {
+    let expected = [
+        (ScoringPersona::Balanced, -30, -90, -60),
+        (ScoringPersona::Audiophile, -60, -180, -120),
+        (ScoringPersona::Efficient, -15, -45, -30),
+        (ScoringPersona::Compatible, -20, -60, -40),
+    ];
+
+    for (persona, scene, obfuscated, retagged) in expected {
+        let weights = build_weights(&persona, &ScoringOverrides::default());
+        assert_eq!(weights.scene_penalty, scene);
+        assert_eq!(weights.obfuscated_penalty, obfuscated);
+        assert_eq!(weights.retagged_penalty, retagged);
+    }
+}
+
+#[test]
 fn balanced_size_curve_matches_legacy() {
     let w = build_weights(&ScoringPersona::Balanced, &ScoringOverrides::default());
     assert_eq!(w.size_excessive, -300);

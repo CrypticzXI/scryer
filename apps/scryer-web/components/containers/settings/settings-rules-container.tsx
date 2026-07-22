@@ -5,6 +5,7 @@ import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import type { RuleSetRecord, RuleSetDraft, RuleValidationResult } from "@/lib/types/rule-sets";
+import { copyRuleSetDraft, createRuleSetInput } from "@/lib/utils/rule-sets";
 import { ruleSetsQuery } from "@/lib/graphql/queries";
 import {
   createRuleSetMutation,
@@ -25,6 +26,7 @@ const RULE_SET_INITIAL_DRAFT: RuleSetDraft = {
 
 type PendingRuleEditorAction =
   | { type: "create" }
+  | { type: "copy"; record: RuleSetRecord }
   | { type: "edit"; record: RuleSetRecord }
   | { type: "close" }
   | {
@@ -96,6 +98,18 @@ export function SettingsRulesContainer() {
     [setGlobalStatus, t],
   );
 
+  const openCopyRuleEditor = useCallback(
+    (record: RuleSetRecord) => {
+      const nextDraft = copyRuleSetDraft(record);
+      setEditingRuleSetId(null);
+      setRuleSetDraft(nextDraft);
+      setRuleSetDraftBaseline(nextDraft);
+      setValidationResult(null);
+      setIsEditorOpen(true);
+    },
+    [],
+  );
+
   const openTemplateRuleEditor = useCallback(
     (template: {
       title: string;
@@ -136,6 +150,17 @@ export function SettingsRulesContainer() {
       setPendingEditorAction({ type: "edit", record });
     },
     [isEditorOpen, isRuleDraftDirty, openEditRuleEditor],
+  );
+
+  const requestCopyRuleSet = useCallback(
+    (record: RuleSetRecord) => {
+      if (!isEditorOpen || !isRuleDraftDirty) {
+        openCopyRuleEditor(record);
+        return;
+      }
+      setPendingEditorAction({ type: "copy", record });
+    },
+    [isEditorOpen, isRuleDraftDirty, openCopyRuleEditor],
   );
 
   const requestCloseRuleEditor = useCallback(() => {
@@ -213,13 +238,7 @@ export function SettingsRulesContainer() {
       } else {
         const { error } = await client
           .mutation(createRuleSetMutation, {
-            input: {
-              name: payload.name,
-              description: payload.description || undefined,
-              regoSource: payload.regoSource,
-              priority: payload.priority,
-              appliedFacets: payload.appliedFacets.length > 0 ? payload.appliedFacets : undefined,
-            },
+            input: createRuleSetInput(payload),
           })
           .toPromise();
         if (error) throw error;
@@ -290,6 +309,8 @@ export function SettingsRulesContainer() {
     if (!pendingEditorAction) return;
     if (pendingEditorAction.type === "create") {
       openCreateRuleEditor();
+    } else if (pendingEditorAction.type === "copy") {
+      openCopyRuleEditor(pendingEditorAction.record);
     } else if (pendingEditorAction.type === "edit") {
       openEditRuleEditor(pendingEditorAction.record);
     } else if (pendingEditorAction.type === "template") {
@@ -301,6 +322,7 @@ export function SettingsRulesContainer() {
   }, [
     closeRuleSetEditor,
     openCreateRuleEditor,
+    openCopyRuleEditor,
     openEditRuleEditor,
     openTemplateRuleEditor,
     pendingEditorAction,
@@ -344,6 +366,7 @@ export function SettingsRulesContainer() {
         resetRuleSetDraft={requestCloseRuleEditor}
         startCreateRuleSet={requestCreateRuleEditor}
         ruleSetRecords={ruleSetRecords}
+        copyRuleSet={requestCopyRuleSet}
         editRuleSet={requestEditRuleSet}
         toggleRuleSetEnabled={toggleRuleSetEnabled}
         deleteRuleSet={deleteRuleSet}
@@ -373,6 +396,8 @@ export function SettingsRulesContainer() {
         confirmLabel={
           pendingEditorAction?.type === "create"
             ? t("settings.ruleCreateNew")
+            : pendingEditorAction?.type === "copy"
+              ? t("settings.ruleCopyAsCustom")
             : pendingEditorAction?.type === "template"
               ? t("settings.ruleApplyTemplate")
               : pendingEditorAction?.type === "edit"

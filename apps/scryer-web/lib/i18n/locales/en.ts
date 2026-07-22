@@ -1560,6 +1560,7 @@ const en: LocaleDictionary = {
   "settings.noRulesFound": "No custom rules configured.",
   "settings.ruleCreate": "Create Rule",
   "settings.ruleCreateNew": "Create new rule",
+  "settings.ruleCopyAsCustom": "Copy as custom rule",
   "settings.ruleUpdate": "Update Rule",
   "settings.ruleApplyTemplate": "Apply template",
   "settings.ruleConfirmDiscardTitle": "Discard current rule edits?",
@@ -1605,6 +1606,7 @@ const en: LocaleDictionary = {
   "settings.refReleaseVideoCodec": "Video codec (e.g. H.265, H.264, AV1)",
   "settings.refReleaseAudio": "Primary audio codec (e.g. DDP, AAC, TrueHD)",
   "settings.refReleaseAudioCodecs": "All detected audio codecs as an array",
+  "settings.refReleaseGuideFacts": "Guide facts detected from the release metadata",
   "settings.refReleaseAudioChannels":
     "Audio channel configuration (e.g. 5.1, 7.1, 2.0)",
   "settings.refReleaseLangsAudio":

@@ -35,6 +35,11 @@
           "descKey": "settings.refReleaseAudioCodecs"
         },
         {
+          "field": "guide_facts",
+          "type": "string[]",
+          "descKey": "settings.refReleaseGuideFacts"
+        },
+        {
           "field": "audio_channels",
           "type": "string?",
           "descKey": "settings.refReleaseAudioChannels"

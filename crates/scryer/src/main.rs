@@ -1276,8 +1276,14 @@ async fn bootstrap_application(
     {
         tracing::warn!(error = %e, "failed to migrate canonical audio/persona settings on startup");
     }
-    if let Err(e) = app_use_case.rebuild_user_rules_engine().await {
-        tracing::warn!(error = %e, "failed to rebuild user rules engine on startup");
+    if let Err(e) = app_use_case
+        .reconcile_and_activate_managed_trash_rule_packs()
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            "failed to reconcile and activate managed TRaSH rule packs; retaining the last loaded rule engine"
+        );
     }
     if let Err(e) = app_use_case
         .migrate_legacy_opensubtitles_provider_config()

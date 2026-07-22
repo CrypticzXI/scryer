@@ -4222,6 +4222,7 @@ pub struct CreateRuleSetInput {
     pub rego_source: String,
     pub applied_facets: Option<Vec<String>>,
     pub priority: Option<i32>,
+    pub enabled: Option<bool>,
 }
 
 #[derive(InputObject)]

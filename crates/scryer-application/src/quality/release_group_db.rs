@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use crate::scoring_weights::ScoringWeights;
 
 /// Reputation tier for a release group.
@@ -82,11 +85,35 @@ pub struct MetadataRuleRecord {
     pub spec_name: &'static str,
     pub implementation: &'static str,
     pub value: &'static str,
+    pub trash_scores_json: &'static str,
+    pub required_json: &'static str,
+    pub negate_json: &'static str,
+    pub complete_json: &'static str,
     pub reason: &'static str,
     pub source_path: &'static str,
 }
 
 include!("trash_guides_release_groups.generated.rs");
+
+struct GroupRuleIndex {
+    exact: HashMap<String, Vec<usize>>,
+    prefixes: Vec<usize>,
+}
+
+static GROUP_RULE_INDEX: LazyLock<GroupRuleIndex> = LazyLock::new(|| {
+    let mut exact = HashMap::<String, Vec<usize>>::new();
+    let mut prefixes = Vec::new();
+    for (index, rule) in GROUP_RULES.iter().enumerate() {
+        match rule.match_kind {
+            GroupMatchKind::Exact => exact
+                .entry(rule.matcher.to_ascii_uppercase())
+                .or_default()
+                .push(index),
+            GroupMatchKind::Prefix => prefixes.push(index),
+        }
+    }
+    GroupRuleIndex { exact, prefixes }
+});
 
 /// Look up a release group's tier, considering source context.
 ///
@@ -107,25 +134,42 @@ pub fn lookup_group(
 
     for facet in facets {
         // Try source-specific match first
-        if let Some(rule) = GROUP_RULES.iter().find(|rule| {
-            group_rule_matches(rule, &name_upper)
-                && rule.entry.facet == *facet
-                && rule.entry.source_context == ctx
-        }) {
+        if let Some(rule) = indexed_group_rule(&name_upper, *facet, ctx) {
             return Some(&rule.entry);
         }
 
         // Fall back to Any context (banned groups, etc.).
-        if let Some(rule) = GROUP_RULES.iter().find(|rule| {
-            group_rule_matches(rule, &name_upper)
-                && rule.entry.facet == *facet
-                && rule.entry.source_context == SourceContext::Any
-        }) {
+        if let Some(rule) = indexed_group_rule(&name_upper, *facet, SourceContext::Any) {
             return Some(&rule.entry);
         }
     }
 
     None
+}
+
+fn indexed_group_rule(
+    candidate: &str,
+    facet: RuleFacet,
+    context: SourceContext,
+) -> Option<&'static GroupRule> {
+    let exact_index = GROUP_RULE_INDEX.exact.get(candidate).and_then(|indices| {
+        indices.iter().copied().find(|index| {
+            let entry = &GROUP_RULES[*index].entry;
+            entry.facet == facet && entry.source_context == context
+        })
+    });
+    let prefix_index = GROUP_RULE_INDEX.prefixes.iter().copied().find(|index| {
+        let rule = &GROUP_RULES[*index];
+        rule.entry.facet == facet
+            && rule.entry.source_context == context
+            && group_rule_matches(rule, candidate)
+    });
+
+    match (exact_index, prefix_index) {
+        (Some(exact), Some(prefix)) => Some(&GROUP_RULES[exact.min(prefix)]),
+        (Some(index), None) | (None, Some(index)) => Some(&GROUP_RULES[index]),
+        (None, None) => None,
+    }
 }
 
 fn candidate_facets(category_hint: Option<&str>) -> &'static [RuleFacet] {
