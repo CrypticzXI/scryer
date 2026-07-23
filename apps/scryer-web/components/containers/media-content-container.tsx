@@ -39,7 +39,6 @@ import {
   discoveryItemDetailQuery,
   ruleSetsQuery,
   routingPageInitQuery,
-  searchForTitleQuery,
   movieSidePanelTitleQuery,
   titleReleaseBlocklistQuery,
   titleCatalogFilterOptionsQuery,
@@ -51,7 +50,9 @@ import {
   QUALITY_PROFILE_INHERIT_VALUE,
   viewToFacet,
 } from "@/lib/constants/settings";
-import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
+import { isAbortError } from "@/lib/graphql/urql-client";
+import { runIterativeReleaseSearch } from "@/lib/graphql/release-search";
+import type { InteractiveSearchProgress } from "@/lib/graphql/release-search";
 import { useClient } from "urql";
 import type {
   ContentSettingsSection,
@@ -3596,22 +3597,24 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
 
   const runInteractiveSearchForTitle = React.useCallback(
-    async (title: TitleRecord) => {
+    async (
+      title: TitleRecord,
+      onUpdate?: (snapshot: InteractiveSearchProgress) => void,
+    ) => {
       interactiveSearchAbortRef.current?.abort();
       const abortController = new AbortController();
       interactiveSearchAbortRef.current = abortController;
 
       try {
-        const { data, error } = await client
-          .query(searchForTitleQuery, { titleId: title.id }, {
-            fetch: makeAbortableFetch(abortController.signal),
-          })
-          .toPromise();
+        const results = await runIterativeReleaseSearch(
+          client,
+          { titleId: title.id },
+          { signal: abortController.signal, onUpdate },
+        );
         if (abortController.signal.aborted) {
           return [];
         }
-        if (error) throw error;
-        return (data?.searchReleases ?? []) as Release[];
+        return results;
       } catch (error) {
         if (abortController.signal.aborted || isAbortError(error)) {
           return [];

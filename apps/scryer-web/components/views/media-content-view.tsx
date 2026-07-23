@@ -100,6 +100,10 @@ import type {
   TitleCatalogFilterOptionsRecord,
 } from "@/lib/types";
 import type { TitleCatalogAdvancedFilters } from "@/lib/utils/title-catalog-query";
+import type {
+  InteractiveSearchIndexerProgress,
+  InteractiveSearchProgress,
+} from "@/lib/graphql/release-search";
 import type { ImportMode } from "@/lib/types/settings";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import type { ViewCategoryId } from "./media-content/indexer-category-picker";
@@ -683,7 +687,10 @@ function TitleContextReleaseSearchPanel({
   onLoadingChange,
 }: {
   title: TitleRecord;
-  onInteractiveSearch: (title: TitleRecord) => Promise<Release[]> | Release[];
+  onInteractiveSearch: (
+    title: TitleRecord,
+    onUpdate?: (snapshot: InteractiveSearchProgress) => void,
+  ) => Promise<Release[]> | Release[];
   onQueueFromInteractive: (
     title: TitleRecord,
     release: Release,
@@ -702,6 +709,9 @@ function TitleContextReleaseSearchPanel({
   const [results, setResults] = React.useState<Release[] | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [searchFailed, setSearchFailed] = React.useState(false);
+  const [indexerProgress, setIndexerProgress] = React.useState<
+    InteractiveSearchIndexerProgress[] | null
+  >(null);
   const [sortKey, setSortKey] =
     React.useState<ReleaseSearchSortKey>("score");
   const [sortDirection, setSortDirection] =
@@ -709,6 +719,20 @@ function TitleContextReleaseSearchPanel({
   const releaseSearchDescription = React.useMemo(() => {
     if (results === null) {
       return t("help.interactiveSearchTooltip");
+    }
+
+    if (loading && indexerProgress !== null) {
+      const done = indexerProgress.filter(
+        (indexer) =>
+          indexer.status === "COMPLETED" ||
+          indexer.status === "FAILED" ||
+          indexer.status === "SKIPPED",
+      ).length;
+      return t("title.contextReleaseSearchProgress", {
+        releaseCount: results.length,
+        done,
+        total: indexerProgress.length,
+      });
     }
 
     const sourceCount = new Set(
@@ -720,7 +744,12 @@ function TitleContextReleaseSearchPanel({
       releaseCount: results.length,
       indexerCount: sourceCount,
     });
-  }, [results, t]);
+  }, [indexerProgress, loading, results, t]);
+  const failedIndexers = React.useMemo(
+    () =>
+      (indexerProgress ?? []).filter((indexer) => indexer.status === "FAILED"),
+    [indexerProgress],
+  );
 
   const handleSortChange = React.useCallback(
     (
@@ -761,6 +790,7 @@ function TitleContextReleaseSearchPanel({
     setResults(null);
     setLoading(false);
     setSearchFailed(false);
+    setIndexerProgress(null);
   }, [title.id]);
 
   React.useEffect(() => {
@@ -776,8 +806,17 @@ function TitleContextReleaseSearchPanel({
     requestIdRef.current = requestId;
     setLoading(true);
     setSearchFailed(false);
+    setIndexerProgress(null);
 
-    void Promise.resolve(onInteractiveSearch(title))
+    const onUpdate = (snapshot: InteractiveSearchProgress) => {
+      if (requestIdRef.current !== requestId) {
+        return;
+      }
+      setResults(snapshot.releases);
+      setIndexerProgress(snapshot.indexers);
+    };
+
+    void Promise.resolve(onInteractiveSearch(title, onUpdate))
       .then((nextResults) => {
         if (requestIdRef.current !== requestId) {
           return;
@@ -822,6 +861,14 @@ function TitleContextReleaseSearchPanel({
           <p className="mt-0.5 truncate text-[11.5px] text-[var(--scry-faint)]">
             {releaseSearchDescription}
           </p>
+          {!loading && failedIndexers.length > 0 ? (
+            <p className="mt-0.5 truncate text-[11.5px] text-[var(--scry-danger-text)]">
+              {t("title.contextReleaseSearchIndexerFailures", {
+                count: failedIndexers.length,
+                names: failedIndexers.map((indexer) => indexer.name).join(", "),
+              })}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1.5">
           {results && results.length > 1 ? (
@@ -872,7 +919,7 @@ function TitleContextReleaseSearchPanel({
           results !== null && results.length > 0 && !searchFailed ? "" : "p-4",
         )}
       >
-        {loading && results === null ? (
+        {loading && (results === null || results.length === 0) ? (
           <div className="flex items-center gap-2 rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-soft)] px-3 py-2 text-[12px] text-[var(--scry-muted2)]">
             <Loader2 className="h-4 w-4 animate-spin text-[var(--scry-accent)]" />
             {t("title.searchingReleases")}
@@ -1014,7 +1061,10 @@ function TitleContextPanel({
     plan: MediaRenamePlan,
   ) => Promise<boolean | void> | boolean | void;
   refreshLoading: boolean;
-  onInteractiveSearch: (title: TitleRecord) => Promise<Release[]> | Release[];
+  onInteractiveSearch: (
+    title: TitleRecord,
+    onUpdate?: (snapshot: InteractiveSearchProgress) => void,
+  ) => Promise<Release[]> | Release[];
   onQueueFromInteractive: (
     title: TitleRecord,
     release: Release,
@@ -1868,6 +1918,7 @@ export function MediaContentView({
     ) => Promise<void> | void;
     runInteractiveSearchForTitle: (
       title: TitleRecord,
+      onUpdate?: (snapshot: InteractiveSearchProgress) => void,
     ) => Promise<Release[]> | Release[];
     queueExistingFromRelease: (
       title: TitleRecord,
