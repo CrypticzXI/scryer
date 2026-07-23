@@ -271,7 +271,9 @@ async fn setup_app(configs: Vec<IndexerConfig>) -> (AppUseCase, User) {
         datastore.clone(),
         encryption_key_state.clone(),
     ));
-    let blocklist_store = Arc::new(scryer_infrastructure::BlocklistStore::new(datastore.clone()));
+    let blocklist_store = Arc::new(scryer_infrastructure::BlocklistStore::new(
+        datastore.clone(),
+    ));
     let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
     let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
     let library_scan_unmatched_store = Arc::new(LibraryScanUnmatchedStore::new(datastore.clone()));
@@ -532,9 +534,13 @@ async fn fast_indexer_results_stream_in_before_slow_indexer_completes() {
         InteractiveReleaseSearchIndexerStatus::Searching
     );
 
-    let done = wait_for_snapshot(&app, &user, &start.id, Duration::from_secs(90), |snapshot| {
-        snapshot.state != InteractiveReleaseSearchState::Running
-    })
+    let done = wait_for_snapshot(
+        &app,
+        &user,
+        &start.id,
+        Duration::from_secs(90),
+        |snapshot| snapshot.state != InteractiveReleaseSearchState::Running,
+    )
     .await;
     assert_eq!(done.state, InteractiveReleaseSearchState::Completed);
     assert!(done.completed_at.is_some());
@@ -586,9 +592,13 @@ async fn rate_limited_indexer_is_marked_failed_and_healthy_results_survive() {
 
     // 90s > the job's own 55s deadline, so the snapshot is guaranteed
     // terminal here even on a saturated CI host.
-    let done = wait_for_snapshot(&app, &user, &start.id, Duration::from_secs(90), |snapshot| {
-        snapshot.state != InteractiveReleaseSearchState::Running
-    })
+    let done = wait_for_snapshot(
+        &app,
+        &user,
+        &start.id,
+        Duration::from_secs(90),
+        |snapshot| snapshot.state != InteractiveReleaseSearchState::Running,
+    )
     .await;
     assert_eq!(done.state, InteractiveReleaseSearchState::Completed);
     assert!(

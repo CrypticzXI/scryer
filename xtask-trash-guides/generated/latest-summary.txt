@@ -1,5 +1,5 @@
 TRaSH Guides sync summary
-Synced at: 2026-07-22
+Synced at: 2026-07-23
 Source revision: e6aa63c782aa049e47be746889e4d06db0fe686f
 
 Active release-group rules: 826

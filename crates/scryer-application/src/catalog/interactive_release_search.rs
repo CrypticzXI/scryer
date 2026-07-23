@@ -20,8 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 /// Overall deadline for a job; stragglers past this are marked failed.
-const INTERACTIVE_RELEASE_SEARCH_DEADLINE: std::time::Duration =
-    std::time::Duration::from_secs(55);
+const INTERACTIVE_RELEASE_SEARCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(55);
 /// Terminal jobs are evicted this long after completion.
 const COMPLETED_JOB_TTL_MINUTES: i64 = 5;
 /// Defensive cap: running jobs older than this are cancelled and evicted.
@@ -103,10 +102,9 @@ fn evict_stale_entries(
                 true
             }
         }
-        _ => entry
-            .snapshot
-            .completed_at
-            .is_some_and(|completed| now - completed <= Duration::minutes(COMPLETED_JOB_TTL_MINUTES)),
+        _ => entry.snapshot.completed_at.is_some_and(|completed| {
+            now - completed <= Duration::minutes(COMPLETED_JOB_TTL_MINUTES)
+        }),
     });
 }
 
@@ -208,7 +206,9 @@ impl AppUseCase {
                 (title.clone(), subject, false)
             }
             _ => {
-                let subject = self.resolve_release_search_subject_for_title(&title).await?;
+                let subject = self
+                    .resolve_release_search_subject_for_title(&title)
+                    .await?;
                 (title.clone(), subject, false)
             }
         };
@@ -225,7 +225,10 @@ impl AppUseCase {
         };
         let scope_id = self.quality_profile_scope_id(lookup);
         let indexer_routing = self
-            .resolve_indexer_routing(Some(title_for_search.library_id.as_str()), scope_id.as_deref())
+            .resolve_indexer_routing(
+                Some(title_for_search.library_id.as_str()),
+                scope_id.as_deref(),
+            )
             .await;
         let indexer_priority_by_name = self
             .build_indexer_priority_by_name(indexer_routing.as_ref())
@@ -414,7 +417,10 @@ impl AppUseCase {
         Ok(true)
     }
 
-    async fn run_interactive_release_search_job(&self, context: InteractiveReleaseSearchJobContext) {
+    async fn run_interactive_release_search_job(
+        &self,
+        context: InteractiveReleaseSearchJobContext,
+    ) {
         let InteractiveReleaseSearchJobContext {
             job_id,
             actor,

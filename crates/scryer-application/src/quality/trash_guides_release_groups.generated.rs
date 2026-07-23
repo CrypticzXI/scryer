@@ -2,7 +2,7 @@
 // Do not edit by hand.
 
 #[allow(dead_code)]
-pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-07-22";
+pub const TRASH_GUIDES_SYNCED_AT: &str = "2026-07-23";
 #[allow(dead_code)]
 pub const TRASH_GUIDES_SOURCE_REVISION: &str = "e6aa63c782aa049e47be746889e4d06db0fe686f";
 
