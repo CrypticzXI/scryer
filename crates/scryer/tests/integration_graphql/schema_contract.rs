@@ -4674,9 +4674,15 @@ async fn graphql_introspection_interactive_release_search_uses_payloads() {
     let start = field("mutationRoot", "startInteractiveReleaseSearch");
     assert_eq!(start["args"][0]["name"], "input");
     assert_eq!(start["args"][0]["type"]["kind"], "NON_NULL");
-    assert_eq!(start["args"][0]["type"]["ofType"]["name"], "SearchReleasesInput");
+    assert_eq!(
+        start["args"][0]["type"]["ofType"]["name"],
+        "SearchReleasesInput"
+    );
     assert_eq!(start["type"]["kind"], "NON_NULL");
-    assert_eq!(start["type"]["ofType"]["name"], "InteractiveReleaseSearchPayload");
+    assert_eq!(
+        start["type"]["ofType"]["name"],
+        "InteractiveReleaseSearchPayload"
+    );
 
     let cancel = field("mutationRoot", "cancelInteractiveReleaseSearch");
     assert_eq!(cancel["args"][0]["name"], "id");

@@ -190,11 +190,6 @@ pub use acquisition::wanted_views::{
     AcquisitionSearchJobView, AcquisitionSearchProgress, AcquisitionSearchRequest,
     WantedConvergenceState, WantedScopeView, WantedViewConvergence,
 };
-pub use catalog::interactive_release_search::{
-    InteractiveReleaseSearchIndexerStatus, InteractiveReleaseSearchIndexerView,
-    InteractiveReleaseSearchRequest, InteractiveReleaseSearchSnapshot,
-    InteractiveReleaseSearchState,
-};
 pub use acquisition_workflow::start_background_acquisition_poller;
 pub use app_usecase_integration::derive_download_queue_display_state;
 pub use app_usecase_integration::enrich_download_queue_items_from_submissions;
@@ -220,6 +215,11 @@ pub use catalog::facets::handler::{
 pub use catalog::facets::movie::MovieFacetHandler;
 pub use catalog::facets::registry::FacetRegistry;
 pub use catalog::facets::series::SeriesFacetHandler;
+pub use catalog::interactive_release_search::{
+    InteractiveReleaseSearchIndexerStatus, InteractiveReleaseSearchIndexerView,
+    InteractiveReleaseSearchRequest, InteractiveReleaseSearchSnapshot,
+    InteractiveReleaseSearchState,
+};
 pub use catalog::title_hydration::start_background_title_hydration_loop;
 pub use catalog::title_images::start_background_title_image_loop;
 pub use catalog::workflow::{DeleteTitlesJobAccepted, DeleteTitlesJobItem, DeleteTitlesJobRequest};
