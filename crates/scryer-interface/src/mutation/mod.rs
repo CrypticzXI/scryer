@@ -3,6 +3,7 @@ mod collections;
 mod config;
 mod downloads;
 mod external_import;
+mod interactive_search;
 mod jobs;
 mod library;
 mod media_requests;
@@ -39,4 +40,5 @@ pub struct MutationRoot(
     post_processing::PostProcessingMutations,
     subtitle::SubtitleMutations,
     recycle_bin::RecycleBinMutations,
+    interactive_search::InteractiveSearchMutations,
 );

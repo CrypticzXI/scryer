@@ -376,6 +376,45 @@ fn auto_mode_enabled_for_structured_collapse(config: &IndexerConfig) -> bool {
     metadata.enable_automatic_search.unwrap_or(true)
 }
 
+/// Presentation order for scored release results: profile-allowed releases
+/// first, then preference score descending. Shared by the one-shot search path
+/// and the interactive job's incremental merge so a truncated snapshot keeps
+/// the same global top-N as `searchReleases`.
+pub(crate) fn compare_release_search_results(
+    left: &IndexerSearchResult,
+    right: &IndexerSearchResult,
+) -> std::cmp::Ordering {
+    let left_allowed = left
+        .quality_profile_decision
+        .as_ref()
+        .map(|decision| decision.allowed)
+        .unwrap_or(true);
+    let right_allowed = right
+        .quality_profile_decision
+        .as_ref()
+        .map(|decision| decision.allowed)
+        .unwrap_or(true);
+
+    match (left_allowed, right_allowed) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => {
+            let left_score = left
+                .quality_profile_decision
+                .as_ref()
+                .map(|decision| decision.preference_score)
+                .unwrap_or(0);
+            let right_score = right
+                .quality_profile_decision
+                .as_ref()
+                .map(|decision| decision.preference_score)
+                .unwrap_or(0);
+
+            right_score.cmp(&left_score)
+        }
+    }
+}
+
 pub(crate) fn dedupe_cross_indexer_release_results(
     results: Vec<IndexerSearchResult>,
     indexer_priority_by_name: &HashMap<String, i64>,
@@ -827,37 +866,7 @@ impl AppUseCase {
             preferred_source_kind.as_str(),
         );
 
-        scored.sort_by(|left, right| {
-            let left_allowed = left
-                .quality_profile_decision
-                .as_ref()
-                .map(|decision| decision.allowed)
-                .unwrap_or(true);
-            let right_allowed = right
-                .quality_profile_decision
-                .as_ref()
-                .map(|decision| decision.allowed)
-                .unwrap_or(true);
-
-            match (left_allowed, right_allowed) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => {
-                    let left_score = left
-                        .quality_profile_decision
-                        .as_ref()
-                        .map(|decision| decision.preference_score)
-                        .unwrap_or(0);
-                    let right_score = right
-                        .quality_profile_decision
-                        .as_ref()
-                        .map(|decision| decision.preference_score)
-                        .unwrap_or(0);
-
-                    right_score.cmp(&left_score)
-                }
-            }
-        });
+        scored.sort_by(compare_release_search_results);
 
         scored
     }
@@ -1267,7 +1276,7 @@ impl AppUseCase {
     /// Interactive search for a title (movie or standalone). Resolves all
     /// external IDs and search category from the title record so the frontend
     /// only needs to pass the title ID.
-    async fn attach_candidate_tokens(
+    pub(crate) async fn attach_candidate_tokens(
         &self,
         actor: &User,
         title: &Title,
