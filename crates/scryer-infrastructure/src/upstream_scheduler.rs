@@ -1070,9 +1070,14 @@ fn decide_candidate(
         };
     }
 
-    if RateLimitRegistry::new()
-        .active_destination_cooldown(&candidate.destination_key)
-        .is_some()
+    // A user-initiated interactive search must attempt the wire even while the
+    // destination is cooling down: silently skipping here renders as an empty
+    // "no releases found" in the UI. If the destination is still rate limited,
+    // the HTTP layer fails fast and the failure is surfaced per indexer.
+    if candidate.intent != SchedulerIntent::InteractiveSearch
+        && RateLimitRegistry::new()
+            .active_destination_cooldown(&candidate.destination_key)
+            .is_some()
     {
         return SchedulerAdmission::Skip {
             candidate_id: candidate.candidate_id,
@@ -1427,6 +1432,40 @@ mod tests {
             freshness: None,
             cancel_token: CancellationToken::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn interactive_search_bypasses_destination_cooldown_skip() {
+        // Unique destination key: the rate-limit registry is process-global and
+        // shared across tests.
+        let dest = DestinationKey::from("interactive-cooldown-bypass.test");
+        RateLimitRegistry::new()
+            .record_destination_cooldown(&dest, Duration::from_secs(300), RetryAfterSource::Seconds)
+            .await;
+
+        let mut interactive = candidate(SchedulerIntent::InteractiveSearch, 10.0);
+        interactive.host_key = HostKey::from("interactive-cooldown-bypass.test");
+        interactive.destination_key = dest.clone();
+        let decision = decide_candidate(interactive, Utc::now(), None, None);
+        assert!(
+            matches!(decision, SchedulerAdmission::Admit { .. }),
+            "interactive search must attempt the wire during a destination cooldown: {decision:?}"
+        );
+
+        let mut background = candidate(SchedulerIntent::BackgroundAcquisition, 10.0);
+        background.host_key = HostKey::from("interactive-cooldown-bypass.test");
+        background.destination_key = dest;
+        let decision = decide_candidate(background, Utc::now(), None, None);
+        assert!(
+            matches!(
+                decision,
+                SchedulerAdmission::Skip {
+                    reason: SkipReason::DestinationCooldown,
+                    ..
+                }
+            ),
+            "background work still honors the destination cooldown: {decision:?}"
+        );
     }
 
     fn quota_feedback(
