@@ -3,6 +3,7 @@ import {
   JOB_RUN_FIELDS,
   MEDIA_SERVER_CONNECTION_FIELDS,
   PROVIDER_CONFIG_VALUE_FIELDS,
+  RELEASE_SEARCH_RESULT_FIELDS,
   SUBTITLE_PROVIDER_CONFIG_FIELDS,
   SUBTITLE_SETTINGS_FIELDS,
   TITLE_MUTATION_RESULT_FIELDS,
@@ -1407,6 +1408,33 @@ export const triggerAcquisitionSearchMutation = `mutation TriggerAcquisitionSear
 
 export const cancelAcquisitionSearchMutation = `mutation CancelAcquisitionSearch($id: ID!) {
   cancelAcquisitionSearch(id: $id) {
+    id
+    accepted
+  }
+}`;
+
+// Hotfix 0.17.1: starts the server-side interactive release-search job; the
+// snapshot is then polled via interactiveReleaseSearchQuery.
+export const startInteractiveReleaseSearchMutation = `mutation StartInteractiveReleaseSearch($input: SearchReleasesInput!) {
+  startInteractiveReleaseSearch(input: $input) {
+    id
+    state
+    results {${RELEASE_SEARCH_RESULT_FIELDS}
+    }
+    indexers {
+      indexerId
+      name
+      status
+      resultCount
+      failureReason
+    }
+    startedAt
+    completedAt
+  }
+}`;
+
+export const cancelInteractiveReleaseSearchMutation = `mutation CancelInteractiveReleaseSearch($id: ID!) {
+  cancelInteractiveReleaseSearch(id: $id) {
     id
     accepted
   }

@@ -948,6 +948,17 @@ pub struct AppRuntimeAcquisitionState {
     /// (RFC 119 §7.3), keyed by job-run id — mirrors the library-scan cancel map.
     pub acquisition_search_cancellation_tokens:
         Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
+    /// In-memory registry of interactive release-search jobs (hotfix 0.17.1),
+    /// keyed by job id. Ephemeral by design — see
+    /// `catalog::interactive_release_search` for the eviction rules.
+    pub(crate) interactive_release_searches: Arc<
+        Mutex<
+            HashMap<
+                String,
+                crate::catalog::interactive_release_search::InteractiveReleaseSearchJobEntry,
+            >,
+        >,
+    >,
 }
 
 pub(crate) struct ReleaseCandidatePasswordTicket {
@@ -1183,6 +1194,7 @@ impl AppRuntimeState {
                 tracked_download_handle: None,
                 tracked_download_snapshot: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 acquisition_search_cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
+                interactive_release_searches: Arc::new(Mutex::new(HashMap::new())),
             },
             imports: AppRuntimeImportState {
                 external_import_warmup_orchestrator:
