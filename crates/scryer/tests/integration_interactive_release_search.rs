@@ -493,7 +493,9 @@ async fn fast_indexer_results_stream_in_before_slow_indexer_completes() {
     .await
     .expect("warmup search");
 
-    // Now make the slow indexer slow.
+    // Now make the slow indexer slow. The delay must stay comfortably under
+    // the 12s per-request indexer search timeout or the slow indexer times
+    // out and finishes Failed instead of Completed.
     slow.reset().await;
     mount_delayed(
         &slow,
@@ -530,7 +532,7 @@ async fn fast_indexer_results_stream_in_before_slow_indexer_completes() {
         InteractiveReleaseSearchIndexerStatus::Searching
     );
 
-    let done = wait_for_snapshot(&app, &user, &start.id, Duration::from_secs(30), |snapshot| {
+    let done = wait_for_snapshot(&app, &user, &start.id, Duration::from_secs(90), |snapshot| {
         snapshot.state != InteractiveReleaseSearchState::Running
     })
     .await;
@@ -564,12 +566,27 @@ async fn rate_limited_indexer_is_marked_failed_and_healthy_results_survive() {
     .await;
     let title_id = add_movie(&app, &user, "Paperman", "tt2388725").await;
 
+    // Warm up the search pipeline so cold WASM compilation (~6s per indexer in
+    // debug, worse under a parallel test sweep) does not eat into the job's
+    // 55s server-side deadline. The warmup also arms the 429 indexer's
+    // destination cooldown, so the job below additionally exercises the
+    // scheduler's interactive cooldown bypass end to end.
+    app.search_indexers_for_title(
+        &user,
+        title_id.clone(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("warmup search");
+
     let start = app
         .start_interactive_release_search(&user, title_request(&title_id))
         .await
         .expect("start job");
 
-    let done = wait_for_snapshot(&app, &user, &start.id, Duration::from_secs(30), |snapshot| {
+    // 90s > the job's own 55s deadline, so the snapshot is guaranteed
+    // terminal here even on a saturated CI host.
+    let done = wait_for_snapshot(&app, &user, &start.id, Duration::from_secs(90), |snapshot| {
         snapshot.state != InteractiveReleaseSearchState::Running
     })
     .await;
