@@ -227,6 +227,47 @@ export function SettingsOverviewSection({
               </div>
             </div>
 
+            <div className="space-y-3 border-t border-border/60 pt-4">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold">{t("settings.imageCacheTitle")}</h3>
+                <p className="text-muted-foreground">
+                  {t("settings.imageCacheHelp")}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <Label>{t("settings.imageCacheMaxSizeLabel")}</Label>
+                <div className="relative w-40">
+                  <Input
+                    {...integerInputProps}
+                    className="pr-14"
+                    value={generalSettings.imageCacheMaxSizeMb}
+                    onChange={(event) => {
+                      const nextValue = sanitizeDigits(event.target.value);
+                      updateGeneralSettings({
+                        imageCacheMaxSizeMb: nextValue === "" ? 0 : Number(nextValue),
+                      });
+                    }}
+                  />
+                  <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+                    {t("settings.imageCacheMbSuffix")}
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.imageCacheEffectiveSize", {
+                    mb: generalSettings.effectiveImageCacheMaxSizeMb.toLocaleString(undefined, {
+                      maximumFractionDigits: 2,
+                    }),
+                    bytes: generalSettings.effectiveImageCacheMaxSizeBytes.toLocaleString(),
+                  })}
+                </p>
+              </div>
+              {generalSettings.imageCacheMaxSizeEnvOverrideActive ? (
+                <div className="rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] p-3 text-xs text-muted-foreground">
+                  {t("settings.imageCacheEnvOverride")}
+                </div>
+              ) : null}
+            </div>
+
             <Button
               id="settings-general-save"
               onClick={onSaveGeneralSettings}

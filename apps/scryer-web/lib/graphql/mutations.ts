@@ -721,6 +721,10 @@ export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($in
   updateGeneralSettings(input: $input) {
     keepHistoryForever
     historyRetentionDays
+    imageCacheMaxSizeMb
+    effectiveImageCacheMaxSizeBytes
+    effectiveImageCacheMaxSizeMb
+    imageCacheMaxSizeEnvOverrideActive
     pluginHttpCaBundlePem
     pluginHttpTrustedCertificates {
       fingerprintSha256

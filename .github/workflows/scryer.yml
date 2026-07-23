@@ -39,6 +39,10 @@ jobs:
         working-directory: apps/scryer-web
         run: npm run lint
 
+      - name: Run web unit tests
+        working-directory: apps/scryer-web
+        run: npm run test
+
       - name: Build web app
         working-directory: apps/scryer-web
         env:

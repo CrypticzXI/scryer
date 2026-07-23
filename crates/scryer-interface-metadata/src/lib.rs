@@ -1,5 +1,5 @@
 use async_graphql::{Context, ID, Object, Result as GqlResult};
-use scryer_application::AppError;
+use scryer_application::{AppError, AppUseCase, ImageProxyKind};
 use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
 use scryer_interface_media::mappers::{from_calendar_episode, parse_iso_date};
 use scryer_interface_media::types::*;
@@ -8,8 +8,17 @@ use scryer_interface_media::types::*;
 pub struct MetadataQueries;
 
 fn from_metadata_search_item(
+    app: &AppUseCase,
     item: scryer_application::RichMetadataSearchItem,
 ) -> MetadataSearchItemPayload {
+    let owner_id = item.tvdb_id.to_string();
+    let poster_url = app.media_image_url(
+        item.poster_url.as_deref(),
+        Some("metadata_search"),
+        Some(&owner_id),
+        ImageProxyKind::Poster,
+        "w250",
+    );
     MetadataSearchItemPayload {
         tvdb_id: item.tvdb_id,
         name: item.name,
@@ -20,7 +29,7 @@ fn from_metadata_search_item(
         status: item.status,
         overview: item.overview,
         popularity: item.popularity,
-        poster_url: item.poster_url,
+        poster_url,
         language: item.language,
         runtime_minutes: item.runtime_minutes,
         sort_title: item.sort_title,
@@ -58,7 +67,10 @@ impl MetadataQueries {
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(results.into_iter().map(from_metadata_search_item).collect())
+        Ok(results
+            .into_iter()
+            .map(|item| from_metadata_search_item(&app, item))
+            .collect())
     }
 
     async fn search_metadata_multi(
@@ -79,17 +91,17 @@ impl MetadataQueries {
             movies: result
                 .movies
                 .into_iter()
-                .map(from_metadata_search_item)
+                .map(|item| from_metadata_search_item(&app, item))
                 .collect(),
             series: result
                 .series
                 .into_iter()
-                .map(from_metadata_search_item)
+                .map(|item| from_metadata_search_item(&app, item))
                 .collect(),
             anime: result
                 .anime
                 .into_iter()
-                .map(from_metadata_search_item)
+                .map(|item| from_metadata_search_item(&app, item))
                 .collect(),
         })
     }
@@ -110,6 +122,16 @@ impl MetadataQueries {
             .get_metadata_movie(&actor, tvdb_id, &language)
             .await
             .map_err(to_gql_error)?;
+        let owner_id = movie.tvdb_id.to_string();
+        let poster_url = app
+            .media_image_url(
+                Some(movie.poster_url.as_str()),
+                Some("metadata_movie"),
+                Some(&owner_id),
+                ImageProxyKind::Poster,
+                "w250",
+            )
+            .expect("metadata movie image registration with an owner always returns a URL");
         Ok(MetadataMoviePayload {
             tvdb_id: movie.tvdb_id.to_string(),
             name: movie.name,
@@ -117,7 +139,7 @@ impl MetadataQueries {
             year: movie.year,
             status: movie.content_status,
             overview: movie.overview,
-            poster_url: movie.poster_url,
+            poster_url,
             language: movie.language,
             runtime_minutes: movie.runtime_minutes,
             sort_title: movie.sort_title,
@@ -144,11 +166,30 @@ impl MetadataQueries {
             .get_metadata_series(&actor, tvdb_id, &language)
             .await
             .map_err(to_gql_error)?;
+        let series_owner_id = series.tvdb_id.to_string();
+        let poster_url = app
+            .media_image_url(
+                Some(series.poster_url.as_str()),
+                Some("metadata_series"),
+                Some(&series_owner_id),
+                ImageProxyKind::Poster,
+                "w250",
+            )
+            .expect("metadata series image registration with an owner always returns a URL");
         let episodes = if include_episodes {
             series
                 .episodes
                 .into_iter()
                 .map(|e| {
+                    let owner_id = e.tvdb_id.to_string();
+                    let image_url = app.media_image_url(
+                        Some(e.image_url.as_str()),
+                        Some("metadata_episode"),
+                        Some(&owner_id),
+                        ImageProxyKind::EpisodeStill,
+                        "original",
+                    )
+                    .expect("metadata episode image registration with an owner always returns a URL");
                     Ok(MetadataEpisodePayload {
                         tvdb_id: e.tvdb_id.to_string(),
                         episode_number: e.episode_number,
@@ -157,7 +198,7 @@ impl MetadataQueries {
                         aired: parse_metadata_date(e.aired, "metadata episode aired")?,
                         runtime_minutes: e.runtime_minutes,
                         is_filler: e.is_filler,
-                        image_url: e.image_url,
+                        image_url,
                     })
                 })
                 .collect::<GqlResult<Vec<_>>>()?
@@ -176,7 +217,7 @@ impl MetadataQueries {
             overview: series.overview,
             network: series.network,
             runtime_minutes: series.runtime_minutes,
-            poster_url: series.poster_url,
+            poster_url,
             country: series.country,
             aliases: series.aliases,
             seasons: series

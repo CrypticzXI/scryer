@@ -5,12 +5,6 @@ export type MediaImageVariant = LocalPosterVariant | LocalBackdropVariant;
 const PROXIED_MEDIA_IMAGE_PATH_RE = /^(.*\/images\/media\/[^/]+\/)([^/]+)$/;
 const LOCAL_TITLE_POSTER_PATH_RE = /^(.*\/images\/titles\/[^/]+\/poster\/)(original|w500|w250|w70)$/;
 const LOCAL_TITLE_BACKDROP_PATH_RE = /^(.*\/images\/titles\/[^/]+\/fanart\/)(original|w\d+)$/;
-const TMDB_IMAGE_PATH_RE = /^(\/t\/p\/)(original|w\d+)(\/.+)$/;
-const TMDB_POSTER_VARIANT_BY_LOCAL_VARIANT: Record<LocalPosterVariant, string> = {
-  original: "original",
-  w250: "w300",
-  w70: "w92",
-};
 
 /** Selects a variant on Scryer's opaque media-image route. */
 export function selectMediaImageVariantUrl(
@@ -71,24 +65,7 @@ export function selectPosterVariantUrl(
         : parsed.toString();
     }
 
-    if (parsed.hostname !== "image.tmdb.org") {
-      return posterUrl;
-    }
-
-    const tmdbMatch = parsed.pathname.match(TMDB_IMAGE_PATH_RE);
-    if (!tmdbMatch) {
-      return posterUrl;
-    }
-
-    const [, prefix, currentVariant, suffix] = tmdbMatch;
-    const desiredTmdbVariant =
-      TMDB_POSTER_VARIANT_BY_LOCAL_VARIANT[desiredVariant];
-    if (currentVariant === desiredTmdbVariant) {
-      return posterUrl;
-    }
-
-    parsed.pathname = `${prefix}${desiredTmdbVariant}${suffix}`;
-    return parsed.toString();
+    return posterUrl;
   } catch {
     return posterUrl;
   }
@@ -121,19 +98,6 @@ export function selectBackdropVariantUrl(
       return isRelativeUrl(backdropUrl)
         ? `${parsed.pathname}${parsed.search}${parsed.hash}`
         : parsed.toString();
-    }
-
-    if (parsed.hostname === "image.tmdb.org") {
-      const tmdbMatch = parsed.pathname.match(TMDB_IMAGE_PATH_RE);
-      if (tmdbMatch) {
-        const [, prefix, currentVariant, suffix] = tmdbMatch;
-        if (currentVariant === desiredVariant) {
-          return backdropUrl;
-        }
-
-        parsed.pathname = `${prefix}${desiredVariant}${suffix}`;
-        return parsed.toString();
-      }
     }
 
     return backdropUrl;

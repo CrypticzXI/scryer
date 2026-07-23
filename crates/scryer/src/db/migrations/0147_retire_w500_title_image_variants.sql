@@ -30,7 +30,10 @@ SET poster_local_path = (
     AND tiv.variant_key = 'w250'
   LIMIT 1
 )
-WHERE poster_local_path LIKE '%/poster/w500%'
+WHERE (
+    poster_local_path LIKE '%/poster/w500'
+    OR poster_local_path LIKE '%/poster/w500?%'
+  )
   AND EXISTS (
     SELECT 1
     FROM title_images ti
@@ -42,7 +45,8 @@ WHERE poster_local_path LIKE '%/poster/w500%'
 
 UPDATE titles
 SET poster_local_path = NULL
-WHERE poster_local_path LIKE '%/poster/w500%';
+WHERE poster_local_path LIKE '%/poster/w500'
+   OR poster_local_path LIKE '%/poster/w500?%';
 
 DELETE FROM title_image_variants
 WHERE variant_key = 'w500';

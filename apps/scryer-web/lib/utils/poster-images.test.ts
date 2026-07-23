@@ -54,21 +54,10 @@ test("rewriting a legacy local w500 poster selects a supported variant", () => {
   );
 });
 
-test("rewriting a TMDB poster original selects the closest card-sized variant", () => {
-  assert.equal(
-    selectPosterVariantUrl(
-      "https://image.tmdb.org/t/p/original/abc123.jpg",
-      "w250",
-    ),
-    "https://image.tmdb.org/t/p/w300/abc123.jpg",
-  );
-});
-
-test("selecting the current TMDB poster variant preserves it", () => {
-  assert.equal(
-    selectPosterVariantUrl("https://image.tmdb.org/t/p/w300/abc123.jpg", "w250"),
-    "https://image.tmdb.org/t/p/w300/abc123.jpg",
-  );
+test("provider URLs are never rewritten into a different upstream request", () => {
+  const upstream = "https://image.tmdb.org/t/p/w500/poster.jpg";
+  assert.equal(selectPosterVariantUrl(upstream, "w70"), upstream);
+  assert.equal(selectBackdropVariantUrl(upstream, "w1280"), upstream);
 });
 
 test("rewriting a local fanart variant selects w1280 and drops stale version token", () => {
@@ -78,25 +67,5 @@ test("rewriting a local fanart variant selects w1280 and drops stale version tok
       "w1280",
     ),
     "/images/titles/title-1/fanart/w1280#backdrop",
-  );
-});
-
-test("rewriting a TMDB image CDN backdrop selects w1280", () => {
-  assert.equal(
-    selectBackdropVariantUrl(
-      "https://image.tmdb.org/t/p/w780/abc123.jpg",
-      "w1280",
-    ),
-    "https://image.tmdb.org/t/p/w1280/abc123.jpg",
-  );
-});
-
-test("rewriting a TMDB image CDN backdrop can select original", () => {
-  assert.equal(
-    selectBackdropVariantUrl(
-      "https://image.tmdb.org/t/p/w1280/abc123.jpg",
-      "original",
-    ),
-    "https://image.tmdb.org/t/p/original/abc123.jpg",
   );
 });

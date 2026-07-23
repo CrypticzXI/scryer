@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, AppServices, AppServicesBuilder, DiscoveryRepository, DownloadClient,
-    DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository,
+    DownloadClientConfigRepository, ImageProxyRepository, IndexerClient, IndexerConfigRepository,
     IndexerSearchLearningRepository, IndexerStatsTracker, LibraryRepository, LogicalBackupExporter,
     MediaRequestRepository, MediaServerConnectionRepository, OAuthRepository,
     PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
@@ -19,6 +19,7 @@ use crate::HttpTitleImageProcessor;
 use crate::discovery::store::DiscoveryStore;
 use crate::external_identity::HttpExternalIdentityVerifier;
 use crate::indexers::scope_indexer_coverage_store::ScopeIndexerCoverageStore;
+use crate::media::images::image_proxy_store::ImageProxyStore;
 use crate::postgres::{
     PostgresLogicalBackupExporter, PostgresServices, restore_backup_bundle_into_postgres_pool,
     restore_prepared_backup_directory_into_postgres_pool,
@@ -642,6 +643,7 @@ enum DatastoreStores {
         subtitle_download_store: Arc<SubtitleDownloadStore>,
         housekeeping_store: Arc<HousekeepingStore>,
         title_image_store: Arc<TitleImageStore>,
+        image_proxy_store: Arc<ImageProxyStore>,
         notification_store: Arc<NotificationStore>,
         release_store: Arc<ReleaseStore>,
         settings_store: Arc<SettingsStore>,
@@ -684,6 +686,7 @@ enum DatastoreStores {
         subtitle_download_store: Arc<SubtitleDownloadStore>,
         housekeeping_store: Arc<HousekeepingStore>,
         title_image_store: Arc<TitleImageStore>,
+        image_proxy_store: Arc<ImageProxyStore>,
         notification_store: Arc<NotificationStore>,
         release_store: Arc<ReleaseStore>,
         settings_store: Arc<SettingsStore>,
@@ -763,6 +766,7 @@ impl DatastoreAssembly {
         let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
         let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
         let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
+        let image_proxy_store = Arc::new(ImageProxyStore::new(datastore.clone()));
         let release_store = Arc::new(ReleaseStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -816,6 +820,7 @@ impl DatastoreAssembly {
             subtitle_download_store,
             housekeeping_store,
             title_image_store,
+            image_proxy_store,
             notification_store,
             release_store,
             settings_store,
@@ -889,6 +894,7 @@ impl DatastoreAssembly {
         let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
         let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
         let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
+        let image_proxy_store = Arc::new(ImageProxyStore::new(datastore.clone()));
         let release_store = Arc::new(ReleaseStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -940,6 +946,7 @@ impl DatastoreAssembly {
             subtitle_download_store,
             housekeeping_store,
             title_image_store,
+            image_proxy_store,
             notification_store,
             release_store,
             settings_store,
@@ -1184,6 +1191,17 @@ impl DatastoreAssembly {
         }
     }
 
+    pub fn image_proxy(&self) -> Arc<dyn ImageProxyRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                image_proxy_store, ..
+            } => image_proxy_store.clone(),
+            DatastoreStores::Postgres {
+                image_proxy_store, ..
+            } => image_proxy_store.clone(),
+        }
+    }
+
     pub fn logical_backup_exporter(&self) -> Arc<dyn LogicalBackupExporter> {
         match &self.stores {
             DatastoreStores::Sqlite {
@@ -1289,6 +1307,7 @@ impl DatastoreAssembly {
                 subtitle_download_store,
                 housekeeping_store,
                 title_image_store,
+                image_proxy_store,
                 rule_set_store,
                 post_processing_script_store,
                 plugin_store,
@@ -1347,6 +1366,7 @@ impl DatastoreAssembly {
                 .with_library_probe_signatures(library_probe_store.clone())
                 .with_library_scan_unmatched_items(library_scan_unmatched_store.clone())
                 .with_title_images(title_image_store.clone())
+                .with_image_proxy(image_proxy_store.clone())
                 .with_housekeeping(housekeeping_store.clone())
                 .with_subtitle_downloads(subtitle_download_store.clone())
                 .with_rule_set_store(rule_set_store.clone())
@@ -1392,6 +1412,7 @@ impl DatastoreAssembly {
                 subtitle_download_store,
                 housekeeping_store,
                 title_image_store,
+                image_proxy_store,
                 notification_store,
                 release_store,
                 settings_store,
@@ -1448,6 +1469,7 @@ impl DatastoreAssembly {
                 .with_library_probe_signatures(library_probe_store.clone())
                 .with_library_scan_unmatched_items(library_scan_unmatched_store.clone())
                 .with_title_images(title_image_store.clone())
+                .with_image_proxy(image_proxy_store.clone())
                 .with_housekeeping(housekeeping_store.clone())
                 .with_subtitle_downloads(subtitle_download_store.clone())
                 .with_rule_set_store(rule_set_store.clone())

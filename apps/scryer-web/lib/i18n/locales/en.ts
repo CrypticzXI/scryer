@@ -852,6 +852,17 @@ const en: LocaleDictionary = {
   "settings.uiSaved": "Display settings saved.",
   "settings.historyRetentionValidation":
     "History retention days must be at least 1 unless history is kept forever.",
+  "settings.imageCacheTitle": "Image cache",
+  "settings.imageCacheHelp":
+    "Limits upstream artwork cached on this server. Reducing the limit evicts the least recently used images.",
+  "settings.imageCacheMaxSizeLabel": "Maximum disk cache size",
+  "settings.imageCacheMbSuffix": "MiB",
+  "settings.imageCacheEffectiveSize":
+    "Effective limit: {{mb}} MiB ({{bytes}} bytes).",
+  "settings.imageCacheEnvOverride":
+    "SCRYER_IMAGE_CACHE_MAX_BYTES is active. Its value is effective; the saved limit applies after the environment override is removed.",
+  "settings.imageCacheMaxSizeValidation":
+    "Image cache maximum size must be at least 1 MiB.",
   "settings.pluginHttpTrustTitle": "Plugin HTTPS trusted certificates",
   "settings.pluginHttpTrustAdvancedLabel": "Advanced feature",
   "settings.pluginHttpTrustStoredCount": "{{count}} stored",

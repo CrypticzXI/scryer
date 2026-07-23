@@ -96,8 +96,32 @@ async fn graphql_metadata_series() {
     assert_eq!(series["name"], "Test Show Name");
     assert_eq!(series["seasons"].as_array().unwrap().len(), 2);
     assert_eq!(series["episodes"].as_array().unwrap().len(), 3);
+    let image_url = series["episodes"][0]["imageUrl"]
+        .as_str()
+        .expect("metadata episode image URL should be a string");
+    let token = image_url
+        .strip_prefix("/images/media/")
+        .and_then(|value| value.strip_suffix("/original"))
+        .expect("metadata episode image URL should use Scryer's media route");
+    assert_eq!(token.len(), 64);
+    assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert!(!image_url.contains("image.tmdb.org"));
+
+    let persisted: (Option<String>, String, String) = sqlx::query_as(
+        "SELECT upstream_url, image_kind, fallback_class
+           FROM image_proxy_sources
+          WHERE token = ?",
+    )
+    .bind(token)
+    .fetch_one(ctx.db.pool())
+    .await
+    .expect("HTTP GraphQL response should durably register its image source");
     assert_eq!(
-        series["episodes"][0]["imageUrl"],
-        "https://image.tmdb.org/t/p/original/pilot.jpg"
+        persisted,
+        (
+            Some("https://image.tmdb.org/t/p/original/pilot.jpg".to_string()),
+            "episode_still".to_string(),
+            "landscape".to_string(),
+        )
     );
 }

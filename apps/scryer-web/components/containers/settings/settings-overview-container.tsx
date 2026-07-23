@@ -20,6 +20,10 @@ import type { GeneralSettings, UiDateTimeFormat, UiSettings } from "@/lib/types/
 const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   keepHistoryForever: false,
   historyRetentionDays: 180,
+  imageCacheMaxSizeMb: 256,
+  effectiveImageCacheMaxSizeBytes: 256 * 1024 * 1024,
+  effectiveImageCacheMaxSizeMb: 256,
+  imageCacheMaxSizeEnvOverrideActive: false,
   pluginHttpCaBundlePem: "",
   pluginHttpTrustedCertificates: [],
 };
@@ -167,6 +171,10 @@ export function SettingsOverviewContainer({
       setGlobalStatus(t("settings.historyRetentionValidation"));
       return;
     }
+    if (generalSettings.imageCacheMaxSizeMb < 1) {
+      setGlobalStatus(t("settings.imageCacheMaxSizeValidation"));
+      return;
+    }
 
     setGeneralSaving(true);
     try {
@@ -175,6 +183,7 @@ export function SettingsOverviewContainer({
           input: {
             keepHistoryForever: generalSettings.keepHistoryForever,
             historyRetentionDays: generalSettings.historyRetentionDays,
+            imageCacheMaxSizeMb: generalSettings.imageCacheMaxSizeMb,
             pluginHttpCaBundlePem: generalSettings.pluginHttpCaBundlePem,
           },
         })

@@ -197,7 +197,7 @@ impl TitleMutations {
         .map_err(to_gql_error)?;
 
         Ok(AddTitleResult {
-            title: from_title(result.title),
+            title: from_title(&app, result.title),
             metadata_hydration_state: AddTitleHydrationStateValue::from_application(
                 result.metadata_hydration_state,
             ),
@@ -252,7 +252,7 @@ impl TitleMutations {
         );
 
         Ok(AddTitleResult {
-            title: from_title(result.title),
+            title: from_title(&app, result.title),
             metadata_hydration_state: AddTitleHydrationStateValue::from_application(
                 result.metadata_hydration_state,
             ),
@@ -309,7 +309,7 @@ impl TitleMutations {
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(from_title(title))
+        Ok(from_title(&app, title))
     }
 
     async fn set_primary_movie_file(
@@ -325,7 +325,7 @@ impl TitleMutations {
             .set_primary_movie_file(&actor, &title_id, &file_id)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_title(title))
+        Ok(from_title(&app, title))
     }
 
     async fn fix_title_match(
@@ -342,7 +342,7 @@ impl TitleMutations {
             .map_err(to_gql_error)?;
 
         Ok(FixTitleMatchPayload {
-            title: from_title(result.title),
+            title: from_title(&app, result.title),
             hydrated: result.hydrated,
             library_scan: result.library_scan.map(from_library_scan_summary),
             warnings: result.warnings,
@@ -436,6 +436,6 @@ impl TitleMutations {
             .set_title_monitored(&actor, &title_id, input.monitored)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_title(title))
+        Ok(from_title(&app, title))
     }
 }

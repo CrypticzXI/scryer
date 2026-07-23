@@ -2792,6 +2792,10 @@ pub struct PluginHttpTrustedCertificatePayload {
 pub struct GeneralSettingsPayload {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+    pub image_cache_max_size_mb: i32,
+    pub effective_image_cache_max_size_bytes: Long,
+    pub effective_image_cache_max_size_mb: f64,
+    pub image_cache_max_size_env_override_active: bool,
     pub plugin_http_ca_bundle_pem: String,
     pub plugin_http_trusted_certificates: Vec<PluginHttpTrustedCertificatePayload>,
 }
@@ -3387,6 +3391,7 @@ pub struct UpdateServiceSettingsInput {
 pub struct UpdateGeneralSettingsInput {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+    pub image_cache_max_size_mb: Option<i32>,
     pub plugin_http_ca_bundle_pem: String,
 }
 

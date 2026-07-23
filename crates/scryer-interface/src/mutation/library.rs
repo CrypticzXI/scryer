@@ -255,7 +255,7 @@ impl LibraryMutations {
             .resolve_pending_import(&actor, &pending_import_id, request)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_resolve_pending_import_result(result))
+        Ok(from_resolve_pending_import_result(&app, result))
     }
 
     async fn bind_pending_import(
@@ -281,7 +281,7 @@ impl LibraryMutations {
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(from_resolve_pending_import_result(result))
+        Ok(from_resolve_pending_import_result(&app, result))
     }
 
     async fn ignore_pending_import(

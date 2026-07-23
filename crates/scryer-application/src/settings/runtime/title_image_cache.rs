@@ -108,6 +108,11 @@ impl AppUseCase {
             .title_images
             .clear_title_image_cache()
             .await?;
+        self.services
+            .library
+            .image_proxy_cache_control
+            .clear_cache()
+            .await?;
         summary.cache_cleared = true;
         info!(
             titles_scanned = summary.titles_scanned,

@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "lint": "tsc --noEmit && eslint 'src/**/*.{ts,tsx}' 'components/**/*.{ts,tsx}' 'lib/**/*.{ts,tsx}'",
     "check:react-compiler": "node scripts/check-react-compiler.mjs",
+    "test": "node --test \"lib/**/*.test.ts\"",
     "test:graphql-compat": "node --test scripts/check-graphql-schema-compat.test.mjs"
   },
   "allowScripts": {

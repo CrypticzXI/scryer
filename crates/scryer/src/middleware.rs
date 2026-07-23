@@ -1170,6 +1170,23 @@ pub(crate) async fn graphql_handler(
     {
         batch_response = rate_limited_graphql_response(&decision);
     }
+    if let Err(error) = state
+        .app
+        .image_proxy_repository()
+        .flush_image_proxy_sources()
+        .await
+    {
+        tracing::error!(error = %error, "failed to durably register GraphQL image proxy sources");
+        let body = serde_json::to_vec(&serde_json::json!({
+            "errors": [{"message": "failed to register image sources"}]
+        }))
+        .unwrap_or_else(|_| b"{}".to_vec());
+        return Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap();
+    }
     let response_status = graphql_response_status(&batch_response);
     let body = serde_json::to_vec(&batch_response).unwrap_or_else(|_| b"{}".to_vec());
 

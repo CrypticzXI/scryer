@@ -1710,6 +1710,10 @@ type ForceGrabPendingReleasePayload {
 type GeneralSettingsPayload {
 	keepHistoryForever: Boolean!
 	historyRetentionDays: Int!
+	imageCacheMaxSizeMb: Int!
+	effectiveImageCacheMaxSizeBytes: Long!
+	effectiveImageCacheMaxSizeMb: Float!
+	imageCacheMaxSizeEnvOverrideActive: Boolean!
 	pluginHttpCaBundlePem: String!
 	pluginHttpTrustedCertificates: [PluginHttpTrustedCertificatePayload!]!
 }
@@ -4816,6 +4820,7 @@ input UpdateDownloadClientRoutingInput {
 input UpdateGeneralSettingsInput {
 	keepHistoryForever: Boolean!
 	historyRetentionDays: Int!
+	imageCacheMaxSizeMb: Int
 	pluginHttpCaBundlePem: String!
 }
 

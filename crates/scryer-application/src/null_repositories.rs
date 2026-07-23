@@ -39,11 +39,13 @@ use crate::{
     ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,
     ExternalImportSetupSecretDraft, ExternalImportSetupSecretDraftInput,
     ExternalImportSetupSecretDraftRepository, ExternalImportSetupSecretDraftSaveResult,
-    ExternalImportSetupSecretDraftStatus, FileImporter, HousekeepingRepository, ImportArtifact,
-    ImportArtifactRepository, ImportRepository, IndexerProxyConfigRepository, IndexerQueryStats,
-    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
-    IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository, LibraryProbeRepository,
-    LibraryProbeSignature, LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
+    ExternalImportSetupSecretDraftStatus, FileImporter, HousekeepingRepository,
+    ImageProxyCacheControl, ImageProxyCacheEntryRecord, ImageProxyRegistration,
+    ImageProxyRepository, ImageProxySourceRecord, ImportArtifact, ImportArtifactRepository,
+    ImportRepository, IndexerProxyConfigRepository, IndexerQueryStats, IndexerSearchLearningKey,
+    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerStatsTracker, JobKey,
+    JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
+    LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestCounts, MediaRequestQuery,
     MediaRequestRepository, MediaRequestResolution, NewBlocklistEntry, NewMediaRequest,
     NotificationChannelRepository, NotificationSubscriptionRepository,
@@ -950,18 +952,23 @@ pub struct NullImageProxyRepository;
 #[async_trait]
 impl ImageProxyRepository for NullImageProxyRepository {
     fn register_image_source(&self, registration: ImageProxyRegistration) -> String {
-        let token_input = format!(
-            "v1\0{}\0{}\0{}\0{}",
-            registration.upstream_url.as_deref().unwrap_or("fallback"),
-            registration.owner_type.as_deref().unwrap_or_default(),
-            registration.owner_id.as_deref().unwrap_or_default(),
-            registration.image_kind.as_str(),
+        let token = crate::image_proxy_source_token(
+            registration.upstream_url.as_deref(),
+            registration.owner_type.as_deref(),
+            registration.owner_id.as_deref(),
+            registration.image_kind,
         );
-        let token = blake3::hash(token_input.as_bytes()).to_hex();
-        format!(
-            "/images/media/{token}/{}",
-            registration.default_variant
-        )
+        format!("/images/media/{token}/{}", registration.default_variant)
+    }
+
+    async fn flush_image_proxy_sources(&self) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn clear_image_proxy_memory(&self) {}
+
+    async fn persist_image_proxy_source(&self, _source: &ImageProxySourceRecord) -> AppResult<()> {
+        Ok(())
     }
 
     async fn get_image_proxy_source(
@@ -986,11 +993,17 @@ impl ImageProxyRepository for NullImageProxyRepository {
         Ok(())
     }
 
-    async fn delete_image_proxy_cache_entry(
+    async fn touch_image_proxy_cache_entry(
         &self,
         _token: &str,
         _variant: &str,
+        _observed_fetched_at: chrono::DateTime<chrono::Utc>,
+        _last_accessed_at: chrono::DateTime<chrono::Utc>,
     ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_image_proxy_cache_entry(&self, _token: &str, _variant: &str) -> AppResult<()> {
         Ok(())
     }
 
@@ -1004,8 +1017,25 @@ impl ImageProxyRepository for NullImageProxyRepository {
         Ok(())
     }
 
-    async fn prune_image_proxy_sources_before(&self, _cutoff: &str) -> AppResult<u64> {
+    async fn prune_image_proxy_sources_before(
+        &self,
+        _cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u64> {
         Ok(0)
+    }
+}
+
+#[derive(Default)]
+pub struct NullImageProxyCacheControl;
+
+#[async_trait]
+impl ImageProxyCacheControl for NullImageProxyCacheControl {
+    async fn clear_cache(&self) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn set_configured_max_bytes(&self, _value: u64) -> AppResult<()> {
+        Ok(())
     }
 }
 

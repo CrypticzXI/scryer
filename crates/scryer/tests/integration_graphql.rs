@@ -1148,6 +1148,15 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
             SettingDefinitionSeed {
                 category: "general".into(),
                 scope: "system".into(),
+                key_name: "images.cache.max_size_mb".into(),
+                data_type: "number".into(),
+                default_value_json: "256".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "general".into(),
+                scope: "system".into(),
                 key_name: "plugins.http.ca_bundle_pem".into(),
                 data_type: "string".into(),
                 default_value_json: "\"\"".into(),

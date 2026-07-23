@@ -24,11 +24,15 @@ JOIN title_image_variants tiv ON tiv.title_image_id = ti.id
 WHERE ti.title_id = t.id
   AND ti.kind = 'poster'
   AND tiv.variant_key = 'w250'
-  AND t.poster_local_path LIKE '%/poster/w500%';
+  AND (
+    t.poster_local_path LIKE '%/poster/w500'
+    OR t.poster_local_path LIKE '%/poster/w500?%'
+  );
 
 UPDATE titles
 SET poster_local_path = NULL
-WHERE poster_local_path LIKE '%/poster/w500%';
+WHERE poster_local_path LIKE '%/poster/w500'
+   OR poster_local_path LIKE '%/poster/w500?%';
 
 DELETE FROM title_image_variants
 WHERE variant_key = 'w500';

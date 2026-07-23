@@ -123,10 +123,6 @@ pub(crate) struct MetadataRuleRecord {
     pub spec_name: &'static str,
     pub implementation: &'static str,
     pub value: &'static str,
-    pub trash_scores_json: &'static str,
-    pub required_json: &'static str,
-    pub negate_json: &'static str,
-    pub complete_json: &'static str,
     pub reason: &'static str,
     pub source_path: &'static str,
 }

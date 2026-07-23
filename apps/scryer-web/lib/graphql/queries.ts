@@ -2521,6 +2521,10 @@ export const generalSettingsQuery = `query GeneralSettings {
   generalSettings {
     keepHistoryForever
     historyRetentionDays
+    imageCacheMaxSizeMb
+    effectiveImageCacheMaxSizeBytes
+    effectiveImageCacheMaxSizeMb
+    imageCacheMaxSizeEnvOverrideActive
     pluginHttpCaBundlePem
     pluginHttpTrustedCertificates {
       fingerprintSha256

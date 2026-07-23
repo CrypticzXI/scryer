@@ -1690,7 +1690,7 @@ pub struct ImageProxySourceRecord {
     pub owner_id: Option<String>,
     pub image_kind: String,
     pub fallback_class: String,
-    pub last_seen_at: String,
+    pub last_seen_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1701,8 +1701,8 @@ pub struct ImageProxyCacheEntryRecord {
     pub byte_size: i64,
     pub upstream_etag: Option<String>,
     pub upstream_last_modified: Option<String>,
-    pub fetched_at: String,
-    pub last_accessed_at: String,
+    pub fetched_at: chrono::DateTime<chrono::Utc>,
+    pub last_accessed_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[async_trait]
@@ -1710,6 +1710,9 @@ pub trait ImageProxyRepository: Send + Sync {
     /// Registers a server-approved image source and returns its Scryer-owned URL.
     /// Implementations must never accept registrations from the HTTP image route.
     fn register_image_source(&self, registration: ImageProxyRegistration) -> String;
+    async fn flush_image_proxy_sources(&self) -> AppResult<()>;
+    fn clear_image_proxy_memory(&self);
+    async fn persist_image_proxy_source(&self, source: &ImageProxySourceRecord) -> AppResult<()>;
 
     async fn get_image_proxy_source(
         &self,
@@ -1727,6 +1730,14 @@ pub trait ImageProxyRepository: Send + Sync {
         entry: &ImageProxyCacheEntryRecord,
     ) -> AppResult<()>;
 
+    async fn touch_image_proxy_cache_entry(
+        &self,
+        token: &str,
+        variant: &str,
+        observed_fetched_at: chrono::DateTime<chrono::Utc>,
+        last_accessed_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<()>;
+
     async fn delete_image_proxy_cache_entry(&self, token: &str, variant: &str) -> AppResult<()>;
 
     async fn list_image_proxy_cache_entries_lru(
@@ -1735,7 +1746,16 @@ pub trait ImageProxyRepository: Send + Sync {
 
     async fn clear_image_proxy_cache_entries(&self) -> AppResult<()>;
 
-    async fn prune_image_proxy_sources_before(&self, cutoff: &str) -> AppResult<u64>;
+    async fn prune_image_proxy_sources_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u64>;
+}
+
+#[async_trait]
+pub trait ImageProxyCacheControl: Send + Sync {
+    async fn clear_cache(&self) -> AppResult<()>;
+    async fn set_configured_max_bytes(&self, value: u64) -> AppResult<()>;
 }
 
 #[async_trait]

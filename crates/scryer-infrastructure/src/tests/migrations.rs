@@ -718,6 +718,11 @@ async fn migration_0147_retires_w500_variants_and_0148_adds_extensible_proxy_tab
             "https://image.tmdb.org/t/p/w300/supported.jpg",
             "/images/titles/title-supported/poster/w250?v=legacy",
         ),
+        (
+            "title-unrelated-w5000",
+            "https://image.tmdb.org/t/p/w500/unrelated.jpg",
+            "/images/titles/title-unrelated-w5000/poster/w5000?v=legacy",
+        ),
     ] {
         sqlx::query(
             "INSERT INTO titles (
@@ -831,7 +836,7 @@ async fn migration_0147_retires_w500_variants_and_0148_adds_extensible_proxy_tab
     let local_paths: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT id, poster_local_path
            FROM titles
-          WHERE id IN ('title-shared', 'title-w500-only')
+          WHERE id IN ('title-shared', 'title-unrelated-w5000', 'title-w500-only')
           ORDER BY id",
     )
     .fetch_all(&services.pool)
@@ -843,6 +848,10 @@ async fn migration_0147_retires_w500_variants_and_0148_adds_extensible_proxy_tab
             (
                 "title-shared".to_string(),
                 Some("/images/titles/title-shared/poster/w250?v=cccccccccccccccc".to_string()),
+            ),
+            (
+                "title-unrelated-w5000".to_string(),
+                Some("/images/titles/title-unrelated-w5000/poster/w5000?v=legacy".to_string()),
             ),
             ("title-w500-only".to_string(), None),
         ]
@@ -941,6 +950,11 @@ async fn migration_0147_postgres_retires_w500_and_adds_proxy_tables_from_env() -
                 "pg-title-shared",
                 "https://image.tmdb.org/t/p/w500/shared.jpg",
                 "/images/titles/pg-title-shared/poster/w500?v=legacy",
+            ),
+            (
+                "pg-title-unrelated-w5000",
+                "https://image.tmdb.org/t/p/w500/unrelated.jpg",
+                "/images/titles/pg-title-unrelated-w5000/poster/w5000?v=legacy",
             ),
         ] {
             sqlx::query(
@@ -1049,7 +1063,7 @@ async fn migration_0147_postgres_retires_w500_and_adds_proxy_tables_from_env() -
         let local_paths: Vec<(String, Option<String>)> = sqlx::query_as(
             "SELECT id, poster_local_path
                FROM titles
-              WHERE id IN ('pg-title-shared', 'pg-title-w500-only')
+              WHERE id IN ('pg-title-shared', 'pg-title-unrelated-w5000', 'pg-title-w500-only')
               ORDER BY id",
         )
         .fetch_all(&pool)
@@ -1064,6 +1078,12 @@ async fn migration_0147_postgres_retires_w500_and_adds_proxy_tables_from_env() -
                     "pg-title-shared".to_string(),
                     Some(
                         "/images/titles/pg-title-shared/poster/w250?v=eeeeeeeeeeeeeeee".to_string()
+                    ),
+                ),
+                (
+                    "pg-title-unrelated-w5000".to_string(),
+                    Some(
+                        "/images/titles/pg-title-unrelated-w5000/poster/w5000?v=legacy".to_string()
                     ),
                 ),
                 ("pg-title-w500-only".to_string(), None),

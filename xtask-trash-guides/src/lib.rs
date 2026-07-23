@@ -215,8 +215,6 @@ struct UpstreamCf {
     trash_id: String,
     #[serde(default)]
     specifications: Vec<UpstreamSpec>,
-    #[serde(default)]
-    trash_scores: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,10 +239,8 @@ struct UpstreamRecord {
     spec_name: String,
     implementation: String,
     value: String,
-    trash_scores_json: String,
     required_json: String,
     negate_json: String,
-    complete_json: String,
 }
 
 #[derive(Debug)]
@@ -460,10 +456,6 @@ struct MetadataRuleRecord {
     spec_name: String,
     implementation: String,
     value: String,
-    trash_scores_json: String,
-    required_json: String,
-    negate_json: String,
-    complete_json: String,
     reason: String,
     source_path: String,
 }
@@ -780,10 +772,8 @@ fn records_from_custom_format(
             spec_name: spec.name,
             implementation: spec.implementation,
             value,
-            trash_scores_json: json_string(parsed.trash_scores.as_ref()),
             required_json: json_string(Some(&spec.required)),
             negate_json: json_string(Some(&spec.negate)),
-            complete_json: json_string(Some(&spec.fields)),
         });
     }
 
@@ -1319,10 +1309,8 @@ fn seed_legacy_group_rules(group_rules: &mut BTreeMap<GroupRuleKey, Vec<Upstream
                 spec_name: seed.name.to_string(),
                 implementation: "ScryerLegacySeed".to_string(),
                 value: format!("{:?}:{:?}:{:?}", seed.tier, seed.context, facet),
-                trash_scores_json: "null".to_string(),
                 required_json: "null".to_string(),
                 negate_json: "null".to_string(),
-                complete_json: "null".to_string(),
             };
             let key = GroupRuleKey {
                 matcher: seed.name.to_string(),
@@ -1429,10 +1417,6 @@ fn metadata_record(record: &UpstreamRecord, reason: &str) -> MetadataRuleRecord 
         spec_name: record.spec_name.clone(),
         implementation: record.implementation.clone(),
         value: record.value.clone(),
-        trash_scores_json: record.trash_scores_json.clone(),
-        required_json: record.required_json.clone(),
-        negate_json: record.negate_json.clone(),
-        complete_json: record.complete_json.clone(),
         reason: reason.to_string(),
         source_path: record.source_path.clone(),
     }

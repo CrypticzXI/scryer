@@ -489,6 +489,10 @@ async fn graphql_typed_general_settings_defaults() {
           generalSettings {
             keepHistoryForever
             historyRetentionDays
+            imageCacheMaxSizeMb
+            effectiveImageCacheMaxSizeBytes
+            effectiveImageCacheMaxSizeMb
+            imageCacheMaxSizeEnvOverrideActive
             pluginHttpCaBundlePem
             pluginHttpTrustedCertificates {
               fingerprintSha256
@@ -503,6 +507,17 @@ async fn graphql_typed_general_settings_defaults() {
     assert_no_errors(&read);
     assert_eq!(read["data"]["generalSettings"]["keepHistoryForever"], false);
     assert_eq!(read["data"]["generalSettings"]["historyRetentionDays"], 180);
+    assert_eq!(read["data"]["generalSettings"]["imageCacheMaxSizeMb"], 256);
+    if read["data"]["generalSettings"]["imageCacheMaxSizeEnvOverrideActive"] == false {
+        assert_eq!(
+            read["data"]["generalSettings"]["effectiveImageCacheMaxSizeBytes"],
+            256 * 1024 * 1024
+        );
+        assert_eq!(
+            read["data"]["generalSettings"]["effectiveImageCacheMaxSizeMb"],
+            256.0
+        );
+    }
     assert_eq!(read["data"]["generalSettings"]["pluginHttpCaBundlePem"], "");
     assert_eq!(
         read["data"]["generalSettings"]["pluginHttpTrustedCertificates"],
@@ -543,6 +558,10 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
           updateGeneralSettings(input: $input) {
             keepHistoryForever
             historyRetentionDays
+            imageCacheMaxSizeMb
+            effectiveImageCacheMaxSizeBytes
+            effectiveImageCacheMaxSizeMb
+            imageCacheMaxSizeEnvOverrideActive
             pluginHttpCaBundlePem
             pluginHttpTrustedCertificates {
               fingerprintSha256
@@ -555,6 +574,7 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
           "input": {
             "keepHistoryForever": false,
             "historyRetentionDays": 45,
+            "imageCacheMaxSizeMb": 384,
             "pluginHttpCaBundlePem": TEST_PLUGIN_HTTP_CA_CERT_PEM
           }
         }),
@@ -564,6 +584,10 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
     assert_eq!(
         first_update["data"]["updateGeneralSettings"]["historyRetentionDays"],
         45
+    );
+    assert_eq!(
+        first_update["data"]["updateGeneralSettings"]["imageCacheMaxSizeMb"],
+        384
     );
     assert_eq!(
         first_update["data"]["updateGeneralSettings"]["pluginHttpCaBundlePem"],
@@ -583,6 +607,10 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
           updateGeneralSettings(input: $input) {
             keepHistoryForever
             historyRetentionDays
+            imageCacheMaxSizeMb
+            effectiveImageCacheMaxSizeBytes
+            effectiveImageCacheMaxSizeMb
+            imageCacheMaxSizeEnvOverrideActive
             pluginHttpCaBundlePem
             pluginHttpTrustedCertificates {
               fingerprintSha256
@@ -610,6 +638,10 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
         45
     );
     assert_eq!(
+        forever_update["data"]["updateGeneralSettings"]["imageCacheMaxSizeMb"],
+        384
+    );
+    assert_eq!(
         forever_update["data"]["updateGeneralSettings"]["pluginHttpCaBundlePem"],
         TEST_PLUGIN_HTTP_CA_CERT_PEM
     );
@@ -627,6 +659,10 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
           generalSettings {
             keepHistoryForever
             historyRetentionDays
+            imageCacheMaxSizeMb
+            effectiveImageCacheMaxSizeBytes
+            effectiveImageCacheMaxSizeMb
+            imageCacheMaxSizeEnvOverrideActive
             pluginHttpCaBundlePem
             pluginHttpTrustedCertificates {
               fingerprintSha256
@@ -641,6 +677,7 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
     assert_no_errors(&read);
     assert_eq!(read["data"]["generalSettings"]["keepHistoryForever"], true);
     assert_eq!(read["data"]["generalSettings"]["historyRetentionDays"], 45);
+    assert_eq!(read["data"]["generalSettings"]["imageCacheMaxSizeMb"], 384);
     assert_eq!(
         read["data"]["generalSettings"]["pluginHttpCaBundlePem"],
         TEST_PLUGIN_HTTP_CA_CERT_PEM
@@ -682,5 +719,42 @@ async fn graphql_typed_general_settings_rejects_invalid_days() {
             .as_array()
             .is_some_and(|errors| !errors.is_empty()),
         "expected validation errors: {body}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_typed_general_settings_rejects_invalid_image_cache_size() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    let body = gql(
+        &ctx,
+        r#"
+        mutation UpdateGeneralSettings($input: UpdateGeneralSettingsInput!) {
+          updateGeneralSettings(input: $input) {
+            imageCacheMaxSizeMb
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "keepHistoryForever": false,
+            "historyRetentionDays": 180,
+            "imageCacheMaxSizeMb": 0,
+            "pluginHttpCaBundlePem": ""
+          }
+        }),
+    )
+    .await;
+
+    assert!(
+        body["errors"].as_array().is_some_and(|errors| {
+            errors.iter().any(|error| {
+                error["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("at least 1 MiB"))
+            })
+        }),
+        "expected image cache validation error: {body}"
     );
 }

@@ -49,9 +49,9 @@ use scryer_application::{
 use scryer_infrastructure::{
     BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
     DatastoreCustomizationStore, DatastoreEngine, FileSystemLibraryRenamer,
-    FileSystemLibraryScanner, FileSystemStagedNzbStore, MetadataGatewayClient, MigrationMode,
-    MultiIndexerSearchClient, PrioritizedDownloadClientRouter, SettingsStore, SmgEnrollmentConfig,
-    WeaverSubscriptionBridgeClient, resolve_datastore_config_from_env,
+    FileSystemLibraryScanner, FileSystemStagedNzbStore, ImageProxyRuntime, MetadataGatewayClient,
+    MigrationMode, MultiIndexerSearchClient, PrioritizedDownloadClientRouter, SettingsStore,
+    SmgEnrollmentConfig, WeaverSubscriptionBridgeClient, resolve_datastore_config_from_env,
     restore_backup_bundle_to_datastore_path, start_weaver_subscription_bridge, validate_datastore,
 };
 use scryer_interface::context::{
@@ -1033,6 +1033,11 @@ async fn bootstrap_application(
 
     let indexer_client = Arc::new(indexer_client);
     let title_images_for_route: Arc<dyn TitleImageRepository> = datastore.title_images();
+    let image_proxy_runtime = Arc::new(ImageProxyRuntime::new(
+        datastore.image_proxy(),
+        title_images_for_route.clone(),
+        &data_dir,
+    ));
     let metadata_gateway_url = std::env::var("SCRYER_METADATA_GATEWAY_GRAPHQL_URL")
         .ok()
         .filter(|v| !v.is_empty())
@@ -1148,6 +1153,7 @@ async fn bootstrap_application(
                 .unwrap_or_else(|| "http://127.0.0.1:8090/graphql".to_string()),
         ))
         .with_metadata_gateway(metadata_gateway)
+        .with_image_proxy_cache_control(image_proxy_runtime.clone())
         .with_library_scanner(library_scanner)
         .with_library_renamer(library_renamer)
         .with_file_importer(Arc::new(scryer_infrastructure::FsFileImporter::new()))
@@ -1185,6 +1191,55 @@ async fn bootstrap_application(
         facet_registry,
         webauthn,
     );
+    if let Err(error) = app_use_case.sync_image_cache_runtime_limit().await {
+        tracing::warn!(error = %error, "failed to apply configured image cache limit");
+    }
+    if let Err(error) = image_proxy_runtime.prune().await {
+        tracing::warn!(error = %error, "failed to run startup image cache maintenance");
+    }
+    {
+        let source_repository = app_use_case.image_proxy_repository();
+        let source_flush_shutdown = shutdown_token.child_token();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = source_flush_shutdown.cancelled() => {
+                        if let Err(error) = source_repository.flush_image_proxy_sources().await {
+                            tracing::warn!(error = %error, "final image proxy source flush failed");
+                        }
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        if let Err(error) = source_repository.flush_image_proxy_sources().await {
+                            tracing::warn!(error = %error, "periodic image proxy source flush failed");
+                        }
+                    }
+                }
+            }
+        });
+    }
+    {
+        let runtime = image_proxy_runtime.clone();
+        let maintenance_shutdown = shutdown_token.child_token();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = maintenance_shutdown.cancelled() => break,
+                    _ = interval.tick() => {
+                        if let Err(error) = runtime.prune().await {
+                            tracing::warn!(error = %error, "periodic image cache maintenance failed");
+                        }
+                    }
+                }
+            }
+        });
+    }
     tokio::spawn(flush_upstream_scheduler_after_shutdown(
         shutdown_token.child_token(),
         {
@@ -1282,7 +1337,7 @@ async fn bootstrap_application(
     {
         tracing::warn!(
             error = %e,
-            "failed to reconcile and activate managed TRaSH rule packs; retaining the last loaded rule engine"
+            "failed to reconcile managed TRaSH rule packs; managed packs stay excluded from the active rules engine until the next successful reconciliation"
         );
     }
     if let Err(e) = app_use_case
@@ -1550,6 +1605,10 @@ async fn bootstrap_application(
             post(graphql_handler).with_state(auth_state.clone()),
         )
         .route(
+            "/images/media/{token}/{variant}",
+            get(image_proxy_handler).with_state(image_proxy_runtime),
+        )
+        .route(
             "/images/titles/{title_id}/{kind}/{variant}",
             get(title_image_handler).with_state(title_images_for_route),
         )
@@ -1605,6 +1664,48 @@ async fn bootstrap_application(
     }
 
     Ok(app)
+}
+
+async fn image_proxy_handler(
+    State(runtime): State<Arc<ImageProxyRuntime>>,
+    headers: HeaderMap,
+    AxumPath((token, variant)): AxumPath<(String, String)>,
+) -> Response {
+    let blob = runtime.resolve(&token, &variant).await;
+    let bare_etag = blob.etag.trim_matches('"');
+    let cache_control = if blob.fallback {
+        HeaderValue::from_static("public, max-age=60")
+    } else {
+        HeaderValue::from_static("public, max-age=86400, must-revalidate")
+    };
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| if_none_match_matches(value, &blob.etag, bare_etag))
+    {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        let headers = response.headers_mut();
+        if let Ok(value) = HeaderValue::from_str(&blob.etag) {
+            headers.insert(header::ETAG, value);
+        }
+        headers.insert(header::CACHE_CONTROL, cache_control);
+        return response;
+    }
+
+    let body_len = blob.bytes.len();
+    let mut response = blob.bytes.into_response();
+    let headers = response.headers_mut();
+    if let Ok(value) = HeaderValue::from_str(&blob.content_type) {
+        headers.insert(header::CONTENT_TYPE, value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&body_len.to_string()) {
+        headers.insert(header::CONTENT_LENGTH, value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&blob.etag) {
+        headers.insert(header::ETAG, value);
+    }
+    headers.insert(header::CACHE_CONTROL, cache_control);
+    response
 }
 
 async fn title_image_handler(

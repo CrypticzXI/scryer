@@ -21,6 +21,7 @@ pub mod fs_integrity;
 mod fs_safety;
 mod health;
 mod helpers;
+mod image_proxy;
 mod import;
 mod integration;
 mod jobs;
@@ -336,6 +337,7 @@ pub(crate) use helpers::{
     to_hex,
 };
 pub use helpers::{accepted_inputs_for_client, nice_thread, normalize_release_password};
+pub use image_proxy::image_proxy_source_token;
 pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,
     JobScheduleInfo, JobScheduleKind, JobSection, JobTriggerSource, LibraryProbeSignature,
@@ -391,15 +393,16 @@ pub use ports::{
     ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretDraftStatus,
     ExternalImportSetupSecretInstanceKind, ExternalImportSetupSecretOverrideDraft,
     ExternalPluginWasm, FileImporter, HousekeepingMediaFileRootRow, HousekeepingRepository,
-    ImportArtifactRepository, ImportFilePermissions, ImportFileTransferProgress,
-    ImportFileTransferProgressSender, ImportRepository, IndexerCapsSnapshotRefresher,
-    IndexerClient, IndexerConfigRepository, IndexerManagementClient, IndexerPluginProvider,
-    IndexerProxyConfigRepository, IndexerSearchLearningContext, IndexerSearchLearningKey,
-    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerStatsTracker,
-    IndexerSystemBackoff, JellyfinServerUser, JobRunRepository, LibraryProbeRepository,
-    LibraryRepository, LibraryScanUnmatchedItemRepository, LogicalBackupExporter, MediaAnalyzer,
-    MediaFileRepository, MediaRequestQuery, MediaRequestRepository,
-    MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
+    ImageProxyCacheControl, ImageProxyCacheEntryRecord, ImageProxyKind, ImageProxyRegistration,
+    ImageProxyRepository, ImageProxySourceRecord, ImportArtifactRepository, ImportFilePermissions,
+    ImportFileTransferProgress, ImportFileTransferProgressSender, ImportRepository,
+    IndexerCapsSnapshotRefresher, IndexerClient, IndexerConfigRepository, IndexerManagementClient,
+    IndexerPluginProvider, IndexerProxyConfigRepository, IndexerSearchLearningContext,
+    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
+    IndexerStatsTracker, IndexerSystemBackoff, JellyfinServerUser, JobRunRepository,
+    LibraryProbeRepository, LibraryRepository, LibraryScanUnmatchedItemRepository,
+    LogicalBackupExporter, MediaAnalyzer, MediaFileRepository, MediaRequestQuery,
+    MediaRequestRepository, MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
     MediaServerUserGroupStatus, NOTIFICATION_REQUEST_SCHEMA_VERSION, NewMediaRequest,
     NotificationActorPayload, NotificationAppPayload, NotificationApplicationUpdatePayload,
     NotificationChannelRepository, NotificationClient, NotificationDownloadPayload,
@@ -417,8 +420,7 @@ pub use ports::{
     SubtitleProviderConfigRepository, SystemInfoProvider, TitleImageProcessor,
     TitleImageRepository, TitleRepository, TotpRepository, UserExternalAccountRepository,
     UserRepository, VerifiedExternalIdentity, WebauthnRepository, WorkflowOperationInfo,
-    WorkflowOperationRepository, ImageProxyCacheEntryRecord, ImageProxyKind,
-    ImageProxyRegistration, ImageProxyRepository, ImageProxySourceRecord,
+    WorkflowOperationRepository,
 };
 pub use quality::release_parser::{
     AudioCodec, ExternalIdSource, ParsedEpisodeMetadata, ParsedEpisodeReleaseType,
@@ -456,23 +458,24 @@ pub use settings::keys::{
     AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, BACKUP_PATH_KEY, CHOWN_GROUP_KEY,
     DEFAULT_ANIME_LIBRARY_PATH, DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL, DEFAULT_FILLER_POLICY,
     DEFAULT_FOLDER_TEMPLATE_ANIME, DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES,
-    DEFAULT_MOVIE_LIBRARY_PATH, DEFAULT_RECAP_POLICY, DEFAULT_RENAME_COLLISION_POLICY,
-    DEFAULT_RENAME_MISSING_METADATA_POLICY, DEFAULT_RENAME_TEMPLATE_ANIME,
-    DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES, DEFAULT_SERIES_LIBRARY_PATH,
-    DISCOVERY_REGION_KEY, DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
-    DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY,
-    FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY,
-    INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
-    LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY,
-    MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY, MOVIES_PATH_KEY,
-    MOVIES_ROOT_FOLDERS_KEY, NFO_WRITE_ON_IMPORT_ANIME_KEY, NFO_WRITE_ON_IMPORT_MOVIE_KEY,
-    NFO_WRITE_ON_IMPORT_SERIES_KEY, NZBGET_OLDER_PRIORITY_SETTING_KEY,
-    NZBGET_RECENT_PRIORITY_SETTING_KEY, PASSWORD_MIN_LENGTH_KEY, PASSWORD_MIN_LENGTH_MIN,
-    PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY, PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY,
-    PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, POST_PROCESSING_SCRIPT_ANIME_KEY,
-    POST_PROCESSING_SCRIPT_MOVIE_KEY, POST_PROCESSING_SCRIPT_SERIES_KEY,
-    POST_PROCESSING_TIMEOUT_KEY, RECYCLE_BIN_ENABLED_KEY, RECYCLE_BIN_PATH_KEY,
-    RECYCLE_BIN_RETENTION_DAYS_KEY, RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY,
+    DEFAULT_IMAGE_CACHE_MAX_SIZE_MB, DEFAULT_MOVIE_LIBRARY_PATH, DEFAULT_RECAP_POLICY,
+    DEFAULT_RENAME_COLLISION_POLICY, DEFAULT_RENAME_MISSING_METADATA_POLICY,
+    DEFAULT_RENAME_TEMPLATE_ANIME, DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES,
+    DEFAULT_SERIES_LIBRARY_PATH, DISCOVERY_REGION_KEY,
+    DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+    FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,
+    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMAGE_CACHE_MAX_BYTES_ENV,
+    IMAGE_CACHE_MAX_SIZE_MB_KEY, IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY,
+    LEGACY_NZBGET_CATEGORY_SETTING_KEY, LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+    METADATA_LANGUAGE_KEY, MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY,
+    MOVIES_PATH_KEY, MOVIES_ROOT_FOLDERS_KEY, NFO_WRITE_ON_IMPORT_ANIME_KEY,
+    NFO_WRITE_ON_IMPORT_MOVIE_KEY, NFO_WRITE_ON_IMPORT_SERIES_KEY,
+    NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY, PASSWORD_MIN_LENGTH_KEY,
+    PASSWORD_MIN_LENGTH_MIN, PLEXMATCH_WRITE_ON_IMPORT_ANIME_KEY,
+    PLEXMATCH_WRITE_ON_IMPORT_SERIES_KEY, PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
+    POST_PROCESSING_SCRIPT_ANIME_KEY, POST_PROCESSING_SCRIPT_MOVIE_KEY,
+    POST_PROCESSING_SCRIPT_SERIES_KEY, POST_PROCESSING_TIMEOUT_KEY, RECYCLE_BIN_ENABLED_KEY,
+    RECYCLE_BIN_PATH_KEY, RECYCLE_BIN_RETENTION_DAYS_KEY, RENAME_COLLISION_POLICY_ANIME_GLOBAL_KEY,
     RENAME_COLLISION_POLICY_GLOBAL_KEY, RENAME_COLLISION_POLICY_KEY,
     RENAME_COLLISION_POLICY_MOVIE_GLOBAL_KEY, RENAME_COLLISION_POLICY_SERIES_GLOBAL_KEY,
     RENAME_ENABLED_KEY, RENAME_MISSING_METADATA_POLICY_ANIME_GLOBAL_KEY,

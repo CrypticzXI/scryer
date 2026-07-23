@@ -33,6 +33,10 @@ export type AcquisitionSettings = {
 export type GeneralSettings = {
   keepHistoryForever: boolean;
   historyRetentionDays: number;
+  imageCacheMaxSizeMb: number;
+  effectiveImageCacheMaxSizeBytes: number;
+  effectiveImageCacheMaxSizeMb: number;
+  imageCacheMaxSizeEnvOverrideActive: boolean;
   pluginHttpCaBundlePem: string;
   pluginHttpTrustedCertificates: TrustedCertificateEntry[];
 };

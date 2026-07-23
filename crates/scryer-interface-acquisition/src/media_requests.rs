@@ -126,7 +126,7 @@ impl MediaRequestMutations {
             .await
             .map_err(to_gql_error)?;
 
-        Ok(from_media_request(request))
+        Ok(from_media_request(&app, request))
     }
 
     async fn cancel_my_media_request(

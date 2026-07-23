@@ -744,6 +744,16 @@ mod tests {
     }
 
     #[test]
+    fn rule_input_contract_copies_are_byte_identical() {
+        assert_eq!(
+            include_str!("../rule-input-contract.json"),
+            include_str!("../../../apps/scryer-web/lib/contracts/rule-input-contract.json"),
+            "crates/scryer-rules/rule-input-contract.json and \
+             apps/scryer-web/lib/contracts/rule-input-contract.json must stay byte-identical"
+        );
+    }
+
+    #[test]
     fn managed_rule_rejects_block_score_builtin() {
         let source = r#"
             package scryer.rules.user.managed_rule

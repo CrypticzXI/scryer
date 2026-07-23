@@ -6,8 +6,8 @@ use scryer_application::{
     AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, BACKUP_PATH_KEY, CHOWN_GROUP_KEY,
     DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY, DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
     FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY, FORM_LOGIN_ENABLED_KEY,
-    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY,
-    INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
+    HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMAGE_CACHE_MAX_SIZE_MB_KEY,
+    IMPORT_MODE_KEY, INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
     LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY,
     MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY, MOVIES_ROOT_FOLDERS_KEY,
     NZBGET_OLDER_PRIORITY_SETTING_KEY, NZBGET_RECENT_PRIORITY_SETTING_KEY, PASSWORD_MIN_LENGTH_KEY,
@@ -216,6 +216,14 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             key_name: HISTORY_RETENTION_DAYS_KEY,
             data_type: "number",
             default_value_json: "180",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_GENERAL,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: IMAGE_CACHE_MAX_SIZE_MB_KEY,
+            data_type: "number",
+            default_value_json: "256",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -1825,6 +1833,12 @@ mod tests {
                 && seed.key_name == HISTORY_RETENTION_DAYS_KEY
                 && seed.data_type == "number"
                 && seed.default_value_json == "180"
+        }));
+        assert!(service_setting_seeds().iter().any(|seed| {
+            seed.scope == SETTINGS_SCOPE_SYSTEM
+                && seed.key_name == IMAGE_CACHE_MAX_SIZE_MB_KEY
+                && seed.data_type == "number"
+                && seed.default_value_json == "256"
         }));
         assert!(service_setting_seeds().iter().any(|seed| {
             seed.scope == SETTINGS_SCOPE_SYSTEM
