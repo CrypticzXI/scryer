@@ -10,10 +10,9 @@ import {
   librariesQuery,
   pendingReleasesQuery,
   releaseDecisionsQuery,
-  searchForEpisodeQuery,
-  searchForTitleQuery,
   wantedItemsQuery,
 } from "@/lib/graphql/queries";
+import { runIterativeReleaseSearch } from "@/lib/graphql/release-search";
 import {
   cancelAcquisitionSearchMutation,
   triggerAcquisitionSearchMutation,
@@ -641,6 +640,17 @@ export const WantedContainer = memo(function WantedContainer({
     async (item: CutoffUnmetItem) => {
       const itemKey = cutoffItemKey(item);
       setCutoffInteractiveSearchingId(itemKey);
+      // Stream partial results into the picker as indexers complete; the
+      // picker opens on the first non-empty partial, the toast at completion.
+      const onUpdate = (snapshot: { releases: Release[] }) => {
+        setCutoffSearchResultsByItemId((current) => ({
+          ...current,
+          [itemKey]: snapshot.releases,
+        }));
+        if (snapshot.releases.length > 0) {
+          setCutoffActiveInteractiveItemId(itemKey);
+        }
+      };
       try {
         if (item.episodeId) {
           const season = item.seasonNumber?.trim();
@@ -648,24 +658,20 @@ export const WantedContainer = memo(function WantedContainer({
           if (!season || !episode) {
             throw new Error("Episode search is unavailable because the episode numbers are missing.");
           }
-          const { data, error } = await client
-            .query(searchForEpisodeQuery, {
-              titleId: item.titleId,
-              season,
-              episode,
-            })
-            .toPromise();
-          if (error) throw error;
-          const results = data?.searchReleases ?? [];
+          const results = await runIterativeReleaseSearch(client, {
+            titleId: item.titleId,
+            season,
+            episode,
+          }, { onUpdate });
           setCutoffSearchResultsByItemId((current) => ({ ...current, [itemKey]: results }));
           setCutoffActiveInteractiveItemId(itemKey);
           setGlobalStatus(t("status.foundNzb", { count: results.length }));
         } else {
-          const { data, error } = await client
-            .query(searchForTitleQuery, { titleId: item.titleId })
-            .toPromise();
-          if (error) throw error;
-          const results = data?.searchReleases ?? [];
+          const results = await runIterativeReleaseSearch(
+            client,
+            { titleId: item.titleId },
+            { onUpdate },
+          );
           setCutoffSearchResultsByItemId((current) => ({ ...current, [itemKey]: results }));
           setCutoffActiveInteractiveItemId(itemKey);
           setGlobalStatus(t("status.foundNzb", { count: results.length }));

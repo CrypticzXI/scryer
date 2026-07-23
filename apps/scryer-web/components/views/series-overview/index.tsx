@@ -11,13 +11,10 @@ import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import { useDownloadConflictConfirmation } from "@/components/common/download-conflict-confirmation";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
-import { isAbortError, makeAbortableFetch } from "@/lib/graphql/urql-client";
+import { isAbortError } from "@/lib/graphql/urql-client";
+import { runIterativeReleaseSearch } from "@/lib/graphql/release-search";
 import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
-import {
-  searchForEpisodeQuery,
-  searchForSeriesMovieQuery,
-} from "@/lib/graphql/queries";
 import { queueExistingMutation } from "@/lib/graphql/mutations";
 import {
   assertNoReplaceConflict,
@@ -465,20 +462,27 @@ export function SeriesOverviewView({
       episodeSearchAbortByIdRef.current[episodeId]?.abort();
       const abortController = new AbortController();
       episodeSearchAbortByIdRef.current[episodeId] = abortController;
-      client.query(searchForEpisodeQuery, {
+      runIterativeReleaseSearch(client, {
         titleId: title.id,
         season: seasonNum,
         episode: episodeNum,
       }, {
-        fetch: makeAbortableFetch(abortController.signal),
-      }).toPromise()
-        .then(({ data, error: queryError }) => {
-          if (queryError) throw queryError;
+        signal: abortController.signal,
+        onUpdate: (snapshot) => {
           if (abortController.signal.aborted) return;
           dispatchEpisodePanel({
             type: "SET_SEARCH_RESULTS",
             episodeId,
-            results: data.searchReleases ?? [],
+            results: snapshot.releases,
+          });
+        },
+      })
+        .then((results) => {
+          if (abortController.signal.aborted) return;
+          dispatchEpisodePanel({
+            type: "SET_SEARCH_RESULTS",
+            episodeId,
+            results,
           });
         })
         .catch((error) => {
@@ -625,20 +629,24 @@ export function SeriesOverviewView({
       seriesMovieSearchAbortByLinkRef.current[link.id]?.abort();
       const abortController = new AbortController();
       seriesMovieSearchAbortByLinkRef.current[link.id] = abortController;
-      client
-        .query(searchForSeriesMovieQuery, {
-          titleId: title.id,
-          seriesMovieLinkId: link.id,
-        }, {
-          fetch: makeAbortableFetch(abortController.signal),
-        })
-        .toPromise()
-        .then(({ data, error: queryError }) => {
-          if (queryError) throw queryError;
+      runIterativeReleaseSearch(client, {
+        titleId: title.id,
+        seriesMovieLinkId: link.id,
+      }, {
+        signal: abortController.signal,
+        onUpdate: (snapshot) => {
           if (abortController.signal.aborted) return;
           setSeriesMovieSearchResultsByLink((prev) => ({
             ...prev,
-            [link.id]: data?.searchReleases ?? [],
+            [link.id]: snapshot.releases,
+          }));
+        },
+      })
+        .then((results) => {
+          if (abortController.signal.aborted) return;
+          setSeriesMovieSearchResultsByLink((prev) => ({
+            ...prev,
+            [link.id]: results,
           }));
         })
         .catch((error) => {

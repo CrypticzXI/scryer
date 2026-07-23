@@ -4192,6 +4192,58 @@ pub struct AcquisitionSearchJobPayload {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
+/// Lifecycle of an interactive release-search job. The job runs server-side;
+/// results stream into the snapshot as each indexer completes.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum InteractiveReleaseSearchStateValue {
+    Running,
+    Completed,
+    Cancelled,
+}
+
+/// Per-indexer progress within an interactive release-search job.
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum InteractiveReleaseSearchIndexerStatusValue {
+    Pending,
+    Searching,
+    Completed,
+    Failed,
+    Skipped,
+}
+
+/// Status of a single indexer inside an interactive release-search job.
+#[derive(SimpleObject, Clone)]
+pub struct InteractiveReleaseSearchIndexerPayload {
+    pub indexer_id: ID,
+    pub name: String,
+    pub status: InteractiveReleaseSearchIndexerStatusValue,
+    /// The indexer's own result count (before cross-indexer dedup).
+    pub result_count: i32,
+    pub failure_reason: Option<String>,
+}
+
+/// Snapshot of an interactive release-search job, polled by `id` while the
+/// job runs so results appear as each indexer completes.
+#[derive(SimpleObject, Clone)]
+pub struct InteractiveReleaseSearchPayload {
+    pub id: ID,
+    pub state: InteractiveReleaseSearchStateValue,
+    /// Scored, cross-indexer-deduped snapshot of the merged results so far.
+    pub results: Vec<IndexerSearchResultPayload>,
+    pub indexers: Vec<InteractiveReleaseSearchIndexerPayload>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct CancelInteractiveReleaseSearchPayload {
+    pub id: ID,
+    /// False when the search had already finished — not an error.
+    pub accepted: bool,
+}
+
 // ── Rule Sets ──────────────────────────────────────────────────────────────
 
 #[derive(SimpleObject, Clone)]

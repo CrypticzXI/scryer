@@ -264,6 +264,14 @@ type CancelExternalImportMonitorWarmupPayload {
 	canceled: Boolean!
 }
 
+type CancelInteractiveReleaseSearchPayload {
+	id: ID!
+	"""
+	False when the search had already finished — not an error.
+	"""
+	accepted: Boolean!
+}
+
 type CancelLibraryScanPayload {
 	sessionId: ID!
 	"""
@@ -1944,6 +1952,57 @@ type IntConfigValuePayload {
 }
 
 """
+Status of a single indexer inside an interactive release-search job.
+"""
+type InteractiveReleaseSearchIndexerPayload {
+	indexerId: ID!
+	name: String!
+	status: InteractiveReleaseSearchIndexerStatusValue!
+	"""
+	The indexer's own result count (before cross-indexer dedup).
+	"""
+	resultCount: Int!
+	failureReason: String
+}
+
+"""
+Per-indexer progress within an interactive release-search job.
+"""
+enum InteractiveReleaseSearchIndexerStatusValue {
+	PENDING
+	SEARCHING
+	COMPLETED
+	FAILED
+	SKIPPED
+}
+
+"""
+Snapshot of an interactive release-search job, polled by `id` while the
+job runs so results appear as each indexer completes.
+"""
+type InteractiveReleaseSearchPayload {
+	id: ID!
+	state: InteractiveReleaseSearchStateValue!
+	"""
+	Scored, cross-indexer-deduped snapshot of the merged results so far.
+	"""
+	results: [IndexerSearchResultPayload!]!
+	indexers: [InteractiveReleaseSearchIndexerPayload!]!
+	startedAt: DateTime!
+	completedAt: DateTime
+}
+
+"""
+Lifecycle of an interactive release-search job. The job runs server-side;
+results stream into the snapshot as each indexer completes.
+"""
+enum InteractiveReleaseSearchStateValue {
+	RUNNING
+	COMPLETED
+	CANCELLED
+}
+
+"""
 A scalar that can represent any JSON value.
 """
 scalar JSON
@@ -2877,6 +2936,17 @@ type MutationRoot {
 	Empty recycle bins for the selected libraries. Returns the number of items purged.
 	"""
 	emptyRecycleBin(libraryIds: [ID!]): EmptyRecycleBinPayload!
+	"""
+	Start a server-side interactive release-search job for the same scopes
+	as `searchReleases`. Results stream into the job snapshot as each
+	indexer completes; poll it with `interactiveReleaseSearch`. Starting a
+	new search for a scope cancels the caller's running job for that scope.
+	"""
+	startInteractiveReleaseSearch(input: SearchReleasesInput!): InteractiveReleaseSearchPayload!
+	"""
+	Cancel a running interactive release-search job.
+	"""
+	cancelInteractiveReleaseSearch(id: ID!): CancelInteractiveReleaseSearchPayload!
 }
 
 type NavigationBadgeCountsPayload {
@@ -3413,6 +3483,12 @@ type QueryRoot {
 	deleteExternalSubtitlePreview(externalSubtitleId: ID!): DeletePreviewPayload!
 	wantedItem(id: ID!): WantedItemPayload
 	searchReleases(input: SearchReleasesInput!): [IndexerSearchResultPayload!]!
+	"""
+	Poll an interactive release-search job started by
+	`startInteractiveReleaseSearch`. `null` for an unknown, evicted, or
+	another user's job.
+	"""
+	interactiveReleaseSearch(id: ID!): InteractiveReleaseSearchPayload
 	titleHistory(filter: TitleHistoryFilterInput!): TitleHistoryPagePayload!
 	titleReleaseBlocklist(titleId: ID!, limit: Int): [TitleReleaseBlocklistEntryPayload!]!
 	activityEvents(limit: Int, offset: Int): [ActivityEventPayload!]!

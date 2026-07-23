@@ -351,6 +351,64 @@ fn from_acquisition_search_job_view(
     })
 }
 
+pub fn from_interactive_release_search_snapshot(
+    snapshot: scryer_application::InteractiveReleaseSearchSnapshot,
+) -> InteractiveReleaseSearchPayload {
+    let state = match snapshot.state {
+        scryer_application::InteractiveReleaseSearchState::Running => {
+            InteractiveReleaseSearchStateValue::Running
+        }
+        scryer_application::InteractiveReleaseSearchState::Completed => {
+            InteractiveReleaseSearchStateValue::Completed
+        }
+        scryer_application::InteractiveReleaseSearchState::Cancelled => {
+            InteractiveReleaseSearchStateValue::Cancelled
+        }
+    };
+    let indexers = snapshot
+        .indexers
+        .into_iter()
+        .map(|indexer| InteractiveReleaseSearchIndexerPayload {
+            indexer_id: indexer.indexer_id.into(),
+            name: indexer.name,
+            status: match indexer.status {
+                scryer_application::InteractiveReleaseSearchIndexerStatus::Pending => {
+                    InteractiveReleaseSearchIndexerStatusValue::Pending
+                }
+                scryer_application::InteractiveReleaseSearchIndexerStatus::Searching => {
+                    InteractiveReleaseSearchIndexerStatusValue::Searching
+                }
+                scryer_application::InteractiveReleaseSearchIndexerStatus::Completed => {
+                    InteractiveReleaseSearchIndexerStatusValue::Completed
+                }
+                scryer_application::InteractiveReleaseSearchIndexerStatus::Failed => {
+                    InteractiveReleaseSearchIndexerStatusValue::Failed
+                }
+                scryer_application::InteractiveReleaseSearchIndexerStatus::Skipped => {
+                    InteractiveReleaseSearchIndexerStatusValue::Skipped
+                }
+            },
+            result_count: indexer.result_count as i32,
+            failure_reason: indexer.failure_reason,
+        })
+        .collect();
+    // Parity with the one-shot `searchReleases` resolver's limit handling.
+    let safe_limit = snapshot.limit.unwrap_or(50).clamp(1, 200) as usize;
+    InteractiveReleaseSearchPayload {
+        id: snapshot.id.into(),
+        state,
+        results: snapshot
+            .results
+            .into_iter()
+            .take(safe_limit)
+            .map(crate::mappers::from_search_result)
+            .collect(),
+        indexers,
+        started_at: snapshot.started_at,
+        completed_at: snapshot.completed_at,
+    }
+}
+
 fn from_cutoff_unmet_item(
     item: scryer_application::CutoffUnmetItem,
     convergence: scryer_application::WantedViewConvergence,
@@ -1022,6 +1080,23 @@ impl CatalogQueries {
             .take(safe_limit)
             .map(crate::mappers::from_search_result)
             .collect())
+    }
+
+    /// Poll an interactive release-search job started by
+    /// `startInteractiveReleaseSearch`. `null` for an unknown, evicted, or
+    /// another user's job.
+    async fn interactive_release_search(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> GqlResult<Option<InteractiveReleaseSearchPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let snapshot = app
+            .interactive_release_search(&actor, id.as_ref())
+            .await
+            .map_err(to_gql_error)?;
+        Ok(snapshot.map(from_interactive_release_search_snapshot))
     }
 
     async fn title_history(

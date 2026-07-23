@@ -136,16 +136,23 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // (five OBJECT, two INPUT_OBJECT, and one ENUM support types).
     // Catalog bootstrap no longer exposes filesystem reachability as a blocking query.
     // User login suspension adds one mutation and its INPUT_OBJECT.
+    // 2026-07-23 hotfix 0.17.1: server-side interactive release-search jobs
+    // (start/cancel mutations + poll query) replace the single join-all
+    // `searchReleases` round-trip for the UI so per-indexer results stream in.
+    // Adds 1 query root, 2 mutation roots, 3 payload OBJECTs
+    // (InteractiveReleaseSearch{,Indexer}Payload, CancelInteractiveReleaseSearchPayload)
+    // and 2 ENUMs (state + indexer status): query 118->119, mutation 164->166,
+    // OBJECT 273->276, ENUM 90->92, public types 527->532.
     assert_eq!(
-        query_field_count, 118,
+        query_field_count, 119,
         "query fields: {query_field_names:?}"
     );
-    assert_eq!(mutation_field_count, 164);
+    assert_eq!(mutation_field_count, 166);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 527);
-    assert_eq!(kind_count("OBJECT"), 273);
+    assert_eq!(public_types.len(), 532);
+    assert_eq!(kind_count("OBJECT"), 276);
     assert_eq!(kind_count("INPUT_OBJECT"), 152);
-    assert_eq!(kind_count("ENUM"), 90);
+    assert_eq!(kind_count("ENUM"), 92);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
@@ -191,6 +198,15 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(public_type_names.contains(&"ConvergenceStateValue"));
     assert!(public_type_names.contains(&"RecencyLaneValue"));
     assert!(public_type_names.contains(&"WantedKindValue"));
+    // 0.17.1 hotfix: streaming interactive release-search job surface.
+    assert!(query_field_names.contains(&"interactiveReleaseSearch"));
+    assert!(mutation_field_names.contains(&"startInteractiveReleaseSearch"));
+    assert!(mutation_field_names.contains(&"cancelInteractiveReleaseSearch"));
+    assert!(public_type_names.contains(&"InteractiveReleaseSearchPayload"));
+    assert!(public_type_names.contains(&"InteractiveReleaseSearchIndexerPayload"));
+    assert!(public_type_names.contains(&"CancelInteractiveReleaseSearchPayload"));
+    assert!(public_type_names.contains(&"InteractiveReleaseSearchStateValue"));
+    assert!(public_type_names.contains(&"InteractiveReleaseSearchIndexerStatusValue"));
     // …and the retired per-item trigger mutations / unpaged cutoff query / phase
     // enum are gone.
     assert!(!query_field_names.contains(&"cutoffUnmetTitles"));
@@ -4606,6 +4622,96 @@ async fn graphql_search_releases_rejects_series_movie_and_episode_inputs_togethe
         .as_str()
         .expect("expected graphql error message");
     assert!(message.contains("series movie searches cannot include season or episode"));
+}
+
+#[tokio::test]
+async fn graphql_introspection_interactive_release_search_uses_payloads() {
+    // 0.17.1 hotfix: the streaming interactive release-search job reuses
+    // SearchReleasesInput on start, id-anchored poll/cancel, and dedicated
+    // payload types with the state / per-indexer-status enums.
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          mutationRoot: __type(name: "MutationRoot") {
+            fields {
+              name
+              args { name type { kind name ofType { kind name } } }
+              type { kind name ofType { kind name } }
+            }
+          }
+          queryRoot: __type(name: "QueryRoot") {
+            fields {
+              name
+              args { name type { kind name ofType { kind name } } }
+              type { kind name ofType { kind name } }
+            }
+          }
+          stateValue: __type(name: "InteractiveReleaseSearchStateValue") {
+            enumValues { name }
+          }
+          indexerStatusValue: __type(name: "InteractiveReleaseSearchIndexerStatusValue") {
+            enumValues { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let field = |root: &str, name: &str| -> Value {
+        body["data"][root]["fields"]
+            .as_array()
+            .expect("root fields")
+            .iter()
+            .find(|field| field["name"] == name)
+            .unwrap_or_else(|| panic!("missing field {name}"))
+            .clone()
+    };
+
+    let start = field("mutationRoot", "startInteractiveReleaseSearch");
+    assert_eq!(start["args"][0]["name"], "input");
+    assert_eq!(start["args"][0]["type"]["kind"], "NON_NULL");
+    assert_eq!(start["args"][0]["type"]["ofType"]["name"], "SearchReleasesInput");
+    assert_eq!(start["type"]["kind"], "NON_NULL");
+    assert_eq!(start["type"]["ofType"]["name"], "InteractiveReleaseSearchPayload");
+
+    let cancel = field("mutationRoot", "cancelInteractiveReleaseSearch");
+    assert_eq!(cancel["args"][0]["name"], "id");
+    assert_eq!(cancel["args"][0]["type"]["kind"], "NON_NULL");
+    assert_eq!(cancel["args"][0]["type"]["ofType"]["name"], "ID");
+    assert_eq!(cancel["type"]["kind"], "NON_NULL");
+    assert_eq!(
+        cancel["type"]["ofType"]["name"],
+        "CancelInteractiveReleaseSearchPayload"
+    );
+
+    let poll = field("queryRoot", "interactiveReleaseSearch");
+    assert_eq!(poll["args"][0]["name"], "id");
+    assert_eq!(poll["args"][0]["type"]["kind"], "NON_NULL");
+    assert_eq!(poll["args"][0]["type"]["ofType"]["name"], "ID");
+    // Nullable payload: unknown/evicted/foreign job ids resolve to null.
+    assert_eq!(poll["type"]["kind"], "OBJECT");
+    assert_eq!(poll["type"]["name"], "InteractiveReleaseSearchPayload");
+
+    let enum_values = |key: &str| -> Vec<&str> {
+        body["data"][key]["enumValues"]
+            .as_array()
+            .expect("enum values")
+            .iter()
+            .filter_map(|value| value["name"].as_str())
+            .collect()
+    };
+    assert_eq!(
+        enum_values("stateValue"),
+        vec!["RUNNING", "COMPLETED", "CANCELLED"]
+    );
+    assert_eq!(
+        enum_values("indexerStatusValue"),
+        vec!["PENDING", "SEARCHING", "COMPLETED", "FAILED", "SKIPPED"]
+    );
 }
 
 #[tokio::test]

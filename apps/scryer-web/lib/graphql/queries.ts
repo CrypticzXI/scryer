@@ -989,8 +989,7 @@ export const externalSubtitleBlocklistEntriesQuery = `query ExternalSubtitleBloc
   }
 }`;
 
-export const searchForTitleQuery = `query SearchReleasesForTitle($titleId: ID!) {
-  searchReleases(input: { titleId: $titleId }) {
+export const RELEASE_SEARCH_RESULT_FIELDS = `
     source
     title
     link
@@ -1060,7 +1059,10 @@ export const searchForTitleQuery = `query SearchReleasesForTitle($titleId: ID!) 
     downloadVolumeFactor
     autoEligible
     autoDecisionCode
-    autoDecisionSummary
+    autoDecisionSummary`;
+
+export const searchForTitleQuery = `query SearchReleasesForTitle($titleId: ID!) {
+  searchReleases(input: { titleId: $titleId }) {${RELEASE_SEARCH_RESULT_FIELDS}
   }
 }`;
 
@@ -1069,77 +1071,7 @@ export const searchForEpisodeQuery = `query SearchReleasesForEpisode($titleId: I
     titleId: $titleId,
     season: $season,
     episode: $episode
-  }) {
-    source
-    title
-    link
-    downloadUrl
-    candidateToken
-    queueScope {
-      __typename
-      ... on EpisodeScopePayload {
-        episodeId
-      }
-      ... on EpisodeSetScopePayload {
-        episodeIds
-      }
-      ... on SeriesMovieScopePayload {
-        seriesMovieLinkId
-      }
-      ... on CollectionScopePayload {
-        collectionId
-      }
-      ... on TitleScopePayload {
-        wholeTitle
-      }
-      ... on OrphanScopePayload {
-        orphaned
-      }
-    }
-    sourceKind
-    sizeBytes
-    publishedAt
-    thumbsUp
-    thumbsDown
-    parsedRelease {
-      rawTitle
-      normalizedTitle
-      releaseGroup
-      quality
-      source
-      videoCodec
-      videoEncoding
-      audio
-      isDualAudio
-      isAtmos
-      isDolbyVision
-      detectedHdr
-      parseConfidence
-      isProperUpload
-      isRemux
-      isBdDisk
-      isAiEnhanced
-    }
-    qualityProfileDecision {
-      allowed
-      blockCodes
-      releaseScore
-      preferenceScore
-      scoringLog {
-        code
-        delta
-        source
-        ruleSetName
-      }
-    }
-    seeders
-    peers
-    infoHash
-    freeleech
-    downloadVolumeFactor
-    autoEligible
-    autoDecisionCode
-    autoDecisionSummary
+  }) {${RELEASE_SEARCH_RESULT_FIELDS}
   }
 }`;
 
@@ -1147,77 +1079,27 @@ export const searchForSeriesMovieQuery = `query SearchReleasesForSeriesMovie($ti
   searchReleases(input: {
     titleId: $titleId,
     seriesMovieLinkId: $seriesMovieLinkId
-  }) {
-    source
-    title
-    link
-    downloadUrl
-    candidateToken
-    queueScope {
-      __typename
-      ... on EpisodeScopePayload {
-        episodeId
-      }
-      ... on EpisodeSetScopePayload {
-        episodeIds
-      }
-      ... on SeriesMovieScopePayload {
-        seriesMovieLinkId
-      }
-      ... on CollectionScopePayload {
-        collectionId
-      }
-      ... on TitleScopePayload {
-        wholeTitle
-      }
-      ... on OrphanScopePayload {
-        orphaned
-      }
+  }) {${RELEASE_SEARCH_RESULT_FIELDS}
+  }
+}`;
+
+// Hotfix 0.17.1: server-side interactive release-search job; results stream in
+// as each indexer completes and are polled via this query.
+export const interactiveReleaseSearchQuery = `query InteractiveReleaseSearch($id: ID!) {
+  interactiveReleaseSearch(id: $id) {
+    id
+    state
+    results {${RELEASE_SEARCH_RESULT_FIELDS}
     }
-    sourceKind
-    sizeBytes
-    publishedAt
-    thumbsUp
-    thumbsDown
-    parsedRelease {
-      rawTitle
-      normalizedTitle
-      releaseGroup
-      quality
-      source
-      videoCodec
-      videoEncoding
-      audio
-      isDualAudio
-      isAtmos
-      isDolbyVision
-      detectedHdr
-      parseConfidence
-      isProperUpload
-      isRemux
-      isBdDisk
-      isAiEnhanced
+    indexers {
+      indexerId
+      name
+      status
+      resultCount
+      failureReason
     }
-    qualityProfileDecision {
-      allowed
-      blockCodes
-      releaseScore
-      preferenceScore
-      scoringLog {
-        code
-        delta
-        source
-        ruleSetName
-      }
-    }
-    seeders
-    peers
-    infoHash
-    freeleech
-    downloadVolumeFactor
-    autoEligible
-    autoDecisionCode
-    autoDecisionSummary
+    startedAt
+    completedAt
   }
 }`;
 
