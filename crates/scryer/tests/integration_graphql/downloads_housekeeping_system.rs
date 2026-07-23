@@ -1,5 +1,24 @@
 use super::*;
 
+fn run_large_stack_graphql_test<F>(future: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("graphql-large-stack-test".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build large-stack GraphQL test runtime")
+                .block_on(future);
+        })
+        .expect("spawn large-stack GraphQL test thread")
+        .join()
+        .expect("large-stack GraphQL test thread should not panic");
+}
+
 #[tokio::test]
 async fn graphql_download_queue_empty() {
     let ctx = TestContext::new().await;
@@ -9,8 +28,12 @@ async fn graphql_download_queue_empty() {
     assert!(queue.is_empty(), "queue should start empty");
 }
 
-#[tokio::test]
-async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
+#[test]
+fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
+    run_large_stack_graphql_test(graphql_invalid_nzb_xml_queue_failure_is_blocklisted_impl());
+}
+
+async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted_impl() {
     let ctx = TestContext::new().await;
     let title_id = add_test_title(&ctx, "Broken NZB Movie", "MOVIE").await;
     let source_hint = format!("{}/invalid.nzb", ctx.nzbget_server.uri());
@@ -105,8 +128,12 @@ async fn graphql_invalid_nzb_xml_queue_failure_is_blocklisted() {
     );
 }
 
-#[tokio::test]
-async fn graphql_title_release_blocklist_entry_can_be_cleared() {
+#[test]
+fn graphql_title_release_blocklist_entry_can_be_cleared() {
+    run_large_stack_graphql_test(graphql_title_release_blocklist_entry_can_be_cleared_impl());
+}
+
+async fn graphql_title_release_blocklist_entry_can_be_cleared_impl() {
     let ctx = TestContext::new().await;
     let title_id = add_test_title(&ctx, "Clear Blocklist Movie", "MOVIE").await;
     let source_hint = format!("{}/invalid-clear.nzb", ctx.nzbget_server.uri());
@@ -227,8 +254,14 @@ async fn graphql_title_release_blocklist_entry_can_be_cleared() {
     );
 }
 
-#[tokio::test]
-async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title() {
+#[test]
+fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title() {
+    run_large_stack_graphql_test(
+        graphql_title_release_blocklist_uses_persisted_blocklist_source_title_impl(),
+    );
+}
+
+async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title_impl() {
     let ctx = TestContext::new().await;
     let title_id = add_test_title(&ctx, "Friends", "SERIES").await;
 
