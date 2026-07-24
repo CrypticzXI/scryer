@@ -67,7 +67,10 @@ impl HttpTitleImageProcessor {
         let response = self
             .outbound_http
             .send(
+                // Redirect hops would escape the DNS-pinned target client, so
+                // this untrusted fetch must never auto-follow.
                 RequestPolicy::safe_read(scope, "title_image_fetch")
+                    .without_redirects()
                     .with_max_retries(2)
                     .with_backoff(
                         std::time::Duration::from_millis(500),

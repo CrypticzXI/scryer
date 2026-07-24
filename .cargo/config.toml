@@ -2,3 +2,10 @@
 xtask = "run -p xtask --"
 xtask-release = "run -p xtask-release --"
 xtask-migrations = "run -p xtask-migrations --"
+
+[env]
+# Deep GraphQL integration tests recurse through the resolver/schema stack far
+# enough to blow the libtest default 2 MiB thread stack (SIGABRT: stack
+# overflow). Match the 16 MiB stack the serve backend already runs with so every
+# test thread has the same headroom the production code path assumes.
+RUST_MIN_STACK = "16777216"
