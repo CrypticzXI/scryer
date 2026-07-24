@@ -60,6 +60,10 @@ pub enum RedirectMode {
     TrustedFollow { max_hops: usize },
 }
 
+/// Matches the hop budget reqwest's default redirect policy allowed before
+/// outbound requests moved to manual redirect handling.
+pub const DEFAULT_TRUSTED_REDIRECT_HOPS: usize = 10;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RetryAfterSource {
     HttpDate,
@@ -163,7 +167,9 @@ impl RequestPolicy {
             base_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(30),
             max_retry_after: default_max_retry_after(),
-            redirect_mode: RedirectMode::NoFollow,
+            redirect_mode: RedirectMode::TrustedFollow {
+                max_hops: DEFAULT_TRUSTED_REDIRECT_HOPS,
+            },
             host_rps_override: None,
         }
     }
@@ -2135,7 +2141,6 @@ fn retry_after_source_label(source: RetryAfterSource) -> &'static str {
 mod tests {
     use super::*;
 
-    const MAX_MANUAL_REDIRECTS: usize = 10;
     use std::io;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2863,7 +2868,7 @@ mod tests {
         let response = outbound
             .send(
                 RequestPolicy::safe_read("redirect-test", "redirect-test")
-                    .with_trusted_redirects(MAX_MANUAL_REDIRECTS),
+                    .with_trusted_redirects(DEFAULT_TRUSTED_REDIRECT_HOPS),
                 || client.get("http://origin.test/test"),
             )
             .await
@@ -2888,7 +2893,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn outbound_client_does_not_follow_redirects_by_default() {
+    async fn outbound_client_follows_redirects_by_default() {
         let (target_bound_url, target_hits) = spawn_http_server(vec![http_response(
             200,
             &[("Content-Type", "text/plain")],
@@ -2910,6 +2915,39 @@ mod tests {
         let response = outbound
             .send(
                 RequestPolicy::safe_read("redirect-test", "redirect-test"),
+                || client.get(origin_bound_url.clone()),
+            )
+            .await
+            .expect("redirected request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(origin_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(target_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn outbound_client_without_redirects_does_not_follow() {
+        let (target_bound_url, target_hits) = spawn_http_server(vec![http_response(
+            200,
+            &[("Content-Type", "text/plain")],
+            "ok",
+        )])
+        .await;
+        let (origin_bound_url, origin_hits) = spawn_http_server(vec![http_response(
+            302,
+            &[("Location", target_bound_url.as_str())],
+            "",
+        )])
+        .await;
+        let registry = RateLimitRegistry::isolated();
+        let client = reqwest_client_builder()
+            .build()
+            .expect("client should build");
+        let outbound = OutboundHttpClient::new(client.clone(), registry);
+
+        let response = outbound
+            .send(
+                RequestPolicy::safe_read("redirect-test", "redirect-test").without_redirects(),
                 || client.get(origin_bound_url.clone()),
             )
             .await
