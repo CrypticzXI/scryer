@@ -1000,10 +1000,8 @@ mod tests {
                 .expect("write redirect");
         });
 
-        let outbound = OutboundHttpClient::new(
-            no_redirect_reqwest_client(),
-            RateLimitRegistry::isolated(),
-        );
+        let outbound =
+            OutboundHttpClient::new(no_redirect_reqwest_client(), RateLimitRegistry::isolated());
         let tempdir = TempDir::new().expect("tempdir");
         let store: Arc<dyn StagedNzbStore> = Arc::new(
             FileSystemStagedNzbStore::new(tempdir.path())
