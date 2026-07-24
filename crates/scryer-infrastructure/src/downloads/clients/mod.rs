@@ -950,6 +950,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stage_nzb_from_url_follows_trusted_redirects() {
+        use std::sync::Arc;
+
+        use scryer_outbound_http::{
+            OutboundHttpClient, RateLimitRegistry, no_redirect_reqwest_client,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let nzb_bytes = load_real_nzb_fixture_bytes();
+
+        let target_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("target listener should bind");
+        let target_addr = target_listener.local_addr().expect("target addr");
+        let target_body = nzb_bytes.clone();
+        tokio::spawn(async move {
+            let (mut socket, _) = target_listener.accept().await.expect("accept target");
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/x-nzb\r\nContent-Length: {}\r\n\r\n",
+                target_body.len()
+            );
+            socket
+                .write_all(header.as_bytes())
+                .await
+                .expect("write target header");
+            socket
+                .write_all(&target_body)
+                .await
+                .expect("write target body");
+        });
+
+        let origin_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("origin listener should bind");
+        let origin_addr = origin_listener.local_addr().expect("origin addr");
+        tokio::spawn(async move {
+            let (mut socket, _) = origin_listener.accept().await.expect("accept origin");
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 301 Moved Permanently\r\nLocation: http://{target_addr}/download.nzb\r\nContent-Length: 0\r\n\r\n"
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write redirect");
+        });
+
+        let outbound = OutboundHttpClient::new(
+            no_redirect_reqwest_client(),
+            RateLimitRegistry::isolated(),
+        );
+        let tempdir = TempDir::new().expect("tempdir");
+        let store: Arc<dyn StagedNzbStore> = Arc::new(
+            FileSystemStagedNzbStore::new(tempdir.path())
+                .await
+                .expect("staged nzb store"),
+        );
+        let pipeline_limit = Arc::new(tokio::sync::Semaphore::new(1));
+
+        let staged = super::stage_nzb_from_url(
+            &outbound,
+            &store,
+            &pipeline_limit,
+            &format!("http://{origin_addr}/getnzb?id=1"),
+            Some("redirect-test"),
+        )
+        .await
+        .expect("nzb download should follow the 301 redirect");
+
+        let compressed =
+            std::fs::read(&staged.staged_nzb.compressed_path).expect("staged file should exist");
+        let decompressed = zstd::stream::decode_all(std::io::Cursor::new(compressed))
+            .expect("staged artifact should decode");
+        assert_eq!(decompressed, nzb_bytes);
+    }
+
+    #[tokio::test]
     async fn real_nzb_fixture_round_trips_through_streaming_staged_zstd_pipeline() {
         let tempdir = TempDir::new().expect("tempdir");
         let staged = materialize_real_staged_nzb_fixture(tempdir.path())
