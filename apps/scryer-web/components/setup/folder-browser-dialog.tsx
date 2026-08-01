@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useClient } from "urql";
 import { File, Folder, FolderOpen, ChevronRight, ArrowUp, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { useTranslate } from "@/lib/context/translate-context";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { browsePathQuery } from "@/lib/graphql/queries";
 import { cn } from "@/lib/utils";
@@ -37,18 +38,25 @@ export function FolderBrowserDialog({
   onSelect,
   selectionTypes,
   initialPath = "/",
-  title = "Select path",
+  title,
 }: FolderBrowserDialogProps) {
   const client = useClient();
+  const t = useTranslate();
   const canSelectFolders = selectionTypes.includes("folder");
   const canSelectFiles = selectionTypes.includes("file");
+  const dialogTitle = title ?? t("folderBrowser.selectPath");
   const selectionDescription =
-    canSelectFolders && canSelectFiles ? "file or folder" : canSelectFiles ? "file" : "folder";
+    canSelectFolders && canSelectFiles
+      ? t("folderBrowser.descriptionFileOrFolder")
+      : canSelectFiles
+        ? t("folderBrowser.descriptionFile")
+        : t("folderBrowser.descriptionFolder");
   const [currentPath, setCurrentPath] = useState(initialPath || "/");
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [browsedPath, setBrowsedPath] = useState<string | null>(null);
+  const breadcrumbRef = useRef<HTMLDivElement | null>(null);
 
   const browse = useCallback(
     async (path: string) => {
@@ -63,13 +71,15 @@ export function FolderBrowserDialog({
       if (gqlError) {
         setEntries([]);
         setBrowsedPath(null);
-        setError(userFacingGraphQlErrorMessage(gqlError, "Unable to browse path."));
+        setError(
+          userFacingGraphQlErrorMessage(gqlError, t("folderBrowser.error")),
+        );
         return;
       }
       setEntries(data?.browsePath ?? []);
       setBrowsedPath(nextPath);
     },
-    [canSelectFiles, client],
+    [canSelectFiles, client, t],
   );
 
   useEffect(() => {
@@ -77,6 +87,14 @@ export function FolderBrowserDialog({
       browse(initialPath || "/");
     }
   }, [open, initialPath, browse]);
+
+  // Keep the deepest segment in view; the row scrolls but has no visible
+  // affordance on platforms with overlay scrollbars.
+  useEffect(() => {
+    const row = breadcrumbRef.current;
+    if (!row) return;
+    row.scrollLeft = row.scrollWidth;
+  }, [open, currentPath]);
 
   const parentPath = currentPath === "/" ? null : currentPath.replace(/\/[^/]+\/?$/, "") || "/";
 
@@ -87,23 +105,26 @@ export function FolderBrowserDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         id="folder-browser-dialog"
-        className="w-[calc(100vw-2rem)] max-w-[42rem] overflow-hidden border-[var(--scry-border)] bg-[var(--scry-surf)] p-0 text-[var(--scry-ink2)] shadow-[0_24px_80px_rgba(0,0,0,0.55)]"
+        className="w-[calc(100vw-2rem)] overflow-hidden border-[var(--scry-border)] bg-[var(--scry-surf)] p-0 text-[var(--scry-ink2)] shadow-[0_24px_80px_rgba(0,0,0,0.55)] sm:max-w-[42rem]"
       >
         <DialogHeader className="border-b border-[var(--scry-border3)] bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0))] px-4 py-3 sm:px-5">
           <DialogTitle className="flex items-center gap-2 text-[15px] font-semibold text-[var(--scry-ink2)]">
             <span className="grid h-8 w-8 place-items-center rounded-[10px] border border-[var(--scry-border2)] bg-[var(--scry-card2)] text-[var(--scry-accent-text)]">
               <FolderOpen className="h-4 w-4" />
             </span>
-            {title}
+            {dialogTitle}
           </DialogTitle>
           <DialogDescription className="sr-only">
-            Browse paths on the Scryer host and select a {selectionDescription}.
+            {selectionDescription}
           </DialogDescription>
         </DialogHeader>
 
         <div className="min-w-0 max-w-full space-y-3 overflow-hidden p-4 sm:p-5">
           <div className="min-w-0 max-w-full rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-3">
-            <div className="flex min-w-0 max-w-full items-center gap-1 overflow-x-auto pb-1 text-sm">
+            <div
+              ref={breadcrumbRef}
+              className="flex min-w-0 max-w-full items-center gap-1 overflow-x-auto pb-1 text-sm"
+            >
               <button
                 type="button"
                 onClick={() => browse("/")}
@@ -120,17 +141,18 @@ export function FolderBrowserDialog({
                 const segPath = "/" + pathSegments.slice(0, i + 1).join("/");
                 const isLast = i === pathSegments.length - 1;
                 return (
-                  <span key={segPath} className="flex items-center gap-1">
+                  <span key={segPath} className="flex shrink-0 items-center gap-1">
                     <ChevronRight className="h-3 w-3 shrink-0 text-[var(--scry-muted3)]" />
                     <button
                       type="button"
                       onClick={() => browse(segPath)}
                       className={cn(
-                        "shrink-0 rounded-[8px] border px-2 py-1 font-[var(--font-code)] transition-colors",
+                        "max-w-[14rem] shrink-0 truncate rounded-[8px] border px-2 py-1 font-[var(--font-code)] transition-colors",
                         isLast
                           ? "border-[var(--scry-baccent)] bg-[rgba(var(--scry-accent-rgb),0.14)] font-medium text-[var(--scry-accent-text)]"
                           : "border-transparent text-[var(--scry-muted3)] hover:border-[var(--scry-border3)] hover:bg-[var(--scry-hover)] hover:text-[var(--scry-ink2)]",
                       )}
+                      title={segment}
                     >
                       {segment}
                     </button>
@@ -160,7 +182,7 @@ export function FolderBrowserDialog({
                 className="h-10 shrink-0 border-[var(--scry-border3)]"
                 onClick={() => browse(currentPath)}
               >
-                Go
+                {t("folderBrowser.go")}
               </Button>
             </div>
           </div>
@@ -170,12 +192,12 @@ export function FolderBrowserDialog({
               <div className="flex h-full items-center justify-center">
                 <div className="flex items-center gap-3 rounded-[12px] border border-[var(--scry-border2)] bg-[var(--scry-inset)] px-4 py-3 text-sm text-[var(--scry-muted3)]">
                   <Loader2 className="h-5 w-5 animate-spin text-[var(--scry-accent-text)]" />
-                  Loading folders
+                  {t("folderBrowser.loading")}
                 </div>
               </div>
             ) : error ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-sm">
-                <p className="max-w-md rounded-[10px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] px-3 py-2 text-[var(--scry-danger-text)]">
+                <p className="max-w-md break-all rounded-[10px] border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] px-3 py-2 text-[var(--scry-danger-text)]">
                   {error}
                 </p>
                 {currentPath !== "/" ? (
@@ -186,7 +208,7 @@ export function FolderBrowserDialog({
                     size="sm"
                     onClick={() => browse("/")}
                   >
-                    Browse /
+                    {t("folderBrowser.browseRoot")}
                   </Button>
                 ) : null}
               </div>
@@ -207,7 +229,9 @@ export function FolderBrowserDialog({
                 )}
                 {entries.length === 0 && !loading && (
                   <div className="px-3 py-10 text-center text-sm text-[var(--scry-muted3)]">
-                    {canSelectFiles ? "No files or subdirectories" : "No subdirectories"}
+                    {canSelectFiles
+                      ? t("folderBrowser.emptyFilesAndFolders")
+                      : t("folderBrowser.emptyFolders")}
                   </div>
                 )}
                 {entries.map((entry) => (
@@ -246,7 +270,10 @@ export function FolderBrowserDialog({
         </div>
 
         <DialogFooter className="min-w-0 max-w-full border-t border-[var(--scry-border3)] bg-[var(--scry-inset)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-          <p className="min-w-0 truncate text-left font-[var(--font-code)] text-xs text-[var(--scry-muted3)] sm:mr-auto">
+          <p
+            className="min-w-0 truncate text-left font-[var(--font-code)] text-xs text-[var(--scry-muted3)] sm:mr-auto"
+            title={currentPath}
+          >
             {currentPath}
           </p>
           <div className="flex min-w-0 shrink-0 flex-wrap justify-end gap-2">
@@ -255,7 +282,7 @@ export function FolderBrowserDialog({
               variant="outline"
               onClick={() => onOpenChange(false)}
             >
-              Cancel
+              {t("label.cancel")}
             </Button>
             {canSelectFolders && (
               <Button
@@ -267,7 +294,7 @@ export function FolderBrowserDialog({
                 }}
               >
                 <FolderOpen className="mr-1.5 h-4 w-4" />
-                Select folder
+                {t("folderBrowser.selectFolder")}
               </Button>
             )}
           </div>

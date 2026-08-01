@@ -92,6 +92,75 @@ function sortBy(
   });
 }
 
+function ScoringLogPanel({
+  decision,
+}: {
+  decision: NonNullable<Release["qualityProfileDecision"]>;
+}) {
+  const t = useTranslate();
+
+  return (
+    <div className="bg-background/80 px-3 py-2">
+      <p className="mb-1 text-xs font-semibold text-muted-foreground">
+        {t("nzb.scoringLog")}
+      </p>
+      <div className="space-y-0.5">
+        {decision.scoringLog.map((entry) => {
+          const badge = entry.source?.startsWith("user:")
+            ? "Custom Rule"
+            : entry.source?.startsWith("system:")
+              ? "System Rule"
+              : null;
+          return (
+            <div
+              key={entry.code}
+              className="flex justify-between gap-4 font-[var(--font-code)] text-xs"
+            >
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                {entry.code}
+                {badge && (
+                  <>
+                    <span className="rounded bg-muted px-1 py-0.5 font-sans text-[10px] leading-none text-muted-foreground">
+                      {badge}
+                    </span>
+                    {entry.ruleSetName && (
+                      <span className="font-sans text-[10px] text-muted-foreground/60">
+                        {entry.ruleSetName}
+                      </span>
+                    )}
+                  </>
+                )}
+              </span>
+              <span
+                className={
+                  entry.delta < 0
+                    ? "text-[var(--scry-danger-text-soft)]"
+                    : "text-[var(--scry-success-text-soft)]"
+                }
+              >
+                {entry.delta > 0 ? "+" : ""}
+                {entry.delta}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 flex justify-between border-t border-border pt-1.5 font-[var(--font-code)] text-xs font-semibold">
+        <span className="text-muted-foreground">{t("nzb.total")}</span>
+        <span
+          className={
+            decision.releaseScore < 0
+              ? "text-[var(--scry-danger-text-soft)]"
+              : "text-[var(--scry-success-text-soft)]"
+          }
+        >
+          {getScoreText(decision.releaseScore)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function SearchResultRow({
   result,
   onQueue,
@@ -263,6 +332,7 @@ function SearchResultRow({
     ];
 
     return (
+      <div className="border-b border-[var(--scry-line2)] last:border-b-0">
       <div
         id={rowId}
         data-ui="release-search-result-row"
@@ -271,7 +341,7 @@ function SearchResultRow({
         data-release-link={result.link ?? ""}
         data-release-download-url={result.downloadUrl ?? ""}
         data-release-candidate-token={result.candidateToken ?? ""}
-        className="flex items-center gap-4 border-b border-[var(--scry-line2)] px-4 py-3.5 transition-colors last:border-b-0 hover:bg-[var(--scry-hover)] max-md:flex-col max-md:items-stretch"
+        className="flex items-center gap-4 px-4 py-3.5 transition-colors hover:bg-[var(--scry-hover)] max-md:flex-col max-md:items-stretch"
       >
         <div className="min-w-0 flex-1">
           <div className="mb-1.5 break-words text-[13px] font-semibold leading-[1.35] text-[var(--scry-ink2)]">
@@ -307,16 +377,33 @@ function SearchResultRow({
           ) : null}
         </div>
         <div className="w-[74px] shrink-0 text-center max-md:w-auto max-md:text-left">
-          <div
-            className={cn(
-              "text-[14px] font-bold tabular-nums",
-              scoreToneClassName,
-            )}
-          >
-            {getScoreText(decision?.releaseScore)}
-          </div>
+          {hasLog ? (
+            <button
+              type="button"
+              onClick={() => setExpanded((prev) => !prev)}
+              aria-expanded={expanded}
+              aria-label={
+                expanded ? t("nzb.hideScoringLog") : t("nzb.showScoringLog")
+              }
+              className={cn(
+                "text-[14px] font-bold tabular-nums underline-offset-2 hover:underline",
+                scoreToneClassName,
+              )}
+            >
+              {getScoreText(decision?.releaseScore)}
+            </button>
+          ) : (
+            <div
+              className={cn(
+                "text-[14px] font-bold tabular-nums",
+                scoreToneClassName,
+              )}
+            >
+              {getScoreText(decision?.releaseScore)}
+            </div>
+          )}
           <div className="mt-0.5 text-[9.5px] font-bold uppercase tracking-[0.06em] text-[var(--scry-faint3)]">
-            Score
+            {t("nzb.score")}
           </div>
         </div>
         <div className="w-16 shrink-0 text-right max-md:w-auto max-md:text-left">
@@ -379,6 +466,8 @@ function SearchResultRow({
             </Button>
           ) : null}
         </div>
+      </div>
+      {expanded && hasLog ? <ScoringLogPanel decision={decision} /> : null}
       </div>
     );
   }
@@ -642,64 +731,7 @@ function SearchResultRow({
             colSpan={4}
             className="border border-x border-t-0 border-border p-0"
           >
-            <div className="bg-background/80 px-3 py-2">
-              <p className="mb-1 text-xs font-semibold text-muted-foreground">
-                {t("nzb.scoringLog")}
-              </p>
-              <div className="space-y-0.5">
-                {decision.scoringLog.map((entry) => {
-                  const badge = entry.source?.startsWith("user:")
-                    ? "Custom Rule"
-                    : entry.source?.startsWith("system:")
-                      ? "System Rule"
-                      : null;
-                  return (
-                    <div
-                      key={entry.code}
-                      className="flex justify-between gap-4 font-[var(--font-code)] text-xs"
-                    >
-                      <span className="flex items-center gap-1.5 text-muted-foreground">
-                        {entry.code}
-                        {badge && (
-                          <>
-                            <span className="rounded bg-muted px-1 py-0.5 font-sans text-[10px] leading-none text-muted-foreground">
-                              {badge}
-                            </span>
-                            {entry.ruleSetName && (
-                              <span className="font-sans text-[10px] text-muted-foreground/60">
-                                {entry.ruleSetName}
-                              </span>
-                            )}
-                          </>
-                        )}
-                      </span>
-                      <span
-                        className={
-                          entry.delta < 0
-                            ? "text-[var(--scry-danger-text-soft)]"
-                            : "text-[var(--scry-success-text-soft)]"
-                        }
-                      >
-                        {entry.delta > 0 ? "+" : ""}
-                        {entry.delta}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="mt-1.5 flex justify-between border-t border-border pt-1.5 font-[var(--font-code)] text-xs font-semibold">
-                <span className="text-muted-foreground">{t("nzb.total")}</span>
-                <span
-                  className={
-                    decision.releaseScore < 0
-                      ? "text-[var(--scry-danger-text-soft)]"
-                      : "text-[var(--scry-success-text-soft)]"
-                  }
-                >
-                  {getScoreText(decision.releaseScore)}
-                </span>
-              </div>
-            </div>
+            <ScoringLogPanel decision={decision} />
           </td>
         </tr>
       ) : null}
@@ -829,7 +861,7 @@ export function SearchResultBuckets({
                 variant={sortKey === "score" ? "secondary" : "outline"}
                 onClick={() => handleSort("score")}
               >
-                Score {renderSortIcon("score")}
+                {t("nzb.score")} {renderSortIcon("score")}
               </Button>
               <Button
                 type="button"
@@ -837,7 +869,7 @@ export function SearchResultBuckets({
                 variant={sortKey === "size" ? "secondary" : "outline"}
                 onClick={() => handleSort("size")}
               >
-                Size {renderSortIcon("size")}
+                {t("nzb.size")} {renderSortIcon("size")}
               </Button>
             </div>
           )}
@@ -880,7 +912,7 @@ export function SearchResultBuckets({
                       className="inline-flex w-full items-center justify-center gap-1"
                       onClick={() => handleSort("score")}
                     >
-                      Score {renderSortIcon("score")}
+                      {t("nzb.score")} {renderSortIcon("score")}
                     </button>
                   </th>
                   <th className="w-[10%] px-4 py-3 text-center text-base font-bold text-foreground">
@@ -889,7 +921,7 @@ export function SearchResultBuckets({
                       className="inline-flex w-full items-center justify-center gap-1"
                       onClick={() => handleSort("size")}
                     >
-                      Size {renderSortIcon("size")}
+                      {t("nzb.size")} {renderSortIcon("size")}
                     </button>
                   </th>
                   <th className="w-[20%] px-4 py-3 text-center text-base font-bold text-foreground">
@@ -931,6 +963,7 @@ export function SearchResultBuckets({
       renderSortIcon,
       requireCandidateToken,
       sortKey,
+      t,
     ],
   );
 
