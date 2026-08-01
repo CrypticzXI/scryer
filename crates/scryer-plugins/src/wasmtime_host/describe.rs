@@ -17,6 +17,52 @@ use crate::wasmtime_host::{crypto_host, engine, error};
 /// Describe runs reuse the 10s describe budget of the Extism path.
 const DESCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+pub(crate) fn validate_archive_module(wasm: &[u8]) -> Result<(), String> {
+    validate_command_module(wasm, true, "archive extractor")
+}
+
+pub(crate) fn validate_subtitle_sync_module(wasm: &[u8]) -> Result<(), String> {
+    validate_command_module(wasm, false, "subtitle sync")
+}
+
+fn validate_command_module(wasm: &[u8], with_crypto: bool, kind: &str) -> Result<(), String> {
+    let engine = engine::shared_async_engine();
+    let module = Module::from_binary(engine, wasm)
+        .map_err(|error| format!("failed to compile {kind} plugin WASM: {error:#}"))?;
+
+    let mut linker: Linker<crate::wasmtime_host::sandbox::HostCtx> = Linker::new(engine);
+    wasmtime_wasi::p1::add_to_linker_async(&mut linker, |ctx| &mut ctx.wasi)
+        .map_err(|error| format!("failed to wire WASI preview1 for {kind} plugin: {error:#}"))?;
+    if with_crypto {
+        crypto_host::add_to_linker(&mut linker).map_err(|error| {
+            format!("failed to register archive crypto host functions: {error:#}")
+        })?;
+    }
+    linker
+        .instantiate_pre(&module)
+        .map_err(|error| format!("{kind} plugin imports do not match the host ABI: {error:#}"))?;
+
+    let start = module
+        .exports()
+        .find(|export| export.name() == "_start")
+        .map(|export| export.ty());
+    match start {
+        Some(ExternType::Func(ty))
+            if ty.params().next().is_none() && ty.results().next().is_none() => {}
+        Some(ExternType::Func(_)) => {
+            return Err("command plugin '_start' export must have type () -> ()".to_string());
+        }
+        _ => return Err("command plugin must export a function named '_start'".to_string()),
+    }
+    if !module
+        .exports()
+        .any(|export| export.name() == "memory" && matches!(export.ty(), ExternType::Memory(_)))
+    {
+        return Err("command plugin must export a linear memory named 'memory'".to_string());
+    }
+    Ok(())
+}
+
 /// Attempt to extract a descriptor from a command-model artifact.
 ///
 /// Returns `None` when the artifact is NOT the command model, so the caller
@@ -152,6 +198,52 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_command_validation_uses_exact_host_abi() {
+        let valid = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "_start")))"#,
+        )
+        .unwrap();
+        validate_archive_module(&valid).expect("valid archive command");
+        validate_subtitle_sync_module(&valid).expect("valid subtitle command");
+
+        let unknown_import = wat::parse_str(
+            r#"(module
+                (import "wasi_snapshot_preview1" "not_a_host_function" (func))
+                (memory (export "memory") 1)
+                (func (export "_start")))"#,
+        )
+        .unwrap();
+        let error =
+            validate_archive_module(&unknown_import).expect_err("unknown host import must fail");
+        assert!(error.contains("imports do not match"), "{error}");
+
+        let wrong_start = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "_start") (param i32)))"#,
+        )
+        .unwrap();
+        let error =
+            validate_archive_module(&wrong_start).expect_err("wrong _start signature must fail");
+        assert!(error.contains("() -> ()"), "{error}");
+    }
+
+    #[test]
+    fn embedded_command_validation_uses_host_engine_features() {
+        let threads = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1 1 shared)
+                (func (export "_start")))"#,
+        )
+        .unwrap();
+        let error =
+            validate_archive_module(&threads).expect_err("threads are disabled by the host engine");
+        assert!(error.contains("compile"), "{error}");
+    }
 
     #[test]
     fn extism_reactor_shape_falls_back_to_none() {

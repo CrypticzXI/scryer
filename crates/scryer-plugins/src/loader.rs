@@ -21,7 +21,7 @@ use crate::archive_adapter::WasmArchiveExtractorClient;
 use crate::download_client_adapter::WasmDownloadClient;
 use crate::embedded_descriptor::embedded_descriptor_from_wasm;
 use crate::indexer_adapter::WasmIndexerClient;
-use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec};
+use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec, validate_legacy_module};
 use crate::notification_adapter::WasmNotificationClient;
 use crate::process_host::ProcessHost;
 use crate::runtime_backing::PluginRuntimeBacking;
@@ -2924,20 +2924,16 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
     if let Some(embedded) = embedded_descriptor_from_wasm(&bytes)? {
         match PluginRuntimeBacking::for_descriptor(&embedded.descriptor) {
             PluginRuntimeBacking::LegacyReactor => {
-                let missing = embedded.missing_function_exports(required_exports_for_descriptor(
-                    &embedded.descriptor,
-                ));
-                if !missing.is_empty() {
-                    return Err(format!(
-                        "{} ({}) is missing required export(s): {}",
-                        embedded.descriptor.id,
-                        embedded.descriptor.plugin_type(),
-                        missing.join(", ")
-                    ));
-                }
+                validate_legacy_module(
+                    &bytes,
+                    &required_exports_for_descriptor(&embedded.descriptor),
+                )?;
             }
-            PluginRuntimeBacking::WasmtimeArchive | PluginRuntimeBacking::WasmtimeSubtitleSync => {
-                embedded.require_command_exports()?;
+            PluginRuntimeBacking::WasmtimeArchive => {
+                crate::wasmtime_host::validate_archive_module(&bytes)?;
+            }
+            PluginRuntimeBacking::WasmtimeSubtitleSync => {
+                crate::wasmtime_host::validate_subtitle_sync_module(&bytes)?;
             }
         }
         let descriptor = embedded.descriptor;
@@ -3791,8 +3787,8 @@ mod tests {
         let mut wasm = wat::parse_str(
             r#"(module
                 (memory (export "memory") 1)
-                (func (export "scryer_describe") unreachable)
-                (func (export "scryer_indexer_search") unreachable))"#,
+                (func (export "scryer_describe") (result i32) unreachable)
+                (func (export "scryer_indexer_search") (result i32) unreachable))"#,
         )
         .unwrap();
         let descriptor_json = serde_json::to_vec(&descriptor("indexer")).unwrap();

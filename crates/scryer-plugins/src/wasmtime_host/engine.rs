@@ -70,6 +70,7 @@ fn archive_engine_config() -> Config {
     config.epoch_interruption(true);
     config.wasm_simd(true);
     config.wasm_relaxed_simd(true);
+    config.wasm_threads(false);
     // Pin the safety-relevant posture to wasmtime 46's current defaults so a
     // future bump cannot silently weaken it. This is a sync engine (no async
     // path), so there is no async-stack coupling to worry about.

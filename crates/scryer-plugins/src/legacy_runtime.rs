@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use scryer_application::{AppError, AppResult};
-use wasmtime::{Caller, Instance, Linker, Module, Store};
+use wasmtime::{Caller, ExternType, Instance, Linker, Module, Store, ValType};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
 use crate::plugin_http_host::{
@@ -57,6 +57,46 @@ impl LegacyPluginSpec {
 pub(crate) struct LegacyPlugin {
     store: Store<LegacyHostState>,
     instance: Instance,
+}
+
+pub(crate) fn validate_legacy_module(wasm: &[u8], required_exports: &[&str]) -> Result<(), String> {
+    let engine = engine::shared_engine();
+    let module = Module::from_binary(engine, wasm)
+        .map_err(|error| format!("failed to compile legacy plugin WASM: {error:#}"))?;
+
+    let mut linker: Linker<LegacyHostState> = Linker::new(engine);
+    wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut LegacyHostState| &mut ctx.wasi)
+        .map_err(|error| format!("failed to wire WASI preview1: {error:#}"))?;
+    add_extism_compat_to_linker(&mut linker)
+        .map_err(|error| format!("failed to wire Extism compatibility ABI: {error:#}"))?;
+    linker
+        .instantiate_pre(&module)
+        .map_err(|error| format!("legacy plugin imports do not match the host ABI: {error:#}"))?;
+
+    let invalid = required_exports
+        .iter()
+        .copied()
+        .filter(|required| {
+            !module.exports().any(|export| {
+                export.name() == *required
+                    && matches!(export.ty(), ExternType::Func(ref ty) if {
+                        let mut params = ty.params();
+                        let mut results = ty.results();
+                        params.next().is_none()
+                            && matches!(results.next(), Some(ValType::I32))
+                            && results.next().is_none()
+                    })
+            })
+        })
+        .collect::<Vec<_>>();
+    if invalid.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "legacy plugin is missing required () -> i32 export(s): {}",
+            invalid.join(", ")
+        ))
+    }
 }
 
 impl LegacyPlugin {
@@ -925,6 +965,48 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    #[test]
+    fn embedded_legacy_validation_uses_exact_host_abi() {
+        let valid = wat::parse_str(
+            r#"(module
+                (func (export "scryer_describe") (result i32) (i32.const 0)))"#,
+        )
+        .unwrap();
+        validate_legacy_module(&valid, &["scryer_describe"]).expect("valid legacy module");
+
+        let unknown_import = wat::parse_str(
+            r#"(module
+                (import "extism:host/env" "not_a_host_function" (func))
+                (func (export "scryer_describe") (result i32) (i32.const 0)))"#,
+        )
+        .unwrap();
+        let error = validate_legacy_module(&unknown_import, &["scryer_describe"])
+            .expect_err("unknown host import must fail");
+        assert!(error.contains("imports do not match"), "{error}");
+
+        let wrong_export = wat::parse_str(
+            r#"(module
+                (func (export "scryer_describe") (result i64) (i64.const 0)))"#,
+        )
+        .unwrap();
+        let error = validate_legacy_module(&wrong_export, &["scryer_describe"])
+            .expect_err("wrong export signature must fail");
+        assert!(error.contains("() -> i32"), "{error}");
+    }
+
+    #[test]
+    fn embedded_legacy_validation_uses_host_engine_features() {
+        let threads = wat::parse_str(
+            r#"(module
+                (memory 1 1 shared)
+                (func (export "scryer_describe") (result i32) (i32.const 0)))"#,
+        )
+        .unwrap();
+        let error = validate_legacy_module(&threads, &["scryer_describe"])
+            .expect_err("threads are disabled by the host engine");
+        assert!(error.contains("compile"), "{error}");
+    }
 
     fn instantiate_wat(wat: &str) -> LegacyPlugin {
         let wasm = wat::parse_str(wat).expect("wat parses");

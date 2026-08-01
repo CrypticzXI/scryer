@@ -15,7 +15,9 @@ mod error;
 mod invoke;
 mod sandbox;
 
-pub(crate) use describe::command_model_describe;
+pub(crate) use describe::{
+    command_model_describe, validate_archive_module, validate_subtitle_sync_module,
+};
 pub(crate) use invoke::{
     ArchiveInvocation, SubtitleSyncInvocation, process_archive, process_subtitle_sync,
 };
