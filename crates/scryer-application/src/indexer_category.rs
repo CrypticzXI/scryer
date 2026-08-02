@@ -43,13 +43,15 @@ impl IndexerCategoryFamily {
     }
 }
 
-/// Map a raw category label (`"TV > Anime"`, `"Movies/HD"`) or newznab id
-/// (`"5070"`) onto a coarse family. Unknown or unmappable input yields `None`,
-/// which always allows the release through.
+/// Map ONE category label (`"TV > Anime"`, `"Movies/HD"`, `"5070"`) onto a
+/// coarse family. `>` and `/` are HIERARCHY separators within a single label;
+/// comma/pipe LIST separators are handled a level up (`indexer_category_label_families`)
+/// because `5000,5070` is two independent assertions, not one path. Unknown or
+/// unmappable input yields `None`, which always allows the release through.
 pub fn indexer_category_family(raw: &str) -> Option<IndexerCategoryFamily> {
     let mut family: Option<IndexerCategoryFamily> = None;
 
-    for segment in raw.split(['>', '/', ',', '|']) {
+    for segment in raw.split(['>', '/']) {
         let Some(segment_family) = category_segment_family(segment) else {
             continue;
         };
@@ -68,6 +70,16 @@ pub fn indexer_category_family(raw: &str) -> Option<IndexerCategoryFamily> {
     }
 
     family
+}
+
+/// Split a raw category value into independent labels (`,`/`|` are list
+/// separators) and map each. `"5000,5070"` yields `[Tv, Anime]` — two
+/// assertions the set rule weighs independently, exactly as the same pair
+/// arriving as separate response attrs would be.
+pub fn indexer_category_label_families(raw: &str) -> Vec<IndexerCategoryFamily> {
+    raw.split([',', '|'])
+        .filter_map(indexer_category_family)
+        .collect()
 }
 
 /// The asymmetric contradiction rule from plan 136 §6.
@@ -112,13 +124,12 @@ where
     let mut saw_mapped_category = false;
 
     for category in categories {
-        let Some(family) = indexer_category_family(category.as_ref()) else {
-            continue;
-        };
-        if !indexer_category_contradicts_facet(family, facet) {
-            return false;
+        for family in indexer_category_label_families(category.as_ref()) {
+            if !indexer_category_contradicts_facet(family, facet) {
+                return false;
+            }
+            saw_mapped_category = true;
         }
-        saw_mapped_category = true;
     }
 
     saw_mapped_category
@@ -208,17 +219,17 @@ pub fn enforce_nzb_category_gate(nzb_head_bytes: &[u8], facet: &MediaFacet) -> A
     let Some(category) = nzb_head_category(nzb_head_bytes) else {
         return Ok(());
     };
-    let Some(family) = indexer_category_family(&category) else {
-        return Ok(());
-    };
-    if !indexer_category_contradicts_facet(family, facet) {
+    // Same set rule as the response-attribute lane: a comma/pipe list is a set
+    // of independent assertions, and one compatible member allows the release.
+    // `5000,5070` therefore passes a series subject on BOTH lanes, while a
+    // hierarchical `TV > Anime` still vetoes it.
+    if !indexer_categories_contradict_facet([category.as_str()], facet) {
         return Ok(());
     }
 
     Err(AppError::Validation(format!(
-        "{CATEGORY_MISMATCH_CODE}: indexer category '{category}' maps to {} but the release was \
-         submitted for a {} subject; the NZB was not handed to the download client",
-        family.as_str(),
+        "{CATEGORY_MISMATCH_CODE}: indexer category '{category}' contradicts the release's {} \
+         subject; the NZB was not handed to the download client",
         facet.as_str()
     )))
 }
@@ -308,9 +319,16 @@ mod tests {
             indexer_category_family("2040"),
             Some(IndexerCategoryFamily::Movies)
         );
+        // Comma lists are NOT one hierarchical label: the single-label mapper
+        // ignores them, and the label splitter yields independent assertions.
+        assert_eq!(indexer_category_family("5000,5070"), None);
         assert_eq!(
-            indexer_category_family("5000,5070"),
-            Some(IndexerCategoryFamily::Anime)
+            indexer_category_label_families("5000,5070"),
+            vec![IndexerCategoryFamily::Tv, IndexerCategoryFamily::Anime]
+        );
+        assert!(
+            !indexer_categories_contradict_facet(["5000,5070"], &MediaFacet::Series),
+            "a dual-categorized list still claims plain TV, so a series subject passes on both lanes"
         );
         assert_eq!(
             indexer_category_family("Anime > TV"),

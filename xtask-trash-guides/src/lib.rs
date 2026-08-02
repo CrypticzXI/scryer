@@ -3507,7 +3507,10 @@ fn render_quality_output(
     }
     writeln!(output, "];\n")?;
 
-    writeln!(output, "pub static TRASH_FACT_SCORES: &[TrashFactScore] = &[")?;
+    writeln!(
+        output,
+        "pub static TRASH_FACT_SCORES: &[TrashFactScore] = &["
+    )?;
     for row in collect_fact_scores(catalog) {
         writeln!(
             output,
@@ -3860,8 +3863,16 @@ fn build_stem_manifest(
                 },
             )
             .collect(),
-        inactive_records: catalog.inactive_records.iter().map(AuditRecord::from).collect(),
-        ignored_records: catalog.ignored_records.iter().map(AuditRecord::from).collect(),
+        inactive_records: catalog
+            .inactive_records
+            .iter()
+            .map(AuditRecord::from)
+            .collect(),
+        ignored_records: catalog
+            .ignored_records
+            .iter()
+            .map(AuditRecord::from)
+            .collect(),
     }
 }
 
@@ -3997,15 +4008,17 @@ fn score_envelope_drift(known: &[ScoreSetEnvelope], current: &[ScoreSetEnvelope]
         .copied()
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .filter_map(|score_set| match (known.get(score_set), current.get(score_set)) {
-            (Some(known), Some(current)) if known == current => None,
-            (Some(known), Some(current)) => Some(format!(
-                "{score_set} {}..{} vetoes {:?} -> {}..{} vetoes {:?}",
-                known.min, known.max, known.vetoes, current.min, current.max, current.vetoes
-            )),
-            (Some(_), None) => Some(format!("{score_set} disappeared")),
-            (None, _) => Some(format!("{score_set} is new")),
-        })
+        .filter_map(
+            |score_set| match (known.get(score_set), current.get(score_set)) {
+                (Some(known), Some(current)) if known == current => None,
+                (Some(known), Some(current)) => Some(format!(
+                    "{score_set} {}..{} vetoes {:?} -> {}..{} vetoes {:?}",
+                    known.min, known.max, known.vetoes, current.min, current.max, current.vetoes
+                )),
+                (Some(_), None) => Some(format!("{score_set} disappeared")),
+                (None, _) => Some(format!("{score_set} is new")),
+            },
+        )
         .collect()
 }
 
@@ -4473,11 +4486,10 @@ mod tests {
     fn service_aliases_expand_optional_groups_losslessly() {
         // Naive splitting turned these into `FUNI` + `MATION` and `C`/`RUNCHY`/`OLL`.
         assert_eq!(alias_tokens(r"\b(FUNi(mation)?)\b"), ["FUNI", "FUNIMATION"]);
-        assert_eq!(alias_tokens(r"\b(amzn|amazon(hd)?)\b"), [
-            "AMAZON",
-            "AMAZONHD",
-            "AMZN"
-        ]);
+        assert_eq!(
+            alias_tokens(r"\b(amzn|amazon(hd)?)\b"),
+            ["AMAZON", "AMAZONHD", "AMZN"]
+        );
     }
 
     #[test]
@@ -4677,12 +4689,14 @@ mod tests {
     #[test]
     fn service_aliases_reject_source_enums_and_stray_fragments() {
         // Sonarr `SourceSpecification` values are numeric enums, never tokens.
-        assert!(distill_service_alias_tokens(&UpstreamRecord {
-            implementation: "SourceSpecification".to_string(),
-            value: "3".to_string(),
-            ..Default::default()
-        })
-        .is_err());
+        assert!(
+            distill_service_alias_tokens(&UpstreamRecord {
+                implementation: "SourceSpecification".to_string(),
+                value: "3".to_string(),
+                ..Default::default()
+            })
+            .is_err()
+        );
         assert!(!alias_tokens(r"\b(C(runchy)?[ .-]?R(oll)?)\b").contains(&"C".to_string()));
     }
 

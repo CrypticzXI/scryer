@@ -129,8 +129,7 @@ const RUNTIME_BAND_MAX_PERCENT: i32 = 200;
 /// Reason code for an automatic replacement held back for manual resolution
 /// because the incoming file's duration is implausible against the file it
 /// would overwrite.
-pub(crate) const REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE: &str =
-    "replace_blocked_runtime_mismatch";
+pub(crate) const REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE: &str = "replace_blocked_runtime_mismatch";
 
 pub(crate) fn facet_to_category_hint(facet: &MediaFacet) -> &'static str {
     facet.as_str()

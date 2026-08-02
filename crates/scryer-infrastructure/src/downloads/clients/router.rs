@@ -1901,7 +1901,10 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             let head_len = bytes.len().min(scryer_application::NZB_HEAD_PROBE_BYTES);
             scryer_application::enforce_nzb_category_gate(
                 &bytes[..head_len],
-                request.search_facet.as_ref().unwrap_or(&request.title.facet),
+                request
+                    .search_facet
+                    .as_ref()
+                    .unwrap_or(&request.title.facet),
             )?;
         }
         let resolved_artifact_kind = Self::request_artifact_kind(request);

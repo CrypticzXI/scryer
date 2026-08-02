@@ -946,18 +946,10 @@ pub(crate) async fn resolve_import_paths(
         specials_folder_template,
     })
 }
-/// Compute the destination path for an episode import using the canonical
-/// token set: base tokens from parsed release metadata, overridden by the
-/// explicit episode values supplied by the caller.
-///
-/// `ep_num_str` may be empty to leave `{episode}` blank (anime absolute-only
-/// files where no per-season episode number is known).
-/// `quality_override` replaces the filename-parsed quality token when the
-/// caller supplies an explicit label (e.g. manual import).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "episode rename rendering uses the full canonical token set explicitly"
-)]
+
+/// Compute the parent directory for an episode import: the season or specials
+/// folder beneath the title folder, or the title folder itself when the library
+/// is not configured to use season folders.
 pub(crate) fn episodic_import_parent_path(
     title: &scryer_domain::Title,
     title_folder_path: &Path,
@@ -978,6 +970,18 @@ pub(crate) fn episodic_import_parent_path(
     }
 }
 
+/// Compute the destination path for an episode import using the canonical
+/// token set: base tokens from parsed release metadata, overridden by the
+/// explicit episode values supplied by the caller.
+///
+/// `ep_num_str` may be empty to leave `{episode}` blank (anime absolute-only
+/// files where no per-season episode number is known).
+/// `quality_override` replaces the filename-parsed quality token when the
+/// caller supplies an explicit label (e.g. manual import).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "episode rename rendering uses the full canonical token set explicitly"
+)]
 pub(crate) fn episode_import_dest_path(
     title: &scryer_domain::Title,
     parsed: &crate::ParsedReleaseMetadata,

@@ -659,9 +659,9 @@ struct JellyfinUser {
 fn jellyfin_remote_password_configured(user: &JellyfinUser) -> Option<bool> {
     match (user.has_password, user.has_configured_password) {
         (None, None) => None,
-        (has_password, has_configured_password) => Some(
-            has_password.unwrap_or(true) && has_configured_password.unwrap_or(true),
-        ),
+        (has_password, has_configured_password) => {
+            Some(has_password.unwrap_or(true) && has_configured_password.unwrap_or(true))
+        }
     }
 }
 
@@ -997,10 +997,9 @@ mod tests {
     async fn jellyfin_verification_reports_whether_the_account_has_a_password() {
         // Field names and values here match what Jellyfin 10.11.5 actually
         // returns from Users/AuthenticateByName.
-        for (has_password, has_configured_password, expected) in [
-            (false, false, Some(false)),
-            (true, true, Some(true)),
-        ] {
+        for (has_password, has_configured_password, expected) in
+            [(false, false, Some(false)), (true, true, Some(true))]
+        {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .and(path("/Users/AuthenticateByName"))

@@ -45,6 +45,10 @@ impl AppUseCase {
         self.services.customization.rule_sets.get_rule_set(id).await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors the rule-set creation contract field for field"
+    )]
     pub async fn create_rule_set(
         &self,
         actor: &User,

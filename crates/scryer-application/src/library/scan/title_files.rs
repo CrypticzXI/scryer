@@ -408,12 +408,11 @@ pub(super) fn classify_title_scan_layout(
     };
 
     let target_season = infer_target_season_number(target_episodes);
-    if let Some(configured_folder) = configured_folder_name {
-        if normalize_layout_component(first_component)
+    if let Some(configured_folder) = configured_folder_name
+        && normalize_layout_component(first_component)
             == normalize_layout_component(configured_folder)
-        {
-            return TitleScanLayoutObservation::SeasonFolder;
-        }
+    {
+        return TitleScanLayoutObservation::SeasonFolder;
     }
 
     let Some(folder_season) = recognize_season_folder_name(first_component) else {

@@ -2305,8 +2305,7 @@ mod tests {
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist =
-            HashSet::from(["one.piece.s02e01.1080p.web-dl.x264-grp".to_string()]);
+        let db_blocklist = HashSet::from(["one.piece.s02e01.1080p.web-dl.x264-grp".to_string()]);
         let context = AutoCandidateEvaluationContext {
             title: &live_action,
             subject: &subject,

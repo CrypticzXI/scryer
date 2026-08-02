@@ -252,7 +252,13 @@ async fn upsert_identity_tracked_state_preserves_terminal_outcomes() {
     };
     let imported_source = DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-imported");
     workflow_store
-        .record_identity_tracked_state(&imported_identity, Some(&imported_source), "imported", None, None)
+        .record_identity_tracked_state(
+            &imported_identity,
+            Some(&imported_source),
+            "imported",
+            None,
+            None,
+        )
         .await
         .expect("imported state should persist");
     let previous = workflow_store
@@ -282,7 +288,13 @@ async fn upsert_identity_tracked_state_preserves_terminal_outcomes() {
     };
     let blocked_source = DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-blocked");
     workflow_store
-        .record_identity_tracked_state(&blocked_identity, Some(&blocked_source), "import_blocked", None, None)
+        .record_identity_tracked_state(
+            &blocked_identity,
+            Some(&blocked_source),
+            "import_blocked",
+            None,
+            None,
+        )
         .await
         .expect("blocked state should persist");
     let previous = workflow_store

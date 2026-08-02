@@ -794,10 +794,7 @@ fn valid_raster_bytes(content_type: &str, bytes: &[u8]) -> bool {
 }
 
 fn clone_shared_fetch_result(result: &SharedFetchResult) -> AppResult<Option<ImageProxyBlob>> {
-    result
-        .as_ref()
-        .map(Clone::clone)
-        .map_err(|message| AppError::Repository(message.clone()))
+    result.clone().map_err(AppError::Repository)
 }
 
 fn cached_blob(entry: &ImageProxyCacheEntryRecord, bytes: Vec<u8>) -> ImageProxyBlob {

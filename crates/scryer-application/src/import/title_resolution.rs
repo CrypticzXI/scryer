@@ -847,7 +847,10 @@ mod tests {
     fn strip_trailing_year_key_strips_only_plausible_year_suffixes() {
         assert_eq!(strip_trailing_year_key("one piece 2023"), "one piece");
         assert_eq!(strip_trailing_year_key("one piece"), "one piece");
-        assert_eq!(strip_trailing_year_key("blade runner 2049 2017"), "blade runner 2049");
+        assert_eq!(
+            strip_trailing_year_key("blade runner 2049 2017"),
+            "blade runner 2049"
+        );
         assert_eq!(strip_trailing_year_key("2023"), "2023");
         assert_eq!(strip_trailing_year_key("area 5150"), "area 5150");
     }
