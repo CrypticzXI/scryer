@@ -66,7 +66,7 @@ fn validate_command_module(wasm: &[u8], with_crypto: bool, kind: &str) -> Result
 /// Attempt to extract a descriptor from a command-model artifact.
 ///
 /// Returns `None` when the artifact is NOT the command model, so the caller
-/// falls back to the Extism describe path. Classification (RFC §8.2): the module
+/// falls back to the Extism describe path. Classification: the module
 /// exports `_start` and does NOT export `scryer_describe`. `Some(Err(_))` means
 /// it is the command model but describe failed (e.g. missing `memory` export or
 /// a bad describe response).

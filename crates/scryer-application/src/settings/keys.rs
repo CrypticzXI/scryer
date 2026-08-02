@@ -21,7 +21,7 @@ pub(crate) const INDEXER_ROUTING_MOVIE_DEFAULT_CATEGORIES: &[&str] = &["2000"];
 pub(crate) const INDEXER_ROUTING_SERIES_DEFAULT_CATEGORIES: &[&str] = &["5000"];
 pub(crate) const INDEXER_ROUTING_ANIME_DEFAULT_CATEGORIES: &[&str] = &["5070"];
 pub const METADATA_LANGUAGE_KEY: &str = "metadata_language";
-// RFC 121 SW5: discovery region seam. Read like metadata_language; a future
+// Discovery region seam. Read like metadata_language; a future
 // preferences UI only has to write this key (defaults to "US" -> unchanged).
 pub const DISCOVERY_REGION_KEY: &str = "discovery.region";
 pub const HISTORY_KEEP_FOREVER_KEY: &str = "history.keep_forever";

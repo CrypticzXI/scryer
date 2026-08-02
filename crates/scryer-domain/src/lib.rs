@@ -1184,7 +1184,7 @@ pub enum DownloadQueueState {
     Failed,
 }
 
-// ── TrackedDownloads (plan 055) ──────────────────────────────────────────────
+// ── TrackedDownloads ──────────────────────────────────────────────
 
 /// Scryer's internal workflow state for a download, independent of the
 /// download client's reported status.

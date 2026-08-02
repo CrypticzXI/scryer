@@ -2801,7 +2801,7 @@ async fn scope_converges_only_after_every_routed_indexer_is_covered() {
 
 #[tokio::test]
 async fn every_scoped_search_records_coverage_including_interactive() {
-    // RFC §D5 "a search is a search": search_and_evaluate_subject records coverage
+    // "A search is a search": search_and_evaluate_subject records coverage
     // for every caller, interactive included. This drives the real chokepoint and
     // asserts the fired indexers land in the coverage ledger regardless of mode.
     let settings = Arc::new(StoredSettingsRepo::default());
@@ -2905,7 +2905,7 @@ async fn empty_response_from_fired_indexer_counts_as_coverage() {
 
 #[tokio::test]
 async fn stale_fingerprint_coverage_reopens_convergence() {
-    // RFC §D4: a profile/criteria edit changes the fingerprint, so prior coverage
+    // A profile/criteria edit changes the fingerprint, so prior coverage
     // (recorded under the old fingerprint) no longer counts and the scope re-opens.
     let settings = Arc::new(StoredSettingsRepo::default());
     let configs = vec![

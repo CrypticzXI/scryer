@@ -1,9 +1,9 @@
-//! The frozen crypto/CRC host ABI (RFC 123 §5), served natively on wasmtime.
+//! The frozen crypto/CRC host ABI, served natively on wasmtime.
 //!
 //! The AES-CBC (aws-lc, stateless per call) and CRC-32 (`crc32fast`, seeded)
 //! cores are moved verbatim from the former `archive_crypto_host.rs` — only the
 //! guest-memory plumbing changes. The Extism version addressed guest offsets as
-//! kernel `MemoryHandle`s (the SIGBUS defect, RFC §1); here we slice the guest's
+//! kernel `MemoryHandle`s (the SIGBUS defect); here we slice the guest's
 //! exported linear memory directly (`Memory::data_mut`) for true zero-copy, with
 //! the `[ptr, ptr+len)` range validated against the real memory size using
 //! overflow-checked arithmetic (§5).
@@ -16,7 +16,7 @@ use wasmtime::{Caller, Extern, Linker};
 /// Import module string both functions live under. The weaver-unrar guest's
 /// default namespace is the embedder-neutral `host`; Scryer's plugin artifacts
 /// opt into `extism:host/user` via weaver-unrar's `host-abi-extism` feature, so
-/// the host serves that namespace and both sides agree (RFC §5). No extism
+/// the host serves that namespace and both sides agree. No extism
 /// dependency is involved — the string is just the agreed module name.
 const CRYPTO_HOST_NAMESPACE: &str = "extism:host/user";
 
@@ -148,7 +148,7 @@ fn checked_range(ptr: i64, len: usize, mem_len: usize) -> Option<Range<usize>> {
     (end <= mem_len).then_some(ptr..end)
 }
 
-// ── Cores moved verbatim from archive_crypto_host.rs (RFC §7.2.6) ──────────
+// ── Cores moved verbatim from archive_crypto_host.rs ──────────
 
 fn crc32(seed: u32, buf: &[u8]) -> u32 {
     // `new_with_initial` resumes from a finalized IEEE CRC value, which is the

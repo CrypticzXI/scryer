@@ -1,4 +1,4 @@
-//! Runtime-strategy seam (RFC 123 §7.1, WP0).
+//! Runtime-strategy seam.
 //!
 //! A `PluginInstanceSpec` describes an instantiation in runtime-agnostic terms;
 //! a `PluginRuntimeBacking` says which runtime executes it. Adapters express
@@ -42,7 +42,7 @@ impl PreopenSpec {
     }
 }
 
-/// Runtime-agnostic description of a single plugin invocation (RFC §7.1).
+/// Runtime-agnostic description of a single plugin invocation.
 #[derive(Clone)]
 pub(crate) struct PluginInstanceSpec {
     /// The verified artifact bytes (from `LoadedPlugin::materialize_wasm()`).
@@ -53,12 +53,12 @@ pub(crate) struct PluginInstanceSpec {
     pub(crate) memory_max_bytes: Option<usize>,
 }
 
-/// Which runtime executes a `PluginInstanceSpec` (RFC §7.1).
+/// Which runtime executes a `PluginInstanceSpec`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PluginRuntimeBacking {
     /// Existing Extism-PDK reactor artifacts on Scryer's native Wasmtime host.
     LegacyReactor,
-    /// The native wasmtime archive host (RFC §7.2).
+    /// The native wasmtime archive host.
     WasmtimeArchive,
     /// Native wasmtime command host for SDK 3.5 subtitle-sync plugins.
     WasmtimeSubtitleSync,

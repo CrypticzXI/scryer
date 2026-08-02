@@ -1637,7 +1637,7 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
     /// Background convergence value hint: the target's recency
     /// lane maps to a scheduler candidate value (hot → high, cold → low) so
-    /// plan 112 can drain cold work first under quota pressure. Only the Auto
+    /// the quota-pressure gate can drain cold work first. Only the Auto
     /// background path carries it; interactive/RSS leave it `None` (neutral).
     pub(crate) background_value: Option<f64>,
 }

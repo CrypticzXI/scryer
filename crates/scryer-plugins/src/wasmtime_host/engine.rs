@@ -1,4 +1,4 @@
-//! Process-wide wasmtime engine for the archive host (RFC 123 §7.2.2).
+//! Process-wide wasmtime engine for the archive host.
 //!
 //! One lazily-initialised `Engine` is shared for the whole process. Its `Config`
 //! turns on epoch interruption (for wall-clock cancellation) and pins the

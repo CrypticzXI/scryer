@@ -1,4 +1,4 @@
-//! TrackedDownloads — scryer-side download lifecycle state machine (plan 055).
+//! TrackedDownloads — scryer-side download lifecycle state machine.
 //!
 //! Maintains an in-memory cache of active downloads, each enriched with title
 //! resolution metadata and driven through a workflow state machine independent

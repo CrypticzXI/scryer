@@ -347,7 +347,7 @@ impl DiscoveryRepository for DiscoveryStore {
         let datastore = self.datastore.clone();
         // Own the payload once; share it across SQLite busy-retries via Arc so the
         // retryable `Fn` closure does a cheap refcount bump instead of a whole-snapshot
-        // deep clone on every attempt (RFC 121 SW4.2).
+        // deep clone on every attempt.
         let commit = std::sync::Arc::new(commit.clone());
         SqlRuntime::run_in_transaction(
             &self.datastore,
@@ -400,7 +400,7 @@ impl DiscoveryRepository for DiscoveryStore {
         commit: &DiscoveryContextIncrementalCommit,
     ) -> AppResult<()> {
         let datastore = self.datastore.clone();
-        // Arc-share the payload across SQLite busy-retries (RFC 121 SW4.2).
+        // Arc-share the payload across SQLite busy-retries.
         let commit = std::sync::Arc::new(commit.clone());
         SqlRuntime::run_in_transaction(
             &self.datastore,
@@ -444,7 +444,7 @@ impl DiscoveryRepository for DiscoveryStore {
         commit: &DiscoveryPublicFeedCommit,
     ) -> AppResult<()> {
         let datastore = self.datastore.clone();
-        // Arc-share the payload across SQLite busy-retries (RFC 121 SW4.2).
+        // Arc-share the payload across SQLite busy-retries.
         let commit = std::sync::Arc::new(commit.clone());
         SqlRuntime::run_in_transaction(&self.datastore, "commit_discovery_public_feed", move |tx| {
             let datastore = datastore.clone();
@@ -1123,7 +1123,7 @@ impl DiscoveryRepository for DiscoveryStore {
         retain_successful_per_kind: usize,
         diagnostic_cutoff: DateTime<Utc>,
     ) -> AppResult<DiscoveryPruneReport> {
-        // RFC 121 SW4.5: prune runs from the housekeeping job, NOT under the
+        // Prune runs from the housekeeping job, NOT under the
         // discovery sync lease, so it can race a concurrent commit. The whole
         // candidate read + keep-set decision + delete loop now runs inside one
         // transaction. On SQLite `run_in_transaction` holds the app-wide writer
@@ -4652,7 +4652,7 @@ async fn insert_title_children_tx(
     if let Some(media_kind) = discovery_item_authoritative_media_kind(item) {
         insert_title_terms_tx(tx, discovery_title_id, "media_kind", None, &[media_kind]).await?;
     }
-    // RFC 121 SW3: project SMG studio_slug / person_ids into the reverse-indexed
+    // Project SMG studio_slug / person_ids into the reverse-indexed
     // terms table so "more from studio / person" lookups reuse the existing
     // idx_discovery_title_terms_kind_value index (zero schema migration).
     if let Some(studio_slug) = &item.studio_slug {
@@ -5397,7 +5397,7 @@ mod tests {
 
     #[tokio::test]
     async fn discovery_item_projects_studio_slug_and_person_ids_into_terms() {
-        // RFC 121 SW3: studio_slug + person_ids project into discovery_title_terms
+        // studio_slug + person_ids project into discovery_title_terms
         // (term_kind 'studio' / 'person') on write and hydrate back onto the item.
         let db = std::env::temp_dir().join(format!(
             "scryer_discovery_studio_person_terms_{}.db",

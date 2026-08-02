@@ -1,4 +1,4 @@
-//! Native wasmtime host for the archive-extractor plugin (RFC 123 §7.2, WP1).
+//! Native wasmtime host for the archive-extractor plugin.
 //!
 //! Replaces the Extism execution path for the archive kind: a process-wide
 //! engine with epoch cancellation and the full wasm feature surface

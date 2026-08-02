@@ -99,7 +99,7 @@ impl AppUseCase {
             .unwrap_or_else(|| "eng".to_string())
     }
 
-    /// RFC 121 SW5: discovery region seam. Mirrors `metadata_language` so a
+    /// Discovery region seam. Mirrors `metadata_language` so a
     /// future preferences UI only has to write `DISCOVERY_REGION_KEY`. Defaults
     /// to "US" (the previous hardcoded value) so behavior is unchanged until set.
     pub(crate) async fn discovery_region(&self) -> String {

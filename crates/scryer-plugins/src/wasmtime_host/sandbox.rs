@@ -1,5 +1,4 @@
-//! WASI preview1 sandbox and store limits for the archive host (RFC 123 §7.2.3
-//! / §7.2.4).
+//! WASI preview1 sandbox and store limits for the archive host.
 //!
 //! Per invocation: a memory cap enforced by a tracking `ResourceLimiter`, and a
 //! WASI p1 context whose only authority is the spec's preopened directories plus
@@ -16,7 +15,7 @@ use crate::runtime_backing::PreopenSpec;
 
 /// Provisional default memory cap for an archive instance: 1 GiB.
 ///
-/// RFC §13.1 (open question): the real sizing driver is solid-RAR dictionaries;
+/// Open question: the real sizing driver is solid-RAR dictionaries;
 /// WP2's benchmark against the real fixture finalises this. Operator-overridable
 /// via `PluginInstanceSpec::memory_max_bytes`.
 pub(crate) const DEFAULT_ARCHIVE_MEMORY_CAP_BYTES: usize = 1024 * 1024 * 1024;
@@ -24,7 +23,7 @@ pub(crate) const DEFAULT_ARCHIVE_MEMORY_CAP_BYTES: usize = 1024 * 1024 * 1024;
 /// Table-element ceiling for an archive instance. The shipped guest never grows
 /// its function table; a finite cap stops a buggy/hostile (still-signed) artifact
 /// from allocating host memory via `table.grow` in a loop — the dimension a
-/// memory-only cap leaves open (RFC §7.2.3).
+/// memory-only cap leaves open.
 pub(crate) const DEFAULT_ARCHIVE_TABLE_ELEMENTS: usize = 1_000_000;
 
 /// Guest path (and `TMPDIR` value) for the per-invocation scratch dir used for
@@ -55,7 +54,7 @@ pub(crate) struct HostCtx {
 
 /// Memory-cap limiter that also records the first denial, so the error mapper
 /// can attribute an OOM/limit trap to the resource limit rather than a generic
-/// fault (RFC §7.2.8). A superset of `StoreLimits::memory_size`.
+/// fault. A superset of `StoreLimits::memory_size`.
 pub(crate) struct HostLimits {
     max_memory_bytes: usize,
     pub(crate) memory_denied: bool,
@@ -112,7 +111,7 @@ pub(crate) struct BareSandbox {
     pub(crate) stderr: MemoryOutputPipe,
 }
 
-/// WASI ctx for a describe invocation (RFC §8.2): empty stdin, argv
+/// WASI ctx for a describe invocation: empty stdin, argv
 /// `[argv0, "describe"]`, captured stdio, and NO filesystem or network authority
 /// — a describe call is a pure function of the artifact. The guest keys the
 /// describe branch off argv[1] (`std::env::args().nth(1)`), so argv[0] MUST be

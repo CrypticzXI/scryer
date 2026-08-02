@@ -23,7 +23,7 @@ use crate::queries::common::parse_utc_datetime;
 use crate::queries::sql_runtime::repo_err;
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore};
 
-// RFC 121 SW4.3: throttle the SQLite full VACUUM so it does not run on every
+// Throttle the SQLite full VACUUM so it does not run on every
 // daily maintenance tick. `auto_vacuum` is not enabled on the connection, so
 // `PRAGMA incremental_vacuum` would be a no-op; instead gate a full VACUUM on
 // the free-page ratio (bloat left behind by discovery prune + raw-page removal).
@@ -1446,7 +1446,7 @@ impl HousekeepingRepository for HousekeepingStore {
                             .execute(&pool)
                             .await
                             .map_err(repo_err)?;
-                        // Throttled full VACUUM (RFC 121 SW4.3): only reclaim when
+                        // Throttled full VACUUM: only reclaim when
                         // the free-page ratio shows meaningful bloat, so the daily
                         // maintenance tick does not pay the VACUUM cost every run.
                         let freelist_pages: i64 = sqlx::query_scalar("PRAGMA freelist_count")

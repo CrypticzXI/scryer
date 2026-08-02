@@ -1,11 +1,11 @@
 /// Scheduler value hint for a hot convergence target (recent air/release/add):
 /// high value so the scope converges promptly and keeps admitting
 /// even while the account's API quota is under pressure. Equals the neutral
-/// baseline, so hot work is never shed by plan 112's low-value pressure gate.
+/// baseline, so hot work is never shed by the low-value pressure gate.
 const BACKGROUND_HOT_TARGET_VALUE: f64 = 1.0;
 
 /// Scheduler value hint for a cold convergence target (long-tail / upgrades):
-/// low value so plan 112 drains it first under quota pressure,
+/// low value so the quota-pressure gate drains it first,
 /// yielding shared account quota to RSS polls and hot acquisition. Above the
 /// absolute `LOW_VALUE_BACKGROUND_THRESHOLD` floor, so a cold scope still
 /// admits when quota is healthy — it only defers once quota tightens.

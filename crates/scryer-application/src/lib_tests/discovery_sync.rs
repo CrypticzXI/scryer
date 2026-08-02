@@ -2581,7 +2581,7 @@ async fn discovery_sync_uses_configured_metadata_language() {
 
 #[tokio::test]
 async fn discovery_sync_uses_configured_region() {
-    // RFC 121 SW5: region routes through settings (defaults to "US" when unset).
+    // Region routes through settings (defaults to "US" when unset).
     let gateway = Arc::new(SnapshotMetadataGateway::default());
     let settings = Arc::new(StoredSettingsRepo::default());
     settings
@@ -6668,7 +6668,7 @@ fn test_external_id(title: &Title, sources: &[&str]) -> Option<String> {
 
 #[test]
 fn discovery_title_deserializes_studio_slug_and_person_ids_with_defaults() {
-    // RFC 121 SW3 + SI3: the SMG feed uses snake_case studio_slug / person_ids and
+    // The SMG feed uses snake_case studio_slug / person_ids and
     // absence must default tolerantly (no deny_unknown_fields, no strict enums).
     let mut base = serde_json::to_value(test_discovery_title())
         .expect("fixture discovery title should serialize");

@@ -2317,7 +2317,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             // Candidate value: the
             // convergence cursor's per-scope lane hint takes precedence — hot
             // scopes carry the high value that keeps admitting under quota
-            // pressure, cold scopes the low value plan 112 sheds first. When no
+            // pressure, cold scopes the low value the quota gate sheds first. When no
             // hint is supplied (interactive/RSS, or a background scope with no
             // hint), fall back to the historically-useful boost, then neutral.
             let expected_value = if let Some(score) = learning_context

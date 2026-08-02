@@ -147,8 +147,8 @@ impl PreparedArchiveRequest {
         }
     }
 
-    /// Express this request's sandbox + timeout requirements as a runtime spec
-    /// (RFC §7.1). Archive plugins only extract from a read-only source into a
+    /// Express this request's sandbox + timeout requirements as a runtime
+    /// spec. Archive plugins only extract from a read-only source into a
     /// writable output; PAR2 repair/normalization is native Scryer work.
     fn instance_spec(&self, wasm: Arc<Vec<u8>>) -> PluginInstanceSpec {
         let mut preopens = Vec::new();
@@ -168,7 +168,7 @@ impl PreparedArchiveRequest {
             wasm,
             preopens,
             timeout: Duration::from_secs(ARCHIVE_PROCESS_TIMEOUT_SECONDS),
-            // None = the host's provisional default cap (RFC §13.1, WP2 bench);
+            // None = the host's provisional default cap;
             // operator-overridable.
             memory_max_bytes: None,
         }

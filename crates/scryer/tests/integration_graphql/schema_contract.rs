@@ -118,16 +118,16 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // 0.17.0 re-pinned this census for the intentionally API-breaking release:
     // query fields moved 119 -> 121 with the added Query.episodeById /
     // Query.collectionById id-anchored lookups; the other counts are unchanged.
-    // 0.17.0 API surface trim (RFC 129 root wave): removed 5 dead query roots
+    // 0.17.0 API surface trim (root wave): removed 5 dead query roots
     // (discoverySyncStatus, libraryScanSession, mediaServerConnection,
     // outboundRateLimitSnapshot, upstreamSchedulerSnapshot), 1 dead mutation
     // (queueReplacementRelease), and the 5 exclusive snapshot payload OBJECT types.
-    // 0.17.0 API surface trim (RFC 129 field wave): removed dead output fields inside
+    // 0.17.0 API surface trim (field wave): removed dead output fields inside
     // consumed types plus 4 never-selected OBJECT types (DiscoverySyncRunPayload and the
     // ExternalImportLibrarySetting{Application,Evidence,Value}Payload trio); the trio's
     // exclusive enums (ExternalImportLibrarySetting{Confidence,Disposition,Key}) drop with
     // it. Root-field counts unchanged; OBJECT 259->255, ENUM 80->77, public types 498->491.
-    // 0.17.0 semantic waves (RFC 129 slice 5): stringly String fields became real enums
+    // 0.17.0 semantic waves (slice 5): stringly String fields became real enums
     // (+12 ENUM), and QueueDownloadScopePayload / ProviderConfigFieldValue became unions
     // (+2 UNION with 6 scope + 5 config-value member OBJECT types, +11 OBJECT).
     // Root-field counts unchanged; ENUM 77->89, OBJECT 255->266, public types 491->516.
@@ -225,7 +225,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(!public_type_names.contains(&"TriggerWantedSearchInput"));
     assert!(!public_type_names.contains(&"ResetWantedItemPayload"));
 
-    // 0.17.0 API surface trim (RFC 129 root wave): dead root fields and their
+    // 0.17.0 API surface trim (root wave): dead root fields and their
     // exclusive snapshot payload types are gone.
     assert!(!query_field_names.contains(&"discoverySyncStatus"));
     assert!(!query_field_names.contains(&"libraryScanSession"));
@@ -239,7 +239,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(!public_type_names.contains(&"UpstreamSchedulerSnapshotPayload"));
     assert!(!public_type_names.contains(&"UpstreamSchedulerSnapshotEntryPayload"));
 
-    // 0.17.0 API surface trim (RFC 129 field wave): never-selected reachable types are
+    // 0.17.0 API surface trim (field wave): never-selected reachable types are
     // gone. FinalizeExternalImportPayload.librarySettingApplications was the only anchor
     // for the external-import library-setting projection, so the trio payload types and
     // their exclusive enums drop with the field; DiscoverySyncRunPayload was only reachable
@@ -255,7 +255,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
 
 #[tokio::test]
 async fn graphql_introspection_external_import_finalize_settings_payload_is_trimmed() {
-    // 0.17.0 API surface trim (RFC 129 field wave): the never-selected library-setting
+    // 0.17.0 API surface trim (field wave): the never-selected library-setting
     // projection on FinalizeExternalImportPayload was removed, so the trio payload types
     // and their exclusive enums no longer appear in the schema.
     let ctx = TestContext::new().await;

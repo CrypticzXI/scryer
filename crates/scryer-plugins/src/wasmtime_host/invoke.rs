@@ -56,7 +56,7 @@ pub(crate) async fn process_archive(
 
     let engine = engine::shared_async_engine();
 
-    // TODO(RFC §9 / WP6): cache the compiled Module keyed by artifact digest;
+    // TODO(WP6): cache the compiled Module keyed by artifact digest;
     // 0.17.0 compiles per request (one archive extraction runs at a time).
     let module = Module::from_binary(engine, &spec.wasm).map_err(|error| {
         AppError::Repository(format!(
@@ -457,9 +457,9 @@ mod tests {
         Module::new(engine, wasm).unwrap_or_else(|error| panic!("{context}: {error}"))
     }
 
-    /// RFC §13.2 PROTOCOL GATE: request-on-stdin / response-on-stdout capture
+    /// PROTOCOL GATE: request-on-stdin / response-on-stdout capture
     /// under wasmtime-wasi p1 with a `Store<HostCtx>`. If this fails, the host
-    /// (and the PDK) must fall back to control files (RFC §7.2.5).
+    /// (and the PDK) must fall back to control files.
     #[test]
     fn stdin_stdout_round_trips_under_wasi_p1() {
         let engine = Engine::default();

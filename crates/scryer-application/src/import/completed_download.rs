@@ -1,4 +1,4 @@
-//! CompletedDownloadHandler — two-phase import bridge (plan 055).
+//! CompletedDownloadHandler — two-phase import bridge.
 //!
 //! Phase 1 (check): validate completed downloads, resolve title, gate auto-import.
 //! Phase 2 (import): run the import pipeline, verify completion across passes.
