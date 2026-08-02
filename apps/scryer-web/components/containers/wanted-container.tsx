@@ -58,7 +58,7 @@ type WantedContainerProps = {
 
 const PENDING_RELEASE_PAGE_SIZE = 300;
 const CUTOFF_PAGE_SIZE = 50;
-// The interactive acquisition-search job runs server-side (RFC 119 §7.3); its id
+// The interactive acquisition-search job runs server-side; its id
 // is kept in sessionStorage so progress survives navigation and reload.
 const ACQUISITION_SEARCH_JOB_STORAGE_KEY = "scryer.acquisitionSearchJobId";
 const ACQUISITION_SEARCH_POLL_INTERVAL_MS = 2_000;
@@ -155,7 +155,7 @@ export const WantedContainer = memo(function WantedContainer({
     Record<string, Release[]>
   >({});
 
-  // --- Interactive acquisition-search job (RFC 119 §7.3) ---
+  // --- Interactive acquisition-search job ---
   const [searchJob, setSearchJob] = useState<AcquisitionSearchJob | null>(null);
   const [searchJobStarting, setSearchJobStarting] = useState(false);
   const searchJobIdRef = useRef<string | null>(null);
@@ -325,7 +325,7 @@ export const WantedContainer = memo(function WantedContainer({
   const refreshItems = useCallback(async () => {
     setLoading(true);
     try {
-      // The derived Missing view (RFC 119 §7.2): the state-row status/media-type
+      // The derived Missing view: the state-row status/media-type
       // filters are gone; the title picker narrows via the name-based titleSearch.
       const { data, error } = await client
         .query(wantedItemsQuery, {
@@ -414,7 +414,7 @@ export const WantedContainer = memo(function WantedContainer({
     [client, expandedItemId],
   );
 
-  // --- Interactive acquisition-search job (RFC 119 §7.3) ---
+  // --- Interactive acquisition-search job ---
 
   const applySearchJobSnapshot = useCallback(
     (job: AcquisitionSearchJob | null) => {
@@ -722,7 +722,7 @@ export const WantedContainer = memo(function WantedContainer({
   );
 
   // "Search All" is one server job over the filtered Upgrades scope set
-  // (RFC 119 §7.3) — progress/cancel survive navigation and reload.
+  // — progress/cancel survive navigation and reload.
   const cutoffBulkSearch = useCallback(() => {
     void startAcquisitionSearch({
       wantedKind: "CUTOFF_UPGRADE",

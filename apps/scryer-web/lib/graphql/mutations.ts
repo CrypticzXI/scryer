@@ -1397,7 +1397,7 @@ export const setPrimaryMovieFileMutation = `mutation SetPrimaryMovieFile($input:
   }
 }`;
 
-// RFC 119 §7.3: one server-side interactive search job replaces the retired
+// One server-side interactive search job replaces the retired
 // per-item trigger mutations; progress is polled via acquisitionSearchJobQuery.
 export const triggerAcquisitionSearchMutation = `mutation TriggerAcquisitionSearch($input: TriggerAcquisitionSearchInput!) {
   triggerAcquisitionSearch(input: $input) {

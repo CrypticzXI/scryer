@@ -1053,7 +1053,7 @@ async fn external_import_monitor_snapshot_enables_collection_for_monitored_episo
         .expect("apply monitor snapshot");
 
     assert!(applied);
-    // RFC 119: the snapshot reconciles monitoring state; acquisition targets are
+    // The snapshot reconciles monitoring state; acquisition targets are
     // derived from that state, no wanted rows are materialized on apply.
     let updated_collection = app
         .get_collection(&user, &collection.id)

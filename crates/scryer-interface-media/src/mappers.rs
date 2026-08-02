@@ -2741,7 +2741,7 @@ pub fn from_wanted_item(
             .transpose()?,
         mismatch_recovery_eligible: item.mismatch_recovery_eligible,
         // Relation-field state rows (`title.wantedItems`, `episode.wantedItem`) are
-        // not the convergence display surface (RFC 119 §6): the derived Missing /
+        // not the convergence display surface: the derived Missing /
         // Upgrades views carry live convergence; here we present a neutral default
         // so the shared payload stays well-typed off a bare state row.
         convergence_state: ConvergenceStateValue::Queued,
@@ -2756,7 +2756,7 @@ pub fn from_wanted_item(
 }
 
 /// Map a derived Missing/Upgrades view row onto the shared `WantedItemPayload`
-/// (RFC 119 §6). The payload `id` is the scope identity: the state-row id when a
+///. The payload `id` is the scope identity: the state-row id when a
 /// state row exists, else the convergence scope key — so a derived target with no
 /// state row is still addressable (pause/resume and the interactive search job both
 /// accept a scope key). Convergence progress and the recency lane come from the

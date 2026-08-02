@@ -22,14 +22,14 @@ const LOW_VALUE_BACKGROUND_THRESHOLD: f64 = 0.25;
 const LOW_VALUE_SUBTITLE_THRESHOLD: f64 = 0.15;
 const RSS_FRESHNESS_ESCALATION_THRESHOLD: f64 = 0.85;
 const LOW_ACCOUNT_QUOTA_REMAINING_FRACTION: f64 = 0.20;
-/// RFC 119 §D3/#4: below this remaining-account-quota fraction, background
+/// Below this remaining-account-quota fraction, background
 /// acquisition is "under pressure" and yields shared quota. It is set above
 /// `LOW_ACCOUNT_QUOTA_REMAINING_FRACTION` (0.20 — where RSS *begins* stretching
 /// its own cadence) so background acquisition starts shedding low-value work at
 /// a higher remaining fraction than RSS reacts at: a saturating convergence
 /// backlog can never starve RSS polls of the shared account quota.
 const BACKGROUND_QUOTA_PRESSURE_REMAINING_FRACTION: f64 = 0.35;
-/// RFC 119 §D3/#4: under quota pressure, background candidates whose value is
+/// Under quota pressure, background candidates whose value is
 /// below this bar defer (`Defer{LowValueBackground}`) while higher-value work
 /// still admits. The convergence lane values (hot 1.0 / cold 0.25) straddle it,
 /// so pressure sheds cold work first and keeps hot work converging.
@@ -1234,7 +1234,7 @@ fn quota_probe_is_due(entry: &SchedulerStateEntry, now: DateTime<Utc>) -> bool {
         .is_some_and(|probe_after| probe_after <= now)
 }
 
-/// RFC 119 §D3/#4: the account's shared API quota is "under pressure" when a
+/// The account's shared API quota is "under pressure" when a
 /// fresh observation shows the remaining fraction below
 /// `BACKGROUND_QUOTA_PRESSURE_REMAINING_FRACTION`. A stale/absent observation
 /// (nothing to trust) is treated as not-under-pressure so background work still
@@ -1282,7 +1282,7 @@ fn should_defer(
 ) -> bool {
     match candidate.intent {
         SchedulerIntent::InteractiveSearch => false,
-        // RFC 119 §D3/#4: this soft gate runs *after* the hard
+        // This soft gate runs *after* the hard
         // `account_quota_retry_after` capacity gate, so it never blocks RSS
         // (BackgroundRss defers here only by cadence). A background candidate
         // defers when it is either below the absolute low-value floor, or below
@@ -2814,7 +2814,7 @@ mod tests {
 
     #[tokio::test]
     async fn low_value_background_defers_under_quota_pressure_while_high_value_admits() {
-        // RFC 119 §D3/#4: under account-quota pressure, a cold (low-value)
+        // Under account-quota pressure, a cold (low-value)
         // convergence candidate defers so shared quota is spent on high-value
         // work; a hot (high-value) candidate on the same account still admits.
         let scheduler = InMemoryUpstreamScheduler::new();
@@ -2872,8 +2872,7 @@ mod tests {
     #[tokio::test]
     async fn low_value_background_admits_when_quota_is_healthy() {
         // Without quota pressure the cold lane still admits — pressure, not raw
-        // value, is what sheds it (RFC 119 §D3: 0.25 sits above the absolute
-        // LOW_VALUE_BACKGROUND_THRESHOLD floor).
+        // value, is what sheds it.
         let scheduler = InMemoryUpstreamScheduler::new();
         let mut cold = candidate(SchedulerIntent::BackgroundAcquisition, 0.25);
         let host = HostKey::from(format!("healthy-{}.example.test", Uuid::new_v4()));
@@ -2907,7 +2906,7 @@ mod tests {
 
     #[tokio::test]
     async fn rss_wins_shared_quota_over_background_acquisition() {
-        // RFC 119 §D3/#4 (cutover-blocking): with the account's quota under
+        // With the account's quota under
         // pressure, a saturating convergence backlog must never starve RSS.
         // The cold BackgroundAcquisition candidate defers on the pressure gate
         // while the overdue BackgroundRss candidate on the same account still
@@ -2982,7 +2981,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_success_feedback_updates_observations_like_success() {
-        // RFC 119 §D5: an EmptySuccess (fired query, zero results) is a
+        // An EmptySuccess (fired query, zero results) is a
         // successful observation for the scheduler — same quota/cooldown effect
         // as Success. It marks last_successful_at and records the quota reading.
         let scheduler = InMemoryUpstreamScheduler::new();

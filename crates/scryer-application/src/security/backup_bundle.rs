@@ -460,7 +460,7 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         table: "upstream_scheduler_rss_cadence",
         classification: BackupTableClassification::Ignore,
     },
-    // RFC 119 convergence coverage records durable observations of external
+    // Convergence coverage records durable observations of external
     // indexer searches. Internal state transitions must not erase that evidence.
     BackupTableCatalogEntry {
         table: "scope_indexer_coverage",

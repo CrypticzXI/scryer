@@ -1,5 +1,5 @@
 """
-Progress snapshot for the interactive acquisition-search job (RFC 119 §7.3).
+Progress snapshot for the interactive acquisition-search job.
 Survives navigation/refresh — the job runs server-side and its state is queried
 by `id` and pushed via `jobRunEvents`.
 """
@@ -16,7 +16,7 @@ type AcquisitionSearchJobPayload {
 }
 
 """
-Lifecycle of the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+Lifecycle of the interactive acquisition-search job.
 """
 enum AcquisitionSearchJobStateValue {
 	RUNNING
@@ -413,7 +413,7 @@ enum ContentScopeValue {
 }
 
 """
-Convergence state of an acquisition scope (RFC 119 §6/§7). Replaces the retired
+Convergence state of an acquisition scope. Replaces the retired
 cadence display (`searchPhase`/`nextSearchAt`): the operator sees whether a scope
 is still sweeping indexers, has converged onto RSS, is queued for the cursor, or
 is deferred because every uncovered indexer is currently unavailable.
@@ -580,7 +580,7 @@ type CutoffUnmetItemPayload {
 	currentTier: String!
 	targetTier: String!
 	"""
-	Convergence progress for this upgrade scope (RFC 119 §6/§7) — the same
+	Convergence progress for this upgrade scope — the same
 	state the Missing/Upgrades views show.
 	"""
 	convergenceState: ConvergenceStateValue!
@@ -589,7 +589,7 @@ type CutoffUnmetItemPayload {
 }
 
 """
-RFC 119 bounded view: one page of cutoff-unmet targets + the full unmet
+Bounded view: one page of cutoff-unmet targets + the full unmet
 count, so the UI paginates instead of loading the whole set.
 """
 type CutoffUnmetTitlesPagePayload {
@@ -2831,31 +2831,31 @@ type MutationRoot {
 	cancelMyMediaRequest(requestId: ID!): MediaRequestActionPayload!
 	"""
 	Re-open the title's title-mismatch scopes for search after a rematch
-	(RFC 119 §D2). Retained: a rematch changes the scope fingerprint, so the
+	. Retained: a rematch changes the scope fingerprint, so the
 	re-open prunes coverage and the cursor re-converges.
 	"""
 	triggerTitleMismatchRecoverySearch(titleId: ID!): TriggerTitleMismatchRecoverySearchPayload!
 	"""
 	Pause acquisition for a scope. `id` is a state-row id or a convergence scope
-	key (RFC 119 §7.4) — a scope key with no row yet materializes one.
+	key — a scope key with no row yet materializes one.
 	"""
 	pauseWantedItem(id: ID!): PauseWantedItemPayload!
 	"""
 	Resume acquisition for a paused scope. `id` is a state-row id or a
-	convergence scope key (RFC 119 §7.4).
+	convergence scope key.
 	"""
 	resumeWantedItem(id: ID!): ResumeWantedItemPayload!
 	forceGrabPendingRelease(id: ID!): ForceGrabPendingReleasePayload!
 	dismissPendingRelease(id: ID!): DismissPendingReleasePayload!
 	"""
 	Start an interactive acquisition-search job over the selected wanted/upgrade
-	scopes (RFC 119 §7.3 / Phase 2). Replaces the retired per-item trigger
+	scopes. Replaces the retired per-item trigger
 	mutations: one server job (progress/cancel survive refresh) runs the
 	interactive best-release search+grab for every requested scope.
 	"""
 	triggerAcquisitionSearch(input: TriggerAcquisitionSearchInput!): AcquisitionSearchJobPayload!
 	"""
-	Cancel a running interactive acquisition-search job (RFC 119 §7.3).
+	Cancel a running interactive acquisition-search job.
 	"""
 	cancelAcquisitionSearch(id: ID!): CancelAcquisitionSearchPayload!
 	createRuleSet(input: CreateRuleSetInput!): RuleSetPayload!
@@ -3498,7 +3498,11 @@ type QueryRoot {
 	activityEvents(limit: Int, offset: Int): [ActivityEventPayload!]!
 	auditLog(eventTypes: [DomainEventTypeValue!], titleId: ID, facet: MediaFacetValue, afterSequence: Long, beforeSequence: Long, limit: Int): [DomainEventEnvelopePayload!]!
 	activeLibraryScans: [LibraryScanProgressPayload!]!
-	externalImportArrSourceWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
+	externalImportArrSourceWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload! @deprecated(reason: "use externalImportWarmupStatus")
+	"""
+	Kind-neutral warmup status lookup — covers Arr source and Prowlarr
+	discovery sessions alike.
+	"""
 	externalImportWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
 	externalImportAggregateWarmupProgress(input: ExternalImportAggregateWarmupProgressInput!): ExternalImportAggregateWarmupProgressPayload!
 	pendingImportCounts: PendingImportCountsPayload!
@@ -3561,7 +3565,7 @@ type QueryRoot {
 	previewManualImportPath(input: PreviewManualImportPathInput!): ManualImportPreviewPayload!
 	me: UserPayload
 	"""
-	RFC 119 §6/§7: the derived Missing / Upgrades view. `wantedKind` selects the
+	The derived Missing / Upgrades view. `wantedKind` selects the
 	target set (`MISSING` derived from fileless monitored scopes, `CUTOFF_UPGRADE`
 	from below-cutoff files). Results are the derived targets joined to the
 	activity-state row (when one exists) and enriched with per-scope convergence
@@ -3570,15 +3574,15 @@ type QueryRoot {
 	"""
 	wantedItems(wantedKind: WantedKindValue! = MISSING, facet: MediaFacetValue, libraryIds: [ID!], titleSearch: String, limit: Int! = 50, offset: Int! = 0): WantedItemsListPayload!
 	"""
-	RFC 119 bounded view: a single page of cutoff-unmet (Upgrades) targets plus
+	Bounded view: a single page of cutoff-unmet (Upgrades) targets plus
 	the full unmet count and per-item convergence progress, so the UI paginates
 	instead of loading the whole set. The unpaged `cutoffUnmetTitles` query was
-	removed in this release (RFC 119 §6): the full-array browser load is retired.
+	removed in this release: the full-array browser load is retired.
 	"""
 	cutoffUnmetTitlesPage(facet: MediaFacetValue, libraryIds: [ID!], limit: Int!, offset: Int!): CutoffUnmetTitlesPagePayload!
 	titleAcquisitionDiagnostics(titleId: ID!): TitleAcquisitionDiagnosticsPayload!
 	"""
-	Progress of an interactive acquisition-search job (RFC 119 §7.3), polled by
+	Progress of an interactive acquisition-search job, polled by
 	the UI alongside the `jobRunEvents` push. `None` when no such job exists.
 	"""
 	acquisitionSearchJob(id: ID!): AcquisitionSearchJobPayload
@@ -3715,7 +3719,7 @@ enum RecapPolicyValue {
 }
 
 """
-Recency lane of an acquisition scope (RFC 119 §D3): `Hot` scopes converge
+Recency lane of an acquisition scope: `Hot` scopes converge
 promptly (high candidate value to the scheduler); `Cold` scopes drain under
 backpressure.
 """
@@ -4751,7 +4755,7 @@ enum TrackedDownloadStatusValue {
 }
 
 """
-Scope selector for the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+Scope selector for the interactive acquisition-search job.
 A bare input searches every derived target of `wanted_kind`; narrowing fields
 filter that set. `wanted_item_id` (a state-row id or a convergence scope key)
 resolves a single scope.
@@ -5151,7 +5155,7 @@ input ValidateRuleSetInput {
 
 type WantedItemPayload {
 	"""
-	Scope identity (RFC 119 §6): the acquisition-state row id when a state row
+	Scope identity: the acquisition-state row id when a state row
 	exists for this scope, otherwise the convergence scope key itself
 	(`episode:<uuid>`, `title:<uuid>`, `series_movie:<uuid>`, …). A derived
 	target with no state row is still addressable by this id (pause/resume and
@@ -5177,7 +5181,7 @@ type WantedItemPayload {
 	latestReleaseDecision: ReleaseDecisionPayload
 	mismatchRecoveryEligible: Boolean!
 	"""
-	Convergence progress for this scope (RFC 119 §6/§7): whether the scope is
+	Convergence progress for this scope: whether the scope is
 	still sweeping indexers, has converged (watching RSS), is queued, or is
 	deferred because every uncovered indexer is currently unavailable.
 	"""
@@ -5191,7 +5195,7 @@ type WantedItemPayload {
 	"""
 	indexersRouted: Int!
 	"""
-	Recency lane (RFC 119 §D3): `Hot` converges promptly, `Cold` drains under
+	Recency lane: `Hot` converges promptly, `Cold` drains under
 	scheduler backpressure.
 	"""
 	recencyLane: RecencyLaneValue!
@@ -5215,7 +5219,7 @@ type WantedItemsPagePayload {
 }
 
 """
-Which derived acquisition-target set a wanted view lists (RFC 119 §6/§7):
+Which derived acquisition-target set a wanted view lists:
 `Missing` scopes have no primary file; `CutoffUpgrade` scopes have a file below
 the effective profile cutoff.
 """
@@ -5263,6 +5267,10 @@ input WebauthnRegisterCompleteInput {
 	friendlyName: String
 }
 
+"""
+Marks an element of a GraphQL schema as no longer supported.
+"""
+directive @deprecated(reason: String = "No longer supported") on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
 """
 Directs the executor to include this field or fragment only when the `if` argument is true.
 """

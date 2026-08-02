@@ -2314,7 +2314,7 @@ impl IndexerClient for MultiIndexerSearchClient {
             } else {
                 None
             };
-            // Candidate value (RFC 119 §D3, consumed by plan 112): the
+            // Candidate value: the
             // convergence cursor's per-scope lane hint takes precedence — hot
             // scopes carry the high value that keeps admitting under quota
             // pressure, cold scopes the low value plan 112 sheds first. When no
@@ -2467,7 +2467,7 @@ impl IndexerClient for MultiIndexerSearchClient {
         // TV/series searches we run ID searches first and only fall back to a
         // broad freetext query if that indexer returned no releases.
         //
-        // RFC 119: per-indexer outcome for convergence coverage. Deferred/skipped
+        // Per-indexer outcome for convergence coverage. Deferred/skipped
         // indexers (never queried) are recorded below; fired/errored are recorded as
         // their tasks complete in the join loop.
         let mut indexer_outcomes: Vec<IndexerQueryOutcome> = Vec::new();
@@ -3518,7 +3518,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     }
                     let empty = response.results.is_empty();
                     if should_record_feedback {
-                        // RFC 119 §D5: a fired query that returned nothing is an
+                        // A fired query that returned nothing is an
                         // EmptySuccess, distinct from a hitful Success. Plan 112
                         // treats both as a successful observation for quota and
                         // cadence; the convergence ledger reads emptiness from

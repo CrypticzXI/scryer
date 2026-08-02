@@ -7,7 +7,7 @@ use scryer_interface_media::types::*;
 #[derive(Default)]
 pub struct WantedMutations;
 
-/// Shared builder for the media-request approval search outcome. The RFC 119
+/// Shared builder for the media-request approval search outcome. The convergence
 /// cutover removed the per-item `trigger*WantedSearch` mutations (the convergence
 /// cursor and `triggerAcquisitionSearch` own search now), but the media-request
 /// approval flow still reports its post-approval search via this payload.
@@ -21,7 +21,7 @@ pub(crate) fn wanted_search_payload(outcome: WantedSearchOutcome) -> WantedSearc
 #[Object]
 impl WantedMutations {
     /// Re-open the title's title-mismatch scopes for search after a rematch
-    /// (RFC 119 §D2). Retained: a rematch changes the scope fingerprint, so the
+    ///. Retained: a rematch changes the scope fingerprint, so the
     /// re-open prunes coverage and the cursor re-converges.
     async fn trigger_title_mismatch_recovery_search(
         &self,
@@ -42,7 +42,7 @@ impl WantedMutations {
     }
 
     /// Pause acquisition for a scope. `id` is a state-row id or a convergence scope
-    /// key (RFC 119 §7.4) — a scope key with no row yet materializes one.
+    /// key — a scope key with no row yet materializes one.
     async fn pause_wanted_item(
         &self,
         ctx: &Context<'_>,
@@ -58,7 +58,7 @@ impl WantedMutations {
     }
 
     /// Resume acquisition for a paused scope. `id` is a state-row id or a
-    /// convergence scope key (RFC 119 §7.4).
+    /// convergence scope key.
     async fn resume_wanted_item(
         &self,
         ctx: &Context<'_>,
@@ -106,7 +106,7 @@ impl WantedMutations {
     }
 
     /// Start an interactive acquisition-search job over the selected wanted/upgrade
-    /// scopes (RFC 119 §7.3 / Phase 2). Replaces the retired per-item trigger
+    /// scopes. Replaces the retired per-item trigger
     /// mutations: one server job (progress/cancel survive refresh) runs the
     /// interactive best-release search+grab for every requested scope.
     async fn trigger_acquisition_search(
@@ -151,7 +151,7 @@ impl WantedMutations {
         })
     }
 
-    /// Cancel a running interactive acquisition-search job (RFC 119 §7.3).
+    /// Cancel a running interactive acquisition-search job.
     async fn cancel_acquisition_search(
         &self,
         ctx: &Context<'_>,

@@ -1,7 +1,6 @@
 //! In-memory interactive release-search jobs (hotfix 0.17.1).
 //!
-//! Deliberate deviation from the acquisition-job pattern (RFC 119 §7.3,
-//! `acquisition/wanted_views.rs`): no `JobRunRecord`/`JobRunTracker`/`JobKey`.
+//! Deliberate deviation from the acquisition-job pattern: no `JobRunRecord`/`JobRunTracker`/`JobKey`.
 //! Those persist job history forever, enforce single-flight per key, and gate
 //! poll/cancel on `ManageSystemSettings` — all wrong for ephemeral, concurrent,
 //! per-user searches carrying heavy result payloads. Jobs here live in an

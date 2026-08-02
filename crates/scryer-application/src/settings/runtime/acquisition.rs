@@ -18,10 +18,9 @@ pub struct AcquisitionSettings {
     pub cross_tier_min_delta: i32,
     pub forced_upgrade_delta_bypass: i32,
     pub poll_interval_seconds: i32,
-    /// Per-cycle evaluation cost ceiling for the convergence cursor (RFC 119
-    /// §D3) — how many scopes may be evaluated per tick, not a rate limiter.
+    /// Per-cycle evaluation cost ceiling for the convergence cursor — how many scopes may be evaluated per tick, not a rate limiter.
     pub long_tail_backfill_max_scopes_per_cycle: i32,
-    /// Dormant slow re-converge backstop (RFC 119 §D6): coverage older than
+    /// Dormant slow re-converge backstop: coverage older than
     /// this many days re-converges. `0` = off, the intended steady state.
     pub long_tail_reconverge_days: i32,
 }

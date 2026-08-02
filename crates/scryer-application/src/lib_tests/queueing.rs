@@ -2514,7 +2514,7 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
     );
 }
 
-// ── RFC 119 convergence coverage write-hook ────────────────────────────────
+// ── convergence coverage write-hook ────────────────────────────────
 
 /// Capturing `ScopeIndexerCoverageRepository` recording every `record_coverage`
 /// call as `(scope_key, facet, indexer_id, fingerprint)`.
@@ -2670,7 +2670,7 @@ async fn convergence_test_title_and_subject(
     (title, subject)
 }
 
-/// Convergence is always on now (RFC 119 cutover): a scope is converged when
+/// Convergence is always on now: a scope is converged when
 /// every routed indexer is covered under the current fingerprint. Resolves the
 /// scope's coordinates and asks whether any routed indexer remains uncovered.
 async fn scope_is_converged(
@@ -2848,7 +2848,7 @@ async fn every_scoped_search_records_coverage_including_interactive() {
 
 #[tokio::test]
 async fn empty_response_from_fired_indexer_counts_as_coverage() {
-    // RFC 119 §D2 (#10): an indexer whose query executed and returned an EMPTY
+    // An indexer whose query executed and returned an EMPTY
     // response is still covered — a long-tail release genuinely absent from an
     // indexer must converge, or the cursor re-searches that empty indexer every
     // cycle forever. The determination comes from the multi-indexer fanout's
@@ -3004,7 +3004,7 @@ async fn coverage_excludes_disabled_indexers() {
 
 #[tokio::test]
 async fn coverage_records_only_indexers_that_fired() {
-    // RFC 119 §D2: a routed indexer that did NOT fire (deferred/skipped/errored) is
+    // A routed indexer that did NOT fire (deferred/skipped/errored) is
     // not recorded as covered, so the scope stays a target for the cursor to retry.
     let settings = Arc::new(StoredSettingsRepo::default());
     let configs = vec![

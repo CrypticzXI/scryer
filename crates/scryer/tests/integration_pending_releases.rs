@@ -769,7 +769,7 @@ async fn ensure_wanted_state_row_preserves_completed_status() {
         .await
         .expect("complete wanted item");
 
-    // RFC 119 §D3: `ensure_acquisition_scope_state` is a pure get-or-create — a scope
+    // `ensure_acquisition_scope_state` is a pure get-or-create — a scope
     // that already owns a row gets that row back untouched, never re-seeded.
     let reseed = scryer_application::AcquisitionScopeState {
         id: scryer_domain::Id::new().0,
@@ -825,7 +825,7 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
         .await
         .expect("pause wanted item");
 
-    // RFC 119 §D3: a raw upsert must not clobber the guarded status of an
+    // A raw upsert must not clobber the guarded status of an
     // existing scope — a re-seed carrying `Wanted` leaves a paused row paused.
     ctx.library_state
         .upsert_acquisition_scope_state(&scryer_application::AcquisitionScopeState {

@@ -3078,6 +3078,7 @@ const en: LocaleDictionary = {
   "setup.monitorWarmupDescription":
     "Scryer is pulling monitored status in the background so the final import step is faster.",
   "setup.monitorWarmupQueued": "Waiting for progress details…",
+  "setup.monitorWarmupLoadingIndexers": "Discovering indexers",
   "setup.monitorWarmupLoadingMovies": "Loading movies",
   "setup.monitorWarmupLoadingSeries": "Loading series",
   "setup.monitorWarmupLoadingEpisodes": "Loading episodes",

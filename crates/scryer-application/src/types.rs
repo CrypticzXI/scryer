@@ -118,7 +118,7 @@ pub struct CutoffUnmetItem {
     pub target_tier: String,
 }
 
-/// One bounded page of cutoff-unmet targets (RFC 119: bounded views). `total` is
+/// One bounded page of cutoff-unmet targets. `total` is
 /// the full unmet count for the query so the UI can paginate without loading the
 /// whole set into the browser.
 #[derive(Clone, Debug)]
@@ -1027,7 +1027,7 @@ pub struct LibraryScanUnmatchedItem {
     pub updated_at: String,
 }
 
-/// Per-scope acquisition state (RFC 119). A row exists because something
+/// Per-scope acquisition state. A row exists because something
 /// *happened* to the scope — a search recorded decisions, a release was
 /// grabbed or went pending, the user paused it — never because a sweep
 /// materialized it. What to search is the derived target set
@@ -1420,7 +1420,7 @@ pub struct IndexerSearchResult {
     pub auto_decision_summary: Option<String>,
 }
 
-/// Per-indexer outcome of a single search query (RFC 119 convergence). Determines
+/// Per-indexer outcome of a single search query. Determines
 /// which routed indexers may be recorded as coverage: only an indexer that actually
 /// fired a query and returned a response (empty included) counts — never one the
 /// scheduler deferred/skipped, and never one whose query errored.
@@ -1438,7 +1438,7 @@ pub enum IndexerSearchOutcome {
 
 impl IndexerSearchOutcome {
     /// Whether this indexer actually executed a query and returned a response.
-    /// Only a fired indexer may be recorded as convergence coverage (RFC 119 §D2).
+    /// Only a fired indexer may be recorded as convergence coverage.
     pub fn fired(&self) -> bool {
         matches!(self, Self::Fired { .. })
     }
@@ -1460,7 +1460,7 @@ pub struct IndexerSearchResponse {
     pub api_max: Option<u32>,
     pub grab_current: Option<u32>,
     pub grab_max: Option<u32>,
-    /// Per-indexer outcomes for this query (RFC 119): which routed indexers fired
+    /// Per-indexer outcomes for this query: which routed indexers fired
     /// (empty or not), were skipped/deferred, or errored. Empty for synthetic or
     /// no-eligible-indexer responses.
     pub indexer_outcomes: Vec<IndexerQueryOutcome>,
@@ -1841,7 +1841,7 @@ pub struct CutoffUnmetQualitySummary {
     pub quality_tier: String,
 }
 
-/// The two derived acquisition-target kinds (RFC 119 §D1). `Missing` scopes have
+/// The two derived acquisition-target kinds. `Missing` scopes have
 /// no primary file; `CutoffUpgrade` scopes have a file whose quality is strictly
 /// below the effective profile cutoff. Both converge the same way — they differ
 /// only in which derived query produces them and in recency lane (upgrades are
@@ -1870,8 +1870,7 @@ impl WantedKind {
 }
 
 /// A monitored episode with no live primary media file — a raw candidate for the
-/// derived missing-target set (RFC 119 §D1: targets are computed from library
-/// state, never materialized). Policy gates (air-date window, recency lane) are
+/// derived missing-target set. Policy gates (air-date window, recency lane) are
 /// applied by the application layer.
 #[derive(Clone, Debug)]
 pub struct MissingEpisodeCandidate {
@@ -1914,7 +1913,7 @@ pub struct MissingSeriesMovieLinkCandidate {
 }
 
 /// Raw candidates for the derived missing-target set: monitored, fileless
-/// scopes straight from library state, in one sweep (RFC 119 §D1).
+/// scopes straight from library state, in one sweep.
 #[derive(Clone, Debug, Default)]
 pub struct MissingScopeCandidates {
     pub episodes: Vec<MissingEpisodeCandidate>,

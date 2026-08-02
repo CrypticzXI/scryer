@@ -209,13 +209,11 @@ impl IndexerClient for TrackingIndexerClient {
 pub(super) struct FixedReleaseIndexerClient {
     pub(super) release_title: String,
     pub(super) indexer_languages: Option<Vec<String>>,
-    /// Indexer ids this stand-in reports as having fired (RFC 119 per-indexer
-    /// outcomes). Empty by default — set via [`with_fired_indexers`] when a test
+    /// Indexer ids this stand-in reports as having fired. Empty by default — set via [`with_fired_indexers`] when a test
     /// drives the real coverage chokepoint and needs specific indexers recorded.
     pub(super) fired_indexer_ids: Vec<String>,
     /// When set, every fired indexer reports `Fired { empty: true }` and the
-    /// response carries no results — a genuine zero-hit response (RFC 119 §D2:
-    /// "no results" is still coverage).
+    /// response carries no results — a genuine zero-hit response.
     pub(super) empty_response: bool,
 }
 

@@ -1,4 +1,4 @@
-//! Derived wanted/upgrades views (RFC 119 §6/§7). The Missing and Upgrades tabs
+//! Derived wanted/upgrades views. The Missing and Upgrades tabs
 //! read the SAME derived target set the convergence cursor rotates over
 //! (`derive_missing_targets` / `compute_cutoff_unmet_items`), joined to the
 //! activity-driven state row when one exists and enriched with the per-scope
@@ -21,7 +21,7 @@ use crate::acquisition::convergence::convergence_scope_key;
 use crate::acquisition::targets::AcquisitionTarget;
 use crate::contracts::{QueueDownloadOutcome, SubmissionConflictPolicy, SubmissionScope};
 
-/// Convergence state of a scope for the UI (RFC 119 §6). Mirrors the GraphQL
+/// Convergence state of a scope for the UI. Mirrors the GraphQL
 /// `ConvergenceStateValue`; the interface maps this 1:1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WantedConvergenceState {
@@ -35,7 +35,7 @@ pub enum WantedConvergenceState {
     Deferred,
 }
 
-/// Per-scope convergence progress carried on a wanted view (RFC 119 §6).
+/// Per-scope convergence progress carried on a wanted view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WantedViewConvergence {
     pub state: WantedConvergenceState,
@@ -43,7 +43,7 @@ pub struct WantedViewConvergence {
     pub indexers_routed: i32,
 }
 
-/// One derived wanted/upgrades row (RFC 119 §6/§7): the target coordinates, the
+/// One derived wanted/upgrades row: the target coordinates, the
 /// joined activity-state row (when one exists), title/library enrichment, the
 /// recency lane, and the batched convergence progress. `id`-identity is decided by
 /// the interface mapper (state-row id, else scope key).
@@ -81,7 +81,7 @@ struct TitleConvergenceContext {
 }
 
 impl AppUseCase {
-    /// One page of the derived Missing/Upgrades view (RFC 119 §6/§7). Mirrors the
+    /// One page of the derived Missing/Upgrades view. Mirrors the
     /// cutoff-unmet authorization: results are limited to the actor's authorized
     /// libraries. `MISSING` derives from the same fileless-scope query the cursor
     /// uses; `CUTOFF_UPGRADE` reuses the cutoff-unmet compute. Both join the state
@@ -279,7 +279,7 @@ impl AppUseCase {
     }
 
     /// Derive per-scope convergence progress for a page in ONE coverage round-trip
-    /// (RFC 119 §6 #12) and attach it to each view.
+    /// and attach it to each view.
     async fn attach_page_convergence(&self, page: &mut [WantedScopeView]) -> AppResult<()> {
         if page.is_empty() {
             return Ok(());
@@ -297,7 +297,7 @@ impl AppUseCase {
         Ok(())
     }
 
-    /// Batched per-scope convergence progress for a page (RFC 119 §6 #12), keyed by
+    /// Batched per-scope convergence progress for a page, keyed by
     /// scope key. Resolves `(fingerprint, routed indexers)` once per title, fetches
     /// all coverage rows for the page's scope keys in one round-trip, computes
     /// covered/routed counts in memory, and folds in the scheduler availability
@@ -508,7 +508,7 @@ fn parse_sort_number(value: Option<&str>) -> i64 {
         .unwrap_or(i64::MAX)
 }
 
-// ── Interactive acquisition-search job (RFC 119 §7.3 / Phase 2) ─────────────
+// ── Interactive acquisition-search job ─────────────
 
 /// One scope to search in an interactive acquisition-search job.
 #[derive(Clone, Debug)]
@@ -519,7 +519,7 @@ struct AcquisitionSearchScope {
     label: String,
 }
 
-/// Request for the interactive acquisition-search job (RFC 119 §7.3). A bare
+/// Request for the interactive acquisition-search job. A bare
 /// request searches every derived target of `wanted_kind`; the narrowing fields
 /// filter that set, and `wanted_item_id` (a state-row id or a scope key) selects a
 /// single scope.
@@ -533,8 +533,7 @@ pub struct AcquisitionSearchRequest {
     pub wanted_item_id: Option<String>,
 }
 
-/// `Missing` is the default target set for the interactive search request (RFC 119
-/// §7.3) — matching the `wantedItems` query default. Defined here because that's
+/// `Missing` is the default target set for the interactive search request — matching the `wantedItems` query default. Defined here because that's
 /// the only consumer of a defaulted `WantedKind`.
 impl Default for WantedKind {
     fn default() -> Self {
@@ -542,7 +541,7 @@ impl Default for WantedKind {
     }
 }
 
-/// Progress snapshot persisted in the job run's `progress_json` (RFC 119 §7.3),
+/// Progress snapshot persisted in the job run's `progress_json`,
 /// read back by the `acquisitionSearchJob` query and pushed via `jobRunEvents`.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -557,7 +556,7 @@ pub struct AcquisitionSearchProgress {
 }
 
 /// App-side view of the interactive acquisition-search job for the GraphQL query
-/// (RFC 119 §7.3). Built from the persisted run record + its progress json.
+///. Built from the persisted run record + its progress json.
 #[derive(Clone, Debug)]
 pub struct AcquisitionSearchJobView {
     pub id: String,
@@ -573,7 +572,7 @@ pub struct AcquisitionSearchJobView {
 }
 
 /// Map a terminal/running job-run status onto the acquisition-search job state
-/// vocabulary (RFC 119 §7.3): a cancellation lands as `Warning`, which the UI
+/// vocabulary: a cancellation lands as `Warning`, which the UI
 /// shows as `Cancelled`.
 fn acquisition_search_state_for_status(status: JobRunStatus, cancelled: bool) -> &'static str {
     if cancelled {
@@ -588,7 +587,7 @@ fn acquisition_search_state_for_status(status: JobRunStatus, cancelled: bool) ->
 }
 
 impl AppUseCase {
-    /// Start the interactive acquisition-search job (RFC 119 §7.3 / Phase 2):
+    /// Start the interactive acquisition-search job:
     /// single-flight guarded, permission-checked (ManageTitles for a title-scoped
     /// request, ManageCatalogSettings for a facet/library-wide one — mirroring
     /// `scanLibrary`), then runs the per-scope best-release search+grab off a
@@ -702,7 +701,7 @@ impl AppUseCase {
         Ok(run_payload)
     }
 
-    /// Permission split (RFC 119 §7.3, mirroring `scanLibrary`): a title-scoped
+    /// Permission split: a title-scoped
     /// request (an explicit `title_id`, or a `wanted_item_id` resolving to one
     /// title) requires `ManageTitles` on that title's library; a facet- or
     /// library-wide request requires `ManageCatalogSettings`.
@@ -919,7 +918,7 @@ impl AppUseCase {
 
     /// Resolve a wanted identifier (state-row id, else convergence scope key) to a
     /// persisted acquisition-state row, creating one if the scope has none yet
-    /// (RFC 119 §7.4 — pause/resume must work off a scope key, not only a row id).
+    ///.
     /// Returns the loaded row so callers see its real id/status.
     pub(crate) async fn resolve_or_create_wanted_state_row(
         &self,
@@ -1186,7 +1185,7 @@ impl AppUseCase {
             .remove(&run.id);
     }
 
-    /// The current state of an interactive acquisition-search job (RFC 119 §7.3),
+    /// The current state of an interactive acquisition-search job,
     /// for the `acquisitionSearchJob` query. Visible to any actor who may read job
     /// runs (`ManageSystemSettings`, matching the jobs surface).
     pub async fn acquisition_search_job(
@@ -1233,7 +1232,7 @@ impl AppUseCase {
         }
     }
 
-    /// Cancel a running interactive acquisition-search job (RFC 119 §7.3). Requires
+    /// Cancel a running interactive acquisition-search job. Requires
     /// `ManageSystemSettings` (the jobs surface); signals the job's cancellation
     /// token so it stops between scopes. Returns whether a running job was signalled.
     pub async fn cancel_acquisition_search(&self, actor: &User, run_id: &str) -> AppResult<bool> {

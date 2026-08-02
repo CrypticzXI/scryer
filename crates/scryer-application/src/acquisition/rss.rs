@@ -451,7 +451,7 @@ impl AppUseCase {
             ..Default::default()
         };
 
-        // For each matched title, score and potentially grab. RFC 119 §D5:
+        // For each matched title, score and potentially grab. By design,
         // target-ness is derived from library state at match time — a monitored
         // scope that is missing or below cutoff — never gated on a pre-existing
         // wanted row. The activity ledger row, when present, still supplies
@@ -637,7 +637,7 @@ impl AppUseCase {
 
     /// Process RSS releases matched to a series title. Single-episode postings
     /// converge per episode; multi-episode/season packs converge once at pack
-    /// granularity (RFC 119 §D5 #3), never fanned out to per-episode rows.
+    /// granularity, never fanned out to per-episode rows.
     #[expect(
         clippy::too_many_arguments,
         reason = "RSS series processing carries per-episode routing state through one workflow step"
@@ -1202,7 +1202,7 @@ impl AppUseCase {
     /// Try to grab the best candidate from scored RSS releases.
     /// Reuses the same logic as process_single_wanted_item for consistency.
     ///
-    /// `wanted` may be an unpersisted state view (RFC 119 §D5): the scope's
+    /// `wanted` may be an unpersisted state view: the scope's
     /// ledger row is materialized via `ensure_acquisition_scope_state` before the first
     /// anchored write (release decision, pending release, grab), and every FK
     /// write uses the persisted id returned by it.

@@ -2808,7 +2808,7 @@ async fn graphql_add_title_default_root_id_stores_library_default() {
     );
 }
 
-/// RFC 119: the per-item `triggerTitleWantedSearch`/`triggerSeasonWantedSearch`
+/// The per-item `triggerTitleWantedSearch`/`triggerSeasonWantedSearch`
 /// mutations were removed. A fileless monitored movie is a *derived* Missing
 /// target (no seeding, no state row required): it appears directly in
 /// `wantedItems(wantedKind: MISSING)` with convergence progress, and the

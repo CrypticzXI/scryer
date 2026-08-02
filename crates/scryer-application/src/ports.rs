@@ -2377,7 +2377,7 @@ pub trait IndexerCapsSnapshotRefresher: Send + Sync {
     ) -> AppResult<Option<IndexerCapsSnapshot>>;
 }
 
-/// One coverage-ledger row (RFC 119 §6 #12): the raw `(scope_key, indexer_id)`
+/// One coverage-ledger row: the raw `(scope_key, indexer_id)`
 /// coverage a batched page fetch returns, so the wanted views can compute
 /// covered/routed counts in memory for a whole page in one round-trip instead of
 /// a per-row lookup.
@@ -2389,7 +2389,7 @@ pub struct ScopeCoverageRow {
     pub searched_at: String,
 }
 
-/// RFC 119 convergence ledger: which indexers an acquisition scope's catalog has
+/// Convergence ledger: which indexers an acquisition scope's catalog has
 /// been actively searched against, under which search-criteria fingerprint. A
 /// scope is "converged" (RSS-only) once every routed indexer has a
 /// current-fingerprint coverage row; a fingerprint change or a new indexer
@@ -2421,7 +2421,7 @@ pub trait ScopeIndexerCoverageRepository: Send + Sync {
     ) -> AppResult<Vec<String>>;
 
     /// All coverage rows for the given scope keys, fetched in one round-trip
-    /// (RFC 119 §6 #12). The wanted views group these by scope key and compare
+    ///. The wanted views group these by scope key and compare
     /// each row's `fingerprint` to the live one in memory, so a full page's
     /// convergence progress costs a single query — never a per-row lookup. Rows
     /// for scope keys with no coverage are simply absent.
@@ -2617,7 +2617,7 @@ pub struct IndexerSearchLearningContext {
     pub title_id: String,
     pub facet: String,
     pub subject_kind: ReleaseSearchSubjectKind,
-    /// Background convergence value hint for this scope (RFC 119 §D3): the
+    /// Background convergence value hint for this scope: the
     /// convergence cursor sets it from the target's recency lane (hot → high,
     /// cold → low). Rides the Auto-only background search path into the
     /// scheduler candidate's `ExpectedValueHint`; RSS and interactive searches
@@ -3343,7 +3343,7 @@ pub trait MediaFileRepository: Send + Sync {
 
     /// One sweep over library state returning every monitored, fileless scope —
     /// the raw candidates the derived missing-target set is computed from
-    /// (RFC 119 §D1). Facet shape, availability windows, and filler opt-ins are
+    ///. Facet shape, availability windows, and filler opt-ins are
     /// application-layer policy applied on top of these rows.
     async fn list_missing_scope_candidates(&self) -> AppResult<MissingScopeCandidates> {
         Ok(MissingScopeCandidates::default())

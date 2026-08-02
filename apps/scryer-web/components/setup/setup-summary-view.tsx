@@ -79,6 +79,14 @@ function activeWarmupPhaseState(
   phaseProgress: ExternalImportMonitorWarmupPhaseProgress;
 } {
   switch (progress.phase) {
+    // Prowlarr discovery sessions report this phase; the monitor warmup this
+    // view renders never enters it, but the union must stay exhaustive.
+    case "LOADING_INDEXERS":
+      return {
+        label: t("setup.monitorWarmupLoadingIndexers"),
+        totalKnown: progress.overallTotalKnown,
+        phaseProgress: progress.overallProgress,
+      };
     case "LOADING_MOVIES":
       return {
         label: t("setup.monitorWarmupLoadingMovies"),

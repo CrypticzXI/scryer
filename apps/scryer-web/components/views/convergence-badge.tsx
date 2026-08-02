@@ -1,7 +1,7 @@
 import { useTranslate } from "@/lib/context/translate-context";
 import type { ConvergenceState, RecencyLane } from "@/lib/types";
 
-// RFC 119 §7.1: the UI shows convergence STATE, not a search cadence. One badge
+// The UI shows convergence STATE, not a search cadence. One badge
 // shared by the Missing/Upgrades tables and the title overviews.
 export function ConvergenceBadge({
   state,

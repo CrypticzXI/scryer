@@ -1223,6 +1223,7 @@ impl ActivityQueries {
             .collect())
     }
 
+    #[graphql(deprecation = "use externalImportWarmupStatus")]
     async fn external_import_arr_source_warmup_status(
         &self,
         ctx: &Context<'_>,
@@ -1241,6 +1242,8 @@ impl ActivityQueries {
         Ok(from_external_import_monitor_warmup_progress(snapshot))
     }
 
+    /// Kind-neutral warmup status lookup — covers Arr source and Prowlarr
+    /// discovery sessions alike.
     async fn external_import_warmup_status(
         &self,
         ctx: &Context<'_>,
@@ -2066,7 +2069,7 @@ impl SystemQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl AcquisitionQueries {
-    /// RFC 119 §6/§7: the derived Missing / Upgrades view. `wantedKind` selects the
+    /// The derived Missing / Upgrades view. `wantedKind` selects the
     /// target set (`MISSING` derived from fileless monitored scopes, `CUTOFF_UPGRADE`
     /// from below-cutoff files). Results are the derived targets joined to the
     /// activity-state row (when one exists) and enriched with per-scope convergence
@@ -2109,10 +2112,10 @@ impl AcquisitionQueries {
         })
     }
 
-    /// RFC 119 bounded view: a single page of cutoff-unmet (Upgrades) targets plus
+    /// Bounded view: a single page of cutoff-unmet (Upgrades) targets plus
     /// the full unmet count and per-item convergence progress, so the UI paginates
     /// instead of loading the whole set. The unpaged `cutoffUnmetTitles` query was
-    /// removed in this release (RFC 119 §6): the full-array browser load is retired.
+    /// removed in this release: the full-array browser load is retired.
     async fn cutoff_unmet_titles_page(
         &self,
         ctx: &Context<'_>,
@@ -2159,7 +2162,7 @@ impl AcquisitionQueries {
         Ok(from_title_acquisition_diagnostics(diagnostics).map_err(to_gql_error)?)
     }
 
-    /// Progress of an interactive acquisition-search job (RFC 119 §7.3), polled by
+    /// Progress of an interactive acquisition-search job, polled by
     /// the UI alongside the `jobRunEvents` push. `None` when no such job exists.
     async fn acquisition_search_job(
         &self,

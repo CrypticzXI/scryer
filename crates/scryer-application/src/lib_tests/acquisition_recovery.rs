@@ -645,7 +645,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
         .await
         .expect("load wanted")
         .expect("wanted exists");
-    // RFC 119: a submit-unavailable failure defers to the standby recovery
+    // A submit-unavailable failure defers to the standby recovery
     // rather than re-opening — the grabbed state row is untouched (no reopen,
     // no reschedule) while the standby is preserved for the retry.
     assert_eq!(updated_wanted.status, AcquisitionScopeStatus::Grabbed);
@@ -1528,7 +1528,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             .await
             .expect("get wanted item")
             .expect("wanted item exists");
-        // RFC 119: the failed pack reopens each covered episode scope for
+        // The failed pack reopens each covered episode scope for
         // convergence (status back to `wanted`, grab cleared) instead of
         // rescheduling a cadence.
         assert_eq!(wanted.status, AcquisitionScopeStatus::Wanted);
@@ -5230,7 +5230,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
 
     assert_eq!(queued, 1);
 
-    // RFC 119 §D5: mismatch recovery re-opens only the mismatch-only scope for
+    // Mismatch recovery re-opens only the mismatch-only scope for
     // convergence (state row reset + coverage pruned); the eligible scope is
     // left untouched. The re-open is the sole state write on the recovery item.
     let updated_recovery = wanted_items
@@ -5348,7 +5348,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
     );
 }
 
-// ── RFC 119 §D5: RSS match-time targets + pack-granularity grabs ────────────
+// ── RSS match-time targets + pack-granularity grabs ────────────
 //
 // Target-ness is derived from library state at match time (monitored scope,
 // missing or below cutoff); a pre-existing wanted row no longer gates the grab.
@@ -5370,7 +5370,7 @@ async fn bootstrap_rss_with_media_files_and_profiles(
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
-    // RFC 119 §D2/§D5: RSS grabs and coverage need a routed indexer for the
+    // RSS grabs and coverage need a routed indexer for the
     // scope; seed a synthetic direct-Newznab indexer the fake client answers for.
     let indexer_configs = Arc::new(MockIndexerConfigRepo {
         store: Arc::new(Mutex::new(vec![synthetic_direct_nab_indexer_config(

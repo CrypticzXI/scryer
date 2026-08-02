@@ -109,7 +109,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         .filter_map(|ty| ty["name"].as_str())
         .collect();
 
-    // RFC 119 cutover: the wanted/cutoff/search surface changed — the top-level
+    // cutover: the wanted/cutoff/search surface changed — the top-level
     // `wantedItems` became the derived Missing/Upgrades view, the unpaged
     // `cutoffUnmetTitles` query was dropped, the four per-item trigger mutations +
     // `resetWantedItem` were replaced by `triggerAcquisitionSearch` /
@@ -145,8 +145,11 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // OBJECT 273->276, ENUM 90->92, public types 527->532.
     // Async Prowlarr discovery adds one status query, one start mutation, and
     // one input object: query 119->120, mutation 166->167, public types 532->533.
+    // The kind-neutral externalImportWarmupStatus supersedes
+    // externalImportArrSourceWarmupStatus; deprecating the old field hides it
+    // from default (includeDeprecated: false) introspection: query 120->119.
     assert_eq!(
-        query_field_count, 120,
+        query_field_count, 119,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(mutation_field_count, 167);
@@ -190,7 +193,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(public_type_names.contains(&"RuntimePathStyleValue"));
     assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
     assert!(public_type_names.contains(&"CutoffUnmetTitlesPagePayload"));
-    // RFC 119 interactive-search job + convergence surface is present…
+    // interactive-search job + convergence surface is present…
     assert!(query_field_names.contains(&"acquisitionSearchJob"));
     assert!(mutation_field_names.contains(&"triggerAcquisitionSearch"));
     assert!(mutation_field_names.contains(&"cancelAcquisitionSearch"));
@@ -2703,7 +2706,7 @@ async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_res
         assert_eq!(id_arg(field)["type"]["ofType"]["name"], "ID");
     }
 
-    // RFC 119 cutover: `resetWantedItem` and its payload were removed — the
+    // cutover: `resetWantedItem` and its payload were removed — the
     // interactive search job (`triggerAcquisitionSearch`) owns re-search now.
     assert!(body["data"]["resetPayload"].is_null());
     assert!(
@@ -3396,7 +3399,7 @@ async fn graphql_introspection_title_acquisition_inputs_use_id_fields() {
     assert_non_null_id_list("bindPendingImport", "episodeIds");
     assert_nullable_id_list("queueDownloadScope", "episodeSet");
 
-    // RFC 119: the interactive search job input replaces the per-item trigger
+    // The interactive search job input replaces the per-item trigger
     // inputs; its scoping ids are all optional.
     assert_nullable_id("triggerAcquisitionSearch", "titleId");
     assert_nullable_id("triggerAcquisitionSearch", "wantedItemId");
@@ -4871,7 +4874,7 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         .filter_map(|field| field["name"].as_str())
         .collect();
     assert!(acquisition_names.contains(&"pollIntervalSeconds"));
-    // RFC 119: the wanted-scheduler cadence knobs (syncIntervalSeconds/batchSize)
+    // The wanted-scheduler cadence knobs (syncIntervalSeconds/batchSize)
     // were replaced by the convergence-cursor knobs.
     assert!(acquisition_names.contains(&"longTailBackfillMaxScopesPerCycle"));
     assert!(acquisition_names.contains(&"longTailReconvergeDays"));

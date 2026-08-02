@@ -146,7 +146,7 @@ impl FileImporter for CopyingFileImporter {
 #[derive(Default, Clone)]
 pub(super) struct MockMediaFileRepo {
     pub(super) store: Arc<Mutex<Vec<TitleMediaFile>>>,
-    /// Optional bridge for the convergence cursor (RFC 119 §D1): when set, the
+    /// Optional bridge for the convergence cursor: when set, the
     /// derived missing-target sweep reads the seeded acquisition-state rows so a
     /// mock-backed store still yields targets for `run_convergence_cycle_once`.
     /// Left `None` for stores that manage their own media files directly.
@@ -263,7 +263,7 @@ impl MediaFileRepository for MockMediaFileRepo {
     }
 
     async fn list_missing_scope_candidates(&self) -> AppResult<MissingScopeCandidates> {
-        // RFC 119 §D1: without a real library store, derive the missing-scope
+        // Without a real library store, derive the missing-scope
         // sweep from the seeded acquisition-state rows so the convergence cursor
         // sees each monitored, fileless `wanted` scope as a target. Synthetic
         // recency inputs (past air date, current add date) keep the scope inside

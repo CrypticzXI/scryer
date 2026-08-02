@@ -1188,7 +1188,7 @@ impl WantedMediaTypeValue {
     }
 }
 
-/// Convergence state of an acquisition scope (RFC 119 §6/§7). Replaces the retired
+/// Convergence state of an acquisition scope. Replaces the retired
 /// cadence display (`searchPhase`/`nextSearchAt`): the operator sees whether a scope
 /// is still sweeping indexers, has converged onto RSS, is queued for the cursor, or
 /// is deferred because every uncovered indexer is currently unavailable.
@@ -1209,7 +1209,7 @@ pub enum ConvergenceStateValue {
     Deferred,
 }
 
-/// Recency lane of an acquisition scope (RFC 119 §D3): `Hot` scopes converge
+/// Recency lane of an acquisition scope: `Hot` scopes converge
 /// promptly (high candidate value to the scheduler); `Cold` scopes drain under
 /// backpressure.
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -1219,7 +1219,7 @@ pub enum RecencyLaneValue {
     Cold,
 }
 
-/// Which derived acquisition-target set a wanted view lists (RFC 119 §6/§7):
+/// Which derived acquisition-target set a wanted view lists:
 /// `Missing` scopes have no primary file; `CutoffUpgrade` scopes have a file below
 /// the effective profile cutoff.
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Default)]
@@ -3200,7 +3200,7 @@ pub struct QueueBestReleaseInput {
     pub replace_in_progress: Option<bool>,
 }
 
-/// Scope selector for the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+/// Scope selector for the interactive acquisition-search job.
 /// A bare input searches every derived target of `wanted_kind`; narrowing fields
 /// filter that set. `wanted_item_id` (a state-row id or a convergence scope key)
 /// resolves a single scope.
@@ -4138,14 +4138,14 @@ pub struct CutoffUnmetItemPayload {
     pub episode_number: Option<String>,
     pub current_tier: String,
     pub target_tier: String,
-    /// Convergence progress for this upgrade scope (RFC 119 §6/§7) — the same
+    /// Convergence progress for this upgrade scope — the same
     /// state the Missing/Upgrades views show.
     pub convergence_state: ConvergenceStateValue,
     pub indexers_covered: i32,
     pub indexers_routed: i32,
 }
 
-/// RFC 119 bounded view: one page of cutoff-unmet targets + the full unmet
+/// Bounded view: one page of cutoff-unmet targets + the full unmet
 /// count, so the UI paginates instead of loading the whole set.
 #[derive(SimpleObject, Clone)]
 pub struct CutoffUnmetTitlesPagePayload {
@@ -4170,7 +4170,7 @@ pub struct TriggerTitleMismatchRecoverySearchPayload {
     pub queued_count: i32,
 }
 
-/// Lifecycle of the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+/// Lifecycle of the interactive acquisition-search job.
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum AcquisitionSearchJobStateValue {
@@ -4180,7 +4180,7 @@ pub enum AcquisitionSearchJobStateValue {
     Failed,
 }
 
-/// Progress snapshot for the interactive acquisition-search job (RFC 119 §7.3).
+/// Progress snapshot for the interactive acquisition-search job.
 /// Survives navigation/refresh — the job runs server-side and its state is queried
 /// by `id` and pushed via `jobRunEvents`.
 #[derive(SimpleObject, Clone)]

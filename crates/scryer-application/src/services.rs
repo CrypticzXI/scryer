@@ -990,7 +990,7 @@ pub struct AppRuntimeAcquisitionState {
     pub tracked_download_snapshot:
         Arc<tokio::sync::RwLock<HashMap<String, tracked_downloads::TrackedDownloadQueueMetadata>>>,
     /// Cancellation tokens for in-flight interactive acquisition-search jobs
-    /// (RFC 119 §7.3), keyed by job-run id — mirrors the library-scan cancel map.
+    ///, keyed by job-run id — mirrors the library-scan cancel map.
     pub acquisition_search_cancellation_tokens:
         Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     /// In-memory registry of interactive release-search jobs (hotfix 0.17.1),
@@ -1040,8 +1040,7 @@ pub struct AppRuntimeJobState {
     pub discovery_sync_wake: Arc<tokio::sync::Notify>,
     pub backup_execution_guards: BackupExecutionGuardTable,
     pub title_deletion_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Single-flight guard for the interactive acquisition-search job (RFC 119
-    /// §7.3) — mirrors `title_deletion_lock`.
+    /// Single-flight guard for the interactive acquisition-search job — mirrors `title_deletion_lock`.
     pub acquisition_search_lock: Arc<tokio::sync::Mutex<()>>,
 }
 

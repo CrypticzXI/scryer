@@ -1,11 +1,11 @@
-/// Scheduler value hint for a hot convergence target (recent air/release/add,
-/// RFC 119 §D3): high value so the scope converges promptly and keeps admitting
+/// Scheduler value hint for a hot convergence target (recent air/release/add):
+/// high value so the scope converges promptly and keeps admitting
 /// even while the account's API quota is under pressure. Equals the neutral
 /// baseline, so hot work is never shed by plan 112's low-value pressure gate.
 const BACKGROUND_HOT_TARGET_VALUE: f64 = 1.0;
 
-/// Scheduler value hint for a cold convergence target (long-tail / upgrades,
-/// RFC 119 §D3): low value so plan 112 drains it first under quota pressure,
+/// Scheduler value hint for a cold convergence target (long-tail / upgrades):
+/// low value so plan 112 drains it first under quota pressure,
 /// yielding shared account quota to RSS polls and hot acquisition. Above the
 /// absolute `LOW_VALUE_BACKGROUND_THRESHOLD` floor, so a cold scope still
 /// admits when quota is healthy — it only defers once quota tightens.
@@ -54,7 +54,7 @@ async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<Me
 
     blocked_facets
 }
-/// Run one convergence cycle (RFC 119 §D3): recover failed downloads, derive
+/// Run one convergence cycle: recover failed downloads, derive
 /// the target set, rotate the cursor over it, and search each selected scope's
 /// uncovered indexers. Plan-112 admission inside the search is the only rate
 /// authority; the cycle merely bounds evaluation cost and pre-skips scopes the
@@ -356,7 +356,7 @@ async fn process_single_target(
         .await;
     let search_season = subject.season;
 
-    // Convergence gate (RFC 119 §D2/§D3): a converged scope rides RSS; an
+    // Convergence gate: a converged scope rides RSS; an
     // unconverged one is searched against exactly its uncovered indexer subset.
     // Resolved once here and reused for the restricted search below.
     let Some(convergence) = app
@@ -496,7 +496,7 @@ async fn process_single_target(
                     )
                     .await?;
 
-                // The pack is its own convergence unit (RFC 119 §D2 #1): a
+                // The pack is its own convergence unit: a
                 // converged pack scope rides RSS, an unconverged one is searched
                 // against its uncovered subset.
                 let pack_uncovered = match app
@@ -1585,7 +1585,7 @@ pub async fn start_background_acquisition_poller(
 
     info!("background acquisition poller started");
 
-    // Run-once cutover seed (RFC 119 §12.3): recently-searched legacy scopes
+    // Run-once cutover seed: recently-searched legacy scopes
     // start converged so first boot does not re-sweep the back-catalog.
     // Spawned so startup stays non-blocking; the cycle racing the seed is
     // harmless (either path only causes a safe converge).
