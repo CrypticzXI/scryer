@@ -350,6 +350,73 @@ fn title_folder_template_rejects_invalid_truncate_filter() {
 }
 
 #[test]
+fn season_folder_template_requires_season_and_rejects_episode_tokens() {
+    validate_season_folder_template("Season {season}")
+        .expect("the regular season template should accept the season token");
+    validate_season_folder_template("Season {season:0}")
+        .expect("zero-width padding should be accepted");
+    validate_season_folder_template("{title} S{season:2}")
+        .expect("season templates should accept title tokens and numeric padding");
+
+    assert!(validate_season_folder_template("Season").is_err());
+    assert!(validate_season_folder_template("Season {episode}").is_err());
+}
+
+#[test]
+fn season_folder_template_rejects_invalid_padding() {
+    for template in [
+        "Season {season:}",
+        "Season {season:abc}",
+        "Season {season:2x}",
+        "Season {season:241}",
+        "Season {season:999999999999999999999999999999999999999}",
+    ] {
+        assert!(
+            validate_season_folder_template(template).is_err(),
+            "invalid padding should be rejected: {template}"
+        );
+    }
+}
+
+#[test]
+fn folder_templates_reject_illegal_literal_characters() {
+    for illegal in ['<', '>', ':', '"', '/', '\\', '|', '?', '*', '\n'] {
+        let template = format!("Season{illegal} {{season}}");
+        assert!(
+            validate_season_folder_template(&template).is_err(),
+            "illegal literal should be rejected: {illegal:?}"
+        );
+    }
+}
+
+#[test]
+fn specials_folder_template_accepts_literal_and_folder_safe_tokens() {
+    validate_specials_folder_template("Specials").expect("literal specials folders are valid");
+    validate_specials_folder_template("{title} Specials")
+        .expect("specials folders should accept title tokens");
+
+    assert!(validate_specials_folder_template("Specials {quality}").is_err());
+}
+
+#[test]
+fn render_episode_folder_name_selects_regular_and_specials_templates() {
+    let title = test_movie_title("Neon Cipher");
+
+    assert_eq!(
+        render_episode_folder_name(&title, 3, "Season {season}", "Specials"),
+        "Season 3"
+    );
+    assert_eq!(
+        render_episode_folder_name(&title, 12, "{title|space:.}.S{season:3}", "Specials"),
+        "Neon.Cipher.S012"
+    );
+    assert_eq!(
+        render_episode_folder_name(&title, 0, "Season {season}", "{title} Specials"),
+        "Neon Cipher Specials"
+    );
+}
+
+#[test]
 fn render_no_tokens_passthrough() {
     let t = BTreeMap::new();
     let result = render_rename_template("plain text no tokens", &t);
@@ -511,6 +578,51 @@ fn infer_title_folder_path_after_rename_decodes_stored_paths() {
         stored_path_to_path_buf(&inferred),
         PathBuf::from("/library/new-root")
     );
+}
+
+#[test]
+fn episode_rename_parent_uses_configured_season_folder_template() {
+    let mut title = test_movie_title("Test Show");
+    title.facet = MediaFacet::Series;
+    title.folder_path = Some("/library/old/Test Show".to_string());
+    let current_file = std::path::Path::new("/library/old/Test Show/Season 01/Episode.mkv");
+
+    let regular = episode_parent_path_for_renamed_file(
+        &title,
+        current_file,
+        "/library/series",
+        "{title}",
+        Some(3),
+        "{title|space:.}.S{season:2}",
+        "Extras",
+    );
+    assert_eq!(
+        regular,
+        PathBuf::from("/library/series/Test Show/Test.Show.S03")
+    );
+
+    let specials = episode_parent_path_for_renamed_file(
+        &title,
+        current_file,
+        "/library/series",
+        "{title}",
+        Some(0),
+        "Season {season}",
+        "Extras",
+    );
+    assert_eq!(specials, PathBuf::from("/library/series/Test Show/Extras"));
+
+    title.tags = vec!["scryer:season-folder:disabled".to_string()];
+    let flat = episode_parent_path_for_renamed_file(
+        &title,
+        current_file,
+        "/library/series",
+        "{title}",
+        Some(3),
+        "Season {season}",
+        "Extras",
+    );
+    assert_eq!(flat, PathBuf::from("/library/series/Test Show"));
 }
 
 #[cfg(not(windows))]

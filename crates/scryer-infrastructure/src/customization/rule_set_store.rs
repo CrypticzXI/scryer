@@ -5,7 +5,9 @@ use scryer_domain::{Id, MediaFacet, RuleSet};
 use sqlx::Row;
 
 use crate::queries::sql_runtime::{SqlArg, SqlExec, SqlRow, SqlRuntime, StoreDatastore, repo_err};
-use crate::storage::sql::json::{canonical_json_arg, json_text_or};
+use crate::storage::sql::json::{
+    canonical_json_arg, canonical_json_text, json_text_or, opt_json_text,
+};
 
 #[derive(Clone)]
 pub struct RuleSetStore {
@@ -50,8 +52,9 @@ impl RuleSetRepository for RuleSetStore {
             "create_rule_set",
             "INSERT INTO rule_sets
                 (id, name, description, rego_source, enabled, priority,
-                 applied_facets, created_at, updated_at, is_managed, managed_key)
-             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+                 applied_facets, created_at, updated_at, is_managed, managed_key,
+                 managed_tag_filter)
+             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
             args,
         )
         .await
@@ -65,7 +68,7 @@ impl RuleSetRepository for RuleSetStore {
             "UPDATE rule_sets
                 SET name = {}, description = {}, rego_source = {}, enabled = {},
                     priority = {}, applied_facets = {}, updated_at = {},
-                    is_managed = {}, managed_key = {}
+                    is_managed = {}, managed_key = {}, managed_tag_filter = {}
               WHERE id = {}",
             vec![
                 args[1].clone(),
@@ -77,6 +80,7 @@ impl RuleSetRepository for RuleSetStore {
                 args[8].clone(),
                 args[9].clone(),
                 args[10].clone(),
+                args[11].clone(),
                 args[0].clone(),
             ],
         )
@@ -152,7 +156,7 @@ impl RuleSetRepository for RuleSetStore {
 }
 
 const RULE_SET_COLUMNS: &str = "id, name, description, rego_source, enabled, priority,
-    applied_facets, created_at, updated_at, is_managed, managed_key";
+    applied_facets, created_at, updated_at, is_managed, managed_key, managed_tag_filter";
 
 async fn fetch_rule_sets(
     exec: SqlExec<'_, '_>,
@@ -207,7 +211,16 @@ fn rule_set_args(rule_set: &RuleSet) -> AppResult<Vec<SqlArg>> {
         SqlArg::Timestamp(rule_set.updated_at),
         SqlArg::Bool(rule_set.is_managed),
         SqlArg::OptText(rule_set.managed_key.clone()),
+        managed_tag_filter_arg(rule_set.managed_tag_filter.as_deref())?,
     ])
+}
+
+/// Stored as a JSON text array, or SQL NULL when the pack is unfiltered.
+fn managed_tag_filter_arg(tags: Option<&[String]>) -> AppResult<SqlArg> {
+    match tags {
+        Some(tags) => canonical_json_text(&tags).map(|json| SqlArg::OptText(Some(json))),
+        None => Ok(SqlArg::OptText(None)),
+    }
 }
 
 fn row_to_rule_set(row: &SqlRow) -> AppResult<RuleSet> {
@@ -223,7 +236,17 @@ fn row_to_rule_set(row: &SqlRow) -> AppResult<RuleSet> {
         updated_at: timestamp_or_now(row, "updated_at")?,
         is_managed: row.bool("is_managed")?,
         managed_key: row.opt_text("managed_key")?,
+        managed_tag_filter: managed_tag_filter(row)?,
     })
+}
+
+fn managed_tag_filter(row: &SqlRow) -> AppResult<Option<Vec<String>>> {
+    let Some(raw) = opt_json_text(row, "managed_tag_filter")? else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str::<Vec<String>>(&raw)
+        .ok()
+        .filter(|tags| !tags.is_empty()))
 }
 
 fn applied_facets(row: &SqlRow) -> AppResult<Vec<MediaFacet>> {

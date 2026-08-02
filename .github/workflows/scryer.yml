@@ -597,22 +597,9 @@ jobs:
             build_lane: portable
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
-            sccache_lane: pr-linux-x86_64-wgpu
+            sccache_lane: pr-linux-x86_64-cpu
             artifact_name: scryer-linux-x86_64-portable
             archive_name: scryer-linux-x86_64-portable.tar.gz
-            cargo_feature_args: --features par2-wgpu
-            release_profile: release
-            install_nasm: true
-            extra_rustflags: ""
-          - arch: x86_64
-            variant: cpu
-            build_lane: portable
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            sccache_lane: pr-linux-x86_64-cpu
-            artifact_name: scryer-linux-x86_64-docker-cpu
-            archive_name: docker-scryer-linux-x86_64-cpu.tar.gz
-            cargo_feature_args: --no-default-features
             release_profile: release
             install_nasm: true
             extra_rustflags: ""
@@ -621,22 +608,9 @@ jobs:
             build_lane: portable
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            sccache_lane: pr-linux-arm64-wgpu
+            sccache_lane: pr-linux-arm64-cpu
             artifact_name: scryer-linux-arm64-portable
             archive_name: scryer-linux-arm64-portable.tar.gz
-            cargo_feature_args: --features par2-wgpu
-            release_profile: release
-            install_nasm: false
-            extra_rustflags: ""
-          - arch: arm64
-            variant: cpu
-            build_lane: portable
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            sccache_lane: pr-linux-arm64-cpu
-            artifact_name: scryer-linux-arm64-docker-cpu
-            archive_name: docker-scryer-linux-arm64-cpu.tar.gz
-            cargo_feature_args: --no-default-features
             release_profile: release
             install_nasm: false
             extra_rustflags: ""
@@ -748,14 +722,14 @@ jobs:
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" ${{ matrix.cargo_feature_args }} 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+            cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
           else
             python3 .github/scripts/build_heartbeat.py \
               --output "${{ matrix.artifact_name }}-heartbeat.log" \
               --build-log "${{ matrix.artifact_name }}-build.log" \
               --status-file "${{ matrix.artifact_name }}-build-status.json" \
               --timeout-seconds 3300 \
-              -- cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" ${{ matrix.cargo_feature_args }}
+              -- cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}"
           fi
 
       - name: Validate release build diagnostics
@@ -950,14 +924,14 @@ jobs:
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
-            cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" --features par2-metal 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
+            cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" 2>&1 | tee "${{ matrix.artifact_name }}-build.log"
           else
             python3 .github/scripts/build_heartbeat.py \
               --output "${{ matrix.artifact_name }}-heartbeat.log" \
               --build-log "${{ matrix.artifact_name }}-build.log" \
               --status-file "${{ matrix.artifact_name }}-build-status.json" \
               --timeout-seconds 3300 \
-              -- cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}" --features par2-metal
+              -- cargo build --timings -p scryer --profile "${SCRYER_CARGO_PROFILE}" --locked --target "${{ matrix.target }}"
           fi
 
       - name: Validate release build diagnostics
@@ -1193,7 +1167,7 @@ jobs:
             $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
           }
           if ($env:GITHUB_EVENT_NAME -eq "pull_request") {
-            cargo build --timings -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} --features par2-wgpu 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
+            cargo build --timings -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} 2>&1 | Tee-Object -FilePath "${{ matrix.artifact_name }}-build.log"
             $cargoExitCode = $LASTEXITCODE
           } else {
             & python .github/scripts/build_heartbeat.py `
@@ -1201,7 +1175,7 @@ jobs:
               --build-log "${{ matrix.artifact_name }}-build.log" `
               --status-file "${{ matrix.artifact_name }}-build-status.json" `
               --timeout-seconds 3300 `
-              -- cargo build --timings -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }} --features par2-wgpu
+              -- cargo build --timings -p scryer --profile $env:SCRYER_CARGO_PROFILE --locked --target ${{ matrix.target }}
             $cargoExitCode = $LASTEXITCODE
           }
           if ($cargoExitCode -ne 0) {
@@ -1383,18 +1357,6 @@ jobs:
           name: scryer-linux-arm64-portable-${{ github.run_id }}
           path: artifacts
 
-      - name: Download linux amd64 CPU artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-x86_64-docker-cpu-${{ github.run_id }}
-          path: artifacts
-
-      - name: Download linux arm64 CPU artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-arm64-docker-cpu-${{ github.run_id }}
-          path: artifacts
-
       - name: Download launcher amd64 artifact
         uses: actions/download-artifact@v8
         with:
@@ -1469,18 +1431,6 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: scryer-linux-arm64-portable-${{ github.run_id }}
-          path: artifacts
-
-      - name: Download linux amd64 CPU artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-x86_64-docker-cpu-${{ github.run_id }}
-          path: artifacts
-
-      - name: Download linux arm64 CPU artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-arm64-docker-cpu-${{ github.run_id }}
           path: artifacts
 
       - name: Download launcher amd64 artifact
@@ -1558,18 +1508,6 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: scryer-linux-arm64-portable-${{ github.run_id }}
-          path: artifacts
-
-      - name: Download linux amd64 CPU artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-x86_64-docker-cpu-${{ github.run_id }}
-          path: artifacts
-
-      - name: Download linux arm64 CPU artifact
-        uses: actions/download-artifact@v8
-        with:
-          name: scryer-linux-arm64-docker-cpu-${{ github.run_id }}
           path: artifacts
 
       - name: Download launcher amd64 artifact

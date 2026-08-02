@@ -140,7 +140,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
             media_root
                 .path()
                 .join("Rename Preview Show (2024)")
-                .join("Season 01")
+                .join("Season 1")
                 .join("Rename Preview Show - S01E03 (012) - 1080p.mkv")
                 .to_string_lossy()
                 .to_string()
@@ -309,7 +309,7 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
             media_root
                 .path()
                 .join("Template Scope Show (2024)")
-                .join("Season 01")
+                .join("Season 1")
                 .join("Template Scope Show - Binary Bloom - WEB-DL - SkyGroup - 1080p.mkv")
                 .to_string_lossy()
                 .to_string()
@@ -449,7 +449,7 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
             media_root
                 .path()
                 .join("Festival Saga (2024)")
-                .join("Season 00")
+                .join("Specials")
                 .join("Festival Saga - S00E03 (003) - 1080p.mkv")
                 .to_string_lossy()
                 .to_string()
@@ -633,14 +633,14 @@ async fn apply_media_rename_for_anime_updates_media_files_and_series_movie_speci
     let expected_regular_path = media_root
         .path()
         .join("Anime Apply Show (2024)")
-        .join("Season 01")
+        .join("Season 1")
         .join("Anime Apply Show - S01E01 (001) - 1080p.mkv")
         .to_string_lossy()
         .to_string();
     let expected_series_movie_path = media_root
         .path()
         .join("Anime Apply Show (2024)")
-        .join("Season 00")
+        .join("Specials")
         .join("Anime Apply Show - S00E03 (003) - 1080p.mkv")
         .to_string_lossy()
         .to_string();
@@ -1084,7 +1084,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
     let destination_path = media_root
         .path()
         .join("Tracked Collision Anime (2024)")
-        .join("Season 01")
+        .join("Season 1")
         .join("Tracked Collision Anime - S01E03 (012) - 1080p.mkv");
 
     let file_id = ctx
@@ -1392,7 +1392,7 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
             media_root
                 .path()
                 .join("Range Preview Show (2024)")
-                .join("Season 01")
+                .join("Season 1")
                 .join("Range Preview Show - S01E01-02 (01-02) - 1080p.mkv")
                 .to_string_lossy()
                 .to_string()
@@ -1625,7 +1625,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
     let expected_path = media_root
         .path()
         .join("Anime Media Rollback (2024)")
-        .join("Season 01")
+        .join("Season 1")
         .join("Anime Media Rollback - S01E01 (001) - 1080p.mkv")
         .to_string_lossy()
         .to_string();

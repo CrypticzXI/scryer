@@ -16,6 +16,22 @@ pub struct ManagedRuleReconciliation {
     pub removed: usize,
 }
 
+/// The single managed key that earlier releases shipped for French.
+///
+/// The redesign splits French into three mutually exclusive variants, so this key
+/// is no longer in the registry and stale-key pruning removes it. Its
+/// hand-picked scores rewarded French dubs — tier bonuses on French release
+/// groups with no VOSTFR preference — which is MULTi VF intent, so an install
+/// that had it enabled gets `trash-guides:locale:french-vf` enabled in its
+/// place. The other two variants stay off; picking between VO and VOSTFR is the
+/// user's call, not a migration's.
+const LEGACY_FRENCH_MANAGED_KEY: &str = "trash-guides:locale:french";
+const LEGACY_FRENCH_SUCCESSOR_KEY: &str = "trash-guides:locale:french-vf";
+
+/// Managed keys of the French family, which are mutually exclusive because
+/// their upstream score sets encode contradictory intent.
+const FRENCH_PACK_KEY_PREFIX: &str = "trash-guides:locale:french-";
+
 impl AppUseCase {
     pub async fn list_rule_sets(&self, actor: &User) -> AppResult<Vec<RuleSet>> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
@@ -69,6 +85,7 @@ impl AppUseCase {
             updated_at: now,
             is_managed: false,
             managed_key: None,
+            managed_tag_filter: None,
         };
 
         self.services
@@ -104,13 +121,14 @@ impl AppUseCase {
         rego_source: Option<String>,
         applied_facets: Option<Vec<MediaFacet>>,
         priority: Option<i32>,
+        managed_tag_filter: Option<Vec<String>>,
     ) -> AppResult<RuleSet> {
-        if name.is_none()
-            && description.is_none()
-            && rego_source.is_none()
-            && applied_facets.is_none()
-            && priority.is_none()
-        {
+        let edits_authored_fields = name.is_some()
+            || description.is_some()
+            || rego_source.is_some()
+            || applied_facets.is_some()
+            || priority.is_some();
+        if !edits_authored_fields && managed_tag_filter.is_none() {
             return Err(AppError::Validation(
                 "at least one rule set field must be provided".into(),
             ));
@@ -127,9 +145,23 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("rule set {id} not found")))?;
 
         if rule_set.is_managed {
+            if edits_authored_fields {
+                return Err(AppError::Validation(
+                    "This rule is managed by a convenience setting. Change the setting instead of editing the rule directly.".into(),
+                ));
+            }
+        } else if managed_tag_filter.is_some() {
             return Err(AppError::Validation(
-                "This rule is managed by a convenience setting. Change the setting instead of editing the rule directly.".into(),
+                "A tag filter only applies to managed rule sets.".into(),
             ));
+        }
+
+        // The filter is stored on the row and baked into the pack's
+        // regenerated source, so the gate the engine evaluates and the filter the
+        // user sees never drift apart. An empty list is the same as no filter.
+        if let Some(tags) = managed_tag_filter {
+            let tags = normalize_managed_tag_filter(tags);
+            self.apply_managed_tag_filter(&mut rule_set, tags)?;
         }
 
         if let Some(new_source) = &rego_source {
@@ -226,6 +258,10 @@ impl AppUseCase {
             .get_rule_set(id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("rule set {id} not found")))?;
+
+        if enabled && !rule_set.enabled {
+            self.ensure_no_conflicting_french_pack(&rule_set).await?;
+        }
 
         rule_set.enabled = enabled;
         rule_set.updated_at = Utc::now();
@@ -411,6 +447,7 @@ impl AppUseCase {
             updated_at: now,
             is_managed: false,
             managed_key: None,
+            managed_tag_filter: None,
         };
         self.services
             .customization
@@ -460,7 +497,19 @@ impl AppUseCase {
             .collect::<std::collections::HashSet<_>>();
         let mut reconciliation = ManagedRuleReconciliation::default();
 
+        // The legacy French row is pruned below, so its opt-in has to be read
+        // before the loop that would otherwise create its successor disabled.
+        let legacy_french_enabled = self
+            .services
+            .customization
+            .rule_sets
+            .get_rule_set_by_managed_key(LEGACY_FRENCH_MANAGED_KEY)
+            .await?
+            .is_some_and(|legacy| legacy.enabled);
+
         for pack in packs {
+            let inherits_legacy_french =
+                legacy_french_enabled && pack.key == LEGACY_FRENCH_SUCCESSOR_KEY;
             match self
                 .services
                 .customization
@@ -469,13 +518,19 @@ impl AppUseCase {
                 .await?
             {
                 Some(mut rule_set) => {
-                    let source =
-                        scryer_rules::rewrite_package_declaration(&pack.source(), &rule_set.id);
+                    let tag_filter = reconciled_tag_filter(pack, &rule_set, inherits_legacy_french);
+                    let enabled = rule_set.enabled || inherits_legacy_french;
+                    let source = scryer_rules::rewrite_package_declaration(
+                        &pack.source(tag_filter.as_deref()),
+                        &rule_set.id,
+                    );
                     let changed = rule_set.name != pack.name
                         || rule_set.description != pack.description
                         || rule_set.rego_source != source
                         || rule_set.priority != 0
                         || rule_set.applied_facets != pack.applied_facets
+                        || rule_set.managed_tag_filter != tag_filter
+                        || rule_set.enabled != enabled
                         || !rule_set.is_managed;
                     if changed {
                         rule_set.name = pack.name.to_string();
@@ -483,6 +538,8 @@ impl AppUseCase {
                         rule_set.rego_source = source;
                         rule_set.priority = 0;
                         rule_set.applied_facets = pack.applied_facets.to_vec();
+                        rule_set.managed_tag_filter = tag_filter;
+                        rule_set.enabled = enabled;
                         rule_set.is_managed = true;
                         rule_set.updated_at = Utc::now();
                         self.services
@@ -506,19 +563,28 @@ impl AppUseCase {
                 None => {
                     let now = Utc::now();
                     let id = Id::new_rego_safe().0;
-                    let source = scryer_rules::rewrite_package_declaration(&pack.source(), &id);
+                    // A pack the user has never seen ships off and
+                    // ungated. Enabling it is the opt-in; the filter is the
+                    // narrowing the user adds afterwards, if any.
+                    let tag_filter =
+                        inherits_legacy_french.then(|| vec![pack.historical_tag.to_string()]);
+                    let source = scryer_rules::rewrite_package_declaration(
+                        &pack.source(tag_filter.as_deref()),
+                        &id,
+                    );
                     let rule_set = RuleSet {
                         id,
                         name: pack.name.to_string(),
                         description: pack.description.to_string(),
                         rego_source: source,
-                        enabled: true,
+                        enabled: inherits_legacy_french,
                         priority: 0,
                         applied_facets: pack.applied_facets.to_vec(),
                         created_at: now,
                         updated_at: now,
                         is_managed: true,
                         managed_key: Some(pack.key.to_string()),
+                        managed_tag_filter: tag_filter,
                     };
                     self.services
                         .customization
@@ -653,6 +719,109 @@ impl AppUseCase {
         );
         Ok(())
     }
+
+    /// Store a tag filter on a managed row and regenerate its source so the
+    /// gate the engine evaluates matches the filter the row advertises.
+    fn apply_managed_tag_filter(
+        &self,
+        rule_set: &mut RuleSet,
+        tags: Option<Vec<String>>,
+    ) -> AppResult<()> {
+        let pack = rule_set
+            .managed_key
+            .as_deref()
+            .and_then(managed_trash::managed_trash_rule_pack)
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "A tag filter only applies to managed TRaSH Guides locale packs.".into(),
+                )
+            })?;
+
+        let source =
+            scryer_rules::rewrite_package_declaration(&pack.source(tags.as_deref()), &rule_set.id);
+        let validation = scryer_rules::validation::validate_managed_rule(&source, &rule_set.id)
+            .map_err(|error| AppError::Validation(format!("rule validation failed: {error}")))?;
+        if !validation.valid {
+            return Err(AppError::Validation(format_rule_validation_errors(
+                &validation,
+            )));
+        }
+
+        rule_set.rego_source = source;
+        rule_set.managed_tag_filter = tags;
+        Ok(())
+    }
+
+    /// The three French packs read score sets that contradict each
+    /// other, so only one may be live at a time.
+    async fn ensure_no_conflicting_french_pack(&self, rule_set: &RuleSet) -> AppResult<()> {
+        let Some(key) = rule_set
+            .managed_key
+            .as_deref()
+            .filter(|key| key.starts_with(FRENCH_PACK_KEY_PREFIX))
+        else {
+            return Ok(());
+        };
+
+        let conflicting = self
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets_by_managed_key_prefix(FRENCH_PACK_KEY_PREFIX)
+            .await?
+            .into_iter()
+            .find(|candidate| {
+                candidate.enabled && candidate.managed_key.as_deref().is_some_and(|k| k != key)
+            });
+
+        match conflicting {
+            Some(conflicting) => Err(AppError::Validation(format!(
+                "\"{}\" is already enabled. The French locale packs read contradictory TRaSH \
+                 Guides score sets, so disable it before enabling another French pack.",
+                conflicting.name
+            ))),
+            None => Ok(()),
+        }
+    }
+}
+
+/// `None` and an empty list both mean "no filter", so they collapse to `None`.
+fn normalize_managed_tag_filter(tags: Vec<String>) -> Option<Vec<String>> {
+    let tags = tags
+        .into_iter()
+        .map(|tag| tag.trim().to_lowercase())
+        .filter(|tag| !tag.is_empty())
+        .collect::<Vec<_>>();
+    (!tags.is_empty()).then_some(tags)
+}
+
+/// A managed row written before the locale packs became opt-in.
+fn predates_opt_in_locale_packs(rule_set: &RuleSet) -> bool {
+    rule_set
+        .rego_source
+        .contains("MANAGED_TRASH_REGISTRY_VERSION=managed-trash-registry-v1")
+        || rule_set.managed_key.as_deref() == Some(LEGACY_FRENCH_MANAGED_KEY)
+}
+
+/// The tag filter reconciliation writes back to an existing managed row.
+///
+/// A row that predates opt-in was only ever reaching titles through
+/// its `locale:*` gate, so it adopts that tag as its filter and keeps behaving
+/// exactly as it did. A row that already carries a filter keeps it, and a row
+/// created under the opt-in model is never auto-gated — nor is a gated pack ever
+/// auto-opened.
+fn reconciled_tag_filter(
+    pack: &managed_trash::ManagedTrashRulePack,
+    rule_set: &RuleSet,
+    inherits_legacy_french: bool,
+) -> Option<Vec<String>> {
+    if let Some(existing) = &rule_set.managed_tag_filter {
+        return Some(existing.clone());
+    }
+    if inherits_legacy_french || (rule_set.enabled && predates_opt_in_locale_packs(rule_set)) {
+        return Some(vec![pack.historical_tag.to_string()]);
+    }
+    None
 }
 
 fn validate_managed_trash_rule_packs(
@@ -660,7 +829,7 @@ fn validate_managed_trash_rule_packs(
 ) -> AppResult<()> {
     for (index, pack) in packs.iter().enumerate() {
         let id = format!("managed_trash_validation_{index}");
-        let source = scryer_rules::rewrite_package_declaration(&pack.source(), &id);
+        let source = scryer_rules::rewrite_package_declaration(&pack.source(None), &id);
         let validation =
             scryer_rules::validation::validate_managed_rule(&source, &id).map_err(|error| {
                 AppError::Validation(format!("managed rule validation failed: {error}"))
@@ -1014,6 +1183,7 @@ mod tests {
             updated_at: now,
             is_managed: true,
             managed_key: Some(managed_key.to_string()),
+            managed_tag_filter: None,
         }
     }
 
@@ -1305,7 +1475,7 @@ mod tests {
     fn managed_locale_packs_match_exact_namespaced_guide_facts() {
         let cases = [
             (
-                "trash-guides:locale:french",
+                "trash-guides:locale:french-vf",
                 &["fra" as &str][..],
                 &[][..],
                 &[
@@ -1318,10 +1488,16 @@ mod tests {
                     "trash.locale.french.marker.voq",
                     "trash.locale.french.marker.vostfr",
                 ][..],
-                &[("trash_tier_1", 120), ("trash_french_vostfr", -100)][..],
+                // The MULTi.VF set scores `language-not-french` as
+                // a veto, and this release carries English audio only.
+                &[
+                    ("trash_tier_1", 245),
+                    ("trash_french_vostfr", 0),
+                    ("trash_lang_not_french", -10_000),
+                ][..],
             ),
             (
-                "trash-guides:locale:french",
+                "trash-guides:locale:french-vf",
                 &["fr-fr" as &str][..],
                 &[][..],
                 &[
@@ -1335,10 +1511,11 @@ mod tests {
                 &[
                     ("trash_french_fr_fr_reference", 40),
                     ("trash_french_fr_fr_quebec", -20),
+                    ("trash_lang_not_french", -10_000),
                 ][..],
             ),
             (
-                "trash-guides:locale:french",
+                "trash-guides:locale:french-vf",
                 &[][..],
                 &["locale:fr-ca"][..],
                 &[
@@ -1352,7 +1529,20 @@ mod tests {
                 &[
                     ("trash_french_fr_ca_reference", -20),
                     ("trash_french_fr_ca_quebec", 40),
+                    ("trash_lang_not_french", -10_000),
                 ][..],
+            ),
+            // The VOSTFR variant reads a score set that neutralizes the French
+            // dub tiers and rewards the subbed marker instead.
+            (
+                "trash-guides:locale:french-vostfr",
+                &["fra" as &str][..],
+                &[][..],
+                &[
+                    "trash.locale.french.group.tier1",
+                    "trash.locale.french.marker.vostfr",
+                ][..],
+                &[("trash_tier_1", 0), ("trash_french_vostfr", 181)][..],
             ),
             (
                 "trash-guides:locale:german",
@@ -1362,14 +1552,14 @@ mod tests {
                     "trash.locale.german.group.tier2",
                     "trash.locale.german.marker.subbed",
                 ][..],
-                &[("trash_tier_2", 60), ("trash_german_subbed", -100)][..],
+                &[("trash_tier_2", 146), ("trash_german_subbed", 329)][..],
             ),
             (
                 "trash-guides:locale:asian",
                 &[][..],
                 &["locale:asian"][..],
-                &["trash.locale.asian.group.tier3", "trash.locale.asian.lq"][..],
-                &[("trash_lq", -150), ("trash_tier_3", 20)][..],
+                &["trash.locale.asian.group.tier3"][..],
+                &[("trash_tier_3", 100)][..],
             ),
         ];
 
@@ -1379,10 +1569,16 @@ mod tests {
                 .find(|pack| pack.key == key)
                 .unwrap();
             let id = key.replace([':', '-'], "_");
+            // Filtered by the pack's historical tag, which is the shape an
+            // upgraded install runs: today's gate, unchanged.
+            let filter = [pack.historical_tag.to_string()];
             let policy = scryer_rules::UserPolicy {
                 id: id.clone(),
                 name: pack.name.to_string(),
-                rego_source: scryer_rules::rewrite_package_declaration(&pack.source(), &id),
+                rego_source: scryer_rules::rewrite_package_declaration(
+                    &pack.source(Some(&filter)),
+                    &id,
+                ),
                 origin: scryer_rules::PolicyOrigin::System,
                 applied_facets: vec![],
             };
@@ -1415,11 +1611,15 @@ mod tests {
         }
 
         let french = &managed_trash::managed_trash_rule_packs()[0];
+        let filter = [french.historical_tag.to_string()];
         let id = "locale_no_intent";
         let policy = scryer_rules::UserPolicy {
             id: id.to_string(),
             name: french.name.to_string(),
-            rego_source: scryer_rules::rewrite_package_declaration(&french.source(), id),
+            rego_source: scryer_rules::rewrite_package_declaration(
+                &french.source(Some(&filter)),
+                id,
+            ),
             origin: scryer_rules::PolicyOrigin::System,
             applied_facets: vec![],
         };
@@ -1431,6 +1631,78 @@ mod tests {
             .evaluate(&input, "movie")
             .unwrap();
         assert!(result.entries.is_empty());
+    }
+
+    /// An enabled pack with no tag filter is the user's opt-in, so
+    /// it applies wherever its facts match — the same titles the filtered pack
+    /// would score, minus the locale gate.
+    #[test]
+    fn unfiltered_managed_locale_pack_scores_without_any_locale_intent() {
+        let french = &managed_trash::managed_trash_rule_packs()[0];
+        let id = "locale_open_gate";
+        let policy = scryer_rules::UserPolicy {
+            id: id.to_string(),
+            name: french.name.to_string(),
+            rego_source: scryer_rules::rewrite_package_declaration(&french.source(None), id),
+            origin: scryer_rules::PolicyOrigin::System,
+            applied_facets: vec![],
+        };
+        let mut input = multi_audio_rule_input("locale-profile", false, false);
+        input.release.guide_facts = vec!["trash.locale.french.group.tier1".to_string()];
+        let result = scryer_rules::UserRulesEngine::build(&[policy])
+            .unwrap()
+            .evaluator()
+            .evaluate(&input, "movie")
+            .unwrap();
+        assert!(result.errors.is_empty(), "{result:?}");
+        let mut entries = result
+            .entries
+            .iter()
+            .map(|entry| (entry.code.as_str(), entry.delta))
+            .collect::<Vec<_>>();
+        entries.sort_unstable();
+        // The open gate lets the language clauses through too, and
+        // MULTi.VF vetoes a release with no French audio.
+        assert_eq!(
+            entries,
+            vec![("trash_lang_not_french", -10_000), ("trash_tier_1", 245)]
+        );
+    }
+
+    /// Upstream scores the locale LQ formats as vetoes, so the derived packs
+    /// emit `BLOCK_SCORE`. The veto is admitted because the pack is
+    /// opt-in: the user who enabled it asked for TRaSH's locale policy,
+    /// including the part that refuses a release outright.
+    #[test]
+    fn managed_locale_veto_survives_the_managed_score_bound() {
+        let asian = managed_trash::managed_trash_rule_packs()
+            .iter()
+            .find(|pack| pack.key == "trash-guides:locale:asian")
+            .unwrap();
+        let filter = [asian.historical_tag.to_string()];
+        let id = "locale_veto";
+        let source = asian.source(Some(&filter));
+        let policy = scryer_rules::UserPolicy {
+            id: id.to_string(),
+            name: asian.name.to_string(),
+            rego_source: scryer_rules::rewrite_package_declaration(&source, id),
+            origin: scryer_rules::PolicyOrigin::System,
+            applied_facets: vec![],
+        };
+        assert!(source.contains(r#"score_entry["trash_lq"] := -10000"#));
+
+        let mut input = multi_audio_rule_input("locale-profile", false, false);
+        input.context.tags = vec!["locale:asian".to_string()];
+        input.release.guide_facts = vec!["trash.locale.asian.lq".to_string()];
+        let result = scryer_rules::UserRulesEngine::build(&[policy])
+            .unwrap()
+            .evaluator()
+            .evaluate(&input, "movie")
+            .unwrap();
+        assert!(result.errors.is_empty(), "{result:?}");
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].code, "trash_lq");
+        assert_eq!(result.entries[0].delta, scryer_rules::BLOCK_SCORE);
     }
 
     #[tokio::test]
@@ -1447,14 +1719,15 @@ mod tests {
             created_at: now,
             updated_at: now,
             is_managed: true,
-            managed_key: Some("trash-guides:locale:french".to_string()),
+            managed_key: Some("trash-guides:locale:french-vf".to_string()),
+            managed_tag_filter: None,
         };
         let stale =
             legacy_managed_rule("stale-pack", "trash-guides:locale:obsolete", "Stale", "old");
         let app = build_test_app(vec![], vec![existing, stale]);
 
         let reconciliation = app.reconcile_managed_trash_rule_packs(false).await.unwrap();
-        assert_eq!(reconciliation.created, 2);
+        assert_eq!(reconciliation.created, 4);
         assert_eq!(reconciliation.updated, 1);
         assert_eq!(reconciliation.removed, 1);
 
@@ -1465,10 +1738,10 @@ mod tests {
             .list_rule_sets()
             .await
             .unwrap();
-        assert_eq!(rules.len(), 3);
+        assert_eq!(rules.len(), 5);
         let french = rules
             .iter()
-            .find(|rule| rule.managed_key.as_deref() == Some("trash-guides:locale:french"))
+            .find(|rule| rule.managed_key.as_deref() == Some("trash-guides:locale:french-vf"))
             .unwrap();
         assert_eq!(french.id, "preserved-french");
         assert_eq!(french.created_at, now);
@@ -1476,15 +1749,164 @@ mod tests {
         assert!(
             french
                 .rego_source
-                .contains("MANAGED_TRASH_REGISTRY_VERSION=managed-trash-registry-v1")
+                .contains("MANAGED_TRASH_REGISTRY_VERSION=managed-trash-registry-v2")
         );
+        // A disabled row was never applying, so nothing has to be preserved and
+        // it is not retroactively gated.
+        assert_eq!(french.managed_tag_filter, None);
         assert!(!rules.iter().any(|rule| rule.id == "stale-pack"));
+    }
+
+    /// Packs a user has never seen ship off and ungated.
+    #[tokio::test]
+    async fn freshly_created_managed_locale_packs_are_disabled_and_unfiltered() {
+        let app = build_test_app(vec![], vec![]);
+
+        let reconciliation = app.reconcile_managed_trash_rule_packs(false).await.unwrap();
+        assert_eq!(reconciliation.created, 5);
+
+        let rules = app
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets()
+            .await
+            .unwrap();
+        assert_eq!(rules.len(), 5);
+        assert!(rules.iter().all(|rule| !rule.enabled), "{rules:#?}");
+        assert!(
+            rules
+                .iter()
+                .all(|rule| rule.managed_tag_filter.is_none() && rule.is_managed),
+            "{rules:#?}"
+        );
+        assert!(
+            rules
+                .iter()
+                .all(|rule| rule.rego_source.contains("locale_intent := true")),
+            "{rules:#?}"
+        );
+    }
+
+    /// An install already running a pack keeps a gated pack, so
+    /// upgrading never widens what the pack scores.
+    #[tokio::test]
+    async fn enabled_pre_opt_in_rows_adopt_their_historical_tag_filter() {
+        let enabled_v1 = legacy_managed_rule(
+            "existing-german",
+            "trash-guides:locale:german",
+            "Old German",
+            "# MANAGED_TRASH_REGISTRY_VERSION=managed-trash-registry-v1\nlocale_intent := true",
+        );
+        let mut disabled_v1 = legacy_managed_rule(
+            "existing-asian",
+            "trash-guides:locale:asian",
+            "Old Asian",
+            "# MANAGED_TRASH_REGISTRY_VERSION=managed-trash-registry-v1\nlocale_intent := true",
+        );
+        disabled_v1.enabled = false;
+        let app = build_test_app(vec![], vec![enabled_v1, disabled_v1]);
+
+        app.reconcile_managed_trash_rule_packs(false).await.unwrap();
+
+        let rules = app
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets()
+            .await
+            .unwrap();
+        let german = rules
+            .iter()
+            .find(|rule| rule.id == "existing-german")
+            .unwrap();
+        assert!(german.enabled);
+        assert_eq!(
+            german.managed_tag_filter.as_deref(),
+            Some(&["locale:german".to_string()][..])
+        );
+        assert!(
+            german
+                .rego_source
+                .contains(r#"has_any_tag(["locale:german"])"#),
+            "{}",
+            german.rego_source
+        );
+        assert!(!german.rego_source.contains("locale_intent := true"));
+
+        let asian = rules
+            .iter()
+            .find(|rule| rule.id == "existing-asian")
+            .unwrap();
+        assert!(!asian.enabled);
+        assert_eq!(asian.managed_tag_filter, None);
+
+        // Reconciling again is a no-op: the stored filter is authoritative once
+        // the row has been migrated.
+        let second = app.reconcile_managed_trash_rule_packs(false).await.unwrap();
+        assert_eq!(second, ManagedRuleReconciliation::default());
+    }
+
+    /// The pre-split French pack carries forward into MULTi VF
+    /// and nothing else.
+    #[tokio::test]
+    async fn enabled_legacy_french_pack_migrates_into_the_vf_variant() {
+        let legacy = legacy_managed_rule(
+            "legacy-french",
+            "trash-guides:locale:french",
+            "TRaSH Guides French Locale",
+            "# MANAGED_TRASH_REGISTRY_VERSION=managed-trash-registry-v1\nlocale_intent := true",
+        );
+        let app = build_test_app(vec![], vec![legacy]);
+
+        let reconciliation = app.reconcile_managed_trash_rule_packs(false).await.unwrap();
+        assert_eq!(reconciliation.created, 5);
+        assert_eq!(reconciliation.removed, 1);
+
+        let rules = app
+            .services
+            .customization
+            .rule_sets
+            .list_rule_sets()
+            .await
+            .unwrap();
+        assert!(
+            !rules
+                .iter()
+                .any(|rule| rule.managed_key.as_deref() == Some("trash-guides:locale:french"))
+        );
+        let vf = rules
+            .iter()
+            .find(|rule| rule.managed_key.as_deref() == Some("trash-guides:locale:french-vf"))
+            .unwrap();
+        assert!(vf.enabled);
+        assert_eq!(
+            vf.managed_tag_filter.as_deref(),
+            Some(&["locale:french".to_string()][..])
+        );
+        assert!(
+            vf.rego_source.contains(r#"has_any_tag(["locale:french"])"#),
+            "{}",
+            vf.rego_source
+        );
+        // Reconciliation never produces two enabled French packs.
+        assert_eq!(
+            rules
+                .iter()
+                .filter(|rule| rule.enabled
+                    && rule
+                        .managed_key
+                        .as_deref()
+                        .is_some_and(|key| key.starts_with("trash-guides:locale:french-")))
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn invalid_managed_pack_prevents_all_reconciliation_mutations() {
-        fn invalid_source() -> String {
-            r#"score_entry["blocked"] := scryer.block_score()"#.to_string()
+        fn invalid_source(_tag_filter: Option<&[String]>) -> String {
+            r#"score_entry["blocked"] := 1.5"#.to_string()
         }
 
         let (app, rule_sets) = build_test_app_with_rule_repo(vec![], vec![]);
@@ -1493,6 +1915,7 @@ mod tests {
             name: "Invalid",
             description: "Invalid managed fixture.",
             applied_facets: &[],
+            historical_tag: "locale:invalid",
             source: invalid_source,
         }];
 
@@ -1564,5 +1987,185 @@ mod tests {
 
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].delta, 200);
+    }
+
+    fn config_admin() -> User {
+        User {
+            id: scryer_domain::Id::new().0,
+            username: "config-admin".to_string(),
+            password_hash: None,
+            account_kind: Default::default(),
+            authorization: scryer_domain::UserAuthorization {
+                app: scryer_domain::AppPermissionMask::from_permissions([
+                    scryer_domain::AppPermission::ManageCatalogSettings,
+                ]),
+                loaded: true,
+                ..Default::default()
+            },
+        }
+    }
+
+    async fn reconciled_app() -> AppUseCase {
+        let app = build_test_app(vec![], vec![]);
+        app.reconcile_managed_trash_rule_packs(false).await.unwrap();
+        app
+    }
+
+    async fn managed_row(app: &AppUseCase, key: &str) -> RuleSet {
+        app.services
+            .customization
+            .rule_sets
+            .get_rule_set_by_managed_key(key)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    /// The French variants read contradictory score sets, so only
+    /// one may be live.
+    #[tokio::test]
+    async fn enabling_a_second_french_pack_is_rejected() {
+        let app = reconciled_app().await;
+        let actor = config_admin();
+        let vf = managed_row(&app, "trash-guides:locale:french-vf").await;
+        let vostfr = managed_row(&app, "trash-guides:locale:french-vostfr").await;
+        let german = managed_row(&app, "trash-guides:locale:german").await;
+
+        app.toggle_rule_set(&actor, &vf.id, true).await.unwrap();
+
+        let error = app
+            .toggle_rule_set(&actor, &vostfr.id, true)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("already enabled"), "{error}");
+        assert!(
+            !managed_row(&app, "trash-guides:locale:french-vostfr")
+                .await
+                .enabled
+        );
+
+        // A different locale is unaffected, and the variant becomes available
+        // once the conflicting one is off.
+        app.toggle_rule_set(&actor, &german.id, true).await.unwrap();
+        app.toggle_rule_set(&actor, &vf.id, false).await.unwrap();
+        app.toggle_rule_set(&actor, &vostfr.id, true).await.unwrap();
+        assert!(
+            managed_row(&app, "trash-guides:locale:french-vostfr")
+                .await
+                .enabled
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_tag_filter_updates_regenerate_the_pack_gate() {
+        let app = reconciled_app().await;
+        let actor = config_admin();
+        let asian = managed_row(&app, "trash-guides:locale:asian").await;
+
+        let filtered = app
+            .update_rule_set(
+                &actor,
+                asian.id.clone(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec!["Locale:Asian".to_string()]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            filtered.managed_tag_filter.as_deref(),
+            Some(&["locale:asian".to_string()][..])
+        );
+        assert!(
+            filtered
+                .rego_source
+                .contains(r#"has_any_tag(["locale:asian"])"#),
+            "{}",
+            filtered.rego_source
+        );
+        assert!(!filtered.rego_source.contains("locale_intent := true"));
+
+        // An empty list is the same as no filter, so the gate opens again.
+        let cleared = app
+            .update_rule_set(
+                &actor,
+                asian.id.clone(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared.managed_tag_filter, None);
+        assert!(cleared.rego_source.contains("locale_intent := true"));
+    }
+
+    #[tokio::test]
+    async fn managed_tag_filter_is_rejected_for_user_rule_sets() {
+        let app = build_test_app(vec![], vec![]);
+        let actor = config_admin();
+        let rule_set = app
+            .create_rule_set(
+                &actor,
+                "User Rule".to_string(),
+                String::new(),
+                r#"score_entry["bonus"] := 10"#.to_string(),
+                vec![],
+                0,
+                Some(true),
+            )
+            .await
+            .unwrap();
+
+        let error = app
+            .update_rule_set(
+                &actor,
+                rule_set.id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec!["locale:french".to_string()]),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("only applies to managed"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_rows_still_reject_authored_field_edits() {
+        let app = reconciled_app().await;
+        let actor = config_admin();
+        let german = managed_row(&app, "trash-guides:locale:german").await;
+
+        let error = app
+            .update_rule_set(
+                &actor,
+                german.id,
+                Some("Renamed".to_string()),
+                None,
+                None,
+                None,
+                None,
+                Some(vec!["locale:german".to_string()]),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("managed by a convenience setting"),
+            "{error}"
+        );
     }
 }

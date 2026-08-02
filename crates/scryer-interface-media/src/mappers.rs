@@ -554,6 +554,8 @@ pub fn from_media_settings(
             .collect(),
         required_audio_languages: settings.required_audio_languages,
         folder_template: settings.folder_template,
+        season_folder_template: settings.season_folder_template,
+        specials_folder_template: settings.specials_folder_template,
         rename_enabled: settings.rename_enabled,
         rename_template: settings.rename_template,
         rename_collision_policy: RenameCollisionPolicyValue::from_app_str(
@@ -3012,6 +3014,7 @@ pub fn from_rule_set(rs: RuleSet) -> RuleSetPayload {
             .collect(),
         is_managed: rs.is_managed,
         managed_key: rs.managed_key,
+        managed_tag_filter: rs.managed_tag_filter,
         created_at: rs.created_at,
         updated_at: rs.updated_at,
     }

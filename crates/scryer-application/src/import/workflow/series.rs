@@ -66,6 +66,8 @@ async fn import_series_download(
         rename_enabled,
         rename_template,
         folder_template,
+        season_folder_template,
+        specials_folder_template,
     } = resolve_import_paths(app, title).await?;
     let full_folder_path = effective_title_folder_path(&media_root, title, &folder_template, None);
 
@@ -101,6 +103,8 @@ async fn import_series_download(
             import_id,
             rename_enabled,
             &rename_template,
+            &season_folder_template,
+            &specials_folder_template,
             &full_folder_path,
             completed,
             source_video,
@@ -606,6 +610,8 @@ async fn import_single_episode_file(
     import_id: &str,
     rename_enabled: bool,
     rename_template: &str,
+    season_folder_template: &str,
+    specials_folder_template: &str,
     title_folder_path: &Path,
     completed: &CompletedDownload,
     source_video: &Path,
@@ -691,6 +697,8 @@ async fn import_single_episode_file(
         import_id,
         rename_enabled,
         rename_template,
+        season_folder_template,
+        specials_folder_template,
         title_folder_path,
         source_video,
         &parsed,
@@ -872,12 +880,30 @@ pub(crate) async fn resolve_import_paths(
         default_folder_template,
         title.facet.as_str(),
     );
+    let season_folder_template = crate::normalize_season_folder_template_or_default(
+        app.read_setting_string_value_for_scope(
+            super::SETTINGS_SCOPE_SYSTEM,
+            super::SEASON_FOLDER_TEMPLATE_KEY,
+            Some(title.facet.as_str()),
+        )
+        .await?,
+    );
+    let specials_folder_template = crate::normalize_specials_folder_template_or_default(
+        app.read_setting_string_value_for_scope(
+            super::SETTINGS_SCOPE_SYSTEM,
+            super::SPECIALS_FOLDER_TEMPLATE_KEY,
+            Some(title.facet.as_str()),
+        )
+        .await?,
+    );
 
     Ok(ImportPathSettings {
         media_root,
         rename_enabled,
         rename_template,
         folder_template,
+        season_folder_template,
+        specials_folder_template,
     })
 }
 /// Compute the destination path for an episode import using the canonical
@@ -892,6 +918,26 @@ pub(crate) async fn resolve_import_paths(
     clippy::too_many_arguments,
     reason = "episode rename rendering uses the full canonical token set explicitly"
 )]
+pub(crate) fn episodic_import_parent_path(
+    title: &scryer_domain::Title,
+    title_folder_path: &Path,
+    season_folder_template: &str,
+    specials_folder_template: &str,
+    season_num: u32,
+) -> PathBuf {
+    if use_season_folders(title) {
+        let season_folder = crate::render_episode_folder_name(
+            title,
+            season_num,
+            season_folder_template,
+            specials_folder_template,
+        );
+        title_folder_path.join(season_folder)
+    } else {
+        title_folder_path.to_path_buf()
+    }
+}
+
 pub(crate) fn episode_import_dest_path(
     title: &scryer_domain::Title,
     parsed: &crate::ParsedReleaseMetadata,
@@ -900,6 +946,8 @@ pub(crate) fn episode_import_dest_path(
     title_folder_path: &Path,
     rename_enabled: bool,
     rename_template: &str,
+    season_folder_template: &str,
+    specials_folder_template: &str,
     season_num: u32,
     ep_num_str: &str,
     absolute_number: Option<&str>,
@@ -926,12 +974,14 @@ pub(crate) fn episode_import_dest_path(
     } else {
         preserved_import_filename(source_path)
     };
-    if use_season_folders(title) {
-        let season_folder = format!("Season {:02}", season_num);
-        title_folder_path.join(&season_folder).join(&rendered)
-    } else {
-        title_folder_path.join(&rendered)
-    }
+    episodic_import_parent_path(
+        title,
+        title_folder_path,
+        season_folder_template,
+        specials_folder_template,
+        season_num,
+    )
+    .join(rendered)
 }
 /// Check whether the title's tags request season-folder organisation.
 /// Defaults to `true` (use season folders) when the tag is absent.

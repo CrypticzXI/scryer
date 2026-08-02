@@ -994,7 +994,10 @@ impl AppUseCase {
                             managed_parent_config_id: Some(Some(parent.id.clone())),
                             managed_child_key: Some(Some(desired.child_key.clone())),
                             managed_metadata_json: Some(managed_metadata_json),
-                            caps_snapshot_json: Some(desired.caps_snapshot_json.clone()),
+                            // Sync plans no longer fetch caps, so a plan without a
+                            // snapshot must not clear the stored one — the background
+                            // enrichment pass owns caps_snapshot_json refreshes.
+                            caps_snapshot_json: desired.caps_snapshot_json.clone().map(Some),
                             config_json: Some(desired.config_json.clone()),
                         })
                         .await

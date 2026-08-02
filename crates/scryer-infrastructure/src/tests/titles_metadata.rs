@@ -69,7 +69,7 @@ async fn title_queries_prefer_local_cached_poster_url() {
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
 
-    let title = make_test_title("title-1", Some("https://tvdb.example/poster.jpg"));
+    let title = make_test_title("title-1", Some("https://artworks.thetvdb.com/poster.jpg"));
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
@@ -80,7 +80,7 @@ async fn title_queries_prefer_local_cached_poster_url() {
         .expect("title should exist");
     assert_eq!(
         before_cache.poster_url.as_deref(),
-        Some("https://tvdb.example/poster.jpg")
+        Some("https://artworks.thetvdb.com/poster.jpg")
     );
 
     let variant_bytes = vec![7, 8, 9];
@@ -100,8 +100,8 @@ async fn title_queries_prefer_local_cached_poster_url() {
             &title.id,
             TitleImageSourceResult {
                 kind: TitleImageKind::Poster,
-                requested_source_url: "https://tvdb.example/poster.jpg".to_string(),
-                source_url: "https://tvdb.example/poster.jpg".to_string(),
+                requested_source_url: "https://artworks.thetvdb.com/poster.jpg".to_string(),
+                source_url: "https://artworks.thetvdb.com/poster.jpg".to_string(),
                 source_etag: Some("\"etag-1\"".to_string()),
                 source_last_modified: None,
                 source_format: "jpeg".to_string(),
@@ -131,7 +131,7 @@ async fn title_queries_prefer_local_cached_poster_url() {
     );
     assert_eq!(
         after_cache.poster_source_url.as_deref(),
-        Some("https://tvdb.example/poster.jpg")
+        Some("https://artworks.thetvdb.com/poster.jpg")
     );
 
     let listed = TitleRepository::list(&catalog, None, None)
@@ -316,7 +316,7 @@ async fn replace_title_match_state_completes_on_single_connection_sqlite() {
     title.year = Some(2024);
     title.overview = Some("overview before clear".to_string());
     title.popularity = Some(42.0);
-    title.poster_url = Some("https://tvdb.example/rematch-poster.jpg".to_string());
+    title.poster_url = Some("https://artworks.thetvdb.com/rematch-poster.jpg".to_string());
 
     TitleRepository::create(&catalog, title.clone())
         .await
@@ -326,7 +326,7 @@ async fn replace_title_match_state_completes_on_single_connection_sqlite() {
             &title.id,
             test_title_image_source_result(
                 TitleImageKind::Poster,
-                "https://tvdb.example/rematch-poster.jpg",
+                "https://artworks.thetvdb.com/rematch-poster.jpg",
                 "w250",
                 250,
                 375,
@@ -1083,18 +1083,18 @@ async fn title_queries_change_local_version_when_cached_poster_changes() {
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
 
-    let title = make_test_title("title-2", Some("https://tvdb.example/poster-a.jpg"));
+    let title = make_test_title("title-2", Some("https://artworks.thetvdb.com/poster-a.jpg"));
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
 
     for (source_url, sha) in [
         (
-            "https://tvdb.example/poster-a.jpg",
+            "https://artworks.thetvdb.com/poster-a.jpg",
             "11111111111111111111111111111111",
         ),
         (
-            "https://tvdb.example/poster-b.jpg",
+            "https://artworks.thetvdb.com/poster-b.jpg",
             "22222222222222222222222222222222",
         ),
     ] {
@@ -1156,7 +1156,7 @@ async fn title_lookup_by_external_id_preserves_source_image_url() {
 
     let mut title = make_test_title(
         "title-external-id",
-        Some("https://tvdb.example/poster-external.jpg"),
+        Some("https://artworks.thetvdb.com/poster-external.jpg"),
     );
     title.external_ids = vec![ExternalId {
         source: "TVDB".to_string(),
@@ -1170,7 +1170,7 @@ async fn title_lookup_by_external_id_preserves_source_image_url() {
             &title.id,
             test_title_image_source_result_with_variants(
                 TitleImageKind::Poster,
-                "https://tvdb.example/poster-external.jpg",
+                "https://artworks.thetvdb.com/poster-external.jpg",
                 vec![test_title_image_variant_record(
                     "w250",
                     250,
@@ -1190,7 +1190,7 @@ async fn title_lookup_by_external_id_preserves_source_image_url() {
         .expect("title should exist");
     assert_eq!(
         found.poster_source_url.as_deref(),
-        Some("https://tvdb.example/poster-external.jpg")
+        Some("https://artworks.thetvdb.com/poster-external.jpg")
     );
 
     let _ = std::fs::remove_file(db);
@@ -1334,7 +1334,7 @@ async fn title_queries_find_by_external_id() {
 
     let mut title = make_test_title(
         "title-external-id",
-        Some("https://tvdb.example/poster-external.jpg"),
+        Some("https://artworks.thetvdb.com/poster-external.jpg"),
     );
     title.external_ids = vec![ExternalId {
         source: "TVDB".to_string(),
@@ -1348,7 +1348,7 @@ async fn title_queries_find_by_external_id() {
             &title.id,
             test_title_image_source_result_with_variants(
                 TitleImageKind::Poster,
-                "https://tvdb.example/poster-external.jpg",
+                "https://artworks.thetvdb.com/poster-external.jpg",
                 vec![test_title_image_variant_record(
                     "w250",
                     250,
@@ -1378,7 +1378,7 @@ async fn title_queries_find_by_external_id() {
     );
     assert_eq!(
         found.poster_source_url.as_deref(),
-        Some("https://tvdb.example/poster-external.jpg")
+        Some("https://artworks.thetvdb.com/poster-external.jpg")
     );
 
     let uppercase_source = catalog
@@ -1416,8 +1416,10 @@ async fn title_queries_list_existing_external_ids_in_library_and_facet_is_scoped
     let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
     insert_test_library(&services, "other-movie-library", MediaFacet::Movie).await;
 
-    let mut same_library_movie =
-        make_test_title("same-library-movie", Some("https://tvdb.example/same.jpg"));
+    let mut same_library_movie = make_test_title(
+        "same-library-movie",
+        Some("https://artworks.thetvdb.com/same.jpg"),
+    );
     same_library_movie.external_ids = vec![ExternalId {
         source: "TVDB".to_string(),
         value: "333333".to_string(),
@@ -1428,7 +1430,7 @@ async fn title_queries_list_existing_external_ids_in_library_and_facet_is_scoped
 
     let mut same_library_movie_upper = make_test_title(
         "same-library-movie-upper",
-        Some("https://tvdb.example/upper.jpg"),
+        Some("https://artworks.thetvdb.com/upper.jpg"),
     );
     same_library_movie_upper.external_ids = vec![ExternalId {
         source: "TVDB".to_string(),
@@ -1440,7 +1442,7 @@ async fn title_queries_list_existing_external_ids_in_library_and_facet_is_scoped
 
     let mut other_library_movie = make_test_title(
         "other-library-movie",
-        Some("https://tvdb.example/other.jpg"),
+        Some("https://artworks.thetvdb.com/other.jpg"),
     );
     other_library_movie.library_id = "other-movie-library".to_string();
     other_library_movie.external_ids = vec![ExternalId {
@@ -1453,7 +1455,7 @@ async fn title_queries_list_existing_external_ids_in_library_and_facet_is_scoped
 
     let mut different_facet_title = make_test_title(
         "same-library-series",
-        Some("https://tvdb.example/series.jpg"),
+        Some("https://artworks.thetvdb.com/series.jpg"),
     );
     different_facet_title.facet = MediaFacet::Series;
     different_facet_title.library_id =
@@ -1503,7 +1505,7 @@ async fn title_queries_list_by_external_ids_preserve_request_order_for_unique_fi
         .expect("db should initialize");
     let catalog = title_store(&services);
 
-    let mut first = make_test_title("title-a", Some("https://tvdb.example/a.jpg"));
+    let mut first = make_test_title("title-a", Some("https://artworks.thetvdb.com/a.jpg"));
     first.external_ids = vec![ExternalId {
         source: "tvdb".to_string(),
         value: "123456".to_string(),
@@ -1512,7 +1514,7 @@ async fn title_queries_list_by_external_ids_preserve_request_order_for_unique_fi
         .await
         .expect("first title should insert");
 
-    let mut second = make_test_title("title-b", Some("https://tvdb.example/b.jpg"));
+    let mut second = make_test_title("title-b", Some("https://artworks.thetvdb.com/b.jpg"));
     second.external_ids = vec![ExternalId {
         source: "tvdb".to_string(),
         value: "345678".to_string(),
@@ -1568,7 +1570,7 @@ async fn title_queries_list_by_external_id_lookups_return_all_matching_titles() 
         insert_test_library(&services, id, MediaFacet::Movie).await;
     }
 
-    let mut first = make_test_title("title-shared-a", Some("https://tvdb.example/a.jpg"));
+    let mut first = make_test_title("title-shared-a", Some("https://artworks.thetvdb.com/a.jpg"));
     first.library_id = "library-a".to_string();
     first.external_ids = vec![ExternalId {
         source: "tvdb".to_string(),
@@ -1578,7 +1580,7 @@ async fn title_queries_list_by_external_id_lookups_return_all_matching_titles() 
         .await
         .expect("first title should insert");
 
-    let mut second = make_test_title("title-shared-b", Some("https://tvdb.example/b.jpg"));
+    let mut second = make_test_title("title-shared-b", Some("https://artworks.thetvdb.com/b.jpg"));
     second.library_id = "library-b".to_string();
     second.external_ids = vec![ExternalId {
         source: "tvdb_series".to_string(),
@@ -1882,7 +1884,7 @@ async fn title_list_for_matching_keeps_source_image_urls() {
 
     let title = make_test_title(
         "title-list-matching",
-        Some("https://tvdb.example/poster.jpg"),
+        Some("https://artworks.thetvdb.com/poster.jpg"),
     );
     TitleRepository::create(&catalog, title.clone())
         .await
@@ -1892,7 +1894,7 @@ async fn title_list_for_matching_keeps_source_image_urls() {
             &title.id,
             test_title_image_source_result_with_variants(
                 TitleImageKind::Poster,
-                "https://tvdb.example/poster.jpg",
+                "https://artworks.thetvdb.com/poster.jpg",
                 vec![test_title_image_variant_record(
                     "w250",
                     250,
@@ -1915,7 +1917,7 @@ async fn title_list_for_matching_keeps_source_image_urls() {
 
     assert_eq!(
         listed.poster_url.as_deref(),
-        Some("https://tvdb.example/poster.jpg")
+        Some("https://artworks.thetvdb.com/poster.jpg")
     );
     assert!(listed.poster_source_url.is_none());
 
@@ -2178,7 +2180,10 @@ async fn title_queries_fall_back_to_remote_when_no_local_variant_exists() {
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
 
-    let title = make_test_title("title-3", Some("https://tvdb.example/poster-original.jpg"));
+    let title = make_test_title(
+        "title-3",
+        Some("https://artworks.thetvdb.com/poster-original.jpg"),
+    );
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
@@ -2188,7 +2193,7 @@ async fn title_queries_fall_back_to_remote_when_no_local_variant_exists() {
             &title.id,
             test_title_image_source_result_with_variants(
                 TitleImageKind::Poster,
-                "https://tvdb.example/poster-original.jpg",
+                "https://artworks.thetvdb.com/poster-original.jpg",
                 Vec::new(),
             ),
             None,
@@ -2202,7 +2207,7 @@ async fn title_queries_fall_back_to_remote_when_no_local_variant_exists() {
         .expect("title should exist");
     assert_eq!(
         updated.poster_url.as_deref(),
-        Some("https://tvdb.example/poster-original.jpg")
+        Some("https://artworks.thetvdb.com/poster-original.jpg")
     );
 
     let original = title_images
@@ -2227,7 +2232,10 @@ async fn replace_title_image_and_append_event_commits_image_and_event_atomically
     let title_images = title_image_store(&services);
     let domain_events = DomainEventStore::new(services.datastore());
 
-    let title = make_test_title("title-image-event", Some("https://tvdb.example/poster.jpg"));
+    let title = make_test_title(
+        "title-image-event",
+        Some("https://artworks.thetvdb.com/poster.jpg"),
+    );
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("title should insert");
@@ -2262,7 +2270,7 @@ async fn replace_title_image_and_append_event_commits_image_and_event_atomically
             &title.id,
             test_title_image_source_result_with_variants(
                 TitleImageKind::Poster,
-                "https://tvdb.example/poster.jpg",
+                "https://artworks.thetvdb.com/poster.jpg",
                 vec![test_title_image_variant_record(
                     "w250",
                     250,
@@ -2318,7 +2326,7 @@ async fn title_queries_fall_back_to_original_when_preferred_local_variant_is_mis
 
     let title = make_test_title(
         "title-4",
-        Some("https://tvdb.example/poster-incomplete.jpg"),
+        Some("https://artworks.thetvdb.com/poster-incomplete.jpg"),
     );
     TitleRepository::create(&catalog, title.clone())
         .await
@@ -2329,7 +2337,7 @@ async fn title_queries_fall_back_to_original_when_preferred_local_variant_is_mis
             &title.id,
             test_title_image_source_result_with_variants(
                 TitleImageKind::Poster,
-                "https://tvdb.example/poster-incomplete.jpg",
+                "https://artworks.thetvdb.com/poster-incomplete.jpg",
                 Vec::new(),
             ),
             None,
@@ -2343,7 +2351,7 @@ async fn title_queries_fall_back_to_original_when_preferred_local_variant_is_mis
         .expect("title should exist");
     assert_eq!(
         updated.poster_url.as_deref(),
-        Some("https://tvdb.example/poster-incomplete.jpg")
+        Some("https://artworks.thetvdb.com/poster-incomplete.jpg")
     );
 
     let pending = title_images
@@ -2376,7 +2384,7 @@ async fn fanart_queries_use_w1280_variant_when_present() {
         .expect("title should insert");
 
     sqlx::query("UPDATE titles SET background_url = ? WHERE id = ?")
-        .bind("https://tvdb.example/fanart.jpg")
+        .bind("https://artworks.thetvdb.com/fanart.jpg")
         .bind(&title.id)
         .execute(&services.pool)
         .await
@@ -2389,7 +2397,7 @@ async fn fanart_queries_use_w1280_variant_when_present() {
             &title.id,
             test_title_image_source_result_with_variants(
                 TitleImageKind::Fanart,
-                "https://tvdb.example/fanart.jpg",
+                "https://artworks.thetvdb.com/fanart.jpg",
                 vec![TitleImageVariantRecord {
                     variant_key: "w1280".to_string(),
                     format: "avif".to_string(),
@@ -2415,7 +2423,7 @@ async fn fanart_queries_use_w1280_variant_when_present() {
     );
     assert_eq!(
         updated.background_source_url.as_deref(),
-        Some("https://tvdb.example/fanart.jpg")
+        Some("https://artworks.thetvdb.com/fanart.jpg")
     );
 
     let fanart_variant = title_images
@@ -2458,7 +2466,7 @@ async fn title_image_refresh_work_requires_fanart_w1280_variant() {
         .expect("title should insert");
 
     sqlx::query("UPDATE titles SET background_url = ? WHERE id = ?")
-        .bind("https://tvdb.example/fanart-refresh.jpg")
+        .bind("https://artworks.thetvdb.com/fanart-refresh.jpg")
         .bind(&title.id)
         .execute(&services.pool)
         .await
@@ -2469,7 +2477,7 @@ async fn title_image_refresh_work_requires_fanart_w1280_variant() {
             &title.id,
             test_title_image_source_result_with_variants(
                 TitleImageKind::Fanart,
-                "https://tvdb.example/fanart-refresh.jpg",
+                "https://artworks.thetvdb.com/fanart-refresh.jpg",
                 Vec::new(),
             ),
             None,
@@ -2491,7 +2499,7 @@ async fn title_image_refresh_work_requires_fanart_w1280_variant() {
             &title.id,
             test_title_image_source_result_with_variants(
                 TitleImageKind::Fanart,
-                "https://tvdb.example/fanart-refresh.jpg",
+                "https://artworks.thetvdb.com/fanart-refresh.jpg",
                 vec![test_title_image_variant_record(
                     "w1280",
                     1280,

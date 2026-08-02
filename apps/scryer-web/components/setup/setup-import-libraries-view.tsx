@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -19,6 +20,10 @@ import {
 } from "lucide-react";
 
 import { AddNewButton } from "@/components/common/add-new-button";
+import {
+  importLibraryDropState,
+  shouldEnableNativeImportDrag,
+} from "@/lib/external-import-library-drag";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import {
   effectiveRootPath,
@@ -50,9 +55,27 @@ interface SetupImportLibrariesViewProps {
 
 const FACET_PICKER: WizardFacet[] = ["MOVIE", "SERIES", "ANIME"];
 
-// Drag-and-drop is desktop-only; at tablet width and below (≤1024px) the
-// click-to-place assign sheet replaces it (DnD is unreliable on touch).
+// Native drag-and-drop is reserved for wide, fine-pointer layouts. The
+// click-to-place assign sheet remains available everywhere.
 const MOBILE_BREAKPOINT = 1025;
+
+function useHasCoarsePointer(): boolean {
+  const [hasCoarsePointer, setHasCoarsePointer] = useState(() =>
+    typeof window === "undefined"
+      ? false
+      : window.matchMedia("(pointer: coarse)").matches,
+  );
+
+  useEffect(() => {
+    const query = window.matchMedia("(pointer: coarse)");
+    const update = () => setHasCoarsePointer(query.matches);
+    query.addEventListener("change", update);
+    update();
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  return hasCoarsePointer;
+}
 
 const SECTION_LABEL: CSSProperties = {
   fontSize: 11,
@@ -91,6 +114,11 @@ export default function SetupImportLibrariesView({
   } = wizard;
 
   const isMobile = useIsMobile(MOBILE_BREAKPOINT);
+  const hasCoarsePointer = useHasCoarsePointer();
+  const nativeDragEnabled = shouldEnableNativeImportDrag(
+    isMobile,
+    hasCoarsePointer,
+  );
   const invalidAssignedRootIdSet = useMemo(
     () => new Set(invalidAssignedRootIds),
     [invalidAssignedRootIds],
@@ -135,6 +163,7 @@ export default function SetupImportLibrariesView({
   };
 
   const dragRootId = useRef<string | null>(null);
+  const [draggingRootId, setDraggingRootId] = useState<string | null>(null);
 
   const assignSheetRoot =
     assignSheetRootId != null ? wizard.rootById(assignSheetRootId) : null;
@@ -142,7 +171,13 @@ export default function SetupImportLibrariesView({
 
   // ── Desktop drag-and-drop (HTML5) ──────────────────────────────────────────
   const onDragStart = useCallback((e: DragEvent, rootId: string) => {
+    const origin = e.target as HTMLElement;
+    if (origin.closest("button, input, textarea, select, a, [role='button']")) {
+      e.preventDefault();
+      return;
+    }
     dragRootId.current = rootId;
+    setDraggingRootId(rootId);
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", rootId);
     const chip = (e.target as HTMLElement).closest<HTMLElement>(
@@ -166,6 +201,7 @@ export default function SetupImportLibrariesView({
 
   const onDragEnd = useCallback((e: DragEvent) => {
     dragRootId.current = null;
+    setDraggingRootId(null);
     const chip = (e.target as HTMLElement).closest<HTMLElement>(
       "[data-rootchip]",
     );
@@ -216,6 +252,7 @@ export default function SetupImportLibrariesView({
       el.style.outlineOffset = "";
       const id = dragRootId.current ?? e.dataTransfer.getData("text/plain");
       dragRootId.current = null;
+      setDraggingRootId(null);
       if (!id) return;
       if (libraryId === null) {
         assignRoot(id, null);
@@ -271,19 +308,20 @@ export default function SetupImportLibrariesView({
     trayRoots.length === 1
       ? t("setup.unmappedCountOne", { count: 1 })
       : t("setup.unmappedCountMany", { count: trayRoots.length });
+  const draggedRoot = draggingRootId ? rootById(draggingRootId) : null;
+  const trayDropState = importLibraryDropState(Boolean(draggedRoot), true);
 
   const renderChip = (root: ImportRoot, variant: "tray" | "library") => (
     <ImportRootChip
       key={root.id}
       root={root}
       variant={variant}
-      isMobile={isMobile}
       invalid={
         Boolean(assign[root.id]) &&
         ((root.manual && !effectiveRootPath(root).trim()) ||
           invalidAssignedRootIdSet.has(root.id))
       }
-      draggable={!isMobile}
+      draggable={nativeDragEnabled}
       onDragStart={(e) => onDragStart(e, root.id)}
       onDragEnd={onDragEnd}
       onRemap={() => setRemapRootId(root.id)}
@@ -302,14 +340,22 @@ export default function SetupImportLibrariesView({
       {/* ── Source Roots tray ── */}
       <div
         data-drop="tray"
-        onDragOver={!isMobile ? zoneOver : undefined}
-        onDragEnter={!isMobile ? zoneEnter : undefined}
-        onDragLeave={!isMobile ? zoneLeave : undefined}
-        onDrop={!isMobile ? (e) => dropTo(e, null) : undefined}
+        data-drop-state={trayDropState}
+        onDragOver={nativeDragEnabled ? zoneOver : undefined}
+        onDragEnter={nativeDragEnabled ? zoneEnter : undefined}
+        onDragLeave={nativeDragEnabled ? zoneLeave : undefined}
+        onDrop={nativeDragEnabled ? (e) => dropTo(e, null) : undefined}
         style={{
-          border: "1px solid var(--scry-border)",
+          border: `1px solid ${
+            trayDropState === "compatible"
+              ? "var(--scry-accent)"
+              : "var(--scry-border)"
+          }`,
           borderRadius: 16,
-          background: "rgba(10, 17, 32, 0.5)",
+          background:
+            trayDropState === "compatible"
+              ? "rgba(var(--scry-accent-rgb), 0.08)"
+              : "rgba(10, 17, 32, 0.5)",
           padding: "18px 20px",
         }}
       >
@@ -454,26 +500,46 @@ export default function SetupImportLibrariesView({
           const style = facetStyle(lib.facet);
           const chips = rootsForLibrary(lib.id);
           const editing = editLibId === lib.id;
+          const dropState = importLibraryDropState(
+            Boolean(draggedRoot),
+            !draggedRoot || kindCompatibleWithFacet(draggedRoot.kind, lib.facet),
+          );
           return (
             <div
               id={`setup-import-library-drop-${selectorToken(lib.facet)}`}
               key={lib.id}
               data-drop="library"
+              data-drop-state={dropState}
               data-library-facet={lib.facet}
               data-library-id={lib.id}
               aria-label={lib.name}
-              onDragOver={!isMobile ? (e) => libZoneOver(e, lib.facet) : undefined}
-              onDragEnter={!isMobile ? (e) => libZoneEnter(e, lib.facet) : undefined}
-              onDragLeave={!isMobile ? zoneLeave : undefined}
-              onDrop={!isMobile ? (e) => dropTo(e, lib.id) : undefined}
+              aria-disabled={dropState === "incompatible"}
+              onDragOver={
+                nativeDragEnabled ? (e) => libZoneOver(e, lib.facet) : undefined
+              }
+              onDragEnter={
+                nativeDragEnabled ? (e) => libZoneEnter(e, lib.facet) : undefined
+              }
+              onDragLeave={nativeDragEnabled ? zoneLeave : undefined}
+              onDrop={nativeDragEnabled ? (e) => dropTo(e, lib.id) : undefined}
               style={{
                 display: "flex",
                 flexDirection: "column",
-                border: "1px solid var(--scry-border)",
+                border: `1px solid ${
+                  dropState === "compatible"
+                    ? "var(--scry-accent)"
+                    : "var(--scry-border)"
+                }`,
                 borderRadius: 14,
-                background: "rgba(10, 17, 32, 0.5)",
+                background:
+                  dropState === "compatible"
+                    ? "rgba(var(--scry-accent-rgb), 0.08)"
+                    : "rgba(10, 17, 32, 0.5)",
                 padding: "14px 15px",
                 minHeight: 130,
+                opacity: dropState === "incompatible" ? 0.45 : 1,
+                transition:
+                  "border-color 120ms ease, background 120ms ease, opacity 120ms ease",
               }}
             >
               {/* Header */}

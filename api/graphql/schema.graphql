@@ -2580,6 +2580,8 @@ type MediaSettingsPayload {
 	rootFolders: [RootFolderPayload!]!
 	requiredAudioLanguages: [String!]!
 	folderTemplate: String!
+	seasonFolderTemplate: String
+	specialsFolderTemplate: String
 	renameEnabled: Boolean!
 	renameTemplate: String!
 	renameCollisionPolicy: RenameCollisionPolicyValue!
@@ -3926,6 +3928,11 @@ type RuleSetPayload {
 	appliedFacets: [String!]!
 	isManaged: Boolean!
 	managedKey: String
+	"""
+	Tags a managed pack is narrowed to. Null means it applies wherever its
+	facts match. Always null for user-authored rule sets.
+	"""
+	managedTagFilter: [String!]
 	createdAt: DateTime!
 	updatedAt: DateTime!
 }
@@ -4901,10 +4908,10 @@ input UpdateDownloadClientRoutingInput {
 }
 
 input UpdateGeneralSettingsInput {
-	keepHistoryForever: Boolean!
-	historyRetentionDays: Int!
+	keepHistoryForever: Boolean
+	historyRetentionDays: Int
 	imageCacheMaxSizeMb: Int
-	pluginHttpCaBundlePem: String!
+	pluginHttpCaBundlePem: String
 }
 
 input UpdateIndexerConfigInput {
@@ -4985,6 +4992,8 @@ input UpdateMediaSettingsInput {
 	rootFolders: [RootFolderInput!]
 	requiredAudioLanguages: [String!]
 	folderTemplate: String
+	seasonFolderTemplate: String
+	specialsFolderTemplate: String
 	renameEnabled: Boolean
 	renameTemplate: String
 	renameCollisionPolicy: RenameCollisionPolicyValue
@@ -5047,6 +5056,12 @@ input UpdateRuleSetInput {
 	regoSource: String
 	appliedFacets: [String!]
 	priority: Int
+	"""
+	Narrow a managed locale pack to titles carrying one of these tags. An
+	empty list clears the filter so the pack applies wherever its facts
+	match. Rejected for user-authored rule sets.
+	"""
+	managedTagFilter: [String!]
 }
 
 input UpdateSecuritySettingsInput {

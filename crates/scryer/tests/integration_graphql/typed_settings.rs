@@ -32,6 +32,76 @@ async fn graphql_media_settings_rejects_invalid_folder_template_tokens() {
 }
 
 #[tokio::test]
+async fn graphql_media_settings_rejects_invalid_season_folder_templates() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let body = gql(
+        &ctx,
+        r#"
+        mutation UpdateMediaSettings($input: UpdateMediaSettingsInput!) {
+          updateMediaSettings(input: $input) {
+            scope
+            seasonFolderTemplate
+          }
+        }
+        "#,
+        json!({
+          "input": {
+            "scope": "SERIES",
+            "seasonFolderTemplate": "Season"
+          }
+        }),
+    )
+    .await;
+
+    let errors = body["errors"]
+        .as_array()
+        .expect("invalid season folder template should return graphql errors");
+    assert!(!errors.is_empty());
+    let message = errors[0]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("must include {season}"));
+}
+
+#[tokio::test]
+async fn graphql_media_settings_rejects_blank_episode_folder_templates() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    for input in [
+        json!({
+          "scope": "SERIES",
+          "seasonFolderTemplate": "   "
+        }),
+        json!({
+          "scope": "ANIME",
+          "specialsFolderTemplate": "\n"
+        }),
+    ] {
+        let body = gql(
+            &ctx,
+            r#"
+            mutation UpdateMediaSettings($input: UpdateMediaSettingsInput!) {
+              updateMediaSettings(input: $input) { scope }
+            }
+            "#,
+            json!({ "input": input }),
+        )
+        .await;
+
+        let errors = body["errors"]
+            .as_array()
+            .expect("blank episode folder template should return graphql errors");
+        assert!(!errors.is_empty());
+        assert!(
+            errors[0]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("template is required")
+        );
+    }
+}
+
+#[tokio::test]
 async fn graphql_media_settings_rejects_invalid_rename_template_tokens() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
@@ -76,6 +146,8 @@ async fn graphql_typed_media_settings_round_trip() {
             rootFolders { path isDefault }
             requiredAudioLanguages
             folderTemplate
+            seasonFolderTemplate
+            specialsFolderTemplate
             renameEnabled
             renameTemplate
             renameCollisionPolicy
@@ -99,6 +171,8 @@ async fn graphql_typed_media_settings_round_trip() {
             ],
             "requiredAudioLanguages": ["eng", "jpn"],
             "folderTemplate": "{title|truncate:64|space:_} ({year})",
+            "seasonFolderTemplate": "{title|space:.}.S{season:2}",
+            "specialsFolderTemplate": "{title} Specials",
             "renameEnabled": false,
             "renameTemplate": "{title|truncate:64|space:_} [{quality}].{ext}",
             "renameCollisionPolicy": "REPLACE_IF_BETTER",
@@ -127,6 +201,11 @@ async fn graphql_typed_media_settings_round_trip() {
         updated["folderTemplate"],
         "{title|truncate:64|space:_} ({year})"
     );
+    assert_eq!(
+        updated["seasonFolderTemplate"],
+        "{title|space:.}.S{season:2}"
+    );
+    assert_eq!(updated["specialsFolderTemplate"], "{title} Specials");
     assert_eq!(updated["renameEnabled"], false);
     assert_eq!(
         updated["renameTemplate"],
@@ -152,6 +231,8 @@ async fn graphql_typed_media_settings_round_trip() {
             rootFolders { path isDefault }
             requiredAudioLanguages
             folderTemplate
+            seasonFolderTemplate
+            specialsFolderTemplate
             renameEnabled
             renameTemplate
             renameCollisionPolicy
@@ -181,6 +262,11 @@ async fn graphql_typed_media_settings_round_trip() {
         settings["folderTemplate"],
         "{title|truncate:64|space:_} ({year})"
     );
+    assert_eq!(
+        settings["seasonFolderTemplate"],
+        "{title|space:.}.S{season:2}"
+    );
+    assert_eq!(settings["specialsFolderTemplate"], "{title} Specials");
     assert_eq!(settings["renameEnabled"], false);
     assert_eq!(
         settings["renameTemplate"],
@@ -195,6 +281,116 @@ async fn graphql_typed_media_settings_round_trip() {
     assert_eq!(settings["monitorFillerMovies"], true);
     assert_eq!(settings["nfoWriteOnImport"], true);
     assert_eq!(settings["plexmatchWriteOnImport"], true);
+}
+
+#[tokio::test]
+async fn graphql_episode_folder_templates_remain_facet_scoped() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    for (scope, season_template, specials_template) in [
+        ("SERIES", "Series S{season:2}", "Series Specials"),
+        ("ANIME", "Anime S{season:3}", "Anime Specials"),
+    ] {
+        let update = gql(
+            &ctx,
+            r#"
+            mutation UpdateMediaSettings($input: UpdateMediaSettingsInput!) {
+              updateMediaSettings(input: $input) {
+                scope
+                seasonFolderTemplate
+                specialsFolderTemplate
+              }
+            }
+            "#,
+            json!({
+              "input": {
+                "scope": scope,
+                "seasonFolderTemplate": season_template,
+                "specialsFolderTemplate": specials_template
+              }
+            }),
+        )
+        .await;
+        assert_no_errors(&update);
+    }
+
+    for (scope, season_template, specials_template) in [
+        ("SERIES", "Series S{season:2}", "Series Specials"),
+        ("ANIME", "Anime S{season:3}", "Anime Specials"),
+    ] {
+        let read = gql(
+            &ctx,
+            r#"
+            query MediaSettings($scope: ContentScopeValue!) {
+              mediaSettings(scope: $scope) {
+                seasonFolderTemplate
+                specialsFolderTemplate
+              }
+            }
+            "#,
+            json!({ "scope": scope }),
+        )
+        .await;
+        assert_no_errors(&read);
+        assert_eq!(
+            read["data"]["mediaSettings"]["seasonFolderTemplate"],
+            season_template
+        );
+        assert_eq!(
+            read["data"]["mediaSettings"]["specialsFolderTemplate"],
+            specials_template
+        );
+    }
+}
+
+#[tokio::test]
+async fn graphql_movie_settings_expose_null_and_reject_season_folder_templates() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+
+    let read = gql(
+        &ctx,
+        r#"
+        query MediaSettings($scope: ContentScopeValue!) {
+          mediaSettings(scope: $scope) {
+            seasonFolderTemplate
+            specialsFolderTemplate
+          }
+        }
+        "#,
+        json!({ "scope": "MOVIE" }),
+    )
+    .await;
+    assert_no_errors(&read);
+    assert!(read["data"]["mediaSettings"]["seasonFolderTemplate"].is_null());
+    assert!(read["data"]["mediaSettings"]["specialsFolderTemplate"].is_null());
+
+    let update = gql(
+        &ctx,
+        r#"
+        mutation UpdateMediaSettings($input: UpdateMediaSettingsInput!) {
+          updateMediaSettings(input: $input) { scope }
+        }
+        "#,
+        json!({
+          "input": {
+            "scope": "MOVIE",
+            "seasonFolderTemplate": "Season {season}"
+          }
+        }),
+    )
+    .await;
+    let errors = update["errors"]
+        .as_array()
+        .expect("movie season folder updates should return graphql errors");
+    assert!(!errors.is_empty());
+    assert!(
+        errors[0]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("only supported for series and anime")
+    );
 }
 
 #[tokio::test]
@@ -621,9 +817,7 @@ async fn graphql_typed_general_settings_round_trip_and_forever_preserves_days() 
         "#,
         json!({
           "input": {
-            "keepHistoryForever": true,
-            "historyRetentionDays": 0,
-            "pluginHttpCaBundlePem": TEST_PLUGIN_HTTP_CA_CERT_PEM
+            "keepHistoryForever": true
           }
         }),
     )
@@ -707,7 +901,6 @@ async fn graphql_typed_general_settings_rejects_invalid_days() {
         "#,
         json!({
           "input": {
-            "keepHistoryForever": false,
             "historyRetentionDays": 0
           }
         }),
@@ -738,10 +931,7 @@ async fn graphql_typed_general_settings_rejects_invalid_image_cache_size() {
         "#,
         json!({
           "input": {
-            "keepHistoryForever": false,
-            "historyRetentionDays": 180,
-            "imageCacheMaxSizeMb": 0,
-            "pluginHttpCaBundlePem": ""
+            "imageCacheMaxSizeMb": 0
           }
         }),
     )

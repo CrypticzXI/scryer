@@ -994,6 +994,9 @@ const mediaSettingsFieldSelection = `
       isDefault
     }
     requiredAudioLanguages
+    folderTemplate
+    seasonFolderTemplate
+    specialsFolderTemplate
     renameEnabled
     renameTemplate
     renameCollisionPolicy

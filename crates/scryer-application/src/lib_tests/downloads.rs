@@ -1640,6 +1640,368 @@ async fn external_weaver_missing_history_retries_from_tracked_runtime() {
 }
 
 #[tokio::test]
+async fn external_weaver_aged_out_history_recovers_via_targeted_lookup() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary Weaver", "weaver").await;
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Aged Out Weaver Retry".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie title");
+
+    let (_command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(8);
+    let ingest = crate::tracked_downloads::TrackedDownloadSnapshotIngestHandle::new(snapshot_tx);
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(
+        crate::integration::start_download_queue_poller_with_options(
+            app.clone(),
+            token.child_token(),
+            tracked_download_rx,
+            snapshot_rx,
+            crate::integration::DownloadQueuePollerOptions {
+                interval: Duration::from_millis(50),
+                excluded_client_types: vec!["weaver".to_string()],
+            },
+        ),
+    );
+
+    let item_id = "weaver-aged-out-1";
+    let download_id = "weaver-download-aged-1";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = "weaver".to_string();
+    item.download_id = Some(download_id.to_string());
+    item.title_id = Some(title.id.clone());
+    item.title_name = title.name.clone();
+    item.facet = Some("movie".to_string());
+    let tracked_id = crate::tracked_downloads::tracked_download_id_for_item(&item);
+    // The recent window never contains the row — it aged out of the bounded
+    // listing while the item sat in the waiting state.
+    *download_client.recent_completed_downloads.lock().await = Some(Vec::new());
+
+    ingest
+        .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+            scope: crate::tracked_downloads::TrackedDownloadSnapshotScope::Delta,
+            items: vec![item.clone()],
+            completed_downloads: Vec::new(),
+            actor_id: None,
+        })
+        .await
+        .expect("publish missing-history update");
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if app
+                .runtime
+                .acquisition
+                .tracked_download_snapshot
+                .read()
+                .await
+                .get(&tracked_id)
+                .is_some_and(|metadata| metadata.state == TrackedDownloadState::ImportPending)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("missing history should enter the retryable waiting state");
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        &title.id,
+        item.title_name.as_str(),
+        source_dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    completed.client_type = "weaver".to_string();
+    completed.download_id = None;
+    download_client
+        .targeted_completed_downloads
+        .lock()
+        .await
+        .insert(item_id.to_string(), completed);
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if import_repo
+                .records
+                .lock()
+                .await
+                .iter()
+                .any(|record| record.source_ref == item_id && record.source_system == "weaver")
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("targeted lookup should recover an item missing from the recent window");
+
+    assert!(
+        download_client
+            .targeted_completed_download_calls
+            .lock()
+            .await
+            .iter()
+            .any(|reference| reference == item_id),
+        "retry should issue a targeted per-item lookup"
+    );
+    assert_eq!(*download_client.completed_download_calls.lock().await, 0);
+
+    token.cancel();
+    poller
+        .await
+        .expect("download queue poller should stop cleanly");
+}
+
+#[tokio::test]
+async fn excluded_client_history_reconciliation_imports_missed_completion() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions,
+        pending_releases,
+    );
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary Weaver", "weaver").await;
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Reconciled Weaver Import".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie title");
+
+    let item_id = "weaver-swallowed-1";
+    let download_id = "weaver-download-swallowed-1";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = "weaver".to_string();
+    item.download_id = Some(download_id.to_string());
+    item.title_id = Some(title.id.clone());
+    item.title_name = title.name.clone();
+    item.facet = Some("movie".to_string());
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        &title.id,
+        item.title_name.as_str(),
+        source_dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    completed.client_type = "weaver".to_string();
+    completed.download_id = None;
+
+    // The completion event was never delivered: no bridge delta is published.
+    // Only the client's history knows about the item.
+    *download_client.history_items.lock().await = vec![item.clone()];
+    *download_client.recent_completed_downloads.lock().await = Some(vec![completed]);
+
+    let (_command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (_snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(8);
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(
+        crate::integration::start_download_queue_poller_with_options(
+            app.clone(),
+            token.child_token(),
+            tracked_download_rx,
+            snapshot_rx,
+            crate::integration::DownloadQueuePollerOptions {
+                interval: Duration::from_millis(50),
+                excluded_client_types: vec!["weaver".to_string()],
+            },
+        ),
+    );
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if import_repo
+                .records
+                .lock()
+                .await
+                .iter()
+                .any(|record| record.source_ref == item_id && record.source_system == "weaver")
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("history reconciliation should import a completion the bridge never announced");
+
+    assert!(
+        !download_client
+            .recent_activity_calls
+            .lock()
+            .await
+            .is_empty(),
+        "reconciliation should list the excluded client's recent history"
+    );
+
+    token.cancel();
+    poller
+        .await
+        .expect("download queue poller should stop cleanly");
+}
+
+#[tokio::test]
+async fn blocked_import_outcome_is_persisted_durably() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary Weaver", "weaver").await;
+
+    let (_command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(8);
+    let ingest = crate::tracked_downloads::TrackedDownloadSnapshotIngestHandle::new(snapshot_tx);
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(
+        crate::integration::start_download_queue_poller_with_options(
+            app.clone(),
+            token.child_token(),
+            tracked_download_rx,
+            snapshot_rx,
+            crate::integration::DownloadQueuePollerOptions {
+                interval: Duration::from_secs(60),
+                excluded_client_types: vec!["weaver".to_string()],
+            },
+        ),
+    );
+
+    let item_id = "weaver-foreign-junk-1";
+    let download_id = "ext-dl-junk-1";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = "weaver".to_string();
+    item.download_id = Some(download_id.to_string());
+    item.title_id = None;
+    item.title_name = "Zxqv Unknown Show S01E01".to_string();
+    item.facet = None;
+    item.is_scryer_origin = false;
+    let tracked_id = crate::tracked_downloads::tracked_download_id_for_item(&item);
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        "",
+        item.title_name.as_str(),
+        source_dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    completed.client_type = "weaver".to_string();
+    completed.download_id = Some(download_id.to_string());
+    completed.parameters.clear();
+
+    ingest
+        .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+            scope: crate::tracked_downloads::TrackedDownloadSnapshotScope::Delta,
+            items: vec![item],
+            completed_downloads: vec![completed],
+            actor_id: None,
+        })
+        .await
+        .expect("publish unmatched completed update");
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if app
+                .runtime
+                .acquisition
+                .tracked_download_snapshot
+                .read()
+                .await
+                .get(&tracked_id)
+                .is_some_and(|metadata| metadata.state == TrackedDownloadState::ImportBlocked)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("unmatched foreign completion should block for manual review");
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let tracked_recorded = download_submissions
+                .tracked_states
+                .lock()
+                .await
+                .values()
+                .any(|state| state == "import_blocked");
+            let identity_recorded = download_submissions
+                .identity_states
+                .lock()
+                .await
+                .values()
+                .any(|state| state == "import_blocked");
+            if tracked_recorded && identity_recorded {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("blocked outcome should be persisted to submissions and identity states");
+
+    token.cancel();
+    poller
+        .await
+        .expect("download queue poller should stop cleanly");
+}
+
+#[tokio::test]
 async fn external_weaver_idless_missing_history_retries_and_dispatches_without_second_delta() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -2730,6 +3092,8 @@ async fn import_series_duplicate_destination_requires_catalog_for_already_import
         &title_folder,
         path_settings.rename_enabled,
         &path_settings.rename_template,
+        &path_settings.season_folder_template,
+        &path_settings.specials_folder_template,
         1,
         "1",
         None,

@@ -1047,6 +1047,8 @@ impl SettingsMutations {
                 }),
                 required_audio_languages: input.required_audio_languages,
                 folder_template: input.folder_template,
+                season_folder_template: input.season_folder_template,
+                specials_folder_template: input.specials_folder_template,
                 rename_enabled: input.rename_enabled,
                 rename_template: input.rename_template,
                 rename_collision_policy: input

@@ -571,6 +571,10 @@ pub struct ExternalImportArrSourceWarmupResult {
 #[derive(Clone, Debug)]
 pub struct ExternalImportProwlarrWarmupResult {
     pub base_url: String,
+    /// The operator-entered Prowlarr API key the discovery ran with. Preview
+    /// merges it into the import group so downstream consumers see the real
+    /// credential, never a placeholder.
+    pub api_key: String,
     pub version: Option<String>,
     pub plan: crate::IndexerSyncPlan,
 }
@@ -3725,6 +3729,7 @@ mod tests {
                     &first.snapshot.session_id,
                     ExternalImportProwlarrWarmupResult {
                         base_url: "http://prowlarr".into(),
+                        api_key: "key".into(),
                         version: Some("2.0.0".into()),
                         plan: crate::IndexerSyncPlan {
                             children: Vec::new(),

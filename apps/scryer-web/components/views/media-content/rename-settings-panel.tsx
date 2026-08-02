@@ -15,7 +15,9 @@ import {
   applyRenameTemplatePreview,
   parseRenameTemplateTokenSpec,
   splitRenameTemplateSegments,
+  validateFolderTemplateSyntax,
   validateRenameTemplateSyntax,
+  type FolderTemplateValidationIssue,
   type RenameTemplateSegment,
   type RenameTemplateValidationIssue,
 } from "@/lib/utils/rename-template";
@@ -57,6 +59,10 @@ const VALID_FOLDER_TOKENS = new Set([
   "title", "year",
   "imdb_id", "tmdb_id", "tvdb_id", "anidb_id", "mal_id", "anilist_id",
 ]);
+const VALID_SEASON_FOLDER_TOKENS = new Set([
+  ...VALID_FOLDER_TOKENS,
+  "season",
+]);
 
 const FOLDER_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
   { token: "title", labelKey: "settings.renameTokenTitle" },
@@ -67,6 +73,10 @@ const FOLDER_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
   { token: "anidb_id", labelKey: "settings.renameTokenAnidbId" },
   { token: "mal_id", labelKey: "settings.renameTokenMalId" },
   { token: "anilist_id", labelKey: "settings.renameTokenAnilistId" },
+];
+const SEASON_FOLDER_TOKEN_DESCRIPTIONS = [
+  ...FOLDER_TOKEN_DESCRIPTIONS,
+  { token: "season", labelKey: "settings.renameTokenSeason" },
 ];
 
 const SHARED_RENAME_TOKEN_DESCRIPTIONS: { token: string; labelKey: string }[] = [
@@ -173,6 +183,7 @@ function getValidRenameTokens(scopeId: ViewCategoryId): ReadonlySet<string> {
 
 function getRenameReferenceTokens(
   renameTokenDescriptions: TokenDescription[],
+  scopeId: ViewCategoryId,
 ): TokenReference[] {
   const tokens = new Map<string, TokenReference>();
   const addToken = (item: TokenDescription, appliesTo: TokenApplicability) => {
@@ -189,7 +200,10 @@ function getRenameReferenceTokens(
     });
   };
 
-  FOLDER_TOKEN_DESCRIPTIONS.forEach((item) => addToken(item, "folders"));
+  const folderTokens = scopeId === "MOVIE"
+    ? FOLDER_TOKEN_DESCRIPTIONS
+    : SEASON_FOLDER_TOKEN_DESCRIPTIONS;
+  folderTokens.forEach((item) => addToken(item, "folders"));
   renameTokenDescriptions.forEach((item) => addToken(item, "files"));
 
   return Array.from(tokens.values());
@@ -223,6 +237,8 @@ function formatRenameValidationIssue(
       return t("settings.renameValidationUnmatchedClose");
     case "unknownToken":
       return t("settings.renameValidationUnknownToken", { token: issue.token });
+    case "invalidPadding":
+      return t("settings.renameValidationInvalidPadding", { padding: issue.padding });
     case "invalidFilter":
       return t("settings.renameValidationInvalidFilter", { filter: issue.filter });
   }
@@ -233,40 +249,40 @@ function formatRenameValidationIssue(
 function validateFolderTemplate(
   template: string,
   t: Translate,
+  validTokens: ReadonlySet<string> = VALID_FOLDER_TOKENS,
+  requiredToken?: string,
 ): string | null {
-  if (!template.trim()) {
-    return t("settings.folderValidationEmpty");
-  }
+  const issue: FolderTemplateValidationIssue | null = validateFolderTemplateSyntax(
+    template,
+    validTokens,
+    requiredToken,
+  );
+  if (!issue) return null;
 
-  let i = 0;
-  while (i < template.length) {
-    if (template[i] === "{") {
-      const closeIndex = template.indexOf("}", i + 1);
-      if (closeIndex === -1) {
-        return t("settings.renameValidationUnmatchedOpen");
-      }
-      const inner = template.slice(i + 1, closeIndex);
-      if (inner.includes("{")) {
-        return t("settings.renameValidationUnmatchedOpen");
-      }
-      const parsed = parseRenameTemplateTokenSpec(inner);
-      if (!parsed.ok) {
-        return parsed.kind === "invalidFilter"
-          ? t("settings.renameValidationInvalidFilter", { filter: parsed.value })
-          : t("settings.folderValidationUnknownToken", { token: parsed.value });
-      }
-      if (!VALID_FOLDER_TOKENS.has(parsed.spec.lookupName)) {
-        return t("settings.folderValidationUnknownToken", { token: parsed.spec.tokenName });
-      }
-      i = closeIndex + 1;
-    } else if (template[i] === "}") {
+  switch (issue.kind) {
+    case "empty":
+      return t("settings.folderValidationEmpty");
+    case "unmatchedOpen":
+      return t("settings.renameValidationUnmatchedOpen");
+    case "unmatchedClose":
       return t("settings.renameValidationUnmatchedClose");
-    } else {
-      i++;
+    case "unknownToken": {
+      const key = validTokens === VALID_SEASON_FOLDER_TOKENS
+        ? "settings.seasonFolderValidationUnknownToken"
+        : "settings.folderValidationUnknownToken";
+      return t(key, { token: issue.token });
     }
+    case "invalidPadding":
+      return t("settings.renameValidationInvalidPadding", { padding: issue.padding });
+    case "invalidFilter":
+      return t("settings.renameValidationInvalidFilter", { filter: issue.filter });
+    case "illegalCharacter":
+      return t("settings.folderValidationIllegalCharacter", {
+        character: JSON.stringify(issue.character),
+      });
+    case "missingRequiredToken":
+      return t("settings.seasonFolderTemplateMustContainSeason");
   }
-
-  return null;
 }
 
 const RENAME_PREVIEW_MOVIE_SAMPLE: Record<string, string> = {
@@ -308,16 +324,24 @@ function applyRenameTemplate(template: string, scopeId: ViewCategoryId): string 
   return applyRenameTemplatePreview(template, getValidRenameTokens(scopeId), sampleValues);
 }
 
-function applyFolderTemplate(template: string, scopeId: ViewCategoryId): string | null {
+function applyFolderTemplate(
+  template: string,
+  scopeId: ViewCategoryId,
+  validTokens: ReadonlySet<string> = VALID_FOLDER_TOKENS,
+  season?: string,
+): string | null {
   if (!template.trim()) return null;
   let result = "";
   let i = 0;
-  const sampleValues =
+  const baseSampleValues =
     scopeId === "MOVIE"
       ? RENAME_PREVIEW_MOVIE_SAMPLE
       : scopeId === "ANIME"
         ? RENAME_PREVIEW_ANIME_SAMPLE
         : RENAME_PREVIEW_SERIES_SAMPLE;
+  const sampleValues = season === undefined
+    ? baseSampleValues
+    : { ...baseSampleValues, season };
   while (i < template.length) {
     if (template[i] === "{") {
       const closeIndex = template.indexOf("}", i + 1);
@@ -325,7 +349,7 @@ function applyFolderTemplate(template: string, scopeId: ViewCategoryId): string 
       const inner = template.slice(i + 1, closeIndex);
       if (inner.includes("{")) return null;
       const parsed = parseRenameTemplateTokenSpec(inner);
-      if (!parsed.ok || !VALID_FOLDER_TOKENS.has(parsed.spec.lookupName)) return null;
+      if (!parsed.ok || !validTokens.has(parsed.spec.lookupName)) return null;
       let value = sampleValues[parsed.spec.lookupName] ?? parsed.spec.tokenName;
       if (parsed.spec.padWidth > 0 && /^\d+$/.test(value)) {
         value = value.padStart(parsed.spec.padWidth, "0");
@@ -342,7 +366,10 @@ function applyFolderTemplate(template: string, scopeId: ViewCategoryId): string 
   return result.trim() || null;
 }
 
-function splitFolderTemplateSegments(template: string): RenameTemplateSegment[] {
+function splitFolderTemplateSegments(
+  template: string,
+  validTokens: ReadonlySet<string> = VALID_FOLDER_TOKENS,
+): RenameTemplateSegment[] {
   if (!template) {
     return [];
   }
@@ -358,7 +385,7 @@ function splitFolderTemplateSegments(template: string): RenameTemplateSegment[] 
         const parsed = inner.includes("{")
           ? null
           : parseRenameTemplateTokenSpec(inner);
-        if (parsed?.ok && VALID_FOLDER_TOKENS.has(parsed.spec.lookupName)) {
+        if (parsed?.ok && validTokens.has(parsed.spec.lookupName)) {
           segments.push({
             text: template.slice(cursor, closeIndex + 1),
             isToken: true,
@@ -1048,6 +1075,10 @@ export function RenameSettingsPanel({
   mediaSettingsSaving,
   categoryFolderTemplates,
   handleFolderTemplateChange,
+  categorySeasonFolderTemplates,
+  handleSeasonFolderTemplateChange,
+  categorySpecialsFolderTemplates,
+  handleSpecialsFolderTemplateChange,
   categoryRenameTemplates,
   handleRenameTemplateChange,
   categoryRenameEnabled,
@@ -1063,6 +1094,10 @@ export function RenameSettingsPanel({
   mediaSettingsSaving: boolean;
   categoryFolderTemplates: Record<ViewCategoryId, string>;
   handleFolderTemplateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  categorySeasonFolderTemplates: Record<ViewCategoryId, string>;
+  handleSeasonFolderTemplateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  categorySpecialsFolderTemplates: Record<ViewCategoryId, string>;
+  handleSpecialsFolderTemplateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   categoryRenameTemplates: Record<ViewCategoryId, string>;
   handleRenameTemplateChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   categoryRenameEnabled: Record<ViewCategoryId, string>;
@@ -1075,6 +1110,9 @@ export function RenameSettingsPanel({
 }) {
   const t = useTranslate();
   const folderTemplateValue = categoryFolderTemplates[activeQualityScopeId];
+  const episodicScope = activeQualityScopeId !== "MOVIE";
+  const seasonFolderTemplateValue = categorySeasonFolderTemplates[activeQualityScopeId];
+  const specialsFolderTemplateValue = categorySpecialsFolderTemplates[activeQualityScopeId];
   const renameEnabled = categoryRenameEnabled[activeQualityScopeId] !== "false";
   const templateValue = categoryRenameTemplates[activeQualityScopeId];
   const folderValidationError = React.useMemo(
@@ -1085,10 +1123,49 @@ export function RenameSettingsPanel({
     () => (renameEnabled ? validateRenameTemplate(templateValue, activeQualityScopeId, t) : null),
     [activeQualityScopeId, renameEnabled, templateValue, t],
   );
+  const seasonFolderValidationError = React.useMemo(
+    () => episodicScope
+      ? validateFolderTemplate(
+          seasonFolderTemplateValue,
+          t,
+          VALID_SEASON_FOLDER_TOKENS,
+          "season",
+        )
+      : null,
+    [episodicScope, seasonFolderTemplateValue, t],
+  );
+  const specialsFolderValidationError = React.useMemo(
+    () => episodicScope
+      ? validateFolderTemplate(
+          specialsFolderTemplateValue,
+          t,
+          VALID_SEASON_FOLDER_TOKENS,
+        )
+      : null,
+    [episodicScope, specialsFolderTemplateValue, t],
+  );
 
   const folderPreview = React.useMemo(
     () => applyFolderTemplate(folderTemplateValue, activeQualityScopeId),
     [activeQualityScopeId, folderTemplateValue],
+  );
+  const seasonFolderPreview = React.useMemo(
+    () => applyFolderTemplate(
+      seasonFolderTemplateValue,
+      activeQualityScopeId,
+      VALID_SEASON_FOLDER_TOKENS,
+      "1",
+    ),
+    [activeQualityScopeId, seasonFolderTemplateValue],
+  );
+  const specialsFolderPreview = React.useMemo(
+    () => applyFolderTemplate(
+      specialsFolderTemplateValue,
+      activeQualityScopeId,
+      VALID_SEASON_FOLDER_TOKENS,
+      "0",
+    ),
+    [activeQualityScopeId, specialsFolderTemplateValue],
   );
 
   const renamePreview = React.useMemo(
@@ -1097,14 +1174,16 @@ export function RenameSettingsPanel({
   );
 
   const folderInputRef = React.useRef<HTMLInputElement>(null);
+  const seasonFolderInputRef = React.useRef<HTMLInputElement>(null);
+  const specialsFolderInputRef = React.useRef<HTMLInputElement>(null);
   const templateInputRef = React.useRef<HTMLInputElement>(null);
   const renameTokenDescriptions = React.useMemo(
     () => getRenameTokenDescriptions(activeQualityScopeId),
     [activeQualityScopeId],
   );
   const referenceTokens = React.useMemo(
-    () => getRenameReferenceTokens(renameTokenDescriptions),
-    [renameTokenDescriptions],
+    () => getRenameReferenceTokens(renameTokenDescriptions, activeQualityScopeId),
+    [activeQualityScopeId, renameTokenDescriptions],
   );
   const [referenceSlot, setReferenceSlot] = React.useState<HTMLElement | null>(null);
 
@@ -1114,11 +1193,16 @@ export function RenameSettingsPanel({
 
   const insertFolderToken = React.useCallback(
     (token: string) => {
-      const input = folderInputRef.current;
+      const seasonToken = episodicScope && token === "season";
+      const input = seasonToken ? seasonFolderInputRef.current : folderInputRef.current;
       if (!input) return;
-      insertTemplateToken(input, folderTemplateValue, token);
+      insertTemplateToken(
+        input,
+        seasonToken ? seasonFolderTemplateValue : folderTemplateValue,
+        token,
+      );
     },
-    [folderTemplateValue],
+    [episodicScope, folderTemplateValue, seasonFolderTemplateValue],
   );
 
   const insertToken = React.useCallback(
@@ -1145,6 +1229,44 @@ export function RenameSettingsPanel({
       applyAutocompleteToken(input, folderTemplateValue, context, token);
     },
     [folderTemplateValue],
+  );
+
+  const autocompleteSeasonFolderToken = React.useCallback(
+    (token: string) => {
+      const input = seasonFolderInputRef.current;
+      if (!input) return;
+      const cursor = input.selectionStart ?? seasonFolderTemplateValue.length;
+      const context = resolveTemplateTokenContext(
+        seasonFolderTemplateValue,
+        cursor,
+        SEASON_FOLDER_TOKEN_DESCRIPTIONS,
+      );
+      if (!context) {
+        insertTemplateToken(input, seasonFolderTemplateValue, token);
+        return;
+      }
+      applyAutocompleteToken(input, seasonFolderTemplateValue, context, token);
+    },
+    [seasonFolderTemplateValue],
+  );
+
+  const autocompleteSpecialsFolderToken = React.useCallback(
+    (token: string) => {
+      const input = specialsFolderInputRef.current;
+      if (!input) return;
+      const cursor = input.selectionStart ?? specialsFolderTemplateValue.length;
+      const context = resolveTemplateTokenContext(
+        specialsFolderTemplateValue,
+        cursor,
+        SEASON_FOLDER_TOKEN_DESCRIPTIONS,
+      );
+      if (!context) {
+        insertTemplateToken(input, specialsFolderTemplateValue, token);
+        return;
+      }
+      applyAutocompleteToken(input, specialsFolderTemplateValue, context, token);
+    },
+    [specialsFolderTemplateValue],
   );
 
   const autocompleteRenameToken = React.useCallback(
@@ -1200,6 +1322,80 @@ export function RenameSettingsPanel({
             </div>
 
             <TemplateExample value={folderPreview} />
+
+            {episodicScope ? (
+              <div className="grid gap-5 border-t border-[var(--scry-border)] pt-5 md:grid-cols-2">
+                <div className="space-y-3">
+                  <div className="space-y-2.5">
+                    <Label className="text-sm text-card-foreground">
+                      {t("settings.seasonFolderTemplateLabel")}
+                    </Label>
+                    <TokenAutocompleteInput
+                      inputRef={seasonFolderInputRef}
+                      value={seasonFolderTemplateValue}
+                      onChange={handleSeasonFolderTemplateChange}
+                      tokenDescriptions={SEASON_FOLDER_TOKEN_DESCRIPTIONS}
+                      onAutocompleteToken={autocompleteSeasonFolderToken}
+                      translateLabel={t}
+                      getSegments={(value) => splitFolderTemplateSegments(
+                        value,
+                        VALID_SEASON_FOLDER_TOKENS,
+                      )}
+                      placeholder={t("settings.seasonFolderTemplatePlaceholder")}
+                      disabled={mediaSettingsLoading}
+                      className={
+                        seasonFolderTemplateValue.trim()
+                          ? seasonFolderValidationError
+                            ? "border-[var(--scry-danger-border-strong)]"
+                            : "border-[var(--scry-accent)]"
+                          : undefined
+                      }
+                    />
+                    {seasonFolderValidationError ? (
+                      <p className="text-xs text-[var(--scry-danger-text-soft)]">
+                        {seasonFolderValidationError}
+                      </p>
+                    ) : null}
+                  </div>
+                  <TemplateExample value={seasonFolderPreview} />
+                </div>
+
+                <div className="space-y-3">
+                  <div className="space-y-2.5">
+                    <Label className="text-sm text-card-foreground">
+                      {t("settings.specialsFolderTemplateLabel")}
+                    </Label>
+                    <TokenAutocompleteInput
+                      inputRef={specialsFolderInputRef}
+                      value={specialsFolderTemplateValue}
+                      onChange={handleSpecialsFolderTemplateChange}
+                      tokenDescriptions={SEASON_FOLDER_TOKEN_DESCRIPTIONS}
+                      onAutocompleteToken={autocompleteSpecialsFolderToken}
+                      translateLabel={t}
+                      getSegments={(value) => splitFolderTemplateSegments(
+                        value,
+                        VALID_SEASON_FOLDER_TOKENS,
+                      )}
+                      placeholder={t("settings.specialsFolderTemplatePlaceholder")}
+                      disabled={mediaSettingsLoading}
+                      className={
+                        specialsFolderTemplateValue.trim()
+                          ? specialsFolderValidationError
+                            ? "border-[var(--scry-danger-border-strong)]"
+                            : "border-[var(--scry-accent)]"
+                          : undefined
+                      }
+                    />
+                    {specialsFolderValidationError ? (
+                      <p className="text-xs text-[var(--scry-danger-text-soft)]">
+                        {specialsFolderValidationError}
+                      </p>
+                    ) : null}
+                  </div>
+                  <TemplateExample value={specialsFolderPreview} />
+                </div>
+              </div>
+            ) : null}
           </div>
         </RenameSettingsSection>
 
@@ -1298,6 +1494,8 @@ export function RenameSettingsPanel({
             disabled={
               mediaSettingsSaving ||
               folderValidationError !== null ||
+              seasonFolderValidationError !== null ||
+              specialsFolderValidationError !== null ||
               renameValidationError !== null
             }
           >

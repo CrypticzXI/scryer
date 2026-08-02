@@ -3056,6 +3056,8 @@ pub struct MediaSettingsPayload {
     pub root_folders: Vec<RootFolderPayload>,
     pub required_audio_languages: Vec<String>,
     pub folder_template: String,
+    pub season_folder_template: Option<String>,
+    pub specials_folder_template: Option<String>,
     pub rename_enabled: bool,
     pub rename_template: String,
     pub rename_collision_policy: RenameCollisionPolicyValue,
@@ -3356,6 +3358,8 @@ pub struct UpdateMediaSettingsInput {
     pub root_folders: Option<Vec<RootFolderInput>>,
     pub required_audio_languages: Option<Vec<String>>,
     pub folder_template: Option<String>,
+    pub season_folder_template: Option<String>,
+    pub specials_folder_template: Option<String>,
     pub rename_enabled: Option<bool>,
     pub rename_template: Option<String>,
     pub rename_collision_policy: Option<RenameCollisionPolicyValue>,
@@ -3389,10 +3393,10 @@ pub struct UpdateServiceSettingsInput {
 
 #[derive(InputObject, Clone)]
 pub struct UpdateGeneralSettingsInput {
-    pub keep_history_forever: bool,
-    pub history_retention_days: i32,
+    pub keep_history_forever: Option<bool>,
+    pub history_retention_days: Option<i32>,
     pub image_cache_max_size_mb: Option<i32>,
-    pub plugin_http_ca_bundle_pem: String,
+    pub plugin_http_ca_bundle_pem: Option<String>,
 }
 
 #[derive(InputObject, Clone)]
@@ -4257,6 +4261,9 @@ pub struct RuleSetPayload {
     pub applied_facets: Vec<String>,
     pub is_managed: bool,
     pub managed_key: Option<String>,
+    /// Tags a managed pack is narrowed to. Null means it applies wherever its
+    /// facts match. Always null for user-authored rule sets.
+    pub managed_tag_filter: Option<Vec<String>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -4290,6 +4297,10 @@ pub struct UpdateRuleSetInput {
     pub rego_source: Option<String>,
     pub applied_facets: Option<Vec<String>>,
     pub priority: Option<i32>,
+    /// Narrow a managed locale pack to titles carrying one of these tags. An
+    /// empty list clears the filter so the pack applies wherever its facts
+    /// match. Rejected for user-authored rule sets.
+    pub managed_tag_filter: Option<Vec<String>>,
 }
 
 #[derive(InputObject)]

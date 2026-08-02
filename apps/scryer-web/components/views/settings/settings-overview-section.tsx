@@ -20,6 +20,7 @@ import {
 import { parseUiDateTimeFormat } from "@/lib/utils/settings-mutation-inputs";
 import type {
   GeneralSettings,
+  GeneralSettingsUpdate,
   TrustedCertificateEntry,
   UiDateTimeFormat,
 } from "@/lib/types/settings";
@@ -39,7 +40,7 @@ type SettingsOverviewSectionProps = {
   generalSaving: boolean;
   imageCacheClearing: boolean;
   onClearImageCache: () => void;
-  onSaveGeneralSettings: () => void;
+  onGeneralSettingsCommit: (update: GeneralSettingsUpdate) => void;
 };
 
 export function SettingsOverviewSection({
@@ -56,7 +57,7 @@ export function SettingsOverviewSection({
   generalSaving,
   imageCacheClearing,
   onClearImageCache,
-  onSaveGeneralSettings,
+  onGeneralSettingsCommit,
 }: SettingsOverviewSectionProps) {
   const t = useTranslate();
   const [advancedTrustOpen, setAdvancedTrustOpen] = React.useState(false);
@@ -70,12 +71,14 @@ export function SettingsOverviewSection({
   );
   const applyTrustedCertificateEntries = React.useCallback(
     (entries: TrustedCertificateEntry[]) => {
+      const pluginHttpCaBundlePem = bundlePemFromTrustedCertificateEntries(entries);
       updateGeneralSettings({
         pluginHttpTrustedCertificates: entries,
-        pluginHttpCaBundlePem: bundlePemFromTrustedCertificateEntries(entries),
+        pluginHttpCaBundlePem,
       });
+      onGeneralSettingsCommit({ pluginHttpCaBundlePem });
     },
-    [updateGeneralSettings],
+    [onGeneralSettingsCommit, updateGeneralSettings],
   );
   const mapTrustedCertUploadError = React.useCallback(
     (error: unknown) => {
@@ -205,8 +208,11 @@ export function SettingsOverviewSection({
               <SettingsToggleSwitch
                 checked={generalSettings.keepHistoryForever}
                 ariaLabel={t("settings.keepHistoryForever")}
-                onChange={(nextValue) =>
-                  updateGeneralSettings({ keepHistoryForever: nextValue })}
+                disabled={generalSaving}
+                onChange={(nextValue) => {
+                  updateGeneralSettings({ keepHistoryForever: nextValue });
+                  onGeneralSettingsCommit({ keepHistoryForever: nextValue });
+                }}
               />
             </div>
 
@@ -216,7 +222,7 @@ export function SettingsOverviewSection({
                 <Input
                   {...integerInputProps}
                   className="pr-16"
-                  disabled={generalSettings.keepHistoryForever}
+                  disabled={generalSettings.keepHistoryForever || generalSaving}
                   value={generalSettings.historyRetentionDays}
                   onChange={(event) => {
                     const nextValue = sanitizeDigits(event.target.value);
@@ -224,6 +230,10 @@ export function SettingsOverviewSection({
                       historyRetentionDays: nextValue === "" ? 0 : Number(nextValue),
                     });
                   }}
+                  onBlur={() =>
+                    onGeneralSettingsCommit({
+                      historyRetentionDays: generalSettings.historyRetentionDays,
+                    })}
                 />
                 <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
                   {t("settings.historyRetentionDaysSuffix")}
@@ -232,81 +242,57 @@ export function SettingsOverviewSection({
             </div>
 
             <div className="space-y-3 border-t border-border/60 pt-4">
-              <div className="space-y-1">
-                <h3 className="text-sm font-semibold">{t("settings.imageCacheTitle")}</h3>
-                <p className="text-muted-foreground">
-                  {t("settings.imageCacheHelp")}
-                </p>
-              </div>
+              <h3 className="text-sm font-semibold">{t("settings.imageCacheTitle")}</h3>
               <div className="space-y-1">
                 <Label>{t("settings.imageCacheMaxSizeLabel")}</Label>
-                <div className="relative w-40">
-                  <Input
-                    {...integerInputProps}
-                    className="pr-14"
-                    value={generalSettings.imageCacheMaxSizeMb}
-                    onChange={(event) => {
-                      const nextValue = sanitizeDigits(event.target.value);
-                      updateGeneralSettings({
-                        imageCacheMaxSizeMb: nextValue === "" ? 0 : Number(nextValue),
-                      });
-                    }}
-                  />
-                  <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
-                    {t("settings.imageCacheMbSuffix")}
-                  </span>
+                <div className="flex items-center gap-2">
+                  <div className="relative w-40">
+                    <Input
+                      {...integerInputProps}
+                      className="pr-14"
+                      disabled={generalSaving}
+                      value={generalSettings.imageCacheMaxSizeMb}
+                      onChange={(event) => {
+                        const nextValue = sanitizeDigits(event.target.value);
+                        updateGeneralSettings({
+                          imageCacheMaxSizeMb: nextValue === "" ? 0 : Number(nextValue),
+                        });
+                      }}
+                      onBlur={() =>
+                        onGeneralSettingsCommit({
+                          imageCacheMaxSizeMb: generalSettings.imageCacheMaxSizeMb,
+                        })}
+                    />
+                    <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+                      {t("settings.imageCacheMbSuffix")}
+                    </span>
+                  </div>
+                  <IconButton
+                    id="settings-general-clear-image-cache"
+                    label={
+                      imageCacheClearing
+                        ? t("settings.clearingImageCache")
+                        : t("settings.clearImageCache")
+                    }
+                    tone="delete"
+                    onClick={onClearImageCache}
+                    disabled={imageCacheClearing}
+                  >
+                    {imageCacheClearing ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                  </IconButton>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  {t("settings.imageCacheEffectiveSize", {
-                    mb: generalSettings.effectiveImageCacheMaxSizeMb.toLocaleString(undefined, {
-                      maximumFractionDigits: 2,
-                    }),
-                    bytes: generalSettings.effectiveImageCacheMaxSizeBytes.toLocaleString(),
-                  })}
-                </p>
               </div>
               {generalSettings.imageCacheMaxSizeEnvOverrideActive ? (
                 <div className="rounded-lg border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] p-3 text-xs text-muted-foreground">
                   {t("settings.imageCacheEnvOverride")}
                 </div>
               ) : null}
-              <div className="space-y-1">
-                <Button
-                  id="settings-general-clear-image-cache"
-                  type="button"
-                  variant="outline"
-                  onClick={onClearImageCache}
-                  disabled={imageCacheClearing}
-                >
-                  {imageCacheClearing ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Trash2 className="mr-2 h-4 w-4" />
-                  )}
-                  {imageCacheClearing
-                    ? t("settings.clearingImageCache")
-                    : t("settings.clearImageCache")}
-                </Button>
-                <p className="text-xs text-muted-foreground">
-                  {t("settings.clearImageCacheHelp")}
-                </p>
-              </div>
             </div>
 
-            <Button
-              id="settings-general-save"
-              onClick={onSaveGeneralSettings}
-              disabled={generalSaving}
-            >
-              {generalSaving ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  {t("label.saving")}
-                </>
-              ) : (
-                t("settings.save")
-              )}
-            </Button>
           </>
         )}
       </div>
@@ -377,7 +363,7 @@ export function SettingsOverviewSection({
                   id="settings-general-plugin-http-trust-upload-button"
                   type="button"
                   variant="outline"
-                  disabled={trustedCertUploading}
+                  disabled={trustedCertUploading || generalSaving}
                   onClick={() => trustedCertInputRef.current?.click()}
                 >
                   {trustedCertUploading ? (
@@ -396,7 +382,10 @@ export function SettingsOverviewSection({
                   id="settings-general-plugin-http-trust-clear"
                   type="button"
                   variant="ghost"
-                  disabled={generalSettings.pluginHttpTrustedCertificates.length === 0}
+                  disabled={
+                    generalSaving ||
+                    generalSettings.pluginHttpTrustedCertificates.length === 0
+                  }
                   onClick={handleClearTrustedCertificates}
                 >
                   {t("settings.pluginHttpTrustClearButton")}
@@ -431,6 +420,7 @@ export function SettingsOverviewSection({
                       id={`settings-general-plugin-http-trust-remove-${entry.fingerprintSha256}`}
                       label={t("label.remove")}
                       appearance="ghost"
+                      disabled={generalSaving}
                       onClick={() => handleRemoveTrustedCertificate(entry.fingerprintSha256)}
                     >
                       <Trash2 className="h-4 w-4" />

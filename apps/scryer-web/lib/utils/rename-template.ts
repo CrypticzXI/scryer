@@ -3,7 +3,13 @@ export type RenameTemplateValidationIssue =
   | { kind: "unmatchedOpen" }
   | { kind: "unmatchedClose" }
   | { kind: "unknownToken"; token: string }
+  | { kind: "invalidPadding"; padding: string }
   | { kind: "invalidFilter"; filter: string };
+
+export type FolderTemplateValidationIssue =
+  | RenameTemplateValidationIssue
+  | { kind: "illegalCharacter"; character: string }
+  | { kind: "missingRequiredToken"; token: string };
 
 export type RenameTemplateSegment = {
   text: string;
@@ -27,13 +33,80 @@ export type ParsedRenameTokenSpec = {
   filters: RenameTokenFilter[];
 };
 
+export const MAX_RENAME_TEMPLATE_PADDING_WIDTH = 240;
+
 export type RenameTokenParseResult =
   | { ok: true; spec: ParsedRenameTokenSpec }
-  | { ok: false; kind: "emptyToken" | "invalidFilter"; value: string };
+  | { ok: false; kind: "emptyToken" | "invalidFilter" | "invalidPadding"; value: string };
 
 const SPACE_FILTER_PREFIX = "space:";
 const TRUNCATE_FILTER_PREFIX = "truncate:";
 const VALID_SPACE_REPLACEMENTS = new Set(["_", ".", "-", ""]);
+const ILLEGAL_FOLDER_TEMPLATE_LITERAL_CHARS = new Set([
+  "<", ">", ":", "\"", "/", "\\", "|", "?", "*",
+]);
+
+function isIllegalFolderTemplateLiteral(character: string): boolean {
+  const codePoint = character.charCodeAt(0);
+  return ILLEGAL_FOLDER_TEMPLATE_LITERAL_CHARS.has(character)
+    || codePoint <= 0x1f
+    || (codePoint >= 0x7f && codePoint <= 0x9f);
+}
+
+export function validateFolderTemplateSyntax(
+  template: string,
+  validTokens: ReadonlySet<string>,
+  requiredToken?: string,
+): FolderTemplateValidationIssue | null {
+  const trimmed = template.trim();
+  if (!trimmed) {
+    return { kind: "empty" };
+  }
+
+  let i = 0;
+  let sawRequiredToken = requiredToken === undefined;
+  while (i < trimmed.length) {
+    if (trimmed[i] === "{") {
+      const closeIndex = trimmed.indexOf("}", i + 1);
+      if (closeIndex === -1) {
+        return { kind: "unmatchedOpen" };
+      }
+      const inner = trimmed.slice(i + 1, closeIndex);
+      if (inner.includes("{")) {
+        return { kind: "unmatchedOpen" };
+      }
+      const parsed = parseRenameTemplateTokenSpec(inner);
+      if (!parsed.ok) {
+        if (parsed.kind === "invalidFilter") {
+          return { kind: "invalidFilter", filter: parsed.value };
+        }
+        if (parsed.kind === "invalidPadding") {
+          return { kind: "invalidPadding", padding: parsed.value };
+        }
+        return { kind: "unknownToken", token: parsed.value };
+      }
+      if (!validTokens.has(parsed.spec.lookupName)) {
+        return { kind: "unknownToken", token: parsed.spec.tokenName };
+      }
+      if (parsed.spec.lookupName === requiredToken) {
+        sawRequiredToken = true;
+      }
+      i = closeIndex + 1;
+    } else if (trimmed[i] === "}") {
+      return { kind: "unmatchedClose" };
+    } else {
+      const character = trimmed[i];
+      if (isIllegalFolderTemplateLiteral(character)) {
+        return { kind: "illegalCharacter", character };
+      }
+      i++;
+    }
+  }
+
+  return sawRequiredToken
+    ? null
+    : { kind: "missingRequiredToken", token: requiredToken ?? "" };
+}
 
 export function validateRenameTemplateSyntax(
   template: string,
@@ -69,9 +142,13 @@ export function validateRenameTemplateSyntax(
       }
       const parsed = parseRenameTemplateTokenSpec(inner);
       if (!parsed.ok) {
-        return parsed.kind === "invalidFilter"
-          ? { kind: "invalidFilter", filter: parsed.value }
-          : { kind: "unknownToken", token: parsed.value };
+        if (parsed.kind === "invalidFilter") {
+          return { kind: "invalidFilter", filter: parsed.value };
+        }
+        if (parsed.kind === "invalidPadding") {
+          return { kind: "invalidPadding", padding: parsed.value };
+        }
+        return { kind: "unknownToken", token: parsed.value };
       }
       if (!validTokens.has(parsed.spec.lookupName)) {
         return { kind: "unknownToken", token: parsed.spec.tokenName };
@@ -216,10 +293,17 @@ export function parseRenameTemplateTokenSpec(inner: string): RenameTokenParseRes
     return { ok: false, kind: "emptyToken", value: inner };
   }
 
-  const padWidth =
-    colonIdx >= 0
-      ? Number.parseInt(tokenCore.slice(colonIdx + 1).trim(), 10)
-      : 0;
+  let padWidth = 0;
+  if (colonIdx >= 0) {
+    const rawPadding = tokenCore.slice(colonIdx + 1).trim();
+    if (!/^\d+$/.test(rawPadding)) {
+      return { ok: false, kind: "invalidPadding", value: rawPadding };
+    }
+    padWidth = Number(rawPadding);
+    if (!Number.isSafeInteger(padWidth) || padWidth > MAX_RENAME_TEMPLATE_PADDING_WIDTH) {
+      return { ok: false, kind: "invalidPadding", value: rawPadding };
+    }
+  }
   const filters: RenameTokenFilter[] = [];
 
   for (const rawFilter of parts) {
@@ -254,7 +338,7 @@ export function parseRenameTemplateTokenSpec(inner: string): RenameTokenParseRes
     spec: {
       tokenName,
       lookupName: tokenName.toLowerCase(),
-      padWidth: Number.isNaN(padWidth) ? 0 : padWidth,
+      padWidth,
       filters,
     },
   };

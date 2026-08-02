@@ -423,63 +423,7 @@ impl TrackedDownloadService {
         let Some(td) = self.cache.get(id) else {
             return false;
         };
-        let state_identity = match download_id_submission_for_tracked_download(app, td).await {
-            Some(submission) => DownloadSourceIdentity::from_submission(&submission),
-            None => DownloadSourceIdentity::new(
-                Some(td.client_id.as_str()),
-                &td.client_type,
-                &td.client_item.download_client_item_id,
-            ),
-        };
-        if let Err(e) = app
-            .services
-            .workflow
-            .download_submissions
-            .update_tracked_state(&state_identity, state.as_str())
-            .await
-        {
-            tracing::warn!(
-                error = %e,
-                id,
-                tracked_state_client_item_id = state_identity.item_id.as_str(),
-                state = state.as_str(),
-                "failed to persist tracked download terminal state"
-            );
-            return false;
-        }
-
-        let observed_identity = observed_queue_item_identity(&td.client_item);
-        if !download_submission_identity_is_empty(&observed_identity)
-            && let Err(e) = app
-                .services
-                .workflow
-                .download_submissions
-                .record_identity_tracked_state(
-                    &observed_identity,
-                    Some(&DownloadSourceIdentity::new(
-                        Some(td.client_id.as_str()),
-                        &td.client_type,
-                        &td.client_item.download_client_item_id,
-                    )),
-                    state.as_str(),
-                    None,
-                    None,
-                )
-                .await
-        {
-            tracing::warn!(
-                error = %e,
-                id,
-                client_id = td.client_id.as_str(),
-                client_type = td.client_type.as_str(),
-                download_client_item_id = td.client_item.download_client_item_id.as_str(),
-                state = state.as_str(),
-                "failed to persist durable tracked download terminal state"
-            );
-            return false;
-        }
-
-        true
+        persist_tracked_download_state_marker(app, td, state, None, None).await
     }
 
     // ── Title Resolution ─────────────────────────────────────────────────
@@ -1066,6 +1010,79 @@ impl TrackedDownloadHandle {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Write a durable tracked-state marker for a download to
+/// download_submissions and download_identity_states.
+///
+/// Terminal states record the outcome. The non-terminal `import_blocked`
+/// marker records that an operator decision is pending, so restarts don't
+/// erase the fact and reconciliation sweeps don't re-offer the item; a later
+/// successful import overwrites it with the terminal state.
+pub(crate) async fn persist_tracked_download_state_marker(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    state: TrackedDownloadState,
+    reason: Option<&str>,
+    detail: Option<&str>,
+) -> bool {
+    let state_identity = match download_id_submission_for_tracked_download(app, td).await {
+        Some(submission) => DownloadSourceIdentity::from_submission(&submission),
+        None => DownloadSourceIdentity::new(
+            Some(td.client_id.as_str()),
+            &td.client_type,
+            &td.client_item.download_client_item_id,
+        ),
+    };
+    if let Err(e) = app
+        .services
+        .workflow
+        .download_submissions
+        .update_tracked_state(&state_identity, state.as_str())
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            id = %td.id,
+            tracked_state_client_item_id = state_identity.item_id.as_str(),
+            state = state.as_str(),
+            "failed to persist tracked download state"
+        );
+        return false;
+    }
+
+    let observed_identity = observed_queue_item_identity(&td.client_item);
+    if !download_submission_identity_is_empty(&observed_identity)
+        && let Err(e) = app
+            .services
+            .workflow
+            .download_submissions
+            .record_identity_tracked_state(
+                &observed_identity,
+                Some(&DownloadSourceIdentity::new(
+                    Some(td.client_id.as_str()),
+                    &td.client_type,
+                    &td.client_item.download_client_item_id,
+                )),
+                state.as_str(),
+                reason,
+                detail,
+            )
+            .await
+    {
+        tracing::warn!(
+            error = %e,
+            id = %td.id,
+            client_id = td.client_id.as_str(),
+            client_type = td.client_type.as_str(),
+            download_client_item_id = td.client_item.download_client_item_id.as_str(),
+            state = state.as_str(),
+            "failed to persist durable tracked download state"
+        );
+        return false;
+    }
+
+    true
+}
 
 pub(crate) fn tracked_client_type_is_excluded(
     client_type: &str,

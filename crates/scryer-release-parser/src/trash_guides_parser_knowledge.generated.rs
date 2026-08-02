@@ -6,136 +6,504 @@ pub const TRASH_GUIDES_SOURCE_REVISION: &str = "e6aa63c782aa049e47be746889e4d06d
 
 pub static SERVICE_ALIAS_RULES: &[ServiceAliasRule] = &[
     ServiceAliasRule {
+        token: "4OD",
+        service: "Channel 4",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "ABEMA",
+        service: "ABEMA",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "ABEMATV",
+        service: "ABEMA",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "ADN",
+        service: "ADN",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "ALL4",
+        service: "Channel 4",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
         token: "AMAZON",
         service: "Amazon",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "AMAZONHD",
         service: "Amazon",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "AMZN",
         service: "Amazon",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "APPLE",
         service: "Apple TV+",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "APTV",
         service: "Apple TV+",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "ATV",
+        service: "ATV",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "ATVP",
         service: "Apple TV+",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "AUBC",
+        service: "ABC iview",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "BCORE",
+        service: "BCORE",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "BGLOBAL",
+        service: "B-Global",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "BILI",
+        service: "Bilibili",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "BILIBILI",
+        service: "Bilibili",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "CBC",
+        service: "CBC Gem",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "CNLP",
+        service: "CANAL+",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "CPNG",
+        service: "Coupang Play",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "CR",
         service: "Crunchyroll",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "CRAV",
+        service: "Crave",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "CRAVE",
+        service: "Crave",
+        requires_web_adjacency: true,
     },
     ServiceAliasRule {
         token: "CROLL",
         service: "Crunchyroll",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "CRUNCHY",
         service: "Crunchyroll",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "CRUNCHYR",
         service: "Crunchyroll",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "CRUNCHYROLL",
         service: "Crunchyroll",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "DCU",
+        service: "DC Universe",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "DISNEY",
         service: "Disney+",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "DMM",
+        service: "DMM TV",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "DSCP",
+        service: "Discovery+",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "DSCV",
+        service: "Discovery+",
+        requires_web_adjacency: true,
     },
     ServiceAliasRule {
         token: "DSNP",
         service: "Disney+",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "DSNPHS",
+        service: "Disney+ Hotstar",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "DSNY",
         service: "Disney+",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "FOD",
+        service: "FOD",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "FRIDAY",
+        service: "friDay Video",
+        requires_web_adjacency: true,
     },
     ServiceAliasRule {
         token: "FUNI",
         service: "Funimation",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "FUNIMATION",
         service: "Funimation",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "HAMI",
+        service: "Hami Video",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "HAMIVIDEO",
+        service: "Hami Video",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "HBO",
         service: "HBO Max",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "HBOM",
         service: "HBO Max",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "HBOMAX",
         service: "HBO Max",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "HIDI",
         service: "HIDIVE",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "HIDIVE",
         service: "HIDIVE",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "HMAX",
         service: "HBO Max",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "HTSR",
+        service: "Disney+ Hotstar",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "HULU",
         service: "Hulu",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "IP",
+        service: "BBC iPlayer",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "IPLAYER",
+        service: "BBC iPlayer",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "IQIY",
+        service: "iQIYI",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "IQIYI",
+        service: "iQIYI",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "IT",
+        service: "iTunes",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "ITV",
+        service: "ITVX",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "ITVX",
+        service: "ITVX",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "KCW",
+        service: "KOCOWA",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "KKTV",
+        service: "KKTV",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "KOCOWA",
+        service: "KOCOWA",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "LINETV",
+        service: "LINE TV",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "MAX",
         service: "HBO Max",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "MY5",
+        service: "My5",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "MYTVSUPER",
+        service: "myTV SUPER",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "NETFLIX",
         service: "Netflix",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "NETFLIXHD",
         service: "Netflix",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "NETFLIXUHD",
         service: "Netflix",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "NF",
         service: "Netflix",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "NLZ",
+        service: "NLZiet",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "NLZIET",
+        service: "NLZiet",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "NOW",
+        service: "NOW",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "OVID",
+        service: "OVID.tv",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "PARAMOUNT",
         service: "Paramount+",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "PATHE",
+        service: "Pathé Thuis",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "PCOK",
         service: "Peacock",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "PEACOCK",
         service: "Peacock",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "PLAY",
+        service: "PLAY",
+        requires_web_adjacency: true,
     },
     ServiceAliasRule {
         token: "PMTP",
         service: "Paramount+",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "QIBI",
+        service: "Quibi",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "QUIBI",
+        service: "Quibi",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "RED",
+        service: "YouTube Premium",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "ROKU",
+        service: "The Roku Channel",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "SALTO",
+        service: "Salto",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "SHO",
+        service: "Showtime",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "SHOWTIME",
+        service: "Showtime",
+        requires_web_adjacency: false,
     },
     ServiceAliasRule {
         token: "STAN",
         service: "Stan",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "STRP",
+        service: "Star+",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "SYFY",
+        service: "SYFY",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "TVER",
+        service: "TVer",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "TVING",
+        service: "TVING",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "VDL",
+        service: "Videoland",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "VIDEOLAND",
+        service: "Videoland",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "VIKI",
+        service: "Viki",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "VIU",
+        service: "Viu",
+        requires_web_adjacency: true,
+    },
+    ServiceAliasRule {
+        token: "VRV",
+        service: "VRV",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "WAKA",
+        service: "Wakanim",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "WAKANIM",
+        service: "Wakanim",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "WAVVE",
+        service: "Wavve",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "WETV",
+        service: "WeTV",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "WKN",
+        service: "Wakanim",
+        requires_web_adjacency: false,
+    },
+    ServiceAliasRule {
+        token: "YOUKU",
+        service: "Youku",
+        requires_web_adjacency: false,
     },
 ];
 

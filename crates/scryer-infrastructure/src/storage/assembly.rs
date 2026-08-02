@@ -2559,8 +2559,9 @@ mod tests {
                 "backup-lattice-title",
                 TitleImageSourceResult {
                     kind: TitleImageKind::Poster,
-                    requested_source_url: "https://example.invalid/poster.jpg".to_string(),
-                    source_url: "https://example.invalid/poster.jpg".to_string(),
+                    requested_source_url: "https://image.tmdb.org/t/p/original/poster.jpg"
+                        .to_string(),
+                    source_url: "https://image.tmdb.org/t/p/original/poster.jpg".to_string(),
                     source_etag: Some("matrix-etag".to_string()),
                     source_last_modified: Some("Wed, 12 Jun 2026 03:00:00 GMT".to_string()),
                     source_format: "jpeg".to_string(),
@@ -2655,7 +2656,7 @@ mod tests {
         assert_eq!(title.external_ids[0].value, "424242");
         assert_eq!(
             title.poster_url.as_deref(),
-            Some("https://example.invalid/poster.jpg"),
+            Some("https://image.tmdb.org/t/p/original/poster.jpg"),
             "durable remote artwork URL should survive restore"
         );
         Ok(())
@@ -2680,7 +2681,10 @@ mod tests {
                 task.title_id == "backup-lattice-title" && task.kind == TitleImageKind::Poster
             })
             .expect("restored title image metadata should queue refresh work");
-        assert_eq!(task.source_url, "https://example.invalid/poster.jpg");
+        assert_eq!(
+            task.source_url,
+            "https://image.tmdb.org/t/p/original/poster.jpg"
+        );
         assert!(
             task.variants
                 .iter()
@@ -2800,7 +2804,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             year: Some(2026),
             overview: Some("Logical backup lattice fixture".to_string()),
-            poster_url: Some("https://example.invalid/poster.jpg".to_string()),
+            poster_url: Some("https://image.tmdb.org/t/p/original/poster.jpg".to_string()),
             poster_source_url: None,
             background_url: None,
             background_source_url: None,

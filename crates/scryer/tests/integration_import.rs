@@ -228,6 +228,8 @@ async fn set_folder_template(ctx: &TestContext, facet: MediaFacet, template: &st
                 root_folders: None,
                 required_audio_languages: None,
                 folder_template: Some(template.to_string()),
+                season_folder_template: None,
+                specials_folder_template: None,
                 rename_enabled: None,
                 rename_template: None,
                 rename_collision_policy: None,
@@ -1442,7 +1444,7 @@ async fn manual_import_series_reuses_existing_title_folder_path_even_when_templa
     )
     .await;
     let existing_folder = dest_root.path().join("Template Show (2024)");
-    std::fs::create_dir_all(existing_folder.join("Season 01")).expect("create existing folder");
+    std::fs::create_dir_all(existing_folder.join("Season 1")).expect("create existing folder");
     ctx.titles
         .set_folder_path(&title.id, existing_folder.to_string_lossy().as_ref())
         .await
@@ -1476,8 +1478,8 @@ async fn manual_import_series_reuses_existing_title_folder_path_even_when_templa
     assert_eq!(results.len(), 1);
     assert!(results[0].success, "manual import should succeed");
     let dest_path = results[0].dest_path.clone().expect("dest path");
-    assert!(dest_path.contains("Template Show (2024)/Season 01/"));
-    assert!(!dest_path.contains("Template Show/Season 01/"));
+    assert!(dest_path.contains("Template Show (2024)/Season 1/"));
+    assert!(!dest_path.contains("Template Show/Season 1/"));
 }
 
 #[tokio::test]

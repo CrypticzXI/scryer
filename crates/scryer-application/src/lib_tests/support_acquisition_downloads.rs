@@ -1352,6 +1352,8 @@ pub(super) struct StubDownloadClient {
     pub(super) recent_activity_for_title_calls: Arc<Mutex<Vec<(String, usize)>>>,
     pub(super) completed_download_calls: Arc<Mutex<usize>>,
     pub(super) recent_completed_download_calls: Arc<Mutex<Vec<usize>>>,
+    pub(super) targeted_completed_downloads: Arc<Mutex<HashMap<String, CompletedDownload>>>,
+    pub(super) targeted_completed_download_calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl StubDownloadClient {
@@ -1497,6 +1499,33 @@ impl DownloadClient for StubDownloadClient {
             None => self.completed_downloads.lock().await.clone(),
         };
         Ok(items.into_iter().take(limit).collect())
+    }
+
+    async fn get_completed_download_for_source(
+        &self,
+        _client_id: &str,
+        _client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<CompletedDownload>> {
+        self.targeted_completed_download_calls
+            .lock()
+            .await
+            .push(download_client_item_id.to_string());
+        if let Some(found) = self
+            .targeted_completed_downloads
+            .lock()
+            .await
+            .get(download_client_item_id)
+        {
+            return Ok(Some(found.clone()));
+        }
+        let items = match self.recent_completed_downloads.lock().await.clone() {
+            Some(items) => items,
+            None => self.completed_downloads.lock().await.clone(),
+        };
+        Ok(items
+            .into_iter()
+            .find(|item| item.download_client_item_id == download_client_item_id))
     }
 
     async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {

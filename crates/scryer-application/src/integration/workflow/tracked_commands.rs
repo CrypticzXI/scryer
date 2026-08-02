@@ -787,6 +787,16 @@ pub async fn start_download_queue_poller_with_options(
                         tracing::warn!(error = %error, "download queue poll failed");
                     }
                 }
+                if include_recent_history {
+                    reconcile_excluded_client_recent_history(
+                        &app,
+                        &actor,
+                        &mut runtime,
+                        &tracked_work_result_tx,
+                        &excluded_client_type_refs,
+                    )
+                    .await;
+                }
                 try_dispatch_excluded_completed_history_retry(
                     &app,
                     &actor,
@@ -1180,7 +1190,7 @@ async fn build_excluded_completed_history_retry_drain(
         .iter()
         .map(|(_, item)| item.clone())
         .collect::<Vec<_>>();
-    let completed_lookup =
+    let mut completed_lookup =
         crate::completed_download_handler::load_completed_download_lookup_for_tracked_client_items_excluding_client_types(
             app,
             &lookup_items,
@@ -1192,10 +1202,41 @@ async fn build_excluded_completed_history_retry_drain(
     let mut retry_ids = Vec::new();
     let mut revalidated = false;
 
-    for (id, _) in retry_items {
-        let has_completed_history = tracker
+    for (id, item) in retry_items {
+        let mut has_completed_history = tracker
             .find(&id)
             .is_some_and(|td| completed_lookup.matches_tracked_download(td));
+        if !has_completed_history {
+            // The recent window is bounded, so a long-stuck item can age out
+            // of it and would otherwise never match again. Ask the client for
+            // the exact row before giving up on this cycle.
+            match app
+                .services
+                .integrations
+                .download_client
+                .get_completed_download_for_source(
+                    &item.client_id,
+                    &item.client_type,
+                    &item.download_client_item_id,
+                )
+                .await
+            {
+                Ok(Some(completed)) => {
+                    completed_lookup.insert(completed);
+                    has_completed_history = tracker
+                        .find(&id)
+                        .is_some_and(|td| completed_lookup.matches_tracked_download(td));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::debug!(
+                        id = %id,
+                        error = %error,
+                        "targeted completed download lookup failed; will retry next cycle"
+                    );
+                }
+            }
+        }
         if !has_completed_history {
             continue;
         }
@@ -1223,6 +1264,104 @@ async fn build_excluded_completed_history_retry_drain(
         drain: TrackedDownloadWorkDrain::new(retry_ids, completed_lookup),
         revalidated,
     }
+}
+
+/// Bounded history reconciliation for clients excluded from generic polling
+/// because a realtime bridge owns their live queue.
+///
+/// A bridge can miss terminal events (drops, disconnect gaps, process
+/// restarts), and completed items never appear in queue snapshots, so without
+/// this sweep a missed completion is permanently invisible. Every
+/// recent-history cycle, fetch the client's recent history and feed completed
+/// rows that still need handling through the normal snapshot path.
+async fn reconcile_excluded_client_recent_history(
+    app: &AppUseCase,
+    actor: &User,
+    runtime: &mut TrackedDownloadRuntimeState,
+    result_tx: &tokio::sync::mpsc::UnboundedSender<TrackedDownloadBackgroundWorkResult>,
+    excluded_client_type_refs: &[&str],
+) {
+    if excluded_client_type_refs.is_empty() {
+        return;
+    }
+
+    let history_items = match app
+        .services
+        .integrations
+        .download_client
+        .list_recent_activity_for_client_types(
+            DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT,
+            excluded_client_type_refs,
+        )
+        .await
+    {
+        Ok(items) => items,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "excluded-client history reconciliation: failed to list recent history"
+            );
+            return;
+        }
+    };
+
+    let mut candidates = Vec::new();
+    for item in history_items {
+        if item.state != scryer_domain::DownloadQueueState::Completed {
+            continue;
+        }
+        let id = tracked_download_id_for_item(&item);
+        if runtime.tracked_work_in_flight.contains(&id) {
+            continue;
+        }
+        if let Some(td) = runtime.tracker.find(&id)
+            && (td.state.is_terminal()
+                || td.state == TrackedDownloadState::Importing
+                || (td.state == TrackedDownloadState::ImportBlocked && td.import_attempted))
+        {
+            continue;
+        }
+        if let Some(state) =
+            crate::completed_download_handler::queue_item_identity_tracked_state(app, &item).await
+            && (state.is_terminal() || state == TrackedDownloadState::ImportBlocked)
+        {
+            continue;
+        }
+        candidates.push(item);
+    }
+    if candidates.is_empty() {
+        return;
+    }
+
+    let completed_lookup =
+        crate::completed_download_handler::load_completed_download_lookup_for_tracked_client_items_excluding_client_types(
+            app,
+            &candidates,
+            DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT,
+            &[],
+        )
+        .await
+        .unwrap_or_default();
+
+    tracing::info!(
+        count = candidates.len(),
+        "reconciling completed history for subscription-covered clients"
+    );
+    process_tracked_download_snapshot(
+        app,
+        actor,
+        runtime,
+        result_tx,
+        candidates,
+        Some(completed_lookup.clone()),
+        TrackedDownloadSnapshotPrune::None,
+        TrackedDownloadSnapshotProjection::UpsertOnly { actor_id: None },
+        TrackedDownloadSnapshotDispatch::Seen { completed_lookup },
+        false,
+        excluded_client_type_refs,
+        "history-reconcile",
+    )
+    .await;
 }
 
 async fn try_dispatch_excluded_completed_history_retry(
@@ -1537,6 +1676,20 @@ async fn handle_tracked_download_background_work_result(
         if persisted {
             finalize_tracked_terminal_state(app, tracker, &result.id, state).await;
         }
+    } else if state == TrackedDownloadState::ImportBlocked
+        && result.kind == TrackedDownloadBackgroundWorkKind::Import
+        && let Some(td) = tracker.find(&result.id)
+    {
+        // A rejected import is an operator decision point; record it durably
+        // so restarts don't erase it and reconciliation doesn't re-offer it.
+        crate::tracked_downloads::persist_tracked_download_state_marker(
+            app,
+            td,
+            TrackedDownloadState::ImportBlocked,
+            Some("import_blocked_after_import"),
+            td.status_messages.first().map(String::as_str),
+        )
+        .await;
     }
 
     publish_runtime_tracked_download_snapshot_cache(app, tracker).await;

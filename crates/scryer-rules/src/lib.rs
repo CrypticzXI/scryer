@@ -48,9 +48,21 @@ pub struct UserPolicy {
 /// Matches `scryer.block_score()` builtin which returns -10000.
 pub const BLOCK_SCORE_THRESHOLD: i32 = -9000;
 
-/// Managed policies may only contribute bounded score adjustments.
-pub const MANAGED_POLICY_MIN_SCORE: i32 = -500;
-pub const MANAGED_POLICY_MAX_SCORE: i32 = 500;
+/// The veto sentinel itself, as returned by the `scryer.block_score()` builtin
+/// and as upstream TRaSH Guides spells its own vetoes.
+pub const BLOCK_SCORE: i32 = -10000;
+
+/// Managed policies rank within this band. The bounds match the ceiling the
+/// normalized TRaSH scores are compressed into, so a pack can express its full
+/// range without reaching the veto sentinel by accident.
+pub const MANAGED_POLICY_MIN_SCORE: i32 = -1000;
+pub const MANAGED_POLICY_MAX_SCORE: i32 = 1000;
+
+/// Ranking entries from one managed policy sum within this band. Vetoes are
+/// excluded: a veto is decisive on its own, so aggregating it with rankings
+/// would compare two different currencies.
+pub const MANAGED_POLICY_MIN_AGGREGATE_SCORE: i64 = -3000;
+pub const MANAGED_POLICY_MAX_AGGREGATE_SCORE: i64 = 3000;
 
 /// Input document set per-release for user rule evaluation.
 ///
@@ -542,23 +554,41 @@ impl UserRulesEvaluator {
     }
 }
 
+/// Enforce the managed-policy score contract at evaluation time.
+///
+/// Managed packs are opt-in, so a pack the user enabled may veto.
+/// A managed entry is therefore either a ranking inside
+/// `[MANAGED_POLICY_MIN_SCORE, MANAGED_POLICY_MAX_SCORE]` or exactly the veto
+/// sentinel. Nothing lives in between: a value below the ranking band but above
+/// the sentinel is neither, and is rejected rather than silently treated as one
+/// of them.
 fn validate_managed_entries(entries: &[UserRuleEntry]) -> Result<(), String> {
-    if let Some(entry) = entries
-        .iter()
-        .find(|entry| entry.delta <= BLOCK_SCORE_THRESHOLD)
-    {
+    let is_veto = |delta: i32| delta == BLOCK_SCORE;
+
+    if let Some(entry) = entries.iter().find(|entry| {
+        !is_veto(entry.delta)
+            && !(MANAGED_POLICY_MIN_SCORE..=MANAGED_POLICY_MAX_SCORE).contains(&entry.delta)
+    }) {
         return Err(format!(
-            "managed rule produced block-capable score {} for {}",
+            "managed rule score {} for {} is neither the veto sentinel {BLOCK_SCORE} nor within \
+             [{MANAGED_POLICY_MIN_SCORE}, {MANAGED_POLICY_MAX_SCORE}]",
             entry.delta, entry.code
         ));
     }
 
+    // A veto decides the release on its own, so there is no ranking total left
+    // to bound.
+    if entries.iter().any(|entry| is_veto(entry.delta)) {
+        return Ok(());
+    }
+
     let aggregate: i64 = entries.iter().map(|entry| i64::from(entry.delta)).sum();
-    if !(i64::from(MANAGED_POLICY_MIN_SCORE)..=i64::from(MANAGED_POLICY_MAX_SCORE))
+    if !(MANAGED_POLICY_MIN_AGGREGATE_SCORE..=MANAGED_POLICY_MAX_AGGREGATE_SCORE)
         .contains(&aggregate)
     {
         return Err(format!(
-            "managed rule aggregate {aggregate} is outside [{MANAGED_POLICY_MIN_SCORE}, {MANAGED_POLICY_MAX_SCORE}]"
+            "managed rule aggregate {aggregate} is outside \
+             [{MANAGED_POLICY_MIN_AGGREGATE_SCORE}, {MANAGED_POLICY_MAX_AGGREGATE_SCORE}]"
         ));
     }
 
@@ -770,8 +800,10 @@ mod tests {
         assert_eq!(result.entries[0].origin, PolicyOrigin::System);
     }
 
+    /// An opt-in managed pack may veto, and the builtin is the
+    /// canonical spelling of that veto.
     #[test]
-    fn managed_rule_rejects_block_builtin_source() {
+    fn managed_rule_accepts_block_builtin_source() {
         let policy = UserPolicy {
             id: "managed_block".to_string(),
             name: "Managed Block".to_string(),
@@ -785,30 +817,115 @@ mod tests {
             applied_facets: vec![],
         };
 
-        assert!(UserRulesEngine::build(&[policy]).is_err());
+        let mut evaluator = UserRulesEngine::build(&[policy]).unwrap().evaluator();
+        let result = evaluator.evaluate(&test_input(), "movie").unwrap();
+        assert!(result.errors.is_empty(), "{result:?}");
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].delta, BLOCK_SCORE);
+    }
+
+    fn managed_policy(id: &str, body: &str) -> UserPolicy {
+        UserPolicy {
+            id: id.to_string(),
+            name: id.to_string(),
+            rego_source: format!("package scryer.rules.user.{id}\nimport rego.v1\n{body}\n"),
+            origin: PolicyOrigin::System,
+            applied_facets: vec![],
+        }
+    }
+
+    fn evaluate_managed(id: &str, body: &str) -> EvalResult {
+        UserRulesEngine::build(&[managed_policy(id, body)])
+            .unwrap()
+            .evaluator()
+            .evaluate(&test_input(), "movie")
+            .unwrap()
     }
 
     #[test]
-    fn managed_rule_rejects_out_of_bounds_runtime_result() {
-        let policy = UserPolicy {
-            id: "managed_bounds".to_string(),
-            name: "Managed Bounds".to_string(),
-            rego_source: r#"
-                package scryer.rules.user.managed_bounds
-                import rego.v1
-                score_entry["too_high"] := 501
-            "#
-            .to_string(),
-            origin: PolicyOrigin::System,
-            applied_facets: vec![],
-        };
+    fn managed_rule_accepts_the_veto_sentinel_exactly() {
+        let result = evaluate_managed("managed_veto", r#"score_entry["veto"] := -10000"#);
+        assert!(result.errors.is_empty(), "{result:?}");
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].delta, BLOCK_SCORE);
+    }
 
-        let mut evaluator = UserRulesEngine::build(&[policy]).unwrap().evaluator();
-        let result = evaluator.evaluate(&test_input(), "movie").unwrap();
+    #[test]
+    fn managed_rule_rejects_scores_between_the_ranking_band_and_the_sentinel() {
+        for (id, body) in [
+            ("managed_near_veto", r#"score_entry["near"] := -9500"#),
+            ("managed_below_band", r#"score_entry["below"] := -1500"#),
+            ("managed_beyond_veto", r#"score_entry["beyond"] := -35000"#),
+        ] {
+            let result = evaluate_managed(id, body);
+            assert!(result.entries.is_empty(), "{id}: {result:?}");
+            assert_eq!(result.errors.len(), 1, "{id}: {result:?}");
+            assert!(
+                result.errors[0]
+                    .message
+                    .contains("neither the veto sentinel"),
+                "{id}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_rule_accepts_rankings_inside_the_band_and_rejects_them_outside() {
+        let inside = evaluate_managed("managed_inside", r#"score_entry["ok"] := 900"#);
+        assert!(inside.errors.is_empty(), "{inside:?}");
+        assert_eq!(inside.entries[0].delta, 900);
+
+        let outside = evaluate_managed("managed_outside", r#"score_entry["too_high"] := 1100"#);
+        assert!(outside.entries.is_empty());
+        assert_eq!(outside.errors.len(), 1);
+        assert_eq!(outside.errors[0].origin, PolicyOrigin::System);
+        assert!(
+            outside.errors[0].message.contains("[-1000, 1000]"),
+            "{outside:?}"
+        );
+    }
+
+    #[test]
+    fn managed_rule_aggregate_admits_a_full_locale_pack() {
+        let result = evaluate_managed(
+            "managed_aggregate",
+            r#"score_entry["tier_1"] := 245
+score_entry["scene"] := 227
+score_entry["marker"] := 900"#,
+        );
+        assert!(result.errors.is_empty(), "{result:?}");
+        assert_eq!(result.entries.len(), 3);
+    }
+
+    #[test]
+    fn managed_rule_aggregate_is_bounded_when_no_entry_vetoes() {
+        let result = evaluate_managed(
+            "managed_aggregate_high",
+            r#"score_entry["a"] := 1000
+score_entry["b"] := 1000
+score_entry["c"] := 1000
+score_entry["d"] := 1000"#,
+        );
         assert!(result.entries.is_empty());
         assert_eq!(result.errors.len(), 1);
-        assert_eq!(result.errors[0].origin, PolicyOrigin::System);
-        assert!(result.errors[0].message.contains("outside [-500, 500]"));
+        assert!(
+            result.errors[0].message.contains("aggregate 4000"),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn managed_rule_veto_short_circuits_the_aggregate_bound() {
+        let result = evaluate_managed(
+            "managed_veto_aggregate",
+            r#"score_entry["veto"] := -10000
+score_entry["a"] := 1000
+score_entry["b"] := 1000
+score_entry["c"] := 1000
+score_entry["d"] := 1000"#,
+        );
+        assert!(result.errors.is_empty(), "{result:?}");
+        assert_eq!(result.entries.len(), 5);
     }
 
     #[test]

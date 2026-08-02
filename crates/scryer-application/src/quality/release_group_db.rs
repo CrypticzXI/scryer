@@ -58,6 +58,54 @@ pub struct GroupRule {
     pub entry: GroupEntry,
 }
 
+/// One upstream `trash_scores` entry, joined to the fact code its custom format
+/// produces. A code appears once per (app, score set) the upstream data scores
+/// it under, so callers pick the set their locale pack declares.
+#[derive(Debug, Clone, Copy)]
+pub struct TrashFactScore {
+    pub code: &'static str,
+    pub app: &'static str,
+    pub score_set: &'static str,
+    pub score: i64,
+}
+
+/// One `LanguageSpecification` value, distilled to something the rule input can
+/// answer directly.
+///
+/// `Named` is the canonical audio-language code
+/// `normalize_detected_audio_language_code` produces, so it compares against
+/// `input.release.languages_audio` with no further translation. `Original` is
+/// upstream's relative id `-2`: the title's own original language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrashLanguage {
+    Named(&'static str),
+    Original,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrashLanguageCondition {
+    pub language: TrashLanguage,
+    pub negate: bool,
+    /// Upstream's `required` flag, which drives `SpecificationMatchesGroup`:
+    /// no required specification may fail, and at least one must match.
+    pub required: bool,
+}
+
+/// One upstream language custom format, distilled to its language conditions.
+///
+/// Language formats are policy rather than detection — they need
+/// the title's original language, which the parser never sees — so they are
+/// evaluated by the managed locale packs against the rule input instead of
+/// being emitted as parser facts. Scores join through [`TrashFactScore`] under
+/// the same `code`.
+#[derive(Debug, Clone, Copy)]
+pub struct TrashLanguageRule {
+    pub code: &'static str,
+    pub app: &'static str,
+    pub stem: &'static str,
+    pub conditions: &'static [TrashLanguageCondition],
+}
+
 include!("trash_guides_release_groups.generated.rs");
 
 struct GroupRuleIndex {

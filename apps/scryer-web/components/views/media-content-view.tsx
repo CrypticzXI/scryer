@@ -1764,6 +1764,14 @@ export function MediaContentView({
     setCategoryFolderTemplates: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
     >;
+    categorySeasonFolderTemplates: Record<ViewCategoryId, string>;
+    setCategorySeasonFolderTemplates: React.Dispatch<
+      React.SetStateAction<Record<ViewCategoryId, string>>
+    >;
+    categorySpecialsFolderTemplates: Record<ViewCategoryId, string>;
+    setCategorySpecialsFolderTemplates: React.Dispatch<
+      React.SetStateAction<Record<ViewCategoryId, string>>
+    >;
     categoryRenameTemplates: Record<ViewCategoryId, string>;
     setCategoryRenameTemplates: React.Dispatch<
       React.SetStateAction<Record<ViewCategoryId, string>>
@@ -2079,6 +2087,10 @@ export function MediaContentView({
     activeQualityScopeId,
     categoryFolderTemplates,
     setCategoryFolderTemplates,
+    categorySeasonFolderTemplates,
+    setCategorySeasonFolderTemplates,
+    categorySpecialsFolderTemplates,
+    setCategorySpecialsFolderTemplates,
     categoryRenameTemplates,
     setCategoryRenameTemplates,
     categoryRenameEnabled,
@@ -2750,6 +2762,26 @@ export function MediaContentView({
     [activeQualityScopeId, setCategoryFolderTemplates],
   );
 
+  const handleSeasonFolderTemplateChange = React.useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      setCategorySeasonFolderTemplates((previous) => ({
+        ...previous,
+        [activeQualityScopeId]: event.target.value,
+      }));
+    },
+    [activeQualityScopeId, setCategorySeasonFolderTemplates],
+  );
+
+  const handleSpecialsFolderTemplateChange = React.useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      setCategorySpecialsFolderTemplates((previous) => ({
+        ...previous,
+        [activeQualityScopeId]: event.target.value,
+      }));
+    },
+    [activeQualityScopeId, setCategorySpecialsFolderTemplates],
+  );
+
   const handleRenameCollisionPolicyChange = React.useCallback(
     (value: string) => {
       setCategoryRenameCollisionPolicies((previous) => ({
@@ -3312,6 +3344,10 @@ export function MediaContentView({
           mediaSettingsSaving={mediaSettingsSaving}
           categoryFolderTemplates={categoryFolderTemplates}
           handleFolderTemplateChange={handleFolderTemplateChange}
+          categorySeasonFolderTemplates={categorySeasonFolderTemplates}
+          handleSeasonFolderTemplateChange={handleSeasonFolderTemplateChange}
+          categorySpecialsFolderTemplates={categorySpecialsFolderTemplates}
+          handleSpecialsFolderTemplateChange={handleSpecialsFolderTemplateChange}
           categoryRenameTemplates={categoryRenameTemplates}
           handleRenameTemplateChange={handleRenameTemplateChange}
           categoryRenameEnabled={categoryRenameEnabled}

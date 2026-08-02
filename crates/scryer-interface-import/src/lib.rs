@@ -1478,6 +1478,11 @@ struct ProwlarrImportGroup {
     child_names: Vec<String>,
     api_key: Option<String>,
     api_key_conflict: bool,
+    /// The key came from an operator-verified direct connection (Connect step
+    /// or warmup session), not from an arr-reported field. Direct keys are
+    /// authoritative: arr-side keys can neither replace nor conflict them,
+    /// regardless of merge order.
+    has_direct_api_key: bool,
 }
 
 impl ProwlarrImportGroup {
@@ -1488,6 +1493,7 @@ impl ProwlarrImportGroup {
             child_names: Vec::new(),
             api_key: None,
             api_key_conflict: false,
+            has_direct_api_key: false,
         };
         group.merge(detected, source);
         group
@@ -1496,6 +1502,9 @@ impl ProwlarrImportGroup {
     fn merge(&mut self, detected: DetectedProwlarrIndexer, source: &str) {
         push_unique(&mut self.sources, source.to_string());
         push_unique(&mut self.child_names, detected.child_name);
+        if self.has_direct_api_key {
+            return;
+        }
         if let Some(api_key) = detected.api_key {
             match self.api_key.as_deref() {
                 Some(existing) if existing != api_key => {
@@ -1552,6 +1561,7 @@ fn merge_direct_prowlarr_group(
             child_names: Vec::new(),
             api_key: None,
             api_key_conflict: false,
+            has_direct_api_key: false,
         });
 
     push_unique(&mut group.sources, "prowlarr".to_string());
@@ -1560,6 +1570,7 @@ fn merge_direct_prowlarr_group(
     }
     group.api_key_conflict = false;
     group.api_key = Some(api_key.trim().to_string());
+    group.has_direct_api_key = true;
 }
 
 fn push_unique(values: &mut Vec<String>, value: String) {
@@ -1999,7 +2010,7 @@ impl ExternalImportMutations {
                     merge_direct_prowlarr_group(
                         &mut prowlarr_groups,
                         &result.base_url,
-                        "warmup-session",
+                        &result.api_key,
                         &child_names,
                     );
                 }
@@ -3439,6 +3450,7 @@ async fn run_external_import_prowlarr_warmup_job(
                 &session_id,
                 ExternalImportProwlarrWarmupResult {
                     base_url,
+                    api_key,
                     version: version_from_validation_result(&validation),
                     plan,
                 },
@@ -4418,6 +4430,41 @@ mod tests {
                 "Indexer B".to_string(),
                 "Indexer C".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn arr_keys_cannot_degrade_a_direct_prowlarr_key_merged_first() {
+        // Preview merges the direct (operator-verified) group BEFORE the arr
+        // loop; a differing arr-reported key must neither replace the direct
+        // key nor flag a conflict.
+        let mut groups = HashMap::new();
+        merge_direct_prowlarr_group(
+            &mut groups,
+            "http://prowlarr.local",
+            "direct-key",
+            &["Indexer A".into()],
+        );
+        merge_prowlarr_group(
+            &mut groups,
+            scryer_application::external_import::DetectedProwlarrIndexer {
+                base_url: "http://prowlarr.local".into(),
+                api_key: Some("stale-arr-key".into()),
+                child_name: "Indexer B".into(),
+            },
+            "sonarr",
+        );
+
+        let group = groups
+            .get(&prowlarr_dedup_key("http://prowlarr.local"))
+            .expect("merged prowlarr group");
+        assert_eq!(group.api_key.as_deref(), Some("direct-key"));
+        assert!(!group.api_key_conflict);
+        assert!(!group.requires_api_key_override());
+        assert_eq!(group.sources, vec!["prowlarr", "sonarr"]);
+        assert_eq!(
+            group.child_names,
+            vec!["Indexer A".to_string(), "Indexer B".to_string()]
         );
     }
 

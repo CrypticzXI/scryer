@@ -718,6 +718,23 @@ file = "postgres/migrations/0148_image_proxy_registry.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 149
+description = "rule set managed tag filter"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0149_rule_set_managed_tag_filter.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0149_rule_set_managed_tag_filter.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

@@ -1,9 +1,10 @@
 use super::*;
 use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
 use crate::acquisition_release_search::{
-    AutoCandidateEvaluationContext, ReleaseAutoDecisionCode, annotate_auto_decision,
-    canonical_title_evidence, evaluate_auto_candidate, parsed_release_matches_title_evidence,
-    serialize_decision_explanation, series_movie_search_title,
+    AutoCandidateEvaluationContext, ReleaseAutoDecisionCode, TITLE_MATCH_HEAD_ANCHOR_MAX_START,
+    annotate_auto_decision, canonical_title_evidence, evaluate_auto_candidate,
+    parsed_release_matches_title_evidence, serialize_decision_explanation,
+    series_movie_search_title, title_key_head_anchored,
 };
 use crate::delay_profile::DelayProfile;
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
@@ -113,6 +114,7 @@ fn token_window_contains(release_tokens: &[String], title_tokens: &[&str]) -> bo
 }
 
 fn title_key_match_score(
+    release_title: &str,
     release_tokens: &[String],
     title_key: &str,
     title_year: Option<i32>,
@@ -129,6 +131,14 @@ fn title_key_match_score(
         if token_len < 3 && !year_matches {
             return None;
         }
+        // A single-word title matching mid-name is usually episode-title
+        // containment junk ("...Heroes.and.Friends..."), not the release's
+        // subject. Require the word at the head of the name or a year token.
+        if !year_matches
+            && !title_key_head_anchored(release_title, title_key, TITLE_MATCH_HEAD_ANCHOR_MAX_START)
+        {
+            return None;
+        }
     }
 
     let mut score = i32::try_from(title_tokens.len()).unwrap_or(i32::MAX / 10) * 10;
@@ -139,21 +149,28 @@ fn title_key_match_score(
 }
 
 fn context_candidate_match_score(
+    release_title: &str,
     release_tokens: &[String],
     candidate: &TitleContextCandidate,
 ) -> Option<i32> {
     let mut best_score: Option<i32> = None;
 
     for key in &candidate.evidence.lookup_keys {
-        if let Some(score) = title_key_match_score(release_tokens, key, candidate.info.year) {
+        if let Some(score) =
+            title_key_match_score(release_title, release_tokens, key, candidate.info.year)
+        {
             best_score = Some(best_score.map_or(score, |best| best.max(score)));
         }
 
         if let Some(year) = candidate.info.year {
             let year_suffix = format!(" {year}");
             if let Some(stripped_key) = key.strip_suffix(&year_suffix)
-                && let Some(score) =
-                    title_key_match_score(release_tokens, stripped_key, candidate.info.year)
+                && let Some(score) = title_key_match_score(
+                    release_title,
+                    release_tokens,
+                    stripped_key,
+                    candidate.info.year,
+                )
             {
                 best_score = Some(best_score.map_or(score, |best| best.max(score)));
             }
@@ -178,7 +195,7 @@ fn match_release_to_title_context<'a>(
     let mut candidates = context_bank
         .iter()
         .filter_map(|candidate| {
-            context_candidate_match_score(&release_tokens, candidate)
+            context_candidate_match_score(release_title, &release_tokens, candidate)
                 .map(|score| (candidate, score))
         })
         .collect::<Vec<_>>();
@@ -2011,6 +2028,108 @@ mod tests {
         );
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
+    }
+
+    // ── single-token containment junk (prod regression: title "Friends") ──
+
+    fn make_series_title(id: &str, name: &str, year: Option<i32>) -> Title {
+        let mut t = make_title(id, name, year);
+        t.facet = MediaFacet::Series;
+        t.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+        t
+    }
+
+    #[test]
+    fn single_token_title_rejects_mid_name_containment_junk() {
+        let titles = vec![make_series_title("friends", "Friends", Some(1994))];
+        let bank = build_title_context_bank(&titles);
+        for junk in [
+            "Cliffords.Puppy.Days.S02E23E24.Heroes.and.Friends.The.Cookie.Crumbles.1080p.PMTP.WEB-DL.AAC2.0.x264-AndreMor",
+            "Daemons.of.the.Shadow.Realm.S01E14.Family.and.Friends.1080p.CR.WEB-DL.MULTi.AAC2.0.H264.Msubs-ToonsHub",
+            "American.Dad.S09E05.Why.Cant.We.Be.Friends.1080p.DSNP.WEB-DL.DDP5.1.H.264-AndreMor",
+            "Caillou.S01E10.Caillous.Friends.720p.PLUTO.WEB-DL.AAC2.0.x264-AndreMor",
+            "ToonsHub.My.Friends.Little.Sister.Has.It.In.for.Me.S01E09.1080p.CR.WEB-DL.AAC2.0.H264",
+        ] {
+            assert!(
+                match_release_to_title_context(junk, &bank).is_none(),
+                "containment junk must not match single-token title: {junk}"
+            );
+        }
+    }
+
+    #[test]
+    fn single_token_title_still_matches_head_anchored_release() {
+        let titles = vec![make_series_title("friends", "Friends", Some(1994))];
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context(
+            "Friends.S01E10.The.One.With.The.Monkey.1080p.BluRay.x264-GRP",
+            &bank,
+        );
+        assert!(result.is_some(), "head-anchored release must still match");
+        assert_eq!(result.unwrap().title_id, "friends");
+    }
+
+    #[test]
+    fn single_token_title_matches_with_year_corroboration() {
+        let titles = vec![make_series_title("friends", "Friends", Some(1994))];
+        let bank = build_title_context_bank(&titles);
+        let result =
+            match_release_to_title_context("Friends.1994.S02E14.1080p.WEB-DL.x264-GRP", &bank);
+        assert!(result.is_some(), "year-corroborated release must match");
+    }
+
+    #[test]
+    fn validator_rejects_target_biased_containment_projection() {
+        // The target-biased parse projects "FRIENDS" out of this name even
+        // though the release is a different show whose episode title merely
+        // contains the word; the validator must not accept that projection.
+        let title = make_series_title("friends", "Friends", Some(1994));
+        let evidence = canonical_title_evidence(&title);
+        let junk = "Cliffords.Puppy.Days.S02E23E24.Heroes.and.Friends.The.Cookie.Crumbles.1080p.PMTP.WEB-DL.AAC2.0.x264-AndreMor";
+        let parsed = crate::parse_release_metadata_for_target(junk, &evidence.parse_context);
+        assert!(!parsed_release_matches_title_evidence(&parsed, &evidence));
+    }
+
+    #[test]
+    fn validator_accepts_head_anchored_release_without_year() {
+        let title = make_series_title("friends", "Friends", Some(1994));
+        let evidence = canonical_title_evidence(&title);
+        let legit = "Friends.S05E03.The.One.Hundredth.1080p.BluRay.x264-GRP";
+        let parsed = crate::parse_release_metadata_for_target(legit, &evidence.parse_context);
+        assert!(parsed_release_matches_title_evidence(&parsed, &evidence));
+    }
+
+    #[test]
+    fn multi_token_title_matches_with_unbracketed_group_prefix() {
+        // One leading release-group token before the title, no year in the
+        // release name — must still head-anchor within the tolerance window.
+        let titles = vec![make_series_title("spyxfamily", "Spy x Family", None)];
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context(
+            "ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
+            &bank,
+        );
+        assert!(result.is_some(), "group-prefixed release must still match");
+        assert_eq!(result.unwrap().title_id, "spyxfamily");
+    }
+
+    #[test]
+    fn title_matches_with_bracketed_group_prefix() {
+        let titles = vec![make_series_title(
+            "tongari",
+            "Tongari Boushi no Atelier",
+            None,
+        )];
+        let bank = build_title_context_bank(&titles);
+        let result = match_release_to_title_context(
+            "[SubsPlease] Tongari Boushi no Atelier - 12 (720p) [53B226F0]",
+            &bank,
+        );
+        assert!(
+            result.is_some(),
+            "bracket-group release must strip to a head-anchored title"
+        );
+        assert_eq!(result.unwrap().title_id, "tongari");
     }
 
     #[test]

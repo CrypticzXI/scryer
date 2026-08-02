@@ -27,6 +27,13 @@ impl CompletedDownloadLookup {
         find_completed_download_in_lookup(self, td).is_some()
     }
 
+    /// Add one completed download fetched outside the original listing (e.g.
+    /// a targeted per-item lookup). Coverage is unchanged: a targeted hit does
+    /// not make a recent-window lookup exhaustive.
+    pub(crate) fn insert(&mut self, completed: CompletedDownload) {
+        index_completed_download_into(self, completed);
+    }
+
     #[cfg(test)]
     pub(super) fn empty_full() -> Self {
         Self {
@@ -216,33 +223,40 @@ pub(super) fn index_completed_downloads(
         ..CompletedDownloadLookup::default()
     };
     for completed in downloads {
-        let observed_identity = observed_completed_download_identity(&completed);
-        if let Some(download_id) = observed_identity
-            .download_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            lookup
-                .by_download_id
-                .entry(completed_download_lookup_key(
-                    Some(&completed.client_id),
-                    &completed.client_type,
-                    download_id,
-                ))
-                .or_default()
-                .push(completed.clone());
-        }
-        lookup.by_source.insert(
-            completed_download_lookup_key(
-                Some(&completed.client_id),
-                &completed.client_type,
-                &completed.download_client_item_id,
-            ),
-            completed,
-        );
+        index_completed_download_into(&mut lookup, completed);
     }
     lookup
+}
+
+fn index_completed_download_into(
+    lookup: &mut CompletedDownloadLookup,
+    completed: CompletedDownload,
+) {
+    let observed_identity = observed_completed_download_identity(&completed);
+    if let Some(download_id) = observed_identity
+        .download_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lookup
+            .by_download_id
+            .entry(completed_download_lookup_key(
+                Some(&completed.client_id),
+                &completed.client_type,
+                download_id,
+            ))
+            .or_default()
+            .push(completed.clone());
+    }
+    lookup.by_source.insert(
+        completed_download_lookup_key(
+            Some(&completed.client_id),
+            &completed.client_type,
+            &completed.download_client_item_id,
+        ),
+        completed,
+    );
 }
 
 pub(super) fn observed_queue_item_identity(

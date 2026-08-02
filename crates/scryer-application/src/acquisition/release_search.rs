@@ -18,6 +18,7 @@ use std::collections::HashSet;
 pub(crate) struct CanonicalTitleEvidence {
     pub(crate) lookup_keys: Vec<String>,
     pub(crate) year: Option<i32>,
+    pub(crate) facet: MediaFacet,
     pub(crate) parse_context: crate::ReleaseParseContext,
 }
 
@@ -186,6 +187,7 @@ fn canonical_title_evidence_for_episode(
     CanonicalTitleEvidence {
         lookup_keys: canonical_title_lookup_keys(title),
         year: title.year,
+        facet: title.facet.clone(),
         parse_context: crate::build_release_parse_context(
             title,
             episode,
@@ -385,18 +387,77 @@ fn extract_titles_from_release(parsed: &ParsedReleaseMetadata) -> Vec<String> {
         })
 }
 
+/// Strip leading `[group]` tags (and separator noise after them) from a raw
+/// release name so head-anchoring sees the actual title span first.
+pub(crate) fn strip_leading_bracket_groups(raw_title: &str) -> &str {
+    let mut rest = raw_title.trim_start();
+    loop {
+        if let Some(stripped) = rest.strip_prefix('[')
+            && let Some(end) = stripped.find(']')
+        {
+            rest = stripped[end + 1..]
+                .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '-' | '_' | '.'));
+            continue;
+        }
+        return rest;
+    }
+}
+
+/// Maximum token index at which a matched title key may start in a release
+/// name and still count as head-anchored. Index 1 tolerates one unbracketed
+/// release-group prefix token (e.g. `ToonsHub.Spy.x.Family...`).
+pub(crate) const TITLE_MATCH_HEAD_ANCHOR_MAX_START: usize = 1;
+
+/// True when `key`'s tokens appear as a contiguous window in the raw release
+/// name starting at token index `max_start_index` or earlier, after leading
+/// bracket groups are stripped. A release *for* a title carries that title at
+/// the head of its name; a name that merely mentions the title mid-string
+/// (episode-title words) does not.
+pub(crate) fn title_key_head_anchored(raw_title: &str, key: &str, max_start_index: usize) -> bool {
+    let release =
+        crate::title_matching::canonical_lookup_key(strip_leading_bracket_groups(raw_title));
+    let release_tokens = release.split_whitespace().collect::<Vec<_>>();
+    let key_tokens = key.split_whitespace().collect::<Vec<_>>();
+    if key_tokens.is_empty() || key_tokens.len() > release_tokens.len() {
+        return false;
+    }
+    release_tokens
+        .windows(key_tokens.len())
+        .take(max_start_index + 1)
+        .any(|window| window == key_tokens.as_slice())
+}
+
 pub(crate) fn parsed_release_matches_title_evidence(
     parsed: &ParsedReleaseMetadata,
     evidence: &CanonicalTitleEvidence,
 ) -> bool {
-    if let (Some(parsed_year), Some(expected_year)) = (parsed.year, evidence.year)
+    // Movie identity includes the year (Resident Evil 2002 vs 2026), so a
+    // parsed year that contradicts the subject is a hard mismatch. Series and
+    // anime release years disambiguate the title itself (Attack on Titan 2021
+    // vs the 2013 first-air year) and are handled by the lookup-key variants
+    // below, so they must not short-circuit the match.
+    if evidence.facet == MediaFacet::Movie
+        && let (Some(parsed_year), Some(expected_year)) = (parsed.year, evidence.year)
         && parsed_year != expected_year
     {
         return false;
     }
 
+    // Target-biased parses can project the target title out of a name that
+    // merely contains it, so bare key equality is not independent evidence.
+    // Require the matched key at the head of the release name, or a year
+    // agreement between release and title.
+    let year_corroborated =
+        parsed.year.is_some() && evidence.year.is_some() && parsed.year == evidence.year;
+    let accepts_key = |key: &str| -> bool {
+        year_corroborated
+            || title_key_head_anchored(&parsed.raw_title, key, TITLE_MATCH_HEAD_ANCHOR_MAX_START)
+    };
+
     for release_title in extract_titles_from_release(parsed) {
-        if evidence.lookup_keys.iter().any(|key| key == &release_title) {
+        if evidence.lookup_keys.iter().any(|key| key == &release_title)
+            && accepts_key(&release_title)
+        {
             return true;
         }
 
@@ -404,6 +465,7 @@ pub(crate) fn parsed_release_matches_title_evidence(
             let year_suffix = format!(" {year}");
             if let Some(without_year) = release_title.strip_suffix(&year_suffix)
                 && evidence.lookup_keys.iter().any(|key| key == without_year)
+                && accepts_key(without_year)
             {
                 return true;
             }
@@ -411,18 +473,21 @@ pub(crate) fn parsed_release_matches_title_evidence(
 
         if let Some(year) = evidence.year {
             let with_year = format!("{release_title} {year}");
-            if evidence.lookup_keys.iter().any(|key| key == &with_year) {
+            if evidence.lookup_keys.iter().any(|key| key == &with_year)
+                && accepts_key(&release_title)
+            {
                 return true;
             }
         }
     }
 
-    contextual_release_matches_title_evidence(parsed, evidence)
+    contextual_release_matches_title_evidence(parsed, evidence, year_corroborated)
 }
 
 fn contextual_release_matches_title_evidence(
     parsed: &ParsedReleaseMetadata,
     evidence: &CanonicalTitleEvidence,
+    year_corroborated: bool,
 ) -> bool {
     let contextual = crate::analyze_release_for_target(&parsed.raw_title, &evidence.parse_context);
     if contextual.is_unparseable() || contextual.is_ambiguous {
@@ -431,6 +496,11 @@ fn contextual_release_matches_title_evidence(
     let Some(best_candidate) = contextual.best_candidate() else {
         return false;
     };
+
+    let year_corroborated = year_corroborated
+        || (best_candidate.projected.year.is_some()
+            && evidence.year.is_some()
+            && best_candidate.projected.year == evidence.year);
 
     let mut titles = best_candidate.projected.normalized_title_variants.clone();
     if !titles
@@ -442,7 +512,14 @@ fn contextual_release_matches_title_evidence(
 
     titles.into_iter().any(|title| {
         let normalized = crate::title_matching::canonical_lookup_key(&title);
-        !normalized.is_empty() && evidence.lookup_keys.iter().any(|key| key == &normalized)
+        !normalized.is_empty()
+            && evidence.lookup_keys.iter().any(|key| key == &normalized)
+            && (year_corroborated
+                || title_key_head_anchored(
+                    &parsed.raw_title,
+                    &normalized,
+                    TITLE_MATCH_HEAD_ANCHOR_MAX_START,
+                ))
     })
 }
 
@@ -1504,6 +1581,29 @@ mod tests {
             &missing_year,
             &evidence
         ));
+    }
+
+    #[test]
+    fn series_and_anime_title_matching_tolerate_release_year_mismatch() {
+        // A release-name year on a series/anime disambiguates the title
+        // (Attack on Titan 2021 vs the 2013 first-air year); it must not veto
+        // an otherwise-matching title the way a movie year mismatch does.
+        for facet in [MediaFacet::Series, MediaFacet::Anime] {
+            let mut title = make_title();
+            title.name = "Attack on Titan".to_string();
+            title.facet = facet;
+            title.year = Some(2013);
+            let evidence = canonical_title_evidence(&title);
+
+            let mut parsed =
+                crate::parse_release_metadata("Attack.on.Titan.S04E01.1080p.WEB-DL");
+            parsed.year = Some(2021);
+            assert!(
+                parsed_release_matches_title_evidence(&parsed, &evidence),
+                "{:?} subject must tolerate a mismatched release year",
+                evidence.facet
+            );
+        }
     }
 
     #[test]

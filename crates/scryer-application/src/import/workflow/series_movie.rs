@@ -857,6 +857,7 @@ async fn import_movie_download(
         rename_enabled,
         rename_template,
         folder_template,
+        ..
     } = resolve_import_paths(app, title).await?;
 
     let parsed = build_augmented_movie_import_metadata(&source_video, completed);
@@ -1501,6 +1502,8 @@ async fn import_series_movie_download(
         rename_enabled,
         rename_template,
         folder_template,
+        season_folder_template,
+        specials_folder_template,
     } = resolve_import_paths(app, title).await?;
 
     let parsed = build_augmented_movie_import_metadata(&source_video, completed);
@@ -1540,10 +1543,15 @@ async fn import_series_movie_download(
         preserved_import_filename(&source_video)
     };
 
-    // Build destination: <media_root>/<title folder>/Season 00/<filename>
     let full_folder_path = effective_title_folder_path(&media_root, title, &folder_template, None);
-
-    let dest_path = full_folder_path.join("Season 00").join(&rendered_filename);
+    let dest_path = episodic_import_parent_path(
+        title,
+        &full_folder_path,
+        &season_folder_template,
+        &specials_folder_template,
+        0,
+    )
+    .join(&rendered_filename);
 
     // Pre-import checks (same as movie import)
     let existing_files = app
@@ -1897,11 +1905,11 @@ async fn import_series_movie_download(
         }
     }
 
-    // Ensure Season 00 directory exists
+    // Ensure the configured episodic destination directory exists.
     if let Some(parent) = dest_path.parent()
         && let Err(err) = tokio::fs::create_dir_all(parent).await
     {
-        tracing::warn!(error = %err, path = %parent.display(), "failed to create Season 00 directory");
+        tracing::warn!(error = %err, path = %parent.display(), "failed to create episodic import directory");
     }
 
     // Import file (hardlink or copy)

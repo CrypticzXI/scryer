@@ -59,6 +59,7 @@ impl RulesMutations {
                 input.rego_source,
                 input.applied_facets.map(|f| parse_facets(Some(f))),
                 input.priority,
+                input.managed_tag_filter,
             )
             .await
             .map_err(to_gql_error)?;

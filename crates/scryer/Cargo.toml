@@ -5,8 +5,6 @@ edition.workspace = true
 
 [features]
 default = []
-par2-metal = ["scryer-application/runtime-par2-metal"]
-par2-wgpu = ["scryer-application/runtime-par2-wgpu"]
 
 [dependencies]
 scryer-application = { path = "../scryer-application", features = ["runtime"] }

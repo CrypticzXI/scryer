@@ -20,7 +20,6 @@ import { ImportInstancePill } from "./import-instance-pill";
 interface ImportRootChipProps {
   root: ImportRoot;
   variant: "tray" | "library";
-  isMobile: boolean;
   invalid?: boolean;
   onRemap?: () => void;
   onAssign?: () => void;
@@ -47,7 +46,6 @@ const MONO: CSSProperties = {
 export function ImportRootChip({
   root,
   variant,
-  isMobile,
   invalid,
   onRemap,
   onAssign,
@@ -73,6 +71,9 @@ export function ImportRootChip({
       data-root-path={effective}
       data-root-variant={variant}
       aria-label={`${root.instanceLabel} ${effective}`}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       style={{
         display: "inline-flex",
         alignItems: "center",
@@ -83,19 +84,18 @@ export function ImportRootChip({
         background: "var(--scry-bg)",
         border: "1px solid var(--scry-border2)",
         maxWidth: "100%",
+        cursor: draggable ? "grab" : undefined,
+        userSelect: "none",
       }}
     >
-      {/* Drag grip — desktop only */}
-      {!isMobile ? (
+      {/* The grip is a visual cue; the full non-interactive chip surface drags. */}
+      {draggable ? (
         <span
           data-root-drag-handle
           data-root-kind={root.kind}
           data-root-path={effective}
           data-root-variant={variant}
-          aria-hidden={!draggable}
-          draggable={draggable}
-          onDragStart={onDragStart}
-          onDragEnd={onDragEnd}
+          aria-hidden
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -111,22 +111,20 @@ export function ImportRootChip({
         </span>
       ) : null}
 
-      {/* Assign button — touch/tablet only (replaces drag-and-drop ≤1024px). */}
-      {isMobile ? (
-        <IconButton
-          type="button"
-          label={
-            library
-              ? t("setup.moveToAnotherLibrary")
-              : t("setup.assignToLibrary")
-          }
-          onClick={onAssign}
-          tone="accent"
-          className={library ? "h-[30px] w-[30px] flex-none rounded-[8px]" : "h-8 w-8 flex-none rounded-[8px]"}
-        >
-          <FolderInput className={library ? "h-[15px] w-[15px]" : "h-4 w-4"} />
-        </IconButton>
-      ) : null}
+      {/* Click-to-assign remains available even when native dragging is enabled. */}
+      <IconButton
+        type="button"
+        label={
+          library
+            ? t("setup.moveToAnotherLibrary")
+            : t("setup.assignToLibrary")
+        }
+        onClick={onAssign}
+        tone="accent"
+        className={library ? "h-[30px] w-[30px] flex-none rounded-[8px]" : "h-8 w-8 flex-none rounded-[8px]"}
+      >
+        <FolderInput className={library ? "h-[15px] w-[15px]" : "h-4 w-4"} />
+      </IconButton>
 
       {/* Instance pill */}
       <ImportInstancePill

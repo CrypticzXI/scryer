@@ -36,6 +36,13 @@ pub(crate) enum RuleFacet {
 pub(crate) struct ServiceAliasRule {
     pub token: &'static str,
     pub service: &'static str,
+    /// The token only names a service when a WEB marker follows it.
+    ///
+    /// Upstream applies these formats to every WEB release, because none of
+    /// their specifications is required. Their tokens are
+    /// common words — `NOW`, `RED`, `PLAY`, `FRIDAY`, `IT` — so without the
+    /// adjacency they would name a service in ordinary titles.
+    pub requires_web_adjacency: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,11 +194,73 @@ pub(crate) struct TokenSignalMatch {
     pub hardcoded_subs: bool,
 }
 
-pub(crate) fn normalize_streaming_service_alias(token: &str) -> Option<&'static str> {
+/// Services TRaSH does not publish, or spellings its patterns do not carry.
+///
+/// The generated table is the source of truth for service detection; this is the
+/// remainder the parser detected before unification and still must. A generated
+/// entry supersedes a curated one for the same token, and
+/// `curated_supplement_adds_no_generated_token` asserts that no such collision
+/// exists today.
+pub(crate) static CURATED_SERVICE_ALIASES: &[(&str, &str)] = &[
+    ("BBC", "BBC iPlayer"),
+    ("BBCI", "BBC iPlayer"),
+    ("DNSP", "Disney+"),
+    ("HOTSTAR", "Hotstar"),
+    ("ITUNES", "iTunes"),
+    ("YOUTUBE", "YouTube"),
+];
+
+fn generated_alias(token: &str) -> Option<&'static ServiceAliasRule> {
     SERVICE_ALIAS_RULES
         .iter()
         .find(|rule| rule.token.eq_ignore_ascii_case(token))
+}
+
+fn curated_alias(token: &str) -> Option<&'static str> {
+    CURATED_SERVICE_ALIASES
+        .iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(token))
+        .map(|(_, service)| *service)
+}
+
+/// The display name for a token already established to name a service.
+///
+/// Policy-agnostic on purpose: adjacency decides whether the token gets the
+/// streaming-service role at all, and by the time a role-assigned token needs a
+/// name that question is settled.
+pub(crate) fn normalize_streaming_service_alias(token: &str) -> Option<&'static str> {
+    generated_alias(token)
         .map(|rule| rule.service)
+        .or_else(|| curated_alias(token))
+}
+
+/// Aliases that name a service on their own, with no neighboring WEB marker.
+///
+/// This is the lookup for context-free callers, which see one token and no
+/// index. A WEB-adjacent alias must never answer here: `NOW`, `RED`, and `IT`
+/// are ordinary title words until upstream's adjacency holds.
+pub(crate) fn normalize_streaming_service_alias_standalone(token: &str) -> Option<&'static str> {
+    match generated_alias(token) {
+        Some(rule) if rule.requires_web_adjacency => None,
+        Some(rule) => Some(rule.service),
+        None => curated_alias(token),
+    }
+}
+
+/// Aliases that name a service given what follows them.
+///
+/// `web_adjacent` is true when the next normalized token is a WEB marker, which
+/// is the adjacency upstream's own `token[ ._-]web[ ._-]?(dl|rip)?` patterns
+/// encode. Bare `web` satisfies them, so the `DL` is not required.
+pub(crate) fn normalize_streaming_service_alias_in_context(
+    token: &str,
+    web_adjacent: bool,
+) -> Option<&'static str> {
+    match generated_alias(token) {
+        Some(rule) if rule.requires_web_adjacency && !web_adjacent => None,
+        Some(rule) => Some(rule.service),
+        None => curated_alias(token),
+    }
 }
 
 pub(crate) fn detect_token_signals(normalized_tokens: &[String]) -> TokenSignalMatch {
@@ -533,6 +602,117 @@ fn pattern_matches(pattern: &TokenPattern, normalized_tokens: &[String]) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn curated_supplement_adds_no_generated_token() {
+        // Generated entries supersede curated ones, so a curated token the
+        // generated table already carries would be silently dead. Keeping the
+        // sets disjoint is what makes the supplement readable as "the rest".
+        let overlapping = CURATED_SERVICE_ALIASES
+            .iter()
+            .filter(|(token, _)| generated_alias(token).is_some())
+            .map(|(token, _)| *token)
+            .collect::<Vec<_>>();
+        assert_eq!(overlapping, Vec::<&str>::new());
+    }
+
+    #[test]
+    fn unification_keeps_every_service_the_hardcoded_list_detected() {
+        // The list `classify_token` carried before the generated table became
+        // authoritative. Each of these was context-free, so each
+        // must still resolve standalone.
+        const LEGACY_TOKENS: &[&str] = &[
+            "NF",
+            "NETFLIX",
+            "AMZN",
+            "AMAZON",
+            "CR",
+            "CRUNCHYROLL",
+            "HULU",
+            "DSNP",
+            "DNSP",
+            "MAX",
+            "HMAX",
+            "HBO",
+            "ATVP",
+            "APTV",
+            "PMTP",
+            "PARAMOUNT",
+            "PCOK",
+            "PEACOCK",
+            "FUNI",
+            "FUNIMATION",
+            "HIDIVE",
+            "STAN",
+            "ITUNES",
+            "BILI",
+            "HOTSTAR",
+            "BBC",
+            "BBCI",
+            "IPLAYER",
+            "YOUTUBE",
+        ];
+        let lost = LEGACY_TOKENS
+            .iter()
+            .copied()
+            .filter(|token| normalize_streaming_service_alias_standalone(token).is_none())
+            .collect::<Vec<_>>();
+        assert_eq!(lost, Vec::<&str>::new());
+    }
+
+    #[test]
+    fn every_alias_service_projects_to_a_streaming_service() {
+        // Detection is worthless if projection cannot name what it found: the
+        // `StreamingService` enum has to keep up with the distilled table.
+        let unprojectable = SERVICE_ALIAS_RULES
+            .iter()
+            .map(|rule| rule.service)
+            .chain(CURATED_SERVICE_ALIASES.iter().map(|(_, service)| *service))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|service| {
+                crate::model::StreamingService::parse(service)
+                    .is_none_or(|parsed| parsed.as_str() != *service)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(unprojectable, Vec::<&str>::new());
+    }
+
+    #[test]
+    fn standalone_lookup_refuses_web_adjacent_aliases() {
+        // Context-free callers must not resolve a token whose policy needs a
+        // neighbor they cannot see.
+        assert_eq!(normalize_streaming_service_alias("NOW"), Some("NOW"));
+        assert_eq!(normalize_streaming_service_alias_standalone("NOW"), None);
+        assert_eq!(
+            normalize_streaming_service_alias_in_context("NOW", false),
+            None
+        );
+        assert_eq!(
+            normalize_streaming_service_alias_in_context("NOW", true),
+            Some("NOW")
+        );
+
+        // Standalone aliases answer regardless of what follows them.
+        assert_eq!(
+            normalize_streaming_service_alias_standalone("AMZN"),
+            Some("Amazon")
+        );
+        assert_eq!(
+            normalize_streaming_service_alias_in_context("AMZN", false),
+            Some("Amazon")
+        );
+
+        // The curated supplement is standalone in both lookups.
+        assert_eq!(
+            normalize_streaming_service_alias_standalone("BBCI"),
+            Some("BBC iPlayer")
+        );
+        assert_eq!(
+            normalize_streaming_service_alias_in_context("hotstar", false),
+            Some("Hotstar")
+        );
+    }
 
     #[test]
     fn detects_generated_streaming_alias_and_token_signals() {

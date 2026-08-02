@@ -68,3 +68,15 @@ pub(crate) async fn load_completed_download_lookup(
 ) -> AppResult<CompletedDownloadLookup> {
     lookup::load_completed_download_lookup(app).await
 }
+
+/// Durable tracked-state marker recorded for a queue item's download
+/// identity, if any. Reconciliation sweeps use this to skip items whose
+/// identity already reached a terminal or operator-blocked outcome.
+pub(crate) async fn queue_item_identity_tracked_state(
+    app: &AppUseCase,
+    item: &DownloadQueueItem,
+) -> Option<TrackedDownloadState> {
+    let identity = lookup::observed_queue_item_identity(item);
+    let source_identity = lookup::queue_item_source_identity(item);
+    lookup::download_id_tracked_state(app, &identity, Some(&source_identity)).await
+}

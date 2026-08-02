@@ -3174,6 +3174,10 @@ pub struct RuleSet {
     pub updated_at: DateTime<Utc>,
     pub is_managed: bool,
     pub managed_key: Option<String>,
+    /// Tags a managed pack narrows itself to. `None` or empty means the pack
+    /// applies wherever its facts match; tags restrict it to titles carrying
+    /// one of them. Only meaningful for managed rows.
+    pub managed_tag_filter: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]

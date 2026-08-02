@@ -18,8 +18,6 @@ runtime-archives = [
     "dep:weaver-par2",
     "dep:zstd",
 ]
-runtime-par2-metal = ["weaver-par2/metal"]
-runtime-par2-wgpu = ["weaver-par2/wgpu"]
 runtime-backups = ["dep:tar", "dep:zstd"]
 runtime-media-analysis = [
     "dep:chardetng",

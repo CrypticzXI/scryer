@@ -16,7 +16,12 @@ import {
   useUiSettings,
 } from "@/lib/context/ui-settings-context";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
-import type { GeneralSettings, UiDateTimeFormat, UiSettings } from "@/lib/types/settings";
+import type {
+  GeneralSettings,
+  GeneralSettingsUpdate,
+  UiDateTimeFormat,
+  UiSettings,
+} from "@/lib/types/settings";
 
 const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   keepHistoryForever: false,
@@ -168,12 +173,12 @@ export function SettingsOverviewContainer({
     ],
   );
 
-  const handleSaveGeneralSettings = React.useCallback(async () => {
-    if (!generalSettings.keepHistoryForever && generalSettings.historyRetentionDays < 1) {
+  const handleSaveGeneralSettings = React.useCallback(async (update: GeneralSettingsUpdate) => {
+    if (update.historyRetentionDays !== undefined && update.historyRetentionDays < 1) {
       setGlobalStatus(t("settings.historyRetentionValidation"));
       return;
     }
-    if (generalSettings.imageCacheMaxSizeMb < 1) {
+    if (update.imageCacheMaxSizeMb !== undefined && update.imageCacheMaxSizeMb < 1) {
       setGlobalStatus(t("settings.imageCacheMaxSizeValidation"));
       return;
     }
@@ -182,12 +187,7 @@ export function SettingsOverviewContainer({
     try {
       const { data, error } = await client
         .mutation(updateGeneralSettingsMutation, {
-          input: {
-            keepHistoryForever: generalSettings.keepHistoryForever,
-            historyRetentionDays: generalSettings.historyRetentionDays,
-            imageCacheMaxSizeMb: generalSettings.imageCacheMaxSizeMb,
-            pluginHttpCaBundlePem: generalSettings.pluginHttpCaBundlePem,
-          },
+          input: update,
         })
         .toPromise();
       if (error) throw error;
@@ -203,7 +203,7 @@ export function SettingsOverviewContainer({
     } finally {
       setGeneralSaving(false);
     }
-  }, [client, generalSettings, setGlobalStatus, t]);
+  }, [client, setGlobalStatus, t]);
 
   const handleClearImageCache = React.useCallback(async () => {
     if (imageCacheClearing) return;
@@ -237,7 +237,7 @@ export function SettingsOverviewContainer({
         generalLoading={generalLoading}
         generalSaving={generalSaving}
         imageCacheClearing={imageCacheClearing}
-        onSaveGeneralSettings={handleSaveGeneralSettings}
+        onGeneralSettingsCommit={handleSaveGeneralSettings}
         onClearImageCache={handleClearImageCache}
       />
       <ConfirmDialog

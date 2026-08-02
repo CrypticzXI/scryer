@@ -763,11 +763,23 @@ const en: LocaleDictionary = {
   "settings.folderTemplateLabel": "Folder template",
   "settings.folderTemplatePlaceholder": "Placeholder",
   "settings.folderTemplateRequired": "Folder template is required.",
+  "settings.seasonFolderTemplateLabel": "Season folder template",
+  "settings.seasonFolderTemplatePlaceholder": "Season {season}",
+  "settings.seasonFolderTemplateRequired": "Season folder template is required.",
+  "settings.specialsFolderTemplateLabel": "Specials folder template",
+  "settings.specialsFolderTemplatePlaceholder": "Specials",
+  "settings.specialsFolderTemplateRequired": "Specials folder template is required.",
+  "settings.seasonFolderTemplateMustContainSeason":
+    "Season folder template must include {season}.",
+  "settings.seasonFolderValidationUnknownToken":
+    "Season folder templates support {season}, title, year, and external ID tokens. Invalid token: {{token}}",
   "settings.folderAvailableTokens": "Folder tokens",
   "settings.folderRenameSectionTitle": "Folder Renaming",
   "settings.folderValidationUnknownToken":
     "Folder templates support {title}, {year}, and external ID tokens. Invalid token: {{token}}",
   "settings.folderValidationEmpty": "Folder template cannot be empty",
+  "settings.folderValidationIllegalCharacter":
+    "Folder template contains an illegal filesystem character: {{character}}",
   "settings.renameTemplateLabel": "Rename template",
   "settings.renameTemplatePlaceholder": "Placeholder",
   "settings.renameTemplateHelp":
@@ -827,6 +839,8 @@ const en: LocaleDictionary = {
   "settings.renameValidationUnmatchedOpen": "Unmatched opening bracket '{'",
   "settings.renameValidationUnmatchedClose": "Unmatched closing bracket '}'",
   "settings.renameValidationUnknownToken": "Unknown token: {{token}}",
+  "settings.renameValidationInvalidPadding":
+    "Numeric padding must be an ASCII integer from 0 to 240: {{padding}}",
   "settings.renameValidationInvalidFilter": "Invalid token filter: {{filter}}",
   "settings.renameValidationEmpty": "Rename template cannot be empty",
   "settings.renameComingSoon": "Renaming rules are coming soon.",
@@ -864,20 +878,14 @@ const en: LocaleDictionary = {
   "settings.historyRetentionValidation":
     "History retention days must be at least 1 unless history is kept forever.",
   "settings.imageCacheTitle": "Image cache",
-  "settings.imageCacheHelp":
-    "Limits upstream artwork cached on this server. Reducing the limit evicts the least recently used images.",
-  "settings.imageCacheMaxSizeLabel": "Maximum disk cache size",
+  "settings.imageCacheMaxSizeLabel": "Image cache size",
   "settings.imageCacheMbSuffix": "MiB",
-  "settings.imageCacheEffectiveSize":
-    "Effective limit: {{mb}} MiB ({{bytes}} bytes).",
   "settings.imageCacheEnvOverride":
     "SCRYER_IMAGE_CACHE_MAX_BYTES is active. Its value is effective; the saved limit applies after the environment override is removed.",
   "settings.imageCacheMaxSizeValidation":
     "Image cache maximum size must be at least 1 MiB.",
   "settings.clearImageCache": "Clear image cache",
   "settings.clearingImageCache": "Clearing image cache…",
-  "settings.clearImageCacheHelp":
-    "Removes generated title artwork and cached upstream images. Images refill on demand.",
   "settings.imageCacheClearQueued": "Image cache reset queued.",
   "settings.pluginHttpTrustTitle": "Plugin HTTPS trusted certificates",
   "settings.pluginHttpTrustAdvancedLabel": "Advanced feature",

@@ -23,6 +23,16 @@ query GetSeries($id: String!, $includeEpisodes: Boolean!, $language: String!) {
         is_adult
         is_spoiler
       }
+      rating
+      rating_sources
+      external_ratings {
+        source
+        value
+        score
+        normalized
+        votes
+        url
+      }
       aliases
       tagged_aliases {
         name

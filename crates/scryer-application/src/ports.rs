@@ -4705,6 +4705,28 @@ pub trait DownloadClient: Send + Sync {
         self.list_recent_activity(limit).await
     }
 
+    /// Recent activity restricted to the given client types.
+    ///
+    /// Used to reconcile clients that are excluded from generic polling
+    /// because a realtime bridge owns their live queue: the bridge can miss
+    /// terminal events, so history still needs a bounded sweep.
+    async fn list_recent_activity_for_client_types(
+        &self,
+        limit: usize,
+        client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        if limit == 0 || client_types.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut items = self.list_recent_activity(limit).await?;
+        items.retain(|item| {
+            client_types
+                .iter()
+                .any(|client_type| item.client_type.eq_ignore_ascii_case(client_type.trim()))
+        });
+        Ok(items)
+    }
+
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
         Err(AppError::Repository(
             "completed download listing is not supported for this client".to_string(),
@@ -4778,6 +4800,47 @@ pub trait DownloadClient: Send + Sync {
             excluded_client_types,
         )
         .await
+    }
+
+    /// Fetch a single completed download by its client-scoped source
+    /// reference.
+    ///
+    /// The default scans the bounded recent window, so an item that has aged
+    /// out of that window is not found. Clients whose backend supports a
+    /// direct per-item history lookup should override this — callers rely on
+    /// it to recover long-stuck items past the recent listing.
+    async fn get_completed_download_for_source(
+        &self,
+        client_id: &str,
+        client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<CompletedDownload>> {
+        let reference = download_client_item_id.trim();
+        if reference.is_empty() {
+            return Ok(None);
+        }
+
+        let client_ids = Some(client_id.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let client_types = Some(client_type.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let items = self
+            .list_recent_completed_downloads_for_client_scope(
+                crate::DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT,
+                &client_ids,
+                &client_types,
+                &[],
+            )
+            .await?;
+        Ok(items
+            .into_iter()
+            .find(|item| item.download_client_item_id == reference))
     }
 
     async fn pause_queue_item(&self, _id: &str) -> AppResult<()> {

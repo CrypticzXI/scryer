@@ -1353,6 +1353,15 @@ impl DownloadClient for WeaverDownloadClient {
             .collect())
     }
 
+    async fn get_completed_download_for_source(
+        &self,
+        _client_id: &str,
+        _client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<CompletedDownload>> {
+        self.get_completed_download(download_client_item_id).await
+    }
+
     async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
         let job_id: u64 = id
             .parse()
@@ -1871,6 +1880,52 @@ mod tests {
 
         assert_eq!(download.download_client_item_id, "10002");
         assert_eq!(download.name, "8f1d2c3b4a59687766554433221100ff");
+    }
+
+    #[tokio::test]
+    async fn trait_targeted_lookup_delegates_to_direct_history_item_query() {
+        let server = MockServer::start().await;
+        let client = WeaverDownloadClient::new(server.uri(), Some("wvr_test".to_string()));
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(header("authorization", "Bearer wvr_test"))
+            .and(body_string_contains("historyItem(id"))
+            .and(body_string_contains("\"id\":10002"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "historyItem": {
+                        "id": 10002,
+                        "name": "8f1d2c3b4a59687766554433221100ff",
+                        "state": "COMPLETE",
+                        "error": null,
+                        "progressPercent": 100.0,
+                        "totalBytes": 123456789_u64,
+                        "category": "2000",
+                        "attributes": [],
+                        "clientRequestId": null,
+                        "outputDir": "/data/complete/8f1d2c3b4a59687766554433221100ff.#10002",
+                        "createdAt": "2024-01-01T00:00:00Z",
+                        "completedAt": "2024-01-01T00:10:00Z",
+                        "attention": null
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let download = scryer_application::DownloadClient::get_completed_download_for_source(
+            &client,
+            "weaver-client",
+            "weaver",
+            "10002",
+        )
+        .await
+        .expect("targeted trait lookup should load")
+        .expect("targeted trait lookup should find the row");
+
+        assert_eq!(download.download_client_item_id, "10002");
     }
 
     #[tokio::test]

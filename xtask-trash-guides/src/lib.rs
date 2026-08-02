@@ -16,7 +16,35 @@ use std::thread;
 use std::time::Duration;
 use xtask_support::{TaskContext, ok, run_checked, step};
 
-const APPS: &[&str] = &["sonarr", "radarr"];
+/// One upstream directory of custom formats, and the `app` its records carry.
+///
+/// `docs/json/guide-only/` sits outside the per-app trees: upstream publishes it
+/// as a menu of language policies that no shipped app profile includes, so it
+/// gets its own pseudo-app rather than being folded into `sonarr` or `radarr`.
+struct GuideSource {
+    app: &'static str,
+    /// Path under `docs/json/`, both for the GitHub contents listing and the raw
+    /// file fetch.
+    dir: &'static str,
+}
+
+const GUIDE_ONLY_APP: &str = "guide-only";
+
+const GUIDE_SOURCES: &[GuideSource] = &[
+    GuideSource {
+        app: "sonarr",
+        dir: "sonarr/cf",
+    },
+    GuideSource {
+        app: "radarr",
+        dir: "radarr/cf",
+    },
+    GuideSource {
+        app: GUIDE_ONLY_APP,
+        dir: GUIDE_ONLY_APP,
+    },
+];
+
 const FETCH_WORKERS: usize = 36;
 const GITHUB_REPO_API_BASE: &str = "https://api.github.com/repos/TRaSH-Guides/Guides";
 const GITHUB_API_BASE: &str = "https://api.github.com/repos/TRaSH-Guides/Guides/contents/docs/json";
@@ -192,6 +220,202 @@ const LEGACY_SEED_GROUPS: &[LegacySeedGroup] = &[
     },
 ];
 
+/// How much evidence one distilled alias token carries on its own.
+///
+/// Sonarr applies a custom format when no `required: true` specification fails
+/// and at least one specification matches. A service format whose title regex is
+/// required therefore treats the bare token as sufficient, while a format with no
+/// required specification matches *every* WEB release once its optional source
+/// specs are considered — so its tokens only mean anything next to a WEB marker.
+/// Required-spec formats get standalone tokens; no-required-spec formats get
+/// WEB-adjacent ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ServiceTokenPolicy {
+    /// Upstream deems the bare token sufficient evidence of the service.
+    Standalone,
+    /// The token counts only when immediately followed by a WEB marker.
+    WebAdjacent,
+}
+
+impl ServiceTokenPolicy {
+    fn requires_web_adjacency(self) -> bool {
+        matches!(self, Self::WebAdjacent)
+    }
+}
+
+/// One upstream service stem admitted to the alias table.
+struct ServiceAliasSpec {
+    stem: &'static str,
+    service: &'static str,
+    /// Policy applied to every distilled token without an override.
+    default_policy: ServiceTokenPolicy,
+    /// Tokens whose policy differs from the stem default (§6a rule 1 exceptions).
+    token_overrides: &'static [(&'static str, ServiceTokenPolicy)],
+    /// Tokens the patterns yield that must never become aliases, with the §6a reason.
+    excluded_tokens: &'static [(&'static str, &'static str)],
+}
+
+/// The binding service inclusion list.
+///
+/// The first fourteen entries predate the redesign. They keep their standalone
+/// behavior because the parser's detection tests pin it.
+const SERVICE_ALIAS_SPECS: &[ServiceAliasSpec] = &[
+    // Grandfathered services. `hbo`, `hmax`, `max`, and `stan` carry no required
+    // specification upstream, but their standalone detection is long-established
+    // parser behavior and is deliberately left alone by §6a's table.
+    standalone_service("amzn", "Amazon"),
+    standalone_service("atvp", "Apple TV+"),
+    standalone_service("cr", "Crunchyroll"),
+    standalone_service("dsnp", "Disney+"),
+    standalone_service("funi", "Funimation"),
+    standalone_service("hbo", "HBO Max"),
+    standalone_service("hidive", "HIDIVE"),
+    standalone_service("hmax", "HBO Max"),
+    standalone_service("hulu", "Hulu"),
+    standalone_service("max", "HBO Max"),
+    standalone_service("nf", "Netflix"),
+    standalone_service("pcok", "Peacock"),
+    standalone_service("pmtp", "Paramount+"),
+    standalone_service("stan", "Stan"),
+    // Newly admitted services.
+    standalone_service("4od", "Channel 4"),
+    standalone_service("abema", "ABEMA"),
+    standalone_service("all4", "Channel 4"),
+    standalone_service("atv", "ATV"),
+    standalone_service("aubc", "ABC iview"),
+    ServiceAliasSpec {
+        stem: "bcore",
+        service: "BCORE",
+        default_policy: ServiceTokenPolicy::Standalone,
+        token_overrides: &[],
+        excluded_tokens: &[("CORE", "common_word")],
+    },
+    standalone_service("bglobal", "B-Global"),
+    standalone_service("bilibili", "Bilibili"),
+    standalone_service("cbc", "CBC Gem"),
+    web_adjacent_service("cnlp", "CANAL+"),
+    standalone_service("cpng", "Coupang Play"),
+    web_adjacent_service("crav", "Crave"),
+    ServiceAliasSpec {
+        stem: "dcu",
+        service: "DC Universe",
+        default_policy: ServiceTokenPolicy::Standalone,
+        token_overrides: &[],
+        excluded_tokens: &[("DC", "brand_prefix_with_title_collisions")],
+    },
+    standalone_service("dmm-tv", "DMM TV"),
+    ServiceAliasSpec {
+        stem: "dscp",
+        service: "Discovery+",
+        default_policy: ServiceTokenPolicy::WebAdjacent,
+        token_overrides: &[],
+        excluded_tokens: &[("DISC", "common_word"), ("DCP", "cinema_package")],
+    },
+    standalone_service("fod", "FOD"),
+    standalone_service("french-adn", "ADN"),
+    standalone_service("french-salto", "Salto"),
+    standalone_service("french-wkn", "Wakanim"),
+    web_adjacent_service("friday", "friDay Video"),
+    standalone_service("hami", "Hami Video"),
+    ServiceAliasSpec {
+        stem: "htsr",
+        service: "Disney+ Hotstar",
+        default_policy: ServiceTokenPolicy::Standalone,
+        token_overrides: &[],
+        excluded_tokens: &[("HS", "too_short")],
+    },
+    ServiceAliasSpec {
+        stem: "ip",
+        service: "BBC iPlayer",
+        default_policy: ServiceTokenPolicy::WebAdjacent,
+        token_overrides: &[("IPLAYER", ServiceTokenPolicy::Standalone)],
+        excluded_tokens: &[],
+    },
+    ServiceAliasSpec {
+        stem: "iqiy",
+        service: "iQIYI",
+        default_policy: ServiceTokenPolicy::WebAdjacent,
+        token_overrides: &[],
+        excluded_tokens: &[("IQ", "too_short")],
+    },
+    ServiceAliasSpec {
+        stem: "it",
+        service: "iTunes",
+        default_policy: ServiceTokenPolicy::WebAdjacent,
+        token_overrides: &[],
+        excluded_tokens: &[("ITUNES", "curated_supplement_keeps_standalone_spelling")],
+    },
+    web_adjacent_service("itvx", "ITVX"),
+    standalone_service("kcw", "KOCOWA"),
+    standalone_service("kktv", "KKTV"),
+    standalone_service("linetv", "LINE TV"),
+    standalone_service("my5", "My5"),
+    standalone_service("mytvsuper", "myTV SUPER"),
+    standalone_service("nlz", "NLZiet"),
+    web_adjacent_service("now", "NOW"),
+    standalone_service("ovid", "OVID.tv"),
+    standalone_service("pathe", "Pathé Thuis"),
+    web_adjacent_service("play", "PLAY"),
+    standalone_service("qibi", "Quibi"),
+    ServiceAliasSpec {
+        stem: "red",
+        service: "YouTube Premium",
+        default_policy: ServiceTokenPolicy::WebAdjacent,
+        token_overrides: &[],
+        excluded_tokens: &[("YOUTUBE", "curated_supplement_owns_youtube")],
+    },
+    standalone_service("roku", "The Roku Channel"),
+    ServiceAliasSpec {
+        stem: "sho",
+        service: "Showtime",
+        default_policy: ServiceTokenPolicy::WebAdjacent,
+        token_overrides: &[("SHOWTIME", ServiceTokenPolicy::Standalone)],
+        excluded_tokens: &[],
+    },
+    standalone_service("strp", "Star+"),
+    standalone_service("syfy", "SYFY"),
+    standalone_service("tver", "TVer"),
+    web_adjacent_service("tving", "TVING"),
+    standalone_service("vdl", "Videoland"),
+    standalone_service("viki", "Viki"),
+    web_adjacent_service("viu", "Viu"),
+    standalone_service("vrv", "VRV"),
+    standalone_service("wavve", "Wavve"),
+    standalone_service("wetv", "WeTV"),
+    standalone_service("youku", "Youku"),
+];
+
+/// Service-shaped stems excluded from the alias table outright, with reasons.
+const EXCLUDED_SERVICE_ALIAS_STEMS: &[(&str, &str)] = &[
+    ("sic", "service_alias_combo_format_not_a_service_tag"),
+    (
+        "hd-streaming-boost",
+        "service_alias_duplicate_pattern_booster",
+    ),
+    ("ma", "service_alias_negative_lookaround_token_collision"),
+    ("u-next", "service_alias_unrepresentable_compound_token"),
+];
+
+const fn standalone_service(stem: &'static str, service: &'static str) -> ServiceAliasSpec {
+    ServiceAliasSpec {
+        stem,
+        service,
+        default_policy: ServiceTokenPolicy::Standalone,
+        token_overrides: &[],
+        excluded_tokens: &[],
+    }
+}
+
+const fn web_adjacent_service(stem: &'static str, service: &'static str) -> ServiceAliasSpec {
+    ServiceAliasSpec {
+        stem,
+        service,
+        default_policy: ServiceTokenPolicy::WebAdjacent,
+        token_overrides: &[],
+        excluded_tokens: &[],
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubEntry {
     name: String,
@@ -205,7 +429,14 @@ struct GitHubCommit {
 #[derive(Debug, Clone)]
 struct FetchTask {
     app: String,
+    dir: String,
     filename: String,
+}
+
+impl FetchTask {
+    fn source_path(&self) -> String {
+        format!("docs/json/{}/{}", self.dir, self.filename)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -213,6 +444,8 @@ struct UpstreamCf {
     name: String,
     #[serde(default)]
     trash_id: String,
+    #[serde(default)]
+    trash_scores: Option<Value>,
     #[serde(default)]
     specifications: Vec<UpstreamSpec>,
 }
@@ -241,6 +474,10 @@ struct UpstreamRecord {
     value: String,
     required_json: String,
     negate_json: String,
+    /// Upstream `trash_scores` for the custom format this specification came
+    /// from, keyed by score set. Parsed once per file and carried on every
+    /// record so distillation can join scores to the facts it emits.
+    scores: BTreeMap<String, i64>,
 }
 
 #[derive(Debug)]
@@ -328,6 +565,7 @@ struct TokenPatternSpec {
 struct ServiceAliasKey {
     token: String,
     service: String,
+    requires_web_adjacency: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -397,6 +635,41 @@ struct LocaleGroupFactRuleRecord {
     provenance: Vec<UpstreamRecord>,
 }
 
+/// One `LanguageSpecification` value, resolved to something the rule input can
+/// answer.
+///
+/// `Named` carries the canonical audio-language code
+/// `crate::normalize_detected_audio_language_code` produces, which is exactly
+/// what `user_rule_input` publishes in `release.languages_audio`. `Original` is
+/// upstream's relative id `-2`, resolved against the title's own original
+/// language rather than a fixed code.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum LanguageConditionSpec {
+    Named(String),
+    Original,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LanguageConditionEntry {
+    language: LanguageConditionSpec,
+    negate: bool,
+    required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LanguageRuleKey {
+    code: String,
+    app: String,
+    stem: String,
+    conditions: Vec<LanguageConditionEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct LanguageRuleRecord {
+    key: LanguageRuleKey,
+    provenance: Vec<UpstreamRecord>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum DetectionOwner {
@@ -427,6 +700,11 @@ struct StemClassification {
 #[derive(Debug, Serialize, Deserialize)]
 struct StemClassificationManifest {
     source_revision: String,
+    /// Reviewed score range per upstream score set. It is an alarm only: the
+    /// normalization never reads it, so a rescaled upstream trips the gate
+    /// instead of quietly changing what vetoes.
+    #[serde(default)]
+    score_envelope: Vec<ScoreSetEnvelope>,
     stems: Vec<StemClassificationManifestRecord>,
     /// Per-specification provenance for everything the distillation did not turn
     /// into a runtime rule. This is audit data: it belongs in the manifest so it
@@ -501,6 +779,7 @@ struct DistilledCatalog {
     blocked_title_rules: Vec<BlockedTitleRecord>,
     fact_rules: Vec<FactRuleRecord>,
     locale_group_fact_rules: Vec<LocaleGroupFactRuleRecord>,
+    language_rules: Vec<LanguageRuleRecord>,
     no_release_group_facets: Vec<DistilledFacet>,
     inactive_records: Vec<MetadataRuleRecord>,
     ignored_records: Vec<MetadataRuleRecord>,
@@ -535,7 +814,7 @@ pub fn run_sync(ctx: &TaskContext) -> Result<()> {
 
     write_if_changed(
         &quality_output,
-        &render_quality_output(&distilled, &fetched.source_revision)?,
+        &render_quality_output(&distilled, &fetched.records, &fetched.source_revision)?,
     )?;
     write_if_changed(
         &parser_output,
@@ -610,6 +889,14 @@ fn validate_distilled_catalog(
         );
     }
 
+    let unscored = unscored_fact_apps(catalog);
+    if !unscored.is_empty() {
+        bail!(
+            "emitted TRaSH facts have no upstream score for the app that produced them: {}",
+            unscored.join(", ")
+        );
+    }
+
     let unbound = build_stem_manifest(records, catalog, "")
         .stems
         .into_iter()
@@ -617,8 +904,10 @@ fn validate_distilled_catalog(
             matches!(
                 record.effect_binding,
                 EffectBinding::HardBlock | EffectBinding::PersonaScore | EffectBinding::LocaleScore
-            ) && (record.detection_owner == DetectionOwner::NativeFact
-                || classify_active_group_stem(&record.stem).is_some())
+            ) && (matches!(
+                record.detection_owner,
+                DetectionOwner::NativeFact | DetectionOwner::ManagedRego
+            ) || classify_active_group_stem(&record.stem).is_some())
                 && record.emitted_rule_count == 0
         })
         .map(|record| format!("{}/{}", record.app, record.stem))
@@ -630,12 +919,51 @@ fn validate_distilled_catalog(
         );
     }
 
+    validate_language_rules(&catalog.language_rules)?;
+    validate_service_alias_rules(&catalog.service_alias_rules)
+}
+
+/// A language rule code is what the managed packs key off, so the apps that
+/// publish the same code must agree on what it means.
+///
+/// Upstream ships the `language-*` family identically in both apps today. If
+/// one of them ever diverges, the packs would silently follow whichever app
+/// happened to resolve first, so the disagreement fails the sync instead.
+fn validate_language_rules(rules: &[LanguageRuleRecord]) -> Result<()> {
+    let mut by_code = BTreeMap::<&str, BTreeSet<&Vec<LanguageConditionEntry>>>::new();
+    for rule in rules {
+        by_code
+            .entry(rule.key.code.as_str())
+            .or_default()
+            .insert(&rule.key.conditions);
+    }
+
+    let divergent = by_code
+        .iter()
+        .filter(|(_, conditions)| conditions.len() > 1)
+        .map(|(code, _)| (*code).to_string())
+        .collect::<Vec<_>>();
+    if !divergent.is_empty() {
+        bail!(
+            "TRaSH language rules disagree across apps for: {}",
+            divergent.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn validate_service_alias_rules(rules: &[ServiceAliasRecord]) -> Result<()> {
     let mut services_by_token = BTreeMap::<&str, BTreeSet<&str>>::new();
-    for rule in &catalog.service_alias_rules {
+    let mut policies_by_token = BTreeMap::<&str, BTreeSet<bool>>::new();
+    for rule in rules {
         services_by_token
             .entry(rule.key.token.as_str())
             .or_default()
             .insert(rule.key.service.as_str());
+        policies_by_token
+            .entry(rule.key.token.as_str())
+            .or_default()
+            .insert(rule.key.requires_web_adjacency);
     }
     let unusable = services_by_token
         .iter()
@@ -664,6 +992,20 @@ fn validate_distilled_catalog(
             ambiguous.join(", ")
         );
     }
+    // One token, one policy. A token that is standalone for one service and
+    // WEB-adjacent for another has no answer at the context-free call sites,
+    // which consult standalone aliases only.
+    let split_policy = policies_by_token
+        .iter()
+        .filter(|(_, policies)| policies.len() > 1)
+        .map(|(token, _)| (*token).to_string())
+        .collect::<Vec<_>>();
+    if !split_policy.is_empty() {
+        bail!(
+            "service alias tokens claim both standalone and WEB-adjacent policies: {}",
+            split_policy.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -677,17 +1019,18 @@ fn fetch_all_records() -> Result<FetchedRecords> {
     let source_revision = resolve_source_revision(&client)?;
     let mut tasks = Vec::new();
 
-    for app in APPS {
-        let listing_url = format!("{GITHUB_API_BASE}/{app}/cf?ref={source_revision}");
+    for source in GUIDE_SOURCES {
+        let listing_url = format!("{GITHUB_API_BASE}/{}?ref={source_revision}", source.dir);
         let listing = get_json::<Vec<GitHubEntry>>(&client, &listing_url)
-            .with_context(|| format!("failed to list {app} custom formats"))?;
+            .with_context(|| format!("failed to list {} custom formats", source.app))?;
 
         for entry in listing {
             if !entry.name.ends_with(".json") {
                 continue;
             }
             tasks.push(FetchTask {
-                app: (*app).to_string(),
+                app: source.app.to_string(),
+                dir: source.dir.to_string(),
                 filename: entry.name,
             });
         }
@@ -736,8 +1079,8 @@ fn read_local_records(source_dir: &Path) -> Result<FetchedRecords> {
             "{SOURCE_REVISION_ENV} is required when {SOURCE_DIR_ENV} is set"
         ))?;
     let mut records = Vec::new();
-    for app in APPS {
-        let directory = source_dir.join("docs/json").join(app).join("cf");
+    for source in GUIDE_SOURCES {
+        let directory = source_dir.join("docs/json").join(source.dir);
         let mut paths = fs::read_dir(&directory)
             .with_context(|| format!("failed to read {}", directory.display()))?
             .map(|entry| entry.map(|entry| entry.path()))
@@ -755,7 +1098,8 @@ fn read_local_records(source_dir: &Path) -> Result<FetchedRecords> {
                 .context("TRaSH source path did not have a UTF-8 filename")?
                 .to_string();
             let task = FetchTask {
-                app: (*app).to_string(),
+                app: source.app.to_string(),
+                dir: source.dir.to_string(),
                 filename,
             };
             let parsed = serde_json::from_str::<UpstreamCf>(
@@ -763,11 +1107,8 @@ fn read_local_records(source_dir: &Path) -> Result<FetchedRecords> {
                     .with_context(|| format!("failed to read {}", path.display()))?,
             )
             .with_context(|| format!("failed to parse {}", path.display()))?;
-            records.extend(records_from_custom_format(
-                &task,
-                parsed,
-                format!("docs/json/{app}/cf/{}", task.filename),
-            ));
+            let source_path = task.source_path();
+            records.extend(records_from_custom_format(&task, parsed, source_path)?);
         }
     }
     records.sort();
@@ -796,25 +1137,20 @@ fn fetch_records_for_task(
     task: &FetchTask,
     source_revision: &str,
 ) -> Result<Vec<UpstreamRecord>> {
-    let raw_url = format!(
-        "{GITHUB_RAW_BASE}/{source_revision}/docs/json/{}/cf/{}",
-        task.app, task.filename
-    );
+    let source_path = task.source_path();
+    let raw_url = format!("{GITHUB_RAW_BASE}/{source_revision}/{source_path}");
     let parsed = get_json::<UpstreamCf>(client, &raw_url)
         .with_context(|| format!("failed to fetch {}", task.filename))?;
-    Ok(records_from_custom_format(
-        task,
-        parsed,
-        format!("docs/json/{}/cf/{}", task.app, task.filename),
-    ))
+    records_from_custom_format(task, parsed, source_path)
 }
 
 fn records_from_custom_format(
     task: &FetchTask,
     parsed: UpstreamCf,
     source_path: String,
-) -> Vec<UpstreamRecord> {
+) -> Result<Vec<UpstreamRecord>> {
     let stem = task.filename.trim_end_matches(".json").to_string();
+    let scores = parse_trash_scores(parsed.trash_scores.as_ref(), &source_path)?;
     let mut records = Vec::new();
 
     for spec in parsed.specifications {
@@ -835,10 +1171,32 @@ fn records_from_custom_format(
             value,
             required_json: json_string(Some(&spec.required)),
             negate_json: json_string(Some(&spec.negate)),
+            scores: scores.clone(),
         });
     }
 
-    records
+    Ok(records)
+}
+
+/// Scores are the valuation half of the guide, so a shape Scryer cannot read is
+/// a hard failure rather than a silently dropped entry.
+fn parse_trash_scores(scores: Option<&Value>, source_path: &str) -> Result<BTreeMap<String, i64>> {
+    let Some(scores) = scores else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(entries) = scores.as_object() else {
+        bail!("trash_scores in {source_path} is not an object");
+    };
+
+    entries
+        .iter()
+        .map(|(score_set, value)| {
+            let score = value.as_i64().ok_or_else(|| {
+                anyhow!("non-integer trash score {value} for {score_set} in {source_path}")
+            })?;
+            Ok((score_set.clone(), score))
+        })
+        .collect()
 }
 
 fn json_string(value: Option<&Value>) -> String {
@@ -921,10 +1279,43 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
     let mut locale_group_fact_rules =
         BTreeMap::<LocaleGroupFactRuleKey, Vec<UpstreamRecord>>::new();
     let mut no_release_group_facets = BTreeSet::<DistilledFacet>::new();
+    let mut language_format_records = BTreeMap::<(String, String), Vec<UpstreamRecord>>::new();
     let mut inactive_records = BTreeSet::<MetadataRuleRecord>::new();
     let mut ignored_records = BTreeSet::<MetadataRuleRecord>::new();
 
     for record in records {
+        // Language formats are decided per *format*, not per specification —
+        // `DidMatch` combines the whole specification list — so they are
+        // collected here and distilled once the group is complete.
+        if is_language_rule_stem(&record.app, &record.stem) {
+            language_format_records
+                .entry((record.app.clone(), record.stem.clone()))
+                .or_default()
+                .push(record.clone());
+            continue;
+        }
+
+        // Alias capture runs first and additively: three of §6a's services are
+        // also French locale markers (`french-adn`, `french-salto`,
+        // `french-wkn`), and those markers still have to reach the locale branch
+        // below. For every other service stem this arm owns the record outright.
+        if let Some(spec) = service_alias_spec(&record.stem) {
+            let locale_owned = is_localized_stem(&record.stem);
+            collect_service_alias_tokens(
+                record,
+                spec,
+                locale_owned,
+                &mut service_alias_rules,
+                &mut inactive_records,
+            );
+            if !locale_owned {
+                continue;
+            }
+        } else if let Some(reason) = excluded_service_alias_reason(&record.stem) {
+            ignored_records.insert(metadata_record(record, reason));
+            continue;
+        }
+
         if let Some(group_target) = classify_active_group_stem(&record.stem) {
             let facet = facet_for_record(record);
             let matchers = match record.implementation.as_str() {
@@ -1038,32 +1429,6 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
         }
 
         match record.stem.as_str() {
-            "amzn" | "atvp" | "cr" | "dsnp" | "funi" | "hbo" | "hidive" | "hmax" | "hulu"
-            | "max" | "nf" | "pcok" | "pmtp" | "stan" => {
-                if record.implementation != "ReleaseTitleSpecification" || record_is_negated(record)
-                {
-                    inactive_records.insert(metadata_record(
-                        record,
-                        "service_alias_requires_positive_title_spec",
-                    ));
-                    continue;
-                }
-                let Ok(tokens) = distill_service_alias_tokens(record) else {
-                    inactive_records
-                        .insert(metadata_record(record, "service_alias_pattern_not_lossless"));
-                    continue;
-                };
-                for token in tokens {
-                    let key = ServiceAliasKey {
-                        token,
-                        service: canonical_service_name(&record.stem)?.to_string(),
-                    };
-                    service_alias_rules
-                        .entry(key)
-                        .or_default()
-                        .push(record.clone());
-                }
-            }
             "upscaled" => {
                 for pattern in distill_named_patterns(record, ParserSignalKindSpec::AiEnhanced)? {
                     let key = SignalRuleKey {
@@ -1326,6 +1691,29 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
         }
     }
 
+    let mut language_rules = Vec::<LanguageRuleRecord>::new();
+    for ((app, stem), format_records) in language_format_records {
+        match distill_language_rule(&format_records)? {
+            LanguageRuleDistillation::Rule(conditions) => {
+                language_rules.push(LanguageRuleRecord {
+                    key: LanguageRuleKey {
+                        code: language_rule_code(&stem),
+                        app,
+                        stem,
+                        conditions,
+                    },
+                    provenance: format_records,
+                });
+            }
+            LanguageRuleDistillation::Inactive(reason) => {
+                for record in &format_records {
+                    inactive_records.insert(metadata_record(record, reason));
+                }
+            }
+        }
+    }
+    language_rules.sort_by(|left, right| left.key.cmp(&right.key));
+
     seed_legacy_group_rules(&mut group_rules);
 
     let mut group_conflict_records = BTreeSet::<MetadataRuleRecord>::new();
@@ -1352,6 +1740,7 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
             .into_iter()
             .map(|(key, provenance)| LocaleGroupFactRuleRecord { key, provenance })
             .collect(),
+        language_rules,
         no_release_group_facets: no_release_group_facets.into_iter().collect(),
         inactive_records: inactive_records.into_iter().collect(),
         ignored_records: ignored_records
@@ -1359,6 +1748,163 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
             .chain(group_conflict_records)
             .collect(),
     })
+}
+
+/// One emitted fact code joined to a single upstream score entry.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FactScoreRow {
+    code: String,
+    app: String,
+    score_set: String,
+    score: i64,
+}
+
+/// Observed range of a score set, recorded so a wholesale change in upstream's
+/// scale trips the coverage gate instead of being absorbed silently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ScoreSetEnvelope {
+    score_set: String,
+    min: i64,
+    max: i64,
+    vetoes: Vec<i64>,
+}
+
+/// Scores at or beyond this magnitude are vetoes rather than rankings; the
+/// value matches `scryer.block_score()` and `BLOCK_SCORE`.
+const VETO_SCORE_THRESHOLD: i64 = -10_000;
+
+/// Cutoff assumed for a score set that publishes no veto at all.
+const DEFAULT_VETO_MAGNITUDE: i64 = 10_000;
+
+/// Fact codes upstream ships with no `trash_scores` at all. Their scores stay
+/// Scryer-native, so the per-app guard treats them as reviewed; a fact that
+/// arrives unscored without being listed here still fails the sync.
+const UNSCORED_UPSTREAM_FACT_CODES: &[&str] = &[
+    "trash.fansub",
+    "trash.locale.french.marker.auvio",
+    "trash.locale.french.marker.salto",
+    "trash.locale.french.marker.vf2",
+    "trash.locale.french.marker.vfb",
+    "trash.locale.french.marker.vff",
+    "trash.locale.french.marker.vfi",
+    "trash.locale.french.marker.vfq",
+    "trash.locale.french.marker.vof",
+    "trash.locale.french.marker.voq",
+    "trash.locale.french.marker.vq",
+    "trash.locale.french.marker.wkn",
+];
+
+fn emitted_fact_provenance(catalog: &DistilledCatalog) -> Vec<(&str, &[UpstreamRecord])> {
+    catalog
+        .fact_rules
+        .iter()
+        .map(|rule| (rule.key.code.as_str(), rule.provenance.as_slice()))
+        .chain(
+            catalog
+                .locale_group_fact_rules
+                .iter()
+                .map(|rule| (rule.key.code.as_str(), rule.provenance.as_slice())),
+        )
+        // Language rules are not parser facts, but they are scored the same way
+        // and resolved through the same table, so they join here.
+        .chain(
+            catalog
+                .language_rules
+                .iter()
+                .map(|rule| (rule.key.code.as_str(), rule.provenance.as_slice())),
+        )
+        .collect()
+}
+
+fn collect_fact_scores(catalog: &DistilledCatalog) -> Vec<FactScoreRow> {
+    let mut rows = BTreeSet::new();
+    for (code, provenance) in emitted_fact_provenance(catalog) {
+        for record in provenance {
+            for (score_set, score) in &record.scores {
+                rows.insert(FactScoreRow {
+                    code: code.to_string(),
+                    app: record.app.clone(),
+                    score_set: score_set.clone(),
+                    score: *score,
+                });
+            }
+        }
+    }
+    rows.into_iter().collect()
+}
+
+/// A score set's cutoff is the *smallest* veto it uses: sets carry vetoes
+/// harder than their own cutoff, so `default` would otherwise read as 35000
+/// because of its twelve -35000 entries.
+fn score_set_veto_magnitudes(records: &[UpstreamRecord]) -> BTreeMap<String, i64> {
+    let mut observed = BTreeMap::<String, Option<i64>>::new();
+    for record in records {
+        for (score_set, score) in &record.scores {
+            let smallest = observed.entry(score_set.clone()).or_default();
+            if *score <= VETO_SCORE_THRESHOLD {
+                *smallest = Some(smallest.map_or(score.abs(), |current| current.min(score.abs())));
+            }
+        }
+    }
+
+    observed
+        .into_iter()
+        .map(|(score_set, smallest)| (score_set, smallest.unwrap_or(DEFAULT_VETO_MAGNITUDE)))
+        .collect()
+}
+
+fn score_set_envelopes(records: &[UpstreamRecord]) -> Vec<ScoreSetEnvelope> {
+    let mut observed = BTreeMap::<&str, (i64, i64, BTreeSet<i64>)>::new();
+    for record in records {
+        for (score_set, score) in &record.scores {
+            let entry = observed
+                .entry(score_set.as_str())
+                .or_insert_with(|| (*score, *score, BTreeSet::new()));
+            entry.0 = entry.0.min(*score);
+            entry.1 = entry.1.max(*score);
+            if *score <= VETO_SCORE_THRESHOLD {
+                entry.2.insert(*score);
+            }
+        }
+    }
+
+    observed
+        .into_iter()
+        .map(|(score_set, (min, max, vetoes))| ScoreSetEnvelope {
+            score_set: score_set.to_string(),
+            min,
+            max,
+            vetoes: vetoes.into_iter().collect(),
+        })
+        .collect()
+}
+
+/// Emitted facts that carry no upstream score for an app that produced them.
+///
+/// Coverage is uneven upstream — a format can be scored in one app and not the
+/// other — so a fact only counts as unscored for the app whose custom format
+/// omits every score set. A global check would fail against valid upstream data.
+///
+/// `guide-only` is simply another app here: its five formats all publish
+/// `trash_scores`, so they answer the guard on their own without any
+/// cross-app borrowing.
+fn unscored_fact_apps(catalog: &DistilledCatalog) -> Vec<String> {
+    let mut scored = BTreeMap::<(&str, &str), bool>::new();
+    for (code, provenance) in emitted_fact_provenance(catalog) {
+        if UNSCORED_UPSTREAM_FACT_CODES.contains(&code) {
+            continue;
+        }
+        for record in provenance {
+            let entry = scored.entry((record.app.as_str(), code)).or_default();
+            *entry |= !record.scores.is_empty();
+        }
+    }
+
+    scored
+        .into_iter()
+        .filter(|(_, scored)| !scored)
+        .map(|((app, code), _)| format!("{app}/{code}"))
+        .collect()
 }
 
 fn seed_legacy_group_rules(group_rules: &mut BTreeMap<GroupRuleKey, Vec<UpstreamRecord>>) {
@@ -1385,6 +1931,7 @@ fn seed_legacy_group_rules(group_rules: &mut BTreeMap<GroupRuleKey, Vec<Upstream
                 value: format!("{:?}:{:?}:{:?}", seed.tier, seed.context, facet),
                 required_json: "null".to_string(),
                 negate_json: "null".to_string(),
+                scores: BTreeMap::new(),
             };
             let key = GroupRuleKey {
                 matcher: seed.name.to_string(),
@@ -1590,6 +2137,23 @@ fn classify_stem(stem: &str) -> StemClassification {
             reason: "reviewed_locale_fact",
         };
     }
+    // Language conditions need metadata the parser never sees — the
+    // title's original language — so detection lives in the managed policy that
+    // reads the rule input, not in a parser fact.
+    if is_language_rule_stem_name(stem) {
+        return match undistillable_language_stem_reason(stem) {
+            Some(reason) => StemClassification {
+                detection_owner: DetectionOwner::Unsupported,
+                effect_binding: EffectBinding::None,
+                reason,
+            },
+            None => StemClassification {
+                detection_owner: DetectionOwner::ManagedRego,
+                effect_binding: EffectBinding::LocaleScore,
+                reason: "reviewed_language_rule",
+            },
+        };
+    }
     if stem == "anime-dual-audio" {
         return StemClassification {
             detection_owner: DetectionOwner::ExistingNative,
@@ -1602,6 +2166,13 @@ fn classify_stem(stem: &str) -> StemClassification {
             detection_owner: DetectionOwner::ExistingNative,
             effect_binding: EffectBinding::Informational,
             reason: "reviewed_service_alias",
+        };
+    }
+    if excluded_service_alias_reason(stem).is_some() {
+        return StemClassification {
+            detection_owner: DetectionOwner::Unsupported,
+            effect_binding: EffectBinding::None,
+            reason: "reviewed_service_alias_exclusion",
         };
     }
     if matches!(
@@ -1665,23 +2236,7 @@ fn classify_stem(stem: &str) -> StemClassification {
 }
 
 fn is_service_alias_stem(stem: &str) -> bool {
-    matches!(
-        stem,
-        "amzn"
-            | "atvp"
-            | "cr"
-            | "dsnp"
-            | "funi"
-            | "hbo"
-            | "hidive"
-            | "hmax"
-            | "hulu"
-            | "max"
-            | "nf"
-            | "pcok"
-            | "pmtp"
-            | "stan"
-    )
+    service_alias_spec(stem).is_some()
 }
 
 fn record_is_negated(record: &UpstreamRecord) -> bool {
@@ -1744,6 +2299,358 @@ fn locale_fact_code(stem: &str) -> String {
         format!("marker.{}", semantic.replace('-', "_"))
     };
     format!("trash.locale.{locale}.{semantic}")
+}
+
+// ---------------------------------------------------------------------------
+// Language rules
+// ---------------------------------------------------------------------------
+
+/// One Sonarr/Radarr `Language` enum id.
+///
+/// Ids are identical in both apps (verified against both `Language.cs`), so a
+/// single table serves the whole distillation. `code` is the canonical audio
+/// language code Scryer publishes in `input.release.languages_audio` — the
+/// output of `normalize_detected_audio_language_code`, which is ISO 639-2/T
+/// lowercase — so a distilled condition compares against the rule input without
+/// any further translation. `name` is upstream's own English name, used to
+/// recognise the release-title specifications that restate a language condition.
+struct LanguageId {
+    id: i64,
+    name: &'static str,
+    code: &'static str,
+}
+
+/// Upstream's relative "Original" language: the title's own original language
+/// rather than a fixed one.
+const ORIGINAL_LANGUAGE_ID: i64 = -2;
+
+const LANGUAGE_IDS: &[LanguageId] = &[
+    LanguageId {
+        id: 1,
+        name: "english",
+        code: "eng",
+    },
+    LanguageId {
+        id: 2,
+        name: "french",
+        code: "fra",
+    },
+    LanguageId {
+        id: 3,
+        name: "spanish",
+        code: "spa",
+    },
+    LanguageId {
+        id: 4,
+        name: "german",
+        code: "deu",
+    },
+    LanguageId {
+        id: 5,
+        name: "italian",
+        code: "ita",
+    },
+    LanguageId {
+        id: 6,
+        name: "danish",
+        code: "dan",
+    },
+    LanguageId {
+        id: 7,
+        name: "dutch",
+        code: "nld",
+    },
+    LanguageId {
+        id: 8,
+        name: "japanese",
+        code: "jpn",
+    },
+    LanguageId {
+        id: 9,
+        name: "icelandic",
+        code: "isl",
+    },
+    LanguageId {
+        id: 10,
+        name: "chinese",
+        code: "zho",
+    },
+    LanguageId {
+        id: 11,
+        name: "russian",
+        code: "rus",
+    },
+    LanguageId {
+        id: 12,
+        name: "polish",
+        code: "pol",
+    },
+    LanguageId {
+        id: 13,
+        name: "vietnamese",
+        code: "vie",
+    },
+    LanguageId {
+        id: 14,
+        name: "swedish",
+        code: "swe",
+    },
+    LanguageId {
+        id: 15,
+        name: "norwegian",
+        code: "nor",
+    },
+    LanguageId {
+        id: 16,
+        name: "finnish",
+        code: "fin",
+    },
+    LanguageId {
+        id: 17,
+        name: "turkish",
+        code: "tur",
+    },
+    LanguageId {
+        id: 18,
+        name: "portuguese",
+        code: "por",
+    },
+    // Scryer's ISO table is `Dutch; Flemish` under the single canonical code
+    // `nld`, so Flemish resolves to Dutch rather than to a code the rule input
+    // would never carry. A format naming both ids therefore yields one
+    // condition after deduplication, which is the same set of releases.
+    LanguageId {
+        id: 19,
+        name: "flemish",
+        code: "nld",
+    },
+    LanguageId {
+        id: 20,
+        name: "greek",
+        code: "ell",
+    },
+    LanguageId {
+        id: 21,
+        name: "korean",
+        code: "kor",
+    },
+    LanguageId {
+        id: 22,
+        name: "hungarian",
+        code: "hun",
+    },
+    LanguageId {
+        id: 23,
+        name: "hebrew",
+        code: "heb",
+    },
+    LanguageId {
+        id: 24,
+        name: "lithuanian",
+        code: "lit",
+    },
+];
+
+/// Language formats whose *required* specifications include a constraint no
+/// language condition can express. Distilling them anyway would silently widen
+/// what upstream matches, so they are captured as audit records instead.
+const UNDISTILLABLE_LANGUAGE_STEMS: &[(&str, &str)] = &[(
+    "language-original-plus-french",
+    "language_rule_requires_unsupported_release_title_spec",
+)];
+
+fn language_id_code(id: i64) -> Option<&'static str> {
+    LANGUAGE_IDS
+        .iter()
+        .find(|entry| entry.id == id)
+        .map(|entry| entry.code)
+}
+
+fn language_name_code(name: &str) -> Option<&'static str> {
+    LANGUAGE_IDS
+        .iter()
+        .find(|entry| entry.name == name)
+        .map(|entry| entry.code)
+}
+
+/// Stems whose custom formats are language policies rather than detection.
+///
+/// Everything under `guide-only/` is one; in the per-app trees they are the
+/// `language-*` family plus the `not-…-or-english` vetoes.
+fn is_language_rule_stem(app: &str, stem: &str) -> bool {
+    app == GUIDE_ONLY_APP || is_language_rule_stem_name(stem)
+}
+
+fn is_language_rule_stem_name(stem: &str) -> bool {
+    stem.starts_with("language-") || (stem.starts_with("not-") && stem.ends_with("-or-english"))
+}
+
+fn undistillable_language_stem_reason(stem: &str) -> Option<&'static str> {
+    UNDISTILLABLE_LANGUAGE_STEMS
+        .iter()
+        .find(|(candidate, _)| *candidate == stem)
+        .map(|(_, reason)| *reason)
+}
+
+/// Stable rule code for a language format.
+///
+/// The `language-` prefix is redundant under `trash.lang.`, so it is dropped;
+/// the `not-…-or-english` stems keep their whole name because it *is* the
+/// policy.
+fn language_rule_code(stem: &str) -> String {
+    let base = stem.strip_prefix("language-").unwrap_or(stem);
+    format!("trash.lang.{}", base.replace('-', "_"))
+}
+
+/// The single word a release-title specification asserts, when it is nothing
+/// more than one word between word boundaries.
+///
+/// Anything richer — alternations, lookarounds, character classes — returns
+/// `None`, because only the bare form can be checked for redundancy against a
+/// language condition.
+fn language_title_marker_word(pattern: &str) -> Option<String> {
+    let pattern = pattern.trim();
+    let pattern = pattern.strip_prefix("(?i)").unwrap_or(pattern);
+    let inner = pattern.strip_prefix(r"\b")?.strip_suffix(r"\b")?;
+    if inner.is_empty() || !inner.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(inner.to_ascii_lowercase())
+}
+
+/// Whether a required non-language specification is already implied by the
+/// format's own language conditions.
+///
+/// The only sound direction is the negated one. Scryer derives
+/// `release.languages_audio` from the same release title upstream is matching,
+/// so "the audio languages do not include German" implies "the title does not
+/// say GERMAN"; keeping the title check would narrow nothing. The positive
+/// direction does not hold — an audio language can come from the indexer rather
+/// than the title — so a positive title requirement is never dropped.
+fn language_title_spec_is_subsumed(
+    record: &UpstreamRecord,
+    conditions: &BTreeSet<LanguageConditionEntry>,
+) -> bool {
+    if record.implementation != "ReleaseTitleSpecification" || !record_is_negated(record) {
+        return false;
+    }
+    let Some(word) = language_title_marker_word(&record.value) else {
+        return false;
+    };
+    let Some(code) = language_name_code(&word) else {
+        return false;
+    };
+    conditions.contains(&LanguageConditionEntry {
+        language: LanguageConditionSpec::Named(code.to_string()),
+        negate: true,
+        required: true,
+    })
+}
+
+/// One distilled language format, or the reason it stayed out of the table.
+#[derive(Debug)]
+enum LanguageRuleDistillation {
+    Rule(Vec<LanguageConditionEntry>),
+    Inactive(&'static str),
+}
+
+/// Turn one custom format's specifications into the condition list the managed
+/// packs evaluate.
+///
+/// Upstream decides a format with `SpecificationMatchesGroup.DidMatch`: no
+/// required specification may fail, and at least one must match. Only the
+/// language specifications survive here, so the non-language ones have to be
+/// accounted for rather than dropped silently:
+///
+/// * an *optional* non-language specification only ever contributed to "at least
+///   one matched", which a required condition already satisfies, so it is safe to
+///   drop whenever the format has one — and lossy when it does not;
+/// * a *required* non-language specification gates the format, so it is dropped
+///   only when a language condition already implies it, and otherwise takes the
+///   whole format out of the table.
+fn distill_language_rule(records: &[UpstreamRecord]) -> Result<LanguageRuleDistillation> {
+    let mut conditions = BTreeSet::<LanguageConditionEntry>::new();
+    let mut other_specs = Vec::new();
+
+    for record in records {
+        if record.implementation != "LanguageSpecification" {
+            other_specs.push(record);
+            continue;
+        }
+
+        let fields = serde_json::from_str::<Value>(&record.value).with_context(|| {
+            format!(
+                "language specification fields in {} are not JSON",
+                record.source_path
+            )
+        })?;
+        // `exceptLanguage` inverts the specification into "carries some language
+        // other than this one", which is a different question from the one the
+        // condition list asks. Upstream only ships it as `false` today; a `true`
+        // has to be designed for rather than silently misread.
+        if fields
+            .get("exceptLanguage")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(LanguageRuleDistillation::Inactive(
+                "language_rule_uses_except_language",
+            ));
+        }
+        let id = fields.get("value").and_then(Value::as_i64).ok_or_else(|| {
+            anyhow!(
+                "language specification in {} has no integer value",
+                record.source_path
+            )
+        })?;
+        let language = if id == ORIGINAL_LANGUAGE_ID {
+            LanguageConditionSpec::Original
+        } else {
+            LanguageConditionSpec::Named(
+                language_id_code(id)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "unmapped TRaSH language id {id} in {}; add it to LANGUAGE_IDS",
+                            record.source_path
+                        )
+                    })?
+                    .to_string(),
+            )
+        };
+
+        conditions.insert(LanguageConditionEntry {
+            language,
+            negate: record_is_negated(record),
+            required: record_is_required(record),
+        });
+    }
+
+    if conditions.is_empty() {
+        return Ok(LanguageRuleDistillation::Inactive(
+            "language_rule_has_no_language_specification",
+        ));
+    }
+
+    let has_required_condition = conditions.iter().any(|condition| condition.required);
+    for record in other_specs {
+        if record_is_required(record) {
+            if !language_title_spec_is_subsumed(record, &conditions) {
+                return Ok(LanguageRuleDistillation::Inactive(
+                    "language_rule_requires_unsupported_release_title_spec",
+                ));
+            }
+        } else if !has_required_condition {
+            // With no required condition the format matches on "at least one
+            // specification matched", so discarding an optional one narrows it.
+            return Ok(LanguageRuleDistillation::Inactive(
+                "language_rule_drops_a_matching_optional_spec",
+            ));
+        }
+    }
+
+    Ok(LanguageRuleDistillation::Rule(
+        conditions.into_iter().collect(),
+    ))
 }
 
 fn locale_group_source_context(stem: &str) -> Option<DistilledContext> {
@@ -2073,21 +2980,84 @@ fn unescape_group_literal(input: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-fn canonical_service_name(stem: &str) -> Result<&'static str> {
-    match stem {
-        "amzn" => Ok("Amazon"),
-        "atvp" => Ok("Apple TV+"),
-        "cr" => Ok("Crunchyroll"),
-        "dsnp" => Ok("Disney+"),
-        "funi" => Ok("Funimation"),
-        "hbo" | "hmax" | "max" => Ok("HBO Max"),
-        "hidive" => Ok("HIDIVE"),
-        "hulu" => Ok("Hulu"),
-        "nf" => Ok("Netflix"),
-        "pcok" => Ok("Peacock"),
-        "pmtp" => Ok("Paramount+"),
-        "stan" => Ok("Stan"),
-        _ => bail!("unknown service stem {stem}"),
+fn service_alias_spec(stem: &str) -> Option<&'static ServiceAliasSpec> {
+    SERVICE_ALIAS_SPECS.iter().find(|spec| spec.stem == stem)
+}
+
+fn excluded_service_alias_reason(stem: &str) -> Option<&'static str> {
+    EXCLUDED_SERVICE_ALIAS_STEMS
+        .iter()
+        .find(|(excluded, _)| *excluded == stem)
+        .map(|(_, reason)| *reason)
+}
+
+/// Turns one upstream specification into alias rows under the §6a token policy.
+///
+/// `locale_owned` marks the records a second branch also classifies: for those
+/// the locale branch records the audit entry, so failures here stay silent
+/// rather than duplicating an inactive record under two reasons.
+fn collect_service_alias_tokens(
+    record: &UpstreamRecord,
+    spec: &ServiceAliasSpec,
+    locale_owned: bool,
+    rules: &mut BTreeMap<ServiceAliasKey, Vec<UpstreamRecord>>,
+    inactive_records: &mut BTreeSet<MetadataRuleRecord>,
+) {
+    if record.implementation != "ReleaseTitleSpecification" || record_is_negated(record) {
+        if !locale_owned {
+            inactive_records.insert(metadata_record(
+                record,
+                "service_alias_requires_positive_title_spec",
+            ));
+        }
+        return;
+    }
+    let tokens = match distill_service_alias_tokens(record) {
+        Ok(tokens) => tokens,
+        Err(failure) => {
+            inactive_records.insert(metadata_record(record, failure.reason()));
+            return;
+        }
+    };
+    for token in tokens {
+        if spec
+            .excluded_tokens
+            .iter()
+            .any(|(excluded, _)| *excluded == token)
+        {
+            continue;
+        }
+        let policy = spec
+            .token_overrides
+            .iter()
+            .find(|(candidate, _)| *candidate == token)
+            .map_or(spec.default_policy, |(_, policy)| *policy);
+        rules
+            .entry(ServiceAliasKey {
+                token,
+                service: spec.service.to_string(),
+                requires_web_adjacency: policy.requires_web_adjacency(),
+            })
+            .or_default()
+            .push(record.clone());
+    }
+}
+
+/// Why one specification produced no usable alias tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AliasDistillationFailure {
+    /// The pattern's safety mechanism is a negative assertion (§6a rule 3).
+    NegativeLookaround,
+    /// The expansion produced nothing a single title token could match.
+    NotLossless,
+}
+
+impl AliasDistillationFailure {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::NegativeLookaround => "service_alias_negative_lookaround",
+            Self::NotLossless => "service_alias_pattern_not_lossless",
+        }
     }
 }
 
@@ -2096,17 +3066,19 @@ fn canonical_service_name(stem: &str) -> Result<&'static str> {
 /// Splitting the raw pattern on non-alphanumerics is not safe here: it turns
 /// `\b(FUNi(mation)?)\b` into `FUNI` plus a bogus `MATION`. Expanding the parsed
 /// regex instead yields exactly the strings upstream intended to match.
-fn distill_service_alias_tokens(record: &UpstreamRecord) -> Result<Vec<String>> {
-    let tokens = finite_group_literals(&strip_lookarounds(&record.value))?
+fn distill_service_alias_tokens(
+    record: &UpstreamRecord,
+) -> Result<Vec<String>, AliasDistillationFailure> {
+    let stripped =
+        strip_lookarounds(&record.value).ok_or(AliasDistillationFailure::NegativeLookaround)?;
+    let tokens = finite_group_literals(&stripped)
+        .map_err(|_| AliasDistillationFailure::NotLossless)?
         .iter()
         .filter_map(|literal| sanitize_alias_token(literal))
         .collect::<BTreeSet<_>>();
 
     if tokens.is_empty() {
-        bail!(
-            "failed to distill service alias tokens for {}",
-            record.source_path
-        );
+        return Err(AliasDistillationFailure::NotLossless);
     }
 
     Ok(tokens.into_iter().collect())
@@ -2131,11 +3103,19 @@ fn sanitize_alias_token(raw: &str) -> Option<String> {
     Some(token)
 }
 
-/// Drops lookaround groups so a pattern that uses them can still be parsed and
-/// expanded. Lookarounds constrain the context around a service tag rather than
-/// the tag text itself, and `regex-syntax` rejects them outright.
-fn strip_lookarounds(pattern: &str) -> String {
-    const OPENERS: [&str; 4] = ["(?=", "(?!", "(?<=", "(?<!"];
+/// Drops *positive* lookaround groups so a pattern that uses them can still be
+/// parsed and expanded. A positive assertion only narrows the context a service
+/// tag appears in, so the tag text survives stripping unchanged, and
+/// `regex-syntax` rejects the syntax outright.
+///
+/// Returns `None` for a negative assertion. by design those are
+/// not strippable: the assertion *is* the pattern's safety mechanism, so
+/// discarding it would widen the match rather than narrow it —
+/// `(?<!dts[ .-]?hd[ .-]?)\b(ma|ykw)\b` would start tagging DTS-HD MA audio as a
+/// streaming service.
+fn strip_lookarounds(pattern: &str) -> Option<String> {
+    const POSITIVE_OPENERS: [&str; 2] = ["(?=", "(?<="];
+    const NEGATIVE_OPENERS: [&str; 2] = ["(?!", "(?<!"];
     let mut output = String::new();
     let mut rest = pattern;
 
@@ -2145,7 +3125,16 @@ fn strip_lookarounds(pattern: &str) -> String {
                 continue;
             }
             let candidate = &rest[index..];
-            if OPENERS.iter().any(|opener| candidate.starts_with(opener)) {
+            if NEGATIVE_OPENERS
+                .iter()
+                .any(|opener| candidate.starts_with(opener))
+            {
+                return None;
+            }
+            if POSITIVE_OPENERS
+                .iter()
+                .any(|opener| candidate.starts_with(opener))
+            {
                 output.push_str(&rest[..index]);
                 match lookaround_end(candidate) {
                     Some(end) => {
@@ -2153,7 +3142,7 @@ fn strip_lookarounds(pattern: &str) -> String {
                         continue 'outer;
                     }
                     // Unbalanced group: keep what came before and stop.
-                    None => return output,
+                    None => return Some(output),
                 }
             }
         }
@@ -2161,7 +3150,7 @@ fn strip_lookarounds(pattern: &str) -> String {
         break;
     }
 
-    output
+    Some(output)
 }
 
 fn is_escaped(pattern: &str, index: usize) -> bool {
@@ -2484,7 +3473,11 @@ fn format_generated_rust(ctx: &TaskContext) -> Result<()> {
     run_checked(&mut command).context("failed to rustfmt generated TRaSH outputs")
 }
 
-fn render_quality_output(catalog: &DistilledCatalog, source_revision: &str) -> Result<String> {
+fn render_quality_output(
+    catalog: &DistilledCatalog,
+    records: &[UpstreamRecord],
+    source_revision: &str,
+) -> Result<String> {
     let mut output = String::new();
     writeln!(
         output,
@@ -2514,6 +3507,61 @@ fn render_quality_output(catalog: &DistilledCatalog, source_revision: &str) -> R
     }
     writeln!(output, "];\n")?;
 
+    writeln!(output, "pub static TRASH_FACT_SCORES: &[TrashFactScore] = &[")?;
+    for row in collect_fact_scores(catalog) {
+        writeln!(
+            output,
+            "    TrashFactScore {{ code: {}, app: {}, score_set: {}, score: {} }},",
+            rust_str(&row.code),
+            rust_str(&row.app),
+            rust_str(&row.score_set),
+            row.score,
+        )?;
+    }
+    writeln!(output, "];\n")?;
+
+    writeln!(
+        output,
+        "pub static TRASH_SCORE_SET_VETO_MAGNITUDES: &[(&str, i64)] = &["
+    )?;
+    for (score_set, magnitude) in score_set_veto_magnitudes(records) {
+        writeln!(output, "    ({}, {magnitude}),", rust_str(&score_set))?;
+    }
+    writeln!(output, "];\n")?;
+
+    writeln!(
+        output,
+        "pub static TRASH_LANGUAGE_RULES: &[TrashLanguageRule] = &["
+    )?;
+    for rule in &catalog.language_rules {
+        let conditions = rule
+            .key
+            .conditions
+            .iter()
+            .map(|condition| {
+                format!(
+                    "TrashLanguageCondition {{ language: {}, negate: {}, required: {} }}",
+                    match &condition.language {
+                        LanguageConditionSpec::Named(code) =>
+                            format!("TrashLanguage::Named({})", rust_str(code)),
+                        LanguageConditionSpec::Original => "TrashLanguage::Original".to_string(),
+                    },
+                    condition.negate,
+                    condition.required,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            output,
+            "    TrashLanguageRule {{ code: {}, app: {}, stem: {}, conditions: &[{conditions}] }},",
+            rust_str(&rule.key.code),
+            rust_str(&rule.key.app),
+            rust_str(&rule.key.stem),
+        )?;
+    }
+    writeln!(output, "];\n")?;
+
     Ok(output)
 }
 
@@ -2537,9 +3585,10 @@ fn render_parser_output(catalog: &DistilledCatalog, source_revision: &str) -> Re
     for rule in &catalog.service_alias_rules {
         writeln!(
             output,
-            "    ServiceAliasRule {{ token: {}, service: {} }},",
+            "    ServiceAliasRule {{ token: {}, service: {}, requires_web_adjacency: {} }},",
             rust_str(&rule.key.token),
             rust_str(&rule.key.service),
+            rule.key.requires_web_adjacency,
         )?;
     }
     writeln!(output, "];\n")?;
@@ -2673,6 +3722,11 @@ fn render_summary(catalog: &DistilledCatalog, source_revision: &str) -> String {
     let _ = writeln!(output, "Active guide facts: {}", catalog.fact_rules.len());
     let _ = writeln!(
         output,
+        "Active language rules: {}",
+        catalog.language_rules.len()
+    );
+    let _ = writeln!(
+        output,
         "Active blocked title rules: {}",
         catalog.blocked_title_rules.len()
     );
@@ -2764,6 +3818,14 @@ fn build_stem_manifest(
             &format!("locale_group:{:?}", rule.key),
         );
     }
+    for rule in &catalog.language_rules {
+        add_stem_emission(
+            &mut emissions,
+            &rule.provenance,
+            &[rule.key.code.as_str()],
+            &format!("language:{:?}", rule.key),
+        );
+    }
 
     let mut stems = BTreeMap::<(&str, &str), StemClassification>::new();
     for record in records {
@@ -2774,6 +3836,7 @@ fn build_stem_manifest(
 
     StemClassificationManifest {
         source_revision: source_revision.to_string(),
+        score_envelope: score_set_envelopes(records),
         stems: stems
             .into_iter()
             .map(
@@ -2864,6 +3927,15 @@ fn enforce_stem_coverage(
     };
 
     let current = build_stem_manifest(records, catalog, "");
+    let drift = score_envelope_drift(&known.score_envelope, &current.score_envelope);
+    if !drift.is_empty() && !accepts_new_stems {
+        bail!(
+            "TRaSH score envelope moved outside the reviewed range: {}; confirm the mapping still treats vetoes as vetoes, then set {ACCEPT_STEMS_ENV}=1 to record the new envelope in {}",
+            drift.join(", "),
+            manifest_path.display()
+        );
+    }
+
     let known = known
         .stems
         .into_iter()
@@ -2902,6 +3974,39 @@ fn enforce_stem_coverage(
         );
     }
     Ok(())
+}
+
+/// Differences between the reviewed and observed score envelopes.
+///
+/// Any difference counts, not just a widening: the failure this guards against
+/// is upstream *shrinking* its scale, where scores that used to veto quietly
+/// stop doing so.
+fn score_envelope_drift(known: &[ScoreSetEnvelope], current: &[ScoreSetEnvelope]) -> Vec<String> {
+    let known = known
+        .iter()
+        .map(|envelope| (envelope.score_set.as_str(), envelope))
+        .collect::<BTreeMap<_, _>>();
+    let current = current
+        .iter()
+        .map(|envelope| (envelope.score_set.as_str(), envelope))
+        .collect::<BTreeMap<_, _>>();
+
+    known
+        .keys()
+        .chain(current.keys())
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|score_set| match (known.get(score_set), current.get(score_set)) {
+            (Some(known), Some(current)) if known == current => None,
+            (Some(known), Some(current)) => Some(format!(
+                "{score_set} {}..{} vetoes {:?} -> {}..{} vetoes {:?}",
+                known.min, known.max, known.vetoes, current.min, current.max, current.vetoes
+            )),
+            (Some(_), None) => Some(format!("{score_set} disappeared")),
+            (None, _) => Some(format!("{score_set} is new")),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -3390,6 +4495,185 @@ mod tests {
         );
     }
 
+    fn service_record(stem: &str, spec_name: &str, value: &str) -> UpstreamRecord {
+        UpstreamRecord {
+            app: "sonarr".to_string(),
+            stem: stem.to_string(),
+            source_path: format!("docs/json/sonarr/cf/{stem}.json"),
+            trash_id: format!("{stem}-id"),
+            cf_name: stem.to_uppercase(),
+            spec_name: spec_name.to_string(),
+            implementation: "ReleaseTitleSpecification".to_string(),
+            value: value.to_string(),
+            required_json: "true".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn alias_row(catalog: &DistilledCatalog, token: &str) -> Option<(String, bool)> {
+        catalog
+            .service_alias_rules
+            .iter()
+            .find(|rule| rule.key.token == token)
+            .map(|rule| (rule.key.service.clone(), rule.key.requires_web_adjacency))
+    }
+
+    #[test]
+    fn negative_lookarounds_are_not_strippable_and_land_in_the_audit() {
+        // Positive assertions only narrow context, so the tag text survives.
+        assert_eq!(
+            strip_lookarounds(r"\b(CNLP)\b(?=[ ._-]web[ ._-]?(dl|rip)\b)").as_deref(),
+            Some(r"\b(CNLP)\b")
+        );
+        // A negative assertion is the pattern's safety mechanism: stripping it
+        // would widen the match, so the whole specification is refused.
+        assert_eq!(
+            strip_lookarounds(r"(?<!dts[ .-]?hd[ .-]?)\b(ma|ykw)\b"),
+            None
+        );
+        assert_eq!(strip_lookarounds(r"\b(hbo)(?![ ._-]max)\b"), None);
+
+        let record = service_record("it", "iT Rename", r"\[(iT)(?![+])\b|\b(?<![+])(iT)\]");
+        assert_eq!(
+            distill_service_alias_tokens(&record),
+            Err(AliasDistillationFailure::NegativeLookaround)
+        );
+        let catalog = distill_records(&[record]).expect("distill negative lookaround");
+        assert!(catalog.service_alias_rules.is_empty());
+        assert!(
+            catalog
+                .inactive_records
+                .iter()
+                .any(|record| record.reason == "service_alias_negative_lookaround")
+        );
+    }
+
+    #[test]
+    fn service_alias_policies_follow_the_reviewed_inclusion_table() {
+        let catalog = distill_records(&[
+            // Required title spec: upstream deems the bare token sufficient.
+            service_record("abema", "ABEMA", r"\b(ABEMA[ ._-]?(TV)?)\b"),
+            // No required spec: the token only counts beside a WEB marker.
+            UpstreamRecord {
+                required_json: "false".to_string(),
+                ..service_record("now", "NOW", r"\b(now)\b[ ._-]web[ ._-]?(dl|rip)?\b")
+            },
+            // Per-token override: SHOWTIME is unambiguous, bare SHO is not.
+            UpstreamRecord {
+                required_json: "false".to_string(),
+                ..service_record(
+                    "sho",
+                    "SHOWTIME",
+                    r"\b(sho|showtime)\b[ ._-]web[ ._-]?(dl|rip)?\b",
+                )
+            },
+            // Per-token exclusions: brand prefix and curated-supplement handoff.
+            service_record("dcu", "DC Universe", r"\b(dcu|DC Universe)\b"),
+            UpstreamRecord {
+                required_json: "false".to_string(),
+                ..service_record(
+                    "red",
+                    "YouTube Red",
+                    r"\b(red|youtube red)\b[ ._-]web[ ._-]?(dl|rip)?\b",
+                )
+            },
+        ])
+        .expect("distill policy table");
+
+        assert_eq!(
+            alias_row(&catalog, "ABEMA"),
+            Some(("ABEMA".to_string(), false))
+        );
+        assert_eq!(
+            alias_row(&catalog, "ABEMATV"),
+            Some(("ABEMA".to_string(), false))
+        );
+        assert_eq!(alias_row(&catalog, "NOW"), Some(("NOW".to_string(), true)));
+        assert_eq!(
+            alias_row(&catalog, "SHO"),
+            Some(("Showtime".to_string(), true))
+        );
+        assert_eq!(
+            alias_row(&catalog, "SHOWTIME"),
+            Some(("Showtime".to_string(), false))
+        );
+        assert_eq!(
+            alias_row(&catalog, "DCU"),
+            Some(("DC Universe".to_string(), false))
+        );
+        assert_eq!(alias_row(&catalog, "DC"), None);
+        assert_eq!(
+            alias_row(&catalog, "RED"),
+            Some(("YouTube Premium".to_string(), true))
+        );
+        assert_eq!(alias_row(&catalog, "YOUTUBE"), None);
+        validate_service_alias_rules(&catalog.service_alias_rules)
+            .expect("guards accept the table");
+    }
+
+    #[test]
+    fn reviewed_service_exclusions_never_reach_the_alias_table() {
+        for (stem, reason) in EXCLUDED_SERVICE_ALIAS_STEMS {
+            let record = service_record(stem, "Service", r"\b(EXAMPLE)\b");
+            let catalog = distill_records(&[record]).expect("distill excluded service stem");
+            assert!(
+                catalog.service_alias_rules.is_empty(),
+                "{stem} produced alias rows"
+            );
+            assert!(
+                catalog
+                    .ignored_records
+                    .iter()
+                    .any(|record| record.reason == *reason),
+                "{stem} lost its exclusion reason"
+            );
+            assert_eq!(
+                classify_stem(stem).reason,
+                "reviewed_service_alias_exclusion"
+            );
+        }
+        // `bcore` is admitted, but only for its own token.
+        let catalog = distill_records(&[service_record(
+            "bcore",
+            "Bravia Core",
+            r"\b(BCORE)\b|\b(CORE)\b",
+        )])
+        .expect("distill bcore");
+        assert_eq!(
+            alias_row(&catalog, "BCORE"),
+            Some(("BCORE".to_string(), false))
+        );
+        assert_eq!(alias_row(&catalog, "CORE"), None);
+    }
+
+    #[test]
+    fn alias_guards_reject_ambiguous_tokens_and_split_policies() {
+        let rule = |token: &str, service: &str, web: bool| ServiceAliasRecord {
+            key: ServiceAliasKey {
+                token: token.to_string(),
+                service: service.to_string(),
+                requires_web_adjacency: web,
+            },
+            provenance: Vec::new(),
+        };
+
+        validate_service_alias_rules(&[
+            rule("SHO", "Showtime", true),
+            rule("SHOWTIME", "Showtime", false),
+        ])
+        .expect("one token, one service, one policy");
+
+        let ambiguous =
+            validate_service_alias_rules(&[rule("PLAY", "PLAY", true), rule("PLAY", "Stan", true)])
+                .expect_err("one token must not name two services");
+        assert!(ambiguous.to_string().contains("more than one service"));
+
+        let split =
+            validate_service_alias_rules(&[rule("NOW", "NOW", true), rule("NOW", "NOW", false)])
+                .expect_err("one token must not carry two policies");
+        assert!(split.to_string().contains("standalone and WEB-adjacent"));
+    }
+
     #[test]
     fn service_aliases_reject_source_enums_and_stray_fragments() {
         // Sonarr `SourceSpecification` values are numeric enums, never tokens.
@@ -3453,6 +4737,172 @@ mod tests {
         assert_eq!(matchers, BTreeSet::from(["AppleTor", "NEXT"]));
     }
 
+    fn scored_record(app: &str, stem: &str, scores: &[(&str, i64)]) -> UpstreamRecord {
+        UpstreamRecord {
+            app: app.to_string(),
+            stem: stem.to_string(),
+            source_path: format!("docs/json/{app}/cf/{stem}.json"),
+            trash_id: stem.to_string(),
+            implementation: "ReleaseGroupSpecification".to_string(),
+            spec_name: "groups".to_string(),
+            value: "^(AppleTor|NEXT)$".to_string(),
+            required_json: "false".to_string(),
+            negate_json: "false".to_string(),
+            scores: scores
+                .iter()
+                .map(|(set, score)| ((*set).to_string(), *score))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn trash_scores_must_be_integers() {
+        let task = FetchTask {
+            app: "radarr".to_string(),
+            dir: "radarr/cf".to_string(),
+            filename: "scene.json".to_string(),
+        };
+        let parsed = serde_json::from_str::<UpstreamCf>(
+            r#"{"name": "Scene", "trash_scores": {"default": 1.5}, "specifications": []}"#,
+        )
+        .expect("fixture should deserialize");
+        let error =
+            records_from_custom_format(&task, parsed, "docs/json/radarr/cf/scene.json".to_string())
+                .expect_err("fractional scores are not scores");
+        assert!(error.to_string().contains("docs/json/radarr/cf/scene.json"));
+    }
+
+    #[test]
+    fn veto_magnitude_is_the_smallest_veto_a_set_uses() {
+        let records = vec![
+            // `default` carries vetoes harder than its own cutoff, so the
+            // largest would misread the set as a 35000 one.
+            scored_record("radarr", "french-lq", &[("default", -10_000)]),
+            scored_record("radarr", "german-lq", &[("default", -35_000)]),
+            scored_record("radarr", "german-dl", &[("german", -35_000)]),
+            scored_record("radarr", "asian-tier-01", &[("anime-radarr", 1650)]),
+        ];
+        assert_eq!(
+            score_set_veto_magnitudes(&records),
+            BTreeMap::from([
+                ("anime-radarr".to_string(), DEFAULT_VETO_MAGNITUDE),
+                ("default".to_string(), 10_000),
+                ("german".to_string(), 35_000),
+            ])
+        );
+    }
+
+    #[test]
+    fn score_envelope_records_the_observed_range_and_sentinels() {
+        let records = vec![
+            scored_record("radarr", "french-lq", &[("default", -10_000)]),
+            scored_record("radarr", "german-lq", &[("default", -35_000)]),
+            scored_record("radarr", "asian-tier-01", &[("default", 1650)]),
+        ];
+        assert_eq!(
+            score_set_envelopes(&records),
+            vec![ScoreSetEnvelope {
+                score_set: "default".to_string(),
+                min: -35_000,
+                max: 1650,
+                vetoes: vec![-35_000, -10_000],
+            }]
+        );
+    }
+
+    #[test]
+    fn envelope_gate_reports_new_shrunk_and_missing_sets() {
+        let known = vec![ScoreSetEnvelope {
+            score_set: "default".to_string(),
+            min: -35_000,
+            max: 11_000,
+            vetoes: vec![-35_000, -10_000],
+        }];
+        assert!(score_envelope_drift(&known, &known).is_empty());
+
+        // A rescaled upstream keeps every value inside the old bounds while
+        // silently retiring the veto sentinels, which is the case this exists
+        // for.
+        let rescaled = vec![ScoreSetEnvelope {
+            score_set: "default".to_string(),
+            min: 0,
+            max: 100,
+            vetoes: Vec::new(),
+        }];
+        assert_eq!(score_envelope_drift(&known, &rescaled).len(), 1);
+        assert_eq!(
+            score_envelope_drift(&known, &[]),
+            vec!["default disappeared".to_string()]
+        );
+        assert_eq!(
+            score_envelope_drift(&[], &known),
+            vec!["default is new".to_string()]
+        );
+    }
+
+    #[test]
+    fn score_guard_is_scoped_per_app_and_skips_reviewed_native_facts() {
+        let scored = distill_records(&[
+            scored_record("radarr", "asian-lq", &[("default", -10_000)]),
+            scored_record("sonarr", "asian-lq", &[]),
+        ])
+        .unwrap();
+        assert_eq!(
+            unscored_fact_apps(&scored),
+            vec!["sonarr/trash.locale.asian.lq".to_string()]
+        );
+
+        // Radarr-only provenance never reports the app that publishes nothing.
+        let radarr_only =
+            distill_records(&[scored_record("radarr", "asian-lq", &[("default", -10_000)])])
+                .unwrap();
+        assert!(unscored_fact_apps(&radarr_only).is_empty());
+
+        // The regional markers ship unscored upstream and are reviewed as such.
+        let native = distill_records(&[UpstreamRecord {
+            implementation: "ReleaseTitleSpecification".to_string(),
+            spec_name: "VFF".to_string(),
+            value: r"\b(VFF)\b".to_string(),
+            ..scored_record("radarr", "french-vff", &[])
+        }])
+        .unwrap();
+        assert!(
+            native
+                .fact_rules
+                .iter()
+                .any(|rule| rule.key.code == "trash.locale.french.marker.vff")
+        );
+        assert!(unscored_fact_apps(&native).is_empty());
+    }
+
+    #[test]
+    fn fact_scores_join_every_score_set_the_producing_format_publishes() {
+        let catalog = distill_records(&[scored_record(
+            "radarr",
+            "asian-lq",
+            &[("default", -10_000), ("german", -35_000)],
+        )])
+        .unwrap();
+        assert_eq!(
+            collect_fact_scores(&catalog),
+            vec![
+                FactScoreRow {
+                    code: "trash.locale.asian.lq".to_string(),
+                    app: "radarr".to_string(),
+                    score_set: "default".to_string(),
+                    score: -10_000,
+                },
+                FactScoreRow {
+                    code: "trash.locale.asian.lq".to_string(),
+                    app: "radarr".to_string(),
+                    score_set: "german".to_string(),
+                    score: -35_000,
+                },
+            ]
+        );
+    }
+
     #[test]
     fn emission_digest_changes_when_matchers_change_at_constant_count() {
         let first = StemEmission {
@@ -3469,6 +4919,573 @@ mod tests {
         assert_ne!(
             stable_emission_digest(&first),
             stable_emission_digest(&second)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Language rules
+    // -----------------------------------------------------------------------
+
+    fn language_record(
+        app: &str,
+        stem: &str,
+        spec_name: &str,
+        fields: &str,
+        negate: bool,
+        required: bool,
+    ) -> UpstreamRecord {
+        let dir = if app == GUIDE_ONLY_APP {
+            GUIDE_ONLY_APP.to_string()
+        } else {
+            format!("{app}/cf")
+        };
+        UpstreamRecord {
+            app: app.to_string(),
+            stem: stem.to_string(),
+            source_path: format!("docs/json/{dir}/{stem}.json"),
+            trash_id: stem.to_string(),
+            cf_name: stem.to_string(),
+            spec_name: spec_name.to_string(),
+            implementation: "LanguageSpecification".to_string(),
+            value: fields.to_string(),
+            required_json: required.to_string(),
+            negate_json: negate.to_string(),
+            scores: BTreeMap::from([("default".to_string(), -10_000)]),
+        }
+    }
+
+    fn title_record(
+        app: &str,
+        stem: &str,
+        spec_name: &str,
+        pattern: &str,
+        negate: bool,
+        required: bool,
+    ) -> UpstreamRecord {
+        UpstreamRecord {
+            implementation: "ReleaseTitleSpecification".to_string(),
+            ..language_record(app, stem, spec_name, pattern, negate, required)
+        }
+    }
+
+    fn distilled_conditions(records: &[UpstreamRecord]) -> Vec<LanguageConditionEntry> {
+        match distill_language_rule(records).expect("fixture should distill") {
+            LanguageRuleDistillation::Rule(conditions) => conditions,
+            LanguageRuleDistillation::Inactive(reason) => {
+                panic!("expected a distilled rule, got {reason}")
+            }
+        }
+    }
+
+    fn inactive_reason(records: &[UpstreamRecord]) -> &'static str {
+        match distill_language_rule(records).expect("fixture should distill") {
+            LanguageRuleDistillation::Rule(conditions) => {
+                panic!("expected an inactive record, got {conditions:?}")
+            }
+            LanguageRuleDistillation::Inactive(reason) => reason,
+        }
+    }
+
+    /// The ids are the contract with the rule input: every one has to name a
+    /// code `normalize_detected_audio_language_code` can produce, or the
+    /// condition would compare against a value `languages_audio` never carries.
+    #[test]
+    fn language_ids_map_to_the_codes_the_rule_input_publishes() {
+        assert_eq!(language_id_code(1), Some("eng"));
+        assert_eq!(language_id_code(2), Some("fra"));
+        assert_eq!(language_id_code(4), Some("deu"));
+        assert_eq!(language_id_code(8), Some("jpn"));
+        assert_eq!(language_id_code(10), Some("zho"));
+        assert_eq!(language_id_code(18), Some("por"));
+        // Scryer's ISO table is `Dutch; Flemish` under one canonical code, so
+        // Flemish and Dutch answer the same question.
+        assert_eq!(language_id_code(7), language_id_code(19));
+        assert_eq!(language_id_code(19), Some("nld"));
+        assert_eq!(language_id_code(20), Some("ell"));
+        assert_eq!(language_id_code(21), Some("kor"));
+        assert_eq!(language_id_code(24), Some("lit"));
+
+        // `Original` is relative, not a language, so it must not sit in the
+        // id table at all.
+        assert_eq!(language_id_code(ORIGINAL_LANGUAGE_ID), None);
+
+        // Codes are lowercase ISO 639-2/T and names are lowercase English, both
+        // matched exactly rather than case-folded at the call sites.
+        for entry in LANGUAGE_IDS {
+            assert_eq!(entry.code, entry.code.to_ascii_lowercase());
+            assert_eq!(entry.name, entry.name.to_ascii_lowercase());
+            assert_eq!(entry.code.len(), 3, "{}", entry.name);
+            assert_eq!(language_name_code(entry.name), Some(entry.code));
+        }
+    }
+
+    #[test]
+    fn an_unmapped_language_id_fails_the_sync_naming_the_file() {
+        let records = vec![language_record(
+            "sonarr",
+            "language-not-klingon",
+            "Not Klingon",
+            r#"{"value":99}"#,
+            true,
+            false,
+        )];
+        let error = distill_language_rule(&records).expect_err("unmapped ids are not distillable");
+        let message = error.to_string();
+        assert!(message.contains("99"), "{message}");
+        assert!(
+            message.contains("docs/json/sonarr/cf/language-not-klingon.json"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn the_relative_original_id_distills_to_the_original_condition() {
+        let records = vec![language_record(
+            "radarr",
+            "language-not-original",
+            "Not Original Language",
+            r#"{"value":-2}"#,
+            true,
+            false,
+        )];
+        assert_eq!(
+            distilled_conditions(&records),
+            vec![LanguageConditionEntry {
+                language: LanguageConditionSpec::Original,
+                negate: true,
+                required: false,
+            }]
+        );
+    }
+
+    /// `SpecificationMatchesGroup.DidMatch` is "no required specification may
+    /// fail, and at least one must match". An optional non-language
+    /// specification only ever answered the second clause, which a required
+    /// condition already answers, so it drops out — this is `language-german-and-original`.
+    #[test]
+    fn optional_non_language_specs_drop_when_a_required_condition_gates_the_format() {
+        let records = vec![
+            language_record(
+                GUIDE_ONLY_APP,
+                "language-german-and-original",
+                "German",
+                r#"{"value":4}"#,
+                false,
+                true,
+            ),
+            title_record(
+                GUIDE_ONLY_APP,
+                "language-german-and-original",
+                "DL",
+                r"(?<!WEB[-_. ]?)\b(DL)\b",
+                false,
+                false,
+            ),
+            title_record(
+                GUIDE_ONLY_APP,
+                "language-german-and-original",
+                "ML",
+                r"\b(ML)\b",
+                false,
+                false,
+            ),
+        ];
+        assert_eq!(
+            distilled_conditions(&records),
+            vec![LanguageConditionEntry {
+                language: LanguageConditionSpec::Named("deu".to_string()),
+                negate: false,
+                required: true,
+            }]
+        );
+    }
+
+    /// With no required condition the format matches on "at least one
+    /// specification matched", so an optional specification Scryer cannot
+    /// express would narrow it — the whole format stays out.
+    #[test]
+    fn an_optional_non_language_spec_is_lossy_when_nothing_is_required() {
+        let records = vec![
+            language_record(
+                GUIDE_ONLY_APP,
+                "language-prefer-german",
+                "German Language",
+                r#"{"value":4}"#,
+                false,
+                false,
+            ),
+            title_record(
+                GUIDE_ONLY_APP,
+                "language-prefer-german",
+                "DL",
+                r"\b(DL)\b",
+                false,
+                false,
+            ),
+        ];
+        assert_eq!(
+            inactive_reason(&records),
+            "language_rule_drops_a_matching_optional_spec"
+        );
+    }
+
+    /// A required title specification is dropped only in the direction that is
+    /// sound: a *negated* language check implies the negated title check,
+    /// because Scryer reads `languages_audio` off the same title. This is the
+    /// `not-…-or-english` family.
+    #[test]
+    fn a_required_title_spec_drops_only_when_a_language_condition_implies_it() {
+        let subsumed = vec![
+            language_record(
+                "sonarr",
+                "not-german-or-english",
+                "Not English Language",
+                r#"{"value":1}"#,
+                true,
+                true,
+            ),
+            language_record(
+                "sonarr",
+                "not-german-or-english",
+                "Not German Language",
+                r#"{"value":4}"#,
+                true,
+                true,
+            ),
+            title_record(
+                "sonarr",
+                "not-german-or-english",
+                "Not German in Title",
+                r"(?i)\bgerman\b",
+                true,
+                true,
+            ),
+        ];
+        assert_eq!(
+            distilled_conditions(&subsumed),
+            vec![
+                LanguageConditionEntry {
+                    language: LanguageConditionSpec::Named("deu".to_string()),
+                    negate: true,
+                    required: true,
+                },
+                LanguageConditionEntry {
+                    language: LanguageConditionSpec::Named("eng".to_string()),
+                    negate: true,
+                    required: true,
+                },
+            ]
+        );
+
+        // A required title marker that names no language gates the format on
+        // something no condition can express, so it is recorded instead of
+        // approximated. This is `language-original-plus-french`.
+        let unsupported = vec![
+            language_record(
+                "sonarr",
+                "language-original-plus-french",
+                "Original Language",
+                r#"{"value":-2}"#,
+                false,
+                true,
+            ),
+            language_record(
+                "sonarr",
+                "language-original-plus-french",
+                "French Language",
+                r#"{"value":2}"#,
+                false,
+                true,
+            ),
+            title_record(
+                "sonarr",
+                "language-original-plus-french",
+                "MULTi",
+                r"\b(MULTi)(\b|\d)",
+                false,
+                true,
+            ),
+        ];
+        assert_eq!(
+            inactive_reason(&unsupported),
+            "language_rule_requires_unsupported_release_title_spec"
+        );
+        // The reviewed classification and the distiller must agree about why.
+        assert_eq!(
+            undistillable_language_stem_reason("language-original-plus-french"),
+            Some("language_rule_requires_unsupported_release_title_spec")
+        );
+
+        // The positive direction never holds: an audio language can arrive from
+        // the indexer rather than the title, so the title check still narrows.
+        let positive = vec![
+            language_record(
+                "sonarr",
+                "language-german-only",
+                "German Language",
+                r#"{"value":4}"#,
+                false,
+                true,
+            ),
+            title_record(
+                "sonarr",
+                "language-german-only",
+                "German in Title",
+                r"(?i)\bgerman\b",
+                false,
+                true,
+            ),
+        ];
+        assert_eq!(
+            inactive_reason(&positive),
+            "language_rule_requires_unsupported_release_title_spec"
+        );
+    }
+
+    #[test]
+    fn except_language_is_a_different_question_and_stays_out() {
+        let records = vec![language_record(
+            "radarr",
+            "language-not-japanese",
+            "Not Japanese Language",
+            r#"{"exceptLanguage":true,"value":8}"#,
+            true,
+            true,
+        )];
+        assert_eq!(
+            inactive_reason(&records),
+            "language_rule_uses_except_language"
+        );
+    }
+
+    #[test]
+    fn language_rule_codes_are_stable_and_drop_the_redundant_prefix() {
+        assert_eq!(
+            language_rule_code("language-not-english"),
+            "trash.lang.not_english"
+        );
+        assert_eq!(
+            language_rule_code("language-not-original-or-german"),
+            "trash.lang.not_original_or_german"
+        );
+        assert_eq!(
+            language_rule_code("not-german-or-english"),
+            "trash.lang.not_german_or_english"
+        );
+    }
+
+    #[test]
+    fn language_stems_are_recognised_by_name_and_by_the_guide_only_tree() {
+        assert!(is_language_rule_stem("sonarr", "language-not-english"));
+        assert!(is_language_rule_stem("radarr", "not-german-or-english"));
+        assert!(is_language_rule_stem(
+            "sonarr",
+            "not-german-japanese-korean-chinese-or-english"
+        ));
+        // Everything under guide-only is a language policy, named or not.
+        assert!(is_language_rule_stem(
+            GUIDE_ONLY_APP,
+            "language-prefer-dutch"
+        ));
+        // Locale stems keep their own branch.
+        assert!(!is_language_rule_stem("sonarr", "french-vostfr"));
+        assert!(!is_language_rule_stem("radarr", "german-lq"));
+        assert!(!is_language_rule_stem("sonarr", "not-german-or-french"));
+    }
+
+    /// Apps that publish the same code have to agree about what it means,
+    /// because the managed packs resolve a code through whichever app answers
+    /// first.
+    #[test]
+    fn language_rules_that_disagree_across_apps_fail_the_sync() {
+        let rule = |app: &str, code: &str| LanguageRuleRecord {
+            key: LanguageRuleKey {
+                code: code.to_string(),
+                app: app.to_string(),
+                stem: "language-not-english".to_string(),
+                conditions: vec![LanguageConditionEntry {
+                    language: LanguageConditionSpec::Named(
+                        if app == "sonarr" { "eng" } else { "deu" }.to_string(),
+                    ),
+                    negate: true,
+                    required: false,
+                }],
+            },
+            provenance: Vec::new(),
+        };
+
+        let error = validate_language_rules(&[
+            rule("sonarr", "trash.lang.not_english"),
+            rule("radarr", "trash.lang.not_english"),
+        ])
+        .expect_err("apps must agree");
+        assert!(
+            error.to_string().contains("trash.lang.not_english"),
+            "{error}"
+        );
+        assert!(validate_language_rules(&[rule("sonarr", "trash.lang.not_english")]).is_ok());
+    }
+
+    /// The local-source path has to walk `docs/json/guide-only/` alongside the
+    /// two app trees, or the offline sync would silently produce a different
+    /// catalog than the network one.
+    #[test]
+    fn the_local_source_tree_carries_guide_only_records() {
+        let root = std::env::temp_dir().join(format!(
+            "scryer-trash-guide-only-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        for source in GUIDE_SOURCES {
+            fs::create_dir_all(root.join("docs/json").join(source.dir)).unwrap();
+        }
+        fs::write(
+            root.join("docs/json/sonarr/cf/language-not-english.json"),
+            r#"{"trash_id":"a","trash_scores":{"default":-10000},"name":"Language: Not English","specifications":[{"name":"Not English Language","implementation":"LanguageSpecification","negate":true,"required":false,"fields":{"value":1}}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("docs/json/radarr/cf/language-not-english.json"),
+            r#"{"trash_id":"b","trash_scores":{"default":-10000},"name":"Language: Not English","specifications":[{"name":"Not English Language","implementation":"LanguageSpecification","negate":true,"required":false,"fields":{"value":1}}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("docs/json/guide-only/language-prefer-dutch.json"),
+            r#"{"trash_id":"guide-only","trash_scores":{"default":10},"name":"Language: Prefer Dutch","specifications":[{"name":"Dutch Language","implementation":"LanguageSpecification","negate":false,"required":false,"fields":{"value":7}},{"name":"Flemish Language","implementation":"LanguageSpecification","negate":false,"required":false,"fields":{"value":19}}]}"#,
+        )
+        .unwrap();
+
+        // SAFETY: single-threaded within this test, and the value is restored
+        // before returning so no other test observes it.
+        let previous = std::env::var(SOURCE_REVISION_ENV).ok();
+        unsafe { std::env::set_var(SOURCE_REVISION_ENV, "test-revision") };
+        let fetched = read_local_records(&root);
+        match previous {
+            Some(value) => unsafe { std::env::set_var(SOURCE_REVISION_ENV, value) },
+            None => unsafe { std::env::remove_var(SOURCE_REVISION_ENV) },
+        }
+        let fetched = fetched.expect("local source should read");
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(fetched.source_revision, "test-revision");
+        let guide_only = fetched
+            .records
+            .iter()
+            .filter(|record| record.app == GUIDE_ONLY_APP)
+            .collect::<Vec<_>>();
+        assert_eq!(guide_only.len(), 2);
+        assert!(
+            guide_only
+                .iter()
+                .all(|record| record.source_path
+                    == "docs/json/guide-only/language-prefer-dutch.json"),
+            "{guide_only:?}"
+        );
+
+        let catalog = distill_records(&fetched.records).expect("fixture should distill");
+        let codes = catalog
+            .language_rules
+            .iter()
+            .map(|rule| (rule.key.code.as_str(), rule.key.app.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            codes,
+            vec![
+                ("trash.lang.not_english", "radarr"),
+                ("trash.lang.not_english", "sonarr"),
+                ("trash.lang.prefer_dutch", GUIDE_ONLY_APP),
+            ]
+        );
+        // Dutch and Flemish collapse onto one condition, so the format asks a
+        // single question.
+        let prefer_dutch = catalog
+            .language_rules
+            .iter()
+            .find(|rule| rule.key.code == "trash.lang.prefer_dutch")
+            .unwrap();
+        assert_eq!(
+            prefer_dutch.key.conditions,
+            vec![LanguageConditionEntry {
+                language: LanguageConditionSpec::Named("nld".to_string()),
+                negate: false,
+                required: false,
+            }]
+        );
+
+        // guide-only is simply another app to the score join, so its scores
+        // land in the table under their own app.
+        assert!(collect_fact_scores(&catalog).contains(&FactScoreRow {
+            code: "trash.lang.prefer_dutch".to_string(),
+            app: GUIDE_ONLY_APP.to_string(),
+            score_set: "default".to_string(),
+            score: 10,
+        }));
+        assert!(unscored_fact_apps(&catalog).is_empty());
+    }
+
+    /// Distillation must not depend on the order records arrive in, because the
+    /// network path fetches concurrently.
+    #[test]
+    fn language_rule_distillation_is_order_independent() {
+        let mut records = vec![
+            language_record(
+                "sonarr",
+                "not-german-or-english",
+                "Not English Language",
+                r#"{"value":1}"#,
+                true,
+                true,
+            ),
+            language_record(
+                "sonarr",
+                "not-german-or-english",
+                "Not German Language",
+                r#"{"value":4}"#,
+                true,
+                true,
+            ),
+            title_record(
+                "sonarr",
+                "not-german-or-english",
+                "Not German in Title",
+                r"(?i)\bgerman\b",
+                true,
+                true,
+            ),
+            language_record(
+                GUIDE_ONLY_APP,
+                "language-not-dutch",
+                "Not Dutch Language",
+                r#"{"value":7}"#,
+                true,
+                true,
+            ),
+            language_record(
+                GUIDE_ONLY_APP,
+                "language-not-dutch",
+                "Not Flemish Language",
+                r#"{"value":19}"#,
+                true,
+                true,
+            ),
+        ];
+
+        let forward = distill_records(&records).unwrap();
+        records.reverse();
+        let reversed = distill_records(&records).unwrap();
+
+        let keys = |catalog: &DistilledCatalog| {
+            catalog
+                .language_rules
+                .iter()
+                .map(|rule| rule.key.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keys(&forward), keys(&reversed));
+        assert_eq!(
+            render_quality_output(&forward, &records, "rev").unwrap(),
+            render_quality_output(&reversed, &records, "rev").unwrap()
         );
     }
 }

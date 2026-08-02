@@ -472,16 +472,16 @@ pub fn validate_user_rule(
 }
 
 /// Validate a system-managed score-only policy.
+///
+/// Managed packs are opt-in, so the source is no longer inspected
+/// for `scryer.block_score()`. That check only restricted the *spelling* of a
+/// veto — a pack could emit the sentinel as a literal and block identically —
+/// and the property it was reaching for now lives in `validate_managed_entries`
+/// at evaluation time, where it cannot be bypassed.
 pub fn validate_managed_rule(
     rego_source: &str,
     rule_set_id: &str,
 ) -> Result<ValidationResult, RulesError> {
-    if rego_source.contains("scryer.block_score()") {
-        return Ok(ValidationResult::invalid(
-            "managed policies cannot call scryer.block_score()",
-        ));
-    }
-
     validate_user_rule(rego_source, rule_set_id)
 }
 
@@ -753,8 +753,10 @@ mod tests {
         );
     }
 
+    /// Opt-in managed packs may veto, so the builtin is accepted
+    /// in managed source. The bound that still applies is evaluation-time.
     #[test]
-    fn managed_rule_rejects_block_score_builtin() {
+    fn managed_rule_accepts_block_score_builtin() {
         let source = r#"
             package scryer.rules.user.managed_rule
             import rego.v1
@@ -762,8 +764,7 @@ mod tests {
         "#;
 
         let result = validate_managed_rule(source, "managed_rule").unwrap();
-        assert!(!result.valid);
-        assert!(result.errors[0].contains("cannot call scryer.block_score"));
+        assert!(result.valid, "errors: {:?}", result.errors);
     }
 
     #[test]

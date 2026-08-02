@@ -893,6 +893,8 @@ fn episode_import_dest_path_uses_rescored_parsed_quality_without_override() {
         std::path::Path::new("/library/Test Show"),
         true,
         "{title} - S{season:2}E{episode:2} - {quality}.{ext}",
+        "Season {season:2}",
+        "Specials",
         8,
         "7",
         None,
@@ -920,6 +922,8 @@ fn episode_import_dest_path_preserves_source_filename_when_renamer_disabled() {
         std::path::Path::new("/library/Test Show"),
         false,
         "{title} - S{season:2}E{episode:2} - {quality}.{ext}",
+        "Season {season:2}",
+        "Specials",
         8,
         "7",
         None,
@@ -930,6 +934,79 @@ fn episode_import_dest_path_preserves_source_filename_when_renamer_disabled() {
     assert_eq!(
         dest_path,
         std::path::PathBuf::from("/library/Test Show/Season 08/Obfuscated.Source.Name.mkv")
+    );
+}
+
+#[test]
+fn episode_import_dest_path_uses_configured_regular_and_specials_folders() {
+    let mut title = test_title(MediaFacet::Series);
+    title.name = "Test Show".to_string();
+    let parsed = crate::parse_release_metadata("Test.Show.S03E07.mkv");
+    let source = std::path::Path::new("/downloads/Test.Show.S03E07.mkv");
+    let title_folder = std::path::Path::new("/library/Test Show");
+
+    let regular = episode_import_dest_path(
+        &title,
+        &parsed,
+        "mkv",
+        source,
+        title_folder,
+        false,
+        "unused",
+        "{title|space:.}.S{season:2}",
+        "Extras",
+        3,
+        "7",
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        regular,
+        std::path::PathBuf::from("/library/Test Show/Test.Show.S03/Test.Show.S03E07.mkv")
+    );
+
+    let specials = episode_import_dest_path(
+        &title,
+        &parsed,
+        "mkv",
+        source,
+        title_folder,
+        false,
+        "unused",
+        "Season {season}",
+        "Extras",
+        0,
+        "7",
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        specials,
+        std::path::PathBuf::from("/library/Test Show/Extras/Test.Show.S03E07.mkv")
+    );
+
+    title.tags = vec!["scryer:season-folder:disabled".to_string()];
+    let flat = episode_import_dest_path(
+        &title,
+        &parsed,
+        "mkv",
+        source,
+        title_folder,
+        false,
+        "unused",
+        "Season {season}",
+        "Extras",
+        3,
+        "7",
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        flat,
+        std::path::PathBuf::from("/library/Test Show/Test.Show.S03E07.mkv")
     );
 }
 

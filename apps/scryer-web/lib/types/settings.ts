@@ -41,6 +41,16 @@ export type GeneralSettings = {
   pluginHttpTrustedCertificates: TrustedCertificateEntry[];
 };
 
+export type GeneralSettingsUpdate = Partial<
+  Pick<
+    GeneralSettings,
+    | "keepHistoryForever"
+    | "historyRetentionDays"
+    | "imageCacheMaxSizeMb"
+    | "pluginHttpCaBundlePem"
+  >
+>;
+
 export type UiDateTimeFormat = "LOCALE" | "ISO24H";
 
 export type UiTableColumnSetting = {
@@ -265,6 +275,8 @@ export type MediaSettings = {
   rootFolders: { path: string; isDefault: boolean }[];
   requiredAudioLanguages: string[];
   folderTemplate: string;
+  seasonFolderTemplate: string | null;
+  specialsFolderTemplate: string | null;
   renameEnabled: boolean;
   renameTemplate: string;
   renameCollisionPolicy: string;

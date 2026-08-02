@@ -3,10 +3,11 @@ Source revision: e6aa63c782aa049e47be746889e4d06db0fe686f
 
 Active release-group rules: 826
   by facet: movies=275, series=174, anime=377
-Active service aliases: 33
+Active service aliases: 100
 Active parser token signals: 29
 Active guide facts: 132
+Active language rules: 17
 Active blocked title rules: 55
   by facet: movies=10, series=5, anime=40
-Preserved inactive records: 254
-Ignored records: 1039
+Preserved inactive records: 432
+Ignored records: 737

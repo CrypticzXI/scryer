@@ -308,9 +308,21 @@ pub(super) fn has_id_only_conflict(td: &TrackedDownload) -> bool {
 }
 
 async fn set_state_to_import_blocked(app: &AppUseCase, td: &mut TrackedDownload) {
+    let was_blocked = td.state == TrackedDownloadState::ImportBlocked;
     td.state = TrackedDownloadState::ImportBlocked;
     td.waiting_for_completed_history = false;
     td.status = TrackedDownloadStatus::Warning;
+
+    if !was_blocked {
+        crate::tracked_downloads::persist_tracked_download_state_marker(
+            app,
+            td,
+            TrackedDownloadState::ImportBlocked,
+            Some("import_blocked_pre_import"),
+            td.status_messages.first().map(String::as_str),
+        )
+        .await;
+    }
 
     if td.notified_manual_interaction {
         return;
@@ -402,6 +414,13 @@ async fn block_tracked_download_identity_for_manual_review(
     if crate::download_submission_identity_is_empty(&observed_identity) {
         return;
     }
+    if !td.status_messages.iter().any(|message| message == detail) {
+        td.status_messages.clear();
+        td.status_messages.push(detail.to_string());
+    }
+    // set_state_to_import_blocked writes the generic blocked marker; record
+    // the specific identity reason afterwards so it wins the upsert.
+    set_state_to_import_blocked(app, td).await;
     let source_identity = DownloadSourceIdentity::new(
         Some(td.client_id.as_str()),
         &td.client_type,
@@ -429,9 +448,4 @@ async fn block_tracked_download_identity_for_manual_review(
             "failed to persist durable tracked-download manual-review state"
         );
     }
-    if !td.status_messages.iter().any(|message| message == detail) {
-        td.status_messages.clear();
-        td.status_messages.push(detail.to_string());
-    }
-    set_state_to_import_blocked(app, td).await;
 }

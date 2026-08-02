@@ -13,7 +13,7 @@ async fn title_image_refresh_work_uses_global_variant_priorities() {
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
 
-    let poster_source = "https://tmdb.example/poster.jpg";
+    let poster_source = "https://image.tmdb.org/poster.jpg";
     let poster = make_test_title("title-priority-poster", Some(poster_source));
     TitleRepository::create(&catalog, poster.clone())
         .await
@@ -24,7 +24,7 @@ async fn title_image_refresh_work_uses_global_variant_priorities() {
         .await
         .expect("fanart title should insert");
     sqlx::query("UPDATE titles SET background_url = ? WHERE id = ?")
-        .bind("https://tmdb.example/fanart.jpg")
+        .bind("https://image.tmdb.org/fanart.jpg")
         .bind(&fanart.id)
         .execute(&services.pool)
         .await
@@ -100,7 +100,7 @@ async fn title_image_refresh_work_uses_global_variant_priorities() {
             &fanart.id,
             test_title_image_source_result(
                 TitleImageKind::Fanart,
-                "https://tmdb.example/fanart.jpg",
+                "https://image.tmdb.org/fanart.jpg",
                 "w1280",
                 1280,
                 720,
@@ -200,7 +200,7 @@ async fn title_image_blobs_deduplicate_and_gc_only_after_last_reference() {
         ("title-shared-image-a", "w250"),
         ("title-shared-image-b", "w2048"),
     ] {
-        let title = make_test_title(id, Some("https://tvdb.example/shared-poster.jpg"));
+        let title = make_test_title(id, Some("https://artworks.thetvdb.com/shared-poster.jpg"));
         TitleRepository::create(&catalog, title.clone())
             .await
             .expect("title should insert");
@@ -209,7 +209,7 @@ async fn title_image_blobs_deduplicate_and_gc_only_after_last_reference() {
                 &title.id,
                 test_title_image_source_result_with_variants(
                     TitleImageKind::Poster,
-                    "https://tvdb.example/shared-poster.jpg",
+                    "https://artworks.thetvdb.com/shared-poster.jpg",
                     vec![test_title_image_variant_record(
                         variant_key,
                         250,
@@ -302,7 +302,7 @@ async fn title_image_blob_upsert_rejects_forged_digest_without_creating_referenc
         .expect("db should initialize");
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
-    let source_url = "https://tvdb.example/forged-poster.jpg";
+    let source_url = "https://artworks.thetvdb.com/forged-poster.jpg";
     let title = make_test_title("title-forged-image-digest", Some(source_url));
     TitleRepository::create(&catalog, title.clone())
         .await
@@ -353,7 +353,7 @@ async fn title_image_blob_upsert_rejects_conflicting_blob_metadata() {
         .expect("db should initialize");
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
-    let source_url = "https://tvdb.example/conflicting-poster.jpg";
+    let source_url = "https://artworks.thetvdb.com/conflicting-poster.jpg";
     let title = make_test_title("title-conflicting-image-blob", Some(source_url));
     TitleRepository::create(&catalog, title.clone())
         .await
@@ -412,11 +412,11 @@ async fn title_image_refresh_work_skips_failed_image_sets_for_current_pass() {
 
     let first = make_test_title(
         "title-skip-current-pass-1",
-        Some("https://tmdb.example/poster-1.jpg"),
+        Some("https://image.tmdb.org/poster-1.jpg"),
     );
     let second = make_test_title(
         "title-skip-current-pass-2",
-        Some("https://tmdb.example/poster-2.jpg"),
+        Some("https://image.tmdb.org/poster-2.jpg"),
     );
     TitleRepository::create(&catalog, first.clone())
         .await
@@ -464,7 +464,7 @@ async fn title_update_metadata_preserves_provider_image_url_after_local_image_pr
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
 
-    let source_url = "https://tvdb.example/provider-poster.jpg";
+    let source_url = "https://artworks.thetvdb.com/provider-poster.jpg";
     let title = make_test_title("title-provider-preserve", Some(source_url));
     TitleRepository::create(&catalog, title.clone())
         .await
@@ -535,8 +535,8 @@ async fn title_artwork_url_update_clears_stale_local_paths_for_changed_sources()
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
 
-    let poster_source = "https://tvdb.example/poster-old.jpg";
-    let background_source = "https://tvdb.example/background-old.jpg";
+    let poster_source = "https://artworks.thetvdb.com/poster-old.jpg";
+    let background_source = "https://artworks.thetvdb.com/background-old.jpg";
     let mut title = make_test_title("title-source-invalidation", Some(poster_source));
     title.background_url = Some(background_source.to_string());
     TitleRepository::create(&catalog, title.clone())
@@ -665,7 +665,7 @@ async fn title_image_refresh_work_ignores_local_title_image_routes() {
 
     let upstream = make_test_title(
         "title-http-route-segment-refresh",
-        Some("https://cdn.example/images/titles/upstream-poster.jpg"),
+        Some("https://image.tmdb.org/images/titles/upstream-poster.jpg"),
     );
     TitleRepository::create(&catalog, upstream.clone())
         .await
@@ -693,7 +693,7 @@ async fn clear_title_image_cache_repairs_polluted_urls_and_clears_db_cache() {
     let catalog = title_store(&services);
     let title_images = title_image_store(&services);
 
-    let source_url = "https://tvdb.example/cache-clear-poster.jpg";
+    let source_url = "https://artworks.thetvdb.com/cache-clear-poster.jpg";
     let repaired = make_test_title("title-cache-clear-repair", Some(source_url));
     TitleRepository::create(&catalog, repaired.clone())
         .await

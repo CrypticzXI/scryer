@@ -436,6 +436,18 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         .await
     }
 
+    async fn list_recent_activity_for_client_types(
+        &self,
+        limit: usize,
+        client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_recent_activity_for_client_types(limit, client_types),
+        )
+        .await
+    }
+
     async fn list_recent_completed_downloads_excluding_client_types(
         &self,
         limit: usize,
@@ -461,6 +473,20 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
                 excluded_client_types,
             )
             .await
+    }
+
+    async fn get_completed_download_for_source(
+        &self,
+        client_id: &str,
+        client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<scryer_domain::CompletedDownload>> {
+        self.run_feedback_read(self.inner.get_completed_download_for_source(
+            client_id,
+            client_type,
+            download_client_item_id,
+        ))
+        .await
     }
 
     async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
@@ -2360,6 +2386,95 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         Ok(all_items)
     }
 
+    async fn list_recent_activity_for_client_types(
+        &self,
+        limit: usize,
+        client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        if limit == 0 || client_types.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let clients = self
+            .list_enabled_clients_by_priority()
+            .await?
+            .into_iter()
+            .filter(|config| {
+                client_types.iter().any(|client_type| {
+                    config
+                        .client_type
+                        .trim()
+                        .eq_ignore_ascii_case(client_type.trim())
+                })
+            })
+            .collect::<Vec<_>>();
+        if clients.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut all_items = Vec::new();
+        let mut read_summary = FeedbackReadSummary::default();
+        for config in clients {
+            if let Some(remaining) = self
+                .feedback_backoff_remaining(&config.id, DownloadFeedbackReadKind::RecentActivity)
+            {
+                debug!(
+                    client_id = %config.id,
+                    client = %config.name,
+                    read_kind = Self::feedback_read_kind_label(
+                        DownloadFeedbackReadKind::RecentActivity
+                    ),
+                    remaining_ms = remaining.as_millis(),
+                    "skipping download client feedback read during backoff"
+                );
+                continue;
+            }
+            let client = match Self::client_from_config(
+                &config,
+                self.staged_nzb_store.clone(),
+                self.staged_nzb_pipeline_limit.clone(),
+                self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
+            ) {
+                Ok(client) => client,
+                Err(error) => {
+                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for type-scoped recent activity listing");
+                    continue;
+                }
+            };
+            match client.list_recent_activity(limit).await {
+                Ok(mut items) => {
+                    self.record_feedback_read_success(
+                        &config.id,
+                        DownloadFeedbackReadKind::RecentActivity,
+                    );
+                    read_summary.record_success();
+                    for item in &mut items {
+                        item.client_id = config.id.clone();
+                        item.client_name = config.name.clone();
+                    }
+                    all_items.extend(items);
+                }
+                Err(error) => {
+                    self.record_feedback_read_failure(
+                        &config.id,
+                        DownloadFeedbackReadKind::RecentActivity,
+                    );
+                    read_summary.record_error(&error);
+                    tracing::warn!(client_id = %config.id, error = %error, "failed to list type-scoped recent activity");
+                }
+            }
+        }
+
+        read_summary.finish()?;
+
+        let mut seen = HashSet::with_capacity(all_items.len());
+        all_items.retain(|item| seen.insert(download_queue_history_key(item)));
+        all_items.sort_by(compare_history_items_desc);
+        all_items.truncate(limit);
+        Ok(all_items)
+    }
+
     async fn list_recent_activity_for_title(
         &self,
         title_id: &str,
@@ -2718,6 +2833,93 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         all_items.sort_by(compare_completed_downloads_desc);
         all_items.truncate(limit);
         Ok(all_items)
+    }
+
+    async fn get_completed_download_for_source(
+        &self,
+        client_id: &str,
+        client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<scryer_domain::CompletedDownload>> {
+        let reference = download_client_item_id.trim();
+        if reference.is_empty() {
+            return Ok(None);
+        }
+
+        let clients = self.list_enabled_clients_by_priority_excluding(&[]).await?;
+        let config = clients
+            .iter()
+            .find(|config| config.id.trim() == client_id.trim() && !client_id.trim().is_empty())
+            .or_else(|| {
+                clients.iter().find(|config| {
+                    config
+                        .client_type
+                        .trim()
+                        .eq_ignore_ascii_case(client_type.trim())
+                })
+            });
+        let Some(config) = config else {
+            return Ok(None);
+        };
+
+        if let Some(remaining) = self.feedback_backoff_remaining(
+            &config.id,
+            DownloadFeedbackReadKind::RecentCompletedDownloads,
+        ) {
+            debug!(
+                client_id = %config.id,
+                client = %config.name,
+                remaining_ms = remaining.as_millis(),
+                "skipping targeted completed download lookup during backoff"
+            );
+            return Ok(None);
+        }
+
+        let client = Self::client_from_config(
+            config,
+            self.staged_nzb_store.clone(),
+            self.staged_nzb_pipeline_limit.clone(),
+            self.plugin_provider.as_ref(),
+            self.feedback_read_timeout,
+        )?;
+        match client
+            .get_completed_download_for_source(&config.id, &config.client_type, reference)
+            .await
+        {
+            Ok(item) => {
+                self.record_feedback_read_success(
+                    &config.id,
+                    DownloadFeedbackReadKind::RecentCompletedDownloads,
+                );
+                Ok(item.map(|mut item| {
+                    item.client_id = config.id.clone();
+                    if let Some(mappings) = download_client_remote_path_mappings(config).as_deref()
+                    {
+                        apply_remote_path_mappings_to_completed_download(&mut item, mappings);
+                    }
+                    let accepts_torrents = Self::config_accepts_source_kind(
+                        config,
+                        DownloadSourceKind::TorrentFile,
+                        self.plugin_provider.as_ref(),
+                    ) || Self::config_accepts_source_kind(
+                        config,
+                        DownloadSourceKind::MagnetUri,
+                        self.plugin_provider.as_ref(),
+                    );
+                    if accepts_torrents {
+                        normalize_completed_download_import_dir(&mut item);
+                    }
+                    item
+                }))
+            }
+            Err(error) => {
+                self.record_feedback_read_failure(
+                    &config.id,
+                    DownloadFeedbackReadKind::RecentCompletedDownloads,
+                );
+                Err(error)
+            }
+        }
     }
 
     async fn pause_queue_item(&self, id: &str) -> AppResult<()> {

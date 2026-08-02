@@ -1270,6 +1270,76 @@ fn service_tokens_project_to_canonical_service_names() {
 }
 
 #[test]
+fn distilled_service_tokens_beyond_the_legacy_list_project_to_their_service() {
+    let mut series = context(ContextFacetHint::Series, "Umibe Signal");
+    series.episodes.push(ContextEpisode {
+        season: Some(1),
+        episode: Some(1),
+        ..Default::default()
+    });
+    let analysis = analyze_release_for_target("Umibe.Signal.S01.ABEMA.WEB-DL", &series);
+    let candidate = analysis.best_candidate().expect("best candidate");
+    assert_eq!(
+        streaming_service_label(candidate.projected.streaming_service.as_ref()),
+        Some("ABEMA")
+    );
+
+    let mut movie = context(ContextFacetHint::Movie, "Copper Kettle");
+    movie.known_years.push(2019);
+    let analysis = analyze_release_for_target("Copper.Kettle.2019.ITVX.WEB-DL", &movie);
+    let candidate = analysis.best_candidate().expect("best candidate");
+    assert_eq!(
+        streaming_service_label(candidate.projected.streaming_service.as_ref()),
+        Some("ITVX")
+    );
+}
+
+#[test]
+fn web_adjacent_service_tokens_need_the_web_marker_to_count() {
+    // Upstream's own pattern for NOW is `\b(now)\b[ ._-]web[ ._-]?(dl|rip)?\b`,
+    // so the token names the service only when a WEB marker follows it.
+    let mut series = context(ContextFacetHint::Series, "Glass Harbor");
+    series.episodes.push(ContextEpisode {
+        season: Some(1),
+        episode: Some(3),
+        ..Default::default()
+    });
+    let analysis = analyze_release_for_target("Glass.Harbor.S01E03.NOW.WEB-DL.1080p", &series);
+    let candidate = analysis.best_candidate().expect("best candidate");
+    assert_eq!(
+        streaming_service_label(candidate.projected.streaming_service.as_ref()),
+        Some("NOW")
+    );
+
+    // The same word inside a title, with no WEB marker after it, is a title word.
+    let mut movie = context(ContextFacetHint::Movie, "Now You Return");
+    movie.known_years.push(2024);
+    let analysis = analyze_release_for_target("Now.You.Return.2024.1080p.BluRay", &movie);
+    let candidate = analysis.best_candidate().expect("best candidate");
+    assert_eq!(
+        streaming_service_label(candidate.projected.streaming_service.as_ref()),
+        None
+    );
+}
+
+#[test]
+fn web_adjacent_service_token_inside_a_title_does_not_claim_the_release() {
+    // `IT` is upstream's iTunes tag, but only next to a WEB marker. Here the
+    // release *is* a WEB-DL, so a policy-free lookup would tag it iTunes on the
+    // strength of a title word four tokens earlier.
+    let mut movie = context(ContextFacetHint::Movie, "It Rains In Portmere");
+    movie.known_years.push(2024);
+    let analysis = analyze_release_for_target("It.Rains.In.Portmere.2024.1080p.WEB-DL", &movie);
+    let candidate = analysis.best_candidate().expect("best candidate");
+
+    assert_eq!(
+        streaming_service_label(candidate.projected.streaming_service.as_ref()),
+        None
+    );
+    assert_eq!(candidate.projected.normalized_title, "IT RAINS IN PORTMERE");
+}
+
+#[test]
 fn unicode_case_and_out_of_corpus_metadata_parse_without_fixture_bias() {
     let mut target = context(ContextFacetHint::Movie, "Éclair Monstra");
     target.known_years.push(2024);
