@@ -1058,6 +1058,7 @@ enum DomainEventTypeValue {
 	METADATA_HYDRATION_UPDATED
 	RELEASE_GRABBED
 	DOWNLOAD_FAILED
+	DOWNLOAD_IGNORED
 	RELEASE_BLOCKLISTED
 	IMPORT_COMPLETED
 	IMPORT_REJECTED
@@ -1167,6 +1168,7 @@ enum DownloadDisplayStateValue {
 	IMPORT_PENDING
 	IMPORT_BLOCKED
 	IMPORT_FAILED
+	IGNORED
 	REMOVING
 	REMOVE_FAILED
 }
@@ -1242,6 +1244,7 @@ type DownloadQueueItemPayload {
 	titleName: String!
 	facet: MediaFacetValue
 	isScryerOrigin: Boolean!
+	sourceProvider: String
 	clientId: ID!
 	clientName: String!
 	clientType: String!
@@ -4468,6 +4471,7 @@ type TitleHistoryEventPayload {
 	displayTitle: String
 	sourceSystem: String
 	sourceRef: String
+	sourceProvider: String
 	sourceHint: String
 	quality: String
 	downloadId: String
@@ -5178,6 +5182,10 @@ type WantedItemPayload {
 	lastSearchAt: DateTime
 	status: WantedStatusValue!
 	grabbedRelease: String
+	"""
+	Safe indexer/provider label for the grabbed release, when known.
+	"""
+	sourceProvider: String
 	currentScore: Int
 	latestReleaseDecision: ReleaseDecisionPayload
 	mismatchRecoveryEligible: Boolean!

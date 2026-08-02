@@ -1245,6 +1245,7 @@ mod tests {
 
     fn sample_request() -> DownloadClientAddRequest {
         DownloadClientAddRequest {
+            search_facet: None,
             title: scryer_domain::Title {
                 id: "title-1".to_string(),
                 name: "Example".to_string(),

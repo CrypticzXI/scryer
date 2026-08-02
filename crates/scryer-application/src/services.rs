@@ -2320,19 +2320,27 @@ impl AppUseCase {
     async fn invalidate_monitored_title_matcher(&self) {
         let mut state = self.runtime.catalog.monitored_title_matcher.write().await;
         state.dirty = true;
+        state.generation = state.generation.wrapping_add(1);
     }
 
     pub(crate) async fn monitored_title_matcher(
         &self,
     ) -> AppResult<Arc<crate::import_title_resolution::MonitoredTitleMatcher>> {
-        {
+        const MATCHER_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+        let observed_generation = {
             let state = self.runtime.catalog.monitored_title_matcher.read().await;
+            let fresh = state
+                .built_at
+                .is_some_and(|built_at| built_at.elapsed() <= MATCHER_MAX_AGE);
             if !state.dirty
+                && fresh
                 && let Some(matcher) = state.matcher.clone()
             {
                 return Ok(matcher);
             }
-        }
+            state.generation
+        };
 
         let titles = self
             .services
@@ -2345,13 +2353,15 @@ impl AppUseCase {
         ));
 
         let mut state = self.runtime.catalog.monitored_title_matcher.write().await;
-        if state.dirty || state.matcher.is_none() {
-            state.matcher = Some(matcher.clone());
+        state.matcher = Some(matcher.clone());
+        state.built_at = Some(std::time::Instant::now());
+        // Only clear dirty when no invalidation raced the rebuild; a bumped
+        // generation means this matcher may already be stale, so the next
+        // caller rebuilds again rather than trusting it.
+        if state.generation == observed_generation {
             state.dirty = false;
-            return Ok(matcher);
         }
-
-        Ok(state.matcher.clone().unwrap_or(matcher))
+        Ok(matcher)
     }
 
     pub fn runtime_build_lane(&self) -> BinaryLane {

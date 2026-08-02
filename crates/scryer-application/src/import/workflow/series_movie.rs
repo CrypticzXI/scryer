@@ -598,14 +598,15 @@ async fn hold_replacement_for_manual_resolution(
     source_video: &Path,
     source_size: i64,
     quality: Option<String>,
+    code: &'static str,
     message: String,
     started_at: DateTime<Utc>,
 ) -> AppResult<ImportResult> {
     tracing::info!(
         title_id = %title.id,
         file = %source_video.display(),
-        code = crate::post_download_gate::REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE,
-        "holding movie replacement for manual resolution"
+        code,
+        "holding movie import for manual resolution"
     );
     persist_file_import_artifact(
         app,
@@ -615,7 +616,7 @@ async fn hold_replacement_for_manual_resolution(
         source_video,
         "movie",
         "rejected",
-        Some(crate::post_download_gate::REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE),
+        Some(code),
         None,
         &[],
     )
@@ -989,6 +990,24 @@ async fn import_movie_download(
     {
         Ok(prepared) => prepared,
         Err(rejection) => {
+            // A band miss is held for the operator, not burned: expected
+            // runtimes are estimates and legitimate outliers (extended cuts,
+            // double-length specials) must stay grabbable after review.
+            if rejection.recycle_reason == crate::post_download_gate::RUNTIME_OUT_OF_BAND_CODE {
+                return hold_replacement_for_manual_resolution(
+                    app,
+                    title,
+                    import_id,
+                    completed,
+                    &source_video,
+                    source_size,
+                    parsed.quality.clone(),
+                    crate::post_download_gate::RUNTIME_OUT_OF_BAND_CODE,
+                    rejection.message.clone(),
+                    started_at,
+                )
+                .await;
+            }
             crate::post_download_gate::reject_source_file_before_import(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
@@ -1128,6 +1147,7 @@ async fn import_movie_download(
             &source_video,
             source_size,
             prepared.parsed.quality.clone(),
+            crate::post_download_gate::REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE,
             message,
             started_at,
         )
@@ -1689,10 +1709,13 @@ async fn import_series_movie_download(
         .iter()
         .max_by_key(|file| file.acquisition_score.unwrap_or(0))
         .and_then(|file| file.acquisition_score);
+    // No fallback to the owning series runtime: a 24-minute parent episode
+    // expectation would put every normal-length linked film outside the band.
+    // An unknown movie runtime means the band cannot run (permissive); the
+    // incumbent replace guard still protects replacements.
     let runtime_sample_validation = manual_aware_runtime_sample_validation(
         movie
             .runtime_minutes
-            .or(title.runtime_minutes)
             .filter(|runtime_minutes| *runtime_minutes > 0)
             .map(|runtime_minutes| runtime_minutes.saturating_mul(60)),
         manual_replacement,
@@ -1713,6 +1736,24 @@ async fn import_series_movie_download(
     {
         Ok(prepared) => prepared,
         Err(rejection) => {
+            // A band miss is held for the operator, not burned: expected
+            // runtimes are estimates and legitimate outliers (extended cuts,
+            // double-length specials) must stay grabbable after review.
+            if rejection.recycle_reason == crate::post_download_gate::RUNTIME_OUT_OF_BAND_CODE {
+                return hold_replacement_for_manual_resolution(
+                    app,
+                    title,
+                    import_id,
+                    completed,
+                    &source_video,
+                    source_size,
+                    parsed.quality.clone(),
+                    crate::post_download_gate::RUNTIME_OUT_OF_BAND_CODE,
+                    rejection.message.clone(),
+                    started_at,
+                )
+                .await;
+            }
             crate::post_download_gate::reject_source_file_before_import(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
@@ -1782,6 +1823,7 @@ async fn import_series_movie_download(
             &source_video,
             source_size,
             prepared.parsed.quality.clone(),
+            crate::post_download_gate::REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE,
             message,
             started_at,
         )

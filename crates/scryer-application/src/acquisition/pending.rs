@@ -153,10 +153,13 @@ impl AppUseCase {
             .list_pending_releases_for_title(&title.id)
             .await
             .unwrap_or_default();
-        if existing.iter().any(|release| {
-            release.wanted_item_id == wanted.id
-                && release.status == PendingReleaseStatus::NeedsReview
-        }) {
+        // One review row per TITLE, not per wanted item: identity ambiguity is
+        // a title-level condition, and a 24-episode ambiguous season must not
+        // flood the review queue with 24 identical rows.
+        if existing
+            .iter()
+            .any(|release| release.status == PendingReleaseStatus::NeedsReview)
+        {
             return;
         }
 
@@ -775,6 +778,8 @@ impl AppUseCase {
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                search_facet: (wanted.media_type == "series_movie")
+                    .then_some(scryer_domain::MediaFacet::Movie),
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 download_id: Some(download_id),
                 source_hint: source_hint.clone(),

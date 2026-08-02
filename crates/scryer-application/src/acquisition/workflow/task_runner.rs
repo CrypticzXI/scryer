@@ -681,6 +681,7 @@ async fn process_single_target(
                                 .download_client
                                 .submit_download(&DownloadClientAddRequest {
                                     title: title.clone(),
+                                    search_facet: None,
                                     purpose: crate::DownloadSubmissionPurpose::Standard,
                                     download_id: Some(download_id),
                                     source_hint: pack_url.clone(),
@@ -1275,6 +1276,8 @@ async fn process_single_target(
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                search_facet: (target.media_type == "series_movie")
+                    .then_some(MediaFacet::Movie),
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 download_id: Some(download_id),
                 source_hint: source_hint.clone(),

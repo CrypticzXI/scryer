@@ -2646,6 +2646,7 @@ const en: LocaleDictionary = {
   "profile.linkAccountConnection": "Connection",
   "profile.linkAccountUsername": "Username",
   "profile.linkAccountPassword": "Password",
+  "profile.linkAccountPasswordlessHint": "Leave blank if this Jellyfin account has no password. Passwordless accounts can be linked, but cannot be used to sign in to Scryer.",
   "profile.linkAccountSubmit": "Link account",
   "profile.linkAccountCancel": "Cancel",
   "profile.linkAccountNoConnections": "No eligible connection available.",

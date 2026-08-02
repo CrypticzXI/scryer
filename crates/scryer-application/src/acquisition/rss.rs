@@ -69,24 +69,30 @@ fn build_title_context_bank(titles: &[Title]) -> Vec<TitleContextCandidate> {
         })
         .collect::<Vec<_>>();
 
-    // Pillar A tier 0 on the RSS path: the matchable set is already in memory,
-    // so library-local collisions are a grouping over it — no extra queries.
-    let mut titles_per_key: HashMap<&str, HashSet<&str>> = HashMap::new();
-    for candidate in &bank {
-        for key in &candidate.evidence.lookup_keys {
-            titles_per_key
-                .entry(key.as_str())
+    // Pillar A tier 0 on the RSS path: collisions are grouped over ALL input
+    // titles (an unmonitored collider is still a collider) on the
+    // year-stripped key shape, so `One Piece` and `One Piece (2023)` collide.
+    // The bank itself stays monitored-only — no extra queries either way.
+    let mut titles_per_stripped_key: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let all_title_keys = titles
+        .iter()
+        .map(crate::acquisition_release_search::canonical_title_lookup_keys)
+        .collect::<Vec<_>>();
+    for (title, keys) in titles.iter().zip(&all_title_keys) {
+        for key in keys {
+            titles_per_stripped_key
+                .entry(crate::import_title_resolution::strip_trailing_year_key(key))
                 .or_default()
-                .insert(candidate.info.title_id.as_str());
+                .insert(title.id.as_str());
         }
     }
-    let shared_keys = titles_per_key
+    let shared_stripped_keys = titles_per_stripped_key
         .into_iter()
         .filter(|(_, title_ids)| title_ids.len() >= 2)
         .map(|(key, _)| key.to_string())
         .collect::<HashSet<_>>();
 
-    if !shared_keys.is_empty() {
+    if !shared_stripped_keys.is_empty() {
         for candidate in &mut bank {
             candidate.evidence.ambiguity =
                 crate::acquisition_release_search::TitleIdentityAmbiguity::from_shared_keys(
@@ -94,7 +100,11 @@ fn build_title_context_bank(titles: &[Title]) -> Vec<TitleContextCandidate> {
                         .evidence
                         .lookup_keys
                         .iter()
-                        .filter(|key| shared_keys.contains(key.as_str()))
+                        .filter(|key| {
+                            shared_stripped_keys.contains(
+                                crate::import_title_resolution::strip_trailing_year_key(key),
+                            )
+                        })
                         .cloned()
                         .collect(),
                 );
@@ -1622,6 +1632,7 @@ impl AppUseCase {
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                search_facet: Some(subject.search_facet.clone()),
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 download_id: Some(download_id),
                 source_hint: source_hint.clone(),

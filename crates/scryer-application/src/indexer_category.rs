@@ -53,13 +53,18 @@ pub fn indexer_category_family(raw: &str) -> Option<IndexerCategoryFamily> {
         let Some(segment_family) = category_segment_family(segment) else {
             continue;
         };
-        // The deepest mapped segment wins ("TV > Anime" is anime), except that
-        // an `anime` segment is the most specific assertion an indexer can
-        // make and is never demoted by a shallower generic segment.
-        family = match family {
-            Some(IndexerCategoryFamily::Anime) => Some(IndexerCategoryFamily::Anime),
-            _ => Some(segment_family),
-        };
+        // An `anime` segment anywhere is the most specific assertion an
+        // indexer can make ("TV > Anime" is anime). For everything else the
+        // FIRST mapped segment — the top-level category — wins: newznab paths
+        // are parent-first, and sub-labels reuse family words in ways that
+        // must not invert the parent ("Movies > HDTV" is a movie category,
+        // "TV > TV Movies" is a tv category).
+        if segment_family == IndexerCategoryFamily::Anime {
+            return Some(IndexerCategoryFamily::Anime);
+        }
+        if family.is_none() {
+            family = Some(segment_family);
+        }
     }
 
     family
@@ -67,8 +72,11 @@ pub fn indexer_category_family(raw: &str) -> Option<IndexerCategoryFamily> {
 
 /// The asymmetric contradiction rule from plan 136 §6.
 ///
-/// * anime category + series/movie subject → veto (anime is strictly more
-///   specific than either plain subject)
+/// * anime category + series subject → veto (anime is strictly more specific
+///   than a plain series subject)
+/// * anime category + movie subject → allow (anime FILMS are legitimately
+///   filed under 5070/anime; Scryer itself searches anime categories for
+///   them, so anime-vs-movie is not a contradiction)
 /// * movies category + episodic subject (series/anime) → veto
 /// * tv category + movie subject → veto
 /// * generic tv category + anime subject → allow (indexers routinely file
@@ -79,8 +87,8 @@ pub fn indexer_category_contradicts_facet(
     facet: &MediaFacet,
 ) -> bool {
     match (family, facet) {
-        (IndexerCategoryFamily::Anime, MediaFacet::Series | MediaFacet::Movie) => true,
-        (IndexerCategoryFamily::Anime, MediaFacet::Anime) => false,
+        (IndexerCategoryFamily::Anime, MediaFacet::Series) => true,
+        (IndexerCategoryFamily::Anime, MediaFacet::Anime | MediaFacet::Movie) => false,
         (IndexerCategoryFamily::Movies, MediaFacet::Series | MediaFacet::Anime) => true,
         (IndexerCategoryFamily::Movies, MediaFacet::Movie) => false,
         (IndexerCategoryFamily::Tv, MediaFacet::Movie) => true,
@@ -153,6 +161,11 @@ pub fn nzb_head_category(nzb_head_bytes: &[u8]) -> Option<String> {
                 }) {
                     value.push_str(&decoded);
                 }
+            }
+            // CDATA carries the literal category text with no entity escaping;
+            // skipping it would let `<![CDATA[TV > Anime]]>` dodge the gate.
+            Ok(Event::CData(ref cdata)) if capturing => {
+                value.push_str(&String::from_utf8_lossy(cdata));
             }
             Ok(Event::GeneralRef(ref reference)) if capturing => {
                 if let Ok(Some(character)) = reference.resolve_char_ref() {
@@ -341,10 +354,6 @@ mod tests {
             IndexerCategoryFamily::Tv,
             &MediaFacet::Movie
         ));
-        assert!(indexer_category_contradicts_facet(
-            IndexerCategoryFamily::Anime,
-            &MediaFacet::Movie
-        ));
     }
 
     #[test]
@@ -516,5 +525,39 @@ mod tests {
 
         enforce_nzb_category_gate(b"not xml at all", &MediaFacet::Series)
             .expect("a malformed payload is permissive");
+    }
+
+    #[test]
+    fn category_mapping_prefers_parent_segment_except_anime() {
+        assert_eq!(
+            indexer_category_family("Movies > HDTV"),
+            Some(IndexerCategoryFamily::Movies)
+        );
+        assert_eq!(
+            indexer_category_family("TV > TV Movies"),
+            Some(IndexerCategoryFamily::Tv)
+        );
+        assert_eq!(
+            indexer_category_family("TV > Anime"),
+            Some(IndexerCategoryFamily::Anime)
+        );
+    }
+
+    #[test]
+    fn anime_category_does_not_contradict_a_movie_subject() {
+        assert!(!indexer_category_contradicts_facet(
+            IndexerCategoryFamily::Anime,
+            &MediaFacet::Movie
+        ));
+        assert!(indexer_category_contradicts_facet(
+            IndexerCategoryFamily::Anime,
+            &MediaFacet::Series
+        ));
+    }
+
+    #[test]
+    fn nzb_head_category_reads_cdata_wrapped_values() {
+        let nzb = br#"<?xml version="1.0"?><nzb><head><meta type="category"><![CDATA[TV > Anime]]></meta></head><file/></nzb>"#;
+        assert_eq!(nzb_head_category(nzb).as_deref(), Some("TV > Anime"));
     }
 }

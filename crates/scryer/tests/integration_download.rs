@@ -370,6 +370,7 @@ fn request_with_staged_nzb(
     source_title: &str,
 ) -> DownloadClientAddRequest {
     DownloadClientAddRequest {
+        search_facet: None,
         title,
         download_id: None,
         source_hint: None,

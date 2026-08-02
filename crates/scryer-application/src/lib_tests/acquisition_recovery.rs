@@ -3224,19 +3224,21 @@ async fn acquisition_cycle_category_mismatch_veto_burns_the_release_without_subm
     // Plan 136 §6 (D1): an NZB whose indexer-asserted category contradicts the
     // subject is never handed to the download client, and the veto must reach
     // the grab caller so the release is recorded Failed — that Failed attempt
-    // is what feeds the blocklist and burns the release.
-    let release_title = "One.Piece.Film.Red.2024.1080p.WEB-DL-GRP";
-    let anime_categorized_nzb = br#"<?xml version="1.0" encoding="iso-8859-1" ?>
+    // is what feeds the blocklist and burns the release. TV-vs-movie is a true
+    // contradiction; anime-vs-movie deliberately is NOT (anime films are
+    // legitimately filed under `TV > Anime` — see the companion allow test).
+    let release_title = "Counterfeit.Feature.2024.1080p.WEB-DL-GRP";
+    let tv_categorized_nzb = br#"<?xml version="1.0" encoding="iso-8859-1" ?>
 <nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
 <head>
- <meta type="name">One.Piece.Film.Red.2024.1080p.WEB-DL-GRP</meta>
- <meta type="category">TV &gt; Anime</meta>
+ <meta type="name">Counterfeit.Feature.2024.1080p.WEB-DL-GRP</meta>
+ <meta type="category">TV &gt; HD</meta>
 </head>
 <file poster="poster@example.invalid" date="1700000000" subject="[1/1]"></file>
 </nzb>"#;
     let download_client = Arc::new(StubDownloadClient::default());
     download_client
-        .set_category_gate_nzb(Some(anime_categorized_nzb))
+        .set_category_gate_nzb(Some(tv_categorized_nzb))
         .await;
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -3252,7 +3254,7 @@ async fn acquisition_cycle_category_mismatch_veto_burns_the_release_without_subm
         );
 
     let (title, _) =
-        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "One Piece Film Red", 2024)
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Counterfeit Feature", 2024)
             .await;
 
     app.run_convergence_cycle_once().await;
@@ -3292,6 +3294,57 @@ async fn acquisition_cycle_category_mismatch_veto_burns_the_release_without_subm
     assert!(
         download_submissions.store.lock().await.is_empty(),
         "a vetoed release must never be recorded as a download submission"
+    );
+}
+
+#[tokio::test]
+async fn acquisition_cycle_allows_anime_categorized_nzb_for_a_movie_subject() {
+    // Post-review fix: `TV > Anime` is how indexers legitimately file anime
+    // FILMS — the gate must not burn One Piece Film Red for being anime.
+    let release_title = "One.Piece.Film.Red.2024.1080p.WEB-DL-GRP";
+    let anime_categorized_nzb = br#"<?xml version="1.0" encoding="iso-8859-1" ?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+<head>
+ <meta type="name">One.Piece.Film.Red.2024.1080p.WEB-DL-GRP</meta>
+ <meta type="category">TV &gt; Anime</meta>
+</head>
+<file poster="poster@example.invalid" date="1700000000" subject="[1/1]"></file>
+</nzb>"#;
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_category_gate_nzb(Some(anime_categorized_nzb))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+
+    let (title, _) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "One Piece Film Red", 2024)
+            .await;
+
+    app.run_convergence_cycle_once().await;
+
+    assert_eq!(
+        download_client.submitted_release_titles.lock().await.len(),
+        1,
+        "an anime-categorized film must reach the download client"
+    );
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert!(
+        failed.is_empty(),
+        "nothing about this grab may be burned: {failed:?}"
     );
 }
 

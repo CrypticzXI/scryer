@@ -816,6 +816,11 @@ pub struct IndexerRoutingPlan {
 #[derive(Clone, Debug)]
 pub struct DownloadClientAddRequest {
     pub title: Title,
+    /// The facet this grab was searched and validated as, when it differs
+    /// from the owning title's facet — a series-movie grab is movie-faceted
+    /// while `title` is the owning series. Category gates must compare
+    /// against this; `None` means the owner facet is the search facet.
+    pub search_facet: Option<MediaFacet>,
     pub purpose: DownloadSubmissionPurpose,
     pub download_id: Option<String>,
     pub source_hint: Option<String>,
@@ -848,6 +853,7 @@ impl DownloadClientAddRequest {
     ) -> Self {
         Self {
             title: title.clone(),
+            search_facet: None,
             purpose: DownloadSubmissionPurpose::Standard,
             download_id: None,
             source_hint,

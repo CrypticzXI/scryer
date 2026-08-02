@@ -831,7 +831,7 @@ pub(crate) async fn resolve_staged_nzb_for_request(
         pipeline_limit,
         &source_hint,
         Some(&request.title.id),
-        &request.title.facet,
+        request.search_facet.as_ref().unwrap_or(&request.title.facet),
     )
     .await?;
     staged.self_staged = true;

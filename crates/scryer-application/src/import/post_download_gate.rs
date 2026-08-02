@@ -108,7 +108,6 @@ pub(crate) const SAMPLE_RUNTIME_ZERO_CODE: &str = "sample_runtime_zero";
 pub(crate) const SAMPLE_RUNTIME_TOO_SHORT_CODE: &str = "sample_runtime_too_short";
 #[cfg(any(feature = "runtime-media-analysis", test))]
 pub(crate) const SAMPLE_RUNTIME_INDETERMINATE_CODE: &str = "sample_runtime_indeterminate";
-#[cfg(any(feature = "runtime-media-analysis", test))]
 pub(crate) const RUNTIME_OUT_OF_BAND_CODE: &str = "runtime_out_of_band";
 
 #[cfg(any(feature = "runtime-media-analysis", test))]

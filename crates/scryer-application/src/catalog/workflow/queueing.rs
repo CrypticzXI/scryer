@@ -484,6 +484,8 @@ impl AppUseCase {
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                search_facet: matches!(scope, SubmissionScope::SeriesMovie { .. })
+                    .then_some(scryer_domain::MediaFacet::Movie),
                 purpose,
                 download_id: Some(download_id),
                 source_hint,

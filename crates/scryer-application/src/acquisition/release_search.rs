@@ -967,11 +967,24 @@ pub(crate) fn evaluate_auto_candidate(
     // evidence — and it is the only category protection torrent/magnet grabs and
     // out-of-band plugin NZB fetches get, since D1 only sees NZBs Scryer itself
     // downloads before submission.
+    // Compare against the facet the subject was SEARCHED as, not the owning
+    // title's facet: a series-movie subject is movie-faceted while its owner
+    // is a series, and a correctly categorized Movies release must not read
+    // as a contradiction.
     if crate::indexer_category::indexer_categories_contradict_facet(
         &candidate.response_attributes.categories,
-        &context.title.facet,
+        &context.subject.search_facet,
     ) {
         return ReleaseAutoDecisionCode::CategoryMismatch;
+    }
+
+    // Burned releases report as blocklisted BEFORE the ambiguity gate runs: a
+    // release that already failed must never be re-parked for review.
+    if context
+        .db_blocklist
+        .contains(&candidate.title.to_ascii_lowercase())
+    {
+        return ReleaseAutoDecisionCode::DbBlocklisted;
     }
 
     // Pillar A3: a bare release name is not identity evidence when the subject's
@@ -1016,13 +1029,6 @@ pub(crate) fn evaluate_auto_candidate(
         && dl_snapshot.is_active(&candidate.title)
     {
         return ReleaseAutoDecisionCode::AlreadyActive;
-    }
-
-    if context
-        .db_blocklist
-        .contains(&candidate.title.to_ascii_lowercase())
-    {
-        return ReleaseAutoDecisionCode::DbBlocklisted;
     }
 
     if candidate_matches_existing_media_file(
@@ -2258,6 +2264,67 @@ mod tests {
         assert_eq!(
             decision_for(&live_action, &subject, &candidate),
             ReleaseAutoDecisionCode::QualityBlocked
+        );
+    }
+
+    #[test]
+    fn year_suffixed_title_pair_still_collides_and_bare_release_is_ambiguous() {
+        // Adversarial-review regression: `One Piece` vs `One Piece (2023)` is
+        // the commonest real collision shape; byte-equality collision
+        // detection missed it, and the with_year matching bridge then
+        // laundered the synthesized `one piece 2023` key into a "unique
+        // alias" disambiguator for a bare release.
+        let (mut live_action, mut library) = one_piece_library(Vec::new());
+        live_action.name = "One Piece (2023)".to_string();
+        library[0] = live_action.clone();
+
+        let ambiguity = library_local_ambiguity(&live_action, &library);
+        assert!(
+            ambiguity.requires_disambiguator(),
+            "year-suffixed pair must collide: {ambiguity:?}"
+        );
+
+        let mut subject = numbering_scoped_subject(&live_action, Some(2), Some(1));
+        subject.title_evidence = subject.title_evidence.with_ambiguity(ambiguity);
+        let candidate = make_candidate("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", None);
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::AmbiguousIdentity,
+            "a bare release must not clear the gate via a synthesized year key"
+        );
+    }
+
+    #[test]
+    fn blocklisted_release_reports_blocklisted_not_ambiguous() {
+        // A burned release must never be re-parked for review: DbBlocklisted
+        // outranks AmbiguousIdentity in the decision order.
+        let (live_action, library) = one_piece_library(Vec::new());
+        let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
+        let candidate = make_candidate("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", None);
+
+        let profile = QualityProfile::default();
+        let thresholds = AcquisitionThresholds::default();
+        let now = Utc::now();
+        let db_blocklist =
+            HashSet::from(["one.piece.s02e01.1080p.web-dl.x264-grp".to_string()]);
+        let context = AutoCandidateEvaluationContext {
+            title: &live_action,
+            subject: &subject,
+            current_score: None,
+            last_search_at: None,
+            profile: &profile,
+            thresholds: &thresholds,
+            cutoff_reached: false,
+            now: &now,
+            dl_snapshot: None,
+            db_blocklist: &db_blocklist,
+            existing_files: &[],
+            delay_profiles: &[],
+            failed_source_kinds: None,
+        };
+        assert_eq!(
+            evaluate_auto_candidate(&candidate, &context),
+            ReleaseAutoDecisionCode::DbBlocklisted
         );
     }
 
