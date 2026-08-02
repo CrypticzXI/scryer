@@ -1379,14 +1379,14 @@ fn pem_encode_certificate(der: &[u8]) -> String {
 
 #[cfg(feature = "runtime-plugin-trust")]
 fn cert_extension_utf8(cert: &Certificate, oid: &str) -> AppResult<Option<String>> {
-    let Some(extensions) = cert.tbs_certificate.extensions.as_ref() else {
+    let Some(extensions) = cert.tbs_certificate().extensions() else {
         return Ok(None);
     };
     extensions
         .iter()
         .find(|ext: &&Extension| ext.extn_id.to_string() == oid)
         .map(|ext| {
-            String::from_utf8(ext.extn_value.clone().into_bytes()).map_err(|_| {
+            String::from_utf8(ext.extn_value.clone().into_bytes().into_vec()).map_err(|_| {
                 AppError::Validation(format!(
                     "Sigstore certificate extension {oid} is not valid UTF-8"
                 ))
@@ -1398,8 +1398,8 @@ fn cert_extension_utf8(cert: &Certificate, oid: &str) -> AppResult<Option<String
 #[cfg(feature = "runtime-plugin-trust")]
 fn cert_subject_uri(cert: &Certificate) -> AppResult<Option<String>> {
     let san = cert
-        .tbs_certificate
-        .get::<SubjectAltName>()
+        .tbs_certificate()
+        .get_extension::<SubjectAltName>()
         .map_err(|e| AppError::Validation(format!("failed to read certificate SAN: {e}")))?
         .map(|(_, san)| san);
     let Some(san) = san else {

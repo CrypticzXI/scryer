@@ -2,7 +2,6 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { Loader2, Subtitles } from "lucide-react";
 import { useClient } from "urql";
-import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { SETTINGS_REFERENCE_SLOT_ID } from "@/components/containers/settings/settings-container";

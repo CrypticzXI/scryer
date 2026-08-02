@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use scryer_application::{
-    AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerRoutingPlan,
-    IndexerSearchResponse, IndexerSearchResult, SearchMode, normalize_release_password,
+    AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerResponseAttributes,
+    IndexerRoutingPlan, IndexerSearchResponse, IndexerSearchResult, SearchMode,
+    normalize_release_password,
 };
 use scryer_domain::{IndexerConfig, IndexerProxyConfig, TaggedAlias};
 use std::{collections::BTreeMap, sync::mpsc};
@@ -734,6 +735,67 @@ fn merge_result_extra(
     extra
 }
 
+/// Lift the indexer-asserted response attrs the auto evaluator consumes (the
+/// A2(2) id disambiguator and the D2 category veto) out of the merged extra map.
+/// Both the SDK-typed `external_ids`/`categories` fields and the `response_*`
+/// keys plugins set directly through `provider_extra` land there, so a single
+/// read covers every plugin shape without touching the ABI.
+fn response_attributes(
+    extra: &std::collections::HashMap<String, serde_json::Value>,
+) -> IndexerResponseAttributes {
+    let external_ids = extra
+        .get("external_ids")
+        .and_then(|value| value.as_object());
+    let response_id = |normalized_key: &str, response_key: &str| {
+        external_ids
+            .and_then(|ids| ids.get(normalized_key))
+            .or_else(|| extra.get(response_key))
+            .and_then(response_attribute_id)
+    };
+
+    IndexerResponseAttributes {
+        tvdb_id: response_id("tvdb_id", "response_tvdbid"),
+        tmdb_id: response_id("tmdb_id", "response_tmdbid"),
+        imdb_id: response_id("imdb_id", "response_imdbid"),
+        categories: response_attribute_categories(extra),
+    }
+}
+
+/// Newznab writes `0` for "no id", so it is treated as absence rather than as a
+/// disagreeing assertion.
+fn response_attribute_id(value: &serde_json::Value) -> Option<String> {
+    response_attribute_text(value).filter(|value| value != "0")
+}
+
+/// Categories from both the SDK-typed field and the provider-specific list, in
+/// indexer order, deduped — a dual-categorized item keeps every value so the
+/// set-level rule can find the compatible one.
+fn response_attribute_categories(
+    extra: &std::collections::HashMap<String, serde_json::Value>,
+) -> Vec<String> {
+    let mut categories: Vec<String> = Vec::new();
+    for key in ["categories", "provider_categories"] {
+        let Some(values) = extra.get(key).and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for category in values.iter().filter_map(response_attribute_text) {
+            if !categories.contains(&category) {
+                categories.push(category);
+            }
+        }
+    }
+    categories
+}
+
+fn response_attribute_text(value: &serde_json::Value) -> Option<String> {
+    let text = match value {
+        serde_json::Value::String(text) => text.trim().to_string(),
+        serde_json::Value::Number(number) => number.to_string(),
+        _ => return None,
+    };
+    (!text.is_empty()).then_some(text)
+}
+
 fn explicit_source_kind(
     result: &scryer_plugin_sdk::PluginSearchResult,
     extra: &std::collections::HashMap<String, serde_json::Value>,
@@ -886,6 +948,7 @@ impl IndexerClient for WasmIndexerClient {
             .into_iter()
             .map(|r| {
                 let extra = merge_result_extra(&r);
+                let response_attributes = response_attributes(&extra);
                 let password_hint = plugin_password_hint(&r, &extra);
                 let source_kind = explicit_source_kind(&r, &extra).or_else(|| {
                     DownloadSourceKind::infer_from_indexer_result(
@@ -923,6 +986,7 @@ impl IndexerClient for WasmIndexerClient {
                     parsed_release_metadata: None,
                     quality_profile_decision: None,
                     extra,
+                    response_attributes,
                     guid: r.guid,
                     info_url: r.info_url,
                     provenance: None,
@@ -1042,6 +1106,81 @@ mod tests {
             extra.get("provider_specific"),
             Some(&serde_json::Value::from("kept"))
         );
+    }
+
+    /// A newznab item's `<attr name="tvdbid" value="393199"/>` reaches the
+    /// adapter as `provider_extra["response_tvdbid"]`, and its `<category>`
+    /// elements as the SDK-typed category lists. This is the shape both the
+    /// search and RSS lanes deliver — they share the response parser.
+    fn newznab_item(
+        tvdbid: Option<&str>,
+        categories: &[&str],
+    ) -> scryer_plugin_sdk::PluginSearchResult {
+        let mut provider_extra = std::collections::HashMap::new();
+        if let Some(tvdbid) = tvdbid {
+            provider_extra.insert(
+                "response_tvdbid".to_string(),
+                serde_json::Value::from(tvdbid),
+            );
+        }
+
+        scryer_plugin_sdk::PluginSearchResult {
+            title: "One.Piece.S02E01.1080p.WEB-DL.x264-GRP".to_string(),
+            provider_categories: categories.iter().map(|value| value.to_string()).collect(),
+            provider_extra,
+            ..scryer_plugin_sdk::PluginSearchResult::default()
+        }
+    }
+
+    #[test]
+    fn captures_newznab_response_ids_and_categories() {
+        let dual = newznab_item(Some("393199"), &["5000", "5070"]);
+        let attributes = response_attributes(&merge_result_extra(&dual));
+        assert_eq!(attributes.tvdb_id.as_deref(), Some("393199"));
+        assert_eq!(attributes.categories, vec!["5000", "5070"]);
+
+        let anime_only = newznab_item(None, &["5070"]);
+        let attributes = response_attributes(&merge_result_extra(&anime_only));
+        assert_eq!(attributes.tvdb_id, None);
+        assert_eq!(attributes.categories, vec!["5070"]);
+    }
+
+    #[test]
+    fn captures_sdk_typed_response_ids_and_dedupes_category_lists() {
+        let result = scryer_plugin_sdk::PluginSearchResult {
+            external_ids: std::collections::HashMap::from([
+                ("tvdb".to_string(), "393199".to_string()),
+                ("tmdb".to_string(), "111110".to_string()),
+                ("imdb".to_string(), "tt14688458".to_string()),
+            ]),
+            categories: vec!["5000".to_string()],
+            provider_categories: vec!["5000".to_string(), "TV > Anime".to_string()],
+            ..scryer_plugin_sdk::PluginSearchResult::default()
+        };
+
+        let attributes = response_attributes(&merge_result_extra(&result));
+        assert_eq!(attributes.tvdb_id.as_deref(), Some("393199"));
+        assert_eq!(attributes.tmdb_id.as_deref(), Some("111110"));
+        assert_eq!(attributes.imdb_id.as_deref(), Some("tt14688458"));
+        assert_eq!(attributes.categories, vec!["5000", "TV > Anime"]);
+    }
+
+    #[test]
+    fn response_attributes_are_empty_without_indexer_assertions() {
+        let attributes = response_attributes(&merge_result_extra(
+            &scryer_plugin_sdk::PluginSearchResult::default(),
+        ));
+
+        assert!(!attributes.has_external_ids());
+        assert!(attributes.categories.is_empty());
+    }
+
+    #[test]
+    fn response_attributes_treat_a_zero_id_as_absent() {
+        // Newznab writes `0` for "no id"; it must not read as a disagreement.
+        let attributes = response_attributes(&merge_result_extra(&newznab_item(Some("0"), &[])));
+
+        assert_eq!(attributes.tvdb_id, None);
     }
 
     #[test]

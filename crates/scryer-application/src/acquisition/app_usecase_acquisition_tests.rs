@@ -125,6 +125,7 @@ fn test_search_result_with_decision(
         parsed_release_metadata: None,
         quality_profile_decision: None,
         extra: HashMap::new(),
+        response_attributes: Default::default(),
         guid: None,
         info_url: None,
         provenance: None,

@@ -88,6 +88,34 @@ pub fn indexer_category_contradicts_facet(
     }
 }
 
+/// Set form of the contradiction rule for the response-attribute lane (D2).
+///
+/// A newznab/torznab item routinely carries several categories, and each one is
+/// an independent assertion. The veto therefore fires only when the indexer said
+/// something mappable *and* every mappable thing it said contradicts the
+/// subject: a dual-categorized `["5000", "5070"]` item still claims plain TV, so
+/// it passes for a series subject, while a `["5070"]`-only item does not. An
+/// empty or wholly unmappable set stays permissive, as on the D1 lane.
+pub fn indexer_categories_contradict_facet<I, S>(categories: I, facet: &MediaFacet) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut saw_mapped_category = false;
+
+    for category in categories {
+        let Some(family) = indexer_category_family(category.as_ref()) else {
+            continue;
+        };
+        if !indexer_category_contradicts_facet(family, facet) {
+            return false;
+        }
+        saw_mapped_category = true;
+    }
+
+    saw_mapped_category
+}
+
 /// Read `<head><meta type="category">…</meta></head>` out of an NZB prefix.
 ///
 /// The input may be truncated at any point (it is a bounded probe of a
@@ -340,6 +368,66 @@ mod tests {
         assert!(!indexer_category_contradicts_facet(
             IndexerCategoryFamily::Movies,
             &MediaFacet::Movie
+        ));
+    }
+
+    #[test]
+    fn dual_categorized_set_allows_the_subject_its_generic_category_names() {
+        assert!(!indexer_categories_contradict_facet(
+            ["5000", "5070"],
+            &MediaFacet::Series
+        ));
+        assert!(!indexer_categories_contradict_facet(
+            ["TV", "TV > Anime"],
+            &MediaFacet::Series
+        ));
+    }
+
+    #[test]
+    fn anime_only_set_vetoes_a_series_subject() {
+        assert!(indexer_categories_contradict_facet(
+            ["5070"],
+            &MediaFacet::Series
+        ));
+        assert!(indexer_categories_contradict_facet(
+            ["5070", "TV > Anime"],
+            &MediaFacet::Series
+        ));
+    }
+
+    #[test]
+    fn movies_only_set_vetoes_an_episodic_subject() {
+        assert!(indexer_categories_contradict_facet(
+            ["2000", "2040"],
+            &MediaFacet::Series
+        ));
+        assert!(indexer_categories_contradict_facet(
+            ["Movies > HD"],
+            &MediaFacet::Anime
+        ));
+    }
+
+    #[test]
+    fn generic_tv_set_allows_an_anime_subject() {
+        assert!(!indexer_categories_contradict_facet(
+            ["5000", "5040"],
+            &MediaFacet::Anime
+        ));
+    }
+
+    #[test]
+    fn empty_or_unmappable_sets_allow_every_subject() {
+        assert!(!indexer_categories_contradict_facet(
+            Vec::<String>::new(),
+            &MediaFacet::Series
+        ));
+        assert!(!indexer_categories_contradict_facet(
+            ["9999", "Books > EBook", "   "],
+            &MediaFacet::Series
+        ));
+        assert!(!indexer_categories_contradict_facet(
+            ["9999", "5070"],
+            &MediaFacet::Anime
         ));
     }
 

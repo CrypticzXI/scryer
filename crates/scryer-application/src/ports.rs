@@ -2020,6 +2020,11 @@ pub struct VerifiedExternalIdentity {
     pub username: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+    /// Whether the remote account has a password configured, when the provider
+    /// reports it. `None` means the provider does not expose the fact (Plex
+    /// verifies through a PIN exchange, not a password), so callers must not
+    /// treat unknown as "no password".
+    pub remote_password_configured: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

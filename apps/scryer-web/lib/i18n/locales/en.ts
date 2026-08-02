@@ -2766,6 +2766,7 @@ const en: LocaleDictionary = {
   "wanted.decision.eligible": "Eligible",
   "wanted.decision.titleMismatch": "Title mismatch",
   "wanted.decision.episodeMismatch": "Episode mismatch",
+  "wanted.decision.categoryMismatch": "Category mismatch",
   "wanted.decision.ambiguousIdentity": "Ambiguous identity",
   "wanted.decision.qualityBlocked": "Quality blocked",
   "wanted.decision.upgradeRejected": "Upgrade rejected",

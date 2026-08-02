@@ -127,6 +127,7 @@ fn make_search_result(
         parsed_release_metadata: Some(parse_release_metadata(title)),
         quality_profile_decision: None,
         extra: HashMap::new(),
+        response_attributes: Default::default(),
         guid: None,
         info_url: None,
         provenance: None,

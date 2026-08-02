@@ -1082,6 +1082,7 @@ async fn process_single_target(
             decision_code,
             ReleaseAutoDecisionCode::TitleMismatch
                 | ReleaseAutoDecisionCode::EpisodeMismatch
+                | ReleaseAutoDecisionCode::CategoryMismatch
                 | ReleaseAutoDecisionCode::AmbiguousIdentity
         ) {
             had_allowed_candidate = true;
@@ -1090,6 +1091,7 @@ async fn process_single_target(
             decision_code,
             ReleaseAutoDecisionCode::TitleMismatch
                 | ReleaseAutoDecisionCode::EpisodeMismatch
+                | ReleaseAutoDecisionCode::CategoryMismatch
                 | ReleaseAutoDecisionCode::AmbiguousIdentity
         ) {
             skipped_for_title_mismatch = true;

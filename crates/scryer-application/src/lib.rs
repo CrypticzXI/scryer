@@ -557,8 +557,8 @@ pub use types::{
     library_scan_file_leaf_key, library_scan_folder_full_path_key, library_scan_folder_leaf_key,
 };
 pub use types::{
-    IndexerQueryOutcome, IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult,
-    ReleaseCandidateProvenance, ReleaseSearchSubjectKind, ReleaseStrategyKind,
+    IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchOutcome, IndexerSearchResponse,
+    IndexerSearchResult, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, ReleaseStrategyKind,
 };
 pub use types::{SmgScryerUpdateNotice, SmgVersionCompatibilityNotice};
 

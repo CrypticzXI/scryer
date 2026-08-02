@@ -295,7 +295,9 @@ function MediaServerUserCombobox({
                 autoComplete="off"
                 data-1p-ignore="true"
                 data-lpignore="true"
+                data-bwignore="true"
                 data-form-type="other"
+                data-protonpass-ignore="true"
                 name="media-server-user-search"
                 className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
               />

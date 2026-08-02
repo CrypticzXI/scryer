@@ -8,7 +8,9 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{disable_platform_keystore_for_tests, load_fixture};
+use common::{
+    disable_platform_keystore_for_tests, initialize_wasm_runtime_for_tests, load_fixture,
+};
 use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, INDEXER_ROUTING_SETTINGS_KEY, IndexerPluginProvider,
     IndexerRoutingSettingsEntry, JwtAuthConfig, LibraryRootDraft, MovieFacetHandler,
@@ -68,6 +70,7 @@ where
     F: FnOnce(&MockServer, &MockServer, chrono::DateTime<chrono::Utc>) -> Vec<IndexerConfig>,
 {
     disable_platform_keystore_for_tests();
+    initialize_wasm_runtime_for_tests();
 
     let newznab_server = MockServer::start().await;
     let torznab_server = MockServer::start().await;

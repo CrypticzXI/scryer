@@ -52,6 +52,7 @@ import type {
 import type { UserAccountKind } from "@/lib/types/users";
 import { PasskeyClientError, registerPasskey } from "@/lib/utils/passkeys";
 import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
+import { canSubmitJellyfinLink } from "@/lib/utils/external-account-link-gate";
 
 type Props = {
   userId?: string;
@@ -792,11 +793,16 @@ export function SettingsProfileContainer({ userId, username }: Props) {
 
   const handleSubmitJellyfinLink = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    // Same completeness rule the submit button uses, so the two cannot drift.
+    // `busy` is false here because re-entrancy is already prevented by the
+    // disabled button; this check is only about the draft being complete.
     if (
       linkingProvider !== "JELLYFIN" ||
-      !linkAccountDraft.connectionId ||
-      !linkAccountDraft.jellyfinUsername.trim() ||
-      !linkAccountDraft.jellyfinPassword
+      !canSubmitJellyfinLink({
+        connectionId: linkAccountDraft.connectionId,
+        username: linkAccountDraft.jellyfinUsername,
+        busy: false,
+      })
     ) {
       return;
     }

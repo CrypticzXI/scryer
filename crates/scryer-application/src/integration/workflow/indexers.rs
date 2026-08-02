@@ -115,12 +115,30 @@ pub(crate) fn derive_indexer_base_url_from_config_fields(
         .ok_or_else(|| AppError::Validation("indexer connection URL is required".into()))?;
 
     if (field.key.contains("feed") || field.key.contains("rss"))
-        && let Some(origin) = extract_url_origin(&raw)
+        && let Some(origin) = extract_base_url_origin(&raw)
     {
         return Ok(origin);
     }
 
     Ok(raw)
+}
+/// Scheme-preserving origin for base-URL derivation (`https://host[:port]`).
+/// Distinct from `extract_url_origin`, which was repurposed for display
+/// labels and returns the bare host — a base URL must keep its scheme or it
+/// fails downstream URL validation.
+fn extract_base_url_origin(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let (scheme, remainder) = trimmed.split_once("://")?;
+    if scheme.is_empty() {
+        return None;
+    }
+
+    let authority = remainder.split(['/', '?', '#']).next()?.trim();
+    if authority.is_empty() {
+        return None;
+    }
+
+    Some(format!("{scheme}://{authority}"))
 }
 pub(crate) fn normalize_indexer_config_json(
     fields: &[scryer_domain::ConfigFieldDef],

@@ -2060,14 +2060,14 @@ fn pem_encode_certificate(der: &[u8]) -> String {
 }
 
 fn cert_extension_utf8(cert: &Certificate, oid: &str) -> Result<Option<String>> {
-    let Some(extensions) = cert.tbs_certificate.extensions.as_ref() else {
+    let Some(extensions) = cert.tbs_certificate().extensions() else {
         return Ok(None);
     };
     extensions
         .iter()
         .find(|ext: &&Extension| ext.extn_id.to_string() == oid)
         .map(|ext| {
-            String::from_utf8(ext.extn_value.clone().into_bytes())
+            String::from_utf8(ext.extn_value.clone().into_bytes().into_vec())
                 .map_err(|_| anyhow!("Sigstore certificate extension {oid} is not valid UTF-8"))
         })
         .transpose()
@@ -2075,8 +2075,8 @@ fn cert_extension_utf8(cert: &Certificate, oid: &str) -> Result<Option<String>> 
 
 fn cert_subject_uri(cert: &Certificate) -> Result<Option<String>> {
     let san = cert
-        .tbs_certificate
-        .get::<SubjectAltName>()
+        .tbs_certificate()
+        .get_extension::<SubjectAltName>()
         .map_err(|error| anyhow!("failed to read certificate SAN: {error}"))?
         .map(|(_, san)| san);
     let Some(san) = san else {
@@ -2546,7 +2546,13 @@ fn release_cache_key(path: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(path.to_string_lossy().as_bytes());
     let digest = hasher.finalize();
-    format!("{digest:x}").chars().take(12).collect()
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+        .chars()
+        .take(12)
+        .collect()
 }
 
 fn docker_cache_key_component(value: &str) -> String {

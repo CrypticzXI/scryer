@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Once},
+};
 
 use async_graphql_axum::GraphQLRequest;
 use async_trait::async_trait;
@@ -42,6 +45,19 @@ use scryer_interface::{ApiSchema, build_schema};
 
 pub fn disable_platform_keystore_for_tests() {
     scryer_infrastructure::keystore::disable_platform_keystore_for_tests();
+}
+
+static TEST_WASMTIME_RUNTIME: Once = Once::new();
+
+pub fn initialize_wasm_runtime_for_tests() {
+    TEST_WASMTIME_RUNTIME.call_once(|| {
+        let cache_dir = std::env::temp_dir().join(format!(
+            "scryer-wasmtime-integration-cache-{}",
+            std::process::id()
+        ));
+        scryer_plugins::initialize_wasm_runtime_at(cache_dir)
+            .expect("test Wasmtime cache must initialize");
+    });
 }
 
 /// Shared integration-test context.
@@ -617,6 +633,7 @@ pub fn disabled_auth_runtime_handle() -> AuthRuntimeStateHandle {
 impl TestContext {
     pub async fn new() -> Self {
         disable_platform_keystore_for_tests();
+        initialize_wasm_runtime_for_tests();
 
         // Start wiremock mock servers for each external API
         let nzbget_server = MockServer::start().await;

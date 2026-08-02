@@ -4,8 +4,12 @@ use crate::acquisition_release_search::{
     AutoCandidateEvaluationContext, CandidateTitleMatch, ReleaseAutoDecisionCode,
     TITLE_MATCH_HEAD_ANCHOR_MAX_START, annotate_auto_decision,
     candidate_presents_identity_disambiguator, canonical_title_evidence, evaluate_auto_candidate,
-    match_parsed_release_to_title_evidence, parsed_release_matches_title_evidence,
-    serialize_decision_explanation, series_movie_search_title, title_key_head_anchored,
+    external_id_agreement, match_parsed_release_to_title_evidence,
+    parsed_release_matches_title_evidence, serialize_decision_explanation,
+    series_movie_search_title, title_key_head_anchored,
+};
+use crate::acquisition_search_queries::{
+    imdb_id_from_title, tmdb_id_from_external_ids, tvdb_id_from_external_ids,
 };
 use crate::delay_profile::DelayProfile;
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
@@ -36,6 +40,11 @@ pub(crate) fn normalize_for_matching(title: &str) -> String {
 struct TitleMatchInfo {
     title_id: String,
     year: Option<i32>,
+    /// External ids Scryer already holds for this title, so an indexer-asserted
+    /// response id can disambiguate a shared canonical key (A2(2)).
+    tvdb_id: Option<String>,
+    tmdb_id: Option<String>,
+    imdb_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -52,6 +61,9 @@ fn build_title_context_bank(titles: &[Title]) -> Vec<TitleContextCandidate> {
             info: TitleMatchInfo {
                 title_id: title.id.clone(),
                 year: title.year,
+                tvdb_id: tvdb_id_from_external_ids(&title.external_ids),
+                tmdb_id: tmdb_id_from_external_ids(&title.external_ids),
+                imdb_id: imdb_id_from_title(title),
             },
             evidence: canonical_title_evidence(title),
         })
@@ -218,8 +230,11 @@ fn context_candidate_match_score(
 /// Match an RSS release against monitored titles using real title contexts.
 /// The cheap lexical pass only builds a small candidate bank; the final match
 /// is always a context-aware v2 parse for a concrete catalog title.
+/// `response_attributes` carries the indexer's own id assertions so a collision
+/// on a shared canonical key can still be resolved (A2(2)).
 fn match_release_to_title_context<'a>(
     release_title: &str,
+    response_attributes: &IndexerResponseAttributes,
     context_bank: &'a [TitleContextCandidate],
 ) -> Option<&'a TitleMatchInfo> {
     let release_tokens = release_tokens_for_matching(release_title);
@@ -246,9 +261,8 @@ fn match_release_to_title_context<'a>(
     );
     candidates.truncate(RSS_TITLE_CONTEXT_CANDIDATE_LIMIT);
 
-    let mut best: Option<(&TitleMatchInfo, i32)> = None;
+    let mut best: Option<(&TitleMatchInfo, i32, bool)> = None;
     let mut titles_per_matched_key: HashMap<String, HashSet<&str>> = HashMap::new();
-    let mut any_disambiguated = false;
     for (candidate, lexical_score) in candidates {
         let parsed =
             parse_release_metadata_for_target(release_title, &candidate.evidence.parse_context);
@@ -267,24 +281,33 @@ fn match_release_to_title_context<'a>(
             .entry(evidence_match.matched_key.clone())
             .or_default()
             .insert(candidate.info.title_id.as_str());
-        any_disambiguated |= candidate_presents_identity_disambiguator(
+        let disambiguated = candidate_presents_identity_disambiguator(
             &candidate.evidence,
             &CandidateTitleMatch {
                 evidence_match: Some(evidence_match),
                 provenance_validated: false,
             },
-            None,
+            external_id_agreement(
+                response_attributes,
+                candidate.info.tvdb_id.as_deref(),
+                candidate.info.tmdb_id.as_deref(),
+                candidate.info.imdb_id.as_deref(),
+            ),
         );
 
         let year_bonus = i32::from(parsed.year.is_some() && parsed.year == candidate.info.year) * 8;
         let parser_bonus = (parsed.parse_confidence * 10.0).round() as i32;
         let score = lexical_score + year_bonus + parser_bonus;
 
+        // A disambiguated candidate outranks an undisambiguated one outright:
+        // an indexer-asserted id or a unique alias names the show, while the
+        // score is only a lexical guess that both colliding titles earn equally.
         match best {
-            Some((best_info, best_score))
-                if score < best_score
-                    || (score == best_score && candidate.info.title_id >= best_info.title_id) => {}
-            _ => best = Some((&candidate.info, score)),
+            Some((best_info, best_score, best_disambiguated))
+                if (disambiguated, score) < (best_disambiguated, best_score)
+                    || ((disambiguated, score) == (best_disambiguated, best_score)
+                        && candidate.info.title_id >= best_info.title_id) => {}
+            _ => best = Some((&candidate.info, score, disambiguated)),
         }
     }
 
@@ -292,7 +315,7 @@ fn match_release_to_title_context<'a>(
     // to two different library titles and nothing disambiguates them, the
     // release names neither show. Assigning by score or title-id tiebreak is how
     // the wrong show gets the grab, so skip the release entirely.
-    if !any_disambiguated
+    if !best.is_some_and(|(_, _, disambiguated)| disambiguated)
         && let Some((collision_key, colliding_titles)) = titles_per_matched_key
             .iter()
             .find(|(_, title_ids)| title_ids.len() >= 2)
@@ -306,7 +329,7 @@ fn match_release_to_title_context<'a>(
         return None;
     }
 
-    best.map(|(info, _)| info)
+    best.map(|(info, _, _)| info)
 }
 
 #[cfg(test)]
@@ -494,9 +517,11 @@ impl AppUseCase {
         let total_new = new_results.len();
 
         for result in new_results {
-            if let Some(title_info) =
-                match_release_to_title_context(&result.title, &title_context_bank)
-            {
+            if let Some(title_info) = match_release_to_title_context(
+                &result.title,
+                &result.response_attributes,
+                &title_context_bank,
+            ) {
                 matched_count += 1;
                 matched_by_title
                     .entry(title_info.title_id.clone())
@@ -1994,11 +2019,24 @@ mod tests {
 
     // ── match_release_to_title_context ──────────────────────────────
 
+    /// Title matching without any indexer id assertion — the shape almost every
+    /// matcher test wants. Tests that exercise A2(2) call the real function.
+    fn match_release<'a>(
+        release_title: &str,
+        context_bank: &'a [TitleContextCandidate],
+    ) -> Option<&'a TitleMatchInfo> {
+        match_release_to_title_context(
+            release_title,
+            &IndexerResponseAttributes::default(),
+            context_bank,
+        )
+    }
+
     #[test]
     fn match_exact_title() {
         let titles = vec![make_title("t1", "Neon Cipher", Some(2010))];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context("Neon.Cipher.2010.1080p.BluRay.x264", &bank);
+        let result = match_release("Neon.Cipher.2010.1080p.BluRay.x264", &bank);
         assert!(result.is_some(), "exact match should succeed");
         assert_eq!(result.unwrap().title_id, "t1");
     }
@@ -2010,7 +2048,7 @@ mod tests {
             make_title("t2", "Glass Harbor", Some(2021)),
         ];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context("Glass.Harbor.2021.1080p.BluRay.x264", &bank);
+        let result = match_release("Glass.Harbor.2021.1080p.BluRay.x264", &bank);
         assert!(result.is_some(), "result was None");
         assert_eq!(result.unwrap().title_id, "t2");
     }
@@ -2022,7 +2060,7 @@ mod tests {
         // Name doesn't include the year
         let titles = vec![t];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context("Neon.Cipher.2010.1080p.BluRay", &bank);
+        let result = match_release("Neon.Cipher.2010.1080p.BluRay", &bank);
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
     }
@@ -2032,7 +2070,7 @@ mod tests {
         // Lookup has "title 2024", release only has "title"
         let titles = vec![make_title("t1", "Glass Harbor 2024", Some(2024))];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context("Glass Harbor", &bank);
+        let result = match_release("Glass Harbor", &bank);
         // Should match via the reverse year-addition path
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
@@ -2042,7 +2080,7 @@ mod tests {
     fn match_no_match_returns_none() {
         let titles = vec![make_title("t1", "Neon Cipher", Some(2010))];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context("Totally.Unknown.Movie.2024.1080p", &bank);
+        let result = match_release("Totally.Unknown.Movie.2024.1080p", &bank);
         assert!(result.is_none());
     }
 
@@ -2050,7 +2088,7 @@ mod tests {
     fn match_empty_release_title_returns_none() {
         let titles = vec![make_title("t1", "Neon Cipher", Some(2010))];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context("", &bank);
+        let result = match_release("", &bank);
         assert!(result.is_none());
     }
 
@@ -2063,7 +2101,7 @@ mod tests {
             vec!["Sen to Chihiro no Kamikakushi"],
         )];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context("Sen.to.Chihiro.no.Kamikakushi", &bank);
+        let result = match_release("Sen.to.Chihiro.no.Kamikakushi", &bank);
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
     }
@@ -2077,7 +2115,7 @@ mod tests {
             vec!["Mon Cousin"],
         )];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context(
+        let result = match_release(
             "Mon.Cousin.A.K.A.My.Cousin.2020.1080p.BluRay.x264-GRP",
             &bank,
         );
@@ -2094,10 +2132,7 @@ mod tests {
             vec!["Mon Cousin"],
         )];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context(
-            "Mon Cousin / My Cousin 2020 1080p BluRay x264-GRP",
-            &bank,
-        );
+        let result = match_release("Mon Cousin / My Cousin 2020 1080p BluRay x264-GRP", &bank);
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
     }
@@ -2123,7 +2158,7 @@ mod tests {
             "ToonsHub.My.Friends.Little.Sister.Has.It.In.for.Me.S01E09.1080p.CR.WEB-DL.AAC2.0.H264",
         ] {
             assert!(
-                match_release_to_title_context(junk, &bank).is_none(),
+                match_release(junk, &bank).is_none(),
                 "containment junk must not match single-token title: {junk}"
             );
         }
@@ -2133,7 +2168,7 @@ mod tests {
     fn single_token_title_still_matches_head_anchored_release() {
         let titles = vec![make_series_title("friends", "Friends", Some(1994))];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context(
+        let result = match_release(
             "Friends.S01E10.The.One.With.The.Monkey.1080p.BluRay.x264-GRP",
             &bank,
         );
@@ -2145,8 +2180,7 @@ mod tests {
     fn single_token_title_matches_with_year_corroboration() {
         let titles = vec![make_series_title("friends", "Friends", Some(1994))];
         let bank = build_title_context_bank(&titles);
-        let result =
-            match_release_to_title_context("Friends.1994.S02E14.1080p.WEB-DL.x264-GRP", &bank);
+        let result = match_release("Friends.1994.S02E14.1080p.WEB-DL.x264-GRP", &bank);
         assert!(result.is_some(), "year-corroborated release must match");
     }
 
@@ -2169,17 +2203,44 @@ mod tests {
         // them, so assigning by score/title-id tiebreak would be a coin flip.
         let bank = one_piece_rss_bank();
         assert!(
-            match_release_to_title_context("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", &bank)
-                .is_none(),
+            match_release("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", &bank).is_none(),
             "colliding bare key with no disambiguator must skip the release"
+        );
+    }
+
+    #[test]
+    fn shared_bare_key_collision_assigns_when_a_response_id_disambiguates() {
+        // A2(2) on the RSS lane: the release name is the same coin flip, but the
+        // indexer asserted the live-action title's own TVDB id.
+        let mut live_action = make_series_title("one-piece-live", "One Piece", Some(2023));
+        live_action.external_ids = vec![scryer_domain::ExternalId {
+            source: "tvdb".to_string(),
+            value: "393199".to_string(),
+        }];
+        let mut anime = make_series_title("one-piece-anime", "One Piece", Some(1999));
+        anime.facet = MediaFacet::Anime;
+        let bank = build_title_context_bank(&[live_action, anime]);
+
+        let result = match_release_to_title_context(
+            "One.Piece.S02E01.1080p.WEB-DL.x264-GRP",
+            &IndexerResponseAttributes {
+                tvdb_id: Some("393199".to_string()),
+                ..Default::default()
+            },
+            &bank,
+        );
+
+        assert_eq!(
+            result.map(|info| info.title_id.as_str()),
+            Some("one-piece-live"),
+            "an indexer-asserted id resolves the collision instead of skipping"
         );
     }
 
     #[test]
     fn shared_bare_key_collision_assigns_when_year_disambiguates() {
         let bank = one_piece_rss_bank();
-        let result =
-            match_release_to_title_context("One.Piece.2023.S02E01.1080p.WEB-DL.x264-GRP", &bank);
+        let result = match_release("One.Piece.2023.S02E01.1080p.WEB-DL.x264-GRP", &bank);
         assert_eq!(
             result.map(|info| info.title_id.as_str()),
             Some("one-piece-live"),
@@ -2214,7 +2275,7 @@ mod tests {
         // release name — must still head-anchor within the tolerance window.
         let titles = vec![make_series_title("spyxfamily", "Spy x Family", None)];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context(
+        let result = match_release(
             "ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
             &bank,
         );
@@ -2230,7 +2291,7 @@ mod tests {
             None,
         )];
         let bank = build_title_context_bank(&titles);
-        let result = match_release_to_title_context(
+        let result = match_release(
             "[SubsPlease] Tongari Boushi no Atelier - 12 (720p) [53B226F0]",
             &bank,
         );

@@ -1404,6 +1404,27 @@ pub struct ReleaseCandidateProvenance {
     pub title_validated_upstream: bool,
 }
 
+/// Indexer-asserted attributes read off a newznab/torznab response item: the
+/// `tvdbid`/`tmdbid`/`imdbid` attrs and the item's categories (raw numeric
+/// newznab ids and/or names, in indexer order). Both are *indexer* claims of the
+/// same trust tier — they feed the identity disambiguator (A2(2)) and the
+/// category veto (D2), never a title match on their own. Empty whenever the
+/// indexer asserted nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexerResponseAttributes {
+    pub tvdb_id: Option<String>,
+    pub tmdb_id: Option<String>,
+    pub imdb_id: Option<String>,
+    pub categories: Vec<String>,
+}
+
+impl IndexerResponseAttributes {
+    /// Whether the indexer asserted any external id on this result.
+    pub fn has_external_ids(&self) -> bool {
+        self.tvdb_id.is_some() || self.tmdb_id.is_some() || self.imdb_id.is_some()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct IndexerSearchResult {
     pub indexer_id: Option<String>,
@@ -1425,6 +1446,9 @@ pub struct IndexerSearchResult {
     /// Arbitrary indexer-specific metadata from WASM plugins.
     /// Passed through to OPA scoring as `input.release.extra`.
     pub extra: HashMap<String, serde_json::Value>,
+    /// Typed counterpart to `extra` for the response attrs the auto evaluator
+    /// consumes directly.
+    pub response_attributes: IndexerResponseAttributes,
     pub guid: Option<String>,
     pub info_url: Option<String>,
     pub provenance: Option<ReleaseCandidateProvenance>,

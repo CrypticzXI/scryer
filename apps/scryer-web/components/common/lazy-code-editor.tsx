@@ -36,7 +36,9 @@ function TextareaFallback({
       autoComplete="off"
       data-1p-ignore="true"
       data-lpignore="true"
+      data-bwignore="true"
       data-form-type="other"
+      data-protonpass-ignore="true"
       value={value}
       onChange={(e) => onChange(e.target.value)}
       readOnly={readOnly}

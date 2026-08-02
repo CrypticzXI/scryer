@@ -1115,6 +1115,7 @@ mod tests {
             delete_status: None,
             delete_error_message: None,
             is_scryer_origin,
+            source_provider: None,
             tracked_state: None,
             tracked_status: None,
             tracked_status_messages: Vec::new(),

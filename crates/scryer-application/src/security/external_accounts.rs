@@ -593,6 +593,20 @@ impl AppUseCase {
         username: String,
         password: String,
     ) -> AppResult<User> {
+        // A Jellyfin account with no password authenticates against an empty
+        // `Pw`, so without this an attacker who knows such a username could sign
+        // in with no secret at all. Linking a passwordless account stays allowed
+        // (see `link_jellyfin_account`); only signing in with one is refused.
+        //
+        // Both refusals below are flattened to the generic `LOGIN_FAILED` by
+        // `to_login_gql_error`, so neither reveals whether the account exists or
+        // whether it happens to be passwordless.
+        if password.trim().is_empty() {
+            return Err(AppError::Unauthorized(
+                "invalid Jellyfin credentials".into(),
+            ));
+        }
+
         let provider = scryer_domain::ExternalAccountProvider::Jellyfin;
         let connection_id = normalize_connection_id(connection_id);
         let connection = self
@@ -604,6 +618,15 @@ impl AppUseCase {
             .external_identity_verifier
             .verify_jellyfin(&connection_id, &connection.base_url, &username, &password)
             .await?;
+        // Defence in depth: refuse when Jellyfin itself reports the account has
+        // no password, regardless of what the caller submitted. `None` means the
+        // server did not report the fact and is deliberately not treated as
+        // passwordless.
+        if verified.remote_password_configured == Some(false) {
+            return Err(AppError::Unauthorized(
+                "invalid Jellyfin credentials".into(),
+            ));
+        }
         self.ensure_verified_identity_matches_request(&provider, &connection_id, &verified)?;
         self.login_verified_external_account(verified, connection)
             .await
@@ -899,6 +922,8 @@ mod tests {
     struct TestExternalIdentityVerifier {
         jellyfin_users: Vec<JellyfinServerUser>,
         plex_users: Vec<PlexServerUser>,
+        /// Usernames the fake Jellyfin server reports as having no password.
+        passwordless_jellyfin_usernames: Vec<String>,
     }
 
     impl TestExternalAccountRepository {
@@ -922,6 +947,7 @@ mod tests {
             Self {
                 jellyfin_users,
                 plex_users: Vec::new(),
+                passwordless_jellyfin_usernames: Vec::new(),
             }
         }
 
@@ -932,6 +958,18 @@ mod tests {
             Self {
                 jellyfin_users,
                 plex_users,
+                passwordless_jellyfin_usernames: Vec::new(),
+            }
+        }
+
+        fn with_passwordless_jellyfin_users(
+            jellyfin_users: Vec<JellyfinServerUser>,
+            passwordless_jellyfin_usernames: Vec<String>,
+        ) -> Self {
+            Self {
+                jellyfin_users,
+                plex_users: Vec::new(),
+                passwordless_jellyfin_usernames,
             }
         }
     }
@@ -1071,6 +1109,12 @@ mod tests {
                 .iter()
                 .find(|user| user.username.eq_ignore_ascii_case(username))
                 .ok_or_else(|| AppError::Unauthorized("invalid Jellyfin credentials".into()))?;
+            let remote_password_configured = Some(
+                !self
+                    .passwordless_jellyfin_usernames
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(username)),
+            );
             Ok(VerifiedExternalIdentity {
                 provider: ExternalAccountProvider::Jellyfin,
                 connection_id: connection_id.to_string(),
@@ -1078,6 +1122,7 @@ mod tests {
                 username: user.username.clone(),
                 display_name: user.display_name.clone(),
                 avatar_url: user.avatar_url.clone(),
+                remote_password_configured,
             })
         }
 
@@ -2190,6 +2235,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn jellyfin_login_rejects_empty_password_before_touching_the_connection() {
+        let app = test_app(Arc::new(TestSettingsRepository::default()));
+
+        for password in ["", "   "] {
+            let result = app
+                .federated_login_with_jellyfin(
+                    "jellyfin-main".to_string(),
+                    "someone".to_string(),
+                    password.to_string(),
+                )
+                .await;
+
+            // No connection is configured here, so if the guard ran any later
+            // this would surface the "not configured" validation error instead.
+            assert!(
+                matches!(&result, Err(AppError::Unauthorized(message)) if message.contains("invalid Jellyfin credentials")),
+                "expected password {password:?} to be refused up front, got {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn jellyfin_login_rejects_account_reported_passwordless_by_the_server() {
+        let app = test_app_with_identity_media_servers_and_verifier(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::default()),
+            Arc::new(TestExternalAccountRepository::default()),
+            vec![test_media_server_connection(
+                scryer_domain::MediaServerProvider::Jellyfin,
+                "jellyfin-main",
+            )],
+            Arc::new(
+                TestExternalIdentityVerifier::with_passwordless_jellyfin_users(
+                    vec![
+                        JellyfinServerUser {
+                            id: "no-password-id".to_string(),
+                            username: "NoPassword".to_string(),
+                            display_name: None,
+                            avatar_url: None,
+                        },
+                        JellyfinServerUser {
+                            id: "has-password-id".to_string(),
+                            username: "HasPassword".to_string(),
+                            display_name: None,
+                            avatar_url: None,
+                        },
+                    ],
+                    vec!["NoPassword".to_string()],
+                ),
+            ),
+        );
+
+        // Non-empty password, so only the server-reported fact can refuse this.
+        let passwordless = app
+            .federated_login_with_jellyfin(
+                "jellyfin-main".to_string(),
+                "NoPassword".to_string(),
+                "anything".to_string(),
+            )
+            .await;
+        assert!(
+            matches!(&passwordless, Err(AppError::Unauthorized(message)) if message.contains("invalid Jellyfin credentials")),
+            "passwordless account must not be able to sign in, got {passwordless:?}"
+        );
+
+        // Control: identical call shape against an account the server reports as
+        // having a password. It clears the guard and fails later on invitation,
+        // proving the refusal above is specific to being passwordless.
+        let with_password = app
+            .federated_login_with_jellyfin(
+                "jellyfin-main".to_string(),
+                "HasPassword".to_string(),
+                "anything".to_string(),
+            )
+            .await;
+        assert!(
+            matches!(&with_password, Err(AppError::Unauthorized(message)) if message.contains("not invited")),
+            "password-configured account should reach the invitation check, got {with_password:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn jellyfin_linking_still_allows_a_passwordless_account() {
+        let admin = admin_user();
+        let app = test_app_with_identity_media_servers_and_verifier(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![admin.clone()])),
+            Arc::new(TestExternalAccountRepository::default()),
+            vec![test_media_server_connection(
+                scryer_domain::MediaServerProvider::Jellyfin,
+                "jellyfin-main",
+            )],
+            Arc::new(
+                TestExternalIdentityVerifier::with_passwordless_jellyfin_users(
+                    vec![JellyfinServerUser {
+                        id: "no-password-id".to_string(),
+                        username: "NoPassword".to_string(),
+                        display_name: None,
+                        avatar_url: None,
+                    }],
+                    vec!["NoPassword".to_string()],
+                ),
+            ),
+        );
+
+        // Empty password too: linking a passwordless account is intentionally
+        // supported, and only signing in with one is refused.
+        let account = app
+            .link_jellyfin_account(
+                &admin,
+                "jellyfin-main".to_string(),
+                "NoPassword".to_string(),
+                String::new(),
+            )
+            .await
+            .expect("linking a passwordless Jellyfin account stays allowed");
+
+        assert_eq!(account.provider, ExternalAccountProvider::Jellyfin);
+        assert_eq!(account.external_user_id.as_deref(), Some("no-password-id"));
+    }
+
+    #[tokio::test]
     async fn link_rejects_disabled_existing_account() {
         let admin = admin_user();
         let now = Utc::now();
@@ -2224,6 +2391,7 @@ mod tests {
                     username: "remote-user".to_string(),
                     display_name: Some("Remote User".to_string()),
                     avatar_url: None,
+                    remote_password_configured: None,
                 },
             )
             .await;
@@ -2268,6 +2436,7 @@ mod tests {
                     username: "remote user".to_string(),
                     display_name: Some("Remote User".to_string()),
                     avatar_url: Some("https://jellyfin.example.test/avatar.png".to_string()),
+                    remote_password_configured: None,
                 },
             )
             .await
@@ -2330,6 +2499,7 @@ mod tests {
                     username: "fresh-name".to_string(),
                     display_name: Some("Fresh Name".to_string()),
                     avatar_url: Some("https://jellyfin.example.test/avatar".to_string()),
+                    remote_password_configured: None,
                 },
                 test_media_server_connection(
                     scryer_domain::MediaServerProvider::Jellyfin,
@@ -2409,6 +2579,7 @@ mod tests {
                 username: "fresh-plex".to_string(),
                 display_name: Some("Fresh Plex".to_string()),
                 avatar_url: Some("https://plex.example.test/avatar".to_string()),
+                remote_password_configured: None,
             },
             test_media_server_connection(scryer_domain::MediaServerProvider::Plex, "plex-main"),
         )
@@ -2465,6 +2636,7 @@ mod tests {
                     username: "fresh-name".to_string(),
                     display_name: Some("Fresh Name".to_string()),
                     avatar_url: None,
+                    remote_password_configured: None,
                 },
                 test_media_server_connection(scryer_domain::MediaServerProvider::Plex, "plex-main"),
             )
@@ -2494,6 +2666,7 @@ mod tests {
                 username: "remote-user".to_string(),
                 display_name: None,
                 avatar_url: None,
+                remote_password_configured: None,
             },
         );
 
@@ -2516,6 +2689,7 @@ mod tests {
                 username: "remote-user".to_string(),
                 display_name: None,
                 avatar_url: None,
+                remote_password_configured: None,
             },
         );
 

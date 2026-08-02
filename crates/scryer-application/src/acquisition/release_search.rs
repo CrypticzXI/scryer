@@ -117,6 +117,7 @@ pub(crate) enum ReleaseAutoDecisionCode {
     ParseUnparseable,
     TitleMismatch,
     EpisodeMismatch,
+    CategoryMismatch,
     AmbiguousIdentity,
     QualityBlocked,
     NegativeScore,
@@ -137,6 +138,9 @@ impl ReleaseAutoDecisionCode {
             "parse_unparseable" => Some(Self::ParseUnparseable),
             "title_mismatch" => Some(Self::TitleMismatch),
             "episode_mismatch" => Some(Self::EpisodeMismatch),
+            // Deliberately the same string the D1 pre-submission gate records on
+            // its Failed attempts, so both category vetoes read alike.
+            "category_mismatch" => Some(Self::CategoryMismatch),
             "ambiguous_identity" => Some(Self::AmbiguousIdentity),
             "quality_blocked" => Some(Self::QualityBlocked),
             "negative_score" => Some(Self::NegativeScore),
@@ -158,6 +162,7 @@ impl ReleaseAutoDecisionCode {
             Self::ParseUnparseable => "parse_unparseable",
             Self::TitleMismatch => "title_mismatch",
             Self::EpisodeMismatch => "episode_mismatch",
+            Self::CategoryMismatch => "category_mismatch",
             Self::AmbiguousIdentity => "ambiguous_identity",
             Self::QualityBlocked => "quality_blocked",
             Self::NegativeScore => "negative_score",
@@ -178,6 +183,7 @@ impl ReleaseAutoDecisionCode {
             Self::ParseUnparseable => "release could not be parsed and blocks auto-grab",
             Self::TitleMismatch => "release title does not match the target title",
             Self::EpisodeMismatch => "release numbering does not match the target episode",
+            Self::CategoryMismatch => "indexer category contradicts the target title",
             Self::AmbiguousIdentity => {
                 "canonical title is ambiguous and no disambiguator was present"
             }
@@ -666,12 +672,13 @@ pub(crate) fn candidate_title_match(
 }
 
 /// Pillar A2: for an identity-ambiguous subject an auto candidate must present
-/// one positive disambiguator. `external_id_agreement` is the A2(2) seam —
-/// indexer response `tvdbid`/`tmdbid`/`imdbid` attrs are not captured yet, so
-/// every caller passes `None` today. Per §9 decision 3 an indexer-asserted id
-/// suffices alone; a contradicting parsed year has already vetoed the match
-/// upstream in [`match_parsed_release_to_title_evidence`], so the year veto
-/// still outranks it.
+/// one positive disambiguator. `external_id_agreement` is the A2(2) input,
+/// computed by [`candidate_external_id_agreement`] from the captured response
+/// attrs. Per §9 decision 3 an indexer-asserted id suffices alone; a
+/// contradicting parsed year has already vetoed the match upstream in
+/// [`match_parsed_release_to_title_evidence`], so the year veto still outranks
+/// it. Only `Some(true)` satisfies the gate — a disagreement or an absent
+/// assertion is simply not a disambiguator, never a veto of its own.
 pub(crate) fn candidate_presents_identity_disambiguator(
     evidence: &CanonicalTitleEvidence,
     title_match: &CandidateTitleMatch,
@@ -699,6 +706,57 @@ pub(crate) fn candidate_presents_identity_disambiguator(
 
     // A2(2) — external id agreement.
     external_id_agreement.unwrap_or(false)
+}
+
+/// A2(2): compare the indexer's response ids against ids Scryer already holds.
+///
+/// `Some(true)` as soon as one id kind both sides carry agrees, `Some(false)`
+/// when at least one kind was comparable and none agreed, and `None` when there
+/// was nothing to compare — the indexer asserted no ids, or asserted only kinds
+/// this subject has no value for.
+pub(crate) fn external_id_agreement(
+    response: &IndexerResponseAttributes,
+    tvdb_id: Option<&str>,
+    tmdb_id: Option<&str>,
+    imdb_id: Option<&str>,
+) -> Option<bool> {
+    let agreements = [
+        numeric_external_id_agreement(response.tvdb_id.as_deref(), tvdb_id),
+        numeric_external_id_agreement(response.tmdb_id.as_deref(), tmdb_id),
+        imdb_external_id_agreement(response.imdb_id.as_deref(), imdb_id),
+    ];
+
+    if agreements.contains(&Some(true)) {
+        return Some(true);
+    }
+    agreements
+        .iter()
+        .any(|agreement| agreement.is_some())
+        .then_some(false)
+}
+
+fn numeric_external_id_agreement(response: Option<&str>, subject: Option<&str>) -> Option<bool> {
+    let response = response.map(str::trim).filter(|value| !value.is_empty())?;
+    let subject = subject.map(str::trim).filter(|value| !value.is_empty())?;
+    Some(response == subject)
+}
+
+fn imdb_external_id_agreement(response: Option<&str>, subject: Option<&str>) -> Option<bool> {
+    let response = crate::normalize::normalize_imdb_id(response?)?;
+    let subject = crate::normalize::normalize_imdb_id(subject?)?;
+    Some(response == subject)
+}
+
+fn candidate_external_id_agreement(
+    candidate: &IndexerSearchResult,
+    subject: &ResolvedReleaseSearchSubject,
+) -> Option<bool> {
+    external_id_agreement(
+        &candidate.response_attributes,
+        subject.tvdb_id.as_deref(),
+        subject.tmdb_id.as_deref(),
+        subject.imdb_id.as_deref(),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -903,6 +961,19 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::EpisodeMismatch;
     }
 
+    // Pillar D2: the indexer filed this release under a category that
+    // contradicts the subject. Checked before the ambiguity gate because it is
+    // the sharper reason — an explicit contradiction rather than absent
+    // evidence — and it is the only category protection torrent/magnet grabs and
+    // out-of-band plugin NZB fetches get, since D1 only sees NZBs Scryer itself
+    // downloads before submission.
+    if crate::indexer_category::indexer_categories_contradict_facet(
+        &candidate.response_attributes.categories,
+        &context.title.facet,
+    ) {
+        return ReleaseAutoDecisionCode::CategoryMismatch;
+    }
+
     // Pillar A3: a bare release name is not identity evidence when the subject's
     // canonical title collides with another library title.
     if context
@@ -913,7 +984,7 @@ pub(crate) fn evaluate_auto_candidate(
         && !candidate_presents_identity_disambiguator(
             &context.subject.title_evidence,
             &title_match,
-            None,
+            candidate_external_id_agreement(candidate, context.subject),
         )
     {
         return ReleaseAutoDecisionCode::AmbiguousIdentity;
@@ -1654,6 +1725,7 @@ mod tests {
             parsed_release_metadata: Some(crate::parse_release_metadata(release_title)),
             quality_profile_decision: None,
             extra: Default::default(),
+            response_attributes: Default::default(),
             guid: None,
             info_url: None,
             provenance,
@@ -2208,6 +2280,158 @@ mod tests {
         assert_eq!(
             decision_for(&title, &subject, &candidate),
             ReleaseAutoDecisionCode::QualityBlocked
+        );
+    }
+
+    // ── A2(2) + D2: indexer response attributes ─────────────────────────────
+
+    fn series_episode_candidate(
+        release_title: &str,
+        response_attributes: IndexerResponseAttributes,
+    ) -> IndexerSearchResult {
+        let mut candidate = make_candidate(release_title, None);
+        candidate.response_attributes = response_attributes;
+        candidate
+    }
+
+    fn response_categories(categories: &[&str]) -> IndexerResponseAttributes {
+        IndexerResponseAttributes {
+            categories: categories.iter().map(|value| value.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn anime_only_response_category_vetoes_a_series_subject() {
+        // D2 on the response lane: the indexer filed this under anime only, and
+        // the wanted item is a plain series episode.
+        let mut title = make_title();
+        title.name = "Friends".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(1994);
+        let subject = numbering_scoped_subject(&title, Some(9), Some(23));
+        let candidate = series_episode_candidate(
+            "Friends.S09E23E24.1080p.BluRay.x264-TENEIGHTY",
+            response_categories(&["5070"]),
+        );
+
+        assert_eq!(
+            decision_for(&title, &subject, &candidate),
+            ReleaseAutoDecisionCode::CategoryMismatch
+        );
+    }
+
+    #[test]
+    fn dual_categorized_response_clears_the_category_gate() {
+        // The set rule: `5000` is a plain-TV assertion the series subject
+        // satisfies, so the additional `5070` is not a contradiction.
+        let mut title = make_title();
+        title.name = "Friends".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(1994);
+        let subject = numbering_scoped_subject(&title, Some(9), Some(23));
+        let candidate = series_episode_candidate(
+            "Friends.S09E23E24.1080p.BluRay.x264-TENEIGHTY",
+            response_categories(&["5000", "5070"]),
+        );
+
+        assert_eq!(
+            decision_for(&title, &subject, &candidate),
+            ReleaseAutoDecisionCode::QualityBlocked
+        );
+    }
+
+    #[test]
+    fn ambiguous_title_accepts_response_id_disambiguator() {
+        // A2(2): the indexer asserts the live-action title's own TVDB id, which
+        // per §9 decision 3 suffices on its own for a bare release name.
+        let (live_action, library) = one_piece_library(Vec::new());
+        let mut subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
+        subject.tvdb_id = Some("393199".to_string());
+        let candidate = series_episode_candidate(
+            "One.Piece.S02E01.1080p.WEB-DL.x264-GRP",
+            IndexerResponseAttributes {
+                tvdb_id: Some("393199".to_string()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::QualityBlocked
+        );
+    }
+
+    #[test]
+    fn ambiguous_title_without_response_ids_stays_ambiguous() {
+        // Same subject, same release name — only the indexer's id assertion is
+        // missing, and absence is not a disambiguator.
+        let (live_action, library) = one_piece_library(Vec::new());
+        let mut subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
+        subject.tvdb_id = Some("393199".to_string());
+        let candidate = make_candidate("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", None);
+
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::AmbiguousIdentity
+        );
+    }
+
+    #[test]
+    fn category_contradiction_outranks_identity_ambiguity() {
+        // The incident release is both anime-categorized and identity-ambiguous.
+        // The category is the sharper, more actionable reason, so it reports
+        // first.
+        let (live_action, library) = one_piece_library(Vec::new());
+        let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
+        let candidate = series_episode_candidate(
+            "One.Piece.S02E01.1080p.WEB-DL.x264-GRP",
+            response_categories(&["5070"]),
+        );
+
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::CategoryMismatch
+        );
+    }
+
+    #[test]
+    fn external_id_agreement_reports_only_comparable_kinds() {
+        let response = IndexerResponseAttributes {
+            tvdb_id: Some(" 393199 ".to_string()),
+            imdb_id: Some("14688458".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            external_id_agreement(&response, Some("393199"), None, None),
+            Some(true),
+            "a trimmed numeric id agrees with the subject's own"
+        );
+        assert_eq!(
+            external_id_agreement(&response, None, None, Some("tt14688458")),
+            Some(true),
+            "imdb ids agree once both sides are normalized"
+        );
+        assert_eq!(
+            external_id_agreement(&response, Some("81189"), None, None),
+            Some(false),
+            "a comparable id that disagrees is a disagreement"
+        );
+        assert_eq!(
+            external_id_agreement(&response, None, Some("140342"), None),
+            None,
+            "the indexer asserted no tmdb id, so there is nothing to compare"
+        );
+        assert_eq!(
+            external_id_agreement(
+                &IndexerResponseAttributes::default(),
+                Some("393199"),
+                None,
+                None
+            ),
+            None,
+            "a response with no ids is not evidence either way"
         );
     }
 

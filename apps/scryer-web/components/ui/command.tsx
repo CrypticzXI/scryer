@@ -81,7 +81,9 @@ function CommandInput({
         autoComplete="off"
         data-1p-ignore="true"
         data-lpignore="true"
+        data-bwignore="true"
         data-form-type="other"
+        data-protonpass-ignore="true"
         className={cn(
           "placeholder:text-muted-foreground flex h-10 w-full bg-transparent py-3 text-sm outline-hidden disabled:cursor-not-allowed disabled:opacity-50",
           className

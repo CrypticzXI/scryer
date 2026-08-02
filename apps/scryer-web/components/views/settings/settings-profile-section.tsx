@@ -37,6 +37,7 @@ import { formatUiDateTime } from "@/lib/utils/date-format";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import { HIGHLIGHT_COLOR_PRESETS } from "@/lib/theme";
+import { canSubmitJellyfinLink as canSubmitJellyfinLinkDraft } from "@/lib/utils/external-account-link-gate";
 
 const TOTP_CODE_LENGTH = 6;
 
@@ -247,11 +248,11 @@ export function SettingsProfileSection({
   const visibleLinkedAccounts = linkedAccounts.filter((account) =>
     isVisibleExternalAccountProvider(account.provider),
   );
-  const canSubmitJellyfinLink =
-    Boolean(linkAccountConnectionId) &&
-    linkAccountUsername.trim().length > 0 &&
-    linkAccountPassword.length > 0 &&
-    !linkAccountBusy;
+  const canSubmitJellyfinLink = canSubmitJellyfinLinkDraft({
+    connectionId: linkAccountConnectionId,
+    username: linkAccountUsername,
+    busy: linkAccountBusy,
+  });
   const canSubmitPlexLink =
     Boolean(linkAccountConnectionId) && !linkAccountBusy;
   const closeTotpActionDialog = () => {

@@ -3928,7 +3928,7 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
         r#"
         {
           queryRoot: __type(name: "QueryRoot") {
-            fields {
+            fields(includeDeprecated: true) {
               name
               args {
                 name
@@ -4097,8 +4097,12 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
         !root_has_field("queryRoot", "externalImportMonitorWarmupStatus"),
         "legacy externalImportMonitorWarmupStatus query should not exist"
     );
+    // externalImportArrSourceWarmupStatus is deprecated (superseded by the
+    // kind-neutral externalImportWarmupStatus) but must keep its contract
+    // until removal — hence includeDeprecated: true on the queryRoot fields.
     for (root_alias, field_name) in [
         ("queryRoot", "externalImportArrSourceWarmupStatus"),
+        ("queryRoot", "externalImportWarmupStatus"),
         ("subscriptionRoot", "externalImportMonitorWarmupProgress"),
     ] {
         let arg = root_arg(root_alias, field_name, "sessionId");
