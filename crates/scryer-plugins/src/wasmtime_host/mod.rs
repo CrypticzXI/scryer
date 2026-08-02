@@ -13,6 +13,7 @@ mod describe;
 pub(crate) mod engine;
 mod error;
 mod invoke;
+pub(crate) mod module_cache;
 mod sandbox;
 
 pub(crate) use describe::{

@@ -18,6 +18,27 @@ fn download_queue_poll_interval() -> Duration {
     })
 }
 
+/// How far back the bridge-covered history reconciliation sweep will reach.
+///
+/// The sweep heals completions whose realtime event was missed, which is
+/// noticed within minutes; the bound keeps an upgrade from mass-importing a
+/// download client's entire retained history on its first cycle. The
+/// `SCRYER_DOWNLOAD_QUEUE_RECONCILE_MAX_AGE_HOURS` override exists for the e2e
+/// harness and for operators performing a deliberate wider backfill.
+const DOWNLOAD_QUEUE_RECONCILE_MAX_AGE_HOURS: i64 = 24;
+
+fn reconcile_history_max_age() -> chrono::Duration {
+    static CACHED: std::sync::OnceLock<chrono::Duration> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let hours = std::env::var("SCRYER_DOWNLOAD_QUEUE_RECONCILE_MAX_AGE_HOURS")
+            .ok()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .filter(|hours| *hours >= 1)
+            .unwrap_or(DOWNLOAD_QUEUE_RECONCILE_MAX_AGE_HOURS);
+        chrono::Duration::hours(hours)
+    })
+}
+
 /// Poll cadence for the recent-history reconciliation pass.
 ///
 /// Defaults to `DOWNLOAD_QUEUE_RECENT_HISTORY_POLL_INTERVAL`. The
@@ -178,21 +199,113 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ResolveImports,
         )
         .await?;
-        let handle = self
-            .runtime
-            .acquisition
-            .tracked_download_handle
-            .as_ref()
-            .ok_or_else(|| AppError::Repository("tracked download service unavailable".into()))?;
-        handle
-            .ignore(crate::tracked_downloads::tracked_download_id(
-                client_id,
-                client_type,
-                download_client_item_id,
-            ))
-            .await?;
-        Ok(())
+        let source_identity = DownloadSourceIdentity::new(
+            client_id,
+            client_type,
+            download_client_item_id,
+        );
+        let tracked_id = crate::tracked_downloads::tracked_download_id(
+            client_id,
+            client_type,
+            download_client_item_id,
+        );
+
+        let Some(handle) = self.runtime.acquisition.tracked_download_handle.as_ref() else {
+            return if finalize_scryer_download_ignored(
+                self,
+                crate::domain_events::DomainEventActor::from(actor),
+                source_identity,
+            )
+            .await?
+            {
+                Ok(())
+            } else {
+                Err(AppError::Repository("tracked download service unavailable".into()))
+            };
+        };
+
+        match handle.ignore(tracked_id).await {
+            Ok(()) => Ok(()),
+            Err(error @ AppError::NotFound(_)) => {
+                if finalize_scryer_download_ignored(
+                    self,
+                    crate::domain_events::DomainEventActor::from(actor),
+                    source_identity,
+                )
+                .await?
+                {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
+}
+
+pub(crate) async fn finalize_scryer_download_ignored(
+    app: &AppUseCase,
+    actor: crate::domain_events::DomainEventActor,
+    source_identity: DownloadSourceIdentity,
+) -> AppResult<bool> {
+    let submission_repository = &app.services.workflow.download_submissions;
+    let Some(submission) = submission_repository
+        .find_by_client_item_id(&source_identity)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if submission.title_id.trim().is_empty() {
+        return Ok(false);
+    }
+    let Some(submission_identity) = submission_repository
+        .get_submission_identity(&source_identity)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let title = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&submission.title_id)
+        .await?;
+    let previous = submission_repository
+        .upsert_identity_tracked_state_returning_previous(
+            &submission_identity,
+            Some(&source_identity),
+            scryer_domain::TrackedDownloadState::Ignored.as_str(),
+            None,
+            None,
+    )
+    .await?;
+    if previous.as_deref() == Some(scryer_domain::TrackedDownloadState::Ignored.as_str()) {
+        return Ok(true);
+    }
+
+    let source_provider = crate::integration::workflow::source_provider_label(
+        submission.source_provider_name.as_deref(),
+        submission.source_hint.as_deref(),
+    );
+    let payload = scryer_domain::DomainEventPayload::DownloadIgnored(
+        scryer_domain::DownloadIgnoredEventData {
+            title: title
+                .as_ref()
+                .map(crate::domain_events::title_context_snapshot),
+            download_client_item_id: source_identity.item_id.clone(),
+            client_id: source_identity.client_id.clone(),
+            client_type: Some(source_identity.client_type.clone()),
+            source_provider,
+        },
+    );
+    let event = if let Some(title) = title.as_ref() {
+        crate::domain_events::new_title_domain_event(actor, title, payload)
+    } else {
+        crate::domain_events::new_global_domain_event(actor, payload)
+    };
+    app.append_domain_event(event).await?;
+    Ok(true)
 }
 impl AppUseCase {
     pub async fn mark_tracked_download_failed(
@@ -293,6 +406,8 @@ impl AppUseCase {
             download_client_type: client_type.to_string(),
             download_client_item_id: download_client_item_id.to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some(title.name.clone()),
             request_signature: None,
@@ -919,7 +1034,26 @@ async fn handle_tracked_download_command(
                 ))));
                 return;
             }
-            let result = if let Some(td) = tracker.find_mut(&id) {
+            let source_identity = tracker
+                .find(&id)
+                .and_then(tracked_download_source_identity);
+            let result = async {
+                if tracker.find(&id).is_none() {
+                    return Err(AppError::NotFound(format!(
+                        "tracked download {requested_id}"
+                    )));
+                }
+                if let Some(source_identity) = source_identity {
+                    finalize_scryer_download_ignored(
+                        app,
+                        crate::domain_events::DomainEventActor::from(actor),
+                        source_identity,
+                    )
+                    .await?;
+                }
+                let td = tracker
+                    .find_mut(&id)
+                    .expect("serialized tracked download disappeared while ignoring");
                 td.state = TrackedDownloadState::Ignored;
                 td.status = TrackedDownloadStatus::Ok;
                 td.status_messages.clear();
@@ -929,11 +1063,8 @@ async fn handle_tracked_download_command(
                 finalize_tracked_terminal_state(app, tracker, &id, TrackedDownloadState::Ignored)
                     .await;
                 Ok(())
-            } else {
-                Err(AppError::NotFound(format!(
-                    "tracked download {requested_id}"
-                )))
-            };
+            }
+            .await;
             if result.is_ok() {
                 publish_runtime_tracked_download_snapshot_cache(app, tracker).await;
             }
@@ -1305,7 +1436,7 @@ async fn reconcile_excluded_client_recent_history(
         }
     };
 
-    let mut candidates = Vec::new();
+    let mut candidates: Vec<DownloadQueueItem> = Vec::new();
     for item in history_items {
         if item.state != scryer_domain::DownloadQueueState::Completed {
             continue;
@@ -1342,6 +1473,41 @@ async fn reconcile_excluded_client_recent_history(
         )
         .await
         .unwrap_or_default();
+
+    // This sweep exists to heal completions the bridge missed, not to import a
+    // client's whole retained history. Without an age bound, the first run
+    // after an upgrade would mass-import every completed row the client still
+    // keeps. Anything older than the window needs an explicit backfill.
+    let cutoff = chrono::Utc::now() - reconcile_history_max_age();
+    let mut skipped_as_stale = 0usize;
+    let mut skipped_without_timestamp = 0usize;
+    candidates.retain(
+        |item| match completed_lookup.completed_at_for_item(item) {
+            Some(completed_at) if completed_at >= cutoff => true,
+            Some(_) => {
+                skipped_as_stale += 1;
+                false
+            }
+            // No completion timestamp means the age cannot be established, so
+            // the row is left alone rather than assumed recent. Reported
+            // separately: unlike a stale row, this one would never age in.
+            None => {
+                skipped_without_timestamp += 1;
+                false
+            }
+        },
+    );
+    if skipped_as_stale > 0 || skipped_without_timestamp > 0 {
+        tracing::debug!(
+            skipped_as_stale,
+            skipped_without_timestamp,
+            max_age_hours = reconcile_history_max_age().num_hours(),
+            "history reconciliation skipped completions outside the reconcile window"
+        );
+    }
+    if candidates.is_empty() {
+        return;
+    }
 
     tracing::info!(
         count = candidates.len(),

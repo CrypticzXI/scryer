@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use scryer_application::{AppError, AppResult};
-use wasmtime::{Caller, ExternType, Instance, Linker, Module, Store, ValType};
+use wasmtime::{Caller, ExternType, Instance, Linker, Store, ValType};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
 use crate::plugin_http_host::{
@@ -12,7 +12,7 @@ use crate::plugin_http_host::{
 use crate::process_host::{PROCESS_HOST_NAMESPACE, ProcessHost};
 use crate::runtime_backing::PreopenSpec;
 use crate::socket_host::{SOCKET_HOST_NAMESPACE, SocketHost};
-use crate::wasmtime_host::engine;
+use crate::wasmtime_host::{engine, module_cache};
 
 const DEFAULT_LEGACY_MEMORY_CAP_BYTES: usize = 512 * 1024 * 1024;
 const DEFAULT_LEGACY_TABLE_ELEMENTS: usize = 1_000_000;
@@ -61,8 +61,8 @@ pub(crate) struct LegacyPlugin {
 
 pub(crate) fn validate_legacy_module(wasm: &[u8], required_exports: &[&str]) -> Result<(), String> {
     let engine = engine::shared_engine();
-    let module = Module::from_binary(engine, wasm)
-        .map_err(|error| format!("failed to compile legacy plugin WASM: {error:#}"))?;
+    let module = module_cache::legacy_module(wasm)
+        .map_err(|error| format!("failed to compile legacy plugin WASM: {error}"))?;
 
     let mut linker: Linker<LegacyHostState> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut LegacyHostState| &mut ctx.wasi)
@@ -102,8 +102,8 @@ pub(crate) fn validate_legacy_module(wasm: &[u8], required_exports: &[&str]) -> 
 impl LegacyPlugin {
     pub(crate) fn instantiate(spec: LegacyPluginSpec) -> AppResult<Self> {
         let engine = engine::shared_engine();
-        let module = Module::from_binary(engine, &spec.wasm)
-            .map_err(|error| AppError::Repository(format!("failed to compile WASM: {error:#}")))?;
+        let module = module_cache::legacy_module(&spec.wasm)
+            .map_err(|error| AppError::Repository(format!("failed to compile WASM: {error}")))?;
 
         let mut linker: Linker<LegacyHostState> = Linker::new(engine);
         wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut LegacyHostState| {

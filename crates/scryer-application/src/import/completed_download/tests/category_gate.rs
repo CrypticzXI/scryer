@@ -64,6 +64,8 @@ async fn foreign_title_parse_with_orphan_submission_still_requires_scryer_catego
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "dl-1".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Paper.Lantern.2012.1080p.WEB-DL".to_string()),
             request_signature: None,

@@ -2956,6 +2956,8 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             download_client_type: "sabnzbd".to_string(),
             download_client_item_id: "queue-delete".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Delete With Cleanup".to_string()),
             request_signature: None,

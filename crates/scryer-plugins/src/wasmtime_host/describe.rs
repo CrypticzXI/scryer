@@ -12,7 +12,7 @@ use scryer_plugin_sdk::{EXPORT_DESCRIBE, PluginDescriptor};
 use wasmtime::{ExternType, Linker, Module, Store};
 
 use crate::wasmtime_host::sandbox::{self, BareSandbox, HostCtx, HostLimits};
-use crate::wasmtime_host::{crypto_host, engine, error};
+use crate::wasmtime_host::{crypto_host, engine, error, module_cache};
 
 /// Describe runs reuse the 10s describe budget of the Extism path.
 const DESCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -27,8 +27,8 @@ pub(crate) fn validate_subtitle_sync_module(wasm: &[u8]) -> Result<(), String> {
 
 fn validate_command_module(wasm: &[u8], with_crypto: bool, kind: &str) -> Result<(), String> {
     let engine = engine::shared_async_engine();
-    let module = Module::from_binary(engine, wasm)
-        .map_err(|error| format!("failed to compile {kind} plugin WASM: {error:#}"))?;
+    let module = module_cache::command_module(wasm)
+        .map_err(|error| format!("failed to compile {kind} plugin WASM: {error}"))?;
 
     let mut linker: Linker<crate::wasmtime_host::sandbox::HostCtx> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_async(&mut linker, |ctx| &mut ctx.wasi)
@@ -80,10 +80,9 @@ pub(crate) fn command_model_describe(wasm: &[u8]) -> Option<Result<PluginDescrip
         return None;
     }
 
-    let engine = engine::shared_engine();
     // If it will not even compile under wasmtime, we cannot classify it here;
     // let the Extism path report its own error.
-    let module = Module::from_binary(engine, wasm).ok()?;
+    let module = module_cache::legacy_module(wasm).ok()?;
 
     let mut has_start = false;
     let mut has_describe = false;

@@ -484,6 +484,12 @@ async fn main() {
     }
 
     let data_dir = resolve_data_dir(data_dir_override.as_deref());
+    let wasmtime_cache_dir = resolve_wasmtime_cache_dir(data_dir_override.as_deref(), &data_dir);
+
+    if let Err(error) = scryer_plugins::initialize_wasm_runtime_at(&wasmtime_cache_dir) {
+        eprintln!("failed to initialize required WASM plugin cache: {error}");
+        std::process::exit(1);
+    }
 
     load_env_file(Some(&data_dir), false);
 
@@ -946,6 +952,7 @@ async fn bootstrap_application(
         load_runtime_plugin_state(&customization_store)
             .await
             .map_err(|e| format!("failed to load runtime plugin state: {e}"))?;
+    scryer_plugins::schedule_plugin_rehydration(&runtime_plugins, &disabled_builtin_plugins);
     let indexer_runtime_plugins = runtime_plugins
         .iter()
         .filter(|plugin| plugin_type_belongs_to_indexer_family(plugin.descriptor.plugin_type()))
@@ -1933,6 +1940,26 @@ fn resolve_data_dir(cli_override: Option<&Path>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Resolve the private native-code cache independently from the persistent
+/// database directory. On Windows the database remains in Roaming AppData for
+/// backward compatibility, while Wasmtime artifacts stay in Local AppData so
+/// they never roam between incompatible machines. Explicit `--data-dir`
+/// instances keep their cache below that directory on every platform.
+fn resolve_wasmtime_cache_dir(data_dir_override: Option<&Path>, data_dir: &Path) -> PathBuf {
+    if data_dir_override.is_some() {
+        return data_dir.join("cache").join("wasmtime");
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(project_dirs) = directories::ProjectDirs::from("", "", "scryer") {
+            return project_dirs.data_local_dir().join("cache").join("wasmtime");
+        }
+    }
+
+    data_dir.join("cache").join("wasmtime")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedLogFileConfig {
     path: PathBuf,
@@ -2871,8 +2898,8 @@ mod tests {
         bootstrap_plugin_installations, collect_runtime_plugin_load_candidates,
         comma_separated_env_has_entries, extract_data_dir, extract_log_file,
         flush_upstream_scheduler_after_shutdown, load_runtime_plugin_state, resolve_auth_mode,
-        resolve_log_file_config, restart_spec_from_parts, title_image_handler,
-        validate_unauthenticated_public_access_allowlist_config,
+        resolve_log_file_config, resolve_wasmtime_cache_dir, restart_spec_from_parts,
+        title_image_handler, validate_unauthenticated_public_access_allowlist_config,
     };
     use chrono::Utc;
     use std::ffi::OsString;
@@ -3072,6 +3099,36 @@ mod tests {
 
         assert_eq!(path, PathBuf::from("/config"));
         assert_eq!(args, vec!["scryer".to_string(), "--version".to_string()]);
+    }
+
+    #[test]
+    fn explicit_data_dir_keeps_wasmtime_cache_in_the_instance_directory() {
+        let data_dir = PathBuf::from("/instance-data");
+        assert_eq!(
+            resolve_wasmtime_cache_dir(Some(data_dir.as_path()), &data_dir),
+            data_dir.join("cache").join("wasmtime")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn default_wasmtime_cache_is_below_the_platform_data_dir() {
+        let data_dir = PathBuf::from("/platform-data");
+        assert_eq!(
+            resolve_wasmtime_cache_dir(None, &data_dir),
+            data_dir.join("cache").join("wasmtime")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_wasmtime_cache_uses_local_app_data() {
+        let data_dir = PathBuf::from(r"C:\Roaming\scryer\data");
+        let resolved = resolve_wasmtime_cache_dir(None, &data_dir);
+        let expected = directories::ProjectDirs::from("", "", "scryer")
+            .map(|project_dirs| project_dirs.data_local_dir().join("cache").join("wasmtime"))
+            .unwrap_or_else(|| data_dir.join("cache").join("wasmtime"));
+        assert_eq!(resolved, expected);
     }
 
     #[test]

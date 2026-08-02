@@ -1137,6 +1137,7 @@ pub fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPay
         title_name: item.title_name,
         facet: item.facet.as_deref().and_then(MediaFacetValue::parse),
         is_scryer_origin: item.is_scryer_origin,
+        source_provider: item.source_provider,
         tracked_state: item
             .tracked_state
             .map(TrackedDownloadStateValue::from_domain),
@@ -2712,6 +2713,7 @@ pub fn from_import_record(record: scryer_domain::ImportRecord) -> ImportRecordPa
 pub fn from_wanted_item(
     item: scryer_application::AcquisitionScopeState,
 ) -> scryer_application::AppResult<WantedItemPayload> {
+    let source_provider = source_provider_from_grabbed_release(item.grabbed_release.as_deref());
     Ok(WantedItemPayload {
         id: item.id.into(),
         title_id: item.title_id.into(),
@@ -2734,6 +2736,7 @@ pub fn from_wanted_item(
         last_search_at: parse_optional_datetime(item.last_search_at, "wanted item last_search_at"),
         status: WantedStatusValue::from_application(item.status),
         grabbed_release: item.grabbed_release,
+        source_provider,
         current_score: item.current_score,
         latest_release_decision: item
             .latest_release_decision
@@ -2770,6 +2773,10 @@ pub fn from_wanted_scope_view(
         .map(|state| state.id.clone())
         .unwrap_or_else(|| view.scope_key.clone());
     let state = view.state;
+    let grabbed_release = state
+        .as_ref()
+        .and_then(|state| state.grabbed_release.clone());
+    let source_provider = source_provider_from_grabbed_release(grabbed_release.as_deref());
     Ok(WantedItemPayload {
         id: id.into(),
         title_id: view.title_id.into(),
@@ -2796,9 +2803,8 @@ pub fn from_wanted_scope_view(
             .as_ref()
             .map(|state| WantedStatusValue::from_application(state.status))
             .unwrap_or(WantedStatusValue::Wanted),
-        grabbed_release: state
-            .as_ref()
-            .and_then(|state| state.grabbed_release.clone()),
+        grabbed_release,
+        source_provider,
         current_score: state.as_ref().and_then(|state| state.current_score),
         latest_release_decision: state
             .as_ref()
@@ -2825,6 +2831,18 @@ pub fn from_wanted_scope_view(
             .and_then(|state| parse_datetime(&state.updated_at, "wanted view updated_at").ok())
             .unwrap_or_else(chrono::Utc::now),
     })
+}
+
+fn source_provider_from_grabbed_release(grabbed_release: Option<&str>) -> Option<String> {
+    let grabbed_release = serde_json::from_str::<Value>(grabbed_release?).ok()?;
+    let source_provider = grabbed_release
+        .get("source_provider")
+        .or_else(|| grabbed_release.get("indexer"))
+        .and_then(Value::as_str)?;
+    let source_provider = source_provider.trim();
+    (!source_provider.is_empty()
+        && !source_provider.contains([':', '/', '\\', '?', '#', '@', '|', '=']))
+    .then(|| source_provider.to_string())
 }
 
 fn convergence_state_value(
@@ -3419,6 +3437,7 @@ pub fn from_title_history_record(
         display_title: record.display_title,
         source_system: record.source_system,
         source_ref: record.source_ref,
+        source_provider: record.source_hint.clone(),
         source_hint: record.source_hint,
         quality: record.quality,
         download_id: record.download_id,

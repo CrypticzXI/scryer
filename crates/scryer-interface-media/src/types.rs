@@ -298,6 +298,7 @@ pub struct DownloadQueueItemPayload {
     pub title_name: String,
     pub facet: Option<MediaFacetValue>,
     pub is_scryer_origin: bool,
+    pub source_provider: Option<String>,
     pub client_id: ID,
     pub client_name: String,
     pub client_type: String,
@@ -420,6 +421,8 @@ pub struct WantedItemPayload {
     pub last_search_at: Option<DateTime<Utc>>,
     pub status: WantedStatusValue,
     pub grabbed_release: Option<String>,
+    /// Safe indexer/provider label for the grabbed release, when known.
+    pub source_provider: Option<String>,
     pub current_score: Option<i32>,
     pub latest_release_decision: Option<ReleaseDecisionPayload>,
     pub mismatch_recovery_eligible: bool,

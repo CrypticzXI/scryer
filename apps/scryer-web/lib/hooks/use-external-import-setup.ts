@@ -559,6 +559,11 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
 
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // Transient failures back off exponentially (capped) instead of hammering
+    // the status endpoint at the base cadence; a successful poll resets it.
+    const basePollMs = 750;
+    const maxPollMs = 5000;
+    let errorPollMs = basePollMs;
     const poll = async () => {
       const { data, error } = await client
         .query(
@@ -574,10 +579,12 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
         if (isLostWarmupSessionError(message)) {
           setWarmupSessionLost(true);
         } else {
-          timer = setTimeout(poll, 750);
+          timer = setTimeout(poll, errorPollMs);
+          errorPollMs = Math.min(errorPollMs * 2, maxPollMs);
         }
         return;
       }
+      errorPollMs = basePollMs;
 
       const progress =
         data.externalImportWarmupStatus as ExternalImportMonitorWarmupProgress;
@@ -585,7 +592,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       if (progress.status === "COMPLETED") {
         void loadPreview();
       } else if (progress.status === "QUEUED" || progress.status === "RUNNING") {
-        timer = setTimeout(poll, 750);
+        timer = setTimeout(poll, basePollMs);
       }
     };
 

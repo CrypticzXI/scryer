@@ -245,19 +245,43 @@ fn matches_download_history_client_ids(
         Some(ids) => ids.contains(&download_queue_client_filter_key(item)),
     }
 }
-fn extract_url_origin(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    let (scheme, remainder) = trimmed.split_once("://")?;
-    if scheme.is_empty() {
-        return None;
-    }
-
+pub(crate) fn extract_url_origin(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().strip_prefix("nzb_url|").unwrap_or(raw.trim());
+    let (_, remainder) = trimmed.split_once("://")?;
     let authority = remainder.split(['/', '?', '#']).next()?.trim();
-    if authority.is_empty() {
+    let host = authority.rsplit('@').next()?.trim();
+    if host.is_empty() {
         return None;
     }
 
-    Some(format!("{scheme}://{authority}"))
+    if let Some(bracketed) = host.strip_prefix('[') {
+        return bracketed
+            .split_once(']')
+            .map(|(address, _)| address.to_string())
+            .filter(|address| !address.is_empty());
+    }
+
+    host.split(':')
+        .next()
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(str::to_string)
+}
+
+pub(crate) fn source_provider_label(
+    provider_name: Option<&str>,
+    source_hint: Option<&str>,
+) -> Option<String> {
+    provider_name
+        .and_then(safe_source_provider_name)
+        .or_else(|| source_hint.and_then(extract_url_origin))
+        .or_else(|| source_hint.and_then(safe_source_provider_name))
+}
+
+fn safe_source_provider_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    (!trimmed.is_empty() && !trimmed.contains([':', '/', '\\', '?', '#', '@', '|', '=']))
+        .then(|| trimmed.to_string())
 }
 fn apply_import_record_overlay_to_queue_item(item: &mut DownloadQueueItem, record: &ImportRecord) {
     item.import_status = Some(record.status);
@@ -354,6 +378,12 @@ fn push_submission_lookup_key(
 }
 fn apply_submission_to_queue_item(item: &mut DownloadQueueItem, submission: &DownloadSubmission) {
     item.is_scryer_origin = true;
+    if item.source_provider.is_none() {
+        item.source_provider = source_provider_label(
+            submission.source_provider_name.as_deref(),
+            submission.source_hint.as_deref(),
+        );
+    }
     if item.title_id.is_none() {
         item.title_id = Some(submission.title_id.clone());
     }
@@ -442,6 +472,39 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
             .collect::<HashMap<_, _>>()
     };
 
+    let identity_tracked_state_map = if client_items.is_empty() {
+        HashMap::new()
+    } else {
+        match app
+            .services
+            .workflow
+            .download_submissions
+            .list_identity_tracked_states_for_client_items(&client_items)
+            .await
+        {
+            Ok(states) => states
+                .into_iter()
+                .map(|(identity, state)| {
+                    (
+                        download_queue_identity_key(
+                            identity.client_id.as_deref(),
+                            &identity.client_type,
+                            &identity.item_id,
+                        ),
+                        state,
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "failed to batch-load durable tracked states for queue enrichment"
+                );
+                HashMap::new()
+            }
+        }
+    };
+
     for (index, item) in items.iter_mut().enumerate() {
         let current = download_queue_item_source_identity(item);
         let original = original_source_identities.and_then(|identities| identities.get(index));
@@ -466,6 +529,14 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
                 &mut seen_lookup_keys,
                 &DownloadSourceIdentity::new(None, &original.client_type, &original.item_id),
             );
+        }
+
+        if let Some(state) = lookup_keys
+            .iter()
+            .find_map(|key| identity_tracked_state_map.get(key))
+            .and_then(|state| TrackedDownloadState::from_str_opt(state))
+        {
+            item.tracked_state = Some(state);
         }
 
         if let Some(submission) = lookup_keys

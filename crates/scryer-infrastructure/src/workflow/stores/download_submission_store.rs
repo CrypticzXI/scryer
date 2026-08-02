@@ -352,6 +352,141 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         row.map(|row| row.text("tracked_state")).transpose()
     }
 
+    async fn upsert_identity_tracked_state_returning_previous(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+        tracked_state: &str,
+        reason: Option<&str>,
+        detail: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        let Some(identity_key) = download_identity_state_key(identity, source_identity) else {
+            return Ok(None);
+        };
+        let identity = identity.clone();
+        let source_identity = source_identity.cloned();
+        let tracked_state = tracked_state.to_string();
+        let reason = reason.map(str::to_string);
+        let detail = detail.map(str::to_string);
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "upsert_download_identity_tracked_state",
+            move |tx| {
+                let identity_key = identity_key.clone();
+                let identity = identity.clone();
+                let source_identity = source_identity.clone();
+                let tracked_state = tracked_state.clone();
+                let reason = reason.clone();
+                let detail = detail.clone();
+                Box::pin(async move {
+                    let previous = SqlRuntime::fetch_optional(
+                        SqlExec::Tx(tx),
+                        "SELECT tracked_state
+                         FROM download_identity_states
+                         WHERE identity_key = {}
+                         LIMIT 1",
+                        &[SqlArg::Text(identity_key.clone())],
+                    )
+                    .await?
+                    .map(|row| row.text("tracked_state"))
+                    .transpose()?;
+                    let now = Utc::now();
+                    SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "INSERT INTO download_identity_states
+                         (id, identity_key, download_id,
+                          client_id, client_type, download_client_item_id,
+                          tracked_state, reason, detail, created_at, updated_at)
+                         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})
+                         ON CONFLICT(identity_key) DO UPDATE
+                         SET download_id = excluded.download_id,
+                             client_id = excluded.client_id,
+                             client_type = excluded.client_type,
+                             download_client_item_id = excluded.download_client_item_id,
+                             tracked_state = excluded.tracked_state,
+                             reason = excluded.reason,
+                             detail = excluded.detail,
+                             updated_at = excluded.updated_at",
+                        &[
+                            SqlArg::Text(Id::new().0),
+                            SqlArg::Text(identity_key),
+                            SqlArg::OptText(identity.download_id),
+                            SqlArg::OptText(source_identity.as_ref().map(|source| {
+                                normalize_download_client_id(source.client_id.as_deref())
+                            })),
+                            SqlArg::OptText(
+                                source_identity
+                                    .as_ref()
+                                    .map(|source| source.client_type.clone()),
+                            ),
+                            SqlArg::OptText(
+                                source_identity
+                                    .as_ref()
+                                    .map(|source| source.item_id.clone()),
+                            ),
+                            SqlArg::Text(tracked_state),
+                            SqlArg::OptText(reason),
+                            SqlArg::OptText(detail),
+                            SqlArg::Timestamp(now),
+                            SqlArg::Timestamp(now),
+                        ],
+                    )
+                    .await?;
+                    Ok(previous)
+                })
+            },
+        )
+        .await
+    }
+
+    async fn list_identity_tracked_states_for_client_items(
+        &self,
+        client_items: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<(DownloadSourceIdentity, String)>> {
+        let chunks = chunk_download_submission_client_items(client_items);
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut states = Vec::new();
+        for chunk in chunks {
+            let mut args = Vec::with_capacity(chunk.len() * 3);
+            let clauses = chunk
+                .iter()
+                .map(|identity| {
+                    args.push(SqlArg::Text(identity.client_type.clone()));
+                    args.push(SqlArg::Text(identity.item_id.clone()));
+                    args.push(SqlArg::Text(normalize_download_client_id(
+                        identity.client_id.as_deref(),
+                    )));
+                    "(client_type = {} AND download_client_item_id = {} AND COALESCE(client_id, '') = {})"
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let rows = SqlRuntime::fetch_all(
+                self.datastore.read_exec(),
+                &format!(
+                    "SELECT client_id, client_type, download_client_item_id, tracked_state
+                     FROM download_identity_states
+                     WHERE {clauses}"
+                ),
+                &args,
+            )
+            .await?;
+            for row in rows {
+                states.push((
+                    DownloadSourceIdentity::new(
+                        row.opt_text("client_id")?.as_deref(),
+                        row.text("client_type")?,
+                        row.text("download_client_item_id")?,
+                    ),
+                    row.text("tracked_state")?,
+                ));
+            }
+        }
+        Ok(states)
+    }
+
     async fn list_for_client_items(
         &self,
         client_items: &[DownloadSourceIdentity],

@@ -123,6 +123,7 @@ impl FromApplication<scryer_application::DownloadDisplayState> for DownloadDispl
             scryer_application::DownloadDisplayState::ImportPending => Self::ImportPending,
             scryer_application::DownloadDisplayState::ImportBlocked => Self::ImportBlocked,
             scryer_application::DownloadDisplayState::ImportFailed => Self::ImportFailed,
+            scryer_application::DownloadDisplayState::Ignored => Self::Ignored,
             scryer_application::DownloadDisplayState::Removing => Self::Removing,
             scryer_application::DownloadDisplayState::RemoveFailed => Self::RemoveFailed,
         }

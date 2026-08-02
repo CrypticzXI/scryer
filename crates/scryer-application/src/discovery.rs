@@ -1769,15 +1769,11 @@ fn personalized_section_results(
     let mut sections = Vec::new();
     let mut emitted_item_keys = HashSet::new();
 
-    sections.extend(label_affinity_sections(
-        &visible_items,
-        &library_profile.genre_labels,
-        "genre",
-        "BECAUSE_YOU_LIKE_GENRE",
-        "because_you_like_genre",
-        limit,
-        &mut emitted_item_keys,
-    ));
+    // Composition order is dedupe priority: `emitted_item_keys` lets an earlier
+    // section claim a title outright, so the most specific reason must compose
+    // first. Tag/theme rails lead the ladder - a title that earns "Because You
+    // Like Isekai" must not be eaten first by the far broader "Because You Like
+    // Animation" genre rail.
     sections.extend(label_affinity_sections(
         &visible_items,
         &library_profile.tag_labels,
@@ -1787,40 +1783,31 @@ fn personalized_section_results(
         limit,
         &mut emitted_item_keys,
     ));
-    let section_specs = [
-        ("FOR_YOU", "For You", None, 1usize),
-        ("MOVIES_FOR_YOU", "Movies For You", Some("movie"), 6usize),
-        ("SERIES_FOR_YOU", "Series For You", Some("series"), 6usize),
-        ("ANIME_FOR_YOU", "Anime For You", Some("anime"), 6usize),
-        ("BECAUSE_YOU_HAVE", "Because You Have", None, 1usize),
-    ];
+    sections.extend(label_affinity_sections(
+        &visible_items,
+        &library_profile.genre_labels,
+        "genre",
+        "BECAUSE_YOU_LIKE_GENRE",
+        "because_you_like_genre",
+        limit,
+        &mut emitted_item_keys,
+    ));
 
-    sections.extend(section_specs.into_iter().filter_map(
-        |(section_type, title, media_kind, minimum_items)| {
-            let mut section_items = visible_items
-                .iter()
-                .filter(|item| {
-                    media_kind.is_none_or(|kind| {
-                        discovery_item_media_kind(item).is_some_and(|item_kind| item_kind == kind)
-                    })
-                })
-                .filter(|item| section_type != "BECAUSE_YOU_HAVE" || item.matched_subject_count > 0)
-                .cloned()
-                .collect::<Vec<_>>();
-            dedupe_and_sort_discovery_items(&mut section_items);
-            if section_items.len() < minimum_items {
-                return None;
-            }
-            section_result_excluding_emitted(
-                section_type.to_ascii_lowercase(),
-                section_type.to_string(),
-                title.to_string(),
-                "personalized".to_string(),
-                section_items,
-                limit,
-                &mut emitted_item_keys,
-            )
-        },
+    // FOR_YOU is the single generic personalized rail and composes last so it
+    // only sweeps up whatever no reason-based rail claimed. Medium is owned by
+    // the dashboard's facet chips, so it must never become a rail identity: the
+    // MOVIES_FOR_YOU / SERIES_FOR_YOU / ANIME_FOR_YOU variants are retired. So is
+    // BECAUSE_YOU_HAVE, which duplicated the title page's More Like This shelf.
+    let mut for_you_items = visible_items;
+    dedupe_and_sort_discovery_items(&mut for_you_items);
+    sections.extend(section_result_excluding_emitted(
+        "for_you".to_string(),
+        "FOR_YOU".to_string(),
+        "For You".to_string(),
+        "personalized".to_string(),
+        for_you_items,
+        limit,
+        &mut emitted_item_keys,
     ));
 
     sections
@@ -1868,6 +1855,7 @@ fn label_affinity_sections(
             .filter(|item| {
                 item.matched_subject_count > 0
                     && discovery_item_matches_affinity_label(item, &label, canonical_kind)
+                    && affinity_label_keeps_item_across_anime_boundary(item, &label)
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -1889,6 +1877,40 @@ fn label_affinity_sections(
         }
     }
     sections
+}
+
+/// Animation is a medium; anime is a tradition. Metadata sources tag anime with
+/// the same canonical `animation` genre facet as Western animation, so an
+/// unguarded "Because You Like Animation" rail comingles Zootopia with Frieren.
+/// This is a deliberate two-label special case at the point where items are
+/// matched to a label, not a general taxonomy: the animation rail drops anime
+/// items, an anime rail keeps only anime items, and every other label is
+/// untouched.
+///
+/// The guard is keyed on the label name and is **kind-agnostic by design**: a
+/// theme/tag rail named "Anime" or "Animation" carries exactly the same meaning
+/// its genre namesake does, so it has to split the same way.
+fn affinity_label_keeps_item_across_anime_boundary(
+    item: &DiscoveryItemRecord,
+    label: &str,
+) -> bool {
+    match normalize_discovery_affinity_key(label).as_str() {
+        "animation" => !discovery_item_is_anime(item),
+        "anime" => discovery_item_is_anime(item),
+        _ => true,
+    }
+}
+
+/// Media kind is the primary anime signal, but `discovery_item_media_kind` falls
+/// back to `target_kind` when `content_type` is missing, which reports an anime
+/// as a plain `series`. The canonical `anime` genre facet is the second witness
+/// that stops such an item leaking into the animation rail, mirroring how the
+/// metadata gateway classifies an anime-tagged title.
+fn discovery_item_is_anime(item: &DiscoveryItemRecord) -> bool {
+    discovery_item_media_kind(item) == Some("anime")
+        || discovery_item_canonical_facet_labels(item, "genre")
+            .iter()
+            .any(|label| normalize_discovery_affinity_key(label) == "anime")
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2193,7 +2215,10 @@ fn catalog_public_section_label(
     section: &CatalogDiscoverySectionCandidatesRecord,
 ) -> Option<String> {
     if section.section_id == "evergreen_popular" {
-        Some("Netflix Most Watched".to_string())
+        // Scryer is an unbiased entry point, so no rail may pitch a provider.
+        // The gateway's own title for this section is being renamed in parallel;
+        // this override exists so the provider name cannot resurrect here.
+        Some("All-Time Favorites".to_string())
     } else {
         section
             .title
@@ -2225,8 +2250,11 @@ fn catalog_personalized_groups(
 ) {
     let personalized_group_start = groups.len();
 
-    for label in
-        canonical_affinity_labels_for_profile(items, &library_profile.genre_labels, "genre")
+    // Same specificity ladder and same anime/animation boundary as the home
+    // composer (`personalized_section_results`): theme/tag groups claim titles
+    // before the broader genre groups, and neither may comingle Western animation
+    // with anime. The two surfaces must not disagree about what a rail means.
+    for label in canonical_affinity_labels_for_profile(items, &library_profile.tag_labels, "theme")
     {
         if groups.len() >= max_groups {
             return;
@@ -2235,15 +2263,16 @@ fn catalog_personalized_groups(
             .iter()
             .filter(|item| {
                 item.matched_subject_count > 0
-                    && discovery_item_matches_affinity_label(item, &label, "genre")
+                    && discovery_item_matches_affinity_label(item, &label, "theme")
+                    && affinity_label_keeps_item_across_anime_boundary(item, &label)
             })
             .cloned()
             .collect::<Vec<_>>();
         dedupe_and_sort_discovery_items(&mut section_items);
         if let Some(group) = catalog_group_excluding_emitted(
             CatalogDiscoveryGroupDraft {
-                id: format!("genre_{}", slugify_discovery_section_part(&label)),
-                kind: CatalogDiscoveryGroupKind::GenreAffinity,
+                id: format!("theme_{}", slugify_discovery_section_part(&label)),
+                kind: CatalogDiscoveryGroupKind::ThemeAffinity,
                 surface: CatalogDiscoverySurface::Personalized,
                 label_value: Some(label),
                 total_count: None,
@@ -2256,7 +2285,8 @@ fn catalog_personalized_groups(
         }
     }
 
-    for label in canonical_affinity_labels_for_profile(items, &library_profile.tag_labels, "theme")
+    for label in
+        canonical_affinity_labels_for_profile(items, &library_profile.genre_labels, "genre")
     {
         if groups.len() >= max_groups {
             return;
@@ -2265,15 +2295,16 @@ fn catalog_personalized_groups(
             .iter()
             .filter(|item| {
                 item.matched_subject_count > 0
-                    && discovery_item_matches_affinity_label(item, &label, "theme")
+                    && discovery_item_matches_affinity_label(item, &label, "genre")
+                    && affinity_label_keeps_item_across_anime_boundary(item, &label)
             })
             .cloned()
             .collect::<Vec<_>>();
         dedupe_and_sort_discovery_items(&mut section_items);
         if let Some(group) = catalog_group_excluding_emitted(
             CatalogDiscoveryGroupDraft {
-                id: format!("theme_{}", slugify_discovery_section_part(&label)),
-                kind: CatalogDiscoveryGroupKind::ThemeAffinity,
+                id: format!("genre_{}", slugify_discovery_section_part(&label)),
+                kind: CatalogDiscoveryGroupKind::GenreAffinity,
                 surface: CatalogDiscoverySurface::Personalized,
                 label_value: Some(label),
                 total_count: None,
@@ -2531,7 +2562,9 @@ fn discovery_affinity_label_is_generic(normalized: &str) -> bool {
             | "series"
             | "show"
             | "shows"
-            | "anime"
+            // "anime" is deliberately absent: it names a tradition, not a medium
+            // noun, so "Because You Like Anime" is a legitimate rail and the
+            // anime/animation boundary guard depends on the label being reachable.
             | "recommendation"
             | "recommendations"
             | "similar"
@@ -5336,6 +5369,233 @@ mod tests {
                 item.display_title
             );
         }
+    }
+
+    fn affinity_test_item(
+        id: &str,
+        content_type: &str,
+        facet_terms: &[&str],
+    ) -> DiscoveryItemRecord {
+        let target_kind = if content_type == "movie" {
+            "movie"
+        } else {
+            "series"
+        };
+        let mut item = test_discovery_item(id, target_kind, Some(content_type));
+        item.target_key = format!("tmdb:{content_type}:{id}");
+        item.display_title = format!("Title {id}");
+        item.sort_title = Some(format!("Title {id}"));
+        item.facet_terms = facet_terms.iter().map(|term| (*term).to_string()).collect();
+        item.matched_subject_count = 1;
+        item
+    }
+
+    fn affinity_section_titles(section: &DiscoverySectionResult) -> Vec<&str> {
+        section
+            .items
+            .iter()
+            .map(|item| item.display_title.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn personalized_sections_retire_medium_and_library_rails() {
+        // Medium is owned by the dashboard's facet chips, so the per-medium
+        // "For You" rails and BECAUSE_YOU_HAVE are gone. Eight items per medium
+        // clears the retired medium rails' old six-item floor, every item has a
+        // matched subject so BECAUSE_YOU_HAVE would have qualified too, and the
+        // small limit leaves plenty of unclaimed items for them: this fixture
+        // emitted all four retired sections before the change.
+        let profile = DiscoveryLibraryAffinityProfile::default();
+        let mut items = Vec::new();
+        for index in 0..8 {
+            items.push(affinity_test_item(&format!("m{index}"), "movie", &[]));
+            items.push(affinity_test_item(&format!("s{index}"), "series", &[]));
+            items.push(affinity_test_item(&format!("a{index}"), "anime", &[]));
+        }
+
+        let sections = personalized_section_results(&items, &profile, true, 5);
+        let section_types = sections
+            .iter()
+            .map(|section| section.section_type.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(section_types, vec!["FOR_YOU"]);
+    }
+
+    #[test]
+    fn personalized_sections_prefer_specific_tag_rail_over_broad_genre_rail() {
+        // Composition order is dedupe priority. A title that earns the narrow
+        // "Because You Like Isekai" theme rail must not be eaten first by the
+        // far broader "Because You Like Animation" genre rail.
+        let profile = DiscoveryLibraryAffinityProfile {
+            genre_labels: vec!["Animation".to_string()],
+            tag_labels: vec!["Isekai".to_string()],
+        };
+        let items = vec![
+            affinity_test_item(
+                "1",
+                "movie",
+                &["canonical:genre:animation", "canonical:theme:isekai"],
+            ),
+            affinity_test_item("2", "movie", &["canonical:genre:animation"]),
+        ];
+
+        let sections = personalized_section_results(&items, &profile, true, 10);
+        let isekai = sections
+            .iter()
+            .find(|section| section.title == "Because You Like Isekai")
+            .expect("isekai theme section");
+        assert_eq!(isekai.section_type, "BECAUSE_YOU_LIKE_TAG");
+        assert_eq!(affinity_section_titles(isekai), vec!["Title 1"]);
+
+        let animation = sections
+            .iter()
+            .find(|section| section.title == "Because You Like Animation")
+            .expect("animation genre section");
+        assert_eq!(animation.section_type, "BECAUSE_YOU_LIKE_GENRE");
+        assert_eq!(affinity_section_titles(animation), vec!["Title 2"]);
+
+        let tag_index = sections
+            .iter()
+            .position(|section| section.section_type == "BECAUSE_YOU_LIKE_TAG")
+            .expect("tag section index");
+        let genre_index = sections
+            .iter()
+            .position(|section| section.section_type == "BECAUSE_YOU_LIKE_GENRE")
+            .expect("genre section index");
+        assert!(tag_index < genre_index);
+    }
+
+    #[test]
+    fn affinity_label_rails_keep_animation_and_anime_apart() {
+        // Animation is a medium, anime is a tradition. Both titles carry the
+        // canonical `animation` genre facet, so only the media-kind guard keeps
+        // Western animation and anime out of each other's rails.
+        let profile = DiscoveryLibraryAffinityProfile {
+            genre_labels: vec!["Animation".to_string(), "Anime".to_string()],
+            tag_labels: Vec::new(),
+        };
+        let items = vec![
+            affinity_test_item("western", "movie", &["canonical:genre:animation"]),
+            affinity_test_item(
+                "shonen",
+                "anime",
+                &["canonical:genre:animation", "canonical:genre:anime"],
+            ),
+        ];
+
+        let sections = personalized_section_results(&items, &profile, true, 10);
+        let animation = sections
+            .iter()
+            .find(|section| section.title == "Because You Like Animation")
+            .expect("animation genre section");
+        assert_eq!(affinity_section_titles(animation), vec!["Title western"]);
+
+        let anime = sections
+            .iter()
+            .find(|section| section.title == "Because You Like Anime")
+            .expect("anime genre section");
+        assert_eq!(affinity_section_titles(anime), vec!["Title shonen"]);
+    }
+
+    #[test]
+    fn anime_affinity_label_survives_the_generic_label_filter() {
+        // Reachability guard: the boundary's "anime" arm is dead code unless a
+        // real profile can actually carry the label. The profile is built by
+        // `top_owned_title_labels` over owned titles, which drops labels that
+        // `discovery_affinity_label_is_generic` rejects - "anime" must not be
+        // among them, or "Because You Like Anime" can never exist.
+        fn anime_title(id: &str) -> Title {
+            let mut title = test_title(id, id, MediaFacet::Series, Vec::new());
+            title.canonical_tags = ["Anime", "Animation"]
+                .into_iter()
+                .map(|name| CanonicalMediaTag {
+                    key: format!("canonical:genre:{}", name.to_ascii_lowercase()),
+                    category: "genre".to_string(),
+                    name: name.to_string(),
+                    confidence: None,
+                    sources: Vec::new(),
+                    source_tag_keys: Vec::new(),
+                    is_adult: false,
+                    is_spoiler: false,
+                })
+                .collect();
+            title
+        }
+
+        let titles = vec![anime_title("a1"), anime_title("a2")];
+        let genre_labels = top_owned_title_labels(
+            &titles,
+            |title| canonical_tag_labels(&title.canonical_tags, "genre"),
+            2,
+        );
+        assert!(
+            genre_labels.iter().any(|label| label == "Anime"),
+            "anime-heavy library produced no Anime label: {genre_labels:?}"
+        );
+
+        // ...and the label, once reachable, splits the two traditions apart.
+        let profile = DiscoveryLibraryAffinityProfile {
+            genre_labels,
+            tag_labels: Vec::new(),
+        };
+        let items = vec![
+            affinity_test_item("western", "movie", &["canonical:genre:animation"]),
+            affinity_test_item(
+                "shonen",
+                "anime",
+                &["canonical:genre:animation", "canonical:genre:anime"],
+            ),
+        ];
+        let sections = personalized_section_results(&items, &profile, true, 10);
+        let anime = sections
+            .iter()
+            .find(|section| section.title == "Because You Like Anime")
+            .expect("anime genre section should be reachable from a real profile");
+        assert_eq!(affinity_section_titles(anime), vec!["Title shonen"]);
+        let animation = sections
+            .iter()
+            .find(|section| section.title == "Because You Like Animation")
+            .expect("animation genre section");
+        assert_eq!(affinity_section_titles(animation), vec!["Title western"]);
+    }
+
+    #[test]
+    fn anime_without_content_type_does_not_leak_into_the_animation_rail() {
+        // `discovery_item_media_kind` falls back to target_kind, so a
+        // content_type-less anime reports as a plain "series". Only the canonical
+        // anime genre facet keeps it out of the Western-animation rail.
+        let mut untyped_anime = test_discovery_item("untyped", "series", None);
+        untyped_anime.target_key = "mal:anime:untyped".to_string();
+        untyped_anime.display_title = "Title untyped".to_string();
+        untyped_anime.sort_title = Some("Title untyped".to_string());
+        untyped_anime.facet_terms = vec![
+            "canonical:genre:animation".to_string(),
+            "canonical:genre:anime".to_string(),
+        ];
+        untyped_anime.matched_subject_count = 1;
+        assert_eq!(discovery_item_media_kind(&untyped_anime), Some("series"));
+
+        let profile = DiscoveryLibraryAffinityProfile {
+            genre_labels: vec!["Animation".to_string(), "Anime".to_string()],
+            tag_labels: Vec::new(),
+        };
+        let items = vec![
+            affinity_test_item("western", "movie", &["canonical:genre:animation"]),
+            untyped_anime,
+        ];
+
+        let sections = personalized_section_results(&items, &profile, true, 10);
+        let animation = sections
+            .iter()
+            .find(|section| section.title == "Because You Like Animation")
+            .expect("animation genre section");
+        assert_eq!(affinity_section_titles(animation), vec!["Title western"]);
+        let anime = sections
+            .iter()
+            .find(|section| section.title == "Because You Like Anime")
+            .expect("anime genre section");
+        assert_eq!(affinity_section_titles(anime), vec!["Title untyped"]);
     }
 
     fn test_pending_change(

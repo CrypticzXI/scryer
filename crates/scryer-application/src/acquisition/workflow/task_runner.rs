@@ -763,6 +763,7 @@ async fn process_single_target(
                                             .unwrap_or(0),
                                         "grabbed_at": now.to_rfc3339(),
                                         "season_pack": true,
+                                        "source_provider": best_pack.source.clone(),
                                     })
                                     .to_string();
                                     app.services
@@ -782,6 +783,8 @@ async fn process_single_target(
                                                 download_client_type: grab.client_type.clone(),
                                                 download_client_item_id: grab.job_id.clone(),
                                                 source_hint: None,
+                                                source_provider_id: best_pack.indexer_id.clone(),
+                                                source_provider_name: Some(best_pack.source.clone()),
                                                 source_kind: None,
                                                 source_title: Some(best_pack.title.clone()),
                                                 request_signature: request_signature.clone(),
@@ -1071,10 +1074,16 @@ async fn process_single_target(
             .map(|d| d.preference_score)
             .unwrap_or(0);
 
-        if !matches!(decision_code, ReleaseAutoDecisionCode::TitleMismatch) {
+        if !matches!(
+            decision_code,
+            ReleaseAutoDecisionCode::TitleMismatch | ReleaseAutoDecisionCode::EpisodeMismatch
+        ) {
             had_allowed_candidate = true;
         }
-        if matches!(decision_code, ReleaseAutoDecisionCode::TitleMismatch) {
+        if matches!(
+            decision_code,
+            ReleaseAutoDecisionCode::TitleMismatch | ReleaseAutoDecisionCode::EpisodeMismatch
+        ) {
             skipped_for_title_mismatch = true;
         }
         if matches!(decision_code, ReleaseAutoDecisionCode::DbBlocklisted) {
@@ -1307,6 +1316,7 @@ async fn process_single_target(
                     "title": candidate.title,
                     "score": candidate_score,
                     "grabbed_at": now.to_rfc3339(),
+                    "source_provider": candidate.source.clone(),
                 })
                 .to_string();
                 let download_job_id = grab.job_id.clone();
@@ -1364,6 +1374,8 @@ async fn process_single_target(
                             download_client_type: grab.client_type.clone(),
                             download_client_item_id: grab.job_id.clone(),
                             source_hint: None,
+                            source_provider_id: candidate.indexer_id.clone(),
+                            source_provider_name: Some(candidate.source.clone()),
                             source_kind: None,
                             source_title: source_title.clone(),
                             request_signature: request_signature.clone(),
@@ -1975,6 +1987,8 @@ mod task_runner_tests {
             download_client_type: "nzbget".to_string(),
             download_client_item_id: job_id.to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
             request_signature: None,

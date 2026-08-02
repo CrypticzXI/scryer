@@ -943,6 +943,8 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
                 download_client_type: identity.client_type.clone(),
                 download_client_item_id: identity.item_id.clone(),
                 source_hint: None,
+                source_provider_id: None,
+                source_provider_name: None,
                 source_kind: None,
                 source_title: None,
                 request_signature: None,

@@ -89,7 +89,11 @@ export function buildHistoryEventDetail(event: TitleHistoryEvent): {
     event.clientName ? { key: "client_name", value: event.clientName } : null,
     event.sourceSystem ? { key: "source_system", value: event.sourceSystem } : null,
     event.sourceRef ? { key: "source_ref", value: event.sourceRef } : null,
-    event.sourceHint ? { key: "source_hint", value: event.sourceHint } : null,
+    event.sourceProvider
+      ? { key: "source_provider", value: event.sourceProvider }
+      : event.sourceHint
+        ? { key: "source_hint", value: event.sourceHint }
+        : null,
     event.skipReason ? { key: "skip_reason", value: event.skipReason } : null,
     event.sourcePath ? { key: "source_path", value: event.sourcePath } : null,
     event.destPath ? { key: "dest_path", value: event.destPath } : null,

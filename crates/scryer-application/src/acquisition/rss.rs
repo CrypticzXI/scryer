@@ -1587,6 +1587,8 @@ impl AppUseCase {
                             download_client_type: grab.client_type.clone(),
                             download_client_item_id: grab.job_id.clone(),
                             source_hint: None,
+                            source_provider_id: best.indexer_id.clone(),
+                            source_provider_name: Some(best.source.clone()),
                             source_kind: None,
                             source_title: source_title.clone(),
                             request_signature: request_signature.clone(),

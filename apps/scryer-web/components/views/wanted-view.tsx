@@ -135,6 +135,7 @@ function formatWantedDecisionCode(code: string, t: Translate) {
   const key = {
     eligible: "wanted.decision.eligible",
     title_mismatch: "wanted.decision.titleMismatch",
+    episode_mismatch: "wanted.decision.episodeMismatch",
     quality_blocked: "wanted.decision.qualityBlocked",
     upgrade_rejected: "wanted.decision.upgradeRejected",
     pending_delay: "wanted.decision.pendingDelay",
@@ -229,6 +230,7 @@ function decisionBadge(code: string, t: Translate) {
   const colors: Record<string, string> = {
     eligible: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
     title_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
+    episode_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
     quality_blocked: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
     upgrade_rejected: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
     pending_delay: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
@@ -591,6 +593,11 @@ function WantedItemsCard({
                         <p className="mt-1 text-xs text-muted-foreground">
                           {item.libraryName ?? item.libraryId ?? "Library"}
                         </p>
+                        {item.sourceProvider ? (
+                          <p className="mt-1 truncate text-xs text-muted-foreground">
+                            {item.sourceProvider}
+                          </p>
+                        ) : null}
                       </button>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {statusBadge(item.status, t)}
@@ -796,6 +803,11 @@ function WantedItemsCard({
                           <div className="truncate text-xs text-muted-foreground">
                             {wantedItemSubtitle(item, t)}
                           </div>
+                          {item.sourceProvider ? (
+                            <div className="truncate text-xs text-muted-foreground">
+                              {item.sourceProvider}
+                            </div>
+                          ) : null}
                         </button>
                       </TableCell>
                       <TableCell className="text-center text-xs text-muted-foreground">

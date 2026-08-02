@@ -735,6 +735,23 @@ file = "postgres/migrations/0149_rule_set_managed_tag_filter.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 150
+description = "download submission source provider"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0150_download_submission_source_provider.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0150_download_submission_source_provider.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

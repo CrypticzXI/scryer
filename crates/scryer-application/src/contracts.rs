@@ -171,6 +171,8 @@ pub struct DownloadSubmission {
     pub download_client_type: String,
     pub download_client_item_id: String,
     pub source_hint: Option<String>,
+    pub source_provider_id: Option<String>,
+    pub source_provider_name: Option<String>,
     pub source_kind: Option<DownloadSourceKind>,
     pub source_title: Option<String>,
     pub request_signature: Option<String>,

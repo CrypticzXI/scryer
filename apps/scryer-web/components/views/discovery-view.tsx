@@ -35,6 +35,14 @@ import {
 } from "@/lib/utils/discovery-display";
 import { discoveryItemFacet } from "@/lib/utils/discovery-actions";
 import {
+  HERO_RAIL_PREFERRED_SECTION_TYPE,
+  NEW_ON_PHYSICAL_SECTION_TYPE,
+  NEW_ON_STREAMING_SECTION_TYPE,
+  discoverySectionType,
+  orderDiscoveryHomeSections,
+  sectionIsPublicPromotion,
+} from "@/lib/utils/discovery-sections";
+import {
   selectBackdropVariantUrl,
   selectPosterVariantUrl,
 } from "@/lib/utils/poster-images";
@@ -155,91 +163,78 @@ function itemMatchScore(item: DiscoveryHomeHero) {
     : null;
 }
 
+// Animation is a medium, anime is a tradition, and the two must not comingle
+// inside one reason-based rail. SMG's feed does not enforce that, so the anime
+// rail is narrowed to anime and the general rails drop anime. Section identity is
+// deliberately left intact - the display name is owned by
+// SECTION_DISPLAY_NAME_KEYS, so there is no need to rewrite the sectionType here.
+const ANIME_ONLY_PUBLIC_SECTION_TYPES = new Set([
+  "ANIME_THIS_WEEK",
+  "POPULAR_WITH_ANIME_FANS",
+]);
+// TRENDING_NOW and POPULAR_RIGHT_NOW merge into one "Right Now" rail, so both
+// halves must anime-exclude identically - otherwise the merged rail leaks anime
+// that the anime band already owns.
+const ANIME_EXCLUDING_PUBLIC_SECTION_TYPES = new Set([
+  "TRENDING_NOW",
+  "POPULAR_RIGHT_NOW",
+  "POPULAR_SERIES",
+]);
+
 function normalizedPublicHomeSections(home: DiscoveryHomePayload | null) {
   const publicSections = home?.publicSections ?? [];
   return publicSections.flatMap((section) => {
     const sectionType = discoverySectionType(section);
-    if (sectionType === "ANIME_THIS_WEEK") {
-      const items = section.items.filter(
-        (item) => discoveryItemFacet(item) === "ANIME",
-      );
-      return items.length > 0
-        ? [
-            {
-              ...section,
-              sectionId: "anime_trending_now",
-              sectionType: "TRENDING_ANIME_NOW",
-              title: "Trending Anime Now",
-              totalCount: items.length,
-              items,
-            },
-          ]
-        : [];
+    const keepsOnlyAnime = ANIME_ONLY_PUBLIC_SECTION_TYPES.has(sectionType);
+    if (
+      !keepsOnlyAnime &&
+      !ANIME_EXCLUDING_PUBLIC_SECTION_TYPES.has(sectionType)
+    ) {
+      return [section];
     }
-    if (sectionType === "TRENDING_NOW" || sectionType === "POPULAR_SERIES") {
-      const items = section.items.filter(
-        (item) => discoveryItemFacet(item) !== "ANIME",
-      );
-      return items.length > 0 ? [{ ...section, totalCount: items.length, items }] : [];
-    }
-    return [section];
+    const items = section.items.filter((item) =>
+      keepsOnlyAnime
+        ? discoveryItemFacet(item) === "ANIME"
+        : discoveryItemFacet(item) !== "ANIME",
+    );
+    return items.length > 0
+      ? [{ ...section, totalCount: items.length, items }]
+      : [];
   });
-}
-
-function allHomeSections(
-  home: DiscoveryHomePayload | null,
-  publicSections = normalizedPublicHomeSections(home),
-) {
-  if (!home) {
-    return [];
-  }
-  return [
-    ...publicSections,
-    ...home.personalizedSections,
-    ...(home.completeCollection ? [home.completeCollection] : []),
-  ].filter((section) => section.items.length > 0);
 }
 
 function normalizedSectionText(section: DiscoveryHomeSection) {
   return `${section.sectionId} ${section.sectionType} ${section.title} ${section.surface}`.toLowerCase();
 }
 
-const WEEKLY_FOR_YOU_SECTION_TYPES = [
-  "TOP_MOVIES_THIS_WEEK",
-  "TOP_SERIES_THIS_WEEK",
-  "TOP_ANIME_THIS_WEEK",
-];
-
-const GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES = new Set([
-  "FOR_YOU",
-  "MOVIES_FOR_YOU",
-  "SERIES_FOR_YOU",
-  "ANIME_FOR_YOU",
-  "BECAUSE_YOU_HAVE",
-]);
-
-function discoverySectionType(section: DiscoveryHomeSection) {
-  return section.sectionType.trim().toUpperCase();
-}
-
-// Public-promotion rails: SMG's v2 feed surfaces these two "new release window"
-// sections. They arrive at feed-bottom with raw SMG titles; we lift them to just
-// under the hero and give them curated (locale-owned) names + icons.
-const NEW_ON_STREAMING_SECTION_TYPE = "NEW_ON_STREAMING";
-const NEW_ON_PHYSICAL_SECTION_TYPE = "NEW_ON_PHYSICAL";
-const PUBLIC_PROMOTION_SECTION_TYPES = [
-  NEW_ON_STREAMING_SECTION_TYPE,
-  NEW_ON_PHYSICAL_SECTION_TYPE,
-] as const;
-const PUBLIC_PROMOTION_SECTION_TYPE_SET = new Set<string>(
-  PUBLIC_PROMOTION_SECTION_TYPES,
-);
-
 // sectionType -> i18n key. Preferred over SMG's raw section.title so product can
 // re-word a rail purely in locale files. Unmapped types fall back to the raw title.
+// This is also how provider names are kept off the dashboard: EVERGREEN_POPULAR
+// arrives from SMG titled "Netflix Most Watched", and Scryer is an unbiased entry
+// point, so the rail is renamed rather than pitched.
 const SECTION_DISPLAY_NAME_KEYS: Record<string, string> = {
   [NEW_ON_STREAMING_SECTION_TYPE]: "discovery.section.newOnStreaming",
   [NEW_ON_PHYSICAL_SECTION_TYPE]: "discovery.section.newOnPhysical",
+  EVERGREEN_POPULAR: "discovery.section.allTimeFavorites",
+  // Merged into a single rail; the surviving half carries the same name whichever
+  // one the gateway sent.
+  POPULAR_RIGHT_NOW: "discovery.section.rightNow",
+  TRENDING_NOW: "discovery.section.rightNow",
+  FOR_YOU: "discovery.section.fromYourTaste",
+  COMPLETE_THE_COLLECTION: "discovery.section.almostComplete",
+  // Sourced from MAL/AniList, so the generic SMG title lies about the content.
+  UPCOMING_NEXT_SEASON: "discovery.section.nextAnimeSeason",
+  // ANIME_THIS_WEEK is the *weekly* rail (animecorner weekly / MAL top airing)
+  // and absorbs the anime-fan-poll rail; ANIME_SEASON_STANDOUTS is the seasonal
+  // one. Naming them the other way round mislabels both.
+  ANIME_THIS_WEEK: "discovery.section.popularInAnime",
+  POPULAR_WITH_ANIME_FANS: "discovery.section.popularInAnime",
+  ANIME_SEASON_STANDOUTS: "discovery.section.thisSeasonInAnime",
+  UPCOMING_MOVIES: "discovery.section.comingSoonMovies",
+  UPCOMING_SERIES: "discovery.section.comingSoonSeries",
+  TOP_RATED_FOR_YOU: "discovery.section.topRatedForYou",
+  // Emitted by Scryer's own composer with a hardcoded English title.
+  TOP_RATED: "discovery.section.topRated",
 };
 
 const SECTION_ICONS: Record<string, LucideIcon> = {
@@ -258,15 +253,12 @@ function sectionDisplayTitle(
       return label;
     }
   }
-  return section.title;
+  // A rail with no mapping and no gateway title still needs a truthful heading.
+  return section.title || t("discovery.section.recommended");
 }
 
 function sectionIcon(section: DiscoveryHomeSection): LucideIcon | null {
   return SECTION_ICONS[discoverySectionType(section)] ?? null;
-}
-
-function sectionIsPublicPromotion(section: DiscoveryHomeSection) {
-  return PUBLIC_PROMOTION_SECTION_TYPE_SET.has(discoverySectionType(section));
 }
 
 function sectionIsCompleteCollection(section: DiscoveryHomeSection) {
@@ -277,72 +269,14 @@ function sectionIsCompleteCollection(section: DiscoveryHomeSection) {
 }
 
 function orderedHomeSections(home: DiscoveryHomePayload | null) {
-  const publicSections = normalizedPublicHomeSections(home);
-  const sections = allHomeSections(home, publicSections);
-  const personalizedSections = (home?.personalizedSections ?? []).filter(
-    (section) => section.items.length > 0,
-  );
-  const completeCollection =
-    home?.completeCollection && home.completeCollection.items.length > 0
-      ? home.completeCollection
-      : null;
-  const usedPersonalizedSections = new Set<DiscoveryHomeSection>();
-  const takePersonalizedSections = (sectionType: string) =>
-    personalizedSections.filter((section) => {
-      if (discoverySectionType(section) !== sectionType) {
-        return false;
-      }
-      usedPersonalizedSections.add(section);
-      return true;
-    });
-  const promotedSections = [
-    ...WEEKLY_FOR_YOU_SECTION_TYPES.flatMap(takePersonalizedSections),
-    ...takePersonalizedSections("BECAUSE_YOU_LIKE_GENRE"),
-    ...takePersonalizedSections("BECAUSE_YOU_LIKE_TAG"),
-  ];
-  const unknownPersonalizedSections = personalizedSections.filter(
-    (section) =>
-      !usedPersonalizedSections.has(section) &&
-      !GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES.has(discoverySectionType(section)),
-  );
-  const hasLibrarySections =
-    promotedSections.length > 0 ||
-    completeCollection !== null ||
-    unknownPersonalizedSections.length > 0;
-  const fallbackSections = hasLibrarySections
-    ? []
-    : personalizedSections.filter((section) =>
-        GENERIC_FOR_YOU_FALLBACK_SECTION_TYPES.has(discoverySectionType(section)),
-      );
-  // Public-promotion tier: the two SMG v2 "new release window" rails, lifted from
-  // feed-bottom to directly under the hero row, in a fixed streaming-then-physical
-  // order regardless of where SMG placed them in the public feed.
-  const publicPromotionSections = PUBLIC_PROMOTION_SECTION_TYPES.flatMap(
-    (sectionType) =>
-      publicSections.filter(
-        (section) => discoverySectionType(section) === sectionType,
-      ),
-  );
-  const orderedSections = [
-    ...promotedSections,
-    ...(completeCollection ? [completeCollection] : []),
-    ...unknownPersonalizedSections,
-    ...fallbackSections,
-  ];
-  const orderedSectionSet = new Set([
-    ...orderedSections,
-    ...publicPromotionSections,
-  ]);
-  return [
-    ...publicPromotionSections,
-    ...orderedSections,
-    ...sections.filter(
-      (section) =>
-        !orderedSectionSet.has(section) &&
-        !personalizedSections.includes(section) &&
-        section !== completeCollection,
-    ),
-  ].filter((section) => section.items.length > 0);
+  if (!home) {
+    return [];
+  }
+  return orderDiscoveryHomeSections<DiscoveryHomeSection>({
+    publicSections: normalizedPublicHomeSections(home),
+    personalizedSections: home.personalizedSections,
+    completeCollection: home.completeCollection,
+  });
 }
 
 function sectionIsUpcoming(section: DiscoveryHomeSection) {
@@ -422,13 +356,17 @@ function discoveryItemHasUsefulTitle(item: DiscoveryHomeCard) {
 
 function findHeroRailSection(sections: DiscoveryHomeSection[]) {
   // Never fold a public-promotion rail into the hero column — those stay as full
-  // rails directly beneath the hero.
+  // rails in their own tier.
   const eligible = sections.filter(
     (section) => !sectionIsPublicPromotion(section),
   );
+  // Preference is by section *type*, not by sniffing the gateway's raw title: a
+  // text match on "trend" would silently hijack the hero for any future rail that
+  // happens to be titled "Trending in ...".
   return (
-    eligible.find((section) =>
-      normalizedSectionText(section).includes("trend"),
+    eligible.find(
+      (section) =>
+        discoverySectionType(section) === HERO_RAIL_PREFERRED_SECTION_TYPE,
     ) ??
     eligible[0] ??
     null
@@ -1669,12 +1607,7 @@ export function DiscoveryView({
             />
             {heroRailSectionWithoutHero ? (
               <DiscoverySectionRail
-                section={{
-                  ...heroRailSectionWithoutHero,
-                  title:
-                    heroRailSectionWithoutHero.title ||
-                    t("discovery.trendingThisWeek"),
-                }}
+                section={heroRailSectionWithoutHero}
                 fillHeight
                 manageableFacets={manageableFacetSet}
                 requestableFacets={requestableFacetSet}

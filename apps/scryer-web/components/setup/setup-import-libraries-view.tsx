@@ -171,11 +171,6 @@ export default function SetupImportLibrariesView({
 
   // ── Desktop drag-and-drop (HTML5) ──────────────────────────────────────────
   const onDragStart = useCallback((e: DragEvent, rootId: string) => {
-    const origin = e.target as HTMLElement;
-    if (origin.closest("button, input, textarea, select, a, [role='button']")) {
-      e.preventDefault();
-      return;
-    }
     dragRootId.current = rootId;
     setDraggingRootId(rootId);
     e.dataTransfer.effectAllowed = "move";

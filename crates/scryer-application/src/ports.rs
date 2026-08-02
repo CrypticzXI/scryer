@@ -2788,12 +2788,41 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         Ok(())
     }
 
+    async fn upsert_identity_tracked_state_returning_previous(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+        tracked_state: &str,
+        reason: Option<&str>,
+        detail: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        let previous = self
+            .get_identity_tracked_state(identity, source_identity)
+            .await?;
+        self.record_identity_tracked_state(
+            identity,
+            source_identity,
+            tracked_state,
+            reason,
+            detail,
+        )
+        .await?;
+        Ok(previous)
+    }
+
     async fn get_identity_tracked_state(
         &self,
         _identity: &DownloadSubmissionIdentity,
         _source_identity: Option<&DownloadSourceIdentity>,
     ) -> AppResult<Option<String>> {
         Ok(None)
+    }
+
+    async fn list_identity_tracked_states_for_client_items(
+        &self,
+        _client_items: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<(DownloadSourceIdentity, String)>> {
+        Ok(Vec::new())
     }
 
     async fn list_for_client_items(

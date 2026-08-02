@@ -113,6 +113,7 @@ export const QueueRowItem = memo(function QueueRowItem({
             />
             <p className="mt-1 text-xs text-muted-foreground">
               {queueItem.clientName || queueItem.clientType} • {queueItem.clientType}
+              {queueItem.sourceProvider ? ` • ${queueItem.sourceProvider}` : null}
             </p>
           </div>
         </div>

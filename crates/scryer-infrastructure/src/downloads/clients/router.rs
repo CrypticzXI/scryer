@@ -3716,6 +3716,7 @@ mod tests {
             imported_at: None,
             delete_status: None,
             delete_error_message: None,
+            source_provider: None,
             is_scryer_origin: false,
             tracked_state: None,
             tracked_status: None,

@@ -1,4 +1,4 @@
-import type { CSSProperties, DragEvent } from "react";
+import { useRef, type CSSProperties, type DragEvent } from "react";
 import {
   ArrowLeftRight,
   ArrowRight,
@@ -62,6 +62,7 @@ export function ImportRootChip({
   const pathTitle = remapped
     ? `${t("setup.provenanceSource")}: ${root.arrRootPath}  →  ${t("setup.provenanceScryer")}: ${effective}`
     : effective;
+  const blockDragRef = useRef(false);
 
   return (
     <span
@@ -72,8 +73,30 @@ export function ImportRootChip({
       data-root-variant={variant}
       aria-label={`${root.instanceLabel} ${effective}`}
       draggable={draggable}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
+      onPointerDownCapture={(e) => {
+        blockDragRef.current = Boolean(
+          (e.target as HTMLElement).closest(
+            "button, input, textarea, select, a, [role='button']",
+          ),
+        );
+      }}
+      onPointerUpCapture={() => {
+        blockDragRef.current = false;
+      }}
+      onPointerCancelCapture={() => {
+        blockDragRef.current = false;
+      }}
+      onDragStart={(e) => {
+        if (blockDragRef.current) {
+          e.preventDefault();
+          return;
+        }
+        onDragStart?.(e);
+      }}
+      onDragEnd={(e) => {
+        blockDragRef.current = false;
+        onDragEnd?.(e);
+      }}
       style={{
         display: "inline-flex",
         alignItems: "center",

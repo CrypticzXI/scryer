@@ -39,6 +39,10 @@ fn build_download_queue_status_detail(item: &DownloadQueueItem) -> String {
     values.join("\n")
 }
 fn base_download_queue_display_state(item: &DownloadQueueItem) -> DownloadDisplayState {
+    if item.tracked_state == Some(TrackedDownloadState::Ignored) {
+        return DownloadDisplayState::Ignored;
+    }
+
     if item.state == DownloadQueueState::Failed {
         return DownloadDisplayState::Failed;
     }
@@ -112,7 +116,9 @@ fn bucket_for_base_display_state(state: DownloadDisplayState) -> DownloadQueueBu
         | DownloadDisplayState::ImportPending
         | DownloadDisplayState::ImportBlocked
         | DownloadDisplayState::ImportFailed => DownloadQueueBucket::Import,
-        DownloadDisplayState::Completed => DownloadQueueBucket::HistorySuccess,
+        DownloadDisplayState::Completed | DownloadDisplayState::Ignored => {
+            DownloadQueueBucket::HistorySuccess
+        }
         DownloadDisplayState::Failed => DownloadQueueBucket::HistoryFailed,
         DownloadDisplayState::Removing | DownloadDisplayState::RemoveFailed => {
             DownloadQueueBucket::HistoryFailed

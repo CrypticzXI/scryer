@@ -331,7 +331,7 @@ export const QueueTableRow = memo(function QueueTableRow({
             <QueueIconAction
               className={`h-10 w-10 border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)] hover:bg-[var(--scry-danger-bg-strong)] ${rowActionVisualClass}`}
               disabled={isRowFullyBusy}
-              label={t("label.delete")}
+              label={t("queue.removeFromDownloader")}
               onClick={() => {
                 if (
                   isActionLoading || isRowBlocked

@@ -395,6 +395,7 @@ const WANTED_ITEM_FIELDS = `
       lastSearchAt
       status
       grabbedRelease
+      sourceProvider
       currentScore
       convergenceState
       indexersCovered
@@ -411,6 +412,7 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     titleName
     facet
     isScryerOrigin
+    sourceProvider
     clientId
     clientName
     clientType
@@ -3426,6 +3428,7 @@ export const titleHistoryQuery = `query TitleHistory($filter: TitleHistoryFilter
       displayTitle
       sourceSystem
       sourceRef
+      sourceProvider
       sourceHint
       quality
       downloadId

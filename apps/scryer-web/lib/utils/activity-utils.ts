@@ -21,6 +21,7 @@ export const queueStateClasses: Record<string, string> = {
   import_pending: "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
   import_blocked: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   import_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  ignored: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   remove_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
 };
@@ -73,9 +74,11 @@ export function activityStatusRank(tab: ActivityTab, displayState: string): numb
       switch (displayState.toLowerCase()) {
         case "completed":
           return 0;
+        case "ignored":
+          return 1;
         case "failed":
         case "remove_failed":
-          return 1;
+          return 2;
         default:
           return 99;
       }
@@ -156,7 +159,9 @@ export function deriveQueueRowPresentation(
           ? "queue.state.extracting"
           : "queue.state.postProcessing";
   const statusLabel =
-    queueItem.importTransferPhase === "COPYING"
+    displayStateKey === "IGNORED"
+      ? "Ignored"
+      : queueItem.importTransferPhase === "COPYING"
       ? t("queue.transfer.copying")
       : queueItem.importTransferPhase === "FINALIZING"
         ? t("queue.transfer.finalizing")

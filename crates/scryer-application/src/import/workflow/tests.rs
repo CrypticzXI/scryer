@@ -77,6 +77,8 @@ mod tests {
                     download_client_type: "sabnzbd".to_string(),
                     download_client_item_id: "item-1".to_string(),
                     source_hint: None,
+                    source_provider_id: None,
+                    source_provider_name: None,
                     source_kind: None,
                     source_title: None,
                     request_signature: None,

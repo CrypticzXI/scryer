@@ -675,6 +675,7 @@ pub enum DownloadDisplayState {
     ImportPending,
     ImportBlocked,
     ImportFailed,
+    Ignored,
     Removing,
     RemoveFailed,
 }

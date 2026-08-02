@@ -793,6 +793,7 @@ impl AppUseCase {
                     "score": pr.release_score,
                     "grabbed_at": now.to_rfc3339(),
                     "source": "pending_release",
+                    "source_provider": pr.indexer_source.clone(),
                 })
                 .to_string();
                 let download_job_id = grab.job_id.clone();
@@ -821,6 +822,8 @@ impl AppUseCase {
                             download_client_type: grab.client_type.clone(),
                             download_client_item_id: grab.job_id.clone(),
                             source_hint: None,
+                            source_provider_id: None,
+                            source_provider_name: pr.indexer_source.clone(),
                             source_kind: None,
                             source_title: source_title.clone(),
                             request_signature: request_signature.clone(),

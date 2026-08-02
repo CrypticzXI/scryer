@@ -34,6 +34,21 @@ impl CompletedDownloadLookup {
         index_completed_download_into(self, completed);
     }
 
+    /// Completion timestamp for a client queue item, when this lookup holds a
+    /// matching row keyed by its client-scoped source reference.
+    pub(crate) fn completed_at_for_item(
+        &self,
+        item: &DownloadQueueItem,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.by_source
+            .get(&completed_download_lookup_key(
+                Some(&item.client_id),
+                &item.client_type,
+                &item.download_client_item_id,
+            ))
+            .and_then(|completed| completed.completed_at)
+    }
+
     #[cfg(test)]
     pub(super) fn empty_full() -> Self {
         Self {

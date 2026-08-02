@@ -39,8 +39,75 @@ use crate::types::{
     SubtitleProviderMode, config_fields_to_domain, indexer_capabilities_to_domain,
     plugin_descriptor_sdk_constraint, validate_plugin_descriptor_sdk_contract,
 };
+use crate::wasmtime_host::module_cache::{self, ModuleFlavor, RehydrationArtifact};
 
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
+
+/// Schedule process-local module rehydration for all enabled persisted and
+/// built-in plugins. Registration happens synchronously before the background
+/// worker starts so a request can wait for its own shared task instead of
+/// compiling an artifact independently.
+pub fn schedule_plugin_rehydration(
+    runtime_plugins: &[RuntimePluginLoad],
+    disabled_builtins: &[String],
+) {
+    let mut artifacts = runtime_plugins
+        .iter()
+        .map(|plugin| RehydrationArtifact {
+            plugin_id: plugin.descriptor.id.clone(),
+            plugin_version: plugin.descriptor.version.clone(),
+            flavor: module_flavor_for_descriptor(&plugin.descriptor),
+            wasm: plugin.wasm_bytes.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let builtin_assets = crate::builtins::INDEXER_BUILTINS
+        .iter()
+        .chain(crate::builtins::SUBTITLE_BUILTINS.iter())
+        .chain(crate::builtins::DOWNLOAD_CLIENT_BUILTINS.iter())
+        .chain(crate::builtins::NOTIFICATION_BUILTINS.iter());
+    for asset in builtin_assets {
+        let descriptor = match parse_builtin_descriptor(*asset) {
+            Ok(descriptor) => descriptor,
+            Err(error) => {
+                warn!(error = %error, "skipping built-in plugin module rehydration");
+                continue;
+            }
+        };
+        if disabled_builtins
+            .iter()
+            .any(|provider_type| provider_type.eq_ignore_ascii_case(descriptor.provider_type()))
+        {
+            continue;
+        }
+        let flavor = module_flavor_for_descriptor(&descriptor);
+        match crate::builtins::decode_builtin_wasm(*asset) {
+            Ok(wasm) => artifacts.push(RehydrationArtifact {
+                plugin_id: descriptor.id,
+                plugin_version: descriptor.version,
+                flavor,
+                wasm,
+            }),
+            Err(error) => warn!(
+                plugin_id = descriptor.id.as_str(),
+                plugin_version = descriptor.version.as_str(),
+                error = %error,
+                "skipping built-in plugin module rehydration"
+            ),
+        }
+    }
+
+    module_cache::schedule_rehydration(artifacts);
+}
+
+fn module_flavor_for_descriptor(descriptor: &PluginDescriptor) -> ModuleFlavor {
+    match PluginRuntimeBacking::for_descriptor(descriptor) {
+        PluginRuntimeBacking::LegacyReactor => ModuleFlavor::LegacyReactor,
+        PluginRuntimeBacking::WasmtimeArchive | PluginRuntimeBacking::WasmtimeSubtitleSync => {
+            ModuleFlavor::Command
+        }
+    }
+}
 
 type IndexerClientCacheKey = (String, String, String, String, String);
 type IndexerClientCache = std::sync::Mutex<HashMap<IndexerClientCacheKey, Arc<dyn IndexerClient>>>;
@@ -2919,6 +2986,7 @@ fn validate_required_exports(
 
 fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), String> {
     let started_at = Instant::now();
+    module_cache::reset_failed_modules(wasm_bytes);
     let bytes = wasm_bytes.to_vec();
 
     if let Some(embedded) = embedded_descriptor_from_wasm(&bytes)? {

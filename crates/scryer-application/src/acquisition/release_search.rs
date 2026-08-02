@@ -18,7 +18,6 @@ use std::collections::HashSet;
 pub(crate) struct CanonicalTitleEvidence {
     pub(crate) lookup_keys: Vec<String>,
     pub(crate) year: Option<i32>,
-    pub(crate) facet: MediaFacet,
     pub(crate) parse_context: crate::ReleaseParseContext,
 }
 
@@ -55,6 +54,7 @@ pub(crate) enum ReleaseAutoDecisionCode {
     ParseAmbiguous,
     ParseUnparseable,
     TitleMismatch,
+    EpisodeMismatch,
     QualityBlocked,
     NegativeScore,
     UpgradeRejected,
@@ -73,6 +73,7 @@ impl ReleaseAutoDecisionCode {
             "parse_ambiguous" => Some(Self::ParseAmbiguous),
             "parse_unparseable" => Some(Self::ParseUnparseable),
             "title_mismatch" => Some(Self::TitleMismatch),
+            "episode_mismatch" => Some(Self::EpisodeMismatch),
             "quality_blocked" => Some(Self::QualityBlocked),
             "negative_score" => Some(Self::NegativeScore),
             "upgrade_rejected" => Some(Self::UpgradeRejected),
@@ -92,6 +93,7 @@ impl ReleaseAutoDecisionCode {
             Self::ParseAmbiguous => "parse_ambiguous",
             Self::ParseUnparseable => "parse_unparseable",
             Self::TitleMismatch => "title_mismatch",
+            Self::EpisodeMismatch => "episode_mismatch",
             Self::QualityBlocked => "quality_blocked",
             Self::NegativeScore => "negative_score",
             Self::UpgradeRejected => "upgrade_rejected",
@@ -110,6 +112,7 @@ impl ReleaseAutoDecisionCode {
             Self::ParseAmbiguous => "release parse is ambiguous and blocks auto-grab",
             Self::ParseUnparseable => "release could not be parsed and blocks auto-grab",
             Self::TitleMismatch => "release title does not match the target title",
+            Self::EpisodeMismatch => "release numbering does not match the target episode",
             Self::QualityBlocked => "quality profile blocked this release",
             Self::NegativeScore => "release score is negative after scoring penalties",
             Self::UpgradeRejected => "upgrade policy rejected this release",
@@ -187,7 +190,6 @@ fn canonical_title_evidence_for_episode(
     CanonicalTitleEvidence {
         lookup_keys: canonical_title_lookup_keys(title),
         year: title.year,
-        facet: title.facet.clone(),
         parse_context: crate::build_release_parse_context(
             title,
             episode,
@@ -431,13 +433,7 @@ pub(crate) fn parsed_release_matches_title_evidence(
     parsed: &ParsedReleaseMetadata,
     evidence: &CanonicalTitleEvidence,
 ) -> bool {
-    // Movie identity includes the year (Resident Evil 2002 vs 2026), so a
-    // parsed year that contradicts the subject is a hard mismatch. Series and
-    // anime release years disambiguate the title itself (Attack on Titan 2021
-    // vs the 2013 first-air year) and are handled by the lookup-key variants
-    // below, so they must not short-circuit the match.
-    if evidence.facet == MediaFacet::Movie
-        && let (Some(parsed_year), Some(expected_year)) = (parsed.year, evidence.year)
+    if let (Some(parsed_year), Some(expected_year)) = (parsed.year, evidence.year)
         && parsed_year != expected_year
     {
         return false;
@@ -686,6 +682,42 @@ pub(crate) fn serialize_decision_explanation(candidate: &IndexerSearchResult) ->
     serde_json::to_string(&payload).ok()
 }
 
+/// Sonarr-style episode anchoring for numbering-scoped subjects: an episode or
+/// season search must not auto-grab a release whose parse carries no episode
+/// identity at all (movie-shaped bare-title junk survives the title guard for
+/// generic names like "Friends"), or whose numbering contradicts the target.
+/// Absent parse data stays permissive — the ambiguous/unparseable handling in
+/// `evaluate_auto_candidate` owns that case. Daily (air-date) and season-pack
+/// parses carry an episode identity and are only checked for fields both
+/// sides actually have, mirroring the strategy-level guard in the search
+/// client.
+fn candidate_numbering_contradicts_subject(
+    candidate: &IndexerSearchResult,
+    subject: &ResolvedReleaseSearchSubject,
+) -> bool {
+    if subject.season.is_none() && subject.episode.is_none() {
+        return false;
+    }
+    let Some(parsed) = candidate.parsed_release_metadata.as_ref() else {
+        return false;
+    };
+    let Some(episode) = parsed.episode.as_ref() else {
+        return true;
+    };
+    if let (Some(expected_season), Some(found_season)) = (subject.season, episode.season)
+        && expected_season != found_season
+    {
+        return true;
+    }
+    if let Some(expected_episode) = subject.episode
+        && !episode.episode_numbers.is_empty()
+        && !episode.episode_numbers.contains(&expected_episode)
+    {
+        return true;
+    }
+    false
+}
+
 pub(crate) fn evaluate_auto_candidate(
     candidate: &IndexerSearchResult,
     context: &AutoCandidateEvaluationContext<'_>,
@@ -706,6 +738,10 @@ pub(crate) fn evaluate_auto_candidate(
 
     if !matches_title {
         return ReleaseAutoDecisionCode::TitleMismatch;
+    }
+
+    if candidate_numbering_contradicts_subject(candidate, context.subject) {
+        return ReleaseAutoDecisionCode::EpisodeMismatch;
     }
 
     let is_allowed = candidate
@@ -1584,29 +1620,6 @@ mod tests {
     }
 
     #[test]
-    fn series_and_anime_title_matching_tolerate_release_year_mismatch() {
-        // A release-name year on a series/anime disambiguates the title
-        // (Attack on Titan 2021 vs the 2013 first-air year); it must not veto
-        // an otherwise-matching title the way a movie year mismatch does.
-        for facet in [MediaFacet::Series, MediaFacet::Anime] {
-            let mut title = make_title();
-            title.name = "Attack on Titan".to_string();
-            title.facet = facet;
-            title.year = Some(2013);
-            let evidence = canonical_title_evidence(&title);
-
-            let mut parsed =
-                crate::parse_release_metadata("Attack.on.Titan.S04E01.1080p.WEB-DL");
-            parsed.year = Some(2021);
-            assert!(
-                parsed_release_matches_title_evidence(&parsed, &evidence),
-                "{:?} subject must tolerate a mismatched release year",
-                evidence.facet
-            );
-        }
-    }
-
-    #[test]
     fn automatic_text_candidate_with_mismatched_year_is_not_eligible() {
         let mut title = make_title();
         title.name = "Resident Evil".to_string();
@@ -1662,6 +1675,169 @@ mod tests {
             evaluate_auto_candidate(&candidate, &context),
             ReleaseAutoDecisionCode::TitleMismatch
         );
+    }
+
+    fn numbering_scoped_subject(
+        title: &Title,
+        season: Option<u32>,
+        episode: Option<u32>,
+    ) -> ResolvedReleaseSearchSubject {
+        ResolvedReleaseSearchSubject {
+            title_id: title.id.clone(),
+            title_tags: title.tags.clone(),
+            title_evidence: canonical_title_evidence(title),
+            queries: vec![title.name.clone()],
+            imdb_id: None,
+            tmdb_id: None,
+            tvdb_id: None,
+            anidb_id: None,
+            mal_id: None,
+            category: title.facet.as_str().to_string(),
+            owner_facet: title.facet.clone(),
+            search_facet: title.facet.clone(),
+            id_search_facet: None,
+            newznab_categories: Vec::new(),
+            runtime_minutes: title.runtime_minutes,
+            season,
+            episode,
+            absolute_episode: None,
+            subject_kind: ReleaseSearchSubjectKind::Episode,
+            current_score: None,
+            last_search_at: None,
+            grabbed_release: None,
+            submission_scope: SubmissionScope::Title,
+        }
+    }
+
+    #[test]
+    fn episode_subject_rejects_candidates_without_episode_identity() {
+        // Bare-title junk for a generic name ("Friends") carries neither a
+        // contradicting year nor episode numbering — the movie-shaped parse is
+        // the only signal, and an episode-scoped subject must refuse it.
+        let mut title = make_title();
+        title.name = "Friends".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(1994);
+        let subject = numbering_scoped_subject(&title, Some(9), Some(23));
+        let candidate = make_candidate("Friends.1080p.BluRay.x264-GRP", None);
+        let profile = QualityProfile::default();
+        let thresholds = AcquisitionThresholds::default();
+        let now = Utc::now();
+        let db_blocklist = HashSet::new();
+        let context = AutoCandidateEvaluationContext {
+            title: &title,
+            subject: &subject,
+            current_score: None,
+            last_search_at: None,
+            profile: &profile,
+            thresholds: &thresholds,
+            cutoff_reached: false,
+            now: &now,
+            dl_snapshot: None,
+            db_blocklist: &db_blocklist,
+            existing_files: &[],
+            delay_profiles: &[],
+            failed_source_kinds: None,
+        };
+
+        assert_eq!(
+            evaluate_auto_candidate(&candidate, &context),
+            ReleaseAutoDecisionCode::EpisodeMismatch
+        );
+    }
+
+    #[test]
+    fn episode_subject_rejects_contradicting_season_numbering() {
+        let mut title = make_title();
+        title.name = "Friends".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(1994);
+        let subject = numbering_scoped_subject(&title, Some(9), Some(23));
+        let candidate = make_candidate("Friends.S05E01.1080p.WEB-DL", None);
+        let profile = QualityProfile::default();
+        let thresholds = AcquisitionThresholds::default();
+        let now = Utc::now();
+        let db_blocklist = HashSet::new();
+        let context = AutoCandidateEvaluationContext {
+            title: &title,
+            subject: &subject,
+            current_score: None,
+            last_search_at: None,
+            profile: &profile,
+            thresholds: &thresholds,
+            cutoff_reached: false,
+            now: &now,
+            dl_snapshot: None,
+            db_blocklist: &db_blocklist,
+            existing_files: &[],
+            delay_profiles: &[],
+            failed_source_kinds: None,
+        };
+
+        assert_eq!(
+            evaluate_auto_candidate(&candidate, &context),
+            ReleaseAutoDecisionCode::EpisodeMismatch
+        );
+    }
+
+    #[test]
+    fn episode_subject_accepts_matching_numbering() {
+        // A real multi-episode release (Friends.S09E23E24) agrees on season
+        // and contains the wanted episode; it must clear the numbering gate
+        // and fall through to the quality decision (absent here → blocked).
+        let mut title = make_title();
+        title.name = "Friends".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(1994);
+        let subject = numbering_scoped_subject(&title, Some(9), Some(23));
+        let candidate = make_candidate("Friends.S09E23E24.1080p.BluRay.x264-TENEIGHTY", None);
+        let profile = QualityProfile::default();
+        let thresholds = AcquisitionThresholds::default();
+        let now = Utc::now();
+        let db_blocklist = HashSet::new();
+        let context = AutoCandidateEvaluationContext {
+            title: &title,
+            subject: &subject,
+            current_score: None,
+            last_search_at: None,
+            profile: &profile,
+            thresholds: &thresholds,
+            cutoff_reached: false,
+            now: &now,
+            dl_snapshot: None,
+            db_blocklist: &db_blocklist,
+            existing_files: &[],
+            delay_profiles: &[],
+            failed_source_kinds: None,
+        };
+
+        assert_eq!(
+            evaluate_auto_candidate(&candidate, &context),
+            ReleaseAutoDecisionCode::QualityBlocked
+        );
+    }
+
+    #[test]
+    fn friends_year_bearing_junk_is_vetoed_but_bare_releases_match() {
+        // Pins the intent of the unconditional year veto: wrong-property junk
+        // that carries its own year (the Korean "Friends" class) must never
+        // match the 1994 series, while the real scene releases — which are
+        // bare-titled — must keep matching.
+        let mut title = make_title();
+        title.name = "Friends".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(1994);
+        let evidence = canonical_title_evidence(&title);
+
+        let mut junk = crate::parse_release_metadata("Friends.S01E01.1080p.WEB-DL");
+        junk.year = Some(2002);
+        assert!(!parsed_release_matches_title_evidence(&junk, &evidence));
+
+        let legit = crate::parse_release_metadata(
+            "Friends.S09E23E24.1080p.NF.WEB-DL.DDP5.1.x264-PRAGMA",
+        );
+        assert_eq!(legit.year, None);
+        assert!(parsed_release_matches_title_evidence(&legit, &evidence));
     }
 
     #[test]
