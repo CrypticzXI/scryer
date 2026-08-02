@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
@@ -136,6 +136,7 @@ function formatWantedDecisionCode(code: string, t: Translate) {
     eligible: "wanted.decision.eligible",
     title_mismatch: "wanted.decision.titleMismatch",
     episode_mismatch: "wanted.decision.episodeMismatch",
+    ambiguous_identity: "wanted.decision.ambiguousIdentity",
     quality_blocked: "wanted.decision.qualityBlocked",
     upgrade_rejected: "wanted.decision.upgradeRejected",
     pending_delay: "wanted.decision.pendingDelay",
@@ -231,6 +232,7 @@ function decisionBadge(code: string, t: Translate) {
     eligible: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
     title_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
     episode_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
+    ambiguous_identity: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
     quality_blocked: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
     upgrade_rejected: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
     pending_delay: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
@@ -1085,14 +1087,17 @@ function formatTimeRemaining(delayUntil: string, t: Translate): string {
   return t("wanted.timeMinutes", { minutes });
 }
 
-function formatPendingStatus(status: PendingReleaseStatus): string {
+function formatPendingStatus(status: PendingReleaseStatus, t: Translate): string {
+  if (status === "NEEDS_REVIEW") {
+    return t("pending.status.needsReview");
+  }
   return status
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
 }
 
-function pendingStatusBadge(status: PendingReleaseStatus) {
+function pendingStatusBadge(status: PendingReleaseStatus, t: Translate) {
   const cls =
     status === "GRABBED"
       ? "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
@@ -1100,17 +1105,17 @@ function pendingStatusBadge(status: PendingReleaseStatus) {
         ? "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]"
         : status === "PROCESSING"
           ? "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]"
-          : status === "SUPERSEDED"
+          : status === "SUPERSEDED" || status === "NEEDS_REVIEW"
             ? "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]"
             : "border-[var(--scry-border2)] bg-[var(--scry-chip)] text-[var(--scry-muted2)]";
   return (
     <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${cls}`}>
-      {formatPendingStatus(status)}
+      {formatPendingStatus(status, t)}
     </span>
   );
 }
 
-function pendingPhaseBadge(status: PendingReleaseStatus) {
+function pendingPhaseBadge(status: PendingReleaseStatus, t: Translate) {
   const label =
     status === "PROCESSING"
       ? "Processing"
@@ -1120,7 +1125,9 @@ function pendingPhaseBadge(status: PendingReleaseStatus) {
           ? "Closed"
           : status === "SUPERSEDED"
             ? "Superseded"
-            : "Scheduled";
+            : status === "NEEDS_REVIEW"
+              ? t("pending.phase.needsReview")
+              : "Scheduled";
   return (
     <span className="inline-flex rounded-full border border-[rgba(var(--scry-accent-rgb),0.24)] bg-[rgba(var(--scry-accent-rgb),0.13)] px-2 py-0.5 text-xs font-medium text-[var(--scry-accent-text)]">
       {label}
@@ -1215,8 +1222,8 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     <div className="min-w-0 flex-1">
                       <p className="break-words text-sm font-medium text-foreground">{item.releaseTitle}</p>
                       <div className="mt-2 flex flex-wrap gap-2">
-                        {pendingStatusBadge(item.status)}
-                        {pendingPhaseBadge(item.status)}
+                        {pendingStatusBadge(item.status, t)}
+                        {pendingPhaseBadge(item.status, t)}
                       </div>
                     </div>
                   </div>
@@ -1314,8 +1321,8 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                         <TableCell className="truncate text-sm" title={item.releaseTitle}>
                           {item.releaseTitle}
                         </TableCell>
-                        <TableCell className="text-center">{pendingStatusBadge(item.status)}</TableCell>
-                        <TableCell className="text-center">{pendingPhaseBadge(item.status)}</TableCell>
+                        <TableCell className="text-center">{pendingStatusBadge(item.status, t)}</TableCell>
+                        <TableCell className="text-center">{pendingPhaseBadge(item.status, t)}</TableCell>
                         <TableCodeCell className="text-center">{item.releaseScore}</TableCodeCell>
                         <TableCodeCell className="text-center text-xs">
                           {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}

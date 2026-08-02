@@ -585,6 +585,22 @@ impl WasmIndexerPluginProvider {
         ))
     }
 
+    fn prepare_builtin_provider_type(&self, provider_type: &str) -> Result<(), String> {
+        let asset = builtin_indexer_asset_for_provider(provider_type).ok_or_else(|| {
+            format!("no built-in indexer plugin is available for provider '{provider_type}'")
+        })?;
+        let wasm_bytes = crate::builtins::decode_builtin_wasm(asset)?;
+        let (descriptor, _) = load_from_bytes(&wasm_bytes)?;
+        if !validate_indexer_descriptor(&descriptor, PluginLoadSource::Builtin)
+            || !descriptor
+                .provider_type()
+                .eq_ignore_ascii_case(provider_type)
+        {
+            return Err("built-in indexer descriptor rejected".to_string());
+        }
+        Ok(())
+    }
+
     fn upsert_runtime_plugin_record(
         &mut self,
         plugin: RuntimePluginLoad,
@@ -1066,6 +1082,13 @@ impl IndexerPluginProvider for DynamicPluginProvider {
         };
         self.invalidate_provider_keys(&affected);
         Ok(())
+    }
+
+    fn prepare_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        self.inner
+            .read()
+            .expect("DynamicPluginProvider lock poisoned")
+            .prepare_builtin_provider_type(provider_type)
     }
 }
 
@@ -2008,6 +2031,25 @@ impl WasmSubtitlePluginProvider {
         ))
     }
 
+    fn prepare_builtin_provider_type(&self, provider_type: &str) -> Result<(), String> {
+        let asset = builtin_subtitle_asset_for_provider(provider_type).ok_or_else(|| {
+            format!("no built-in subtitle plugin is available for provider '{provider_type}'")
+        })?;
+        let wasm_bytes = crate::builtins::decode_builtin_wasm(asset)?;
+        let (descriptor, _) = load_from_bytes(&wasm_bytes)?;
+        if !validate_descriptor_for_type(
+            &descriptor,
+            Some("subtitle_provider"),
+            PluginLoadSource::Builtin,
+        ) || !descriptor
+            .provider_type()
+            .eq_ignore_ascii_case(provider_type)
+        {
+            return Err("built-in subtitle provider descriptor rejected".to_string());
+        }
+        Ok(())
+    }
+
     fn upsert_runtime_plugin_record(
         &mut self,
         plugin: RuntimePluginLoad,
@@ -2379,6 +2421,13 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
         };
         self.invalidate_provider_keys(&affected);
         Ok(())
+    }
+
+    fn prepare_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        self.inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned")
+            .prepare_builtin_provider_type(provider_type)
     }
 }
 

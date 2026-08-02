@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { createBrowserRouter, Navigate, useLocation } from "react-router-dom";
+import { createBrowserRouter, Navigate, useLocation } from "react-router";
 import { PageShellFallback } from "@/components/root/page-shell-fallback";
 import { getRuntimeBasePath } from "@/lib/runtime-config";
 import { resolveAppRoute } from "@/lib/utils/routing";

@@ -346,6 +346,37 @@ async fn execute_resolved_episode_import(
         });
     }
 
+    // Replace guard: overwriting a library file is stricter than filling a gap.
+    // With no catalog runtime the band could not run at the gate, so compare the
+    // probed duration against what the incumbent file(s) actually hold and park
+    // an implausible replacement for manual resolution instead of burning it.
+    if !existing_incumbents.is_empty()
+        && let Some(message) = crate::post_download_gate::replace_runtime_band_block(
+            runtime_sample_validation,
+            prepared.accepted.as_ref(),
+            crate::post_download_gate::incumbent_replace_runtime_seconds(
+                existing_incumbents
+                    .iter()
+                    .map(|incumbent| incumbent.media_file.duration_seconds),
+            ),
+        )
+    {
+        tracing::info!(
+            title_id = %title.id,
+            file = %source_video.display(),
+            code = crate::post_download_gate::REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE,
+            "holding episode replacement for manual resolution"
+        );
+        return Ok(EpisodeImportOutcome::Skipped {
+            message,
+            reason_code: Some(
+                crate::post_download_gate::REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE.to_string(),
+            ),
+            skip_reason: Some(ImportSkipReason::PolicyMismatch),
+            episode_ids: target_episode_ids.clone(),
+        });
+    }
+
     let ext = precheck_ext;
     let effective_quality_label = quality_override
         .as_deref()

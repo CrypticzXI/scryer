@@ -310,14 +310,9 @@ mod tests {
 
         let reader_cache = cache_for(temp.path());
         let reader_engine = engine_with_cache(reader_cache.clone());
-        for _ in 0..100 {
-            wasmtime::Module::from_binary(&reader_engine, &wasm).expect("cached module must load");
-            if reader_cache.cache_hits() >= 1 {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        panic!("second engine did not reuse the persistent Wasmtime cache");
+        wasmtime::Module::from_binary(&reader_engine, &wasm).expect("cached module must load");
+        assert_eq!(reader_cache.cache_hits(), 1);
+        assert_eq!(reader_cache.cache_misses(), 0);
     }
 
     #[test]

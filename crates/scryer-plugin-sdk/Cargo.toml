@@ -10,7 +10,7 @@ repository = "https://github.com/scryer-media/scryer"
 default = []
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 schemars = "1"
 semver = { workspace = true }
 serde = { workspace = true }

@@ -285,6 +285,70 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    async fn prepare_runtime_builtin(
+        &self,
+        installation: &PluginInstallation,
+    ) -> AppResult<()> {
+        let provider_type = installation.provider_type.clone();
+        if is_indexer_plugin_type(&installation.plugin_type) {
+            let provider = self
+                .services
+                .integrations
+                .plugin_provider
+                .available()
+                .cloned()
+                .ok_or_else(|| {
+                    AppError::Repository("indexer plugin provider unavailable".to_string())
+                })?;
+            return tokio::task::spawn_blocking(move || {
+                provider.prepare_builtin_plugin(&provider_type)
+            })
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "built-in indexer plugin preparation task failed: {error}"
+                ))
+            })?
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to prepare built-in indexer plugin: {error}"
+                ))
+            });
+        }
+
+        match installation.plugin_type.as_str() {
+            "subtitle_provider" => {
+                let provider = self
+                    .services
+                    .integrations
+                    .subtitle_plugin_provider
+                    .available()
+                    .cloned()
+                    .ok_or_else(|| {
+                        AppError::Repository("subtitle plugin provider unavailable".to_string())
+                    })?;
+                tokio::task::spawn_blocking(move || {
+                    provider.prepare_builtin_plugin(&provider_type)
+                })
+                .await
+                .map_err(|error| {
+                    AppError::Repository(format!(
+                        "built-in subtitle plugin preparation task failed: {error}"
+                    ))
+                })?
+                .map_err(|error| {
+                    AppError::Repository(format!(
+                        "failed to prepare built-in subtitle plugin: {error}"
+                    ))
+                })
+            }
+            other => Err(AppError::Validation(format!(
+                "unsupported plugin_type '{}' for built-in preparation",
+                other
+            ))),
+        }
+    }
+
     fn apply_runtime_builtin_restore(&self, installation: &PluginInstallation) -> AppResult<()> {
         let provider_type = installation.provider_type.as_str();
         if is_indexer_plugin_type(&installation.plugin_type) {

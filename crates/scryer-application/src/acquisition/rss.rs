@@ -1,10 +1,11 @@
 use super::*;
 use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
 use crate::acquisition_release_search::{
-    AutoCandidateEvaluationContext, ReleaseAutoDecisionCode, TITLE_MATCH_HEAD_ANCHOR_MAX_START,
-    annotate_auto_decision, canonical_title_evidence, evaluate_auto_candidate,
-    parsed_release_matches_title_evidence, serialize_decision_explanation,
-    series_movie_search_title, title_key_head_anchored,
+    AutoCandidateEvaluationContext, CandidateTitleMatch, ReleaseAutoDecisionCode,
+    TITLE_MATCH_HEAD_ANCHOR_MAX_START, annotate_auto_decision,
+    candidate_presents_identity_disambiguator, canonical_title_evidence, evaluate_auto_candidate,
+    match_parsed_release_to_title_evidence, parsed_release_matches_title_evidence,
+    serialize_decision_explanation, series_movie_search_title, title_key_head_anchored,
 };
 use crate::delay_profile::DelayProfile;
 use crate::domain_events::{new_title_domain_event, title_context_snapshot};
@@ -44,7 +45,7 @@ struct TitleContextCandidate {
 }
 
 fn build_title_context_bank(titles: &[Title]) -> Vec<TitleContextCandidate> {
-    titles
+    let mut bank = titles
         .iter()
         .filter(|title| title.monitored)
         .map(|title| TitleContextCandidate {
@@ -54,7 +55,41 @@ fn build_title_context_bank(titles: &[Title]) -> Vec<TitleContextCandidate> {
             },
             evidence: canonical_title_evidence(title),
         })
-        .collect()
+        .collect::<Vec<_>>();
+
+    // Pillar A tier 0 on the RSS path: the matchable set is already in memory,
+    // so library-local collisions are a grouping over it — no extra queries.
+    let mut titles_per_key: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for candidate in &bank {
+        for key in &candidate.evidence.lookup_keys {
+            titles_per_key
+                .entry(key.as_str())
+                .or_default()
+                .insert(candidate.info.title_id.as_str());
+        }
+    }
+    let shared_keys = titles_per_key
+        .into_iter()
+        .filter(|(_, title_ids)| title_ids.len() >= 2)
+        .map(|(key, _)| key.to_string())
+        .collect::<HashSet<_>>();
+
+    if !shared_keys.is_empty() {
+        for candidate in &mut bank {
+            candidate.evidence.ambiguity =
+                crate::acquisition_release_search::TitleIdentityAmbiguity::from_shared_keys(
+                    candidate
+                        .evidence
+                        .lookup_keys
+                        .iter()
+                        .filter(|key| shared_keys.contains(key.as_str()))
+                        .cloned()
+                        .collect(),
+                );
+        }
+    }
+
+    bank
 }
 
 /// Extract the series/movie title portion from a release name by taking
@@ -212,6 +247,8 @@ fn match_release_to_title_context<'a>(
     candidates.truncate(RSS_TITLE_CONTEXT_CANDIDATE_LIMIT);
 
     let mut best: Option<(&TitleMatchInfo, i32)> = None;
+    let mut titles_per_matched_key: HashMap<String, HashSet<&str>> = HashMap::new();
+    let mut any_disambiguated = false;
     for (candidate, lexical_score) in candidates {
         let parsed =
             parse_release_metadata_for_target(release_title, &candidate.evidence.parse_context);
@@ -220,9 +257,24 @@ fn match_release_to_title_context<'a>(
         {
             continue;
         }
-        if !parsed_release_matches_title_evidence(&parsed, &candidate.evidence) {
+        let Some(evidence_match) =
+            match_parsed_release_to_title_evidence(&parsed, &candidate.evidence)
+        else {
             continue;
-        }
+        };
+
+        titles_per_matched_key
+            .entry(evidence_match.matched_key.clone())
+            .or_default()
+            .insert(candidate.info.title_id.as_str());
+        any_disambiguated |= candidate_presents_identity_disambiguator(
+            &candidate.evidence,
+            &CandidateTitleMatch {
+                evidence_match: Some(evidence_match),
+                provenance_validated: false,
+            },
+            None,
+        );
 
         let year_bonus = i32::from(parsed.year.is_some() && parsed.year == candidate.info.year) * 8;
         let parser_bonus = (parsed.parse_confidence * 10.0).round() as i32;
@@ -234,6 +286,24 @@ fn match_release_to_title_context<'a>(
                     || (score == best_score && candidate.info.title_id >= best_info.title_id) => {}
             _ => best = Some((&candidate.info, score)),
         }
+    }
+
+    // Sonarr collision conservatism (Pillar A3): when the same bare key resolves
+    // to two different library titles and nothing disambiguates them, the
+    // release names neither show. Assigning by score or title-id tiebreak is how
+    // the wrong show gets the grab, so skip the release entirely.
+    if !any_disambiguated
+        && let Some((collision_key, colliding_titles)) = titles_per_matched_key
+            .iter()
+            .find(|(_, title_ids)| title_ids.len() >= 2)
+    {
+        tracing::debug!(
+            release = release_title,
+            matched_key = collision_key.as_str(),
+            title_count = colliding_titles.len(),
+            "RSS sync: skipping release — shared canonical key matches multiple titles with no disambiguator"
+        );
+        return None;
     }
 
     best.map(|(info, _)| info)
@@ -2078,6 +2148,43 @@ mod tests {
         let result =
             match_release_to_title_context("Friends.1994.S02E14.1080p.WEB-DL.x264-GRP", &bank);
         assert!(result.is_some(), "year-corroborated release must match");
+    }
+
+    // ── Pillar A3: RSS collision conservatism (Sonarr parity) ────────────────
+
+    /// The incident pair on the RSS path: the live-action `One Piece` (2023)
+    /// and the anime (1999) share the bare canonical key in one library.
+    fn one_piece_rss_bank() -> Vec<TitleContextCandidate> {
+        let mut anime = make_series_title("one-piece-anime", "One Piece", Some(1999));
+        anime.facet = MediaFacet::Anime;
+        build_title_context_bank(&[
+            make_series_title("one-piece-live", "One Piece", Some(2023)),
+            anime,
+        ])
+    }
+
+    #[test]
+    fn shared_bare_key_collision_skips_release_without_disambiguator() {
+        // Two library titles answer to the same bare key and nothing separates
+        // them, so assigning by score/title-id tiebreak would be a coin flip.
+        let bank = one_piece_rss_bank();
+        assert!(
+            match_release_to_title_context("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", &bank)
+                .is_none(),
+            "colliding bare key with no disambiguator must skip the release"
+        );
+    }
+
+    #[test]
+    fn shared_bare_key_collision_assigns_when_year_disambiguates() {
+        let bank = one_piece_rss_bank();
+        let result =
+            match_release_to_title_context("One.Piece.2023.S02E01.1080p.WEB-DL.x264-GRP", &bank);
+        assert_eq!(
+            result.map(|info| info.title_id.as_str()),
+            Some("one-piece-live"),
+            "a year-stamped release names exactly one of the colliding titles"
+        );
     }
 
     #[test]

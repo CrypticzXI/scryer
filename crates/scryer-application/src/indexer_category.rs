@@ -1,0 +1,432 @@
+//! Indexer-asserted category as an identity veto (plan 136 §6, Pillar D).
+//!
+//! An indexer that files a release under `TV > Anime` has made an explicit,
+//! machine-readable identity assertion. Category is only *indexer* evidence
+//! (same trust tier as response ids), so it is enforced with an **asymmetric**
+//! contradiction rule: a veto fires only when the asserted category is more
+//! specific than the subject, never the other way around.
+//!
+//! This module owns the coarse mapping and the contradiction rule for both
+//! insertion points: the pre-submission NZB metadata gate (D1, live) and the
+//! newznab/torznab response-attribute lane (D2, later).
+
+use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
+use scryer_domain::MediaFacet;
+
+use crate::{AppError, AppResult};
+
+/// Failure code carried by the release attempt recorded when a submission is
+/// vetoed, so operators can see why the release was burned.
+pub const CATEGORY_MISMATCH_CODE: &str = "category_mismatch";
+
+/// Upper bound on the NZB prefix inspected for `<head>` metadata. The head
+/// precedes the first `<file>` element, so a bounded prefix is enough and an
+/// oversized or headless payload never costs more than this.
+pub const NZB_HEAD_PROBE_BYTES: usize = 32 * 1024;
+
+/// Coarse family that an indexer category name or newznab id maps onto.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexerCategoryFamily {
+    Anime,
+    Movies,
+    Tv,
+}
+
+impl IndexerCategoryFamily {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anime => "anime",
+            Self::Movies => "movies",
+            Self::Tv => "tv",
+        }
+    }
+}
+
+/// Map a raw category label (`"TV > Anime"`, `"Movies/HD"`) or newznab id
+/// (`"5070"`) onto a coarse family. Unknown or unmappable input yields `None`,
+/// which always allows the release through.
+pub fn indexer_category_family(raw: &str) -> Option<IndexerCategoryFamily> {
+    let mut family: Option<IndexerCategoryFamily> = None;
+
+    for segment in raw.split(['>', '/', ',', '|']) {
+        let Some(segment_family) = category_segment_family(segment) else {
+            continue;
+        };
+        // The deepest mapped segment wins ("TV > Anime" is anime), except that
+        // an `anime` segment is the most specific assertion an indexer can
+        // make and is never demoted by a shallower generic segment.
+        family = match family {
+            Some(IndexerCategoryFamily::Anime) => Some(IndexerCategoryFamily::Anime),
+            _ => Some(segment_family),
+        };
+    }
+
+    family
+}
+
+/// The asymmetric contradiction rule from plan 136 §6.
+///
+/// * anime category + series/movie subject → veto (anime is strictly more
+///   specific than either plain subject)
+/// * movies category + episodic subject (series/anime) → veto
+/// * tv category + movie subject → veto
+/// * generic tv category + anime subject → allow (indexers routinely file
+///   anime under plain TV; absence of specificity is not evidence)
+/// * anime category + anime subject, movies + movie → allow
+pub fn indexer_category_contradicts_facet(
+    family: IndexerCategoryFamily,
+    facet: &MediaFacet,
+) -> bool {
+    match (family, facet) {
+        (IndexerCategoryFamily::Anime, MediaFacet::Series | MediaFacet::Movie) => true,
+        (IndexerCategoryFamily::Anime, MediaFacet::Anime) => false,
+        (IndexerCategoryFamily::Movies, MediaFacet::Series | MediaFacet::Anime) => true,
+        (IndexerCategoryFamily::Movies, MediaFacet::Movie) => false,
+        (IndexerCategoryFamily::Tv, MediaFacet::Movie) => true,
+        (IndexerCategoryFamily::Tv, MediaFacet::Series | MediaFacet::Anime) => false,
+    }
+}
+
+/// Read `<head><meta type="category">…</meta></head>` out of an NZB prefix.
+///
+/// The input may be truncated at any point (it is a bounded probe of a
+/// streaming download); parsing stops at the first problem and reports whatever
+/// was already recovered. XML entities are resolved, so `TV &gt; Anime` is
+/// returned as `TV > Anime`.
+pub fn nzb_head_category(nzb_head_bytes: &[u8]) -> Option<String> {
+    let head_text = String::from_utf8_lossy(nzb_head_bytes);
+    let mut reader = Reader::from_str(&head_text);
+    let mut in_head = false;
+    let mut capturing = false;
+    let mut value = String::new();
+    let mut category: Option<String> = None;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref start)) => {
+                match local_name_lowercase(start.name().as_ref()).as_str() {
+                    "head" => in_head = true,
+                    "meta" if in_head => {
+                        capturing = meta_declares_category(start);
+                        value.clear();
+                    }
+                    // The head always precedes the first file segment; anything
+                    // else at this point means there is nothing left to find.
+                    "file" if !in_head => break,
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(ref text)) if capturing => {
+                if let Some(decoded) = text.decode().ok().and_then(|decoded| {
+                    quick_xml::escape::unescape(&decoded)
+                        .ok()
+                        .map(|unescaped| unescaped.into_owned())
+                }) {
+                    value.push_str(&decoded);
+                }
+            }
+            Ok(Event::GeneralRef(ref reference)) if capturing => {
+                if let Ok(Some(character)) = reference.resolve_char_ref() {
+                    value.push(character);
+                } else if let Ok(decoded) = reference.decode()
+                    && let Some(entity) =
+                        quick_xml::escape::resolve_predefined_entity(decoded.as_ref())
+                {
+                    value.push_str(entity);
+                }
+            }
+            Ok(Event::End(ref end)) => match local_name_lowercase(end.name().as_ref()).as_str() {
+                "meta" if capturing => {
+                    let trimmed = value.trim();
+                    if category.is_none() && !trimmed.is_empty() {
+                        category = Some(trimmed.to_string());
+                    }
+                    capturing = false;
+                    value.clear();
+                }
+                "head" => break,
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            // A truncated or malformed probe is not evidence of anything.
+            Err(_) => break,
+            _ => {}
+        }
+    }
+
+    category
+}
+
+/// Pre-submission gate (D1): reject an NZB whose indexer-asserted category
+/// contradicts the subject facet, before the payload reaches a download client.
+///
+/// Permissive by construction — an absent, unmappable, or unparseable category
+/// always passes.
+pub fn enforce_nzb_category_gate(nzb_head_bytes: &[u8], facet: &MediaFacet) -> AppResult<()> {
+    let Some(category) = nzb_head_category(nzb_head_bytes) else {
+        return Ok(());
+    };
+    let Some(family) = indexer_category_family(&category) else {
+        return Ok(());
+    };
+    if !indexer_category_contradicts_facet(family, facet) {
+        return Ok(());
+    }
+
+    Err(AppError::Validation(format!(
+        "{CATEGORY_MISMATCH_CODE}: indexer category '{category}' maps to {} but the release was \
+         submitted for a {} subject; the NZB was not handed to the download client",
+        family.as_str(),
+        facet.as_str()
+    )))
+}
+
+fn category_segment_family(segment: &str) -> Option<IndexerCategoryFamily> {
+    let segment = segment.trim();
+    if segment.is_empty() {
+        return None;
+    }
+    if let Ok(newznab_id) = segment.parse::<u32>() {
+        return newznab_id_family(newznab_id);
+    }
+
+    let lowered = segment.to_ascii_lowercase();
+    if lowered.contains("anime") {
+        Some(IndexerCategoryFamily::Anime)
+    } else if lowered.contains("movie") {
+        Some(IndexerCategoryFamily::Movies)
+    } else if lowered.contains("series") || lowered.contains("tv") {
+        Some(IndexerCategoryFamily::Tv)
+    } else {
+        None
+    }
+}
+
+fn newznab_id_family(newznab_id: u32) -> Option<IndexerCategoryFamily> {
+    match newznab_id {
+        5070 => Some(IndexerCategoryFamily::Anime),
+        2000..=2999 => Some(IndexerCategoryFamily::Movies),
+        5000..=5999 => Some(IndexerCategoryFamily::Tv),
+        _ => None,
+    }
+}
+
+fn meta_declares_category(start: &BytesStart<'_>) -> bool {
+    start
+        .attributes()
+        .filter_map(|attribute| attribute.ok())
+        .any(|attribute| {
+            local_name_lowercase(attribute.key.as_ref()) == "type"
+                && String::from_utf8_lossy(attribute.value.as_ref())
+                    .trim()
+                    .eq_ignore_ascii_case("category")
+        })
+}
+
+fn local_name_lowercase(name: &[u8]) -> String {
+    let local = name.rsplit(|byte| *byte == b':').next().unwrap_or(name);
+    String::from_utf8_lossy(local).to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indexer_category_family_maps_names_and_ids() {
+        assert_eq!(
+            indexer_category_family("TV > Anime"),
+            Some(IndexerCategoryFamily::Anime)
+        );
+        assert_eq!(
+            indexer_category_family("Movies > HD"),
+            Some(IndexerCategoryFamily::Movies)
+        );
+        assert_eq!(
+            indexer_category_family("TV"),
+            Some(IndexerCategoryFamily::Tv)
+        );
+        assert_eq!(
+            indexer_category_family("TV > Web-DL"),
+            Some(IndexerCategoryFamily::Tv)
+        );
+        assert_eq!(
+            indexer_category_family("Series"),
+            Some(IndexerCategoryFamily::Tv)
+        );
+        assert_eq!(
+            indexer_category_family("5070"),
+            Some(IndexerCategoryFamily::Anime)
+        );
+        assert_eq!(
+            indexer_category_family("5040"),
+            Some(IndexerCategoryFamily::Tv)
+        );
+        assert_eq!(
+            indexer_category_family("2040"),
+            Some(IndexerCategoryFamily::Movies)
+        );
+        assert_eq!(
+            indexer_category_family("5000,5070"),
+            Some(IndexerCategoryFamily::Anime)
+        );
+        assert_eq!(
+            indexer_category_family("Anime > TV"),
+            Some(IndexerCategoryFamily::Anime),
+            "an anime segment is never demoted by a shallower generic segment"
+        );
+    }
+
+    #[test]
+    fn indexer_category_family_is_unknown_for_garbage_or_absent_values() {
+        assert_eq!(indexer_category_family(""), None);
+        assert_eq!(indexer_category_family("   "), None);
+        assert_eq!(indexer_category_family("Books > EBook"), None);
+        assert_eq!(indexer_category_family("9999"), None);
+        assert_eq!(indexer_category_family("¯\\_(ツ)_/¯"), None);
+    }
+
+    #[test]
+    fn anime_category_vetoes_a_series_subject() {
+        assert!(indexer_category_contradicts_facet(
+            IndexerCategoryFamily::Anime,
+            &MediaFacet::Series
+        ));
+    }
+
+    #[test]
+    fn movies_category_vetoes_an_episodic_subject() {
+        assert!(indexer_category_contradicts_facet(
+            IndexerCategoryFamily::Movies,
+            &MediaFacet::Series
+        ));
+        assert!(indexer_category_contradicts_facet(
+            IndexerCategoryFamily::Movies,
+            &MediaFacet::Anime
+        ));
+    }
+
+    #[test]
+    fn tv_category_vetoes_a_movie_subject() {
+        assert!(indexer_category_contradicts_facet(
+            IndexerCategoryFamily::Tv,
+            &MediaFacet::Movie
+        ));
+        assert!(indexer_category_contradicts_facet(
+            IndexerCategoryFamily::Anime,
+            &MediaFacet::Movie
+        ));
+    }
+
+    #[test]
+    fn generic_tv_category_allows_an_anime_subject() {
+        assert!(!indexer_category_contradicts_facet(
+            IndexerCategoryFamily::Tv,
+            &MediaFacet::Anime
+        ));
+        assert!(!indexer_category_contradicts_facet(
+            IndexerCategoryFamily::Tv,
+            &MediaFacet::Series
+        ));
+    }
+
+    #[test]
+    fn matching_categories_allow_their_own_subject() {
+        assert!(!indexer_category_contradicts_facet(
+            IndexerCategoryFamily::Anime,
+            &MediaFacet::Anime
+        ));
+        assert!(!indexer_category_contradicts_facet(
+            IndexerCategoryFamily::Movies,
+            &MediaFacet::Movie
+        ));
+    }
+
+    fn nzb_head_with_category(category: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="iso-8859-1" ?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+<head>
+ <meta type="name">One.Piece.S02.DANiSH.JAPANESE.1080p.WEB.H264</meta>
+ <meta type="title">One.Piece.S02.DANiSH.JAPANESE.1080p.WEB.H264</meta>
+ <meta type="category">{category}</meta>
+ <meta type="size">12345678</meta>
+</head>
+<file poster="poster@example.invalid" date="1700000000" subject="[1/2] - &quot;x.par2&quot;">
+</file>
+</nzb>"#
+        )
+    }
+
+    #[test]
+    fn nzb_head_category_decodes_xml_entities() {
+        assert_eq!(
+            nzb_head_category(nzb_head_with_category("TV &gt; Anime").as_bytes()),
+            Some("TV > Anime".to_string())
+        );
+    }
+
+    #[test]
+    fn nzb_head_category_is_absent_without_a_category_meta() {
+        let nzb = r#"<?xml version="1.0"?>
+<nzb><head><meta type="name">Some.Release</meta></head><file></file></nzb>"#;
+
+        assert_eq!(nzb_head_category(nzb.as_bytes()), None);
+    }
+
+    #[test]
+    fn nzb_head_category_tolerates_a_truncated_probe() {
+        let nzb = nzb_head_with_category("TV &gt; Anime");
+        let truncated = &nzb.as_bytes()[..nzb.find("<meta type=\"size\"").unwrap()];
+
+        assert_eq!(
+            nzb_head_category(truncated),
+            Some("TV > Anime".to_string()),
+            "a probe cut after the category meta still resolves the category"
+        );
+    }
+
+    #[test]
+    fn nzb_head_category_is_absent_for_a_malformed_head() {
+        let nzb = br#"<?xml version="1.0"?><nzb><head><meta type="category">TV > Anime"#;
+
+        assert_eq!(nzb_head_category(nzb), None);
+    }
+
+    #[test]
+    fn enforce_nzb_category_gate_blocks_an_anime_nzb_for_a_series_subject() {
+        let nzb = nzb_head_with_category("TV &gt; Anime");
+
+        let error = enforce_nzb_category_gate(nzb.as_bytes(), &MediaFacet::Series)
+            .expect_err("an anime nzb must not be submitted for a series subject");
+
+        assert!(
+            error.to_string().contains(CATEGORY_MISMATCH_CODE),
+            "gate error must carry the category_mismatch code: {error}"
+        );
+        assert!(error.to_string().contains("TV > Anime"), "{error}");
+    }
+
+    #[test]
+    fn enforce_nzb_category_gate_allows_an_anime_nzb_for_an_anime_subject() {
+        let nzb = nzb_head_with_category("TV &gt; Anime");
+
+        enforce_nzb_category_gate(nzb.as_bytes(), &MediaFacet::Anime)
+            .expect("an anime nzb is exactly right for an anime subject");
+    }
+
+    #[test]
+    fn enforce_nzb_category_gate_allows_unknown_and_absent_categories() {
+        let unknown = nzb_head_with_category("Books &gt; EBook");
+        enforce_nzb_category_gate(unknown.as_bytes(), &MediaFacet::Series)
+            .expect("an unmappable category is permissive");
+
+        let absent = r#"<?xml version="1.0"?><nzb><head></head><file></file></nzb>"#;
+        enforce_nzb_category_gate(absent.as_bytes(), &MediaFacet::Series)
+            .expect("an absent category is permissive");
+
+        enforce_nzb_category_gate(b"not xml at all", &MediaFacet::Series)
+            .expect("a malformed payload is permissive");
+    }
+}

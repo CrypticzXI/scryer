@@ -134,6 +134,7 @@ async fn graphql_title_history_includes_download_ignored_events() {
                 client_id: Some("client-1".to_string()),
                 client_type: Some("nzbget".to_string()),
                 source_provider: Some("Fixture Indexer".to_string()),
+                source_title: Some("Fixture.Release.2026.1080p.WEB-DL".to_string()),
             }),
         })
         .await
@@ -145,7 +146,7 @@ async fn graphql_title_history_includes_download_ignored_events() {
         query TitleHistory($titleId: ID!) {
           titleHistory(filter: { titleIds: [$titleId], eventTypes: [DOWNLOAD_IGNORED], limit: 10 }) {
             totalCount
-            items { eventType downloadId sourceProvider sourceHint }
+            items { eventType downloadId sourceTitle displayTitle sourceProvider sourceHint }
           }
         }
         "#,
@@ -157,6 +158,8 @@ async fn graphql_title_history_includes_download_ignored_events() {
     let record = &body["data"]["titleHistory"]["items"][0];
     assert_eq!(record["eventType"], "download_ignored");
     assert_eq!(record["downloadId"], "ignored-job-1");
+    assert_eq!(record["sourceTitle"], "Fixture.Release.2026.1080p.WEB-DL");
+    assert_eq!(record["displayTitle"], "Fixture.Release.2026.1080p.WEB-DL");
     assert_eq!(record["sourceProvider"], "Fixture Indexer");
     assert_eq!(record["sourceHint"], "Fixture Indexer");
 }

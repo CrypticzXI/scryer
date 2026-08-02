@@ -557,6 +557,7 @@ struct MockPluginProvider {
     upsert_count: AtomicUsize,
     remove_count: AtomicUsize,
     restore_count: AtomicUsize,
+    prepare_error: Option<String>,
 }
 
 impl MockPluginProvider {
@@ -577,6 +578,7 @@ impl MockPluginProvider {
             upsert_count: AtomicUsize::new(0),
             remove_count: AtomicUsize::new(0),
             restore_count: AtomicUsize::new(0),
+            prepare_error: None,
         }
     }
 
@@ -600,6 +602,11 @@ impl MockPluginProvider {
     fn with_builtin_provider(mut self, pt: &str, name: &str, default_url: Option<&str>) -> Self {
         self = self.with_provider(pt, name, default_url);
         self.builtin_types.push(pt.to_string());
+        self
+    }
+
+    fn with_prepare_error(mut self, error: &str) -> Self {
+        self.prepare_error = Some(error.to_string());
         self
     }
 
@@ -760,6 +767,13 @@ impl IndexerPluginProvider for MockPluginProvider {
             .push(provider_type.to_string());
         self.remove_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn prepare_builtin_plugin(&self, _provider_type: &str) -> Result<(), String> {
+        match &self.prepare_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 
     fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
@@ -1697,6 +1711,10 @@ impl SubtitlePluginProvider for MockSubtitlePluginProvider {
             }
         }
         self.remove_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn prepare_builtin_plugin(&self, _provider_type: &str) -> Result<(), String> {
         Ok(())
     }
 
@@ -3134,6 +3152,66 @@ async fn toggle_enables_disabled_plugin() {
         .unwrap()
         .unwrap();
     assert!(stored.is_enabled);
+}
+
+#[tokio::test]
+async fn toggle_enable_preparation_failure_preserves_disabled_installation() {
+    let provider = MockPluginProvider::new()
+        .with_builtin_provider("alpha", "Alpha Plugin", None)
+        .with_prepare_error("compile failed");
+    let h = bootstrap_plugins(Some(provider));
+    h.plugin_repo
+        .installations
+        .lock()
+        .await
+        .push(make_installation("alpha", "1.0.0", true, false));
+
+    let error = h
+        .app
+        .toggle_plugin(&admin(), "alpha", true)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("compile failed"));
+
+    let stored = h
+        .plugin_repo
+        .get_plugin_installation("alpha")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!stored.is_enabled);
+}
+
+#[tokio::test]
+async fn toggle_external_descriptor_failure_preserves_disabled_installation() {
+    let h = bootstrap_plugins(Some(MockPluginProvider::new().with_provider(
+        "alpha",
+        "Alpha Plugin",
+        None,
+    )));
+    let wasm_bytes = b"external-wasm";
+    let mut installation = make_installation("alpha", "1.0.0", false, false);
+    installation.wasm_digest_algo = Some("blake3".to_string());
+    installation.wasm_digest = Some(blake3::hash(wasm_bytes).to_hex().to_string());
+    h.plugin_repo
+        .create_plugin_installation(&installation, Some(wasm_bytes))
+        .await
+        .unwrap();
+
+    let error = h
+        .app
+        .toggle_plugin(&admin(), "alpha", true)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("missing a descriptor"));
+
+    let stored = h
+        .plugin_repo
+        .get_plugin_installation("alpha")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!stored.is_enabled);
 }
 
 #[tokio::test]

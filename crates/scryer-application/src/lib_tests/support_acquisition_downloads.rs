@@ -1007,7 +1007,7 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
             .lock()
             .await
             .iter()
-            .filter(|release| release.status == PendingReleaseStatus::Waiting)
+            .filter(|release| release.status.is_open_for_review())
             .cloned()
             .collect())
     }
@@ -1062,7 +1062,7 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
             .lock()
             .await
             .iter()
-            .filter(|release| release.status == PendingReleaseStatus::Waiting)
+            .filter(|release| release.status.is_open_for_review())
             .filter(|release| {
                 query
                     .title_id
@@ -1344,6 +1344,10 @@ pub(super) struct StubDownloadClient {
     pub(super) deleted_requests: DeletedDownloadRequests,
     pub(super) delete_error: Arc<Mutex<Option<String>>>,
     pub(super) submit_error: Arc<Mutex<Option<StubSubmitError>>>,
+    /// NZB payload the real pre-submission category gate is run against, so a
+    /// caller-level test can exercise the production veto instead of a
+    /// hand-written error string.
+    pub(super) category_gate_nzb: Arc<Mutex<Option<Vec<u8>>>>,
     pub(super) grab_info_hash: Arc<Mutex<Option<String>>>,
     pub(super) submitted_release_titles: Arc<Mutex<Vec<String>>>,
     pub(super) submitted_source_passwords: Arc<Mutex<Vec<Option<String>>>>,
@@ -1369,6 +1373,12 @@ impl StubDownloadClient {
 
     pub(super) async fn set_grab_info_hash(&self, info_hash: Option<&str>) {
         *self.grab_info_hash.lock().await = info_hash.map(str::to_string);
+    }
+
+    /// Serve `nzb` as the payload every submission would download, gated by the
+    /// production pre-submission category check.
+    pub(super) async fn set_category_gate_nzb(&self, nzb: Option<&[u8]>) {
+        *self.category_gate_nzb.lock().await = nzb.map(<[u8]>::to_vec);
     }
 
     pub(super) async fn record_delete(
@@ -1401,6 +1411,11 @@ impl DownloadClient for StubDownloadClient {
         &self,
         request: &DownloadClientAddRequest,
     ) -> AppResult<DownloadGrabResult> {
+        // Mirrors production ordering: the NZB payload is inspected before the
+        // client is ever handed the job, so a vetoed release leaves no trace.
+        if let Some(nzb) = self.category_gate_nzb.lock().await.as_deref() {
+            crate::enforce_nzb_category_gate(nzb, &request.title.facet)?;
+        }
         let job_id = format!("job-for-{}", request.title.id);
         self.submitted_release_titles.lock().await.push(
             request

@@ -376,6 +376,111 @@ async fn set_primary_movie_file_scopes_series_movie_promotion_to_linked_files() 
 }
 
 #[tokio::test]
+async fn set_primary_movie_file_scopes_episode_promotion_to_linked_files() {
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let (app, user, _) = bootstrap_with_cutoff_projection_state(
+        Arc::new(StoredSettingsRepo::default()),
+        Arc::new(StoredQualityProfileRepo::default()),
+        media_files,
+    );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Episode Primary Switch".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series title");
+
+    let old_primary_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: "/series/Episode Primary Switch/Season 01/primary.mkv".into(),
+            size_bytes: 1_000,
+            role: MediaFileRole::Primary,
+            ..Default::default()
+        })
+        .await
+        .expect("insert old primary");
+    app.services
+        .library
+        .media_files
+        .link_file_to_episode(&old_primary_id, "episode-1")
+        .await
+        .expect("link old primary to episode");
+    let new_primary_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: "/series/Episode Primary Switch/Season 01/additional.mkv".into(),
+            size_bytes: 2_000,
+            role: MediaFileRole::Additional,
+            ..Default::default()
+        })
+        .await
+        .expect("insert additional file");
+    app.services
+        .library
+        .media_files
+        .link_file_to_episode(&new_primary_id, "episode-1")
+        .await
+        .expect("link additional file to episode");
+    let unrelated_primary_id = app
+        .services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: "/series/Episode Primary Switch/Season 01/unrelated.mkv".into(),
+            size_bytes: 500,
+            role: MediaFileRole::Primary,
+            ..Default::default()
+        })
+        .await
+        .expect("insert unrelated primary");
+    app.services
+        .library
+        .media_files
+        .link_file_to_episode(&unrelated_primary_id, "episode-2")
+        .await
+        .expect("link unrelated primary to episode");
+
+    app.set_primary_movie_file(&user, &title.id, &new_primary_id)
+        .await
+        .expect("promote episode primary file");
+
+    let files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list files");
+    let role_for = |file_id: &str| {
+        files
+            .iter()
+            .find(|file| file.id == file_id)
+            .map(|file| file.role)
+            .expect("file role")
+    };
+    assert_eq!(role_for(&new_primary_id), MediaFileRole::Primary);
+    assert_eq!(role_for(&old_primary_id), MediaFileRole::Additional);
+    assert_eq!(role_for(&unrelated_primary_id), MediaFileRole::Primary);
+}
+
+#[tokio::test]
 async fn set_title_monitored_emits_title_updated_with_actor() {
     let (app, user) = bootstrap();
     let title = app

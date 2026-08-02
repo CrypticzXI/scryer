@@ -368,8 +368,10 @@ fn resolved_episode_ids_are_within_expected(
     target_episode_ids: &[String],
     expected_episode_ids: &HashSet<String>,
 ) -> bool {
-    target_episode_ids.is_empty()
-        || target_episode_ids
+    // An unresolved file binds to nothing, so it is never "within" the grabbed
+    // release; the caller rejects that case first with a more precise reason.
+    !target_episode_ids.is_empty()
+        && target_episode_ids
             .iter()
             .all(|episode_id| expected_episode_ids.contains(episode_id))
 }
@@ -657,6 +659,44 @@ async fn import_single_episode_file(
         .iter()
         .map(|episode| episode.id.clone())
         .collect();
+    // Fail closed: a parseable episodic file that binds to no episode of this
+    // title is not part of what was grabbed and must never reach the library.
+    // Ordered ahead of the grabbed-release scope check so the reported reason
+    // names the missing episode instead of the broader scope violation, and
+    // returned before any destination rendering, scoring, media-file insertion,
+    // or source cleanup can run.
+    if target_episodes.is_empty() {
+        // The early return skips the shared outcome handling below, so record
+        // the rejected artifact here: the file must still be visible in the
+        // import results even though nothing was transferred.
+        persist_file_import_artifact(
+            app,
+            import_id,
+            completed,
+            title.id.as_str(),
+            source_video,
+            "episode",
+            "rejected",
+            Some("episode_not_found_for_title"),
+            None,
+            &target_episodes,
+        )
+        .await;
+        return Ok(EpisodeImportOutcome::Rejected {
+            rejection: crate::post_download_gate::ImportedFileRejection {
+                message: "file resolves to no episode of this title".to_string(),
+                recycle_reason: "episode_not_found_for_title",
+                skip_reason: Some(ImportSkipReason::PolicyMismatch),
+                blocking_rule_codes: vec!["episode_not_found_for_title".to_string()],
+            },
+            // The file stays in the completed-download directory: leaving the
+            // rest of the pack importable is Sonarr-compatible, and burning the
+            // release for one stray file would be wrong.
+            finalize_before_import: false,
+            reason_code: Some("episode_not_found_for_title".to_string()),
+            episode_ids: Vec::new(),
+        });
+    }
     if let Some(expected_episode_ids) = expected_episode_ids
         && !resolved_episode_ids_are_within_expected(&target_episode_ids, expected_episode_ids)
     {

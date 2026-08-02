@@ -3152,6 +3152,7 @@ enum PendingReleaseStatusValue {
 	SUPERSEDED
 	EXPIRED
 	DISMISSED
+	NEEDS_REVIEW
 }
 
 type PendingReleasesPayload {

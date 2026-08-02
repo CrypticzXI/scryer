@@ -8,7 +8,7 @@ import {
   X,
 } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { useClient } from "urql";
 import { Button } from "@/components/ui/button";
 import {

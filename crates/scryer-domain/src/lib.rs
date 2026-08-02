@@ -2828,6 +2828,10 @@ pub struct DownloadIgnoredEventData {
     pub client_id: Option<String>,
     pub client_type: Option<String>,
     pub source_provider: Option<String>,
+    /// Release title the download was grabbed under; `default` so events
+    /// appended before this field existed still deserialize.
+    #[serde(default)]
+    pub source_title: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

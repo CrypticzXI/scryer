@@ -290,11 +290,11 @@ fn compile_registered(
     plugin: Option<(&str, &str)>,
 ) -> Result<Arc<Module>, String> {
     let started = Instant::now();
-    let (cache_hits_before, cache_misses_before) = engine::cache_statistics();
     let engine = match key.flavor {
         ModuleFlavor::LegacyReactor => engine::shared_engine(),
         ModuleFlavor::Command => engine::shared_async_engine(),
     };
+    let (cache_hits_before, cache_misses_before) = engine::cache_statistics();
     let result = Module::from_binary(engine, wasm)
         .map(Arc::new)
         .map_err(|error| format!("failed to compile plugin WASM: {error:#}"));

@@ -264,6 +264,7 @@ impl FromApplication<AppPendingReleaseStatus> for PendingReleaseStatusValue {
             AppPendingReleaseStatus::Superseded => Self::Superseded,
             AppPendingReleaseStatus::Expired => Self::Expired,
             AppPendingReleaseStatus::Dismissed => Self::Dismissed,
+            AppPendingReleaseStatus::NeedsReview => Self::NeedsReview,
         }
     }
 }
@@ -278,6 +279,7 @@ impl IntoApplication<AppPendingReleaseStatus> for PendingReleaseStatusValue {
             Self::Superseded => AppPendingReleaseStatus::Superseded,
             Self::Expired => AppPendingReleaseStatus::Expired,
             Self::Dismissed => AppPendingReleaseStatus::Dismissed,
+            Self::NeedsReview => AppPendingReleaseStatus::NeedsReview,
         }
     }
 }

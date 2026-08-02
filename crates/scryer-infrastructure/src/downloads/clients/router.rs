@@ -1892,6 +1892,18 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     ) -> AppResult<DownloadGrabResult> {
         let request = self.prepare_proxied_download_request(request).await?;
         let request = &request;
+        // Pillar D1 for NZB bytes Scryer already holds (indexer-proxied
+        // artifacts). URL-sourced NZBs are gated as they stream in, inside
+        // `stage_nzb_from_url`, so no payload is ever fetched twice.
+        if let Some(ResolvedDownloadArtifact::Nzb { bytes, .. }) =
+            request.resolved_download_artifact.as_ref()
+        {
+            let head_len = bytes.len().min(scryer_application::NZB_HEAD_PROBE_BYTES);
+            scryer_application::enforce_nzb_category_gate(
+                &bytes[..head_len],
+                &request.title.facet,
+            )?;
+        }
         let resolved_artifact_kind = Self::request_artifact_kind(request);
         let selection = match self.list_clients_for_title(&request.title).await {
             Ok(configs) => configs,
@@ -2050,6 +2062,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                                         &self.staged_nzb_pipeline_limit,
                                         &source_hint,
                                         Some(&request.title.id),
+                                        &request.title.facet,
                                     )
                                     .await?,
                                 );
@@ -3872,6 +3885,96 @@ mod tests {
 
         assert_eq!(result.client_type, "qbittorrent");
         assert_eq!(torrent_client.submissions.lock().unwrap().len(), 1);
+    }
+
+    /// Head shape taken from the incident NZB: the indexer declared the
+    /// release as anime, and Scryer submitted it for a live-action series.
+    const ANIME_CATEGORY_NZB: &[u8] = br#"<?xml version="1.0" encoding="iso-8859-1" ?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+<head>
+ <meta type="name">One.Piece.S02.DANiSH.JAPANESE.1080p.WEB.H264</meta>
+ <meta type="category">TV &gt; Anime</meta>
+</head>
+<file poster="poster@example.invalid" date="1700000000" subject="[1/1] - &quot;one.piece.par2&quot;"></file>
+</nzb>"#;
+
+    fn nzb_bytes_router(client: Arc<MockDownloadClient>) -> PrioritizedDownloadClientRouter {
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb".to_string()],
+                clients: vec![("nzb".to_string(), client)],
+            });
+        PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("nzb", "Plugin NZB", "plugin-nzb", 0)],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        )
+    }
+
+    fn resolved_nzb_request(facet: MediaFacet) -> DownloadClientAddRequest {
+        DownloadClientAddRequest {
+            title: test_title_for_facet(facet),
+            purpose: scryer_application::DownloadSubmissionPurpose::Standard,
+            download_id: None,
+            source_hint: Some("https://example.invalid/release.nzb".to_string()),
+            staged_nzb: None,
+            resolved_download_artifact: Some(ResolvedDownloadArtifact::Nzb {
+                bytes: ANIME_CATEGORY_NZB.to_vec(),
+                file_name: Some("release.nzb".to_string()),
+                content_type: Some("application/x-nzb".to_string()),
+            }),
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("One.Piece.S02.DANiSH.JAPANESE.1080p.WEB.H264".to_string()),
+            source_password: None,
+            category: None,
+            queue_priority: None,
+            download_directory: None,
+            release_title: None,
+            indexer_name: None,
+            indexer_id: None,
+            info_hash_hint: None,
+            seed_goal_ratio: None,
+            seed_goal_seconds: None,
+            is_recent: None,
+            season_pack: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_download_blocks_nzb_bytes_whose_category_contradicts_the_subject() {
+        let client = Arc::new(MockDownloadClient::default());
+        let router = nzb_bytes_router(client.clone());
+
+        let error = router
+            .submit_download(&resolved_nzb_request(MediaFacet::Series))
+            .await
+            .expect_err("an anime-categorized nzb must not be submitted for a series subject");
+
+        assert!(
+            matches!(&error, AppError::Validation(message) if message.contains("category_mismatch")),
+            "expected a definitive category_mismatch veto, got {error:?}"
+        );
+        assert!(
+            client.submissions.lock().unwrap().is_empty(),
+            "the download client must never receive a vetoed release"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_download_passes_nzb_bytes_whose_category_matches_the_subject() {
+        let client = Arc::new(MockDownloadClient::default());
+        let router = nzb_bytes_router(client.clone());
+
+        router
+            .submit_download(&resolved_nzb_request(MediaFacet::Anime))
+            .await
+            .expect("the same bytes are exactly right for an anime subject");
+
+        assert_eq!(client.submissions.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -531,12 +531,20 @@ async fn enrich_download_queue_items_from_submissions_with_original_identities(
             );
         }
 
-        if let Some(state) = lookup_keys
-            .iter()
-            .find_map(|key| identity_tracked_state_map.get(key))
-            .and_then(|state| TrackedDownloadState::from_str_opt(state))
+        // Durable identity rows are matched by client triple, which can be
+        // shared across grabs (a re-added torrent reuses its hash as the item
+        // id). Only the latest row's `ignored` marker may be stamped, and only
+        // onto history-state items, so a live re-grab of a previously ignored
+        // identity is never hidden and runtime state is otherwise
+        // authoritative.
+        if is_history_download_state(&item.state)
+            && lookup_keys
+                .iter()
+                .find_map(|key| identity_tracked_state_map.get(key))
+                .and_then(|state| TrackedDownloadState::from_str_opt(state))
+                == Some(TrackedDownloadState::Ignored)
         {
-            item.tracked_state = Some(state);
+            item.tracked_state = Some(TrackedDownloadState::Ignored);
         }
 
         if let Some(submission) = lookup_keys

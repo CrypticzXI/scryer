@@ -108,6 +108,8 @@ pub(crate) const SAMPLE_RUNTIME_ZERO_CODE: &str = "sample_runtime_zero";
 pub(crate) const SAMPLE_RUNTIME_TOO_SHORT_CODE: &str = "sample_runtime_too_short";
 #[cfg(any(feature = "runtime-media-analysis", test))]
 pub(crate) const SAMPLE_RUNTIME_INDETERMINATE_CODE: &str = "sample_runtime_indeterminate";
+#[cfg(any(feature = "runtime-media-analysis", test))]
+pub(crate) const RUNTIME_OUT_OF_BAND_CODE: &str = "runtime_out_of_band";
 
 #[cfg(any(feature = "runtime-media-analysis", test))]
 const MIN_EXPECTED_RUNTIME_FOR_SAMPLE_RATIO_SECONDS: i32 = 5 * 60;
@@ -117,6 +119,19 @@ const MIN_UNKNOWN_RUNTIME_SAMPLE_SECONDS: i32 = 60;
 const MIN_RATIO_SAMPLE_SECONDS: i32 = 90;
 #[cfg(any(feature = "runtime-media-analysis", test))]
 const SAMPLE_RUNTIME_PERCENT: i32 = 10;
+/// Coarse plausibility band around the expected runtime. Deliberately wide (2x
+/// each way) so extended pilots, omnibus cuts, and padded encodes stay
+/// importable while a file that is plainly a different episode is rejected.
+/// Shared with the replace guard, which reuses the same band against the
+/// incumbent file's stored duration when no expected runtime exists.
+const RUNTIME_BAND_MIN_PERCENT: i32 = 50;
+const RUNTIME_BAND_MAX_PERCENT: i32 = 200;
+
+/// Reason code for an automatic replacement held back for manual resolution
+/// because the incoming file's duration is implausible against the file it
+/// would overwrite.
+pub(crate) const REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE: &str =
+    "replace_blocked_runtime_mismatch";
 
 pub(crate) fn facet_to_category_hint(facet: &MediaFacet) -> &'static str {
     facet.as_str()
@@ -177,6 +192,34 @@ fn runtime_sample_rejection(
             ));
         }
 
+        // Past the sample detector, hold the file to a coarse plausibility band.
+        // `expected_seconds` already arrives episode-count-normalized, so a
+        // multi-episode file is compared against the summed expectation and is
+        // never re-multiplied here. Band endpoints pass; only a duration strictly
+        // outside them rejects.
+        let band_min_seconds = expected_seconds.saturating_mul(RUNTIME_BAND_MIN_PERCENT) / 100;
+        let band_max_seconds = expected_seconds.saturating_mul(RUNTIME_BAND_MAX_PERCENT) / 100;
+        if actual_seconds < band_min_seconds {
+            return Some(imported_runtime_sample_rejection(
+                RUNTIME_OUT_OF_BAND_CODE,
+                format!(
+                    "imported file runtime is too short for the expected runtime: expected about {} minutes, probed file is {} seconds",
+                    (expected_seconds + 59) / 60,
+                    actual_seconds
+                ),
+            ));
+        }
+        if actual_seconds > band_max_seconds {
+            return Some(imported_runtime_sample_rejection(
+                RUNTIME_OUT_OF_BAND_CODE,
+                format!(
+                    "imported file runtime is too long for the expected runtime: expected about {} minutes, probed file is {} seconds",
+                    (expected_seconds + 59) / 60,
+                    actual_seconds
+                ),
+            ));
+        }
+
         return None;
     }
 
@@ -203,6 +246,77 @@ fn imported_runtime_sample_rejection(code: &'static str, message: String) -> Imp
         skip_reason: Some(ImportSkipReason::PolicyMismatch),
         blocking_rule_codes: vec![code.to_string()],
     }
+}
+
+/// Total stored duration of the primary files an automatic import would
+/// overwrite. Mirrors `expected_runtime_seconds_for_episode_import`: the sum
+/// only counts when *every* incumbent carries a positive stored duration, so a
+/// partially scanned library leaves the replace guard inert rather than
+/// comparing against a short-changed denominator.
+pub(crate) fn incumbent_replace_runtime_seconds(
+    durations: impl IntoIterator<Item = Option<i32>>,
+) -> Option<i32> {
+    let mut total: i32 = 0;
+    let mut counted = false;
+    for duration in durations {
+        let duration = duration.filter(|seconds| *seconds > 0)?;
+        total = total.saturating_add(duration);
+        counted = true;
+    }
+    counted.then_some(total)
+}
+
+/// Replacing an existing primary file is held to a stricter standard than
+/// filling an empty slot. When the expected-runtime band could not run because
+/// the catalog has no runtime for the target, fall back to the incumbent file's
+/// stored duration and hold an incoming file outside the same band for manual
+/// resolution instead of overwriting the library copy.
+///
+/// Permissive by construction: without both a probed duration and a stored
+/// incumbent duration the guard cannot run, so unscanned incumbents and builds
+/// without media analysis keep today's behavior. Manual imports bypass it for
+/// the same reason they bypass the sample check — the operator picked the file.
+pub(crate) fn replace_runtime_band_block(
+    validation: RuntimeSampleValidation,
+    accepted: &ImportedFileAcceptance,
+    incumbent_runtime_seconds: Option<i32>,
+) -> Option<String> {
+    if validation.mode == RuntimeSampleValidationMode::BypassRuntimeSampleCheck {
+        return None;
+    }
+    // Only the no-expected-runtime case reaches here; when an expected runtime
+    // exists the band already ran against it during the gate.
+    if validation.expected_runtime_seconds.is_some() {
+        return None;
+    }
+
+    let incumbent_seconds = incumbent_runtime_seconds.filter(|seconds| *seconds > 0)?;
+    let actual_seconds = accepted
+        .analysis
+        .as_ref()
+        .and_then(|analysis| analysis.duration_seconds)
+        .filter(|seconds| *seconds > 0)?;
+
+    let band_min_seconds = incumbent_seconds.saturating_mul(RUNTIME_BAND_MIN_PERCENT) / 100;
+    let band_max_seconds = incumbent_seconds.saturating_mul(RUNTIME_BAND_MAX_PERCENT) / 100;
+    // Wording deliberately avoids the "blocked"/"locked" vocabulary that
+    // `completed_import_error_message_is_retryable` treats as transient.
+    if actual_seconds < band_min_seconds {
+        return Some(format!(
+            "imported file runtime is too short to replace the existing file: existing file is about {} minutes, probed file is {} seconds; held for manual resolution",
+            (incumbent_seconds + 59) / 60,
+            actual_seconds
+        ));
+    }
+    if actual_seconds > band_max_seconds {
+        return Some(format!(
+            "imported file runtime is too long to replace the existing file: existing file is about {} minutes, probed file is {} seconds; held for manual resolution",
+            (incumbent_seconds + 59) / 60,
+            actual_seconds
+        ));
+    }
+
+    None
 }
 
 #[expect(
@@ -1471,5 +1585,261 @@ mod tests {
         let rejection = runtime_sample_rejection(manual(Some(42 * 60)), Some(20));
 
         assert!(rejection.is_none());
+    }
+
+    #[test]
+    fn automatic_import_rejects_anime_length_file_for_live_action_episode() {
+        // One Piece incident: a 24:55 anime episode imported against the ~55-minute
+        // live-action episode. Well clear of the sample threshold, far below the band.
+        let rejection = runtime_sample_rejection(automatic(Some(3300)), Some(1495))
+            .expect("45%-of-expected runtime should reject");
+
+        assert_eq!(rejection.recycle_reason, RUNTIME_OUT_OF_BAND_CODE);
+        assert_eq!(
+            rejection.skip_reason,
+            Some(ImportSkipReason::PolicyMismatch)
+        );
+        assert_eq!(
+            rejection.blocking_rule_codes,
+            vec![RUNTIME_OUT_OF_BAND_CODE.to_string()]
+        );
+        assert_eq!(
+            rejection.message,
+            "imported file runtime is too short for the expected runtime: expected about 55 minutes, probed file is 1495 seconds"
+        );
+    }
+
+    #[test]
+    fn automatic_import_rejects_hour_long_file_for_anime_episode() {
+        // Inverse of the incident: a 60-minute file against a 24-minute episode.
+        let rejection = runtime_sample_rejection(automatic(Some(1440)), Some(3600))
+            .expect("250%-of-expected runtime should reject");
+
+        assert_eq!(rejection.recycle_reason, RUNTIME_OUT_OF_BAND_CODE);
+        assert_eq!(
+            rejection.message,
+            "imported file runtime is too long for the expected runtime: expected about 24 minutes, probed file is 3600 seconds"
+        );
+    }
+
+    #[test]
+    fn automatic_import_accepts_double_episode_file_within_band() {
+        // S09E23E24: the expectation is already summed across both episodes, so a
+        // ~190% file stays inside the band.
+        let rejection = runtime_sample_rejection(automatic(Some(2640)), Some(5040));
+
+        assert!(rejection.is_none());
+    }
+
+    #[test]
+    fn automatic_import_accepts_exact_runtime_band_endpoints() {
+        // Band endpoints are inclusive: exactly 50% and exactly 200% pass.
+        assert!(runtime_sample_rejection(automatic(Some(3300)), Some(1650)).is_none());
+        assert!(runtime_sample_rejection(automatic(Some(3300)), Some(6600)).is_none());
+    }
+
+    #[test]
+    fn automatic_import_skips_runtime_band_when_expected_runtime_is_unknown() {
+        assert!(runtime_sample_rejection(automatic(None), Some(3600)).is_none());
+        assert!(runtime_sample_rejection(automatic(None), Some(120)).is_none());
+    }
+
+    #[test]
+    fn automatic_import_skips_runtime_band_below_expected_runtime_floor() {
+        // Expected runtimes under the 5-minute floor stay permissive.
+        assert!(runtime_sample_rejection(automatic(Some(240)), Some(30)).is_none());
+    }
+
+    #[test]
+    fn manual_queued_import_bypasses_runtime_band() {
+        assert!(runtime_sample_rejection(manual(Some(3300)), Some(1495)).is_none());
+        assert!(runtime_sample_rejection(manual(Some(1440)), Some(3600)).is_none());
+    }
+
+    fn probed(duration_seconds: Option<i32>) -> ImportedFileAcceptance {
+        let mut analysis = build_stream_pointer_media_file_analysis();
+        analysis.duration_seconds = duration_seconds;
+        ImportedFileAcceptance {
+            analysis: Some(analysis),
+            scan_error: None,
+            rule_file_doc: None,
+            audio_language_warning: None,
+        }
+    }
+
+    fn unprobed() -> ImportedFileAcceptance {
+        ImportedFileAcceptance {
+            analysis: None,
+            scan_error: Some("native media analysis is not compiled into this target".to_string()),
+            rule_file_doc: None,
+            audio_language_warning: None,
+        }
+    }
+
+    #[test]
+    fn replace_guard_blocks_anime_length_file_over_live_action_incumbent() {
+        // One Piece incident with no catalog runtime: the band cannot run against
+        // metadata, so the 24:55 file is measured against the ~55-minute file it
+        // would overwrite.
+        let message = replace_runtime_band_block(
+            automatic(None),
+            &probed(Some(1495)),
+            incumbent_replace_runtime_seconds([Some(3300)]),
+        )
+        .expect("45%-of-incumbent runtime should be held");
+
+        assert_eq!(
+            message,
+            "imported file runtime is too short to replace the existing file: existing file is about 55 minutes, probed file is 1495 seconds; held for manual resolution"
+        );
+    }
+
+    #[test]
+    fn replace_guard_blocks_hour_long_file_over_anime_incumbent() {
+        let message = replace_runtime_band_block(
+            automatic(None),
+            &probed(Some(3600)),
+            incumbent_replace_runtime_seconds([Some(1440)]),
+        )
+        .expect("250%-of-incumbent runtime should be held");
+
+        assert_eq!(
+            message,
+            "imported file runtime is too long to replace the existing file: existing file is about 24 minutes, probed file is 3600 seconds; held for manual resolution"
+        );
+    }
+
+    #[test]
+    fn replace_guard_is_permissive_when_incumbent_duration_is_unknown() {
+        assert!(
+            replace_runtime_band_block(
+                automatic(None),
+                &probed(Some(1495)),
+                incumbent_replace_runtime_seconds([None]),
+            )
+            .is_none()
+        );
+        assert!(
+            replace_runtime_band_block(
+                automatic(None),
+                &probed(Some(1495)),
+                incumbent_replace_runtime_seconds([Some(0)]),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn replace_guard_is_permissive_without_a_probed_duration() {
+        assert!(
+            replace_runtime_band_block(
+                automatic(None),
+                &probed(None),
+                incumbent_replace_runtime_seconds([Some(3300)]),
+            )
+            .is_none()
+        );
+        assert!(
+            replace_runtime_band_block(
+                automatic(None),
+                &unprobed(),
+                incumbent_replace_runtime_seconds([Some(3300)]),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn replace_guard_leaves_gap_fill_imports_alone() {
+        // No incumbent files at all: nothing is being overwritten.
+        assert!(
+            replace_runtime_band_block(
+                automatic(None),
+                &probed(Some(1495)),
+                incumbent_replace_runtime_seconds(std::iter::empty()),
+            )
+            .is_none()
+        );
+        assert!(
+            replace_runtime_band_block(
+                automatic(None),
+                &probed(Some(30)),
+                incumbent_replace_runtime_seconds(std::iter::empty()),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn replace_guard_defers_to_the_expected_runtime_band() {
+        // With an expected runtime the gate already applied the band; the replace
+        // guard must not double-judge the same file against the incumbent.
+        assert!(
+            replace_runtime_band_block(
+                automatic(Some(1440)),
+                &probed(Some(1495)),
+                incumbent_replace_runtime_seconds([Some(3300)]),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn manual_replacement_bypasses_the_replace_guard() {
+        assert!(
+            replace_runtime_band_block(
+                manual(None),
+                &probed(Some(1495)),
+                incumbent_replace_runtime_seconds([Some(3300)]),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn replace_guard_band_endpoints_are_inclusive() {
+        assert!(
+            replace_runtime_band_block(
+                automatic(None),
+                &probed(Some(1650)),
+                incumbent_replace_runtime_seconds([Some(3300)]),
+            )
+            .is_none()
+        );
+        assert!(
+            replace_runtime_band_block(
+                automatic(None),
+                &probed(Some(6600)),
+                incumbent_replace_runtime_seconds([Some(3300)]),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn incumbent_replace_runtime_sums_multi_file_targets_only_when_all_are_known() {
+        assert_eq!(
+            incumbent_replace_runtime_seconds([Some(1320), Some(1320)]),
+            Some(2640)
+        );
+        assert_eq!(
+            incumbent_replace_runtime_seconds([Some(1320), None]),
+            None,
+            "a partially scanned target must leave the guard inert"
+        );
+        assert_eq!(incumbent_replace_runtime_seconds(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn replace_guard_compares_double_episode_file_against_summed_incumbents() {
+        // Two single-episode incumbents replaced by one double-episode file.
+        assert!(
+            replace_runtime_band_block(
+                automatic(None),
+                &probed(Some(2600)),
+                incumbent_replace_runtime_seconds([Some(1320), Some(1320)]),
+            )
+            .is_none()
+        );
     }
 }

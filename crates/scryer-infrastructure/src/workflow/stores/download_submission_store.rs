@@ -357,6 +357,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         identity: &DownloadSubmissionIdentity,
         source_identity: Option<&DownloadSourceIdentity>,
         tracked_state: &str,
+        preserve_previous: &[&str],
         reason: Option<&str>,
         detail: Option<&str>,
     ) -> AppResult<Option<String>> {
@@ -366,6 +367,10 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
         let identity = identity.clone();
         let source_identity = source_identity.cloned();
         let tracked_state = tracked_state.to_string();
+        let preserve_previous = preserve_previous
+            .iter()
+            .map(|state| state.to_string())
+            .collect::<Vec<_>>();
         let reason = reason.map(str::to_string);
         let detail = detail.map(str::to_string);
         SqlRuntime::run_in_transaction(
@@ -376,6 +381,7 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                 let identity = identity.clone();
                 let source_identity = source_identity.clone();
                 let tracked_state = tracked_state.clone();
+                let preserve_previous = preserve_previous.clone();
                 let reason = reason.clone();
                 let detail = detail.clone();
                 Box::pin(async move {
@@ -390,6 +396,16 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                     .await?
                     .map(|row| row.text("tracked_state"))
                     .transpose()?;
+                    if let Some(previous) = previous.as_deref().filter(|previous| {
+                        preserve_previous
+                            .iter()
+                            .any(|preserved| preserved == previous)
+                    }) {
+                        // The read and this early return share the transaction,
+                        // so a terminal outcome can never be flipped by a
+                        // concurrent ignore.
+                        return Ok(Some(previous.to_string()));
+                    }
                     let now = Utc::now();
                     SqlRuntime::execute(
                         SqlExec::Tx(tx),
@@ -468,7 +484,8 @@ impl DownloadSubmissionRepository for DownloadSubmissionStore {
                 &format!(
                     "SELECT client_id, client_type, download_client_item_id, tracked_state
                      FROM download_identity_states
-                     WHERE {clauses}"
+                     WHERE {clauses}
+                     ORDER BY updated_at ASC, id ASC"
                 ),
                 &args,
             )

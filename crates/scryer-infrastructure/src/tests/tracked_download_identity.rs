@@ -234,3 +234,163 @@ async fn tracked_state_upsert_creates_download_submission_row_when_missing() {
     drop(services);
     let _ = std::fs::remove_file(db);
 }
+
+#[tokio::test]
+async fn upsert_identity_tracked_state_preserves_terminal_outcomes() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_identity_upsert_guard_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
+    let preserved = ["imported", "failed"];
+
+    let imported_identity = DownloadSubmissionIdentity {
+        download_id: Some("scryer-download:already-imported".to_string()),
+    };
+    let imported_source = DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-imported");
+    workflow_store
+        .record_identity_tracked_state(&imported_identity, Some(&imported_source), "imported", None, None)
+        .await
+        .expect("imported state should persist");
+    let previous = workflow_store
+        .upsert_identity_tracked_state_returning_previous(
+            &imported_identity,
+            Some(&imported_source),
+            "ignored",
+            &preserved,
+            None,
+            None,
+        )
+        .await
+        .expect("guarded upsert should succeed");
+    assert_eq!(previous.as_deref(), Some("imported"));
+    let state = workflow_store
+        .get_identity_tracked_state(&imported_identity, Some(&imported_source))
+        .await
+        .expect("state lookup should succeed");
+    assert_eq!(
+        state.as_deref(),
+        Some("imported"),
+        "a terminal imported outcome must not be flipped to ignored"
+    );
+
+    let blocked_identity = DownloadSubmissionIdentity {
+        download_id: Some("scryer-download:blocked-import".to_string()),
+    };
+    let blocked_source = DownloadSourceIdentity::new(Some("client-a"), "weaver", "job-blocked");
+    workflow_store
+        .record_identity_tracked_state(&blocked_identity, Some(&blocked_source), "import_blocked", None, None)
+        .await
+        .expect("blocked state should persist");
+    let previous = workflow_store
+        .upsert_identity_tracked_state_returning_previous(
+            &blocked_identity,
+            Some(&blocked_source),
+            "ignored",
+            &preserved,
+            None,
+            None,
+        )
+        .await
+        .expect("guarded upsert should succeed");
+    assert_eq!(previous.as_deref(), Some("import_blocked"));
+    let state = workflow_store
+        .get_identity_tracked_state(&blocked_identity, Some(&blocked_source))
+        .await
+        .expect("state lookup should succeed");
+    assert_eq!(state.as_deref(), Some("ignored"));
+
+    let repeat = workflow_store
+        .upsert_identity_tracked_state_returning_previous(
+            &blocked_identity,
+            Some(&blocked_source),
+            "ignored",
+            &preserved,
+            None,
+            None,
+        )
+        .await
+        .expect("repeated upsert should succeed");
+    assert_eq!(
+        repeat.as_deref(),
+        Some("ignored"),
+        "a repeated ignore must report the prior ignored state so no duplicate event is emitted"
+    );
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
+async fn list_identity_tracked_states_orders_latest_row_last_per_client_triple() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_identity_list_order_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let workflow_store = DownloadSubmissionStore::new(services.datastore());
+
+    // Two grabs of the same client item (a re-added torrent reuses its hash
+    // as the item id) leave two identity rows behind the same client triple.
+    let triple = DownloadSourceIdentity::new(Some("client-a"), "qbittorrent", "hash-1");
+    workflow_store
+        .record_identity_tracked_state(
+            &DownloadSubmissionIdentity {
+                download_id: Some("scryer-download:old-grab".to_string()),
+            },
+            Some(&triple),
+            "ignored",
+            None,
+            None,
+        )
+        .await
+        .expect("old grab state should persist");
+    workflow_store
+        .record_identity_tracked_state(
+            &DownloadSubmissionIdentity {
+                download_id: Some("scryer-download:new-grab".to_string()),
+            },
+            Some(&triple),
+            "imported",
+            None,
+            None,
+        )
+        .await
+        .expect("new grab state should persist");
+    sqlx::query("UPDATE download_identity_states SET updated_at = ? WHERE download_id = ?")
+        .bind("2026-01-01T00:00:00Z")
+        .bind("scryer-download:old-grab")
+        .execute(services.pool())
+        .await
+        .expect("old grab timestamp should update");
+    sqlx::query("UPDATE download_identity_states SET updated_at = ? WHERE download_id = ?")
+        .bind("2026-02-01T00:00:00Z")
+        .bind("scryer-download:new-grab")
+        .execute(services.pool())
+        .await
+        .expect("new grab timestamp should update");
+
+    let states = workflow_store
+        .list_identity_tracked_states_for_client_items(std::slice::from_ref(&triple))
+        .await
+        .expect("batch state lookup should succeed");
+
+    let triple_states = states
+        .iter()
+        .filter(|(identity, _)| *identity == triple)
+        .map(|(_, state)| state.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        triple_states,
+        vec!["ignored", "imported"],
+        "rows must be ordered oldest-first so the newest grab's state wins a last-write map build"
+    );
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}

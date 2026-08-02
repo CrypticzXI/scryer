@@ -1253,6 +1253,7 @@ pub enum PendingReleaseStatusValue {
     Superseded,
     Expired,
     Dismissed,
+    NeedsReview,
 }
 
 #[derive(InputObject)]

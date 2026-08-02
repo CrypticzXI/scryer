@@ -582,6 +582,69 @@ fn manual_aware_runtime_sample_validation(
     }
 }
 
+/// Park an automatic movie-scoped replacement for manual resolution: nothing is
+/// transferred, no media-file record changes, and the release is not burned into
+/// the blocklist. The skipped result leaves the tracked download in the blocked
+/// import queue so the operator decides.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "held replacements report the same source, sizing, and timing context as a normal movie import result"
+)]
+async fn hold_replacement_for_manual_resolution(
+    app: &AppUseCase,
+    title: &scryer_domain::Title,
+    import_id: &str,
+    completed: &CompletedDownload,
+    source_video: &Path,
+    source_size: i64,
+    quality: Option<String>,
+    message: String,
+    started_at: DateTime<Utc>,
+) -> AppResult<ImportResult> {
+    tracing::info!(
+        title_id = %title.id,
+        file = %source_video.display(),
+        code = crate::post_download_gate::REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE,
+        "holding movie replacement for manual resolution"
+    );
+    persist_file_import_artifact(
+        app,
+        import_id,
+        completed,
+        title.id.as_str(),
+        source_video,
+        "movie",
+        "rejected",
+        Some(crate::post_download_gate::REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE),
+        None,
+        &[],
+    )
+    .await;
+    let result = ImportResult {
+        import_id: import_id.to_string(),
+        decision: ImportDecision::Skipped,
+        skip_reason: Some(ImportSkipReason::PolicyMismatch),
+        title_id: Some(title.id.clone()),
+        source_system: Some(completed.client_type.clone()),
+        source_ref: Some(completed.download_client_item_id.clone()),
+        source_title: Some(completed.name.clone()),
+        source_path: path_to_stored_string(source_video),
+        dest_path: None,
+        quality,
+        episode_ids: Vec::new(),
+        file_size_bytes: Some(source_size),
+        link_type: None,
+        error_message: Some(message),
+        started_at,
+        completed_at: Utc::now(),
+    };
+    let result_json = serde_json::to_string(&result).ok();
+    let status = completed_import_status_for_result(&result, ImportStatus::Skipped);
+    app.update_import_status_and_notify(import_id, status, result_json)
+        .await?;
+    Ok(result)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "additional movie imports share the normal movie path context without using the upgrade gate"
@@ -903,6 +966,13 @@ async fn import_movie_download(
         .iter()
         .max_by_key(|file| file.acquisition_score.unwrap_or(0))
         .and_then(|file| file.acquisition_score);
+    let runtime_sample_validation = manual_aware_runtime_sample_validation(
+        title
+            .runtime_minutes
+            .filter(|runtime_minutes| *runtime_minutes > 0)
+            .map(|runtime_minutes| runtime_minutes.saturating_mul(60)),
+        manual_replacement,
+    );
     let prepared = match crate::post_download_gate::prepare_import_candidate(
         app,
         title,
@@ -913,13 +983,7 @@ async fn import_movie_download(
         !existing_files.is_empty(),
         existing_score,
         false,
-        manual_aware_runtime_sample_validation(
-            title
-                .runtime_minutes
-                .filter(|runtime_minutes| *runtime_minutes > 0)
-                .map(|runtime_minutes| runtime_minutes.saturating_mul(60)),
-            manual_replacement,
-        ),
+        runtime_sample_validation,
     )
     .await
     {
@@ -1041,6 +1105,33 @@ async fn import_movie_download(
         app.update_import_status_and_notify(import_id, status, result_json)
             .await?;
         return Ok(result);
+    }
+
+    // Replace guard: with no catalog runtime the band could not run at the gate,
+    // so an automatic overwrite is measured against the incumbent file instead.
+    if let Some(replaced_file) = existing_files
+        .iter()
+        .max_by_key(|file| file.acquisition_score.unwrap_or(0))
+        && let Some(message) = crate::post_download_gate::replace_runtime_band_block(
+            runtime_sample_validation,
+            prepared.accepted.as_ref(),
+            crate::post_download_gate::incumbent_replace_runtime_seconds([
+                replaced_file.duration_seconds,
+            ]),
+        )
+    {
+        return hold_replacement_for_manual_resolution(
+            app,
+            title,
+            import_id,
+            completed,
+            &source_video,
+            source_size,
+            prepared.parsed.quality.clone(),
+            message,
+            started_at,
+        )
+        .await;
     }
 
     let import_mode = app
@@ -1598,6 +1689,14 @@ async fn import_series_movie_download(
         .iter()
         .max_by_key(|file| file.acquisition_score.unwrap_or(0))
         .and_then(|file| file.acquisition_score);
+    let runtime_sample_validation = manual_aware_runtime_sample_validation(
+        movie
+            .runtime_minutes
+            .or(title.runtime_minutes)
+            .filter(|runtime_minutes| *runtime_minutes > 0)
+            .map(|runtime_minutes| runtime_minutes.saturating_mul(60)),
+        manual_replacement,
+    );
     let prepared = match crate::post_download_gate::prepare_import_candidate(
         app,
         title,
@@ -1608,14 +1707,7 @@ async fn import_series_movie_download(
         !series_movie_files.is_empty(),
         existing_score,
         false,
-        manual_aware_runtime_sample_validation(
-            movie
-                .runtime_minutes
-                .or(title.runtime_minutes)
-                .filter(|runtime_minutes| *runtime_minutes > 0)
-                .map(|runtime_minutes| runtime_minutes.saturating_mul(60)),
-            manual_replacement,
-        ),
+        runtime_sample_validation,
     )
     .await
     {
@@ -1668,6 +1760,33 @@ async fn import_series_movie_download(
             return Ok(result);
         }
     };
+
+    // Replace guard: with no catalog runtime the band could not run at the gate,
+    // so an automatic overwrite is measured against the incumbent file instead.
+    if let Some(replaced_file) = series_movie_files
+        .iter()
+        .max_by_key(|file| file.acquisition_score.unwrap_or(0))
+        && let Some(message) = crate::post_download_gate::replace_runtime_band_block(
+            runtime_sample_validation,
+            prepared.accepted.as_ref(),
+            crate::post_download_gate::incumbent_replace_runtime_seconds([
+                replaced_file.duration_seconds,
+            ]),
+        )
+    {
+        return hold_replacement_for_manual_resolution(
+            app,
+            title,
+            import_id,
+            completed,
+            &source_video,
+            source_size,
+            prepared.parsed.quality.clone(),
+            message,
+            started_at,
+        )
+        .await;
+    }
 
     // Upgrade check: if there's an existing file for this series movie, score and compare.
     let import_mode = app

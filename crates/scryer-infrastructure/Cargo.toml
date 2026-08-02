@@ -14,7 +14,7 @@ scryer-application = { path = "../scryer-application" }
 scryer-outbound-http = { path = "../scryer-outbound-http" }
 scryer-rules = { path = "../scryer-rules" }
 async-trait = { workspace = true }
-base64 = "0.22"
+base64 = "0.23"
 serde_json = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
@@ -23,7 +23,7 @@ sqlx = { workspace = true }
 chrono = { workspace = true }
 quick-xml = { workspace = true }
 blake3 = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 libsqlite3-sys = { version = "0.37.0", default-features = false, features = ["bundled"] }
 unicode-normalization = "0.1"
 zstd = { version = "0.13", default-features = false }
@@ -34,7 +34,7 @@ aws-lc-rs = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 metrics = { workspace = true }
-tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 url = "2"
@@ -74,6 +74,6 @@ cc = "1.1"
 graphql-parser = "0.4"
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = "0.10"
+sha2 = "0.11"
 toml = { workspace = true }
 zstd = { version = "0.13", default-features = false }

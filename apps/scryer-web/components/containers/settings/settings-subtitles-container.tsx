@@ -244,6 +244,7 @@ export function SettingsSubtitlesContainer({
     React.useState(false);
   const [subtitlesExpanded, setSubtitlesExpanded] = React.useState(true);
   const loadedRef = React.useRef(false);
+  const lastSubmittedSettingsRef = React.useRef<SubtitleSettings | null>(null);
   const providerCatalogVersionRef = React.useRef(providerCatalogVersion);
   const syncPluginProgressSubscriptionRef = React.useRef<(() => void) | null>(
     null,
@@ -407,10 +408,12 @@ export function SettingsSubtitlesContainer({
         }
 
         const payload = data?.subtitleSettings;
-        setSettings({
+        const nextSettings = {
           ...DEFAULTS,
           ...(payload ?? {}),
-        });
+        };
+        lastSubmittedSettingsRef.current = nextSettings;
+        setSettings(nextSettings);
         setProviderTypes(
           (data?.subtitleProviderTypes ?? []) as SubtitleProviderTypeInfo[],
         );
@@ -598,10 +601,14 @@ export function SettingsSubtitlesContainer({
   ]);
 
   React.useEffect(() => {
-    if (!loadedRef.current) {
+    if (
+      !loadedRef.current ||
+      settings === lastSubmittedSettingsRef.current
+    ) {
       return;
     }
 
+    lastSubmittedSettingsRef.current = settings;
     setSaving(true);
     client
       .mutation(updateSubtitleSettingsMutation, {
@@ -629,14 +636,12 @@ export function SettingsSubtitlesContainer({
         if (error) {
           const message = error.message || t("status.failedToUpdate");
           setGlobalStatus(message);
-          toast.error(message);
         }
       })
       .catch((error: unknown) => {
         const message =
           error instanceof Error ? error.message : t("status.failedToUpdate");
         setGlobalStatus(message);
-        toast.error(message);
       })
       .finally(() => setSaving(false));
   }, [client, setGlobalStatus, settings, t]);

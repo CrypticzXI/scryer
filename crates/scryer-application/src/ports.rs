@@ -2788,17 +2788,28 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         Ok(())
     }
 
+    /// Upsert the durable identity tracked state, returning the previous
+    /// state. When the previous state is listed in `preserve_previous` the
+    /// row is left untouched and that state is returned — this is how a
+    /// terminal outcome (imported/failed) survives a later ignore attempt.
     async fn upsert_identity_tracked_state_returning_previous(
         &self,
         identity: &DownloadSubmissionIdentity,
         source_identity: Option<&DownloadSourceIdentity>,
         tracked_state: &str,
+        preserve_previous: &[&str],
         reason: Option<&str>,
         detail: Option<&str>,
     ) -> AppResult<Option<String>> {
         let previous = self
             .get_identity_tracked_state(identity, source_identity)
             .await?;
+        if let Some(previous) = previous
+            .as_deref()
+            .filter(|previous| preserve_previous.contains(previous))
+        {
+            return Ok(Some(previous.to_string()));
+        }
         self.record_identity_tracked_state(
             identity,
             source_identity,
@@ -3980,6 +3991,10 @@ pub trait IndexerPluginProvider: Send + Sync {
         let _ = provider_type;
         Err("this provider does not support single-plugin runtime mutation".to_string())
     }
+    fn prepare_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support builtin runtime preparation".to_string())
+    }
     fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
         let _ = provider_type;
         Err("this provider does not support builtin runtime restoration".to_string())
@@ -4518,6 +4533,10 @@ pub trait SubtitlePluginProvider: Send + Sync {
     fn remove_runtime_plugin(&self, provider_type: &str) -> Result<(), String> {
         let _ = provider_type;
         Err("this provider does not support single-plugin runtime mutation".to_string())
+    }
+    fn prepare_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support builtin runtime preparation".to_string())
     }
     fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
         let _ = provider_type;

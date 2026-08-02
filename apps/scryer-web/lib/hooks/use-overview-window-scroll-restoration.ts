@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation } from "react-router";
 
 const OVERVIEW_SCROLL_STORAGE_PREFIX = "scryer:overview-scroll:";
 const MAX_RESTORE_ATTEMPTS = 12;

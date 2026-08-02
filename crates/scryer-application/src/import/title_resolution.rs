@@ -65,6 +65,27 @@ impl MonitoredTitleMatcher {
         matcher
     }
 
+    /// Pillar A tier 0: the subset of `keys` that at least one *other* monitored
+    /// library title also claims. The normalized-title index is already keyed by
+    /// `canonical_title_lookup_keys`, so collision detection is a lookup per key
+    /// with no extra repository work.
+    pub(crate) fn shared_lookup_keys(&self, title_id: &str, keys: &[String]) -> Vec<String> {
+        keys.iter()
+            .filter(|key| {
+                self.normalized_title_index
+                    .get(key.as_str())
+                    .is_some_and(|indexes| {
+                        indexes.iter().any(|index| {
+                            self.titles
+                                .get(*index)
+                                .is_some_and(|title| title.id != title_id)
+                        })
+                    })
+            })
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn resolve_movie<'a>(
         &'a self,
         parsed: &ParsedReleaseMetadata,

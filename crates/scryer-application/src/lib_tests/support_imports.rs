@@ -670,6 +670,61 @@ fn import_record_counts_as_already_imported(record: &ImportRecord) -> bool {
     }
 }
 
+/// Keeps every per-file import artifact so tests can assert what each file in a
+/// pack was recorded as (imported / rejected / already present) and why.
+#[derive(Default, Clone)]
+pub(super) struct RecordingImportArtifactRepo {
+    pub(super) artifacts: Arc<Mutex<Vec<crate::ImportArtifact>>>,
+}
+
+impl RecordingImportArtifactRepo {
+    pub(super) async fn artifacts_for_file(&self, file_name: &str) -> Vec<crate::ImportArtifact> {
+        let normalized = file_name.to_ascii_lowercase();
+        self.artifacts
+            .lock()
+            .await
+            .iter()
+            .filter(|artifact| artifact.normalized_file_name == normalized)
+            .cloned()
+            .collect()
+    }
+}
+
+#[async_trait]
+impl crate::ImportArtifactRepository for RecordingImportArtifactRepo {
+    async fn insert_artifact(&self, artifact: crate::ImportArtifact) -> AppResult<()> {
+        self.artifacts.lock().await.push(artifact);
+        Ok(())
+    }
+
+    async fn list_by_source_identity(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> AppResult<Vec<crate::ImportArtifact>> {
+        Ok(self
+            .artifacts
+            .lock()
+            .await
+            .iter()
+            .filter(|artifact| &artifact.source_identity() == identity)
+            .cloned()
+            .collect())
+    }
+
+    async fn count_by_result_for_source_identity(
+        &self,
+        identity: &DownloadSourceIdentity,
+        result: &str,
+    ) -> AppResult<u64> {
+        Ok(self
+            .list_by_source_identity(identity)
+            .await?
+            .iter()
+            .filter(|artifact| artifact.result == result)
+            .count() as u64)
+    }
+}
+
 #[derive(Default, Clone)]
 pub(super) struct TrackingImportRepo {
     pub(super) records: Arc<Mutex<Vec<ImportRecord>>>,

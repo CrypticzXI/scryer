@@ -1143,6 +1143,10 @@ pub enum PendingReleaseStatus {
     Superseded,
     Expired,
     Dismissed,
+    /// Parked for a human decision (Pillar A3): the best candidate for the scope
+    /// was rejected as `ambiguous_identity`. Carries no delay-timer semantics and
+    /// is never auto-promoted — only an explicit grab-now or dismiss resolves it.
+    NeedsReview,
 }
 
 impl PendingReleaseStatus {
@@ -1155,6 +1159,7 @@ impl PendingReleaseStatus {
             Self::Superseded => "superseded",
             Self::Expired => "expired",
             Self::Dismissed => "dismissed",
+            Self::NeedsReview => "needs_review",
         }
     }
 
@@ -1167,8 +1172,16 @@ impl PendingReleaseStatus {
             "superseded" => Some(Self::Superseded),
             "expired" => Some(Self::Expired),
             "dismissed" => Some(Self::Dismissed),
+            "needs_review" => Some(Self::NeedsReview),
             _ => None,
         }
+    }
+
+    /// True for statuses the pending-releases view still lists as open work.
+    /// `needs_review` joins `waiting` in the listing base set so a parked row is
+    /// visible; it deliberately stays out of the delay-expiry processor.
+    pub fn is_open_for_review(self) -> bool {
+        matches!(self, Self::Waiting | Self::NeedsReview)
     }
 }
 
@@ -1186,6 +1199,7 @@ mod pending_release_status_tests {
             PendingReleaseStatus::Superseded,
             PendingReleaseStatus::Expired,
             PendingReleaseStatus::Dismissed,
+            PendingReleaseStatus::NeedsReview,
         ];
 
         for status in statuses {

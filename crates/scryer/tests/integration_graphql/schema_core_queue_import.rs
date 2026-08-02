@@ -1383,7 +1383,10 @@ async fn graphql_introspection_exposes_core_graph_relationship_fields() {
             "GRABBED",
             "SUPERSEDED",
             "EXPIRED",
-            "DISMISSED"
+            "DISMISSED",
+            // Pillar A3: a candidate parked because the canonical title is
+            // ambiguous. No delay timer, resolved only by grab-now / dismiss.
+            "NEEDS_REVIEW",
         ]
     );
 }

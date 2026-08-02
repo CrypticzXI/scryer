@@ -1630,10 +1630,12 @@ impl PendingReleaseRepository for PendingReleaseStore {
     }
 
     async fn list_waiting_pending_releases(&self) -> AppResult<Vec<PendingRelease>> {
+        // `needs_review` rows are parked, not delayed, but they are open work and
+        // belong in the same review surface as `waiting` (§9 decision 2).
         let sql = format!(
             "SELECT {PENDING_RELEASE_COLUMNS}
                FROM pending_releases
-              WHERE status = 'waiting'
+              WHERE status IN ('waiting', 'needs_review')
               ORDER BY delay_until ASC"
         );
         let encryption_key = self.encryption_key()?;
@@ -1716,9 +1718,10 @@ impl PendingReleaseRepository for PendingReleaseStore {
             "FROM pending_releases pr"
         };
 
-        // Base set is `waiting`, matching the historic list_waiting / for_wanted
-        // reads; the optional status filter narrows within that base.
-        let mut where_sql = String::from(" WHERE pr.status = 'waiting'");
+        // Base set is the open-for-review statuses (`waiting` plus the parked
+        // `needs_review`), matching the list_waiting / for_wanted reads; the
+        // optional status filter narrows within that base.
+        let mut where_sql = String::from(" WHERE pr.status IN ('waiting', 'needs_review')");
         let mut filter_args: Vec<SqlArg> = Vec::new();
         if let Some(title_id) = query.title_id.as_deref() {
             where_sql.push_str(" AND pr.title_id = {}");

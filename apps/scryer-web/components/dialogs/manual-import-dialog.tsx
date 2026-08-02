@@ -33,7 +33,7 @@ import { previewManualImportQuery } from "@/lib/graphql/queries";
 import { queueManualImportMutation } from "@/lib/graphql/mutations";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { buildViewPath } from "@/lib/utils/routing";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { useClient } from "urql";
 
 const ARCHIVE_EXTRACTION_PLUGIN_REQUIRED_CODE = "ARCHIVE_EXTRACTION_PLUGIN_REQUIRED";

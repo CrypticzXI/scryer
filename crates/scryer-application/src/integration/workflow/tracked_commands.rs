@@ -211,32 +211,38 @@ impl AppUseCase {
         );
 
         let Some(handle) = self.runtime.acquisition.tracked_download_handle.as_ref() else {
-            return if finalize_scryer_download_ignored(
+            return match finalize_scryer_download_ignored(
                 self,
                 crate::domain_events::DomainEventActor::from(actor),
                 source_identity,
             )
             .await?
             {
-                Ok(())
-            } else {
-                Err(AppError::Repository("tracked download service unavailable".into()))
+                FinalizeIgnoredOutcome::Finalized => Ok(()),
+                FinalizeIgnoredOutcome::PreservedTerminal(state) => {
+                    Err(preserved_terminal_ignore_error(&state))
+                }
+                FinalizeIgnoredOutcome::NoSubmission => Err(AppError::Repository(
+                    "tracked download service unavailable".into(),
+                )),
             };
         };
 
         match handle.ignore(tracked_id).await {
             Ok(()) => Ok(()),
             Err(error @ AppError::NotFound(_)) => {
-                if finalize_scryer_download_ignored(
+                match finalize_scryer_download_ignored(
                     self,
                     crate::domain_events::DomainEventActor::from(actor),
                     source_identity,
                 )
                 .await?
                 {
-                    Ok(())
-                } else {
-                    Err(error)
+                    FinalizeIgnoredOutcome::Finalized => Ok(()),
+                    FinalizeIgnoredOutcome::PreservedTerminal(state) => {
+                        Err(preserved_terminal_ignore_error(&state))
+                    }
+                    FinalizeIgnoredOutcome::NoSubmission => Err(error),
                 }
             }
             Err(error) => Err(error),
@@ -244,46 +250,100 @@ impl AppUseCase {
     }
 }
 
+/// Outcome of durably finalizing a download as ignored.
+pub(crate) enum FinalizeIgnoredOutcome {
+    /// The download is durably ignored (now, or already was).
+    Finalized,
+    /// The download already reached a terminal outcome; it was left as-is.
+    PreservedTerminal(String),
+    /// No scryer submission exists for this identity; nothing durable to write.
+    NoSubmission,
+}
+
+fn preserved_terminal_ignore_error(state: &str) -> AppError {
+    AppError::Validation(format!(
+        "download already resolved as {state}; nothing to ignore"
+    ))
+}
+
 pub(crate) async fn finalize_scryer_download_ignored(
     app: &AppUseCase,
     actor: crate::domain_events::DomainEventActor,
     source_identity: DownloadSourceIdentity,
-) -> AppResult<bool> {
+) -> AppResult<FinalizeIgnoredOutcome> {
+    let ignored = scryer_domain::TrackedDownloadState::Ignored.as_str();
+    // A download that already reached a terminal outcome keeps it: a later
+    // delete of the client entry is cleanup, not a change of outcome.
+    let preserved_states = [
+        scryer_domain::TrackedDownloadState::Imported.as_str(),
+        scryer_domain::TrackedDownloadState::Failed.as_str(),
+    ];
+
     let submission_repository = &app.services.workflow.download_submissions;
     let Some(submission) = submission_repository
         .find_by_client_item_id(&source_identity)
         .await?
     else {
-        return Ok(false);
+        return Ok(FinalizeIgnoredOutcome::NoSubmission);
     };
     if submission.title_id.trim().is_empty() {
-        return Ok(false);
+        return Ok(FinalizeIgnoredOutcome::NoSubmission);
     }
-    let Some(submission_identity) = submission_repository
+
+    match submission_repository
+        .get_tracked_state(&source_identity)
+        .await?
+        .as_deref()
+    {
+        Some(state) if state == ignored => return Ok(FinalizeIgnoredOutcome::Finalized),
+        Some(state) if preserved_states.contains(&state) => {
+            return Ok(FinalizeIgnoredOutcome::PreservedTerminal(state.to_string()));
+        }
+        _ => {}
+    }
+
+    // Legacy submissions predate download-id identity rows; for them the
+    // submission-row state above is both the durability and idempotency guard.
+    let mut identity_already_ignored = false;
+    if let Some(submission_identity) = submission_repository
         .get_submission_identity(&source_identity)
         .await?
-    else {
-        return Ok(false);
-    };
+    {
+        let previous = submission_repository
+            .upsert_identity_tracked_state_returning_previous(
+                &submission_identity,
+                Some(&source_identity),
+                ignored,
+                &preserved_states,
+                None,
+                None,
+            )
+            .await?;
+        match previous.as_deref() {
+            Some(state) if preserved_states.contains(&state) => {
+                return Ok(FinalizeIgnoredOutcome::PreservedTerminal(state.to_string()));
+            }
+            Some(state) if state == ignored => identity_already_ignored = true,
+            _ => {}
+        }
+    }
+
+    submission_repository
+        .update_tracked_state(&source_identity, ignored)
+        .await?;
+
+    if identity_already_ignored {
+        // Healed the submission row for an identity that was already ignored;
+        // the audit event was emitted when the identity row transitioned.
+        return Ok(FinalizeIgnoredOutcome::Finalized);
+    }
+
     let title = app
         .services
         .catalog
         .titles
         .get_by_id(&submission.title_id)
         .await?;
-    let previous = submission_repository
-        .upsert_identity_tracked_state_returning_previous(
-            &submission_identity,
-            Some(&source_identity),
-            scryer_domain::TrackedDownloadState::Ignored.as_str(),
-            None,
-            None,
-    )
-    .await?;
-    if previous.as_deref() == Some(scryer_domain::TrackedDownloadState::Ignored.as_str()) {
-        return Ok(true);
-    }
-
     let source_provider = crate::integration::workflow::source_provider_label(
         submission.source_provider_name.as_deref(),
         submission.source_hint.as_deref(),
@@ -297,6 +357,7 @@ pub(crate) async fn finalize_scryer_download_ignored(
             client_id: source_identity.client_id.clone(),
             client_type: Some(source_identity.client_type.clone()),
             source_provider,
+            source_title: submission.source_title.clone(),
         },
     );
     let event = if let Some(title) = title.as_ref() {
@@ -305,7 +366,7 @@ pub(crate) async fn finalize_scryer_download_ignored(
         crate::domain_events::new_global_domain_event(actor, payload)
     };
     app.append_domain_event(event).await?;
-    Ok(true)
+    Ok(FinalizeIgnoredOutcome::Finalized)
 }
 impl AppUseCase {
     pub async fn mark_tracked_download_failed(
@@ -1044,12 +1105,19 @@ async fn handle_tracked_download_command(
                     )));
                 }
                 if let Some(source_identity) = source_identity {
-                    finalize_scryer_download_ignored(
+                    match finalize_scryer_download_ignored(
                         app,
                         crate::domain_events::DomainEventActor::from(actor),
                         source_identity,
                     )
-                    .await?;
+                    .await?
+                    {
+                        FinalizeIgnoredOutcome::Finalized | FinalizeIgnoredOutcome::NoSubmission => {
+                        }
+                        FinalizeIgnoredOutcome::PreservedTerminal(state) => {
+                            return Err(preserved_terminal_ignore_error(&state));
+                        }
+                    }
                 }
                 let td = tracker
                     .find_mut(&id)

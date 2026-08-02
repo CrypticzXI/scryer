@@ -1,6 +1,6 @@
 import * as React from "react";
 import { ChevronDown, Loader2, Search } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 
 import { TitlePoster } from "@/components/title-poster";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

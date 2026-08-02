@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useClient } from "urql";
 import { Search, ArrowDownToLine, Loader2, Hash, CircleAlert } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { Badge } from "@/components/ui/badge";

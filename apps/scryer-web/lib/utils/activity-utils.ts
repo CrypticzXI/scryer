@@ -37,6 +37,7 @@ export const queueStateLabels: Record<string, string> = {
   import_pending: "queue.state.importPending",
   import_blocked: "queue.state.importBlocked",
   import_failed: "queue.manualImportFailed",
+  ignored: "queue.state.ignored",
   remove_failed: "queue.removeFailed",
   failed: "queue.state.failed",
 };
@@ -160,14 +161,14 @@ export function deriveQueueRowPresentation(
           : "queue.state.postProcessing";
   const statusLabel =
     displayStateKey === "IGNORED"
-      ? "Ignored"
+      ? t("queue.state.ignored")
       : queueItem.importTransferPhase === "COPYING"
-      ? t("queue.transfer.copying")
-      : queueItem.importTransferPhase === "FINALIZING"
-        ? t("queue.transfer.finalizing")
-        : displayStateKey === "POST_PROCESSING"
-          ? t(postProcessingStatusKey)
-          : t(queueStateLabels[displayStateKey.toLowerCase()] ?? "queue.state.unknown");
+        ? t("queue.transfer.copying")
+        : queueItem.importTransferPhase === "FINALIZING"
+          ? t("queue.transfer.finalizing")
+          : displayStateKey === "POST_PROCESSING"
+            ? t(postProcessingStatusKey)
+            : t(queueStateLabels[displayStateKey.toLowerCase()] ?? "queue.state.unknown");
   const hasStatusDetails =
     (stateKey === "failed" ||
       displayStateKey === "REMOVE_FAILED" ||
@@ -182,7 +183,7 @@ export function deriveQueueRowPresentation(
     displayStateKey !== "IMPORTING" &&
     displayStateKey !== "REMOVING";
   const canIgnore =
-    trackedStateKey === "import_blocked" &&
+    (trackedStateKey === "import_blocked" || displayStateKey === "IMPORT_FAILED") &&
     displayStateKey !== "IMPORTING" &&
     displayStateKey !== "REMOVING";
   const canMarkFailed =
@@ -254,7 +255,7 @@ export function canIgnoreImportItem(queueItem: DownloadQueueItem): boolean {
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const displayStateKey = normalizeQueueState(queueItem.displayState);
   return (
-    trackedStateKey === "import_blocked" &&
+    (trackedStateKey === "import_blocked" || displayStateKey === "import_failed") &&
     displayStateKey !== "importing" &&
     displayStateKey !== "removing"
   );

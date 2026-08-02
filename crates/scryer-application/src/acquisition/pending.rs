@@ -130,6 +130,89 @@ impl AppUseCase {
         }
     }
 
+    /// Park the best candidate of a scope for human review (Pillar A3): the
+    /// auto path rejected it as `ambiguous_identity`, so it is neither grabbed
+    /// nor silently dropped. The row carries no delay semantics — the expiry
+    /// processor only reads `waiting` rows — and is resolved by the existing
+    /// grab-now / dismiss actions on the pending-releases view.
+    ///
+    /// Idempotent per scope: an already-parked row for the same wanted item
+    /// short-circuits, so repeated cycles do not pile up review rows.
+    pub(crate) async fn park_pending_release_for_review(
+        &self,
+        wanted: &AcquisitionScopeState,
+        title: &scryer_domain::Title,
+        candidate: &IndexerSearchResult,
+        release_score: i32,
+        scoring_log_json: Option<String>,
+    ) {
+        let existing = self
+            .services
+            .workflow
+            .pending_releases
+            .list_pending_releases_for_title(&title.id)
+            .await
+            .unwrap_or_default();
+        if existing.iter().any(|release| {
+            release.wanted_item_id == wanted.id
+                && release.status == PendingReleaseStatus::NeedsReview
+        }) {
+            return;
+        }
+
+        let now = Utc::now();
+        let pending = PendingRelease {
+            id: Id::new().0,
+            wanted_item_id: wanted.id.clone(),
+            title_id: title.id.clone(),
+            release_title: candidate.title.clone(),
+            release_url: candidate
+                .download_url
+                .clone()
+                .or_else(|| candidate.link.clone()),
+            source_kind: candidate.source_kind,
+            release_size_bytes: candidate.size_bytes,
+            release_score,
+            scoring_log_json,
+            indexer_source: Some(candidate.source.clone()),
+            release_guid: candidate.guid.clone(),
+            added_at: now.to_rfc3339(),
+            // No timer applies; the column is NOT NULL, so the parked row simply
+            // records when review was requested.
+            delay_until: now.to_rfc3339(),
+            status: PendingReleaseStatus::NeedsReview,
+            grabbed_at: None,
+            source_password: crate::normalize_release_password(candidate.password_hint.as_deref()),
+            published_at: candidate.published_at.clone(),
+            info_hash: candidate
+                .extra
+                .get("info_hash")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+        };
+
+        match self
+            .services
+            .workflow
+            .pending_releases
+            .insert_pending_release(&pending)
+            .await
+        {
+            Ok(_) => info!(
+                title = title.name.as_str(),
+                release = candidate.title.as_str(),
+                score = release_score,
+                "pending release: parked for review — canonical title is ambiguous"
+            ),
+            Err(error) => warn!(
+                error = %error,
+                title = title.name.as_str(),
+                release = candidate.title.as_str(),
+                "pending release: failed to park ambiguous-identity candidate"
+            ),
+        }
+    }
+
     /// Process pending releases whose delay has expired.
     /// Called periodically from the acquisition poller.
     pub async fn process_expired_pending_releases(&self) -> AppResult<u32> {
@@ -463,7 +546,7 @@ impl AppUseCase {
                 "pending release {id} not found"
             )));
         };
-        if pr.status != PendingReleaseStatus::Waiting {
+        if !pr.status.is_open_for_review() {
             return Err(AppError::Repository(format!(
                 "pending release {id} is not in waiting status"
             )));
@@ -510,7 +593,7 @@ impl AppUseCase {
                 "pending release {id} not found"
             )));
         };
-        if pr.status != PendingReleaseStatus::Waiting {
+        if !pr.status.is_open_for_review() {
             return Err(AppError::Repository(format!(
                 "pending release {id} is not in waiting status"
             )));
@@ -528,6 +611,24 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
+        // Dismissing a review row is a verdict, not a deferral: burn the release
+        // signature so the same ambiguous release cannot be re-offered and the
+        // scope converges on a different candidate (Pillar A3).
+        if pr.status == PendingReleaseStatus::NeedsReview {
+            let _ = self
+                .services
+                .workflow
+                .release_attempts
+                .record_release_attempt(
+                    Some(title.id.clone()),
+                    pr.release_url.clone(),
+                    Some(pr.release_title.clone()),
+                    ReleaseDownloadAttemptOutcome::Failed,
+                    Some("dismissed from review: ambiguous identity".to_string()),
+                    crate::normalize_release_password(pr.source_password.as_deref()),
+                )
+                .await;
+        }
         self.services
             .workflow
             .pending_releases

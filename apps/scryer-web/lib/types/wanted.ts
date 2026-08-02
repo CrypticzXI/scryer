@@ -10,7 +10,8 @@ export type PendingReleaseStatus =
   | "GRABBED"
   | "SUPERSEDED"
   | "EXPIRED"
-  | "DISMISSED";
+  | "DISMISSED"
+  | "NEEDS_REVIEW";
 
 export type WantedItem = {
   id: string;

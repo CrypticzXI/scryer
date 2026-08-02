@@ -573,8 +573,10 @@ pub(crate) fn title_history_record_from_domain_event(
             data.title.as_ref().map(|title| title.title_name.clone()),
             data.title.as_ref().map(|title| title.facet.clone()),
             TitleHistoryEventType::DownloadIgnored,
-            None,
-            data.source_provider.clone(),
+            data.source_title.clone(),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_provider.clone()),
             None,
             None,
             data.source_provider.clone(),

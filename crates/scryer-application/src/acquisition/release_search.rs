@@ -14,11 +14,73 @@ use crate::quality::release_parser::ParseDisposition;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 
+/// Library-local identity ambiguity for a canonical title (Pillar A tier 0):
+/// the subject's canonical lookup keys that at least one *other* library title
+/// also claims. Empty means the title is unambiguous and a bare release name
+/// stays sufficient evidence. Derived from Scryer's own catalog only — no
+/// catalog/SMG knowledge is involved.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TitleIdentityAmbiguity {
+    pub(crate) shared_lookup_keys: Vec<String>,
+}
+
+impl TitleIdentityAmbiguity {
+    pub(crate) fn from_shared_keys(shared_lookup_keys: Vec<String>) -> Self {
+        Self { shared_lookup_keys }
+    }
+
+    /// True when an auto candidate must present a positive disambiguator (A2).
+    pub(crate) fn requires_disambiguator(&self) -> bool {
+        !self.shared_lookup_keys.is_empty()
+    }
+
+    /// True when `key` is an alias only this title claims within the library
+    /// collision set — the A2(3) "unique alias hit" disambiguator.
+    pub(crate) fn key_is_unique_to_title(&self, key: &str) -> bool {
+        !self
+            .shared_lookup_keys
+            .iter()
+            .any(|shared| shared.as_str() == key)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct CanonicalTitleEvidence {
     pub(crate) lookup_keys: Vec<String>,
     pub(crate) year: Option<i32>,
     pub(crate) parse_context: crate::ReleaseParseContext,
+    /// Library-local collision data. Defaults to "not ambiguous" so every
+    /// existing construction site keeps its behavior; the resolution paths
+    /// attach real data through [`CanonicalTitleEvidence::with_ambiguity`].
+    pub(crate) ambiguity: TitleIdentityAmbiguity,
+}
+
+impl CanonicalTitleEvidence {
+    pub(crate) fn with_ambiguity(mut self, ambiguity: TitleIdentityAmbiguity) -> Self {
+        self.ambiguity = ambiguity;
+        self
+    }
+}
+
+/// How a parsed release name matched a canonical title, retained so the Pillar A
+/// disambiguator check can tell a shared bare key from a unique alias.
+#[derive(Clone, Debug)]
+pub(crate) struct TitleEvidenceMatch {
+    /// The canonical lookup key that actually matched.
+    pub(crate) matched_key: String,
+    /// The release carries the title's year (A2(1)).
+    pub(crate) year_corroborated: bool,
+}
+
+/// A candidate's title match, including the id-backed provenance shortcut that
+/// bypasses parsing entirely.
+#[derive(Clone, Debug)]
+pub(crate) struct CandidateTitleMatch {
+    /// Present when the match came from parsing the release name.
+    pub(crate) evidence_match: Option<TitleEvidenceMatch>,
+    /// Match came from a `title_validated_upstream` strategy — disambiguated by
+    /// construction (A2(4)).
+    pub(crate) provenance_validated: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +117,7 @@ pub(crate) enum ReleaseAutoDecisionCode {
     ParseUnparseable,
     TitleMismatch,
     EpisodeMismatch,
+    AmbiguousIdentity,
     QualityBlocked,
     NegativeScore,
     UpgradeRejected,
@@ -74,6 +137,7 @@ impl ReleaseAutoDecisionCode {
             "parse_unparseable" => Some(Self::ParseUnparseable),
             "title_mismatch" => Some(Self::TitleMismatch),
             "episode_mismatch" => Some(Self::EpisodeMismatch),
+            "ambiguous_identity" => Some(Self::AmbiguousIdentity),
             "quality_blocked" => Some(Self::QualityBlocked),
             "negative_score" => Some(Self::NegativeScore),
             "upgrade_rejected" => Some(Self::UpgradeRejected),
@@ -94,6 +158,7 @@ impl ReleaseAutoDecisionCode {
             Self::ParseUnparseable => "parse_unparseable",
             Self::TitleMismatch => "title_mismatch",
             Self::EpisodeMismatch => "episode_mismatch",
+            Self::AmbiguousIdentity => "ambiguous_identity",
             Self::QualityBlocked => "quality_blocked",
             Self::NegativeScore => "negative_score",
             Self::UpgradeRejected => "upgrade_rejected",
@@ -113,6 +178,9 @@ impl ReleaseAutoDecisionCode {
             Self::ParseUnparseable => "release could not be parsed and blocks auto-grab",
             Self::TitleMismatch => "release title does not match the target title",
             Self::EpisodeMismatch => "release numbering does not match the target episode",
+            Self::AmbiguousIdentity => {
+                "canonical title is ambiguous and no disambiguator was present"
+            }
             Self::QualityBlocked => "quality profile blocked this release",
             Self::NegativeScore => "release score is negative after scoring penalties",
             Self::UpgradeRejected => "upgrade policy rejected this release",
@@ -196,6 +264,7 @@ fn canonical_title_evidence_for_episode(
             None,
             Some(title.facet.as_str()),
         ),
+        ambiguity: TitleIdentityAmbiguity::default(),
     }
 }
 
@@ -433,10 +502,21 @@ pub(crate) fn parsed_release_matches_title_evidence(
     parsed: &ParsedReleaseMetadata,
     evidence: &CanonicalTitleEvidence,
 ) -> bool {
+    match_parsed_release_to_title_evidence(parsed, evidence).is_some()
+}
+
+/// Matching counterpart of [`parsed_release_matches_title_evidence`] that keeps
+/// *which* lookup key matched and whether the release year corroborated it.
+/// Pillar A needs both: a shared bare key is not identity evidence for an
+/// ambiguous subject, while a unique alias or a year agreement is.
+pub(crate) fn match_parsed_release_to_title_evidence(
+    parsed: &ParsedReleaseMetadata,
+    evidence: &CanonicalTitleEvidence,
+) -> Option<TitleEvidenceMatch> {
     if let (Some(parsed_year), Some(expected_year)) = (parsed.year, evidence.year)
         && parsed_year != expected_year
     {
-        return false;
+        return None;
     }
 
     // Target-biased parses can project the target title out of a name that
@@ -449,12 +529,29 @@ pub(crate) fn parsed_release_matches_title_evidence(
         year_corroborated
             || title_key_head_anchored(&parsed.raw_title, key, TITLE_MATCH_HEAD_ANCHOR_MAX_START)
     };
+    // Several of the title's keys can match one release name. Keep the most
+    // specific hit — a key unique to this title outranks the shared bare key,
+    // and a longer key outranks a shorter one — so A2(3) sees the alias that
+    // actually carries identity rather than whichever variant came first.
+    let mut best: Option<TitleEvidenceMatch> = None;
+    let mut consider = |key: &str| {
+        let rank = |key: &str| (evidence.ambiguity.key_is_unique_to_title(key), key.len());
+        if best
+            .as_ref()
+            .is_none_or(|current| rank(key) > rank(&current.matched_key))
+        {
+            best = Some(TitleEvidenceMatch {
+                matched_key: key.to_string(),
+                year_corroborated,
+            });
+        }
+    };
 
     for release_title in extract_titles_from_release(parsed) {
         if evidence.lookup_keys.iter().any(|key| key == &release_title)
             && accepts_key(&release_title)
         {
-            return true;
+            consider(&release_title);
         }
 
         if let Some(year) = parsed.year {
@@ -463,7 +560,7 @@ pub(crate) fn parsed_release_matches_title_evidence(
                 && evidence.lookup_keys.iter().any(|key| key == without_year)
                 && accepts_key(without_year)
             {
-                return true;
+                consider(without_year);
             }
         }
 
@@ -472,9 +569,13 @@ pub(crate) fn parsed_release_matches_title_evidence(
             if evidence.lookup_keys.iter().any(|key| key == &with_year)
                 && accepts_key(&release_title)
             {
-                return true;
+                consider(&with_year);
             }
         }
+    }
+
+    if best.is_some() {
+        return best;
     }
 
     contextual_release_matches_title_evidence(parsed, evidence, year_corroborated)
@@ -484,14 +585,12 @@ fn contextual_release_matches_title_evidence(
     parsed: &ParsedReleaseMetadata,
     evidence: &CanonicalTitleEvidence,
     year_corroborated: bool,
-) -> bool {
+) -> Option<TitleEvidenceMatch> {
     let contextual = crate::analyze_release_for_target(&parsed.raw_title, &evidence.parse_context);
     if contextual.is_unparseable() || contextual.is_ambiguous {
-        return false;
+        return None;
     }
-    let Some(best_candidate) = contextual.best_candidate() else {
-        return false;
-    };
+    let best_candidate = contextual.best_candidate()?;
 
     let year_corroborated = year_corroborated
         || (best_candidate.projected.year.is_some()
@@ -506,29 +605,47 @@ fn contextual_release_matches_title_evidence(
         titles.push(best_candidate.projected.normalized_title.clone());
     }
 
-    titles.into_iter().any(|title| {
+    titles.into_iter().find_map(|title| {
         let normalized = crate::title_matching::canonical_lookup_key(&title);
-        !normalized.is_empty()
+        let accepted = !normalized.is_empty()
             && evidence.lookup_keys.iter().any(|key| key == &normalized)
             && (year_corroborated
                 || title_key_head_anchored(
                     &parsed.raw_title,
                     &normalized,
                     TITLE_MATCH_HEAD_ANCHOR_MAX_START,
-                ))
+                ));
+        accepted.then_some(TitleEvidenceMatch {
+            matched_key: normalized,
+            year_corroborated,
+        })
     })
 }
 
+#[cfg(test)]
 pub(crate) fn candidate_matches_title_subject(
     candidate: &IndexerSearchResult,
     evidence: &CanonicalTitleEvidence,
 ) -> bool {
+    candidate_title_match(candidate, evidence).is_some()
+}
+
+/// Matching counterpart of [`candidate_matches_title_subject`] that retains the
+/// Pillar A disambiguator inputs (matched key, year agreement, id-backed
+/// provenance).
+pub(crate) fn candidate_title_match(
+    candidate: &IndexerSearchResult,
+    evidence: &CanonicalTitleEvidence,
+) -> Option<CandidateTitleMatch> {
     if candidate
         .provenance
         .as_ref()
         .is_some_and(|provenance| provenance.title_validated_upstream)
     {
-        return true;
+        return Some(CandidateTitleMatch {
+            evidence_match: None,
+            provenance_validated: true,
+        });
     }
 
     let parsed_owned;
@@ -540,7 +657,48 @@ pub(crate) fn candidate_matches_title_subject(
         &parsed_owned
     };
 
-    parsed_release_matches_title_evidence(parsed, evidence)
+    match_parsed_release_to_title_evidence(parsed, evidence).map(|evidence_match| {
+        CandidateTitleMatch {
+            evidence_match: Some(evidence_match),
+            provenance_validated: false,
+        }
+    })
+}
+
+/// Pillar A2: for an identity-ambiguous subject an auto candidate must present
+/// one positive disambiguator. `external_id_agreement` is the A2(2) seam —
+/// indexer response `tvdbid`/`tmdbid`/`imdbid` attrs are not captured yet, so
+/// every caller passes `None` today. Per §9 decision 3 an indexer-asserted id
+/// suffices alone; a contradicting parsed year has already vetoed the match
+/// upstream in [`match_parsed_release_to_title_evidence`], so the year veto
+/// still outranks it.
+pub(crate) fn candidate_presents_identity_disambiguator(
+    evidence: &CanonicalTitleEvidence,
+    title_match: &CandidateTitleMatch,
+    external_id_agreement: Option<bool>,
+) -> bool {
+    // A2(4) — id-backed strategies are disambiguated by construction.
+    if title_match.provenance_validated {
+        return true;
+    }
+
+    if let Some(evidence_match) = title_match.evidence_match.as_ref() {
+        // A2(1) — the release carries the title's year.
+        if evidence_match.year_corroborated {
+            return true;
+        }
+        // A2(3) — the matched key is an alias unique to this title within the
+        // library collision set, not the shared bare key.
+        if evidence
+            .ambiguity
+            .key_is_unique_to_title(&evidence_match.matched_key)
+        {
+            return true;
+        }
+    }
+
+    // A2(2) — external id agreement.
+    external_id_agreement.unwrap_or(false)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -723,7 +881,8 @@ pub(crate) fn evaluate_auto_candidate(
     context: &AutoCandidateEvaluationContext<'_>,
 ) -> ReleaseAutoDecisionCode {
     let parse_state = candidate_parse_state(candidate);
-    let matches_title = candidate_matches_title_subject(candidate, &context.subject.title_evidence);
+    let title_match = candidate_title_match(candidate, &context.subject.title_evidence);
+    let matches_title = title_match.is_some();
     match parse_state {
         CandidateParseState::Ambiguous if !matches_title => {
             return ReleaseAutoDecisionCode::ParseAmbiguous;
@@ -736,12 +895,28 @@ pub(crate) fn evaluate_auto_candidate(
         | CandidateParseState::Parsed => {}
     }
 
-    if !matches_title {
+    let Some(title_match) = title_match else {
         return ReleaseAutoDecisionCode::TitleMismatch;
-    }
+    };
 
     if candidate_numbering_contradicts_subject(candidate, context.subject) {
         return ReleaseAutoDecisionCode::EpisodeMismatch;
+    }
+
+    // Pillar A3: a bare release name is not identity evidence when the subject's
+    // canonical title collides with another library title.
+    if context
+        .subject
+        .title_evidence
+        .ambiguity
+        .requires_disambiguator()
+        && !candidate_presents_identity_disambiguator(
+            &context.subject.title_evidence,
+            &title_match,
+            None,
+        )
+    {
+        return ReleaseAutoDecisionCode::AmbiguousIdentity;
     }
 
     let is_allowed = candidate
@@ -853,6 +1028,28 @@ fn preferred_scoped_external_id(ids: &[ScopedExternalId], source: &str) -> Optio
 }
 
 impl AppUseCase {
+    /// Library-local identity ambiguity for a search subject (Pillar A tier 0).
+    /// Reads the cached monitored-title matcher, whose normalized-title index is
+    /// already built from `canonical_title_lookup_keys`, so a convergence cycle
+    /// pays for one index build instead of a query per subject. Falls back to
+    /// "not ambiguous" when the index cannot be loaded — Pillar B still catches
+    /// the bad import.
+    pub(crate) async fn title_identity_ambiguity(&self, title: &Title) -> TitleIdentityAmbiguity {
+        match self.monitored_title_matcher().await {
+            Ok(matcher) => TitleIdentityAmbiguity::from_shared_keys(
+                matcher.shared_lookup_keys(&title.id, &canonical_title_lookup_keys(title)),
+            ),
+            Err(error) => {
+                tracing::debug!(
+                    title_id = title.id.as_str(),
+                    error = %error,
+                    "identity ambiguity: monitored title index unavailable, treating title as unambiguous"
+                );
+                TitleIdentityAmbiguity::default()
+            }
+        }
+    }
+
     fn release_search_category_for_facet(&self, facet: &MediaFacet) -> String {
         self.facet_registry
             .get(facet)
@@ -1035,7 +1232,8 @@ impl AppUseCase {
         Ok(ResolvedReleaseSearchSubject {
             title_id: title.id.clone(),
             title_tags: title.tags.clone(),
-            title_evidence: canonical_title_evidence(title),
+            title_evidence: canonical_title_evidence(title)
+                .with_ambiguity(self.title_identity_ambiguity(title).await),
             queries: vec![query],
             imdb_id,
             tmdb_id: tmdb_id_from_external_ids(&title.external_ids),
@@ -1151,7 +1349,8 @@ impl AppUseCase {
         Ok(ResolvedReleaseSearchSubject {
             title_id: title.id.clone(),
             title_tags: title.tags.clone(),
-            title_evidence: canonical_title_evidence_for_episode(title, episode_record.as_ref()),
+            title_evidence: canonical_title_evidence_for_episode(title, episode_record.as_ref())
+                .with_ambiguity(self.title_identity_ambiguity(title).await),
             queries,
             imdb_id,
             tmdb_id: tmdb_id_from_external_ids(&title.external_ids),
@@ -1223,7 +1422,8 @@ impl AppUseCase {
         Ok(ResolvedReleaseSearchSubject {
             title_id: title.id.clone(),
             title_tags: title.tags.clone(),
-            title_evidence: canonical_title_evidence(title),
+            title_evidence: canonical_title_evidence(title)
+                .with_ambiguity(self.title_identity_ambiguity(title).await),
             queries,
             imdb_id,
             tmdb_id: tmdb_id_from_external_ids(&title.external_ids),
@@ -1299,7 +1499,8 @@ impl AppUseCase {
             ResolvedReleaseSearchSubject {
                 title_id: title.id.clone(),
                 title_tags: title.tags.clone(),
-                title_evidence: canonical_title_evidence(&search_title),
+                title_evidence: canonical_title_evidence(&search_title)
+                    .with_ambiguity(self.title_identity_ambiguity(&search_title).await),
                 queries,
                 imdb_id,
                 tmdb_id: tmdb_id_from_external_ids(&search_title.external_ids),
@@ -1346,7 +1547,8 @@ impl AppUseCase {
         ResolvedReleaseSearchSubject {
             title_id: owner_title.id.clone(),
             title_tags: owner_title.tags.clone(),
-            title_evidence: canonical_title_evidence_for_episode(search_title, episode),
+            title_evidence: canonical_title_evidence_for_episode(search_title, episode)
+                .with_ambiguity(self.title_identity_ambiguity(search_title).await),
             queries: query_result.queries,
             imdb_id: query_result.imdb_id,
             tmdb_id: query_result.tmdb_id,
@@ -1833,11 +2035,180 @@ mod tests {
         junk.year = Some(2002);
         assert!(!parsed_release_matches_title_evidence(&junk, &evidence));
 
-        let legit = crate::parse_release_metadata(
-            "Friends.S09E23E24.1080p.NF.WEB-DL.DDP5.1.x264-PRAGMA",
-        );
+        let legit =
+            crate::parse_release_metadata("Friends.S09E23E24.1080p.NF.WEB-DL.DDP5.1.x264-PRAGMA");
         assert_eq!(legit.year, None);
         assert!(parsed_release_matches_title_evidence(&legit, &evidence));
+    }
+
+    // ── Pillar A: identity ambiguity + required disambiguators ───────────────
+
+    /// The incident pair: a live-action `One Piece` (2023, series) and the
+    /// anime `One Piece` (1999) in the same library, both claiming the bare
+    /// canonical key `one piece`. `aliases` is applied to the live-action title
+    /// so a unique-alias hit can be exercised.
+    fn one_piece_library(aliases: Vec<String>) -> (Title, Vec<Title>) {
+        let mut live_action = make_title();
+        live_action.id = "title-one-piece-live".to_string();
+        live_action.name = "One Piece".to_string();
+        live_action.facet = MediaFacet::Series;
+        live_action.year = Some(2023);
+        live_action.aliases = aliases;
+        live_action.tagged_aliases = Vec::new();
+
+        let mut anime = make_title();
+        anime.id = "title-one-piece-anime".to_string();
+        anime.name = "One Piece".to_string();
+        anime.facet = MediaFacet::Anime;
+        anime.year = Some(1999);
+        anime.aliases = Vec::new();
+        anime.tagged_aliases = Vec::new();
+
+        let library = vec![live_action.clone(), anime];
+        (live_action, library)
+    }
+
+    /// Tier 0 ambiguity exactly as the acquisition paths derive it: from the
+    /// monitored-title index over the library, with no schema or SMG input.
+    fn library_local_ambiguity(subject: &Title, library: &[Title]) -> TitleIdentityAmbiguity {
+        let matcher = crate::import_title_resolution::MonitoredTitleMatcher::new(library.to_vec());
+        TitleIdentityAmbiguity::from_shared_keys(
+            matcher.shared_lookup_keys(&subject.id, &canonical_title_lookup_keys(subject)),
+        )
+    }
+
+    fn ambiguous_episode_subject(
+        title: &Title,
+        library: &[Title],
+        season: Option<u32>,
+        episode: Option<u32>,
+    ) -> ResolvedReleaseSearchSubject {
+        let mut subject = numbering_scoped_subject(title, season, episode);
+        subject.title_evidence = subject
+            .title_evidence
+            .with_ambiguity(library_local_ambiguity(title, library));
+        subject
+    }
+
+    fn decision_for(
+        title: &Title,
+        subject: &ResolvedReleaseSearchSubject,
+        candidate: &IndexerSearchResult,
+    ) -> ReleaseAutoDecisionCode {
+        let profile = QualityProfile::default();
+        let thresholds = AcquisitionThresholds::default();
+        let now = Utc::now();
+        let db_blocklist = HashSet::new();
+        let context = AutoCandidateEvaluationContext {
+            title,
+            subject,
+            current_score: None,
+            last_search_at: None,
+            profile: &profile,
+            thresholds: &thresholds,
+            cutoff_reached: false,
+            now: &now,
+            dl_snapshot: None,
+            db_blocklist: &db_blocklist,
+            existing_files: &[],
+            delay_profiles: &[],
+            failed_source_kinds: None,
+        };
+        evaluate_auto_candidate(candidate, &context)
+    }
+
+    #[test]
+    fn library_local_collision_flags_shared_bare_key() {
+        let (live_action, library) = one_piece_library(vec!["One Piece Live Action".to_string()]);
+        let ambiguity = library_local_ambiguity(&live_action, &library);
+
+        assert!(ambiguity.requires_disambiguator());
+        assert_eq!(ambiguity.shared_lookup_keys, vec!["one piece".to_string()]);
+        assert!(!ambiguity.key_is_unique_to_title("one piece"));
+        assert!(ambiguity.key_is_unique_to_title("one piece live action"));
+    }
+
+    #[test]
+    fn ambiguous_title_rejects_bare_candidate_without_disambiguator() {
+        // The driving incident: a bare `One.Piece.S02E01` names both library
+        // titles equally well, so it is not identity evidence for either.
+        let (live_action, library) = one_piece_library(Vec::new());
+        let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
+        let candidate = make_candidate("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", None);
+
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::AmbiguousIdentity
+        );
+    }
+
+    #[test]
+    fn ambiguous_title_accepts_year_disambiguator() {
+        // A2(1): the release carries the live-action title's year, so it names
+        // one of the two colliding titles and clears the identity gate.
+        let (live_action, library) = one_piece_library(Vec::new());
+        let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
+        let candidate = make_candidate("One.Piece.2023.S02E01.1080p.WEB-DL.x264-GRP", None);
+
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::QualityBlocked
+        );
+    }
+
+    #[test]
+    fn ambiguous_title_accepts_unique_alias_disambiguator() {
+        // A2(3): the matched key is an alias only the live-action title claims.
+        let (live_action, library) = one_piece_library(vec!["One Piece Live Action".to_string()]);
+        let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
+        let candidate = make_candidate("One.Piece.Live.Action.S02E01.1080p.WEB-DL.x264-GRP", None);
+
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::QualityBlocked
+        );
+    }
+
+    #[test]
+    fn ambiguous_title_accepts_id_backed_provenance() {
+        // A2(4): id-backed strategies are disambiguated by construction.
+        let (live_action, library) = one_piece_library(Vec::new());
+        let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
+        let candidate = make_candidate(
+            "One.Piece.S02E01.1080p.WEB-DL.x264-GRP",
+            Some(ReleaseCandidateProvenance {
+                search_subject_kind: ReleaseSearchSubjectKind::Episode,
+                strategy_kind: ReleaseStrategyKind::IdBacked,
+                title_validated_upstream: true,
+            }),
+        );
+
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::QualityBlocked
+        );
+    }
+
+    #[test]
+    fn unambiguous_title_demands_no_disambiguator() {
+        // Friends is alone on its canonical key, so a bare scene release keeps
+        // clearing the identity gate untouched.
+        let mut title = make_title();
+        title.id = "title-friends".to_string();
+        title.name = "Friends".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(1994);
+        title.aliases = Vec::new();
+        title.tagged_aliases = Vec::new();
+        let library = vec![title.clone()];
+        let subject = ambiguous_episode_subject(&title, &library, Some(9), Some(23));
+        assert!(!subject.title_evidence.ambiguity.requires_disambiguator());
+
+        let candidate = make_candidate("Friends.S09E23E24.1080p.BluRay.x264-TENEIGHTY", None);
+        assert_eq!(
+            decision_for(&title, &subject, &candidate),
+            ReleaseAutoDecisionCode::QualityBlocked
+        );
     }
 
     #[test]

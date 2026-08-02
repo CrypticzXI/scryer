@@ -606,6 +606,38 @@ async fn graphql_typed_subtitle_settings_round_trip() {
 }
 
 #[tokio::test]
+async fn graphql_typed_subtitle_settings_invalid_scores_fall_back_to_defaults() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    for (key, value) in [
+        ("subtitles.minimum_score_series", json!(101)),
+        ("subtitles.minimum_score_movie", json!(-1)),
+    ] {
+        ctx.settings_store
+            .upsert_setting_value("system", key, None, value.to_string(), "test", None)
+            .await
+            .expect("subtitle score should seed");
+    }
+
+    let read = gql(
+        &ctx,
+        r#"
+        query SubtitleSettings {
+          subtitleSettings {
+            minimumScoreSeries
+            minimumScoreMovie
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&read);
+    assert_eq!(read["data"]["subtitleSettings"]["minimumScoreSeries"], 90);
+    assert_eq!(read["data"]["subtitleSettings"]["minimumScoreMovie"], 70);
+}
+
+#[tokio::test]
 async fn graphql_typed_acquisition_settings_round_trip() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;

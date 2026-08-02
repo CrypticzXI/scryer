@@ -1038,6 +1038,10 @@ async fn process_single_target(
     let mut had_quality_allowed_candidate = false;
     let mut skipped_for_failed = false;
     let mut skipped_for_title_mismatch = false;
+    // Candidates iterate best-first, so the first `ambiguous_identity` rejection
+    // is the scope's best ambiguous candidate — the only one worth parking for
+    // review this cycle (Pillar A3).
+    let mut parked_ambiguous_identity = false;
     let mut grab_attempts: usize = 0;
     // Track source kinds where ALL download clients failed.  Avoids hammering
     // dead clients with more candidates of the same protocol.
@@ -1076,13 +1080,17 @@ async fn process_single_target(
 
         if !matches!(
             decision_code,
-            ReleaseAutoDecisionCode::TitleMismatch | ReleaseAutoDecisionCode::EpisodeMismatch
+            ReleaseAutoDecisionCode::TitleMismatch
+                | ReleaseAutoDecisionCode::EpisodeMismatch
+                | ReleaseAutoDecisionCode::AmbiguousIdentity
         ) {
             had_allowed_candidate = true;
         }
         if matches!(
             decision_code,
-            ReleaseAutoDecisionCode::TitleMismatch | ReleaseAutoDecisionCode::EpisodeMismatch
+            ReleaseAutoDecisionCode::TitleMismatch
+                | ReleaseAutoDecisionCode::EpisodeMismatch
+                | ReleaseAutoDecisionCode::AmbiguousIdentity
         ) {
             skipped_for_title_mismatch = true;
         }
@@ -1107,6 +1115,22 @@ async fn process_single_target(
                     | ReleaseAutoDecisionCode::CutoffReached
             ) {
                 break;
+            }
+            if matches!(decision_code, ReleaseAutoDecisionCode::AmbiguousIdentity)
+                && !parked_ambiguous_identity
+            {
+                parked_ambiguous_identity = true;
+                app.park_pending_release_for_review(
+                    item,
+                    &title,
+                    candidate,
+                    candidate_score,
+                    serialize_decision_explanation(candidate),
+                )
+                .await;
+                // Keep walking the ranked list: a lower-scored candidate that
+                // does present a disambiguator is still grabbable this cycle.
+                continue;
             }
             if matches!(decision_code, ReleaseAutoDecisionCode::PendingDelay) {
                 let scoring_json = candidate.quality_profile_decision.as_ref().map(|decision| {
