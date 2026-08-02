@@ -1035,6 +1035,7 @@ impl AppUseCase {
             )
             .await?
             .into_iter()
+            .filter(|item| item.is_scryer_origin)
             .filter(|item| matches_download_import_filter(item, filter))
             .collect::<Vec<_>>();
 
@@ -1096,6 +1097,7 @@ impl AppUseCase {
             )
             .await?
             .into_iter()
+            .filter(|item| item.is_scryer_origin)
             .filter(|item| matches_download_import_filter(item, filter))
             .count();
 

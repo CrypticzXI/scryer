@@ -469,19 +469,11 @@ impl ExternalArrClient {
                 None => continue,
             };
 
-            // Re-fetch individually to get unmasked sensitive fields.
-            let fields = match self.api_get(&format!("indexer/{id}")).await {
-                Ok(detail) => detail
-                    .get("fields")
-                    .and_then(Value::as_array)
-                    .map(|f| flatten_arr_fields(f))
-                    .unwrap_or_default(),
-                Err(_) => item
-                    .get("fields")
-                    .and_then(Value::as_array)
-                    .map(|f| flatten_arr_fields(f))
-                    .unwrap_or_default(),
-            };
+            let fields = item
+                .get("fields")
+                .and_then(Value::as_array)
+                .map(|fields| flatten_arr_fields(fields))
+                .unwrap_or_default();
 
             results.push(ArrIndexer {
                 id,
@@ -1177,16 +1169,18 @@ fn flatten_arr_fields(fields: &[Value]) -> HashMap<String, Value> {
 mod tests {
     use std::collections::HashMap;
     use std::net::TcpListener as StdTcpListener;
+    use std::sync::Arc;
 
     use serde_json::Value;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tokio::sync::Mutex;
 
     use super::{
         ArrIndexer, EXTERNAL_IMPORT_HOST_RPS_LANE, EXTERNAL_IMPORT_HOST_RPS_PROFILE,
         ExternalArrApiBucket, ExternalArrClient, detect_linked_prowlarr_proxy_indexer,
-        detect_prowlarr_proxy_indexer, map_download_client_type, map_indexer_provider_type,
-        should_skip_imported_indexer, sonarr_episode_list_path,
+        detect_prowlarr_proxy_indexer, field_str_sensitive, map_download_client_type,
+        map_indexer_provider_type, should_skip_imported_indexer, sonarr_episode_list_path,
     };
 
     #[test]
@@ -1239,6 +1233,47 @@ mod tests {
             }
         });
         format!("http://localhost:{port}")
+    }
+
+    async fn spawn_indexer_list_mock(indexers: Value) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind indexer list mock");
+        let port = listener.local_addr().expect("mock address").port();
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let paths_for_task = paths.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _peer)) = listener.accept().await else {
+                    return;
+                };
+                let mut buffer = [0_u8; 4096];
+                let Ok(read) = stream.read(&mut buffer).await else {
+                    continue;
+                };
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/")
+                    .to_string();
+                paths_for_task.lock().await.push(path.clone());
+                let response = if path.starts_with("/api/v3/system/status") {
+                    json_response(r#"{"appName":"Sonarr","version":"4.0.0"}"#)
+                } else if path == "/api" || path.starts_with("/api?") {
+                    json_response(r#"{"current":"v3"}"#)
+                } else if path.starts_with("/api/v3/indexer") {
+                    json_response(&indexers.to_string())
+                } else {
+                    "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                        .to_string()
+                };
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        (format!("http://localhost:{port}"), paths)
     }
 
     fn unused_ipv4_port() -> u16 {
@@ -1326,6 +1361,52 @@ mod tests {
 
         assert_eq!(app_name, "Sonarr");
         assert_eq!(version, "4.0.17.2952");
+    }
+
+    #[tokio::test]
+    async fn list_indexers_uses_one_list_request_and_no_detail_requests() {
+        let mut fixtures = vec![serde_json::json!({
+            "id": 1,
+            "name": "Prowlarr Proxy",
+            "implementation": "Torznab",
+            "fields": [
+                { "name": "baseUrl", "value": "https://media.example.test/prowlarr/12345/" },
+                { "name": "apiPath", "value": "/api" },
+                { "name": "apiKey", "value": "********" }
+            ]
+        })];
+        fixtures.extend((2..=41).map(|id| {
+            serde_json::json!({
+                "id": id,
+                "name": format!("Indexer {id}"),
+                "implementation": "Newznab",
+                "fields": [
+                    { "name": "baseUrl", "value": format!("https://indexer-{id}.example.test") },
+                    { "name": "apiKey", "value": "********" }
+                ]
+            })
+        }));
+        let (base_url, request_paths) = spawn_indexer_list_mock(Value::Array(fixtures)).await;
+        let client = ExternalArrClient::for_sonarr_v4(base_url, "fixture-key".into())
+            .expect("valid localhost URL");
+
+        let indexers = client.list_indexers().await.expect("indexer list");
+
+        assert_eq!(indexers.len(), 41);
+        assert!(field_str_sensitive(&indexers[0].fields, "apiKey").is_none());
+        let detected = detect_prowlarr_proxy_indexer(&indexers[0])
+            .expect("masked proxy indexer should still be detected");
+        assert_eq!(detected.base_url, "https://media.example.test/prowlarr");
+        assert!(detected.api_key.is_none());
+        let paths = request_paths.lock().await;
+        let list_requests = paths
+            .iter()
+            .filter(|path| {
+                path.as_str() == "/api/v3/indexer" || path.starts_with("/api/v3/indexer?")
+            })
+            .count();
+        assert_eq!(list_requests, 1);
+        assert!(paths.iter().all(|path| !path.contains("/indexer/")));
     }
 
     #[tokio::test]

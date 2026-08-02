@@ -453,7 +453,7 @@ pub use services::{
     ExternalImportArrSourceSeriesEntry, ExternalImportArrSourceWarmupResult,
     ExternalImportMonitorWarmupBeginResult, ExternalImportMonitorWarmupPhase,
     ExternalImportMonitorWarmupPhaseProgress, ExternalImportMonitorWarmupProgressSnapshot,
-    ExternalImportMonitorWarmupStatus, ProviderCatalogFamily,
+    ExternalImportMonitorWarmupStatus, ExternalImportProwlarrWarmupResult, ProviderCatalogFamily,
 };
 pub use settings::keys::{
     ANIME_FILLER_POLICY_KEY, ANIME_INTER_SEASON_MOVIES_KEY, ANIME_MONITOR_FILLER_MOVIES_KEY,

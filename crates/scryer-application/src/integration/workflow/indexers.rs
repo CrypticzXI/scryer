@@ -1066,6 +1066,7 @@ impl AppUseCase {
         if indexers_changed {
             self.publish_indexers_changed();
         }
+        self.queue_managed_indexer_enrichment(actor, &parent.id);
         Ok(result)
     }
 }

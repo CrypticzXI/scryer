@@ -25,7 +25,7 @@ pub use model::{
     TokenAnnotations, TokenRange, TokenRole, VideoCodec,
 };
 pub use trash_guides::detect_blocked_title as detect_trash_guides_blocked_title;
-pub use trash_guides::{TRASH_GUIDES_SOURCE_REVISION, TRASH_GUIDES_SYNCED_AT};
+pub use trash_guides::TRASH_GUIDES_SOURCE_REVISION;
 
 use parse::{AnalysisInputs, analyze_inputs};
 use sanitize::sanitize_input;

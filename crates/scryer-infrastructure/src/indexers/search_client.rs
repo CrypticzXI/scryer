@@ -181,6 +181,14 @@ enum TitleGuardMode {
     ExactTitleMatch,
 }
 
+fn title_guard_mode_for_strategy(strategy: &SearchStrategy) -> TitleGuardMode {
+    if !strategy.ids.is_empty() || strategy.request_query.trim().is_empty() {
+        TitleGuardMode::SkipTitleMatch
+    } else {
+        TitleGuardMode::ExactTitleMatch
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct ManagedIndexerMetadata {
     enable_rss: Option<bool>,
@@ -1812,12 +1820,7 @@ impl MultiIndexerSearchClient {
                 None
             };
             let strategy_label = strategy.label.clone();
-            let title_guard_mode =
-                if !strategy.ids.is_empty() || strategy.request_query.trim().is_empty() {
-                    TitleGuardMode::SkipTitleMatch
-                } else {
-                    TitleGuardMode::ExactTitleMatch
-                };
+            let title_guard_mode = title_guard_mode_for_strategy(&strategy);
 
             set.spawn(async move {
                 let StrategyTierContext {
@@ -4194,6 +4197,41 @@ mod tests {
 
         assert!(entry.claim_feedback());
         assert!(!entry.claim_feedback());
+    }
+
+    #[test]
+    fn id_strategies_skip_the_text_title_guard() {
+        let mut ids = HashMap::new();
+        ids.insert("tmdb".to_string(), "123".to_string());
+        let id_strategy = SearchStrategy {
+            request_query: "Resident Evil 2026".to_string(),
+            request_facet: "movie".to_string(),
+            ids,
+            season: None,
+            episode: None,
+            absolute_episode: None,
+            generic_query_only: false,
+            label: "ids_tmdb".to_string(),
+        };
+        let text_strategy = SearchStrategy {
+            request_query: "Resident Evil 2026".to_string(),
+            request_facet: "movie".to_string(),
+            ids: HashMap::new(),
+            season: None,
+            episode: None,
+            absolute_episode: None,
+            generic_query_only: false,
+            label: "freetext".to_string(),
+        };
+
+        assert_eq!(
+            title_guard_mode_for_strategy(&id_strategy),
+            TitleGuardMode::SkipTitleMatch
+        );
+        assert_eq!(
+            title_guard_mode_for_strategy(&text_strategy),
+            TitleGuardMode::ExactTitleMatch
+        );
     }
 
     struct MockIndexerConfigRepository {

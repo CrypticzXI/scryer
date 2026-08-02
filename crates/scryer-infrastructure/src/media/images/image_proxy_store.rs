@@ -62,24 +62,10 @@ impl ImageProxyStore {
             .and_then(|memory| memory.records.get(token).cloned())
     }
 
-    fn persist_source_in_background(&self, record: ImageProxySourceRecord) {
-        let datastore = self.datastore.clone();
-        let pending = Arc::clone(&self.pending);
-        if let Ok(mut queued) = pending.lock() {
-            queued.insert(record.token.clone(), record.clone());
+    fn queue_source(&self, record: ImageProxySourceRecord) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.insert(record.token.clone(), record);
         }
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        handle.spawn(async move {
-            if let Err(error) = persist_queued_source(&datastore, &pending, &record).await {
-                tracing::warn!(
-                    error = %error,
-                    token = %record.token,
-                    "failed to persist image proxy source"
-                );
-            }
-        });
     }
 
     fn touch_source_if_stale(&self, mut record: ImageProxySourceRecord) -> ImageProxySourceRecord {
@@ -89,7 +75,7 @@ impl ImageProxyStore {
         {
             record.last_seen_at = now;
             self.remember(record.clone());
-            self.persist_source_in_background(record.clone());
+            self.queue_source(record.clone());
         }
         record
     }
@@ -135,7 +121,7 @@ impl ImageProxyRepository for ImageProxyStore {
             self.touch_source_if_stale(existing);
         } else {
             self.remember(record.clone());
-            self.persist_source_in_background(record);
+            self.queue_source(record);
         }
 
         format!(
@@ -157,12 +143,6 @@ impl ImageProxyRepository for ImageProxyStore {
         if let Ok(mut memory) = self.memory.lock() {
             *memory = MemorySources::default();
         }
-    }
-
-    async fn persist_image_proxy_source(&self, source: &ImageProxySourceRecord) -> AppResult<()> {
-        persist_queued_source(&self.datastore, &self.pending, source).await?;
-        self.remember(source.clone());
-        Ok(())
     }
 
     async fn get_image_proxy_source(
@@ -338,16 +318,6 @@ pub(super) fn approved_upstream_url(raw: &str) -> Option<String> {
     Some(parsed.to_string())
 }
 
-async fn persist_queued_source(
-    datastore: &StoreDatastore,
-    pending: &Arc<Mutex<HashMap<String, ImageProxySourceRecord>>>,
-    record: &ImageProxySourceRecord,
-) -> AppResult<()> {
-    upsert_source(datastore, record).await?;
-    acknowledge_queued_source(pending, record);
-    Ok(())
-}
-
 async fn persist_queued_sources(
     datastore: &StoreDatastore,
     pending: &Arc<Mutex<HashMap<String, ImageProxySourceRecord>>>,
@@ -410,20 +380,6 @@ fn source_upsert_args(record: &ImageProxySourceRecord) -> Vec<SqlArg> {
     ]
 }
 
-async fn upsert_source(
-    datastore: &StoreDatastore,
-    record: &ImageProxySourceRecord,
-) -> AppResult<()> {
-    SqlRuntime::execute_write(
-        datastore,
-        "upsert_image_proxy_source",
-        UPSERT_SOURCE_SQL,
-        source_upsert_args(record),
-    )
-    .await?;
-    Ok(())
-}
-
 async fn fetch_source(
     datastore: &StoreDatastore,
     token: &str,
@@ -476,7 +432,10 @@ mod tests {
     };
     use sqlx::sqlite::SqlitePoolOptions;
 
-    use super::{ImageProxyStore, MEMORY_SOURCE_LIMIT, approved_upstream_url, fetch_source};
+    use super::{
+        ImageProxyStore, MEMORY_SOURCE_LIMIT, acknowledge_queued_source, approved_upstream_url,
+        fetch_source,
+    };
     use crate::storage::sql::runtime::StoreDatastore;
 
     #[test]
@@ -548,6 +507,15 @@ mod tests {
             .get(route_parts.len().saturating_sub(2))
             .expect("token route segment")
             .to_string();
+
+        assert!(
+            fetch_source(&datastore, &token)
+                .await
+                .expect("check staged source")
+                .is_none(),
+            "registration must not perform an individual database write"
+        );
+        assert_eq!(store.pending.lock().expect("pending source lock").len(), 1);
 
         store
             .flush_image_proxy_sources()
@@ -660,8 +628,10 @@ mod tests {
             fallback_class: "landscape".to_string(),
             last_seen_at: Utc::now() - chrono::Duration::days(31),
         };
+        store.remember(old_record.clone());
+        store.queue_source(old_record);
         store
-            .persist_image_proxy_source(&old_record)
+            .flush_image_proxy_sources()
             .await
             .expect("persist old source");
         assert_eq!(
@@ -693,5 +663,116 @@ mod tests {
         let memory = store.memory.lock().expect("memory registry lock");
         assert_eq!(memory.records.len(), MEMORY_SOURCE_LIMIT);
         assert!(!memory.records.contains_key(&format!("{:064x}", 0)));
+    }
+
+    #[test]
+    fn queued_source_acknowledgement_preserves_a_newer_record() {
+        let token = "a".repeat(64);
+        let older = ImageProxySourceRecord {
+            token: token.clone(),
+            upstream_url: Some("https://image.tmdb.org/t/p/original/poster.jpg".to_string()),
+            owner_type: Some("title".to_string()),
+            owner_id: Some("title-1".to_string()),
+            image_kind: "poster".to_string(),
+            fallback_class: "portrait".to_string(),
+            last_seen_at: Utc::now(),
+        };
+        let newer = ImageProxySourceRecord {
+            last_seen_at: older.last_seen_at + chrono::Duration::seconds(1),
+            ..older.clone()
+        };
+        let pending = Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([(
+            token.clone(),
+            newer.clone(),
+        )])));
+
+        acknowledge_queued_source(&pending, &older);
+        assert_eq!(
+            pending.lock().expect("pending source lock").get(&token),
+            Some(&newer)
+        );
+
+        acknowledge_queued_source(&pending, &newer);
+        assert!(pending.lock().expect("pending source lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_batch_flush_retains_all_sources_for_retry() {
+        const SOURCE_COUNT: usize = 32;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite image proxy retry pool");
+        let datastore = StoreDatastore::Sqlite {
+            pool: pool.clone(),
+            writer_gate: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        let store = ImageProxyStore::new(datastore.clone());
+
+        let mut tokens = Vec::new();
+        for index in 0..SOURCE_COUNT {
+            let route = store.register_image_source(ImageProxyRegistration {
+                upstream_url: Some(format!(
+                    "https://image.tmdb.org/t/p/original/poster-{index}.jpg"
+                )),
+                owner_type: Some("title".to_string()),
+                owner_id: Some(format!("title-{index}")),
+                image_kind: ImageProxyKind::Poster,
+                fallback_class: "portrait".to_string(),
+                default_variant: "w250".to_string(),
+            });
+            tokens.push(
+                route
+                    .split('/')
+                    .nth_back(1)
+                    .expect("token route segment")
+                    .to_string(),
+            );
+        }
+
+        store
+            .flush_image_proxy_sources()
+            .await
+            .expect_err("flush should fail before the source table exists");
+        assert_eq!(
+            store.pending.lock().expect("pending source lock").len(),
+            SOURCE_COUNT
+        );
+
+        sqlx::query(
+            "CREATE TABLE image_proxy_sources (
+                token TEXT PRIMARY KEY,
+                upstream_url TEXT,
+                owner_type TEXT,
+                owner_id TEXT,
+                image_kind TEXT NOT NULL,
+                fallback_class TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create image proxy sources table after failed flush");
+
+        store
+            .flush_image_proxy_sources()
+            .await
+            .expect("retry queued source flush");
+        assert!(
+            store
+                .pending
+                .lock()
+                .expect("pending source lock")
+                .is_empty()
+        );
+        for token in tokens {
+            assert!(
+                fetch_source(&datastore, &token)
+                    .await
+                    .expect("load retried source")
+                    .is_some()
+            );
+        }
     }
 }

@@ -427,8 +427,41 @@ struct StemClassification {
 #[derive(Debug, Serialize, Deserialize)]
 struct StemClassificationManifest {
     source_revision: String,
-    synced_at: String,
     stems: Vec<StemClassificationManifestRecord>,
+    /// Per-specification provenance for everything the distillation did not turn
+    /// into a runtime rule. This is audit data: it belongs in the manifest so it
+    /// stays queryable without being compiled into the generated Rust.
+    #[serde(default)]
+    inactive_records: Vec<AuditRecord>,
+    #[serde(default)]
+    ignored_records: Vec<AuditRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AuditRecord {
+    app: String,
+    stem: String,
+    trash_id: String,
+    cf_name: String,
+    spec_name: String,
+    implementation: String,
+    reason: String,
+    source_path: String,
+}
+
+impl From<&MetadataRuleRecord> for AuditRecord {
+    fn from(record: &MetadataRuleRecord) -> Self {
+        Self {
+            app: record.app.clone(),
+            stem: record.stem.clone(),
+            trash_id: record.trash_id.clone(),
+            cf_name: record.cf_name.clone(),
+            spec_name: record.spec_name.clone(),
+            implementation: record.implementation.clone(),
+            reason: record.reason.clone(),
+            source_path: record.source_path.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -495,8 +528,6 @@ pub fn run_sync(ctx: &TaskContext) -> Result<()> {
         distilled.blocked_title_rules.len()
     ));
 
-    let synced_at = Utc::now().format("%Y-%m-%d").to_string();
-
     step("Writing generated outputs");
     let quality_output = ctx.path(QUALITY_OUTPUT);
     let parser_output = ctx.path(PARSER_OUTPUT);
@@ -504,24 +535,19 @@ pub fn run_sync(ctx: &TaskContext) -> Result<()> {
 
     write_if_changed(
         &quality_output,
-        &render_quality_output(&distilled, &synced_at, &fetched.source_revision)?,
+        &render_quality_output(&distilled, &fetched.source_revision)?,
     )?;
     write_if_changed(
         &parser_output,
-        &render_parser_output(&distilled, &synced_at, &fetched.source_revision)?,
+        &render_parser_output(&distilled, &fetched.source_revision)?,
     )?;
     write_if_changed(
         &summary_output,
-        &render_summary(&distilled, &synced_at, &fetched.source_revision),
+        &render_summary(&distilled, &fetched.source_revision),
     )?;
     write_if_changed(
         &manifest_output,
-        &render_stem_manifest(
-            &fetched.records,
-            &distilled,
-            &synced_at,
-            &fetched.source_revision,
-        )?,
+        &render_stem_manifest(&fetched.records, &distilled, &fetched.source_revision)?,
     )?;
     format_generated_rust(ctx)?;
     ok("Generated TRaSH distillation artifacts refreshed");
@@ -584,7 +610,7 @@ fn validate_distilled_catalog(
         );
     }
 
-    let unbound = build_stem_manifest(records, catalog, "", "")
+    let unbound = build_stem_manifest(records, catalog, "")
         .stems
         .into_iter()
         .filter(|record| {
@@ -601,6 +627,41 @@ fn validate_distilled_catalog(
         bail!(
             "effect-bound TRaSH stems emitted no runtime rules: {}",
             unbound.join(", ")
+        );
+    }
+
+    let mut services_by_token = BTreeMap::<&str, BTreeSet<&str>>::new();
+    for rule in &catalog.service_alias_rules {
+        services_by_token
+            .entry(rule.key.token.as_str())
+            .or_default()
+            .insert(rule.key.service.as_str());
+    }
+    let unusable = services_by_token
+        .iter()
+        .filter(|(token, _)| sanitize_alias_token(token).as_deref() != Some(**token))
+        .map(|(token, _)| (*token).to_string())
+        .collect::<Vec<_>>();
+    if !unusable.is_empty() {
+        bail!(
+            "service alias tokens match too broadly to be title tokens: {}",
+            unusable.join(", ")
+        );
+    }
+    let ambiguous = services_by_token
+        .iter()
+        .filter(|(_, services)| services.len() > 1)
+        .map(|(token, services)| {
+            format!(
+                "{token} -> {}",
+                services.iter().copied().collect::<Vec<_>>().join("/")
+            )
+        })
+        .collect::<Vec<_>>();
+    if !ambiguous.is_empty() {
+        bail!(
+            "service alias tokens resolve to more than one service: {}",
+            ambiguous.join(", ")
         );
     }
     Ok(())
@@ -979,7 +1040,20 @@ fn distill_records(records: &[UpstreamRecord]) -> Result<DistilledCatalog> {
         match record.stem.as_str() {
             "amzn" | "atvp" | "cr" | "dsnp" | "funi" | "hbo" | "hidive" | "hmax" | "hulu"
             | "max" | "nf" | "pcok" | "pmtp" | "stan" => {
-                for token in distill_service_alias_tokens(record)? {
+                if record.implementation != "ReleaseTitleSpecification" || record_is_negated(record)
+                {
+                    inactive_records.insert(metadata_record(
+                        record,
+                        "service_alias_requires_positive_title_spec",
+                    ));
+                    continue;
+                }
+                let Ok(tokens) = distill_service_alias_tokens(record) else {
+                    inactive_records
+                        .insert(metadata_record(record, "service_alias_pattern_not_lossless"));
+                    continue;
+                };
+                for token in tokens {
                     let key = ServiceAliasKey {
                         token,
                         service: canonical_service_name(&record.stem)?.to_string(),
@@ -2017,15 +2091,16 @@ fn canonical_service_name(stem: &str) -> Result<&'static str> {
     }
 }
 
+/// Aliases are the losslessly expanded literals of a release-title regex.
+///
+/// Splitting the raw pattern on non-alphanumerics is not safe here: it turns
+/// `\b(FUNi(mation)?)\b` into `FUNI` plus a bogus `MATION`. Expanding the parsed
+/// regex instead yields exactly the strings upstream intended to match.
 fn distill_service_alias_tokens(record: &UpstreamRecord) -> Result<Vec<String>> {
-    let mut tokens = BTreeSet::new();
-    if let Some(token) = sanitize_token(&record.spec_name) {
-        tokens.insert(token);
-    }
-
-    for extracted in extract_explicit_tokens(&record.value) {
-        tokens.insert(extracted);
-    }
+    let tokens = finite_group_literals(&strip_lookarounds(&record.value))?
+        .iter()
+        .filter_map(|literal| sanitize_alias_token(literal))
+        .collect::<BTreeSet<_>>();
 
     if tokens.is_empty() {
         bail!(
@@ -2035,6 +2110,89 @@ fn distill_service_alias_tokens(record: &UpstreamRecord) -> Result<Vec<String>> 
     }
 
     Ok(tokens.into_iter().collect())
+}
+
+/// An alias is matched against one normalized title token, so only the first
+/// alphanumeric run of an expansion can ever match: `stan[ ._-]web` tags a
+/// release whose first token is `STAN`, never a token spelled `STANWEB`. Where a
+/// separator is optional (`hbo[ ._-]?max`) the joined expansion supplies
+/// `HBOMAX` on its own.
+///
+/// The token must also be at least two characters and contain a letter: bare
+/// digits are Sonarr source enums and single characters match nearly any title.
+fn sanitize_alias_token(raw: &str) -> Option<String> {
+    let first_run = raw
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .find(|run| !run.is_empty())?;
+    let token = sanitize_token(first_run)?;
+    if token.len() < 2 || !token.chars().any(|ch| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+    Some(token)
+}
+
+/// Drops lookaround groups so a pattern that uses them can still be parsed and
+/// expanded. Lookarounds constrain the context around a service tag rather than
+/// the tag text itself, and `regex-syntax` rejects them outright.
+fn strip_lookarounds(pattern: &str) -> String {
+    const OPENERS: [&str; 4] = ["(?=", "(?!", "(?<=", "(?<!"];
+    let mut output = String::new();
+    let mut rest = pattern;
+
+    'outer: while !rest.is_empty() {
+        for (index, _) in rest.char_indices() {
+            if is_escaped(rest, index) {
+                continue;
+            }
+            let candidate = &rest[index..];
+            if OPENERS.iter().any(|opener| candidate.starts_with(opener)) {
+                output.push_str(&rest[..index]);
+                match lookaround_end(candidate) {
+                    Some(end) => {
+                        rest = &candidate[end..];
+                        continue 'outer;
+                    }
+                    // Unbalanced group: keep what came before and stop.
+                    None => return output,
+                }
+            }
+        }
+        output.push_str(rest);
+        break;
+    }
+
+    output
+}
+
+fn is_escaped(pattern: &str, index: usize) -> bool {
+    pattern[..index]
+        .chars()
+        .rev()
+        .take_while(|ch| *ch == '\\')
+        .count()
+        % 2
+        == 1
+}
+
+/// Byte offset just past the `)` closing the group that starts at `pattern[0]`.
+fn lookaround_end(pattern: &str) -> Option<usize> {
+    let mut depth = 0_usize;
+    for (index, ch) in pattern.char_indices() {
+        if is_escaped(pattern, index) {
+            continue;
+        }
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn distill_named_patterns(
@@ -2289,25 +2447,6 @@ fn sanitize_token(raw: &str) -> Option<String> {
     if token.is_empty() { None } else { Some(token) }
 }
 
-fn extract_explicit_tokens(pattern: &str) -> BTreeSet<String> {
-    let mut tokens = BTreeSet::new();
-    let mut current = String::new();
-    for ch in pattern.chars() {
-        if ch.is_ascii_alphanumeric() {
-            current.push(ch.to_ascii_uppercase());
-            continue;
-        }
-        if let Some(token) = normalize_extracted_token(&current) {
-            tokens.insert(token);
-        }
-        current.clear();
-    }
-    if let Some(token) = normalize_extracted_token(&current) {
-        tokens.insert(token);
-    }
-    tokens
-}
-
 fn extract_boundary_tokens(pattern: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut input = pattern;
@@ -2324,35 +2463,6 @@ fn extract_boundary_tokens(pattern: &str) -> Vec<String> {
         input = &after_start[end + 2..];
     }
     tokens
-}
-
-fn normalize_extracted_token(token: &str) -> Option<String> {
-    if token.is_empty() {
-        return None;
-    }
-
-    let blocklist = [
-        "B",
-        "DL",
-        "RIP",
-        "WEB",
-        "JSON",
-        "CF",
-        "TITLE",
-        "SOURCE",
-        "SPECIFICATION",
-        "VALUE",
-        "LOOKBEHIND",
-        "LOOKAHEAD",
-        "TRUE",
-        "FALSE",
-        "HEVC",
-    ];
-    if blocklist.contains(&token) {
-        return None;
-    }
-
-    Some(token.to_string())
 }
 
 fn write_if_changed(path: &Path, next: &str) -> Result<()> {
@@ -2374,20 +2484,11 @@ fn format_generated_rust(ctx: &TaskContext) -> Result<()> {
     run_checked(&mut command).context("failed to rustfmt generated TRaSH outputs")
 }
 
-fn render_quality_output(
-    catalog: &DistilledCatalog,
-    synced_at: &str,
-    source_revision: &str,
-) -> Result<String> {
+fn render_quality_output(catalog: &DistilledCatalog, source_revision: &str) -> Result<String> {
     let mut output = String::new();
     writeln!(
         output,
         "// Generated by `cargo xtask trash-guides sync`.\n// Do not edit by hand.\n"
-    )?;
-    writeln!(
-        output,
-        "#[allow(dead_code)]\npub const TRASH_GUIDES_SYNCED_AT: &str = {};",
-        rust_str(synced_at)
     )?;
     writeln!(
         output,
@@ -2413,65 +2514,14 @@ fn render_quality_output(
     }
     writeln!(output, "];\n")?;
 
-    writeln!(
-        output,
-        "#[allow(dead_code)]\npub static ACTIVE_GROUP_RULE_METADATA: &[TrashGuideRuleMetadata] = &["
-    )?;
-    for rule in &catalog.group_rules {
-        for provenance in &rule.provenance {
-            writeln!(
-                output,
-                "    TrashGuideRuleMetadata {{ matcher: {}, match_kind: GroupMatchKind::{}, tier: GroupTier::{}, facet: RuleFacet::{}, source_context: SourceContext::{}, app: {}, stem: {}, trash_id: {}, cf_name: {}, spec_name: {}, source_path: {} }},",
-                rust_str(&rule.key.matcher),
-                match rule.key.match_kind {
-                    GroupMatchKindSpec::Exact => "Exact",
-                    GroupMatchKindSpec::Prefix => "Prefix",
-                },
-                render_tier(rule.key.tier),
-                render_facet(rule.key.facet),
-                render_context(rule.key.context),
-                rust_str(&provenance.app),
-                rust_str(&provenance.stem),
-                rust_str(&provenance.trash_id),
-                rust_str(&provenance.cf_name),
-                rust_str(&provenance.spec_name),
-                rust_str(&provenance.source_path),
-            )?;
-        }
-    }
-    writeln!(output, "];\n")?;
-
-    render_metadata_rules(
-        &mut output,
-        "INACTIVE_GROUP_RULES",
-        &catalog.inactive_records,
-        Some("localized_preserved_inactive"),
-    )?;
-    writeln!(output)?;
-    render_metadata_rules(
-        &mut output,
-        "IGNORED_GROUP_RULES",
-        &catalog.ignored_records,
-        None,
-    )?;
-
     Ok(output)
 }
 
-fn render_parser_output(
-    catalog: &DistilledCatalog,
-    synced_at: &str,
-    source_revision: &str,
-) -> Result<String> {
+fn render_parser_output(catalog: &DistilledCatalog, source_revision: &str) -> Result<String> {
     let mut output = String::new();
     writeln!(
         output,
         "// Generated by `cargo xtask trash-guides sync`.\n// Do not edit by hand.\n"
-    )?;
-    writeln!(
-        output,
-        "#[allow(dead_code)]\npub const TRASH_GUIDES_SYNCED_AT: &str = {};",
-        rust_str(synced_at)
     )?;
     writeln!(
         output,
@@ -2485,21 +2535,12 @@ fn render_parser_output(
         "pub static SERVICE_ALIAS_RULES: &[ServiceAliasRule] = &["
     )?;
     for rule in &catalog.service_alias_rules {
-        for provenance in &rule.provenance {
-            writeln!(
-                output,
-                "    ServiceAliasRule {{ token: {}, service: {}, facet: RuleFacet::{}, app: {}, stem: {}, trash_id: {}, cf_name: {}, spec_name: {}, source_path: {} }},",
-                rust_str(&rule.key.token),
-                rust_str(&rule.key.service),
-                render_facet(facet_for_record(provenance)),
-                rust_str(&provenance.app),
-                rust_str(&provenance.stem),
-                rust_str(&provenance.trash_id),
-                rust_str(&provenance.cf_name),
-                rust_str(&provenance.spec_name),
-                rust_str(&provenance.source_path),
-            )?;
-        }
+        writeln!(
+            output,
+            "    ServiceAliasRule {{ token: {}, service: {} }},",
+            rust_str(&rule.key.token),
+            rust_str(&rule.key.service),
+        )?;
     }
     writeln!(output, "];\n")?;
 
@@ -2598,66 +2639,16 @@ fn render_parser_output(
     }
     writeln!(output, "];\n")?;
 
-    render_metadata_rules(
-        &mut output,
-        "INACTIVE_PARSER_RULES",
-        &catalog.inactive_records,
-        None,
-    )?;
-    writeln!(output)?;
-    render_metadata_rules(
-        &mut output,
-        "IGNORED_PARSER_RULES",
-        &catalog.ignored_records,
-        None,
-    )?;
-
     Ok(output)
 }
 
-fn render_metadata_rules(
-    output: &mut String,
-    name: &str,
-    records: &[MetadataRuleRecord],
-    only_reason: Option<&str>,
-) -> Result<()> {
-    writeln!(
-        output,
-        "#[allow(dead_code)]\npub static {name}: &[MetadataRuleRecord] = &["
-    )?;
-    for record in records {
-        if let Some(reason) = only_reason
-            && record.reason != reason
-        {
-            continue;
-        }
-        writeln!(
-            output,
-            "    MetadataRuleRecord {{ app: {}, facet: RuleFacet::{}, stem: {}, trash_id: {}, cf_name: {}, spec_name: {}, implementation: {}, value: {}, reason: {}, source_path: {} }},",
-            rust_str(&record.app),
-            render_facet(record.facet),
-            rust_str(&record.stem),
-            rust_str(&record.trash_id),
-            rust_str(&record.cf_name),
-            rust_str(&record.spec_name),
-            rust_str(&record.implementation),
-            rust_str(&record.value),
-            rust_str(&record.reason),
-            rust_str(&record.source_path),
-        )?;
-    }
-    writeln!(output, "];")?;
-    Ok(())
-}
-
-fn render_summary(catalog: &DistilledCatalog, synced_at: &str, source_revision: &str) -> String {
+fn render_summary(catalog: &DistilledCatalog, source_revision: &str) -> String {
     let mut output = String::new();
     let (movie_groups, series_groups, anime_groups) =
         count_group_rules_by_facet(&catalog.group_rules);
     let (movie_titles, series_titles, anime_titles) =
         count_blocked_title_rules_by_facet(&catalog.blocked_title_rules);
     let _ = writeln!(output, "TRaSH Guides sync summary");
-    let _ = writeln!(output, "Synced at: {synced_at}");
     let _ = writeln!(output, "Source revision: {source_revision}");
     let _ = writeln!(output);
     let _ = writeln!(
@@ -2701,10 +2692,9 @@ fn render_summary(catalog: &DistilledCatalog, synced_at: &str, source_revision: 
 fn render_stem_manifest(
     records: &[UpstreamRecord],
     catalog: &DistilledCatalog,
-    synced_at: &str,
     source_revision: &str,
 ) -> Result<String> {
-    let manifest = build_stem_manifest(records, catalog, synced_at, source_revision);
+    let manifest = build_stem_manifest(records, catalog, source_revision);
     serde_json::to_string_pretty(&manifest)
         .map(|mut rendered| {
             rendered.push('\n');
@@ -2723,7 +2713,6 @@ struct StemEmission {
 fn build_stem_manifest(
     records: &[UpstreamRecord],
     catalog: &DistilledCatalog,
-    synced_at: &str,
     source_revision: &str,
 ) -> StemClassificationManifest {
     let mut emissions = BTreeMap::<(String, String), StemEmission>::new();
@@ -2785,7 +2774,6 @@ fn build_stem_manifest(
 
     StemClassificationManifest {
         source_revision: source_revision.to_string(),
-        synced_at: synced_at.to_string(),
         stems: stems
             .into_iter()
             .map(
@@ -2809,6 +2797,8 @@ fn build_stem_manifest(
                 },
             )
             .collect(),
+        inactive_records: catalog.inactive_records.iter().map(AuditRecord::from).collect(),
+        ignored_records: catalog.ignored_records.iter().map(AuditRecord::from).collect(),
     }
 }
 
@@ -2873,7 +2863,7 @@ fn enforce_stem_coverage(
         }
     };
 
-    let current = build_stem_manifest(records, catalog, "", "");
+    let current = build_stem_manifest(records, catalog, "");
     let known = known
         .stems
         .into_iter()
@@ -3363,6 +3353,53 @@ mod tests {
             distill_scene_group_matchers(&record).unwrap(),
             vec!["CAKES".to_string(), "GGEZ".to_string()]
         );
+    }
+
+    fn alias_tokens(value: &str) -> Vec<String> {
+        distill_service_alias_tokens(&UpstreamRecord {
+            implementation: "ReleaseTitleSpecification".to_string(),
+            value: value.to_string(),
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn service_aliases_expand_optional_groups_losslessly() {
+        // Naive splitting turned these into `FUNI` + `MATION` and `C`/`RUNCHY`/`OLL`.
+        assert_eq!(alias_tokens(r"\b(FUNi(mation)?)\b"), ["FUNI", "FUNIMATION"]);
+        assert_eq!(alias_tokens(r"\b(amzn|amazon(hd)?)\b"), [
+            "AMAZON",
+            "AMAZONHD",
+            "AMZN"
+        ]);
+    }
+
+    #[test]
+    fn service_aliases_survive_lookarounds_and_stay_single_tokens() {
+        // Lookaround-bearing patterns must still yield HBO Max's real aliases.
+        assert_eq!(
+            alias_tokens(r"\b(hmax|hbom|hbo[ ._-]?max)\b(?=[ ._-]web[ ._-]?(dl|rip)\b)"),
+            ["HBO", "HBOM", "HBOMAX", "HMAX"]
+        );
+        // A mandatory separator means the alias is only the first token: a
+        // release is tagged by a `STAN` token, never one spelled `STANWEB`.
+        assert_eq!(
+            alias_tokens(r"\b(stan)\b[ ._-]web[ ._-]?(dl|rip)?\b"),
+            ["STAN"]
+        );
+    }
+
+    #[test]
+    fn service_aliases_reject_source_enums_and_stray_fragments() {
+        // Sonarr `SourceSpecification` values are numeric enums, never tokens.
+        assert!(distill_service_alias_tokens(&UpstreamRecord {
+            implementation: "SourceSpecification".to_string(),
+            value: "3".to_string(),
+            ..Default::default()
+        })
+        .is_err());
+        assert!(!alias_tokens(r"\b(C(runchy)?[ .-]?R(oll)?)\b").contains(&"C".to_string()));
     }
 
     #[test]

@@ -451,6 +451,7 @@ impl ExternalImportMonitorWarmupStatus {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExternalImportMonitorWarmupPhase {
+    LoadingIndexers,
     LoadingMovies,
     LoadingSeries,
     LoadingEpisodes,
@@ -567,6 +568,13 @@ pub struct ExternalImportArrSourceWarmupResult {
     pub indexers: Vec<crate::external_import::ArrIndexer>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ExternalImportProwlarrWarmupResult {
+    pub base_url: String,
+    pub version: Option<String>,
+    pub plan: crate::IndexerSyncPlan,
+}
+
 #[derive(Clone)]
 pub struct ExternalImportMonitorWarmupBeginResult {
     pub snapshot: ExternalImportMonitorWarmupProgressSnapshot,
@@ -584,6 +592,7 @@ struct ExternalImportMonitorWarmupSessionHandle {
     tx: tokio::sync::watch::Sender<ExternalImportMonitorWarmupProgressSnapshot>,
     scan_hints: Option<crate::LibraryScanHintSet>,
     arr_source_result: Option<ExternalImportArrSourceWarmupResult>,
+    prowlarr_result: Option<ExternalImportProwlarrWarmupResult>,
 }
 
 #[derive(Default)]
@@ -652,6 +661,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
                 tx,
                 scan_hints: None,
                 arr_source_result: None,
+                prowlarr_result: None,
             },
         );
 
@@ -724,6 +734,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
                     tx,
                     scan_hints: None,
                     arr_source_result: None,
+                    prowlarr_result: None,
                 },
             );
         }
@@ -772,6 +783,32 @@ impl ExternalImportMonitorWarmupOrchestrator {
         state.sessions_by_id.get(session_id).and_then(|handle| {
             (handle.actor_user_id == actor_user_id)
                 .then(|| handle.arr_source_result.clone())
+                .flatten()
+        })
+    }
+
+    pub async fn set_prowlarr_result(
+        &self,
+        session_id: &str,
+        result: ExternalImportProwlarrWarmupResult,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get_mut(session_id) else {
+            return false;
+        };
+        handle.prowlarr_result = Some(result);
+        true
+    }
+
+    pub async fn prowlarr_result(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<ExternalImportProwlarrWarmupResult> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id)
+                .then(|| handle.prowlarr_result.clone())
                 .flatten()
         })
     }
@@ -850,7 +887,11 @@ impl ExternalImportMonitorWarmupOrchestrator {
             let Some(handle) = state.sessions_by_id.get(&session_id) else {
                 continue;
             };
-            if !handle.connection_fingerprint.starts_with("arr-source=") {
+            if !handle.connection_fingerprint.starts_with("arr-source=")
+                && !handle
+                    .connection_fingerprint
+                    .starts_with("prowlarr-source=")
+            {
                 continue;
             }
             let snapshot = handle.tx.borrow().clone();
@@ -3648,13 +3689,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn external_import_warmup_prune_only_removes_arr_source_sessions() {
+    async fn external_import_prowlarr_warmup_deduplicates_per_actor_and_isolates_results() {
+        let orchestrator = ExternalImportMonitorWarmupOrchestrator::default();
+        let first = orchestrator
+            .begin(
+                "user-1",
+                "prowlarr-source=http://prowlarr|key",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-1".into()),
+            )
+            .await;
+        let reused = orchestrator
+            .begin(
+                "user-1",
+                "prowlarr-source=http://prowlarr|key",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-2".into()),
+            )
+            .await;
+        let other_actor = orchestrator
+            .begin(
+                "user-2",
+                "prowlarr-source=http://prowlarr|key",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-3".into()),
+            )
+            .await;
+
+        assert!(first.created);
+        assert!(!reused.created);
+        assert_eq!(reused.snapshot.session_id, first.snapshot.session_id);
+        assert!(other_actor.created);
+        assert_ne!(other_actor.snapshot.session_id, first.snapshot.session_id);
+
+        assert!(
+            orchestrator
+                .set_prowlarr_result(
+                    &first.snapshot.session_id,
+                    ExternalImportProwlarrWarmupResult {
+                        base_url: "http://prowlarr".into(),
+                        version: Some("2.0.0".into()),
+                        plan: crate::IndexerSyncPlan {
+                            children: Vec::new(),
+                        },
+                    },
+                )
+                .await
+        );
+        assert!(
+            orchestrator
+                .prowlarr_result("user-1", &first.snapshot.session_id)
+                .await
+                .is_some()
+        );
+        assert!(
+            orchestrator
+                .prowlarr_result("user-2", &first.snapshot.session_id)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn external_import_warmup_prune_only_removes_import_source_sessions() {
         let orchestrator = ExternalImportMonitorWarmupOrchestrator::default();
         let source = orchestrator
             .begin(
                 "user-1",
                 "arr-source=sonarr|http://sonarr|key",
                 ExternalImportMonitorWarmupProgressSnapshot::new("source-session".into()),
+            )
+            .await;
+        let prowlarr_source = orchestrator
+            .begin(
+                "user-1",
+                "prowlarr-source=http://prowlarr|key",
+                ExternalImportMonitorWarmupProgressSnapshot::new("prowlarr-session".into()),
             )
             .await;
         let apply = orchestrator
@@ -3668,7 +3775,7 @@ mod tests {
             .await;
         let old_updated_at = (Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
 
-        for snapshot in [&source.snapshot, &apply.snapshot] {
+        for snapshot in [&source.snapshot, &prowlarr_source.snapshot, &apply.snapshot] {
             let mut completed = snapshot.clone();
             completed.status = ExternalImportMonitorWarmupStatus::Completed;
             completed.updated_at = old_updated_at.clone();
@@ -3680,7 +3787,9 @@ mod tests {
             .prune_terminal_older_than(chrono::Duration::hours(2))
             .await;
 
-        assert_eq!(removed, vec!["source-session".to_string()]);
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&"source-session".to_string()));
+        assert!(removed.contains(&"prowlarr-session".to_string()));
         assert!(
             orchestrator
                 .snapshot("user-1", crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID)

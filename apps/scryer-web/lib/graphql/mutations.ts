@@ -1898,6 +1898,11 @@ export const startExternalImportArrSourceWarmupMutation = `mutation StartExterna
   }
 }`;
 
+export const startExternalImportProwlarrWarmupMutation = `mutation StartExternalImportProwlarrWarmup($input: StartExternalImportProwlarrWarmupInput!) {
+  startExternalImportProwlarrWarmup(input: $input) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
 export const cancelExternalImportArrSourceWarmupMutation = `mutation CancelExternalImportArrSourceWarmup($sessionId: ID!) {
   cancelExternalImportArrSourceWarmup(sessionId: $sessionId) {
     sessionId
@@ -2035,8 +2040,13 @@ export type StartExternalImportArrSourceWarmupInput = {
   connection: ExternalImportConnectionInput;
 };
 
+export type StartExternalImportProwlarrWarmupInput = {
+  connection: ExternalImportConnectionInput;
+};
+
 export type PreviewExternalImportInput = {
   sourceWarmupSessionIds: string[];
+  prowlarrWarmupSessionId?: string | null;
   prowlarr?: ExternalImportConnectionInput | null;
 };
 

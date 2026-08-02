@@ -58,37 +58,6 @@ pub struct GroupRule {
     pub entry: GroupEntry,
 }
 
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-pub struct TrashGuideRuleMetadata {
-    pub matcher: &'static str,
-    pub match_kind: GroupMatchKind,
-    pub tier: GroupTier,
-    pub facet: RuleFacet,
-    pub source_context: SourceContext,
-    pub app: &'static str,
-    pub stem: &'static str,
-    pub trash_id: &'static str,
-    pub cf_name: &'static str,
-    pub spec_name: &'static str,
-    pub source_path: &'static str,
-}
-
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-pub struct MetadataRuleRecord {
-    pub app: &'static str,
-    pub facet: RuleFacet,
-    pub stem: &'static str,
-    pub trash_id: &'static str,
-    pub cf_name: &'static str,
-    pub spec_name: &'static str,
-    pub implementation: &'static str,
-    pub value: &'static str,
-    pub reason: &'static str,
-    pub source_path: &'static str,
-}
-
 include!("trash_guides_release_groups.generated.rs");
 
 struct GroupRuleIndex {

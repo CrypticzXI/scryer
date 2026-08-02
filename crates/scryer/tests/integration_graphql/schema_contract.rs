@@ -143,15 +143,17 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // (InteractiveReleaseSearch{,Indexer}Payload, CancelInteractiveReleaseSearchPayload)
     // and 2 ENUMs (state + indexer status): query 118->119, mutation 164->166,
     // OBJECT 273->276, ENUM 90->92, public types 527->532.
+    // Async Prowlarr discovery adds one status query, one start mutation, and
+    // one input object: query 119->120, mutation 166->167, public types 532->533.
     assert_eq!(
-        query_field_count, 119,
+        query_field_count, 120,
         "query fields: {query_field_names:?}"
     );
-    assert_eq!(mutation_field_count, 166);
+    assert_eq!(mutation_field_count, 167);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 532);
+    assert_eq!(public_types.len(), 533);
     assert_eq!(kind_count("OBJECT"), 276);
-    assert_eq!(kind_count("INPUT_OBJECT"), 152);
+    assert_eq!(kind_count("INPUT_OBJECT"), 153);
     assert_eq!(kind_count("ENUM"), 92);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);

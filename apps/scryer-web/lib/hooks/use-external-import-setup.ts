@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Client } from "urql";
 
+import { isProwlarrDiscoveryReady } from "@/lib/external-import-wizard-orchestration";
 import {
   cancelExternalImportArrSourceWarmupMutation,
   clearExternalImportSetupSecretDraftMutation,
@@ -12,6 +13,7 @@ import {
   saveExternalImportSetupSecretDraftMutation,
   scanLibraryMutation,
   startExternalImportArrSourceWarmupMutation,
+  startExternalImportProwlarrWarmupMutation,
   updateLibraryMutation,
   validateExternalImportConnectionMutation,
   type ExecuteExternalImportInput,
@@ -20,6 +22,7 @@ import {
 import {
   browsePathQuery,
   externalImportAggregateWarmupProgressQuery,
+  externalImportWarmupStatusQuery,
   externalImportSetupSecretDraftQuery,
   externalImportSetupSecretDraftStatusQuery,
   wizardQualityProfilesQuery,
@@ -30,6 +33,7 @@ import type {
   ExternalImportConnectionValidation,
   ExternalImportPreview,
   ExternalImportAggregateWarmupProgress,
+  ExternalImportMonitorWarmupProgress,
   ExternalImportResult,
 } from "@/lib/types/external-import";
 
@@ -50,7 +54,7 @@ export interface ImportInstance {
   status: ImportInstanceStatus;
   version: string | null;
   error: string | null;
-  /** Warmup session id (Sonarr/Radarr only) once a connected verify kicks it off. */
+  /** Child/title discovery session created after successful connection validation. */
   warmupSessionId: string | null;
 }
 
@@ -416,17 +420,33 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       });
       lastVerifiedRef.current[id] = connection;
 
-      // Kick off the warmup for arr instances (concurrent across instances).
+      // Kick off child/title discovery without holding the validation request.
       const arrKind = arrKindOf(inst.kind);
-      if (arrKind) {
-        const { data: warmupData } = await client
-          .mutation(startExternalImportArrSourceWarmupMutation, {
-            input: { kind: arrKind, connection },
-          })
-          .toPromise();
-        const sessionId = warmupData?.startExternalImportArrSourceWarmup
-          ?.sessionId as string | undefined;
-        if (sessionId) {
+      const { data: warmupData, error: warmupError } = await client
+        .mutation(
+          arrKind
+            ? startExternalImportArrSourceWarmupMutation
+            : startExternalImportProwlarrWarmupMutation,
+          {
+            input: arrKind ? { kind: arrKind, connection } : { connection },
+          },
+        )
+        .toPromise();
+      const sessionId = (arrKind
+        ? warmupData?.startExternalImportArrSourceWarmup?.sessionId
+        : warmupData?.startExternalImportProwlarrWarmup?.sessionId) as
+        | string
+        | undefined;
+      if (!arrKind && !sessionId) {
+        patchInstance(id, {
+          status: "error",
+          error:
+            gqlError(warmupError) ||
+            "Connection succeeded, but Prowlarr discovery could not start",
+        });
+        return;
+      }
+      if (sessionId) {
           // Reconcile the freshly-started session against the latest state,
           // cancelling any session that is now orphaned. Orphans starve the
           // backend's scarce episode-warmup slots and leave the live warmup
@@ -455,7 +475,6 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
           });
           if (toCancel) cancelInstanceWarmup(toCancel);
         }
-      }
     },
     [client, instances, patchInstance, cancelInstanceWarmup],
   );
@@ -467,6 +486,10 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
         .map((inst) => inst.warmupSessionId as string),
     [arrInstances],
   );
+  const prowlarrWarmupSessionId =
+    prowlarrInstance?.status === "connected"
+      ? prowlarrInstance.warmupSessionId
+      : null;
 
   /** ≥1 connected Sonarr/Radarr (or a connected Prowlarr) is required to advance. */
   const canLeaveConnect = useMemo(
@@ -485,6 +508,13 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   // ── Preview (root folders, clients, indexers) ──────────────────────────────
   const [preview, setPreview] = useState<ExternalImportPreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  const [prowlarrWarmupProgress, setProwlarrWarmupProgress] =
+    useState<ExternalImportMonitorWarmupProgress | null>(null);
+  const prowlarrWarmupReady = isProwlarrDiscoveryReady(
+    Boolean(prowlarrConnectionInput),
+    prowlarrWarmupSessionId,
+    prowlarrWarmupProgress?.status ?? null,
+  );
   const [previewError, setPreviewError] = useState<string | null>(null);
   // A referenced warmup session vanished server-side (restart / TTL). Unlike a
   // transient failure this can't be retried in place — recovery is to re-verify
@@ -496,7 +526,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
   const [pendingReverify, setPendingReverify] = useState(false);
 
   const loadPreview = useCallback(async () => {
-    if (connectedArrSessionIds.length === 0 && !prowlarrConnectionInput) {
+    if (connectedArrSessionIds.length === 0 && !prowlarrWarmupSessionId) {
       setPreview(null);
       return;
     }
@@ -506,7 +536,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
       .mutation(previewExternalImportMutation, {
         input: {
           sourceWarmupSessionIds: connectedArrSessionIds,
-          prowlarr: prowlarrConnectionInput,
+          prowlarrWarmupSessionId,
         },
       })
       .toPromise();
@@ -519,7 +549,77 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     }
     setPreview(data.previewExternalImport as ExternalImportPreview);
     setWarmupSessionLost(false);
-  }, [client, connectedArrSessionIds, prowlarrConnectionInput]);
+  }, [client, connectedArrSessionIds, prowlarrWarmupSessionId]);
+
+  useEffect(() => {
+    if (!prowlarrWarmupSessionId) {
+      setProwlarrWarmupProgress(null);
+      return;
+    }
+
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      const { data, error } = await client
+        .query(
+          externalImportWarmupStatusQuery,
+          { sessionId: prowlarrWarmupSessionId },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (stopped) return;
+      if (error || !data?.externalImportWarmupStatus) {
+        const message = gqlError(error) || "Failed to load Prowlarr discovery status";
+        setPreviewError(message);
+        if (isLostWarmupSessionError(message)) {
+          setWarmupSessionLost(true);
+        } else {
+          timer = setTimeout(poll, 750);
+        }
+        return;
+      }
+
+      const progress =
+        data.externalImportWarmupStatus as ExternalImportMonitorWarmupProgress;
+      setProwlarrWarmupProgress(progress);
+      if (progress.status === "COMPLETED") {
+        void loadPreview();
+      } else if (progress.status === "QUEUED" || progress.status === "RUNNING") {
+        timer = setTimeout(poll, 750);
+      }
+    };
+
+    void poll();
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [client, loadPreview, prowlarrWarmupSessionId]);
+
+  const retryProwlarrWarmup = useCallback(async () => {
+    if (!prowlarrConnectionInput || !prowlarrInstance) return;
+    setPreviewError(null);
+    setProwlarrWarmupProgress(null);
+    const { data, error } = await client
+      .mutation(startExternalImportProwlarrWarmupMutation, {
+        input: { connection: prowlarrConnectionInput },
+      })
+      .toPromise();
+    const sessionId = data?.startExternalImportProwlarrWarmup?.sessionId as
+      | string
+      | undefined;
+    if (error || !sessionId) {
+      setPreviewError(gqlError(error) || "Failed to restart Prowlarr discovery");
+      return;
+    }
+    setInstances((prev) =>
+      prev.map((instance) =>
+        instance.id === prowlarrInstance.id
+          ? { ...instance, warmupSessionId: sessionId }
+          : instance,
+      ),
+    );
+  }, [client, prowlarrConnectionInput, prowlarrInstance]);
 
   // ── Mapping board: roots + manual roots + remaps + assign ──────────────────
   const [manualRoots, setManualRoots] = useState<ImportRoot[]>(
@@ -1064,6 +1164,13 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     // Re-entering Sources (back→forward) must not duplicate them — the backend
     // create path does not dedup — so short-circuit once a prior run succeeded.
     if (executeResult) return { ok: true, error: null };
+    if (!prowlarrWarmupReady) {
+      const error =
+        prowlarrWarmupProgress?.errorMessage ||
+        "Prowlarr indexer discovery must finish before importing sources.";
+      setExecuteError(error);
+      return { ok: false, error };
+    }
     setExecuting(true);
     setExecuteError(null);
     const input: ExecuteExternalImportInput = {
@@ -1102,6 +1209,8 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     dcPasswordOverrides,
     idxApiKeyOverrides,
     executeResult,
+    prowlarrWarmupReady,
+    prowlarrWarmupProgress,
   ]);
 
   // ── Aggregate warmup progress (gates Summary) ──────────────────────────────
@@ -1521,6 +1630,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
 
   // Every selected client/indexer that needs an operator-supplied secret has one.
   const sourcesReady = useMemo(() => {
+    if (!prowlarrWarmupReady) return false;
     if (!preview) return true;
     const apiKeyClientTypes = new Set(["sabnzbd", "weaver"]);
     const dcOk = preview.downloadClients.every((dc) => {
@@ -1557,6 +1667,7 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     });
   }, [
     preview,
+    prowlarrWarmupReady,
     selectedDcKeys,
     selectedIdxKeys,
     dcApiKeyOverrides,
@@ -1605,6 +1716,10 @@ export function useExternalImportSetup({ client }: UseExternalImportSetupArgs) {
     connectionReady,
     canLeaveConnect,
     connectedArrSessionIds,
+    prowlarrWarmupSessionId,
+    prowlarrWarmupProgress,
+    prowlarrWarmupReady,
+    retryProwlarrWarmup,
     // server secret draft
     secretDraftOwnedByOther,
     secretDraftOverwroteOther,

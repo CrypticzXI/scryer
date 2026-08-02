@@ -326,11 +326,22 @@ async fn list_download_import_page_returns_only_import_rows_for_selected_filter(
     let mut blocked = queue_history_fixture_item("blocked-1", DownloadQueueState::Completed, 20);
     blocked.tracked_state = Some(TrackedDownloadState::ImportBlocked);
 
+    let mut foreign_blocked =
+        queue_history_fixture_item("foreign-blocked-1", DownloadQueueState::Completed, 25);
+    foreign_blocked.is_scryer_origin = false;
+    foreign_blocked.tracked_state = Some(TrackedDownloadState::ImportBlocked);
+
     let failed = queue_history_fixture_item("failed-1", DownloadQueueState::Failed, 10);
     let completed = queue_history_fixture_item("completed-1", DownloadQueueState::Completed, 5);
 
-    *download_client.history_items.lock().await =
-        vec![completed, failed, blocked.clone(), pending, importing];
+    *download_client.history_items.lock().await = vec![
+        completed,
+        failed,
+        foreign_blocked,
+        blocked.clone(),
+        pending,
+        importing,
+    ];
 
     let page = app
         .list_download_import_page(&user, 50, 0, DownloadImportFilter::Blocked)
@@ -345,6 +356,12 @@ async fn list_download_import_page_returns_only_import_rows_for_selected_filter(
         crate::integration::derive_download_queue_display_state(&page.items[0]),
         DownloadDisplayState::ImportBlocked
     );
+
+    let count = app
+        .count_download_import_items(&user, DownloadImportFilter::Blocked)
+        .await
+        .expect("import count should load");
+    assert_eq!(count, 1);
 }
 
 #[tokio::test]

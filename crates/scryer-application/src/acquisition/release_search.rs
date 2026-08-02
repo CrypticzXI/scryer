@@ -6,8 +6,8 @@ use super::*;
 use crate::acquisition_policy::evaluate_upgrade;
 use crate::acquisition_search_queries::{
     anidb_id_from_external_ids, build_movie_search_queries, build_search_queries,
-    imdb_id_from_title, mal_id_from_external_ids, tmdb_id_from_external_ids,
-    tvdb_id_from_external_ids,
+    imdb_id_from_title, mal_id_from_external_ids, movie_text_search_query,
+    tmdb_id_from_external_ids, tvdb_id_from_external_ids,
 };
 use crate::delay_profile::DelayProfile;
 use crate::quality::release_parser::ParseDisposition;
@@ -389,6 +389,12 @@ pub(crate) fn parsed_release_matches_title_evidence(
     parsed: &ParsedReleaseMetadata,
     evidence: &CanonicalTitleEvidence,
 ) -> bool {
+    if let (Some(parsed_year), Some(expected_year)) = (parsed.year, evidence.year)
+        && parsed_year != expected_year
+    {
+        return false;
+    }
+
     for release_title in extract_titles_from_release(parsed) {
         if evidence.lookup_keys.iter().any(|key| key == &release_title) {
             return true;
@@ -893,7 +899,11 @@ impl AppUseCase {
             .as_deref()
             .and_then(crate::normalize::normalize_numeric_id);
         let category = self.release_search_category_for_facet(&title.facet);
-        let query = title.name.trim().to_string();
+        let query = if title.facet == MediaFacet::Movie {
+            movie_text_search_query(&title.name, title.year)
+        } else {
+            title.name.trim().to_string()
+        };
         if query.is_empty() && imdb_id.is_none() && tvdb_id.is_none() && anidb_id.is_none() {
             return Err(AppError::Validation(
                 "title has no name or external IDs".into(),
@@ -1450,9 +1460,12 @@ mod tests {
 
     #[test]
     fn candidate_matches_title_subject_trusts_upstream_validation() {
-        let title = make_title();
+        let mut title = make_title();
+        title.name = "Resident Evil".to_string();
+        title.facet = MediaFacet::Movie;
+        title.year = Some(2026);
         let candidate = make_candidate(
-            "Completely.Different.Show.S01E01.1080p.WEB-DL",
+            "Resident.Evil.2002.1080p.WEB-DL",
             Some(ReleaseCandidateProvenance {
                 search_subject_kind: ReleaseSearchSubjectKind::Episode,
                 strategy_kind: ReleaseStrategyKind::IdBacked,
@@ -1464,6 +1477,91 @@ mod tests {
             &candidate,
             &canonical_title_evidence(&title)
         ));
+    }
+
+    #[test]
+    fn text_title_matching_rejects_only_mismatched_parsed_years() {
+        let mut title = make_title();
+        title.name = "Resident Evil".to_string();
+        title.facet = MediaFacet::Movie;
+        title.year = Some(2026);
+        let evidence = canonical_title_evidence(&title);
+
+        let mismatched = crate::parse_release_metadata("Resident.Evil.2002.1080p.WEB-DL");
+        assert_eq!(mismatched.year, Some(2002));
+        assert!(!parsed_release_matches_title_evidence(
+            &mismatched,
+            &evidence
+        ));
+
+        let mut matching = mismatched.clone();
+        matching.year = Some(2026);
+        assert!(parsed_release_matches_title_evidence(&matching, &evidence));
+
+        let mut missing_year = mismatched;
+        missing_year.year = None;
+        assert!(parsed_release_matches_title_evidence(
+            &missing_year,
+            &evidence
+        ));
+    }
+
+    #[test]
+    fn automatic_text_candidate_with_mismatched_year_is_not_eligible() {
+        let mut title = make_title();
+        title.name = "Resident Evil".to_string();
+        title.facet = MediaFacet::Movie;
+        title.year = Some(2026);
+        let candidate = make_candidate("Resident.Evil.2002.1080p.WEB-DL", None);
+        let subject = ResolvedReleaseSearchSubject {
+            title_id: title.id.clone(),
+            title_tags: title.tags.clone(),
+            title_evidence: canonical_title_evidence(&title),
+            queries: vec!["Resident Evil 2026".to_string()],
+            imdb_id: None,
+            tmdb_id: None,
+            tvdb_id: None,
+            anidb_id: None,
+            mal_id: None,
+            category: title.facet.as_str().to_string(),
+            owner_facet: title.facet.clone(),
+            search_facet: title.facet.clone(),
+            id_search_facet: None,
+            newznab_categories: Vec::new(),
+            runtime_minutes: title.runtime_minutes,
+            season: None,
+            episode: None,
+            absolute_episode: None,
+            subject_kind: ReleaseSearchSubjectKind::Title,
+            current_score: None,
+            last_search_at: None,
+            grabbed_release: None,
+            submission_scope: SubmissionScope::Title,
+        };
+        let profile = QualityProfile::default();
+        let thresholds = AcquisitionThresholds::default();
+        let now = Utc::now();
+        let db_blocklist = HashSet::new();
+        let context = AutoCandidateEvaluationContext {
+            title: &title,
+            subject: &subject,
+            current_score: None,
+            last_search_at: None,
+            profile: &profile,
+            thresholds: &thresholds,
+            cutoff_reached: false,
+            now: &now,
+            dl_snapshot: None,
+            db_blocklist: &db_blocklist,
+            existing_files: &[],
+            delay_profiles: &[],
+            failed_source_kinds: None,
+        };
+
+        assert_eq!(
+            evaluate_auto_candidate(&candidate, &context),
+            ReleaseAutoDecisionCode::TitleMismatch
+        );
     }
 
     #[test]

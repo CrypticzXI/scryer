@@ -2712,6 +2712,11 @@ export const externalImportArrSourceWarmupStatusQuery = `query ExternalImportArr
   }
 }`;
 
+export const externalImportWarmupStatusQuery = `query ExternalImportWarmupStatus($sessionId: ID!) {
+  externalImportWarmupStatus(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
 // Aggregated title-fetch progress across every per-instance warmup session,
 // used to gate the Summary step.
 export const externalImportAggregateWarmupProgressQuery = `query ExternalImportAggregateWarmupProgress($input: ExternalImportAggregateWarmupProgressInput!) {

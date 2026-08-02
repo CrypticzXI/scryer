@@ -661,7 +661,14 @@ impl IndexerManagementClient for ProwlarrManagementClient {
     }
 
     async fn plan_sync(&self, _parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
-        self.build_sync_plan(true).await
+        self.build_sync_plan(false).await
+    }
+
+    async fn enrichment_sync_plan(
+        &self,
+        _parent_config_id: &str,
+    ) -> AppResult<Option<IndexerSyncPlan>> {
+        self.build_sync_plan(true).await.map(Some)
     }
 
     async fn preview_sync_plan(&self, _parent_config_id: &str) -> AppResult<IndexerSyncPlan> {
@@ -1483,6 +1490,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn validate_connection_only_requests_system_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(SYSTEM_STATUS_PATH))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "appName": "Prowlarr",
+                "version": "2.0.0"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
+        let result = client
+            .validate_connection()
+            .await
+            .expect("validation result");
+
+        assert_eq!(result.status, "valid");
+        let requests = server.received_requests().await.expect("recorded requests");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), SYSTEM_STATUS_PATH);
+    }
+
+    #[tokio::test]
     async fn validate_connection_rejects_non_prowlarr_app_name() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1561,8 +1592,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preview_sync_plan_lists_children_without_fetching_caps() {
+    async fn preview_sync_plan_lists_forty_one_children_without_fetching_caps() {
         let server = MockServer::start().await;
+        let indexers = (1..=41)
+            .map(|id| {
+                json!({
+                    "id": id,
+                    "name": format!("Fixture Indexer {id}"),
+                    "enable": true,
+                    "appProfileId": 1,
+                    "protocol": "usenet",
+                    "priority": 3,
+                    "downloadClientId": 0,
+                    "capabilities": { "categories": [] }
+                })
+            })
+            .collect::<Vec<_>>();
         Mock::given(method("GET"))
             .and(path(SYSTEM_STATUS_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -1573,16 +1618,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path(INDEXER_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
-                "id": 7,
-                "name": "Fixture Indexer",
-                "enable": true,
-                "appProfileId": 1,
-                "protocol": "usenet",
-                "priority": 3,
-                "downloadClientId": 0,
-                "capabilities": { "categories": [] }
-            }])))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&indexers))
             .mount(&server)
             .await;
         Mock::given(method("GET"))
@@ -1605,20 +1641,24 @@ mod tests {
         let metadata: ManagedChildMetadata =
             serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap();
 
-        assert_eq!(metadata.indexer_id, 7);
+        assert_eq!(plan.children.len(), 41);
+        assert_eq!(metadata.indexer_id, 1);
         assert!(metadata.caps_snapshot.is_none());
         assert!(child.caps_snapshot_json.is_none());
 
         let requests = server.received_requests().await.unwrap();
         assert!(
-            !requests.iter().any(|request| request.url.path() == "/7/api"
-                && request.url.query().unwrap_or_default().contains("t=caps")),
+            !requests.iter().any(|request| request
+                .url
+                .query()
+                .unwrap_or_default()
+                .contains("t=caps")),
             "preview must not fetch child caps"
         );
     }
 
     #[tokio::test]
-    async fn plan_sync_fetches_and_persists_child_caps_snapshot() {
+    async fn enrichment_sync_plan_fetches_and_persists_child_caps_snapshot() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(SYSTEM_STATUS_PATH))
@@ -1675,7 +1715,11 @@ mod tests {
             .await;
 
         let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
-        let plan = client.plan_sync("parent").await.expect("sync plan");
+        let plan = client
+            .enrichment_sync_plan("parent")
+            .await
+            .expect("enrichment plan")
+            .expect("supported enrichment plan");
         let child = plan.children.first().expect("child plan");
         let metadata: ManagedChildMetadata =
             serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap();
@@ -1694,7 +1738,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plan_sync_fetches_child_caps_concurrently_and_preserves_child_order() {
+    async fn enrichment_sync_plan_fetches_caps_concurrently_and_preserves_child_order() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(SYSTEM_STATUS_PATH))
@@ -1784,7 +1828,11 @@ mod tests {
 
         let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
         let started = std::time::Instant::now();
-        let plan = client.plan_sync("parent").await.expect("sync plan");
+        let plan = client
+            .enrichment_sync_plan("parent")
+            .await
+            .expect("enrichment plan")
+            .expect("supported enrichment plan");
         let elapsed = started.elapsed();
 
         assert!(
@@ -1806,7 +1854,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plan_sync_skips_caps_fetch_for_upstream_disabled_children() {
+    async fn enrichment_sync_plan_skips_caps_fetch_for_upstream_disabled_children() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(SYSTEM_STATUS_PATH))
@@ -1842,7 +1890,11 @@ mod tests {
             .await;
 
         let client = ProwlarrManagementClient::new(&test_indexer_config(&server.uri()));
-        let plan = client.plan_sync("parent").await.expect("sync plan");
+        let plan = client
+            .enrichment_sync_plan("parent")
+            .await
+            .expect("enrichment plan")
+            .expect("supported enrichment plan");
         let child = plan.children.first().expect("child plan");
         let metadata: ManagedChildMetadata =
             serde_json::from_str(child.managed_metadata_json.as_deref().unwrap()).unwrap();

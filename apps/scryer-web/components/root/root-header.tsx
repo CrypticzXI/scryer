@@ -1581,7 +1581,13 @@ export const RootHeader = React.memo(function RootHeader({
                                             {t("search.noMetadataMatches")}
                                           </p>
                                         ) : (
-                                          <div className="flex gap-3 overflow-x-auto overscroll-x-contain pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                                          <div
+                                            className={cn(
+                                              desktopSearchFilters.includes(f.id)
+                                                ? "flex flex-wrap gap-3 pb-1"
+                                                : "flex gap-3 overflow-x-auto overscroll-x-contain pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                                            )}
+                                          >
                                             {renderMetadataSection(
                                               items,
                                               f.id,

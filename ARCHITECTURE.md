@@ -193,9 +193,16 @@ explicit intent and verified preconditions. Secrets do not enter logs, metrics,
 public errors, or unencrypted persistence.
 
 Host-owned remote HTTP uses a shared transport policy for trust, rate limits,
-timeouts, retries, and observability. A specialized helper protocol may own
-different transport semantics only when the exception is explicit, bounded,
-tested, and observable.
+timeouts, retries, and observability. Safe redirects are normal upstream
+service behavior for indexers, metadata and image providers, download clients,
+and similar integrations. The shared transport may follow them when hop count
+is bounded and its normal timeout, retry, per-hop rate-limit, and observability
+rules remain in effect. Redirect rejection is an explicit protocol exception,
+not the default security posture. Callers remain responsible for validating
+the initial endpoint and the response they consume.
+
+A specialized helper protocol may own different transport semantics only when
+the exception is explicit, bounded, tested, and observable.
 
 ### 14. Operations Are Part of the Product
 

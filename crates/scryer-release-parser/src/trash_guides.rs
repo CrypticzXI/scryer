@@ -36,13 +36,6 @@ pub(crate) enum RuleFacet {
 pub(crate) struct ServiceAliasRule {
     pub token: &'static str,
     pub service: &'static str,
-    pub facet: RuleFacet,
-    pub app: &'static str,
-    pub stem: &'static str,
-    pub trash_id: &'static str,
-    pub cf_name: &'static str,
-    pub spec_name: &'static str,
-    pub source_path: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,21 +103,6 @@ pub(crate) struct LocaleGroupFactRule {
     pub match_kind: LocaleGroupMatchKind,
     pub facet: RuleFacet,
     pub source_context: LocaleSourceContext,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) struct MetadataRuleRecord {
-    pub app: &'static str,
-    pub facet: RuleFacet,
-    pub stem: &'static str,
-    pub trash_id: &'static str,
-    pub cf_name: &'static str,
-    pub spec_name: &'static str,
-    pub implementation: &'static str,
-    pub value: &'static str,
-    pub reason: &'static str,
-    pub source_path: &'static str,
 }
 
 include!("trash_guides_parser_knowledge.generated.rs");

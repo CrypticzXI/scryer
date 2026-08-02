@@ -4940,8 +4940,7 @@ pub enum ExternalArrSourceKind {
 
 /// Connection kind for the lightweight, pre-warmup connection probe used by the
 /// setup wizard's Connect step. Unlike [`ExternalArrSourceKind`] this also
-/// covers Prowlarr, which has no warmup of its own but can still be
-/// connection-tested before preview.
+/// covers Prowlarr, whose child discovery starts separately after this probe.
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalImportConnectionKind {
@@ -5025,6 +5024,11 @@ pub struct StartExternalImportArrSourceWarmupInput {
 }
 
 #[derive(InputObject)]
+pub struct StartExternalImportProwlarrWarmupInput {
+    pub connection: ExternalImportConnectionInput,
+}
+
+#[derive(InputObject)]
 pub struct ExternalImportAggregateWarmupProgressInput {
     pub source_warmup_session_ids: Vec<ID>,
 }
@@ -5032,6 +5036,8 @@ pub struct ExternalImportAggregateWarmupProgressInput {
 #[derive(InputObject)]
 pub struct PreviewExternalImportInput {
     pub source_warmup_session_ids: Vec<ID>,
+    pub prowlarr_warmup_session_id: Option<ID>,
+    #[graphql(deprecation = "use prowlarrWarmupSessionId")]
     pub prowlarr: Option<ExternalImportConnectionInput>,
 }
 
@@ -5213,6 +5219,7 @@ pub enum ExternalImportMonitorWarmupStatusValue {
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalImportMonitorWarmupPhaseValue {
+    LoadingIndexers,
     LoadingMovies,
     LoadingSeries,
     LoadingEpisodes,

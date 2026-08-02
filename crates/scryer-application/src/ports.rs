@@ -1712,7 +1712,6 @@ pub trait ImageProxyRepository: Send + Sync {
     fn register_image_source(&self, registration: ImageProxyRegistration) -> String;
     async fn flush_image_proxy_sources(&self) -> AppResult<()>;
     fn clear_image_proxy_memory(&self);
-    async fn persist_image_proxy_source(&self, source: &ImageProxySourceRecord) -> AppResult<()>;
 
     async fn get_image_proxy_source(
         &self,
@@ -4029,6 +4028,12 @@ pub trait IndexerManagementClient: Send + Sync {
         Err(AppError::Repository(
             "managed child sync is not supported for this provider".to_string(),
         ))
+    }
+    async fn enrichment_sync_plan(
+        &self,
+        _parent_config_id: &str,
+    ) -> AppResult<Option<IndexerSyncPlan>> {
+        Ok(None)
     }
     fn name(&self) -> &str;
 }

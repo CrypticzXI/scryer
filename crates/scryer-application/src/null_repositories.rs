@@ -967,10 +967,6 @@ impl ImageProxyRepository for NullImageProxyRepository {
 
     fn clear_image_proxy_memory(&self) {}
 
-    async fn persist_image_proxy_source(&self, _source: &ImageProxySourceRecord) -> AppResult<()> {
-        Ok(())
-    }
-
     async fn get_image_proxy_source(
         &self,
         _token: &str,

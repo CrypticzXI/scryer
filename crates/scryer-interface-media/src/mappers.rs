@@ -3084,6 +3084,9 @@ pub fn from_external_import_monitor_warmup_progress(
             }
         },
         phase: match snapshot.phase {
+            scryer_application::ExternalImportMonitorWarmupPhase::LoadingIndexers => {
+                ExternalImportMonitorWarmupPhaseValue::LoadingIndexers
+            }
             scryer_application::ExternalImportMonitorWarmupPhase::LoadingMovies => {
                 ExternalImportMonitorWarmupPhaseValue::LoadingMovies
             }

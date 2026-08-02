@@ -346,7 +346,6 @@ impl ImageProxyRuntime {
         let Some(source_url) = source.upstream_url.as_deref() else {
             return Ok(None);
         };
-        self.repository.persist_image_proxy_source(source).await?;
         let upstream_url = upstream_variant_url(source_url, &source.image_kind, variant)
             .and_then(|url| approved_upstream_url(&url))
             .ok_or_else(|| AppError::Validation("unapproved image proxy source".to_string()))?;
@@ -741,6 +740,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use super::{
+        ImageProxyRuntime, upstream_variant_url, valid_raster_bytes, valid_token, variant_allowed,
+    };
     use async_trait::async_trait;
     use chrono::Utc;
     use scryer_application::{
@@ -749,16 +751,12 @@ mod tests {
         TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask,
     };
     use scryer_domain::{DomainEvent, NewDomainEvent};
-    use tokio::sync::Barrier;
-
-    use super::{
-        ImageProxyRuntime, upstream_variant_url, valid_raster_bytes, valid_token, variant_allowed,
-    };
 
     struct TestImageRepository {
         source: ImageProxySourceRecord,
         cache_entries: Mutex<Vec<ImageProxyCacheEntryRecord>>,
         cache_reads: AtomicUsize,
+        cache_read_delay: Option<std::time::Duration>,
         cache_deletes: AtomicUsize,
         cache_clears: AtomicUsize,
         memory_clears: AtomicUsize,
@@ -778,13 +776,6 @@ mod tests {
             self.memory_clears.fetch_add(1, Ordering::Relaxed);
         }
 
-        async fn persist_image_proxy_source(
-            &self,
-            _source: &ImageProxySourceRecord,
-        ) -> AppResult<()> {
-            Ok(())
-        }
-
         async fn get_image_proxy_source(
             &self,
             token: &str,
@@ -798,6 +789,9 @@ mod tests {
             variant: &str,
         ) -> AppResult<Option<ImageProxyCacheEntryRecord>> {
             self.cache_reads.fetch_add(1, Ordering::Relaxed);
+            if let Some(delay) = self.cache_read_delay {
+                tokio::time::sleep(delay).await;
+            }
             Ok(self
                 .cache_entries
                 .lock()
@@ -971,6 +965,7 @@ mod tests {
             },
             cache_entries: Mutex::new(Vec::new()),
             cache_reads: AtomicUsize::new(0),
+            cache_read_delay: None,
             cache_deletes: AtomicUsize::new(0),
             cache_clears: AtomicUsize::new(0),
             memory_clears: AtomicUsize::new(0),
@@ -1048,6 +1043,7 @@ mod tests {
                 last_accessed_at: now,
             }]),
             cache_reads: AtomicUsize::new(0),
+            cache_read_delay: None,
             cache_deletes: AtomicUsize::new(0),
             cache_clears: AtomicUsize::new(0),
             memory_clears: AtomicUsize::new(0),
@@ -1144,6 +1140,7 @@ mod tests {
                 entry(&tokens[2], 10),
             ]),
             cache_reads: AtomicUsize::new(0),
+            cache_read_delay: None,
             cache_deletes: AtomicUsize::new(0),
             cache_clears: AtomicUsize::new(0),
             memory_clears: AtomicUsize::new(0),
@@ -1241,11 +1238,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn singleflight_shares_success_and_failure_results_with_all_waiters() {
+    async fn concurrent_resolve_calls_share_one_cache_miss_initializer() {
+        const REQUEST_COUNT: usize = 8;
         let token = "d".repeat(64);
         let image_repository = Arc::new(TestImageRepository {
             source: ImageProxySourceRecord {
-                token,
+                token: token.clone(),
                 upstream_url: None,
                 owner_type: Some("episode".to_string()),
                 owner_id: Some("episode-2".to_string()),
@@ -1255,6 +1253,7 @@ mod tests {
             },
             cache_entries: Mutex::new(Vec::new()),
             cache_reads: AtomicUsize::new(0),
+            cache_read_delay: Some(std::time::Duration::from_millis(10)),
             cache_deletes: AtomicUsize::new(0),
             cache_clears: AtomicUsize::new(0),
             memory_clears: AtomicUsize::new(0),
@@ -1269,43 +1268,28 @@ mod tests {
         });
         let temp = tempfile::tempdir().expect("temporary image cache");
         let runtime = Arc::new(ImageProxyRuntime::new(
-            image_repository,
+            image_repository.clone(),
             title_images,
             temp.path(),
         ));
 
-        for (key, expected_error) in [("success", false), ("failure", true)] {
-            let barrier = Arc::new(Barrier::new(9));
-            let attempts = Arc::new(AtomicUsize::new(0));
-            let mut tasks = Vec::new();
-            for _ in 0..8 {
-                let runtime = Arc::clone(&runtime);
-                let barrier = Arc::clone(&barrier);
-                let attempts = Arc::clone(&attempts);
-                tasks.push(tokio::spawn(async move {
-                    let fetch = runtime.inflight_fetch(key.to_string()).await;
-                    barrier.wait().await;
-                    fetch
-                        .get_or_init(|| async move {
-                            attempts.fetch_add(1, Ordering::Relaxed);
-                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                            if expected_error {
-                                Err("shared upstream failure".to_string())
-                            } else {
-                                Ok(None)
-                            }
-                        })
-                        .await
-                        .clone()
-                }));
-            }
-            barrier.wait().await;
-            for task in tasks {
-                let result = task.await.expect("singleflight waiter");
-                assert_eq!(result.is_err(), expected_error);
-            }
-            assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        let mut tasks = Vec::new();
+        for _ in 0..REQUEST_COUNT {
+            let runtime = Arc::clone(&runtime);
+            let token = token.clone();
+            tasks.push(tokio::spawn(async move {
+                runtime.resolve(&token, "original").await
+            }));
         }
+        for task in tasks {
+            assert!(task.await.expect("concurrent image resolve").fallback);
+        }
+
+        assert_eq!(
+            image_repository.cache_reads.load(Ordering::Relaxed),
+            REQUEST_COUNT + 2,
+            "each request performs its initial cache lookup, while one shared initializer performs the two miss-path lookups"
+        );
     }
 
     #[cfg(feature = "image-processing")]

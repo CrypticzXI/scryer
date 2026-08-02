@@ -1241,6 +1241,24 @@ impl ActivityQueries {
         Ok(from_external_import_monitor_warmup_progress(snapshot))
     }
 
+    async fn external_import_warmup_status(
+        &self,
+        ctx: &Context<'_>,
+        session_id: ID,
+    ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.maintain_external_import_arr_source_sessions(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        let session_id = String::from(session_id);
+        let snapshot = app
+            .get_external_import_monitor_warmup_status(&actor, &session_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_external_import_monitor_warmup_progress(snapshot))
+    }
+
     async fn external_import_aggregate_warmup_progress(
         &self,
         ctx: &Context<'_>,

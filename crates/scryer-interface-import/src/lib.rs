@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use chrono::Utc;
@@ -15,7 +16,8 @@ use scryer_application::{
     ExternalImportMonitorSeasonEntry, ExternalImportMonitorSeriesEntry,
     ExternalImportMonitorSnapshotChunk, ExternalImportMonitorSnapshotEntryKind,
     ExternalImportMonitorWarmupPhase, ExternalImportMonitorWarmupProgressSnapshot,
-    ExternalImportMonitorWarmupStatus, ExternalImportSetupInstanceApiKeyDraft,
+    ExternalImportMonitorWarmupStatus, ExternalImportProwlarrWarmupResult,
+    ExternalImportSetupInstanceApiKeyDraft,
     ExternalImportSetupSecretDraftInput as AppExternalImportSetupSecretDraftInput,
     ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretInstanceKind,
     ExternalImportSetupSecretOverrideDraft, FOLDER_CHMOD_KEY, IndexerConfigUpdate, LibraryScanHint,
@@ -343,6 +345,14 @@ fn source_connection_fingerprint(source: &ExternalArrImportSource) -> String {
             .trim_end_matches('/')
             .to_ascii_lowercase(),
         source.api_key.trim()
+    )
+}
+
+fn prowlarr_connection_fingerprint(base_url: &str, api_key: &str) -> String {
+    format!(
+        "{}|{}",
+        base_url.trim().trim_end_matches('/').to_ascii_lowercase(),
+        api_key.trim()
     )
 }
 
@@ -1768,6 +1778,56 @@ impl ExternalImportMutations {
         Ok(from_external_import_monitor_warmup_progress(begin.snapshot))
     }
 
+    async fn start_external_import_prowlarr_warmup(
+        &self,
+        ctx: &Context<'_>,
+        input: StartExternalImportProwlarrWarmupInput,
+    ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
+        require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let actor = actor_from_ctx(ctx)?;
+        let app = app_from_ctx(ctx)?;
+        maintain_external_import_source_sessions(&app, &actor).await?;
+
+        let base_url = input
+            .connection
+            .base_url
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
+        let api_key = input.connection.api_key.trim().to_string();
+        let fingerprint = format!(
+            "prowlarr-source={}",
+            prowlarr_connection_fingerprint(&base_url, &api_key)
+        );
+        let mut begin = app
+            .begin_external_import_monitor_warmup(&actor, &fingerprint)
+            .await?;
+
+        if begin.created {
+            begin.snapshot.phase = ExternalImportMonitorWarmupPhase::LoadingIndexers;
+            let session_id = begin.snapshot.session_id.clone();
+            publish_warmup_progress(&app, &session_id, &mut begin.snapshot).await;
+            let app_for_task = app.clone();
+            let actor_for_task = actor.clone();
+            let snapshot_for_task = begin.snapshot.clone();
+            let cancel_token = begin.cancel_token.clone();
+            tokio::spawn(async move {
+                run_external_import_prowlarr_warmup_job(
+                    app_for_task,
+                    actor_for_task,
+                    session_id,
+                    base_url,
+                    api_key,
+                    cancel_token,
+                    snapshot_for_task,
+                )
+                .await;
+            });
+        }
+
+        Ok(from_external_import_monitor_warmup_progress(begin.snapshot))
+    }
+
     async fn cancel_external_import_arr_source_warmup(
         &self,
         ctx: &Context<'_>,
@@ -1804,9 +1864,8 @@ impl ExternalImportMutations {
         input: ValidateExternalImportConnectionInput,
     ) -> GqlResult<ExternalImportConnectionValidationPayload> {
         let kind = input.kind;
-        // Prowlarr validation routes through preview_managed_indexer_children,
-        // which requires ManageSystemSettings; Sonarr/Radarr only need
-        // ManageCatalogSettings (matching the warmup path).
+        // Prowlarr validation uses only the provider's lightweight connection
+        // check; child discovery belongs to the detached warmup job.
         let required_permission = match kind {
             ExternalImportConnectionKind::Prowlarr => AppPermission::ManageSystemSettings,
             ExternalImportConnectionKind::Sonarr | ExternalImportConnectionKind::Radarr => {
@@ -1840,9 +1899,9 @@ impl ExternalImportMutations {
                     &input.connection.base_url,
                     &input.connection.api_key,
                 );
-                app.preview_managed_indexer_children(&actor, "prowlarr", Some(&config_json))
+                app.test_indexer_connection(&actor, "prowlarr", Some(&config_json), None, None)
                     .await
-                    .map(|(validation, _plan)| version_from_validation_result(&validation))
+                    .map(|()| None)
             }
         };
 
@@ -1875,9 +1934,20 @@ impl ExternalImportMutations {
         let app = app_from_ctx(ctx)?;
         maintain_external_import_source_sessions(&app, &actor).await?;
 
-        if input.source_warmup_session_ids.is_empty() && input.prowlarr.is_none() {
+        if input.prowlarr_warmup_session_id.is_some() && input.prowlarr.is_some() {
             return Err(to_gql_error(AppError::Validation(
-                "at least one Arr source warmup session or prowlarr must be provided".to_string(),
+                "prowlarrWarmupSessionId and deprecated prowlarr input cannot both be provided"
+                    .to_string(),
+            )));
+        }
+
+        if input.source_warmup_session_ids.is_empty()
+            && input.prowlarr_warmup_session_id.is_none()
+            && input.prowlarr.is_none()
+        {
+            return Err(to_gql_error(AppError::Validation(
+                "at least one Arr source warmup session or Prowlarr warmup session must be provided"
+                    .to_string(),
             )));
         }
 
@@ -1897,7 +1967,52 @@ impl ExternalImportMutations {
         let mut idx_key_idx: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         let mut prowlarr_groups: HashMap<String, ProwlarrImportGroup> = HashMap::new();
-        let linked_prowlarr_base_url = input.prowlarr.as_ref().map(|conn| conn.base_url.as_str());
+        let mut linked_prowlarr_base_url =
+            input.prowlarr.as_ref().map(|conn| conn.base_url.clone());
+
+        if let Some(session_id) = &input.prowlarr_warmup_session_id {
+            let session_id_string = session_id.to_string();
+            let snapshot = app
+                .get_external_import_monitor_warmup_status(&actor, &session_id_string)
+                .await
+                .map_err(to_gql_error)?;
+            match snapshot.status {
+                ExternalImportMonitorWarmupStatus::Queued
+                | ExternalImportMonitorWarmupStatus::Running => {
+                    payload.prowlarr_connected = true;
+                }
+                ExternalImportMonitorWarmupStatus::Completed => {
+                    let result = app
+                        .external_import_prowlarr_warmup_result(&actor, &session_id_string)
+                        .await
+                        .map_err(to_gql_error)?;
+                    payload.prowlarr_connected = true;
+                    payload.prowlarr_version = result.version.clone();
+                    linked_prowlarr_base_url = Some(result.base_url.clone());
+                    let child_names = result
+                        .plan
+                        .children
+                        .iter()
+                        .map(|child| child.name.trim().to_string())
+                        .filter(|name| !name.is_empty())
+                        .collect::<Vec<_>>();
+                    merge_direct_prowlarr_group(
+                        &mut prowlarr_groups,
+                        &result.base_url,
+                        "warmup-session",
+                        &child_names,
+                    );
+                }
+                ExternalImportMonitorWarmupStatus::Failed => {
+                    payload.prowlarr_error = snapshot
+                        .error_message
+                        .or_else(|| Some("Prowlarr discovery failed".to_string()));
+                }
+                ExternalImportMonitorWarmupStatus::Canceled => {
+                    payload.prowlarr_error = Some("Prowlarr discovery was canceled".to_string());
+                }
+            }
+        }
 
         if let Some(conn) = &input.prowlarr {
             let config_json = prowlarr_parent_config_json(&conn.base_url, &conn.api_key);
@@ -1976,7 +2091,7 @@ impl ExternalImportMutations {
                     continue;
                 }
                 if let Some(detected) =
-                    detect_imported_prowlarr_proxy_indexer(idx, linked_prowlarr_base_url)
+                    detect_imported_prowlarr_proxy_indexer(idx, linked_prowlarr_base_url.as_deref())
                 {
                     merge_prowlarr_group(&mut prowlarr_groups, detected, &result.source_key);
                     continue;
@@ -3275,6 +3390,86 @@ async fn run_external_import_arr_source_warmup_job(
             snapshot.phase = ExternalImportMonitorWarmupPhase::Ready;
             snapshot.error_message = Some(err.to_string());
             publish_warmup_progress(&app, &session_id, &mut snapshot).await;
+        }
+    }
+}
+
+async fn run_external_import_prowlarr_warmup_job(
+    app: scryer_application::AppUseCase,
+    actor: scryer_domain::User,
+    session_id: String,
+    base_url: String,
+    api_key: String,
+    cancel_token: CancellationToken,
+    mut snapshot: ExternalImportMonitorWarmupProgressSnapshot,
+) {
+    let started_at = Instant::now();
+    snapshot.status = ExternalImportMonitorWarmupStatus::Running;
+    snapshot.phase = ExternalImportMonitorWarmupPhase::LoadingIndexers;
+    snapshot.error_message = None;
+    publish_warmup_progress(&app, &session_id, &mut snapshot).await;
+
+    let config_json = prowlarr_parent_config_json(&base_url, &api_key);
+    let outcome = tokio::select! {
+        _ = cancel_token.cancelled() => None,
+        result = app.preview_managed_indexer_children(
+            &actor,
+            "prowlarr",
+            Some(&config_json),
+        ) => Some(result),
+    };
+
+    match outcome {
+        None => {
+            snapshot.status = ExternalImportMonitorWarmupStatus::Canceled;
+            snapshot.phase = ExternalImportMonitorWarmupPhase::Ready;
+            snapshot.error_message = None;
+            publish_warmup_progress(&app, &session_id, &mut snapshot).await;
+            tracing::info!(
+                session_id = %session_id,
+                child_count = 0,
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                terminal_status = "canceled",
+                "external Prowlarr import warmup finished"
+            );
+        }
+        Some(Ok((validation, plan))) => {
+            let child_count = plan.children.len().min(i32::MAX as usize) as i32;
+            app.set_external_import_prowlarr_warmup_result(
+                &session_id,
+                ExternalImportProwlarrWarmupResult {
+                    base_url,
+                    version: version_from_validation_result(&validation),
+                    plan,
+                },
+            )
+            .await;
+            snapshot.overall_total_known = true;
+            snapshot.overall_progress.total = child_count;
+            snapshot.overall_progress.completed = child_count;
+            snapshot.status = ExternalImportMonitorWarmupStatus::Completed;
+            snapshot.phase = ExternalImportMonitorWarmupPhase::Ready;
+            publish_warmup_progress(&app, &session_id, &mut snapshot).await;
+            tracing::info!(
+                session_id = %session_id,
+                child_count,
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                terminal_status = "completed",
+                "external Prowlarr import warmup finished"
+            );
+        }
+        Some(Err(error)) => {
+            snapshot.status = ExternalImportMonitorWarmupStatus::Failed;
+            snapshot.phase = ExternalImportMonitorWarmupPhase::Ready;
+            snapshot.error_message = Some(error.to_string());
+            publish_warmup_progress(&app, &session_id, &mut snapshot).await;
+            tracing::warn!(
+                session_id = %session_id,
+                child_count = 0,
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                terminal_status = "failed",
+                "external Prowlarr import warmup finished"
+            );
         }
     }
 }

@@ -1459,8 +1459,7 @@ input ExternalImportConnectionInput {
 """
 Connection kind for the lightweight, pre-warmup connection probe used by the
 setup wizard's Connect step. Unlike [`ExternalArrSourceKind`] this also
-covers Prowlarr, which has no warmup of its own but can still be
-connection-tested before preview.
+covers Prowlarr, whose child discovery starts separately after this probe.
 """
 enum ExternalImportConnectionKind {
 	SONARR
@@ -1512,6 +1511,7 @@ type ExternalImportIndexerPayload {
 }
 
 enum ExternalImportMonitorWarmupPhaseValue {
+	LOADING_INDEXERS
 	LOADING_MOVIES
 	LOADING_SERIES
 	LOADING_EPISODES
@@ -2885,6 +2885,7 @@ type MutationRoot {
 	saveExternalImportSetupSecretDraft(input: SaveExternalImportSetupSecretDraftInput!): SaveExternalImportSetupSecretDraftPayload!
 	clearExternalImportSetupSecretDraft: ClearExternalImportSetupSecretDraftPayload!
 	startExternalImportArrSourceWarmup(input: StartExternalImportArrSourceWarmupInput!): ExternalImportMonitorWarmupProgressPayload!
+	startExternalImportProwlarrWarmup(input: StartExternalImportProwlarrWarmupInput!): ExternalImportMonitorWarmupProgressPayload!
 	cancelExternalImportArrSourceWarmup(sessionId: ID!): CancelExternalImportMonitorWarmupPayload!
 	"""
 	Lightweight connection probe for the Connect step. Tests reachability +
@@ -3303,7 +3304,8 @@ input PrepareBackupDownloadInput {
 
 input PreviewExternalImportInput {
 	sourceWarmupSessionIds: [ID!]!
-	prowlarr: ExternalImportConnectionInput
+	prowlarrWarmupSessionId: ID
+	prowlarr: ExternalImportConnectionInput @deprecated(reason: "use prowlarrWarmupSessionId")
 }
 
 input PreviewManualImportInput {
@@ -3495,6 +3497,7 @@ type QueryRoot {
 	auditLog(eventTypes: [DomainEventTypeValue!], titleId: ID, facet: MediaFacetValue, afterSequence: Long, beforeSequence: Long, limit: Int): [DomainEventEnvelopePayload!]!
 	activeLibraryScans: [LibraryScanProgressPayload!]!
 	externalImportArrSourceWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
+	externalImportWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
 	externalImportAggregateWarmupProgress(input: ExternalImportAggregateWarmupProgressInput!): ExternalImportAggregateWarmupProgressPayload!
 	pendingImportCounts: PendingImportCountsPayload!
 	navigationBadgeCounts: NavigationBadgeCountsPayload!
@@ -4174,6 +4177,10 @@ enum SortDirectionValue {
 
 input StartExternalImportArrSourceWarmupInput {
 	kind: ExternalArrSourceKind!
+	connection: ExternalImportConnectionInput!
+}
+
+input StartExternalImportProwlarrWarmupInput {
 	connection: ExternalImportConnectionInput!
 }
 

@@ -1,5 +1,5 @@
 use scryer_domain::MediaFacet;
-use scryer_release_parser::{TRASH_GUIDES_SOURCE_REVISION, TRASH_GUIDES_SYNCED_AT};
+use scryer_release_parser::TRASH_GUIDES_SOURCE_REVISION;
 
 pub(crate) const MANAGED_TRASH_KEY_PREFIX: &str = "trash-guides:locale:";
 const MANAGED_TRASH_REGISTRY_VERSION: &str = "managed-trash-registry-v1";
@@ -57,7 +57,6 @@ fn source(intent: &str, fact_prefix: &str, include_scene: bool, locale_rules: &s
     });
     format!(
         r#"# MANAGED_TRASH_REGISTRY_VERSION={MANAGED_TRASH_REGISTRY_VERSION}
-# TRASH_GUIDES_SYNCED_AT={TRASH_GUIDES_SYNCED_AT}
 # TRASH_GUIDES_SOURCE_REVISION={TRASH_GUIDES_SOURCE_REVISION}
 # This managed score-only policy is regenerated from the compiled locale-pack registry.
 
