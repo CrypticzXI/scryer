@@ -25,10 +25,10 @@ use scryer_outbound_http::{
     no_redirect_reqwest_client,
 };
 use scryer_plugin_sdk::{
-    PluginDescriptor, SDK_VERSION, effective_host_sdk_constraint, host_version_matches_constraint,
-    plugin_descriptor_requires_host_process, plugin_descriptor_sdk_constraint,
-    sdk_constraint_or_legacy, validate_plugin_descriptor_host_permissions,
-    validate_plugin_descriptor_sdk_contract, validate_sdk_contract,
+    PluginDescriptor, ProviderDescriptor, SDK_VERSION, effective_host_sdk_constraint,
+    host_version_matches_constraint, plugin_descriptor_sdk_constraint, sdk_constraint_or_legacy,
+    validate_plugin_descriptor_host_permissions, validate_plugin_descriptor_sdk_contract,
+    validate_sdk_contract,
 };
 use serde::{Deserialize, Serialize};
 use std::{sync::LazyLock, time::Duration};
