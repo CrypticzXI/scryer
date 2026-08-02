@@ -150,7 +150,7 @@ fn runtime_sample_rejection(
     let Some(actual_seconds) = actual_runtime_seconds else {
         return Some(imported_runtime_sample_rejection(
             SAMPLE_RUNTIME_INDETERMINATE_CODE,
-            "imported file runtime could not be determined for automatic import".to_string(),
+            "video file could not be read to verify its duration; it may be incomplete or corrupted. Download it again and retry the import".to_string(),
         ));
     };
 
@@ -1460,6 +1460,10 @@ mod tests {
             .expect("indeterminate runtime should reject");
 
         assert_eq!(rejection.recycle_reason, SAMPLE_RUNTIME_INDETERMINATE_CODE);
+        assert_eq!(
+            rejection.message,
+            "video file could not be read to verify its duration; it may be incomplete or corrupted. Download it again and retry the import"
+        );
     }
 
     #[test]

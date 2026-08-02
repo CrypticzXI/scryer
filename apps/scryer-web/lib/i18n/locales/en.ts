@@ -874,6 +874,11 @@ const en: LocaleDictionary = {
     "SCRYER_IMAGE_CACHE_MAX_BYTES is active. Its value is effective; the saved limit applies after the environment override is removed.",
   "settings.imageCacheMaxSizeValidation":
     "Image cache maximum size must be at least 1 MiB.",
+  "settings.clearImageCache": "Clear image cache",
+  "settings.clearingImageCache": "Clearing image cache…",
+  "settings.clearImageCacheHelp":
+    "Removes generated title artwork and cached upstream images. Images refill on demand.",
+  "settings.imageCacheClearQueued": "Image cache reset queued.",
   "settings.pluginHttpTrustTitle": "Plugin HTTPS trusted certificates",
   "settings.pluginHttpTrustAdvancedLabel": "Advanced feature",
   "settings.pluginHttpTrustStoredCount": "{{count}} stored",
@@ -3235,8 +3240,6 @@ const en: LocaleDictionary = {
     "Some detected source folders still need a library. Go back to the Libraries step to map them before finishing.",
 
   "settings.manageConfiguration": "Manage configuration",
-  "settings.clearTitleImageCache": "Clear Title Image Cache",
-  "settings.titleImageCacheClearQueued": "Title image cache reset queued.",
   "settings.runSetupWizard": "Run setup wizard",
 
   "history.title": "History",

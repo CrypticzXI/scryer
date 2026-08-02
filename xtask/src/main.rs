@@ -1075,6 +1075,8 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
         std::env::var("SCRYER_VITE_POLL_INTERVAL_MS").unwrap_or_else(|_| "250".to_string());
     let backend_rust_min_stack = dotenv_or_process_env(&dotenv_envs, "RUST_MIN_STACK")
         .unwrap_or_else(|| DEFAULT_SERVE_BACKEND_RUST_MIN_STACK.to_string());
+    let metrics =
+        dotenv_or_process_env(&dotenv_envs, "SCRYER_METRICS").unwrap_or_else(|| "true".to_string());
     let encryption_key = serve_encryption_key();
     let webauthn_rp_id = dotenv_or_process_env(&dotenv_envs, "SCRYER_WEBAUTHN_RP_ID")
         .unwrap_or_else(|| "localhost".to_string());
@@ -1118,6 +1120,7 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
     println!("   Vite file watch: polling={vite_use_polling} interval_ms={vite_poll_interval}");
     println!("   Keychain: disabled for xtask serve");
     println!("   Backend RUST_MIN_STACK: {backend_rust_min_stack}");
+    println!("   Metrics: {metrics} (/metrics)");
     println!("   WebAuthn RP ID: {webauthn_rp_id}");
     println!("   WebAuthn RP origin: {webauthn_rp_origin}");
     match datastore.kind {
@@ -1149,6 +1152,7 @@ fn serve_local_scryer(ctx: &TaskContext, args: ServeArgs, mode: ServeMode) -> Re
     serve
         .env("SCRYER_DISABLE_PLATFORM_KEYSTORE", "1")
         .env("SCRYER_ENCRYPTION_KEY", &encryption_key)
+        .env("SCRYER_METRICS", &metrics)
         .env("SCRYER_OPEN_BROWSER", "false")
         .env("SCRYER_WEB_UI_URL", &frontend_url)
         .env("SCRYER_WEBAUTHN_RP_ID", &webauthn_rp_id)

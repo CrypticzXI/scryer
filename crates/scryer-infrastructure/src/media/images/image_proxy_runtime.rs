@@ -7,17 +7,17 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::header::{
-    CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED,
+    ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED,
 };
 use scryer_application::{
     AppError, AppResult, ImageProxyCacheControl, ImageProxyCacheEntryRecord, ImageProxyRepository,
     ImageProxySourceRecord, TitleImageKind, TitleImageRepository,
 };
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    HostRpsProfile, OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
     no_redirect_reqwest_client,
 };
-use tokio::sync::{Mutex, OnceCell, RwLock};
+use tokio::sync::{Mutex, OnceCell, OwnedRwLockReadGuard, RwLock};
 
 use super::image_proxy_store::approved_upstream_url;
 
@@ -26,6 +26,10 @@ const DEFAULT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 const FRESH_DAYS: i64 = 7;
 const STALE_DAYS: i64 = 30;
 const ACCESS_TOUCH_MINUTES: i64 = 60;
+const IMAGE_PROXY_HOST_RPS: f64 = 100.0;
+const IMAGE_PROXY_HOST_RPS_BURST: u32 = 100;
+const IMAGE_PROXY_HOST_RPS_LANE: &str = "image_proxy";
+const IMAGE_PROXY_ACCEPT: &str = "image/webp,image/jpeg;q=0.9,image/png;q=0.8";
 
 const PORTRAIT_FALLBACK: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#20242b"/><circle cx="1" cy="1" r=".42" fill="#667080"/><path d="M.3 2.7c.08-.72.33-1.08.7-1.08s.62.36.7 1.08" fill="#667080"/></svg>"##;
 const LANDSCAPE_FALLBACK: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 9"><rect width="16" height="9" fill="#20242b"/><path d="m1 8 4-4 3 3 2-2 5 3" fill="#667080"/><circle cx="12" cy="2.5" r="1" fill="#667080"/></svg>"##;
@@ -57,6 +61,7 @@ pub struct ImageProxyRuntime {
     configured_cache_bytes: Arc<AtomicU64>,
     environment_override_bytes: Option<u64>,
     inflight: Arc<Mutex<HashMap<String, Weak<InflightFetch>>>>,
+    source_flush: Arc<Mutex<()>>,
     cache_lifecycle: Arc<RwLock<()>>,
 }
 
@@ -73,13 +78,11 @@ impl ImageProxyRuntime {
             repository,
             title_images,
             cache_dir: data_dir.as_ref().join("cache").join("images"),
-            outbound_http: OutboundHttpClient::new(
-                no_redirect_reqwest_client(),
-                RateLimitRegistry::new(),
-            ),
+            outbound_http: image_outbound_http_client(),
             configured_cache_bytes: Arc::new(AtomicU64::new(DEFAULT_CACHE_BYTES)),
             environment_override_bytes,
             inflight: Arc::new(Mutex::new(HashMap::new())),
+            source_flush: Arc::new(Mutex::new(())),
             cache_lifecycle: Arc::new(RwLock::new(())),
         }
     }
@@ -105,13 +108,7 @@ impl ImageProxyRuntime {
                 return fallback_blob("landscape");
             }
         };
-        if let Err(error) = self.repository.flush_image_proxy_sources().await {
-            tracing::warn!(
-                error = %error,
-                token,
-                "failed to persist image proxy source before serving it"
-            );
-        }
+        self.flush_source_touches_in_background(token.to_string());
 
         if !variant_allowed(&source.image_kind, variant) {
             return fallback_blob(&source.fallback_class);
@@ -224,7 +221,7 @@ impl ImageProxyRuntime {
     }
 
     async fn read_cached(
-        &self,
+        self: &Arc<Self>,
         token: &str,
         variant: &str,
     ) -> Option<(ImageProxyCacheEntryRecord, Vec<u8>, CacheFreshness)> {
@@ -258,10 +255,12 @@ impl ImageProxyRuntime {
         {
             let observed_fetched_at = entry.fetched_at;
             entry.last_accessed_at = now;
-            let _ = self
-                .repository
-                .touch_image_proxy_cache_entry(token, variant, observed_fetched_at, now)
-                .await;
+            self.touch_cache_entry_in_background(
+                token.to_string(),
+                variant.to_string(),
+                observed_fetched_at,
+                now,
+            );
         }
         Some((entry, bytes, freshness))
     }
@@ -272,10 +271,10 @@ impl ImageProxyRuntime {
         token: &str,
         variant: &str,
     ) -> AppResult<Option<ImageProxyBlob>> {
-        let _lifecycle_guard = self.cache_lifecycle.read().await;
+        let lifecycle_guard = self.cache_lifecycle.clone().read_owned().await;
         let fetch = self.inflight_fetch(format!("{token}:{variant}")).await;
         let result = fetch
-            .get_or_init(|| async {
+            .get_or_init(move || async move {
                 if let Some((entry, bytes, freshness)) = self.read_cached(token, variant).await
                     && freshness != CacheFreshness::Expired
                 {
@@ -286,7 +285,7 @@ impl ImageProxyRuntime {
                     .get_image_proxy_cache_entry(token, variant)
                     .await
                     .map_err(|error| error.to_string())?;
-                self.fetch_and_cache(source, token, variant, existing)
+                self.fetch_and_cache(source, token, variant, existing, lifecycle_guard)
                     .await
                     .map_err(|error| error.to_string())
             })
@@ -295,16 +294,16 @@ impl ImageProxyRuntime {
     }
 
     async fn refresh_stale_singleflight(
-        &self,
+        self: &Arc<Self>,
         source: &ImageProxySourceRecord,
         token: &str,
         variant: &str,
         observed_fetched_at: DateTime<Utc>,
     ) -> AppResult<()> {
-        let _lifecycle_guard = self.cache_lifecycle.read().await;
+        let lifecycle_guard = self.cache_lifecycle.clone().read_owned().await;
         let fetch = self.inflight_fetch(format!("{token}:{variant}")).await;
         let result = fetch
-            .get_or_init(|| async {
+            .get_or_init(move || async move {
                 let existing = self
                     .repository
                     .get_image_proxy_cache_entry(token, variant)
@@ -316,7 +315,7 @@ impl ImageProxyRuntime {
                 {
                     return Ok(None);
                 }
-                self.fetch_and_cache(source, token, variant, existing)
+                self.fetch_and_cache(source, token, variant, existing, lifecycle_guard)
                     .await
                     .map_err(|error| error.to_string())
             })
@@ -337,11 +336,12 @@ impl ImageProxyRuntime {
     }
 
     async fn fetch_and_cache(
-        &self,
+        self: &Arc<Self>,
         source: &ImageProxySourceRecord,
         token: &str,
         variant: &str,
         existing: Option<ImageProxyCacheEntryRecord>,
+        lifecycle_guard: OwnedRwLockReadGuard<()>,
     ) -> AppResult<Option<ImageProxyBlob>> {
         let Some(source_url) = source.upstream_url.as_deref() else {
             return Ok(None);
@@ -349,31 +349,24 @@ impl ImageProxyRuntime {
         let upstream_url = upstream_variant_url(source_url, &source.image_kind, variant)
             .and_then(|url| approved_upstream_url(&url))
             .ok_or_else(|| AppError::Validation("unapproved image proxy source".to_string()))?;
-        let target = scryer_outbound_http::prepare_untrusted_public_http_target(
-            &upstream_url,
-            "image proxy",
-        )
-        .await
-        .map_err(|error| AppError::Validation(error.to_string()))?;
         let mut response = self
             .outbound_http
-            .send(
-                RequestPolicy::safe_read("image_proxy", "image_proxy_fetch")
-                    .with_max_retries(1)
-                    .with_backoff(Duration::from_millis(250), Duration::from_secs(3)),
-                || {
-                    let mut request = target.client().get(target.url().clone());
-                    if let Some(entry) = existing.as_ref() {
-                        if let Some(etag) = entry.upstream_etag.as_deref() {
-                            request = request.header(IF_NONE_MATCH, etag);
-                        }
-                        if let Some(last_modified) = entry.upstream_last_modified.as_deref() {
-                            request = request.header(IF_MODIFIED_SINCE, last_modified);
-                        }
+            .send(image_fetch_policy(), || {
+                let mut request = self
+                    .outbound_http
+                    .client()
+                    .get(&upstream_url)
+                    .header(ACCEPT, IMAGE_PROXY_ACCEPT);
+                if let Some(entry) = existing.as_ref() {
+                    if let Some(etag) = entry.upstream_etag.as_deref() {
+                        request = request.header(IF_NONE_MATCH, etag);
                     }
-                    request
-                },
-            )
+                    if let Some(last_modified) = entry.upstream_last_modified.as_deref() {
+                        request = request.header(IF_MODIFIED_SINCE, last_modified);
+                    }
+                }
+                request
+            })
             .await
             .map_err(outbound_error)?;
 
@@ -388,9 +381,7 @@ impl ImageProxyRuntime {
                 })?;
             entry.fetched_at = Utc::now();
             entry.last_accessed_at = entry.fetched_at;
-            self.repository
-                .upsert_image_proxy_cache_entry(&entry)
-                .await?;
+            self.update_cache_metadata_in_background(entry.clone(), lifecycle_guard);
             return Ok(Some(cached_blob(&entry, bytes)));
         }
         if response.status().is_redirection() || !response.status().is_success() {
@@ -463,11 +454,13 @@ impl ImageProxyRuntime {
             last_accessed_at: now,
         };
         if self.effective_max_bytes() > 0 {
-            self.write_cache_file(token, variant, &bytes).await?;
-            self.repository
-                .upsert_image_proxy_cache_entry(&entry)
-                .await?;
-            self.enforce_budget().await?;
+            self.persist_cache_entry_in_background(
+                token.to_string(),
+                variant.to_string(),
+                bytes.clone(),
+                entry,
+                lifecycle_guard,
+            );
         }
         Ok(Some(ImageProxyBlob {
             content_type,
@@ -475,6 +468,106 @@ impl ImageProxyRuntime {
             bytes,
             fallback: false,
         }))
+    }
+
+    fn flush_source_touches_in_background(self: &Arc<Self>, token: String) {
+        let Ok(flush_guard) = self.source_flush.clone().try_lock_owned() else {
+            return;
+        };
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            let _flush_guard = flush_guard;
+            if let Err(error) = runtime.repository.flush_image_proxy_sources().await {
+                tracing::warn!(
+                    error = %error,
+                    token,
+                    "failed to persist image proxy source access"
+                );
+            }
+        });
+    }
+
+    fn touch_cache_entry_in_background(
+        self: &Arc<Self>,
+        token: String,
+        variant: String,
+        observed_fetched_at: DateTime<Utc>,
+        last_accessed_at: DateTime<Utc>,
+    ) {
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Err(error) = runtime
+                .repository
+                .touch_image_proxy_cache_entry(
+                    &token,
+                    &variant,
+                    observed_fetched_at,
+                    last_accessed_at,
+                )
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    token,
+                    variant,
+                    "failed to update image proxy cache access time"
+                );
+            }
+        });
+    }
+
+    fn update_cache_metadata_in_background(
+        self: &Arc<Self>,
+        entry: ImageProxyCacheEntryRecord,
+        lifecycle_guard: OwnedRwLockReadGuard<()>,
+    ) {
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            let _lifecycle_guard = lifecycle_guard;
+            if let Err(error) = runtime
+                .repository
+                .upsert_image_proxy_cache_entry(&entry)
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    token = %entry.token,
+                    variant = %entry.variant,
+                    "failed to update image proxy cache metadata"
+                );
+            }
+        });
+    }
+
+    fn persist_cache_entry_in_background(
+        self: &Arc<Self>,
+        token: String,
+        variant: String,
+        bytes: Vec<u8>,
+        entry: ImageProxyCacheEntryRecord,
+        lifecycle_guard: OwnedRwLockReadGuard<()>,
+    ) {
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            let _lifecycle_guard = lifecycle_guard;
+            let result = async {
+                runtime.write_cache_file(&token, &variant, &bytes).await?;
+                runtime
+                    .repository
+                    .upsert_image_proxy_cache_entry(&entry)
+                    .await?;
+                runtime.enforce_budget().await
+            }
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(
+                    error = %error,
+                    token,
+                    variant,
+                    "failed to persist image proxy cache entry"
+                );
+            }
+        });
     }
 
     async fn write_cache_file(&self, token: &str, variant: &str, bytes: &[u8]) -> AppResult<()> {
@@ -592,6 +685,20 @@ impl ImageProxyCacheControl for ImageProxyRuntime {
         self.configured_cache_bytes.store(value, Ordering::Relaxed);
         self.enforce_budget().await
     }
+}
+
+fn image_outbound_http_client() -> OutboundHttpClient {
+    OutboundHttpClient::new(no_redirect_reqwest_client(), RateLimitRegistry::isolated())
+}
+
+fn image_fetch_policy() -> RequestPolicy {
+    RequestPolicy::safe_read("image_proxy", "image_proxy_fetch")
+        .with_max_retries(1)
+        .with_backoff(Duration::from_millis(250), Duration::from_secs(3))
+        .with_host_rps_limit(
+            IMAGE_PROXY_HOST_RPS_LANE,
+            HostRpsProfile::limited(IMAGE_PROXY_HOST_RPS, IMAGE_PROXY_HOST_RPS_BURST),
+        )
 }
 
 fn variant_allowed(kind: &str, variant: &str) -> bool {
@@ -741,7 +848,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::{
-        ImageProxyRuntime, upstream_variant_url, valid_raster_bytes, valid_token, variant_allowed,
+        IMAGE_PROXY_HOST_RPS, IMAGE_PROXY_HOST_RPS_BURST, IMAGE_PROXY_HOST_RPS_LANE,
+        ImageProxyRuntime, image_fetch_policy, image_outbound_http_client, upstream_variant_url,
+        valid_raster_bytes, valid_token, variant_allowed,
     };
     use async_trait::async_trait;
     use chrono::Utc;
@@ -751,12 +860,16 @@ mod tests {
         TitleImageRepository, TitleImageSourceResult, TitleImageSyncTask,
     };
     use scryer_domain::{DomainEvent, NewDomainEvent};
+    use scryer_outbound_http::{HostKey, HostRpsProfile, HostRpsProfileSource, RateLimitRegistry};
+    use tokio::sync::Notify;
 
     struct TestImageRepository {
         source: ImageProxySourceRecord,
         cache_entries: Mutex<Vec<ImageProxyCacheEntryRecord>>,
         cache_reads: AtomicUsize,
         cache_read_delay: Option<std::time::Duration>,
+        cache_write_started: Option<Arc<Notify>>,
+        cache_write_release: Option<Arc<Notify>>,
         cache_deletes: AtomicUsize,
         cache_clears: AtomicUsize,
         memory_clears: AtomicUsize,
@@ -806,6 +919,12 @@ mod tests {
             &self,
             entry: &ImageProxyCacheEntryRecord,
         ) -> AppResult<()> {
+            if let Some(started) = self.cache_write_started.as_ref() {
+                started.notify_one();
+            }
+            if let Some(release) = self.cache_write_release.as_ref() {
+                release.notified().await;
+            }
             let mut entries = self.cache_entries.lock().expect("cache entries lock");
             if let Some(existing) = entries
                 .iter_mut()
@@ -923,6 +1042,135 @@ mod tests {
     }
 
     #[test]
+    fn image_http_client_has_an_isolated_governor_and_dedicated_lane() {
+        let host = HostKey::from("image-proxy-isolation.example.test");
+        let shared_registry = RateLimitRegistry::new();
+        shared_registry.register_host_profile(
+            host.clone(),
+            HostRpsProfile::limited(1.0, 1),
+            HostRpsProfileSource::ExplicitRegistration,
+        );
+
+        let image_http = image_outbound_http_client();
+        assert_ne!(
+            image_http.registry().profile_for_host(&host).source,
+            HostRpsProfileSource::ExplicitRegistration
+        );
+
+        let policy = image_fetch_policy();
+        let image_limit = policy
+            .host_rps_override
+            .expect("image fetches use a dedicated governor lane");
+        assert_eq!(image_limit.lane.as_ref(), IMAGE_PROXY_HOST_RPS_LANE);
+        assert_eq!(
+            image_limit.profile.requests_per_second,
+            IMAGE_PROXY_HOST_RPS
+        );
+        assert_eq!(image_limit.profile.burst, IMAGE_PROXY_HOST_RPS_BURST);
+    }
+
+    #[tokio::test]
+    async fn clear_waits_for_background_cache_persistence_then_removes_it() {
+        let token = "e".repeat(64);
+        let write_started = Arc::new(Notify::new());
+        let write_release = Arc::new(Notify::new());
+        let image_repository = Arc::new(TestImageRepository {
+            source: ImageProxySourceRecord {
+                token: token.clone(),
+                upstream_url: None,
+                owner_type: Some("episode".to_string()),
+                owner_id: Some("episode-3".to_string()),
+                image_kind: "episode_still".to_string(),
+                fallback_class: "landscape".to_string(),
+                last_seen_at: Utc::now(),
+            },
+            cache_entries: Mutex::new(Vec::new()),
+            cache_reads: AtomicUsize::new(0),
+            cache_read_delay: None,
+            cache_write_started: Some(write_started.clone()),
+            cache_write_release: Some(write_release.clone()),
+            cache_deletes: AtomicUsize::new(0),
+            cache_clears: AtomicUsize::new(0),
+            memory_clears: AtomicUsize::new(0),
+        });
+        let title_images = Arc::new(TestTitleImageRepository {
+            blob: TitleImageBlob {
+                content_type: "image/avif".to_string(),
+                etag: "\"unused\"".to_string(),
+                bytes: Vec::new(),
+            },
+            reads: AtomicUsize::new(0),
+        });
+        let temp = tempfile::tempdir().expect("temporary image cache");
+        let runtime = Arc::new(ImageProxyRuntime::new(
+            image_repository.clone(),
+            title_images,
+            temp.path(),
+        ));
+        let bytes = b"background-cache-write".to_vec();
+        let now = Utc::now();
+        let entry = ImageProxyCacheEntryRecord {
+            token: token.clone(),
+            variant: "original".to_string(),
+            content_type: "image/png".to_string(),
+            byte_size: bytes.len() as i64,
+            upstream_etag: None,
+            upstream_last_modified: None,
+            fetched_at: now,
+            last_accessed_at: now,
+        };
+        let lifecycle_guard = runtime.cache_lifecycle.clone().read_owned().await;
+
+        runtime.persist_cache_entry_in_background(
+            token.clone(),
+            "original".to_string(),
+            bytes.clone(),
+            entry,
+            lifecycle_guard,
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), write_started.notified())
+            .await
+            .expect("background cache write should reach the repository");
+        assert!(
+            image_repository
+                .cache_entries
+                .lock()
+                .expect("cache entries lock")
+                .is_empty(),
+            "the caller returned while cache persistence remained blocked"
+        );
+
+        let clear_runtime = Arc::clone(&runtime);
+        let clear_task = tokio::spawn(async move { clear_runtime.clear_cache().await });
+        tokio::task::yield_now().await;
+        assert!(
+            !clear_task.is_finished(),
+            "clear must wait until the in-flight cache write releases its lifecycle guard"
+        );
+
+        write_release.notify_one();
+        clear_task
+            .await
+            .expect("clear task")
+            .expect("clear image proxy cache");
+        assert!(
+            image_repository
+                .cache_entries
+                .lock()
+                .expect("cache entries lock")
+                .is_empty(),
+            "clear removes metadata written by the completed background task"
+        );
+        assert!(
+            !tokio::fs::try_exists(runtime.cache_path(&token, "original"))
+                .await
+                .expect("inspect cleared cache file"),
+            "clear removes bytes written by the completed background task"
+        );
+    }
+
+    #[test]
     fn policies_are_kind_specific_and_person_extensible() {
         assert!(variant_allowed("poster", "w250"));
         assert!(!variant_allowed("poster", "w1280"));
@@ -940,6 +1188,33 @@ mod tests {
             )
             .as_deref(),
             Some("https://image.tmdb.org/t/p/w92/poster.jpg")
+        );
+        assert_eq!(
+            upstream_variant_url(
+                "https://image.tmdb.org/t/p/original/poster.jpg",
+                "poster",
+                "w250"
+            )
+            .as_deref(),
+            Some("https://image.tmdb.org/t/p/w300/poster.jpg")
+        );
+        assert_eq!(
+            upstream_variant_url(
+                "https://image.tmdb.org/t/p/original/background.jpg",
+                "fanart",
+                "w1280"
+            )
+            .as_deref(),
+            Some("https://image.tmdb.org/t/p/w1280/background.jpg")
+        );
+        assert_eq!(
+            upstream_variant_url(
+                "https://artworks.thetvdb.com/banners/poster.jpg",
+                "poster",
+                "w250"
+            )
+            .as_deref(),
+            Some("https://artworks.thetvdb.com/banners/poster.jpg")
         );
     }
 
@@ -966,6 +1241,8 @@ mod tests {
             cache_entries: Mutex::new(Vec::new()),
             cache_reads: AtomicUsize::new(0),
             cache_read_delay: None,
+            cache_write_started: None,
+            cache_write_release: None,
             cache_deletes: AtomicUsize::new(0),
             cache_clears: AtomicUsize::new(0),
             memory_clears: AtomicUsize::new(0),
@@ -1044,6 +1321,8 @@ mod tests {
             }]),
             cache_reads: AtomicUsize::new(0),
             cache_read_delay: None,
+            cache_write_started: None,
+            cache_write_release: None,
             cache_deletes: AtomicUsize::new(0),
             cache_clears: AtomicUsize::new(0),
             memory_clears: AtomicUsize::new(0),
@@ -1141,6 +1420,8 @@ mod tests {
             ]),
             cache_reads: AtomicUsize::new(0),
             cache_read_delay: None,
+            cache_write_started: None,
+            cache_write_release: None,
             cache_deletes: AtomicUsize::new(0),
             cache_clears: AtomicUsize::new(0),
             memory_clears: AtomicUsize::new(0),
@@ -1254,6 +1535,8 @@ mod tests {
             cache_entries: Mutex::new(Vec::new()),
             cache_reads: AtomicUsize::new(0),
             cache_read_delay: Some(std::time::Duration::from_millis(10)),
+            cache_write_started: None,
+            cache_write_release: None,
             cache_deletes: AtomicUsize::new(0),
             cache_clears: AtomicUsize::new(0),
             memory_clears: AtomicUsize::new(0),

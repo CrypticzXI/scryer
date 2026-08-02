@@ -37,6 +37,8 @@ type SettingsOverviewSectionProps = {
   onGeneralSettingsChange: (settings: GeneralSettings) => void;
   generalLoading: boolean;
   generalSaving: boolean;
+  imageCacheClearing: boolean;
+  onClearImageCache: () => void;
   onSaveGeneralSettings: () => void;
 };
 
@@ -52,6 +54,8 @@ export function SettingsOverviewSection({
   onGeneralSettingsChange,
   generalLoading,
   generalSaving,
+  imageCacheClearing,
+  onClearImageCache,
   onSaveGeneralSettings,
 }: SettingsOverviewSectionProps) {
   const t = useTranslate();
@@ -266,6 +270,27 @@ export function SettingsOverviewSection({
                   {t("settings.imageCacheEnvOverride")}
                 </div>
               ) : null}
+              <div className="space-y-1">
+                <Button
+                  id="settings-general-clear-image-cache"
+                  type="button"
+                  variant="outline"
+                  onClick={onClearImageCache}
+                  disabled={imageCacheClearing}
+                >
+                  {imageCacheClearing ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="mr-2 h-4 w-4" />
+                  )}
+                  {imageCacheClearing
+                    ? t("settings.clearingImageCache")
+                    : t("settings.clearImageCache")}
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  {t("settings.clearImageCacheHelp")}
+                </p>
+              </div>
             </div>
 
             <Button

@@ -2056,8 +2056,10 @@ fn discovery_image_urls(
         .as_deref()
         .map(|title_id| ("title", title_id))
         .unwrap_or(("discovery", item.id.as_str()));
+    let poster_source =
+        preferred_discovery_poster_source(item.poster_path.as_deref(), item.poster_url.as_deref());
     let poster = app.media_image_url(
-        item.poster_url.as_deref(),
+        poster_source.as_deref(),
         Some(owner_type),
         Some(owner_id),
         ImageProxyKind::Poster,
@@ -2071,6 +2073,31 @@ fn discovery_image_urls(
         "w1280",
     );
     (poster, background)
+}
+
+fn preferred_discovery_poster_source(
+    poster_path: Option<&str>,
+    poster_url: Option<&str>,
+) -> Option<String> {
+    let tmdb_source = poster_path.and_then(|value| {
+        let value = value.trim();
+        if value.starts_with("https://image.tmdb.org/")
+            || value.starts_with("http://image.tmdb.org/")
+        {
+            Some(value.to_string())
+        } else if value.starts_with('/') && !value.starts_with("//") {
+            Some(format!("https://image.tmdb.org/t/p/original{value}"))
+        } else {
+            None
+        }
+    });
+
+    tmdb_source.or_else(|| {
+        poster_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
 }
 
 pub fn from_discovery_item(app: &AppUseCase, item: DiscoveryItemRecord) -> DiscoveryItemPayload {
@@ -3450,8 +3477,8 @@ pub fn json_string_to_value(raw: String) -> async_graphql::Json<serde_json::Valu
 mod tests {
     use super::{
         discovery_home_query_from_input, discovery_surface_value, from_import_record,
-        from_title_history_record, from_wanted_item, provider_config_values_from_json_with_fields,
-        provider_config_values_to_json,
+        from_title_history_record, from_wanted_item, preferred_discovery_poster_source,
+        provider_config_values_from_json_with_fields, provider_config_values_to_json,
     };
     use crate::types::{
         BoolConfigValuePayload, DiscoveryHomeFiltersInput, DiscoveryHomeInput,
@@ -3491,6 +3518,30 @@ mod tests {
             secret_value: None,
             clear_secret: None,
         }
+    }
+
+    #[test]
+    fn discovery_posters_prefer_tmdb_paths_over_tvdb_urls() {
+        assert_eq!(
+            preferred_discovery_poster_source(
+                Some("/poster.jpg"),
+                Some("https://artworks.thetvdb.com/banners/poster.jpg"),
+            )
+            .as_deref(),
+            Some("https://image.tmdb.org/t/p/original/poster.jpg")
+        );
+    }
+
+    #[test]
+    fn discovery_posters_retain_the_supplied_url_without_a_tmdb_path() {
+        assert_eq!(
+            preferred_discovery_poster_source(
+                Some("not-a-tmdb-path"),
+                Some("https://artworks.thetvdb.com/banners/poster.jpg"),
+            )
+            .as_deref(),
+            Some("https://artworks.thetvdb.com/banners/poster.jpg")
+        );
     }
 
     fn wanted_item_fixture() -> AcquisitionScopeState {

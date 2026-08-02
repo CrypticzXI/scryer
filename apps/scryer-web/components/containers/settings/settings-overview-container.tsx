@@ -3,6 +3,7 @@ import { SettingsOverviewSection } from "@/components/views/settings/settings-ov
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { generalSettingsQuery } from "@/lib/graphql/queries";
 import {
+  clearTitleImageCacheMutation,
   rehydrateAllMetadataMutation,
   setMyUiSettingsMutation,
   updateGeneralSettingsMutation,
@@ -58,6 +59,7 @@ export function SettingsOverviewContainer({
   );
   const [generalLoading, setGeneralLoading] = React.useState(true);
   const [generalSaving, setGeneralSaving] = React.useState(false);
+  const [imageCacheClearing, setImageCacheClearing] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -203,6 +205,22 @@ export function SettingsOverviewContainer({
     }
   }, [client, generalSettings, setGlobalStatus, t]);
 
+  const handleClearImageCache = React.useCallback(async () => {
+    if (imageCacheClearing) return;
+    setImageCacheClearing(true);
+    try {
+      const { error } = await client.mutation(clearTitleImageCacheMutation, {}).toPromise();
+      if (error) throw error;
+      setGlobalStatus(t("settings.imageCacheClearQueued"));
+    } catch (error) {
+      setGlobalStatus(
+        error instanceof Error ? error.message : t("status.failedToUpdate"),
+      );
+    } finally {
+      setImageCacheClearing(false);
+    }
+  }, [client, imageCacheClearing, setGlobalStatus, t]);
+
   return (
     <>
       <SettingsOverviewSection
@@ -218,7 +236,9 @@ export function SettingsOverviewContainer({
         onGeneralSettingsChange={setGeneralSettings}
         generalLoading={generalLoading}
         generalSaving={generalSaving}
+        imageCacheClearing={imageCacheClearing}
         onSaveGeneralSettings={handleSaveGeneralSettings}
+        onClearImageCache={handleClearImageCache}
       />
       <ConfirmDialog
         open={pendingLanguage !== null}
