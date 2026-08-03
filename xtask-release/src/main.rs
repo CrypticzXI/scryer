@@ -254,6 +254,8 @@ struct ReleaseArgs {
     patch: bool,
     #[arg(long)]
     dry_run: bool,
+    #[arg(long)]
+    allow_graphql_dangerous: bool,
     version: Option<String>,
 }
 
@@ -544,11 +546,19 @@ fn prompt_continue_if_dirty(ctx: &TaskContext) -> Result<()> {
     Ok(())
 }
 
-fn release_args_signature(explicit: Option<&Version>, bump: VersionBump) -> String {
-    explicit.map_or_else(
+fn release_args_signature(
+    explicit: Option<&Version>,
+    bump: VersionBump,
+    allow_graphql_dangerous: bool,
+) -> String {
+    let mut signature = explicit.map_or_else(
         || format!("bump:{}", version_bump_label(bump)),
         |version| format!("version:{version}"),
-    )
+    );
+    if allow_graphql_dangerous {
+        signature.push_str(";allow-graphql-dangerous");
+    }
+    signature
 }
 
 fn version_bump_label(bump: VersionBump) -> &'static str {
@@ -2664,7 +2674,8 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         .transpose()?
         .unwrap_or_else(|| Version::new(0, 0, 0));
     let (bump, explicit) = parse_bump(&args)?;
-    let release_args = release_args_signature(explicit.as_ref(), bump);
+    let release_args =
+        release_args_signature(explicit.as_ref(), bump, args.allow_graphql_dangerous);
     let next_version = explicit.unwrap_or_else(|| next_version(&current_version, bump));
     let tag_name = format!("scryer-v{next_version}");
     let catalog_url = OFFICIAL_PLUGIN_CATALOG_V3_REDIRECT_URL.to_string();
@@ -2832,6 +2843,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                 "[graphql] ",
                 latest_tag.as_deref(),
                 &next_version,
+                args.allow_graphql_dangerous,
             )?;
             run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
             ok("Parallel validation passed");
@@ -3294,6 +3306,7 @@ fn run_scryer_graphql_api_compat_validation(
     prefix: &'static str,
     latest_tag: Option<&str>,
     next_version: &Version,
+    allow_graphql_dangerous: bool,
 ) -> Result<()> {
     prefixed_step(prefix, "Exporting current GraphQL schema");
     let export_dir = ctx.path(GRAPHQL_SCHEMA_EXPORT_DIR);
@@ -3335,6 +3348,9 @@ fn run_scryer_graphql_api_compat_validation(
             check.arg("scripts/check-graphql-schema-compat.mjs");
             check.arg(&previous_schema_path);
             check.arg(&current_schema_path);
+            if allow_graphql_dangerous {
+                check.arg("--allow-dangerous");
+            }
             match run_streaming(&mut check, prefix) {
                 Ok(()) => prefixed_ok(prefix, "GraphQL API compatibility passed"),
                 Err(error) if schema_breaks_allowed_for_bump(latest_tag, next_version) => {
@@ -4013,7 +4029,7 @@ mod tests {
     #[test]
     fn release_args_signature_uses_bump_mode_when_version_not_explicit() {
         assert_eq!(
-            release_args_signature(None, VersionBump::Minor),
+            release_args_signature(None, VersionBump::Minor, false),
             "bump:minor"
         );
     }
@@ -4022,8 +4038,16 @@ mod tests {
     fn release_args_signature_uses_explicit_version_when_present() {
         let version = Version::parse("1.2.3").unwrap();
         assert_eq!(
-            release_args_signature(Some(&version), VersionBump::Patch),
+            release_args_signature(Some(&version), VersionBump::Patch, false),
             "version:1.2.3"
+        );
+    }
+
+    #[test]
+    fn release_args_signature_includes_graphql_dangerous_override() {
+        assert_eq!(
+            release_args_signature(None, VersionBump::Patch, true),
+            "bump:patch;allow-graphql-dangerous"
         );
     }
 

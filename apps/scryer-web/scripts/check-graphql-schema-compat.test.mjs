@@ -242,4 +242,8 @@ test("rejects enum value additions as dangerous", () => {
   assert.equal(hasSchemaCompatibilityFailure(changes), true);
   assert.equal(changes.breaking.length, 0);
   assert.ok(changes.dangerous.some((change) => change.description.includes("PAUSED")));
+  assert.equal(
+    hasSchemaCompatibilityFailure(changes, { allowDangerous: true }),
+    false,
+  );
 });
