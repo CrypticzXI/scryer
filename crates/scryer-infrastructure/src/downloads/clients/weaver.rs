@@ -199,11 +199,13 @@ struct SubmissionResultPayload {
     #[serde(default)]
     status: Option<String>,
     #[serde(default)]
-    job_id: Option<u64>,
+    message: Option<String>,
     #[serde(default)]
     error_code: Option<String>,
+    /// Always populated by Weaver alongside a submission outcome, including the
+    /// PARKED case that returns no `item`.
     #[serde(default)]
-    message: Option<String>,
+    job_id: Option<u64>,
     item: Option<SubmissionQueueItemPayload>,
 }
 
@@ -1260,13 +1262,14 @@ impl DownloadClient for WeaverDownloadClient {
                     if is_weaver_schema_error(&error, "Unknown type \"SubmitNzbInput\"")
                         || is_weaver_schema_error(&error, "Unknown argument \"input\"")
                         || is_weaver_schema_error(&error, "Unknown field \"accepted\"")
-                        // Fields added alongside the idempotent-replay fix. A
-                        // Weaver old enough to expose `accepted` but not these
-                        // must still fall back instead of hard-failing the grab.
+                        // Selected alongside the idempotent-replay fix. `jobId`
+                        // and `errorCode` postdate `accepted`, so a pre-2026-07-10
+                        // Weaver lands here and falls back to the legacy mutation
+                        // rather than hard-failing the grab.
                         || is_weaver_schema_error(&error, "Unknown field \"status\"")
+                        || is_weaver_schema_error(&error, "Unknown field \"message\"")
                         || is_weaver_schema_error(&error, "Unknown field \"jobId\"")
-                        || is_weaver_schema_error(&error, "Unknown field \"errorCode\"")
-                        || is_weaver_schema_error(&error, "Unknown field \"message\"") =>
+                        || is_weaver_schema_error(&error, "Unknown field \"errorCode\"") =>
                 {
                     let compressed_bytes = tokio::fs::read(&staged.staged_nzb.compressed_path)
                         .await
@@ -1711,9 +1714,9 @@ mod tests {
 
     #[test]
     fn parked_submission_resolves_its_job_id_without_a_queue_item() {
-        // A parked semantic-duplicate reports accepted with NO item, which used
-        // to trip the "accepted without a queue item" error. jobId is always
-        // populated, so the submission is still trackable.
+        // A parked semantic duplicate reports accepted with NO item, which used
+        // to trip the "accepted without a queue item" error and lose the grab.
+        // jobId is always populated, so the submission stays trackable.
         let payload: SubmissionPayload = WeaverDownloadClient::parse_graphql_response(
             reqwest::StatusCode::OK,
             r#"{"data":{"submitNzb":{"accepted":true,"status":"PARKED","jobId":77,"errorCode":null,"message":"semantic duplicate candidate parked","item":null}}}"#,
@@ -1724,7 +1727,9 @@ mod tests {
         assert!(submission.item.is_none());
         assert!(submission.status_is(super::WEAVER_STATUS_PARKED));
         assert_eq!(submission.resolved_job_id(), Some(77));
-        assert!(submission.rejection_detail().contains("PARKED"));
+        let detail = submission.rejection_detail();
+        assert!(detail.contains("PARKED"));
+        assert!(detail.contains("semantic duplicate candidate parked"));
     }
 
     #[test]

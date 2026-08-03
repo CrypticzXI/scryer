@@ -540,7 +540,7 @@ pub(crate) fn context_free_identity_anchor_keys(raw_title: &str) -> Vec<String> 
 /// The one key-comparison rule shared by the anchor gate and the contextual
 /// confirm loop: a normalized string names the title when it equals a lookup
 /// key outright, or equals a key with the title's own year elided.
-fn evidence_key_for_normalized(
+pub(crate) fn evidence_key_for_normalized(
     evidence: &CanonicalTitleEvidence,
     normalized: &str,
 ) -> Option<String> {

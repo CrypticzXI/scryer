@@ -262,15 +262,23 @@ impl TitleRepository for TestTitleRepo {
 struct TestShowRepo {
     collections: Arc<Mutex<Vec<Collection>>>,
     episodes: Arc<Mutex<Vec<Episode>>>,
+    series_movie_links: Arc<Mutex<Vec<scryer_domain::SeriesMovieLink>>>,
 }
 
 #[async_trait]
 impl ShowRepository for TestShowRepo {
     async fn list_series_movie_links_for_title(
         &self,
-        _: &str,
+        title_id: &str,
     ) -> AppResult<Vec<scryer_domain::SeriesMovieLink>> {
-        Ok(vec![])
+        Ok(self
+            .series_movie_links
+            .lock()
+            .await
+            .iter()
+            .filter(|link| link.series_title_id == title_id)
+            .cloned()
+            .collect())
     }
 
     async fn list_series_movie_external_id_lookup_matches(
@@ -299,6 +307,9 @@ impl ShowRepository for TestShowRepo {
         &self,
         link: scryer_domain::SeriesMovieLink,
     ) -> AppResult<scryer_domain::SeriesMovieLink> {
+        let mut links = self.series_movie_links.lock().await;
+        links.retain(|existing| existing.id != link.id);
+        links.push(link.clone());
         Ok(link)
     }
 
@@ -1305,6 +1316,7 @@ fn build_app_with_download_client_configs_submissions_and_settings(
         Arc::new(TestShowRepo {
             collections: Arc::new(Mutex::new(collections)),
             episodes: Arc::new(Mutex::new(episodes)),
+            series_movie_links: Arc::new(Mutex::new(Vec::new())),
         }),
         Arc::new(NullUserRepository),
         Arc::new(TestIndexerConfigRepo),

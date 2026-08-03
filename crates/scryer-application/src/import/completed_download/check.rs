@@ -404,54 +404,95 @@ async fn completed_download_proves_assigned_title(
             matcher.shared_lookup_keys(title_id, &evidence.lookup_keys),
         );
 
-    let proves_assigned_title = |raw_title: &str| -> bool {
-        let parsed = crate::parse_release_metadata_for_target(raw_title, &evidence.parse_context);
-        let Some(evidence_match) =
-            crate::acquisition_release_search::match_parsed_release_to_title_evidence(
-                &parsed, &evidence,
-            )
-        else {
-            return false;
-        };
-        let external_id_matches = parsed
-            .imdb_id
-            .as_deref()
-            .zip(crate::acquisition_search_queries::imdb_id_from_title(&title).as_deref())
-            .is_some_and(|(observed, expected)| observed.eq_ignore_ascii_case(expected))
-            || parsed
-                .tmdb_id
-                .as_deref()
-                .zip(
-                    crate::acquisition_search_queries::tmdb_id_from_external_ids(
-                        &title.external_ids,
-                    )
-                    .as_deref(),
-                )
-                .is_some_and(|(observed, expected)| observed == expected)
-            || parsed
-                .tvdb_id
-                .as_deref()
-                .zip(
-                    crate::acquisition_search_queries::tvdb_id_from_external_ids(
-                        &title.external_ids,
-                    )
-                    .as_deref(),
-                )
-                .is_some_and(|(observed, expected)| observed == expected);
+    // A series movie is searched and grabbed under the *movie's* identity —
+    // `series_movie_search_title` swaps in the movie's name, facet, year and
+    // ids — so the gate must accept proof against that same identity.
+    // Validating a linked movie's release against the parent series alone
+    // would let the series' year veto every legitimately grabbed series movie.
+    let mut proof_subjects = vec![(title.clone(), evidence)];
+    match app
+        .services
+        .catalog
+        .shows
+        .list_series_movie_links_for_title(title_id)
+        .await
+    {
+        Ok(links) => {
+            for link in links {
+                let link_title =
+                    crate::acquisition_release_search::series_movie_search_title(&title, &link);
+                let mut link_evidence =
+                    crate::acquisition_release_search::canonical_title_evidence(&link_title);
+                link_evidence.ambiguity =
+                    crate::acquisition_release_search::TitleIdentityAmbiguity::from_shared_keys(
+                        matcher.shared_lookup_keys(title_id, &link_evidence.lookup_keys),
+                    );
+                proof_subjects.push((link_title, link_evidence));
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                title_id,
+                error = %error,
+                "completed download identity gate could not load series movie links"
+            );
+            return AssignedTitleProof::Unknown;
+        }
+    }
 
-        if evidence_match.requires_external_id && !external_id_matches {
-            return false;
-        }
-        if evidence.ambiguity.requires_disambiguator()
-            && !evidence_match.year_corroborated
-            && !external_id_matches
-            && !evidence
-                .ambiguity
-                .key_is_unique_to_title(&evidence_match.matched_key)
-        {
-            return false;
-        }
-        true
+    let proves_assigned_title = |raw_title: &str| -> bool {
+        proof_subjects.iter().any(|(subject_title, evidence)| {
+            let parsed =
+                crate::parse_release_metadata_for_target(raw_title, &evidence.parse_context);
+            let Some(evidence_match) =
+                crate::acquisition_release_search::match_parsed_release_to_title_evidence(
+                    &parsed, evidence,
+                )
+            else {
+                return false;
+            };
+            let external_id_matches = parsed
+                .imdb_id
+                .as_deref()
+                .zip(
+                    crate::acquisition_search_queries::imdb_id_from_title(subject_title).as_deref(),
+                )
+                .is_some_and(|(observed, expected)| observed.eq_ignore_ascii_case(expected))
+                || parsed
+                    .tmdb_id
+                    .as_deref()
+                    .zip(
+                        crate::acquisition_search_queries::tmdb_id_from_external_ids(
+                            &subject_title.external_ids,
+                        )
+                        .as_deref(),
+                    )
+                    .is_some_and(|(observed, expected)| observed == expected)
+                || parsed
+                    .tvdb_id
+                    .as_deref()
+                    .zip(
+                        crate::acquisition_search_queries::tvdb_id_from_external_ids(
+                            &subject_title.external_ids,
+                        )
+                        .as_deref(),
+                    )
+                    .is_some_and(|(observed, expected)| observed == expected);
+
+            if evidence_match.requires_external_id && !external_id_matches {
+                return false;
+            }
+            if evidence.ambiguity.requires_disambiguator()
+                && !evidence_match.year_corroborated
+                && !external_id_matches
+                && !evidence
+                    .ambiguity
+                    .key_is_unique_to_title(&evidence_match.matched_key)
+            {
+                return false;
+            }
+            true
+        })
     };
 
     let folder_name = std::path::Path::new(&completed.dest_dir)
@@ -467,24 +508,46 @@ async fn completed_download_proves_assigned_title(
             completion_sources.push(raw_title);
         }
     }
+
+    // What actually finished on disk outranks every other signal: a completion
+    // name that positively asserts a *different* library title's identity —
+    // and not the assigned one — is a contradiction, not obfuscation. Neither
+    // the durable submission linkage nor the historical source_title may
+    // override it.
+    let completion_contradicts_assignment = completion_sources.iter().any(|raw_title| {
+        let anchor_keys =
+            crate::acquisition_release_search::context_free_identity_anchor_keys(raw_title);
+        matcher.keys_name_another_title(title_id, &anchor_keys)
+            && !proof_subjects.iter().any(|(_, evidence)| {
+                anchor_keys.iter().any(|anchor_key| {
+                    crate::acquisition_release_search::evidence_key_for_normalized(
+                        evidence, anchor_key,
+                    )
+                    .is_some()
+                })
+            })
+    });
+    if completion_contradicts_assignment {
+        return AssignedTitleProof::Disproven;
+    }
+
+    // A Submission or ClientParameter match is Scryer's own durable grab-time
+    // identity: the submission row / embedded client parameters were written
+    // when the grab passed the full disambiguator discipline, with strictly
+    // more evidence (indexer ids, year, uniqueness) than a filename can carry.
+    // Re-deriving identity from the release name can only lose information, so
+    // with no contradiction on disk the linkage stands as proof.
+    if matches!(
+        td.match_type,
+        TitleMatchType::Submission | TitleMatchType::ClientParameter
+    ) {
+        return AssignedTitleProof::Proven;
+    }
+
     for raw_title in &completion_sources {
         if proves_assigned_title(raw_title) {
             return AssignedTitleProof::Proven;
         }
-    }
-
-    // What actually finished on disk outranks what was grabbed: a completion
-    // name that positively asserts a *different* library title's identity is a
-    // contradiction, not obfuscation, and the historical source_title must not
-    // override it.
-    let completion_contradicts_assignment = completion_sources.iter().any(|raw_title| {
-        matcher.keys_name_another_title(
-            title_id,
-            &crate::acquisition_release_search::context_free_identity_anchor_keys(raw_title),
-        )
-    });
-    if completion_contradicts_assignment {
-        return AssignedTitleProof::Disproven;
     }
 
     // The grabbed release name is fallback proof for clients that obfuscate the
