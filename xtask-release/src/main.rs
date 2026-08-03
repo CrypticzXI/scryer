@@ -2280,6 +2280,17 @@ fn require_builtin_descriptor_sdk_version(plugin_id: &str, sdk_version: &str) ->
     Ok(())
 }
 
+fn release_builtin_descriptor_loader(ctx: &TaskContext) -> Result<WasmPluginDescriptorLoader> {
+    let cache_dir = ctx.path("tmp/xtask-release-wasmtime");
+    scryer_plugins::initialize_wasm_runtime_at(&cache_dir).map_err(|error| {
+        anyhow!(
+            "failed to initialize release WASM plugin cache at {}: {error}",
+            cache_dir.display()
+        )
+    })?;
+    Ok(WasmPluginDescriptorLoader)
+}
+
 fn existing_builtin_wasm_digest(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<String> {
     let paths = builtin_asset_paths(ctx, spec);
     let compressed_wasm = fs::read(&paths.wasm)
@@ -2290,7 +2301,7 @@ fn existing_builtin_wasm_digest(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> 
             paths.wasm.display()
         )
     })?;
-    let descriptor = WasmPluginDescriptorLoader
+    let descriptor = release_builtin_descriptor_loader(ctx)?
         .load_descriptor_from_wasm_bytes(&wasm_bytes)
         .map_err(|error| {
             anyhow!(
@@ -2372,7 +2383,7 @@ fn sync_builtin_plugin(
     })?;
     let wasm_digest = required_blake3_digest("builtin wasm", &artifact.wasm_digests)?;
     require_blake3_bytes("builtin wasm", wasm_digest, &wasm_bytes)?;
-    let mut descriptor = WasmPluginDescriptorLoader
+    let mut descriptor = release_builtin_descriptor_loader(ctx)?
         .load_descriptor_from_wasm_bytes(&wasm_bytes)
         .map_err(|error| anyhow!("failed to describe builtin {}: {error}", spec.plugin_id))?;
     if descriptor.id != spec.plugin_id {
@@ -3659,6 +3670,15 @@ mod tests {
                 .contains(&format!("expected {}", scryer_plugin_sdk::SDK_VERSION)),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn release_builtin_descriptor_loader_initializes_wasm_runtime() {
+        let ctx = TaskContext::new();
+        let digest = existing_builtin_wasm_digest(&ctx, &BUILTIN_PLUGINS[0])
+            .expect("release builtin descriptor should load");
+        assert!(digest.starts_with("blake3:"));
+        assert_eq!(digest.len(), 71);
     }
 
     #[test]
