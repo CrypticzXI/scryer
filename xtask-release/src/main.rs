@@ -3206,9 +3206,15 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
         run_streaming(&mut install, prefix)?;
     }
 
+    prefixed_step(prefix, "Updating Cargo.lock (cargo update)");
+    let mut update = ctx.release_command_in("cargo", &ctx.repo_root);
+    update.arg("update");
+    run_streaming(&mut update, prefix)?;
+    prefixed_ok(prefix, "Cargo.lock updated");
+
     prefixed_step(
         prefix,
-        "Starting Rust tests immediately while other Rust release validations continue",
+        "Starting Rust tests while other Rust release validations continue",
     );
     let (nextest_tx, nextest_rx) = mpsc::channel();
     let nextest_ctx = ctx.clone();
@@ -3219,12 +3225,6 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
 
     let mut failures = Vec::new();
     let release_checks_result: Result<()> = (|| {
-        prefixed_step(prefix, "Updating Cargo.lock (cargo update)");
-        let mut update = ctx.release_command_in("cargo", &ctx.repo_root);
-        update.arg("update");
-        run_streaming(&mut update, prefix)?;
-        prefixed_ok(prefix, "Cargo.lock updated");
-
         prefixed_step(prefix, "Running cargo audit");
         if !command_available("cargo-audit")? {
             warn("cargo-audit not installed — installing");
