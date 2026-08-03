@@ -456,51 +456,149 @@ fn series_movie_newznab_categories(owner_facet: &MediaFacet) -> Vec<String> {
     categories
 }
 
-/// Strip leading `[group]` tags (and separator noise after them) from a raw
-/// release name so head-anchoring sees the actual title span first.
-pub(crate) fn strip_leading_bracket_groups(raw_title: &str) -> &str {
-    let mut rest = raw_title.trim_start();
-    loop {
-        if let Some(stripped) = rest.strip_prefix('[')
-            && let Some(end) = stripped.find(']')
-        {
-            rest = stripped[end + 1..]
-                .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '-' | '_' | '.'));
-            continue;
-        }
-        return rest;
-    }
-}
-
-/// Maximum token index at which a matched title key may start in a release
-/// name and still count as head-anchored. Index 1 tolerates one unbracketed
-/// release-group prefix token (e.g. `ToonsHub.Spy.x.Family...`).
-pub(crate) const TITLE_MATCH_HEAD_ANCHOR_MAX_START: usize = 1;
-
-/// True when `key`'s tokens appear as a contiguous window in the raw release
-/// name starting at token index `max_start_index` or earlier, after leading
-/// bracket groups are stripped. A release *for* a title carries that title at
-/// the head of its name; a name that merely mentions the title mid-string
-/// (episode-title words) does not.
-pub(crate) fn title_key_head_anchored(raw_title: &str, key: &str, max_start_index: usize) -> bool {
-    let release =
-        crate::title_matching::canonical_lookup_key(strip_leading_bracket_groups(raw_title));
-    let release_tokens = release.split_whitespace().collect::<Vec<_>>();
-    let key_tokens = key.split_whitespace().collect::<Vec<_>>();
-    if key_tokens.is_empty() || key_tokens.len() > release_tokens.len() {
-        return false;
-    }
-    release_tokens
-        .windows(key_tokens.len())
-        .take(max_start_index + 1)
-        .any(|window| window == key_tokens.as_slice())
-}
-
 pub(crate) fn parsed_release_matches_title_evidence(
     parsed: &ParsedReleaseMetadata,
     evidence: &CanonicalTitleEvidence,
 ) -> bool {
     match_parsed_release_to_title_evidence(parsed, evidence).is_some()
+}
+
+fn push_anchor_key(keys: &mut Vec<String>, key: &str) {
+    let key = key.trim();
+    if !key.is_empty() && !keys.iter().any(|existing| existing == key) {
+        keys.push(key.to_string());
+    }
+}
+
+/// Pass 1 of the identity proof: canonical keys the *context-free* parse
+/// extracts from a release name, before any target bias is applied.
+///
+/// A target-biased parse can project the target title out of a longer raw
+/// span (`Electric Bloom` projecting the `BLOOM` alias), so bias may only
+/// refine an identity that unbiased extraction already supports. Besides the
+/// neutral title and its variants, two principled near-miss forms anchor too:
+/// a leading known release-group run stripped (`Erai-raws.Title...`), and the
+/// halves of an `AKA` dual-titled name.
+pub(crate) fn context_free_identity_anchor_keys(raw_title: &str) -> Vec<String> {
+    let neutral = crate::parse_release_metadata(raw_title);
+    let mut extracted = neutral.normalized_title_variants.clone();
+    extracted.push(neutral.normalized_title.clone());
+
+    // Year tokens in the raw name re-attach to the extraction: a boundary
+    // heuristic reads `Blade.Runner.2049.2160p` as title `Blade Runner`, but
+    // the subject's key is `blade runner 2049`.
+    let mut year_tokens = Vec::<String>::new();
+    for digits in raw_title.split(|ch: char| !ch.is_ascii_digit()) {
+        if digits.len() == 4
+            && digits
+                .parse::<i32>()
+                .is_ok_and(|year| (1900..=2099).contains(&year))
+            && !year_tokens.iter().any(|existing| existing == digits)
+        {
+            year_tokens.push(digits.to_string());
+        }
+    }
+
+    let mut keys = Vec::<String>::new();
+    for title in extracted {
+        let key = crate::title_matching::canonical_lookup_key(&title);
+        if key.is_empty() {
+            continue;
+        }
+        push_anchor_key(&mut keys, &key);
+        for year in &year_tokens {
+            if !key.ends_with(year.as_str()) {
+                push_anchor_key(&mut keys, &format!("{key} {year}"));
+            }
+        }
+
+        // `Title AKA Other Title` names both subjects; each half anchors.
+        if key.contains(" aka ") {
+            for half in key.split(" aka ") {
+                push_anchor_key(&mut keys, half);
+            }
+        }
+
+        // An unbracketed leading group tag reads as title text to a neutral
+        // parse. Only a run the release-group database recognizes may be
+        // elided — an unknown prefix stays, so containment junk cannot anchor.
+        let tokens = key.split_whitespace().collect::<Vec<_>>();
+        for dropped in 1..=tokens.len().saturating_sub(1).min(3) {
+            let prefix = &tokens[..dropped];
+            if [prefix.join("-"), prefix.join(" ")]
+                .iter()
+                .any(|candidate| crate::release_group_db::is_known_release_group(candidate))
+            {
+                push_anchor_key(&mut keys, &tokens[dropped..].join(" "));
+            }
+        }
+    }
+
+    keys
+}
+
+/// The one key-comparison rule shared by the anchor gate and the contextual
+/// confirm loop: a normalized string names the title when it equals a lookup
+/// key outright, or equals a key with the title's own year elided.
+fn evidence_key_for_normalized(
+    evidence: &CanonicalTitleEvidence,
+    normalized: &str,
+) -> Option<String> {
+    evidence
+        .lookup_keys
+        .iter()
+        .find(|key| {
+            key.as_str() == normalized
+                || evidence
+                    .year
+                    .is_some_and(|year| key.strip_suffix(&format!(" {year}")) == Some(normalized))
+        })
+        .cloned()
+}
+
+/// Stacked-alias anchor: fansub names often glue two alias forms of the same
+/// subject together (`Sora.no.Vale.Silver.Horizon.Beyond.the.Vale.-.01`), so a
+/// neutral parse extracts one long title no single key equals. The extraction
+/// still anchors when it decomposes *completely* into two or three distinct
+/// lookup keys of this title — full coverage, so containment junk (extra words
+/// that are no key of the subject) can never satisfy it.
+fn extraction_decomposes_into_evidence_keys(
+    evidence: &CanonicalTitleEvidence,
+    extracted_key: &str,
+) -> bool {
+    const MAX_STACKED_SEGMENTS: usize = 3;
+
+    fn covers(
+        evidence: &CanonicalTitleEvidence,
+        tokens: &[&str],
+        start: usize,
+        used: &mut Vec<String>,
+    ) -> bool {
+        if start == tokens.len() {
+            return used.len() >= 2;
+        }
+        if used.len() >= MAX_STACKED_SEGMENTS {
+            return false;
+        }
+        for end in start + 1..=tokens.len() {
+            let segment = tokens[start..end].join(" ");
+            let Some(matched_key) = evidence_key_for_normalized(evidence, &segment) else {
+                continue;
+            };
+            if used.contains(&matched_key) {
+                continue;
+            }
+            used.push(matched_key);
+            if covers(evidence, tokens, end, used) {
+                return true;
+            }
+            used.pop();
+        }
+        false
+    }
+
+    let tokens = extracted_key.split_whitespace().collect::<Vec<_>>();
+    !tokens.is_empty() && covers(evidence, &tokens, 0, &mut Vec::new())
 }
 
 /// Matching counterpart of [`parsed_release_matches_title_evidence`] that keeps
@@ -527,6 +625,22 @@ fn contextual_release_matches_title_evidence(
     evidence: &CanonicalTitleEvidence,
     year_corroborated: bool,
 ) -> Option<TitleEvidenceMatch> {
+    // Pass 1 — the unbiased extraction must name this title before the
+    // target-biased parse is allowed to prove anything. Bias can refine an
+    // anchored identity (projection, numbering, year); it can never
+    // manufacture one.
+    let anchored = context_free_identity_anchor_keys(&parsed.raw_title)
+        .iter()
+        .any(|anchor_key| {
+            evidence_key_for_normalized(evidence, anchor_key).is_some()
+                || extraction_decomposes_into_evidence_keys(evidence, anchor_key)
+        });
+    if !anchored {
+        return None;
+    }
+
+    // Pass 2 — the target-biased parse confirms the anchor and supplies the
+    // projection the acquisition pipeline actually consumes.
     let contextual = crate::analyze_release_for_target(&parsed.raw_title, &evidence.parse_context);
     if contextual.is_unparseable() {
         return None;
@@ -538,91 +652,10 @@ fn contextual_release_matches_title_evidence(
             && evidence.year.is_some()
             && best_candidate.projected.year == evidence.year);
 
-    let title_zone_is_fully_explained = |zone: &crate::release_parser::TokenRange| {
-        let mut cursor = zone.start_token;
-        let first_title_match = best_candidate
-            .context_title_matches
-            .iter()
-            .filter(|context_match| {
-                !matches!(
-                    context_match.kind,
-                    crate::release_parser::ContextTitleMatchKind::EpisodeTitle
-                )
-            })
-            .filter(|context_match| {
-                context_match.token_range.start_token >= zone.start_token
-                    && context_match.token_range.end_token <= zone.end_token
-            })
-            .min_by_key(|context_match| context_match.token_range.start_token);
-
-        if first_title_match.is_some_and(|context_match| {
-            context_match.token_range.start_token == zone.start_token + 1
-        }) && let Some(prefix_span) = best_candidate
-            .unconsumed_tokens
-            .iter()
-            .find(|span| span.start == 0)
-            && let Some(prefix) = parsed.raw_title.get(prefix_span.start..prefix_span.end)
-        {
-            let prefix = prefix.trim_matches(|character: char| {
-                character.is_whitespace()
-                    || matches!(character, '[' | ']' | '(' | ')' | '.' | '-' | '_')
-            });
-            let bracketed_prefix = contextual
-                .tokens
-                .get(zone.start_token)
-                .is_some_and(|token| token.bracket_depth > 0);
-            if bracketed_prefix
-                || (!prefix.is_empty() && crate::release_group_db::is_known_release_group(prefix))
-            {
-                cursor += 1;
-            }
-        }
-
-        for context_match in best_candidate
-            .context_title_matches
-            .iter()
-            .filter(|context_match| {
-                context_match.token_range.start_token >= zone.start_token
-                    && context_match.token_range.end_token <= zone.end_token
-            })
-        {
-            if context_match.token_range.end_token <= cursor {
-                continue;
-            }
-            if context_match.token_range.start_token > cursor {
-                let connector = contextual.tokens[cursor..context_match.token_range.start_token]
-                    .iter()
-                    .map(|token| token.normalized.as_str())
-                    .collect::<String>();
-                if !connector.eq_ignore_ascii_case("AKA") {
-                    return false;
-                }
-                cursor = context_match.token_range.start_token;
-            }
-            cursor = cursor.max(context_match.token_range.end_token);
-        }
-        if cursor + 1 == zone.end_token
-            && contextual.tokens.get(cursor).is_some_and(|token| {
-                token
-                    .normalized
-                    .chars()
-                    .all(|character| character.is_ascii_digit())
-                    && matches!(
-                        token.separator_before,
-                        crate::release_parser::SeparatorKind::Hyphen
-                            | crate::release_parser::SeparatorKind::Other
-                    )
-            })
-        {
-            cursor += 1;
-        }
-        cursor == zone.end_token
-    };
-
-    // Context may explain a release, but it may not prove itself by projecting
-    // the target title. The union of its pre-projection canonical/alias spans
-    // must cover the complete title zone. `Electric Bloom` therefore cannot
-    // prove `BLOOM`, while stacked aliases for the same target remain valid.
+    // The biased parse's pre-projection canonical/alias spans confirm the
+    // anchor; each must sit inside a recognized title zone. Full zone
+    // accounting is the anchor's job now — `Electric Bloom` already failed
+    // pass 1 for `BLOOM`, because its unbiased extraction names no such key.
     best_candidate
         .context_title_matches
         .iter()
@@ -636,21 +669,11 @@ fn contextual_release_matches_title_evidence(
             best_candidate.zones.title_zones.iter().any(|zone| {
                 context_match.token_range.start_token >= zone.start_token
                     && context_match.token_range.end_token <= zone.end_token
-                    && title_zone_is_fully_explained(zone)
             })
         })
         .filter_map(|context_match| {
             let normalized = crate::title_matching::canonical_lookup_key(&context_match.normalized);
-            let matched_key = evidence
-                .lookup_keys
-                .iter()
-                .find(|key| {
-                    **key == normalized
-                        || evidence.year.is_some_and(|year| {
-                            key.strip_suffix(&format!(" {year}")) == Some(normalized.as_str())
-                        })
-                })?
-                .clone();
+            let matched_key = evidence_key_for_normalized(evidence, &normalized)?;
             let canonical_shape =
                 crate::import_title_resolution::strip_trailing_year_key(&evidence.canonical_key);
             let is_single_word_alias = context_match.kind

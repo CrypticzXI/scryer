@@ -1114,7 +1114,18 @@ impl AppUseCase {
             )
             .await?
             .into_iter()
-            .filter(|item| item.is_scryer_origin)
+            // Deliberately NOT filtered by `is_scryer_origin`. That flag means
+            // "Scryer submitted this", not "this belongs to another app", so it
+            // also excludes downloads the user added to the client by hand —
+            // exactly the items this surface exists to resolve. Filtering them
+            // out here makes the Assign Download Title flow unreachable.
+            //
+            // Keeping another app's downloads out of Scryer's import is the job
+            // of completed_download_allows_automatic_import (see
+            // import/completed_download/check.rs): a foreign item whose category
+            // does not match the title's effective category is refused automatic
+            // import and parked in ImportBlocked. This query only controls
+            // whether such already-blocked rows are visible for manual triage.
             .filter(|item| matches_download_import_filter(item, filter))
             .collect::<Vec<_>>();
 
@@ -1176,7 +1187,9 @@ impl AppUseCase {
             )
             .await?
             .into_iter()
-            .filter(|item| item.is_scryer_origin)
+            // Must mirror list_download_import_page exactly (see the note
+            // there); if these two disagree the import badge count drifts from
+            // the rows the tab actually shows.
             .filter(|item| matches_download_import_filter(item, filter))
             .count();
 

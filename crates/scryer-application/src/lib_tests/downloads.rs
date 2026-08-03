@@ -355,20 +355,35 @@ async fn list_download_import_page_returns_only_import_rows_for_selected_filter(
         .await
         .expect("import page should load");
 
-    assert_eq!(page.total_count, 1);
+    // Foreign (non-Scryer-origin) blocked downloads MUST be listed here. This
+    // is the surface used to assign a title to a download Scryer did not submit
+    // — filtering them out makes that flow unreachable. Keeping another app's
+    // downloads from being imported is completed_download_allows_automatic_import's
+    // job, not this query's; it parks them in ImportBlocked, which is exactly
+    // what this page is for.
     assert!(!page.has_more);
-    assert_eq!(page.items.len(), 1);
-    assert_eq!(page.items[0].download_client_item_id, "blocked-1");
-    assert_eq!(
-        crate::integration::derive_download_queue_display_state(&page.items[0]),
-        DownloadDisplayState::ImportBlocked
-    );
+    assert_eq!(page.total_count, 2);
+    assert_eq!(page.items.len(), 2);
+    let blocked_ids = page
+        .items
+        .iter()
+        .map(|item| item.download_client_item_id.as_str())
+        .collect::<Vec<_>>();
+    assert!(blocked_ids.contains(&"blocked-1"));
+    assert!(blocked_ids.contains(&"foreign-blocked-1"));
+    for item in &page.items {
+        assert_eq!(
+            crate::integration::derive_download_queue_display_state(item),
+            DownloadDisplayState::ImportBlocked
+        );
+    }
 
     let count = app
         .count_download_import_items(&user, DownloadImportFilter::Blocked)
         .await
         .expect("import count should load");
-    assert_eq!(count, 1);
+    // Must agree with page.total_count or the import badge drifts from the list.
+    assert_eq!(count, 2);
 }
 
 #[tokio::test]

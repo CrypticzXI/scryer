@@ -2,11 +2,10 @@ use super::*;
 use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
 use crate::acquisition_release_search::{
     AutoCandidateEvaluationContext, CandidateTitleMatch, ReleaseAutoDecisionCode,
-    TITLE_MATCH_HEAD_ANCHOR_MAX_START, annotate_auto_decision,
-    candidate_presents_identity_disambiguator, canonical_title_evidence, evaluate_auto_candidate,
-    external_id_agreement, match_parsed_release_to_title_evidence,
-    parsed_release_matches_title_evidence, serialize_decision_explanation,
-    series_movie_search_title, title_key_head_anchored,
+    annotate_auto_decision, candidate_presents_identity_disambiguator, canonical_title_evidence,
+    context_free_identity_anchor_keys, evaluate_auto_candidate, external_id_agreement,
+    match_parsed_release_to_title_evidence, parsed_release_matches_title_evidence,
+    serialize_decision_explanation, series_movie_search_title,
 };
 use crate::acquisition_search_queries::{
     imdb_id_from_title, tmdb_id_from_external_ids, tvdb_id_from_external_ids,
@@ -20,7 +19,6 @@ use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
 const RSS_SYNC_MAX_GUIDS: usize = 2000;
-const RSS_TITLE_CONTEXT_CANDIDATE_LIMIT: usize = 8;
 
 fn rss_categories_for_routing_entry(scope_id: &str, entry: &IndexerRoutingEntry) -> Vec<String> {
     if entry.categories.is_empty() {
@@ -59,7 +57,6 @@ struct TitleContextBank {
     tvdb_index: HashMap<String, Vec<usize>>,
     tmdb_index: HashMap<String, Vec<usize>>,
     imdb_index: HashMap<String, Vec<usize>>,
-    max_key_tokens: usize,
 }
 
 impl std::ops::Deref for TitleContextBank {
@@ -132,7 +129,6 @@ fn build_title_context_bank(titles: &[Title]) -> TitleContextBank {
     let mut tvdb_index = HashMap::<String, Vec<usize>>::new();
     let mut tmdb_index = HashMap::<String, Vec<usize>>::new();
     let mut imdb_index = HashMap::<String, Vec<usize>>::new();
-    let mut max_key_tokens = 0;
     for (index, candidate) in candidates.iter().enumerate() {
         for key in &candidate.evidence.lookup_keys {
             for indexed_key in [
@@ -142,7 +138,6 @@ fn build_title_context_bank(titles: &[Title]) -> TitleContextBank {
                 if indexed_key.is_empty() {
                     continue;
                 }
-                max_key_tokens = max_key_tokens.max(indexed_key.split_whitespace().count());
                 let indexes = key_index.entry(indexed_key.to_string()).or_default();
                 if !indexes.contains(&index) {
                     indexes.push(index);
@@ -169,7 +164,6 @@ fn build_title_context_bank(titles: &[Title]) -> TitleContextBank {
         tvdb_index,
         tmdb_index,
         imdb_index,
-        max_key_tokens,
     }
 }
 
@@ -207,98 +201,11 @@ fn extract_titles_from_release(parsed: &ParsedReleaseMetadata) -> Vec<String> {
         })
 }
 
-fn release_tokens_for_matching(release_title: &str) -> Vec<String> {
-    normalize_for_matching(release_title)
-        .split_whitespace()
-        .map(str::to_string)
-        .collect()
-}
-
-fn release_contains_year(release_tokens: &[String], year: i32) -> bool {
-    let year = year.to_string();
-    release_tokens.iter().any(|token| token == &year)
-}
-
-fn token_window_contains(release_tokens: &[String], title_tokens: &[&str]) -> bool {
-    !title_tokens.is_empty()
-        && release_tokens.windows(title_tokens.len()).any(|window| {
-            window
-                .iter()
-                .map(String::as_str)
-                .eq(title_tokens.iter().copied())
-        })
-}
-
-fn title_key_match_score(
-    release_title: &str,
-    release_tokens: &[String],
-    title_key: &str,
-    title_year: Option<i32>,
-) -> Option<i32> {
-    let title_tokens = title_key.split_whitespace().collect::<Vec<_>>();
-    if !token_window_contains(release_tokens, &title_tokens) {
-        return None;
-    }
-
-    if title_tokens.len() == 1 {
-        let token_len = title_tokens[0].chars().count();
-        let year_matches =
-            title_year.is_some_and(|year| release_contains_year(release_tokens, year));
-        if token_len < 3 && !year_matches {
-            return None;
-        }
-        // A single-word title matching mid-name is usually episode-title
-        // containment junk ("...Heroes.and.Friends..."), not the release's
-        // subject. Require the word at the head of the name or a year token.
-        if !year_matches
-            && !title_key_head_anchored(release_title, title_key, TITLE_MATCH_HEAD_ANCHOR_MAX_START)
-        {
-            return None;
-        }
-    }
-
-    let mut score = i32::try_from(title_tokens.len()).unwrap_or(i32::MAX / 10) * 10;
-    if title_year.is_some_and(|year| release_contains_year(release_tokens, year)) {
-        score += 6;
-    }
-    Some(score)
-}
-
-fn context_candidate_match_score(
-    release_title: &str,
-    release_tokens: &[String],
-    candidate: &TitleContextCandidate,
-) -> Option<i32> {
-    let mut best_score: Option<i32> = None;
-
-    for key in &candidate.evidence.lookup_keys {
-        if let Some(score) =
-            title_key_match_score(release_title, release_tokens, key, candidate.info.year)
-        {
-            best_score = Some(best_score.map_or(score, |best| best.max(score)));
-        }
-
-        if let Some(year) = candidate.info.year {
-            let year_suffix = format!(" {year}");
-            if let Some(stripped_key) = key.strip_suffix(&year_suffix)
-                && let Some(score) = title_key_match_score(
-                    release_title,
-                    release_tokens,
-                    stripped_key,
-                    candidate.info.year,
-                )
-            {
-                best_score = Some(best_score.map_or(score, |best| best.max(score)));
-            }
-        }
-    }
-
-    best_score
-}
-
 /// Match an RSS release against monitored titles using real title contexts.
-/// The cheap lexical pass only builds a small candidate bank; the final match
-/// is always a context-aware v2 parse for a concrete catalog title.
+/// Candidates come from exact lookups of the release's context-free anchor
+/// keys (plus the indexer's own id assertions) — there is no lexical
+/// containment scan to admit junk — and every candidate then faces the full
+/// contextual proof in [`match_parsed_release_to_title_evidence`].
 /// `response_attributes` carries the indexer's own id assertions so a collision
 /// on a shared canonical key can still be resolved (A2(2)).
 fn match_release_to_title_context<'a>(
@@ -306,24 +213,24 @@ fn match_release_to_title_context<'a>(
     response_attributes: &IndexerResponseAttributes,
     context_bank: &'a TitleContextBank,
 ) -> Option<&'a TitleMatchInfo> {
-    let release_tokens = release_tokens_for_matching(release_title);
-    if release_tokens.is_empty() {
-        return None;
-    }
-
-    let mut candidate_indexes = HashSet::<usize>::new();
-    for start in 0..release_tokens.len() {
-        let max_end = release_tokens
-            .len()
-            .min(start.saturating_add(context_bank.max_key_tokens));
-        for end in start + 1..=max_end {
-            let key = release_tokens[start..end].join(" ");
-            if let Some(indexes) = context_bank.key_index.get(&key) {
-                candidate_indexes.extend(indexes.iter().copied());
+    let anchor_keys = context_free_identity_anchor_keys(release_title);
+    let mut candidate_indexes = Vec::<usize>::new();
+    // A stacked-alias name extracts as one glued title no single key equals, so
+    // candidacy also probes every token prefix of each anchor key. Discovery
+    // only — each candidate still faces the full anchored proof below.
+    for key in &anchor_keys {
+        let tokens = key.split_whitespace().collect::<Vec<_>>();
+        for end in 1..=tokens.len() {
+            if let Some(indexes) = context_bank.key_index.get(&tokens[..end].join(" ")) {
+                for index in indexes {
+                    if !candidate_indexes.contains(index) {
+                        candidate_indexes.push(*index);
+                    }
+                }
             }
         }
     }
-    for (asserted_id, index) in [
+    for (asserted_id, index_map) in [
         (
             response_attributes.tvdb_id.as_ref(),
             &context_bank.tvdb_index,
@@ -338,41 +245,29 @@ fn match_release_to_title_context<'a>(
         ),
     ] {
         if let Some(asserted_id) = asserted_id
-            && let Some(indexes) = index.get(&asserted_id.to_ascii_lowercase())
+            && let Some(indexes) = index_map.get(&asserted_id.to_ascii_lowercase())
         {
-            candidate_indexes.extend(indexes.iter().copied());
+            for index in indexes {
+                if !candidate_indexes.contains(index) {
+                    candidate_indexes.push(*index);
+                }
+            }
         }
     }
-    if candidate_indexes.len() > RSS_TITLE_CONTEXT_CANDIDATE_LIMIT {
-        tracing::debug!(
-            release = release_title,
-            candidate_count = candidate_indexes.len(),
-            "RSS sync: skipping release — identity shortlist exceeds bounded context limit"
-        );
+    if candidate_indexes.is_empty() {
         return None;
     }
 
-    let mut candidates = candidate_indexes
-        .into_iter()
-        .filter_map(|index| context_bank.candidates.get(index))
-        .filter_map(|candidate| {
-            context_candidate_match_score(release_title, &release_tokens, candidate)
-                .map(|score| (candidate, score))
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by(
-        |(left_candidate, left_score), (right_candidate, right_score)| {
-            right_score.cmp(left_score).then_with(|| {
-                left_candidate
-                    .info
-                    .title_id
-                    .cmp(&right_candidate.info.title_id)
-            })
-        },
-    );
     let mut best: Option<(&TitleMatchInfo, i32, bool)> = None;
     let mut titles_per_matched_key: HashMap<String, HashSet<&str>> = HashMap::new();
-    for (candidate, lexical_score) in candidates {
+    for index in candidate_indexes {
+        let Some(candidate) = context_bank.candidates.get(index) else {
+            continue;
+        };
+        // The target-biased parse supplies year/projection semantics (it knows
+        // when a year token is part of the title, as in `Blade Runner 2049`);
+        // identity still anchors on the context-free extraction inside
+        // `match_parsed_release_to_title_evidence`.
         let parsed =
             parse_release_metadata_for_target(release_title, &candidate.evidence.parse_context);
         if let (Some(parsed_year), Some(title_year)) = (parsed.year, candidate.info.year)
@@ -386,6 +281,11 @@ fn match_release_to_title_context<'a>(
             continue;
         };
 
+        // The matched key's specificity ranks colliding candidates: a longer
+        // key names the release more precisely than a shared bare key.
+        let key_score = i32::try_from(evidence_match.matched_key.split_whitespace().count())
+            .unwrap_or(i32::MAX / 10)
+            * 10;
         titles_per_matched_key
             .entry(evidence_match.matched_key.clone())
             .or_default()
@@ -409,7 +309,7 @@ fn match_release_to_title_context<'a>(
 
         let year_bonus = i32::from(parsed.year.is_some() && parsed.year == candidate.info.year) * 8;
         let parser_bonus = (parsed.parse_confidence * 10.0).round() as i32;
-        let score = lexical_score + year_bonus + parser_bonus;
+        let score = key_score + year_bonus + parser_bonus;
 
         // A disambiguated candidate outranks an undisambiguated one outright:
         // an indexer-asserted id or a unique alias names the show, while the
@@ -2470,6 +2370,136 @@ mod tests {
             "bracket-group release must strip to a head-anchored title"
         );
         assert_eq!(result.unwrap().title_id, "tongari");
+    }
+
+    #[test]
+    fn hyphenated_bracket_group_prefix_matches() {
+        let titles = vec![make_series_title(
+            "mushoku",
+            "Mushoku Tensei Jobless Reincarnation",
+            None,
+        )];
+        let bank = build_title_context_bank(&titles);
+        let result = match_release(
+            "[Erai-raws] Mushoku Tensei Jobless Reincarnation S03E05 [1080p CR WEB-DL AVC AAC][MultiSub]",
+            &bank,
+        );
+        assert!(
+            result.is_some(),
+            "multi-token bracket group must strip out of the title span"
+        );
+        assert_eq!(result.unwrap().title_id, "mushoku");
+    }
+
+    #[test]
+    fn two_token_bracket_group_prefix_matches() {
+        let titles = vec![make_series_title(
+            "frieren",
+            "Frieren Beyond Journeys End",
+            None,
+        )];
+        let bank = build_title_context_bank(&titles);
+        let result = match_release(
+            "[Anime Time] Frieren Beyond Journeys End - 05 [1080p][HEVC 10bit x265][AAC][Multi Sub]",
+            &bank,
+        );
+        assert!(
+            result.is_some(),
+            "space-separated bracket group must strip out of the title span"
+        );
+        assert_eq!(result.unwrap().title_id, "frieren");
+    }
+
+    #[test]
+    fn known_release_group_dotted_prefix_matches() {
+        let titles = vec![make_series_title(
+            "mushoku",
+            "Mushoku Tensei Jobless Reincarnation",
+            None,
+        )];
+        let bank = build_title_context_bank(&titles);
+        let result = match_release(
+            "Erai-raws.Mushoku.Tensei.Jobless.Reincarnation.S03E05.1080p.CR.WEB-DL",
+            &bank,
+        );
+        assert!(
+            result.is_some(),
+            "an unbracketed known release-group run must anchor past the prefix"
+        );
+        assert_eq!(result.unwrap().title_id, "mushoku");
+    }
+
+    #[test]
+    fn unknown_multi_token_prefix_still_rejects() {
+        let titles = vec![make_series_title(
+            "mushoku",
+            "Mushoku Tensei Jobless Reincarnation",
+            None,
+        )];
+        let bank = build_title_context_bank(&titles);
+        assert!(
+            match_release(
+                "Totally.Unknown.Grp.Mushoku.Tensei.Jobless.Reincarnation.S03E05.1080p.WEB-DL",
+                &bank,
+            )
+            .is_none(),
+            "an unknown multi-token prefix is containment junk, not a group tag"
+        );
+    }
+
+    #[test]
+    fn bracket_styled_title_matches() {
+        let titles = vec![make_series_title("oshi-no-ko", "Oshi no Ko", None)];
+        let bank = build_title_context_bank(&titles);
+        let result = match_release("[Oshi no Ko].S02E01.1080p.WEB-DL.AAC2.0.H.264", &bank);
+        assert!(
+            result.is_some(),
+            "a bracket-styled title with no title text after the brackets must match"
+        );
+        assert_eq!(result.unwrap().title_id, "oshi-no-ko");
+    }
+
+    #[test]
+    fn bracket_group_before_unknown_title_still_rejects() {
+        let titles = vec![make_series_title("judas", "Judas", Some(2021))];
+        let bank = build_title_context_bank(&titles);
+        assert!(
+            match_release("[Judas].Some.Other.Show.S01E01.1080p.WEB-DL", &bank).is_none(),
+            "a bracket group followed by another show's title text is a tag, not the subject"
+        );
+    }
+
+    #[test]
+    fn stacked_alias_release_matches_via_bank() {
+        let mut title = make_series_title("vale", "Silver Horizon Beyond the Vale", Some(2023));
+        title.aliases = vec!["Sora no Vale".to_string()];
+        let bank = build_title_context_bank(&[title]);
+        let result = match_release(
+            "[SubsPlease] Sora.no.Vale.Silver.Horizon.Beyond.the.Vale.-.01.[1080p].[HEVC]",
+            &bank,
+        );
+        assert!(
+            result.is_some(),
+            "a name stacking two alias forms of the same subject must anchor"
+        );
+        assert_eq!(result.unwrap().title_id, "vale");
+    }
+
+    #[test]
+    fn trailing_year_title_matches_with_and_without_release_year() {
+        let titles = vec![make_series_title("br2049", "Blade Runner 2049", Some(2017))];
+        let bank = build_title_context_bank(&titles);
+        for release in [
+            "Blade.Runner.2049.2017.2160p.WEB-DL.DDP5.1.HDR.HEVC",
+            "Blade.Runner.2049.1080p.BluRay.x264",
+        ] {
+            let result = match_release(release, &bank);
+            assert!(
+                result.is_some(),
+                "year-suffixed title must anchor even when the boundary heuristic splits it: {release}"
+            );
+            assert_eq!(result.unwrap().title_id, "br2049");
+        }
     }
 
     #[test]

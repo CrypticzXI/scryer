@@ -122,6 +122,18 @@ impl MonitoredTitleMatcher {
             .collect()
     }
 
+    /// True when any of `keys` is a lookup key some *other* library title owns
+    /// — the raw name those keys came from positively asserts a different
+    /// subject's identity. Year-suffix bridged like
+    /// [`Self::shared_lookup_keys`].
+    pub(crate) fn keys_name_another_title(&self, title_id: &str, keys: &[String]) -> bool {
+        keys.iter().any(|key| {
+            self.ambiguity_index
+                .get(strip_trailing_year_key(key))
+                .is_some_and(|ids| ids.iter().any(|id| id != title_id))
+        })
+    }
+
     pub(crate) fn resolve_movie<'a>(
         &'a self,
         parsed: &ParsedReleaseMetadata,

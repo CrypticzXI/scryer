@@ -400,3 +400,94 @@ async fn scryer_submission_with_complete_title_proof_reaches_import_pending() {
 
     assert_eq!(td.state, TrackedDownloadState::ImportPending);
 }
+
+#[tokio::test]
+async fn obfuscated_completed_name_proves_via_source_title() {
+    let title = build_title("spy-family", "Spy x Family", MediaFacet::Series);
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let completed = build_completed_download(
+        "abc123xyz987",
+        temp_dir.path().to_string_lossy().as_ref(),
+        Some("series"),
+    );
+    let download_client = test_download_client_with_completed(completed);
+    let app = build_app_with_download_client(vec![title], vec![], vec![], vec![], download_client);
+    let mut td = build_tracked_download("spy-family", "series", "abc123xyz987");
+    td.client_item.is_scryer_origin = true;
+    td.match_type = TitleMatchType::Submission;
+    // The client obfuscated the completed name and folder mid-flight; the
+    // grabbed release name Scryer recorded still proves the identity.
+    td.source_title =
+        Some("ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264".to_string());
+
+    check(&app, &mut td).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+}
+
+#[tokio::test]
+async fn contradictory_completed_name_blocks_despite_valid_source_title() {
+    let spy = build_title("spy-family", "Spy x Family", MediaFacet::Series);
+    let mut one_piece = build_title("one-piece-anime", "One Piece", MediaFacet::Anime);
+    one_piece.year = Some(1999);
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    // The client's completed item positively names a different library title —
+    // that is a contradiction, not obfuscation, and the historical grabbed
+    // name must not override what actually finished on disk.
+    let completed = build_completed_download(
+        "One.Piece.1071.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG",
+        temp_dir.path().to_string_lossy().as_ref(),
+        Some("series"),
+    );
+    let download_client = test_download_client_with_completed(completed);
+    let app = build_app_with_download_client(
+        vec![spy, one_piece],
+        vec![],
+        vec![],
+        vec![],
+        download_client,
+    );
+    let mut td = build_tracked_download(
+        "spy-family",
+        "series",
+        "One.Piece.1071.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG",
+    );
+    td.client_item.is_scryer_origin = true;
+    td.match_type = TitleMatchType::Submission;
+    td.source_title =
+        Some("ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264".to_string());
+
+    check(&app, &mut td).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+}
+
+#[tokio::test]
+async fn junk_source_title_is_not_an_identity_bypass() {
+    let mut title = build_title(
+        "fragrant-flower",
+        "The Fragrant Flower Blooms with Dignity",
+        MediaFacet::Series,
+    );
+    title.year = Some(2025);
+    title.aliases.push("BLOOM".to_string());
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let completed = build_completed_download(
+        "abc123xyz987",
+        temp_dir.path().to_string_lossy().as_ref(),
+        Some("series"),
+    );
+    let download_client = test_download_client_with_completed(completed);
+    let app = build_app_with_download_client(vec![title], vec![], vec![], vec![], download_client);
+    let mut td = build_tracked_download("fragrant-flower", "series", "abc123xyz987");
+    td.client_item.is_scryer_origin = true;
+    td.match_type = TitleMatchType::Submission;
+    td.source_title = Some(
+        "Electric.Bloom.S01E09.How.it.all.came.out.of.the.wash.MULTI.1080p.DSNP.WEB-DL.DDP5.1.H.264"
+            .to_string(),
+    );
+
+    check(&app, &mut td).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+}

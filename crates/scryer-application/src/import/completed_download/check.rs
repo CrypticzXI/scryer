@@ -116,20 +116,49 @@ pub(crate) async fn check_with_lookup(
         }
     }
 
-    if !completed_download_proves_assigned_title(app, td, &completed).await {
-        let detail = "The completed release name no longer proves the title assigned at grab time. Automatic import is blocked to prevent replacing media for a different series.";
-        block_tracked_download_identity_for_manual_review(
-            app,
-            td,
-            "completed_title_identity_mismatch",
-            detail,
-        )
-        .await;
-        if td.state != TrackedDownloadState::ImportBlocked {
-            td.warn(detail);
-            set_state_to_import_blocked(app, td).await;
+    match completed_download_proves_assigned_title(app, td, &completed).await {
+        AssignedTitleProof::Proven => {}
+        AssignedTitleProof::Unknown => {
+            // Infrastructure failed, not the proof. A durable block here would
+            // turn a transient title-repo or matcher error into a permanent
+            // identity verdict, so leave the download untouched and let the
+            // next check tick retry.
+            tracing::warn!(
+                id = %td.id,
+                "completed download identity gate hit an infrastructure error; retrying next tick"
+            );
+            return;
         }
-        return;
+        AssignedTitleProof::MissingTitle => {
+            let detail = "The title assigned to this download at grab time no longer exists in the library. Automatic import is blocked until the download is reassigned or removed.";
+            block_tracked_download_identity_for_manual_review(
+                app,
+                td,
+                "assigned_title_missing",
+                detail,
+            )
+            .await;
+            if td.state != TrackedDownloadState::ImportBlocked {
+                td.warn(detail);
+                set_state_to_import_blocked(app, td).await;
+            }
+            return;
+        }
+        AssignedTitleProof::Disproven => {
+            let detail = "The completed release name no longer proves the title assigned at grab time. Automatic import is blocked to prevent replacing media for a different series.";
+            block_tracked_download_identity_for_manual_review(
+                app,
+                td,
+                "completed_title_identity_mismatch",
+                detail,
+            )
+            .await;
+            if td.state != TrackedDownloadState::ImportBlocked {
+                td.warn(detail);
+                set_state_to_import_blocked(app, td).await;
+            }
+            return;
+        }
     }
 
     // Auto-import safety gating.
@@ -313,17 +342,29 @@ async fn completed_download_allows_automatic_import(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssignedTitleProof {
+    /// A raw name proved the assigned title; import may proceed.
+    Proven,
+    /// Every raw name failed the proof — block for manual review.
+    Disproven,
+    /// The assigned title no longer exists — block under its own reason.
+    MissingTitle,
+    /// Infrastructure error while proving — retry next tick, never block.
+    Unknown,
+}
+
 async fn completed_download_proves_assigned_title(
     app: &AppUseCase,
     td: &TrackedDownload,
     completed: &CompletedDownload,
-) -> bool {
+) -> AssignedTitleProof {
     if !matches!(
         td.match_type,
         TitleMatchType::Submission | TitleMatchType::ClientParameter
     ) && !td.client_item.is_scryer_origin
     {
-        return true;
+        return AssignedTitleProof::Proven;
     }
 
     let Some(title_id) = td
@@ -332,18 +373,18 @@ async fn completed_download_proves_assigned_title(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        return false;
+        return AssignedTitleProof::Disproven;
     };
     let title = match app.services.catalog.titles.get_by_id(title_id).await {
         Ok(Some(title)) => title,
-        Ok(None) => return false,
+        Ok(None) => return AssignedTitleProof::MissingTitle,
         Err(error) => {
             tracing::warn!(
                 title_id,
                 error = %error,
                 "completed download identity gate could not load assigned title"
             );
-            return false;
+            return AssignedTitleProof::Unknown;
         }
     };
     let matcher = match app.monitored_title_matcher().await {
@@ -354,7 +395,7 @@ async fn completed_download_proves_assigned_title(
                 error = %error,
                 "completed download identity gate could not load title matcher"
             );
-            return false;
+            return AssignedTitleProof::Unknown;
         }
     };
     let mut evidence = crate::acquisition_release_search::canonical_title_evidence(&title);
@@ -363,24 +404,14 @@ async fn completed_download_proves_assigned_title(
             matcher.shared_lookup_keys(title_id, &evidence.lookup_keys),
         );
 
-    let folder_name = std::path::Path::new(&completed.dest_dir)
-        .file_name()
-        .and_then(|value| value.to_str());
-    for raw_title in [Some(completed.name.as_str()), folder_name]
-        .into_iter()
-        .flatten()
-    {
-        let raw_title = raw_title.trim();
-        if raw_title.is_empty() {
-            continue;
-        }
+    let proves_assigned_title = |raw_title: &str| -> bool {
         let parsed = crate::parse_release_metadata_for_target(raw_title, &evidence.parse_context);
         let Some(evidence_match) =
             crate::acquisition_release_search::match_parsed_release_to_title_evidence(
                 &parsed, &evidence,
             )
         else {
-            continue;
+            return false;
         };
         let external_id_matches = parsed
             .imdb_id
@@ -409,7 +440,7 @@ async fn completed_download_proves_assigned_title(
                 .is_some_and(|(observed, expected)| observed == expected);
 
         if evidence_match.requires_external_id && !external_id_matches {
-            continue;
+            return false;
         }
         if evidence.ambiguity.requires_disambiguator()
             && !evidence_match.year_corroborated
@@ -418,12 +449,60 @@ async fn completed_download_proves_assigned_title(
                 .ambiguity
                 .key_is_unique_to_title(&evidence_match.matched_key)
         {
-            continue;
+            return false;
         }
-        return true;
+        true
+    };
+
+    let folder_name = std::path::Path::new(&completed.dest_dir)
+        .file_name()
+        .and_then(|value| value.to_str());
+    let mut completion_sources = Vec::<&str>::new();
+    for raw_title in [Some(completed.name.as_str()), folder_name]
+        .into_iter()
+        .flatten()
+    {
+        let raw_title = raw_title.trim();
+        if !raw_title.is_empty() && !completion_sources.contains(&raw_title) {
+            completion_sources.push(raw_title);
+        }
+    }
+    for raw_title in &completion_sources {
+        if proves_assigned_title(raw_title) {
+            return AssignedTitleProof::Proven;
+        }
     }
 
-    false
+    // What actually finished on disk outranks what was grabbed: a completion
+    // name that positively asserts a *different* library title's identity is a
+    // contradiction, not obfuscation, and the historical source_title must not
+    // override it.
+    let completion_contradicts_assignment = completion_sources.iter().any(|raw_title| {
+        matcher.keys_name_another_title(
+            title_id,
+            &crate::acquisition_release_search::context_free_identity_anchor_keys(raw_title),
+        )
+    });
+    if completion_contradicts_assignment {
+        return AssignedTitleProof::Disproven;
+    }
+
+    // The grabbed release name is fallback proof for clients that obfuscate the
+    // completed name and folder mid-flight; a Scryer-origin grab must not lose
+    // its identity to that. Junk cannot ride in on it — the matcher rejects a
+    // non-proving source_title exactly like any other raw name.
+    if let Some(source_title) = td
+        .source_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && !completion_sources.contains(&source_title)
+        && proves_assigned_title(source_title)
+    {
+        return AssignedTitleProof::Proven;
+    }
+
+    AssignedTitleProof::Disproven
 }
 
 fn normalized_download_category(category: Option<&str>) -> Option<&str> {
