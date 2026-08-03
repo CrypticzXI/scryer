@@ -22,14 +22,14 @@ const LOW_VALUE_BACKGROUND_THRESHOLD: f64 = 0.25;
 const LOW_VALUE_SUBTITLE_THRESHOLD: f64 = 0.15;
 const RSS_FRESHNESS_ESCALATION_THRESHOLD: f64 = 0.85;
 const LOW_ACCOUNT_QUOTA_REMAINING_FRACTION: f64 = 0.20;
-/// RFC 119 §D3/#4: below this remaining-account-quota fraction, background
+/// Below this remaining-account-quota fraction, background
 /// acquisition is "under pressure" and yields shared quota. It is set above
 /// `LOW_ACCOUNT_QUOTA_REMAINING_FRACTION` (0.20 — where RSS *begins* stretching
 /// its own cadence) so background acquisition starts shedding low-value work at
 /// a higher remaining fraction than RSS reacts at: a saturating convergence
 /// backlog can never starve RSS polls of the shared account quota.
 const BACKGROUND_QUOTA_PRESSURE_REMAINING_FRACTION: f64 = 0.35;
-/// RFC 119 §D3/#4: under quota pressure, background candidates whose value is
+/// Under quota pressure, background candidates whose value is
 /// below this bar defer (`Defer{LowValueBackground}`) while higher-value work
 /// still admits. The convergence lane values (hot 1.0 / cold 0.25) straddle it,
 /// so pressure sheds cold work first and keeps hot work converging.
@@ -556,45 +556,51 @@ impl SqlUpstreamSchedulerStore {
         let retention = chrono::Duration::from_std(SCHEDULER_STATE_RETENTION)
             .unwrap_or_else(|_| chrono::Duration::days(30));
         let state_cutoff = now - retention;
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
-            "DELETE FROM upstream_destination_cooldowns
-             WHERE cooldown_until <= {}",
-            &[SqlArg::Timestamp(now)],
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "prune_upstream_scheduler_rows",
+            move |tx| {
+                Box::pin(async move {
+                    tx.execute(
+                        "DELETE FROM upstream_destination_cooldowns
+                         WHERE cooldown_until <= {}",
+                        &[SqlArg::Timestamp(now)],
+                    )
+                    .await?;
+                    tx.execute(
+                        "DELETE FROM upstream_scheduler_states
+                         WHERE updated_at < {}
+                           AND NOT EXISTS (
+                               SELECT 1
+                               FROM upstream_destination_cooldowns
+                               WHERE upstream_destination_cooldowns.destination_key = upstream_scheduler_states.destination_key
+                                 AND upstream_destination_cooldowns.cooldown_until > {}
+                           )",
+                        &[SqlArg::Timestamp(state_cutoff), SqlArg::Timestamp(now)],
+                    )
+                    .await?;
+                    tx.execute(
+                        "DELETE FROM upstream_scheduler_rss_cadence
+                         WHERE updated_at < {}
+                           AND (latest_safe_poll_at IS NULL OR latest_safe_poll_at < {})
+                           AND NOT EXISTS (
+                               SELECT 1
+                               FROM upstream_destination_cooldowns
+                               WHERE upstream_destination_cooldowns.destination_key = upstream_scheduler_rss_cadence.destination_key
+                                 AND upstream_destination_cooldowns.cooldown_until > {}
+                           )",
+                        &[
+                            SqlArg::Timestamp(state_cutoff),
+                            SqlArg::Timestamp(now),
+                            SqlArg::Timestamp(now),
+                        ],
+                    )
+                    .await?;
+                    Ok(())
+                })
+            },
         )
-        .await?;
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
-            "DELETE FROM upstream_scheduler_states
-             WHERE updated_at < {}
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM upstream_destination_cooldowns
-                   WHERE upstream_destination_cooldowns.destination_key = upstream_scheduler_states.destination_key
-                     AND upstream_destination_cooldowns.cooldown_until > {}
-               )",
-            &[SqlArg::Timestamp(state_cutoff), SqlArg::Timestamp(now)],
-        )
-        .await?;
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
-            "DELETE FROM upstream_scheduler_rss_cadence
-             WHERE updated_at < {}
-               AND (latest_safe_poll_at IS NULL OR latest_safe_poll_at < {})
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM upstream_destination_cooldowns
-                   WHERE upstream_destination_cooldowns.destination_key = upstream_scheduler_rss_cadence.destination_key
-                     AND upstream_destination_cooldowns.cooldown_until > {}
-               )",
-            &[
-                SqlArg::Timestamp(state_cutoff),
-                SqlArg::Timestamp(now),
-                SqlArg::Timestamp(now),
-            ],
-        )
-        .await?;
-        Ok(())
+        .await
     }
 
     async fn load_entries(&self) -> AppResult<HashMap<SchedulerStateKey, SchedulerStateEntry>> {
@@ -716,10 +722,7 @@ impl SqlUpstreamSchedulerStore {
             return Ok(());
         }
 
-        for (key, entry) in entries {
-            SqlRuntime::execute(
-                self.datastore.read_exec(),
-                "INSERT INTO upstream_scheduler_states (
+        const UPSERT_STATE_SQL: &str = "INSERT INTO upstream_scheduler_states (
                     host_key, destination_key, account_quota_key, rss_request_key,
                     api_current, api_max, grab_current, grab_max, quota_observed_at,
                     quota_probe_after, quota_reset_at, quota_source, last_decision,
@@ -756,8 +759,13 @@ impl SqlUpstreamSchedulerStore {
                     admitted_count = excluded.admitted_count,
                     deferred_count = excluded.deferred_count,
                     skipped_count = excluded.skipped_count,
-                    updated_at = excluded.updated_at",
-                &[
+                    updated_at = excluded.updated_at";
+
+        let updated_at = Utc::now();
+        let arg_rows: Vec<Vec<SqlArg>> = entries
+            .into_iter()
+            .map(|(key, entry)| {
+                vec![
                     SqlArg::Text(key.host_key.to_string()),
                     SqlArg::Text(key.destination_key.to_string()),
                     SqlArg::Text(
@@ -782,12 +790,24 @@ impl SqlUpstreamSchedulerStore {
                     SqlArg::I64(entry.admitted_count as i64),
                     SqlArg::I64(entry.deferred_count as i64),
                     SqlArg::I64(entry.skipped_count as i64),
-                    SqlArg::Timestamp(Utc::now()),
-                ],
-            )
-            .await?;
-        }
-        Ok(())
+                    SqlArg::Timestamp(updated_at),
+                ]
+            })
+            .collect();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "flush_upstream_scheduler_states",
+            move |tx| {
+                let arg_rows = arg_rows.clone();
+                Box::pin(async move {
+                    for args in &arg_rows {
+                        tx.execute(UPSERT_STATE_SQL, args).await?;
+                    }
+                    Ok(())
+                })
+            },
+        )
+        .await
     }
 
     async fn flush_rss_cadence(
@@ -798,15 +818,7 @@ impl SqlUpstreamSchedulerStore {
             return Ok(());
         }
 
-        for (key, entry) in entries {
-            let target_interval_seconds = entry
-                .target_interval
-                .unwrap_or_else(|| Duration::from_secs(15 * 60))
-                .as_secs()
-                .min(i64::MAX as u64) as i64;
-            SqlRuntime::execute(
-                self.datastore.read_exec(),
-                "INSERT INTO upstream_scheduler_rss_cadence (
+        const UPSERT_CADENCE_SQL: &str = "INSERT INTO upstream_scheduler_rss_cadence (
                     host_key, destination_key, account_quota_key, rss_request_key,
                     last_successful_poll_at, last_attempt_at, target_interval_seconds,
                     latest_safe_poll_at, estimated_feed_depth, freshness_risk,
@@ -828,8 +840,18 @@ impl SqlUpstreamSchedulerStore {
                     last_seen_release_published_at = COALESCE(excluded.last_seen_release_published_at, upstream_scheduler_rss_cadence.last_seen_release_published_at),
                     last_feed_gap_start_at = COALESCE(excluded.last_feed_gap_start_at, upstream_scheduler_rss_cadence.last_feed_gap_start_at),
                     last_feed_gap_end_at = COALESCE(excluded.last_feed_gap_end_at, upstream_scheduler_rss_cadence.last_feed_gap_end_at),
-                    updated_at = excluded.updated_at",
-                &[
+                    updated_at = excluded.updated_at";
+
+        let updated_at = Utc::now();
+        let arg_rows: Vec<Vec<SqlArg>> = entries
+            .into_iter()
+            .map(|(key, entry)| {
+                let target_interval_seconds = entry
+                    .target_interval
+                    .unwrap_or_else(|| Duration::from_secs(15 * 60))
+                    .as_secs()
+                    .min(i64::MAX as u64) as i64;
+                vec![
                     SqlArg::Text(key.host_key.to_string()),
                     SqlArg::Text(key.destination_key.to_string()),
                     SqlArg::Text(
@@ -850,12 +872,24 @@ impl SqlUpstreamSchedulerStore {
                     SqlArg::OptTimestamp(entry.last_seen_release_published_at),
                     SqlArg::OptTimestamp(entry.last_feed_gap_start_at),
                     SqlArg::OptTimestamp(entry.last_feed_gap_end_at),
-                    SqlArg::Timestamp(Utc::now()),
-                ],
-            )
-            .await?;
-        }
-        Ok(())
+                    SqlArg::Timestamp(updated_at),
+                ]
+            })
+            .collect();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "flush_upstream_scheduler_rss_cadence",
+            move |tx| {
+                let arg_rows = arg_rows.clone();
+                Box::pin(async move {
+                    for args in &arg_rows {
+                        tx.execute(UPSERT_CADENCE_SQL, args).await?;
+                    }
+                    Ok(())
+                })
+            },
+        )
+        .await
     }
 
     async fn flush_destination_cooldowns(
@@ -866,13 +900,7 @@ impl SqlUpstreamSchedulerStore {
             return Ok(());
         }
 
-        for cooldown in cooldowns {
-            let retry_after_seconds = cooldown
-                .retry_after
-                .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64);
-            SqlRuntime::execute(
-                self.datastore.read_exec(),
-                "INSERT INTO upstream_destination_cooldowns (
+        const UPSERT_COOLDOWN_SQL: &str = "INSERT INTO upstream_destination_cooldowns (
                     destination_key, cooldown_until, retry_after_seconds, source,
                     status_code, message, observed_at, updated_at
                  )
@@ -885,8 +913,16 @@ impl SqlUpstreamSchedulerStore {
                     status_code = excluded.status_code,
                     message = excluded.message,
                     observed_at = excluded.observed_at,
-                    updated_at = excluded.updated_at",
-                &[
+                    updated_at = excluded.updated_at";
+
+        let updated_at = Utc::now();
+        let arg_rows: Vec<Vec<SqlArg>> = cooldowns
+            .into_iter()
+            .map(|cooldown| {
+                let retry_after_seconds = cooldown
+                    .retry_after
+                    .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64);
+                vec![
                     SqlArg::Text(cooldown.destination_key.to_string()),
                     SqlArg::Timestamp(cooldown.cooldown_until),
                     SqlArg::OptI64(retry_after_seconds),
@@ -894,12 +930,24 @@ impl SqlUpstreamSchedulerStore {
                     SqlArg::OptI64(cooldown.status_code.map(i64::from)),
                     SqlArg::OptText(cooldown.message),
                     SqlArg::Timestamp(cooldown.observed_at),
-                    SqlArg::Timestamp(Utc::now()),
-                ],
-            )
-            .await?;
-        }
-        Ok(())
+                    SqlArg::Timestamp(updated_at),
+                ]
+            })
+            .collect();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "flush_upstream_destination_cooldowns",
+            move |tx| {
+                let arg_rows = arg_rows.clone();
+                Box::pin(async move {
+                    for args in &arg_rows {
+                        tx.execute(UPSERT_COOLDOWN_SQL, args).await?;
+                    }
+                    Ok(())
+                })
+            },
+        )
+        .await
     }
 }
 
@@ -1186,7 +1234,7 @@ fn quota_probe_is_due(entry: &SchedulerStateEntry, now: DateTime<Utc>) -> bool {
         .is_some_and(|probe_after| probe_after <= now)
 }
 
-/// RFC 119 §D3/#4: the account's shared API quota is "under pressure" when a
+/// The account's shared API quota is "under pressure" when a
 /// fresh observation shows the remaining fraction below
 /// `BACKGROUND_QUOTA_PRESSURE_REMAINING_FRACTION`. A stale/absent observation
 /// (nothing to trust) is treated as not-under-pressure so background work still
@@ -1234,7 +1282,7 @@ fn should_defer(
 ) -> bool {
     match candidate.intent {
         SchedulerIntent::InteractiveSearch => false,
-        // RFC 119 §D3/#4: this soft gate runs *after* the hard
+        // This soft gate runs *after* the hard
         // `account_quota_retry_after` capacity gate, so it never blocks RSS
         // (BackgroundRss defers here only by cadence). A background candidate
         // defers when it is either below the absolute low-value floor, or below
@@ -2766,7 +2814,7 @@ mod tests {
 
     #[tokio::test]
     async fn low_value_background_defers_under_quota_pressure_while_high_value_admits() {
-        // RFC 119 §D3/#4: under account-quota pressure, a cold (low-value)
+        // Under account-quota pressure, a cold (low-value)
         // convergence candidate defers so shared quota is spent on high-value
         // work; a hot (high-value) candidate on the same account still admits.
         let scheduler = InMemoryUpstreamScheduler::new();
@@ -2824,8 +2872,7 @@ mod tests {
     #[tokio::test]
     async fn low_value_background_admits_when_quota_is_healthy() {
         // Without quota pressure the cold lane still admits — pressure, not raw
-        // value, is what sheds it (RFC 119 §D3: 0.25 sits above the absolute
-        // LOW_VALUE_BACKGROUND_THRESHOLD floor).
+        // value, is what sheds it.
         let scheduler = InMemoryUpstreamScheduler::new();
         let mut cold = candidate(SchedulerIntent::BackgroundAcquisition, 0.25);
         let host = HostKey::from(format!("healthy-{}.example.test", Uuid::new_v4()));
@@ -2859,7 +2906,7 @@ mod tests {
 
     #[tokio::test]
     async fn rss_wins_shared_quota_over_background_acquisition() {
-        // RFC 119 §D3/#4 (cutover-blocking): with the account's quota under
+        // With the account's quota under
         // pressure, a saturating convergence backlog must never starve RSS.
         // The cold BackgroundAcquisition candidate defers on the pressure gate
         // while the overdue BackgroundRss candidate on the same account still
@@ -2934,7 +2981,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_success_feedback_updates_observations_like_success() {
-        // RFC 119 §D5: an EmptySuccess (fired query, zero results) is a
+        // An EmptySuccess (fired query, zero results) is a
         // successful observation for the scheduler — same quota/cooldown effect
         // as Success. It marks last_successful_at and records the quota reading.
         let scheduler = InMemoryUpstreamScheduler::new();

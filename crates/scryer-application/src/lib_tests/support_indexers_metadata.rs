@@ -48,6 +48,7 @@ impl IndexerClient for MockIndexerClient {
                 parsed_release_metadata: None,
                 quality_profile_decision: None,
                 extra: Default::default(),
+                response_attributes: Default::default(),
                 guid: None,
                 info_url: None,
                 provenance: None,
@@ -188,6 +189,7 @@ impl IndexerClient for TrackingIndexerClient {
                 parsed_release_metadata: Some(crate::parse_release_metadata(&release_title)),
                 quality_profile_decision: None,
                 extra: Default::default(),
+                response_attributes: Default::default(),
                 guid: Some(format!("guid-{release_slug}")),
                 info_url: Some(format!("https://example.invalid/info/{release_slug}")),
                 provenance: None,
@@ -209,13 +211,11 @@ impl IndexerClient for TrackingIndexerClient {
 pub(super) struct FixedReleaseIndexerClient {
     pub(super) release_title: String,
     pub(super) indexer_languages: Option<Vec<String>>,
-    /// Indexer ids this stand-in reports as having fired (RFC 119 per-indexer
-    /// outcomes). Empty by default — set via [`with_fired_indexers`] when a test
+    /// Indexer ids this stand-in reports as having fired. Empty by default — set via [`with_fired_indexers`] when a test
     /// drives the real coverage chokepoint and needs specific indexers recorded.
     pub(super) fired_indexer_ids: Vec<String>,
     /// When set, every fired indexer reports `Fired { empty: true }` and the
-    /// response carries no results — a genuine zero-hit response (RFC 119 §D2:
-    /// "no results" is still coverage).
+    /// response carries no results — a genuine zero-hit response.
     pub(super) empty_response: bool,
 }
 
@@ -302,6 +302,7 @@ impl IndexerClient for FixedReleaseIndexerClient {
                 parsed_release_metadata: Some(crate::parse_release_metadata(&self.release_title)),
                 quality_profile_decision: None,
                 extra: Default::default(),
+                response_attributes: Default::default(),
                 guid: Some("guid-fixed-release".to_string()),
                 info_url: Some("https://example.invalid/info".to_string()),
                 provenance: None,
@@ -385,6 +386,7 @@ impl IndexerClient for SharedUrlMovieIndexerClient {
                 parsed_release_metadata: Some(crate::parse_release_metadata(&release_title)),
                 quality_profile_decision: None,
                 extra: Default::default(),
+                response_attributes: Default::default(),
                 guid: Some(format!("guid-{release_title}")),
                 info_url: Some("https://example.invalid/info".to_string()),
                 provenance: None,
@@ -488,6 +490,7 @@ impl IndexerClient for RecordingCategoriesIndexerClient {
                 parsed_release_metadata: Some(crate::parse_release_metadata(&self.release_title)),
                 quality_profile_decision: None,
                 extra: Default::default(),
+                response_attributes: Default::default(),
                 guid: Some("guid-recording-release".to_string()),
                 info_url: Some("https://example.invalid/info".to_string()),
                 provenance: None,
@@ -598,6 +601,7 @@ impl IndexerClient for MultiReleaseIndexerClient {
                     parsed_release_metadata: Some(crate::parse_release_metadata(release_title)),
                     quality_profile_decision: None,
                     extra: Default::default(),
+                    response_attributes: Default::default(),
                     guid: Some(format!("guid-multi-release-{index}")),
                     info_url: Some(format!("https://example.invalid/info/{index}")),
                     provenance: None,

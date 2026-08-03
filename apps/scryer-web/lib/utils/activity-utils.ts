@@ -21,6 +21,7 @@ export const queueStateClasses: Record<string, string> = {
   import_pending: "border-[rgba(var(--scry-accent-rgb),0.4)] bg-[rgba(var(--scry-accent-rgb),0.1)] text-[var(--scry-accent-text)]",
   import_blocked: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
   import_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
+  ignored: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   remove_failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
   failed: "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]",
 };
@@ -36,6 +37,7 @@ export const queueStateLabels: Record<string, string> = {
   import_pending: "queue.state.importPending",
   import_blocked: "queue.state.importBlocked",
   import_failed: "queue.manualImportFailed",
+  ignored: "queue.state.ignored",
   remove_failed: "queue.removeFailed",
   failed: "queue.state.failed",
 };
@@ -73,9 +75,11 @@ export function activityStatusRank(tab: ActivityTab, displayState: string): numb
       switch (displayState.toLowerCase()) {
         case "completed":
           return 0;
+        case "ignored":
+          return 1;
         case "failed":
         case "remove_failed":
-          return 1;
+          return 2;
         default:
           return 99;
       }
@@ -156,13 +160,15 @@ export function deriveQueueRowPresentation(
           ? "queue.state.extracting"
           : "queue.state.postProcessing";
   const statusLabel =
-    queueItem.importTransferPhase === "COPYING"
-      ? t("queue.transfer.copying")
-      : queueItem.importTransferPhase === "FINALIZING"
-        ? t("queue.transfer.finalizing")
-        : displayStateKey === "POST_PROCESSING"
-          ? t(postProcessingStatusKey)
-          : t(queueStateLabels[displayStateKey.toLowerCase()] ?? "queue.state.unknown");
+    displayStateKey === "IGNORED"
+      ? t("queue.state.ignored")
+      : queueItem.importTransferPhase === "COPYING"
+        ? t("queue.transfer.copying")
+        : queueItem.importTransferPhase === "FINALIZING"
+          ? t("queue.transfer.finalizing")
+          : displayStateKey === "POST_PROCESSING"
+            ? t(postProcessingStatusKey)
+            : t(queueStateLabels[displayStateKey.toLowerCase()] ?? "queue.state.unknown");
   const hasStatusDetails =
     (stateKey === "failed" ||
       displayStateKey === "REMOVE_FAILED" ||
@@ -177,7 +183,7 @@ export function deriveQueueRowPresentation(
     displayStateKey !== "IMPORTING" &&
     displayStateKey !== "REMOVING";
   const canIgnore =
-    trackedStateKey === "import_blocked" &&
+    (trackedStateKey === "import_blocked" || displayStateKey === "IMPORT_FAILED") &&
     displayStateKey !== "IMPORTING" &&
     displayStateKey !== "REMOVING";
   const canMarkFailed =
@@ -249,7 +255,7 @@ export function canIgnoreImportItem(queueItem: DownloadQueueItem): boolean {
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const displayStateKey = normalizeQueueState(queueItem.displayState);
   return (
-    trackedStateKey === "import_blocked" &&
+    (trackedStateKey === "import_blocked" || displayStateKey === "import_failed") &&
     displayStateKey !== "importing" &&
     displayStateKey !== "removing"
   );

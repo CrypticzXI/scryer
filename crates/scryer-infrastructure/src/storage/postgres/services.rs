@@ -350,6 +350,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn postgres_execute_batch_insert_multi_chunk_renumbers_placeholders() -> AppResult<()> {
+        use crate::queries::sql_runtime::{SqlArg, SqlRuntime, StoreDatastore};
+
+        let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            eprintln!("skipping PostgreSQL batch-insert test; SCRYER_TEST_POSTGRES_URL is not set");
+            return Ok(());
+        };
+
+        let admin_pool = sqlx::PgPool::connect(&raw_url).await.map_err(|error| {
+            AppError::Repository(format!("failed to connect to postgres: {error}"))
+        })?;
+        let schema = next_test_schema_name();
+
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+            .execute(&admin_pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to create test schema: {error}"))
+            })?;
+
+        let result = async {
+            let schema_url = postgres_url_with_search_path(&raw_url, &schema)?;
+            let pool = sqlx::PgPool::connect(&schema_url).await.map_err(|error| {
+                AppError::Repository(format!("failed to connect with search_path: {error}"))
+            })?;
+
+            sqlx::query(
+                "CREATE TABLE batch_probe_pg (n INTEGER NOT NULL, label TEXT NOT NULL, note TEXT NOT NULL)",
+            )
+            .execute(&pool)
+            .await
+            .map_err(|error| {
+                AppError::Repository(format!("failed to create scratch table: {error}"))
+            })?;
+
+            // 700 rows x 3 cols, cap 1000 => 333 rows/chunk => three chunks.
+            // Each chunk statement is rendered independently, so its
+            // $-placeholders restart at $1; a correct multi-chunk insert proves
+            // per-statement renumbering lands every bind in the right slot.
+            let row_count = 700usize;
+            let rows: Vec<Vec<SqlArg>> = (0..row_count)
+                .map(|index| {
+                    vec![
+                        SqlArg::I32(index as i32),
+                        SqlArg::Text(format!("row-{index}")),
+                        SqlArg::Text(format!("note-{index}")),
+                    ]
+                })
+                .collect();
+
+            let datastore = StoreDatastore::Postgres { pool: pool.clone() };
+            let affected =
+                SqlRuntime::run_in_transaction(&datastore, "pg_batch_probe_insert", move |tx| {
+                    let rows = rows.clone();
+                    Box::pin(async move {
+                        SqlRuntime::execute_batch_insert(
+                            tx,
+                            "INSERT INTO batch_probe_pg (n, label, note)",
+                            3,
+                            rows,
+                            "",
+                        )
+                        .await
+                    })
+                })
+                .await?;
+            assert_eq!(
+                affected, row_count as u64,
+                "rows_affected must sum across all three chunks"
+            );
+
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM batch_probe_pg")
+                .fetch_one(&pool)
+                .await
+                .map_err(|error| AppError::Repository(error.to_string()))?;
+            assert_eq!(count, row_count as i64);
+
+            let first = sqlx::query("SELECT label, note FROM batch_probe_pg WHERE n = $1")
+                .bind(0_i32)
+                .fetch_one(&pool)
+                .await
+                .map_err(|error| AppError::Repository(error.to_string()))?;
+            assert_eq!(first.get::<String, _>("label"), "row-0");
+            assert_eq!(first.get::<String, _>("note"), "note-0");
+
+            let last = sqlx::query("SELECT label, note FROM batch_probe_pg WHERE n = $1")
+                .bind((row_count - 1) as i32)
+                .fetch_one(&pool)
+                .await
+                .map_err(|error| AppError::Repository(error.to_string()))?;
+            assert_eq!(last.get::<String, _>("label"), format!("row-{}", row_count - 1));
+            assert_eq!(last.get::<String, _>("note"), format!("note-{}", row_count - 1));
+
+            pool.close().await;
+            Ok::<_, AppError>(())
+        }
+        .await;
+
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+            .execute(&admin_pool)
+            .await;
+        admin_pool.close().await;
+        if let Err(error) = cleanup {
+            return Err(AppError::Repository(format!(
+                "failed to drop test schema {schema}: {error}"
+            )));
+        }
+        result
+    }
+
+    #[tokio::test]
     async fn postgres_settings_accept_raw_strings_and_read_them_back_as_json_strings()
     -> AppResult<()> {
         let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")

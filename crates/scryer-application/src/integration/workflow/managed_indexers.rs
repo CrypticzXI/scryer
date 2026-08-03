@@ -69,6 +69,129 @@ impl AppUseCase {
             }
         });
     }
+
+    pub(crate) fn queue_managed_indexer_enrichment(&self, actor: &User, config_id: &str) {
+        let config_id = config_id.trim().to_string();
+        if config_id.is_empty() {
+            return;
+        }
+
+        let app = self.clone();
+        let actor = actor.clone();
+        tokio::spawn(async move {
+            if let Err(error) = app
+                .enrich_managed_indexer_children(&actor, &config_id)
+                .await
+            {
+                tracing::warn!(
+                    config_id = %config_id,
+                    error = %error,
+                    "background managed indexer caps enrichment failed"
+                );
+            }
+        });
+    }
+
+    async fn enrich_managed_indexer_children(
+        &self,
+        actor: &User,
+        config_id: &str,
+    ) -> AppResult<()> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        let started = std::time::Instant::now();
+        let _sync_guard = self
+            .runtime
+            .integrations
+            .managed_indexer_sync_lock
+            .clone()
+            .lock_owned()
+            .await;
+        let parent = self
+            .services
+            .integrations
+            .indexer_configs
+            .get_by_id(config_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("indexer config '{config_id}' not found")))?;
+        let provider = self
+            .services
+            .integrations
+            .plugin_provider
+            .available()
+            .ok_or_else(|| AppError::Repository("indexer provider not available".into()))?;
+        let client = provider
+            .management_client_for_provider(&parent)
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "no indexer management client available for provider type '{}'",
+                    parent.provider_type
+                ))
+            })?;
+        let Some(plan) = client.enrichment_sync_plan(&parent.id).await? else {
+            return Ok(());
+        };
+        let desired_children = self
+            .prepare_managed_indexer_sync_plan(&parent, plan)
+            .await?;
+        let existing_by_key = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await?
+            .into_iter()
+            .filter(|candidate| {
+                candidate.managed_parent_config_id.as_deref() == Some(parent.id.as_str())
+            })
+            .filter_map(|candidate| {
+                candidate
+                    .managed_child_key
+                    .clone()
+                    .map(|child_key| (child_key, candidate))
+            })
+            .collect::<HashMap<_, _>>();
+
+        let mut enriched = 0_usize;
+        for desired in desired_children {
+            let Some(caps_snapshot_json) = desired.caps_snapshot_json else {
+                continue;
+            };
+            let Some(existing) = existing_by_key.get(&desired.child_key) else {
+                continue;
+            };
+            let managed_metadata_json = desired
+                .managed_metadata_json
+                .or_else(|| existing.managed_metadata_json.clone());
+            if existing.caps_snapshot_json.as_deref() == Some(caps_snapshot_json.as_str())
+                && existing.managed_metadata_json == managed_metadata_json
+            {
+                continue;
+            }
+            self.services
+                .integrations
+                .indexer_configs
+                .update(IndexerConfigUpdate {
+                    id: existing.id.clone(),
+                    managed_metadata_json: Some(managed_metadata_json),
+                    caps_snapshot_json: Some(Some(caps_snapshot_json)),
+                    ..Default::default()
+                })
+                .await?;
+            enriched = enriched.saturating_add(1);
+        }
+        if enriched > 0 {
+            self.publish_indexers_changed();
+        }
+        tracing::info!(
+            config_id = %parent.id,
+            child_count = enriched,
+            duration_ms = started.elapsed().as_millis(),
+            "managed indexer caps enrichment completed"
+        );
+        Ok(())
+    }
 }
 impl AppUseCase {
     async fn prepare_managed_indexer_sync_plan(

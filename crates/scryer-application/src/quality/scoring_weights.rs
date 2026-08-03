@@ -120,6 +120,9 @@ pub struct ScoringWeights {
     pub upscaled_penalty: i32,
     pub hardcoded_subs_penalty: i32,
     pub reencode_penalty: i32,
+    pub scene_penalty: i32,
+    pub obfuscated_penalty: i32,
+    pub retagged_penalty: i32,
 
     // ── Edition bonuses (movies) ───────────────────────────
     pub edition_imax: i32,
@@ -367,6 +370,9 @@ pub(crate) fn balanced_weights() -> ScoringWeights {
         upscaled_penalty: BLOCK_SCORE,
         hardcoded_subs_penalty: -300,
         reencode_penalty: -400,
+        scene_penalty: -30,
+        obfuscated_penalty: -90,
+        retagged_penalty: -60,
 
         // Editions — not applied until Phase E
         edition_imax: 80,
@@ -454,6 +460,9 @@ fn audiophile_weights() -> ScoringWeights {
         upscaled_penalty: BLOCK_SCORE,
         hardcoded_subs_penalty: -400,
         reencode_penalty: -800,
+        scene_penalty: -60,
+        obfuscated_penalty: -180,
+        retagged_penalty: -120,
 
         edition_imax: 120,
         edition_extended: 60,
@@ -540,6 +549,9 @@ fn efficient_weights() -> ScoringWeights {
         upscaled_penalty: BLOCK_SCORE,
         hardcoded_subs_penalty: -200,
         reencode_penalty: -200,
+        scene_penalty: -15,
+        obfuscated_penalty: -45,
+        retagged_penalty: -30,
 
         edition_imax: 40,
         edition_extended: 20,
@@ -626,6 +638,9 @@ fn compatible_weights() -> ScoringWeights {
         upscaled_penalty: BLOCK_SCORE,
         hardcoded_subs_penalty: -300,
         reencode_penalty: -400,
+        scene_penalty: -20,
+        obfuscated_penalty: -60,
+        retagged_penalty: -40,
 
         edition_imax: 60,
         edition_extended: 30,

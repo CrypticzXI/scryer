@@ -15,11 +15,11 @@ use crate::lex::{
     normalize_token,
 };
 use crate::model::{
-    AudioCodec, CandidateZones, ExternalIdSource, MetadataAst, ParseDisposition, ParseFamily,
-    ParseReason, ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedExternalId,
-    ParsedReleaseMetadata, ParsedSpecialKind, ReleaseIdentity, ReleaseParseAnalysis,
-    ReleaseParseCandidate, ReleaseSource, StreamingService, TitleSegment, TitleSegmentKind,
-    TokenAnnotations, TokenRange, TokenRole, VideoCodec,
+    AudioCodec, CandidateZones, ContextTitleMatch, ContextTitleMatchKind, ExternalIdSource,
+    MetadataAst, ParseDisposition, ParseFamily, ParseReason, ParsedEpisodeMetadata,
+    ParsedEpisodeReleaseType, ParsedExternalId, ParsedReleaseMetadata, ParsedSpecialKind,
+    ReleaseIdentity, ReleaseParseAnalysis, ReleaseParseCandidate, ReleaseSource, StreamingService,
+    TitleSegment, TitleSegmentKind, TokenAnnotations, TokenRange, TokenRole, VideoCodec,
 };
 
 const BEAM_WIDTH: usize = 24;
@@ -41,6 +41,13 @@ pub(crate) struct AnalysisInputs<'a> {
 }
 
 pub(crate) fn analyze_inputs(inputs: AnalysisInputs<'_>) -> ReleaseParseAnalysis {
+    let category_hint = match inputs.target.facet_hint {
+        ContextFacetHint::Movie => Some("movie"),
+        ContextFacetHint::Series => Some("series"),
+        ContextFacetHint::Anime => Some("anime"),
+        ContextFacetHint::Unknown => None,
+    };
+    let facts = crate::trash_guides::derive_facts(inputs.raw_input, category_hint);
     let lexed = lex_lossless(inputs.sanitized_input);
     let annotations = annotate_tokens(&lexed.tokens);
     let context_index = build_context_index(inputs.target);
@@ -60,6 +67,21 @@ pub(crate) fn analyze_inputs(inputs: AnalysisInputs<'_>) -> ReleaseParseAnalysis
         inputs.raw_input,
         inputs.parser_version,
     );
+    for candidate in &mut candidates {
+        let mut candidate_facts = facts.clone();
+        candidate_facts.extend(crate::trash_guides::derive_locale_group_facts(
+            &candidate.projected,
+            category_hint,
+        ));
+        candidate_facts.extend(crate::trash_guides::derive_structural_facts(
+            &candidate.projected,
+            category_hint,
+        ));
+        candidate_facts.sort();
+        candidate_facts.dedup();
+        candidate.projected.guide_facts = candidate_facts;
+        crate::trash_guides::project_safe_facts(&mut candidate.projected);
+    }
     let best_candidate_index = candidates
         .iter()
         .enumerate()
@@ -150,9 +172,15 @@ pub(crate) fn analyze_inputs(inputs: AnalysisInputs<'_>) -> ReleaseParseAnalysis
         best_candidate.projected.scoring_model_version = SCORING_MODEL_VERSION;
     }
 
+    let analysis_facts = best_candidate_index
+        .and_then(|index| candidates.get(index))
+        .map(|candidate| candidate.projected.guide_facts.clone())
+        .unwrap_or(facts);
+
     ReleaseParseAnalysis {
         raw_input: inputs.raw_input.to_string(),
         sanitized_input: inputs.sanitized_input.to_string(),
+        guide_facts: analysis_facts,
         parse_hints,
         tokens: lexed.tokens,
         annotations,
@@ -398,8 +426,9 @@ struct CompoundMetadata {
 fn annotate_tokens(tokens: &[Token]) -> Vec<TokenAnnotations> {
     tokens
         .iter()
-        .map(|token| {
-            let mut roles = classify_token(token);
+        .enumerate()
+        .map(|(index, token)| {
+            let mut roles = classify_token(token, tokens.get(index + 1));
             roles.sort_by(|left, right| {
                 right
                     .confidence
@@ -430,7 +459,7 @@ fn annotate_tokens(tokens: &[Token]) -> Vec<TokenAnnotations> {
         .collect()
 }
 
-fn classify_token(token: &Token) -> Vec<RoleCandidate> {
+fn classify_token(token: &Token, next: Option<&Token>) -> Vec<RoleCandidate> {
     let mut roles = Vec::new();
     let normalized = token.normalized.as_str();
     let compound = detect_compound_metadata(normalized);
@@ -484,37 +513,11 @@ fn classify_token(token: &Token) -> Vec<RoleCandidate> {
             strong_anchor: true,
         });
     }
-    if matches!(
-        normalized,
-        "NF" | "NETFLIX"
-            | "AMZN"
-            | "AMAZON"
-            | "CR"
-            | "CRUNCHYROLL"
-            | "HULU"
-            | "DSNP"
-            | "DNSP"
-            | "MAX"
-            | "HMAX"
-            | "HBO"
-            | "ATVP"
-            | "APTV"
-            | "PMTP"
-            | "PARAMOUNT"
-            | "PCOK"
-            | "PEACOCK"
-            | "FUNI"
-            | "FUNIMATION"
-            | "HIDIVE"
-            | "STAN"
-            | "ITUNES"
-            | "BILI"
-            | "HOTSTAR"
-            | "BBC"
-            | "BBCI"
-            | "IPLAYER"
-            | "YOUTUBE"
-    ) {
+    // Detection is the distilled TRaSH table plus the curated supplement, not a
+    // hand-maintained list: the generated table is the source of
+    // truth. WEB-adjacent aliases need the neighbor, which is why this site --
+    // and only this site -- resolves them with context.
+    if normalize_streaming_service_with_neighbor(normalized, next).is_some() {
         roles.push(RoleCandidate {
             role: TokenRole::StreamingService,
             confidence: 96,
@@ -2190,7 +2193,7 @@ fn range_is_metadata_marker(tokens: &[Token], range: TokenRange) -> bool {
             !release_group_part_is_valid(token, index > range.start_token)
                 || is_explicit_language_metadata_token(normalized)
                 || is_release_flag_metadata_token(normalized)
-                || (range_len == 1 && normalize_streaming_service(normalized).is_some())
+                || (range_len == 1 && normalize_standalone_streaming_service(normalized).is_some())
                 || parse_special_kind(normalized).is_some()
         })
     })
@@ -2917,6 +2920,12 @@ fn build_candidate(
         state.accepted_alias_hits.as_slice(),
         alias_oracle,
     );
+    let context_title_matches = context_title_matches_for_state(
+        tokens,
+        state.title_token_indices.as_slice(),
+        state.accepted_alias_hits.as_slice(),
+        alias_oracle,
+    );
     let canonical_context_title = canonical_context_title(context_index);
     let title_context_matched = state.context_evidence.iter().any(|code| {
         matches!(
@@ -3024,6 +3033,7 @@ fn build_candidate(
         .is_some_and(|value| value.eq_ignore_ascii_case("remux"));
     let projected = ParsedReleaseMetadata {
         raw_title: raw_input.to_string(),
+        guide_facts: Vec::new(),
         normalized_title,
         normalized_title_variants,
         release_group: release_group.clone(),
@@ -3104,6 +3114,7 @@ fn build_candidate(
     ReleaseParseCandidate {
         family: state.family,
         title_segments,
+        context_title_matches,
         identity: state.identity,
         metadata: state.metadata,
         zones,
@@ -3400,6 +3411,50 @@ fn title_segments_for_state(
         }
     }
     segments
+}
+
+fn context_title_matches_for_state(
+    tokens: &[Token],
+    title_indices: &[usize],
+    accepted_alias_hits: &[AliasHit],
+    alias_oracle: &AliasOracle,
+) -> Vec<ContextTitleMatch> {
+    let contextual_hits =
+        contextual_hits_within_title_zone(title_indices, accepted_alias_hits, alias_oracle);
+    let mut matches = accepted_alias_hits
+        .iter()
+        .chain(contextual_hits.iter())
+        .filter_map(|hit| {
+            let pattern = alias_oracle.patterns.get(hit.pattern_id)?;
+            let kind = match hit.evidence {
+                AliasEvidenceKind::CanonicalTitle => ContextTitleMatchKind::CanonicalTitle,
+                AliasEvidenceKind::TitleAlias => ContextTitleMatchKind::TitleAlias,
+                AliasEvidenceKind::EpisodeTitle => ContextTitleMatchKind::EpisodeTitle,
+            };
+            Some(ContextTitleMatch {
+                kind,
+                token_range: hit.token_range,
+                raw: render_token_indices(
+                    tokens,
+                    &(hit.token_range.start_token..hit.token_range.end_token).collect::<Vec<_>>(),
+                ),
+                normalized: pattern.text.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        left.token_range
+            .start_token
+            .cmp(&right.token_range.start_token)
+            .then(right.token_range.len().cmp(&left.token_range.len()))
+            .then(left.kind.cmp(&right.kind))
+    });
+    matches.dedup_by(|left, right| {
+        left.kind == right.kind
+            && left.token_range == right.token_range
+            && left.normalized == right.normalized
+    });
+    matches
 }
 
 fn extend_title_connector_variants(
@@ -5013,7 +5068,7 @@ fn is_late_part_scan_boundary(token: &str) -> bool {
             | "DUAL"
             | "DUALAUDIO"
     ) || parse_year(token).is_some()
-        || normalize_streaming_service(token).is_some()
+        || normalize_standalone_streaming_service(token).is_some()
         || is_compound_metadata_like_token(token)
 }
 
@@ -5605,19 +5660,33 @@ fn coalesce_source(tokens: &[Token], index: usize) -> String {
     token.raw.clone()
 }
 
+/// Display name for a token that already holds the streaming-service role.
 fn normalize_streaming_service(token: &str) -> Option<&'static str> {
-    if let Some(service) = crate::trash_guides::normalize_streaming_service_alias(token) {
-        return Some(service);
-    }
-    match token {
-        "STAN" => Some("Stan"),
-        "ITUNES" => Some("iTunes"),
-        "BILI" => Some("Bilibili"),
-        "HOTSTAR" => Some("Hotstar"),
-        "BBC" | "BBCI" | "IPLAYER" => Some("BBC iPlayer"),
-        "YOUTUBE" => Some("YouTube"),
-        _ => None,
-    }
+    crate::trash_guides::normalize_streaming_service_alias(token)
+}
+
+/// Service detection for callers that see one token and no neighbors.
+///
+/// Restricted to standalone aliases: a WEB-adjacent alias such as `NOW` or `RED`
+/// cannot be resolved without the neighbor, and guessing that it names a service
+/// would let a common title word flip a structural predicate.
+fn normalize_standalone_streaming_service(token: &str) -> Option<&'static str> {
+    crate::trash_guides::normalize_streaming_service_alias_standalone(token)
+}
+
+/// Service detection at the role-assignment site, which has the next token.
+fn normalize_streaming_service_with_neighbor(
+    token: &str,
+    next: Option<&Token>,
+) -> Option<&'static str> {
+    let web_adjacent = next.is_some_and(|next| is_web_marker_token(next.normalized.as_str()));
+    crate::trash_guides::normalize_streaming_service_alias_in_context(token, web_adjacent)
+}
+
+/// The WEB markers upstream's adjacency patterns accept. Bare `WEB` counts:
+/// their shape is `token[ ._-]web[ ._-]?(dl|rip)?`, where the suffix is optional.
+fn is_web_marker_token(normalized: &str) -> bool {
+    matches!(normalized, "WEB" | "WEBDL" | "WEBRIP")
 }
 
 fn detect_compound_metadata(token: &str) -> CompoundMetadata {

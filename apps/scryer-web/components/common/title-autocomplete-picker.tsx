@@ -11,6 +11,7 @@ import { titleAutocompleteSelectionQuery, titlesQuery } from "@/lib/graphql/quer
 import { useTranslate } from "@/lib/context/translate-context";
 import type { TitleRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { selectPosterVariantUrl } from "@/lib/utils/poster-images";
 
 const MIN_SEARCH_LENGTH = 2;
 const SEARCH_DEBOUNCE_MS = 250;
@@ -299,6 +300,10 @@ export function TitleAutocompletePicker({
                 <div className="space-y-1">
                   {results.map((title) => {
                     const facetLabel = sectionLabelForFacet(t, title.facet);
+                    const posterUrl = selectPosterVariantUrl(
+                      title.posterUrl,
+                      "w250",
+                    );
                     return (
                       <button
                         key={title.id}
@@ -306,10 +311,9 @@ export function TitleAutocompletePicker({
                         onClick={() => handleSelect(title)}
                         className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent"
                       >
-                        {title.posterUrl || title.posterSourceUrl ? (
+                        {posterUrl ? (
                           <TitlePoster
-                            src={title.posterUrl}
-                            sourceSrc={title.posterSourceUrl}
+                            src={posterUrl}
                             alt={title.name}
                             className="h-12 w-8 shrink-0 rounded-sm object-cover"
                           />

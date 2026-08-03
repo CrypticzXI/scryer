@@ -2,11 +2,11 @@ use chrono::NaiveDate;
 use scryer_domain::{Collection, Episode, MediaFacet, Title};
 
 pub use scryer_release_parser::{
-    AudioCodec, ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ExternalIdSource,
-    ParseDisposition, ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedReleaseMetadata,
-    ParsedSpecialKind, ReleaseParseAnalysis, ReleaseParseContext, ReleaseSource, StreamingService,
-    TargetedReleaseParseAnalysis, VideoCodec, analyze_release_against_targets,
-    analyze_release_for_target, best_parse_for_target,
+    AudioCodec, ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle,
+    ContextTitleMatchKind, ExternalIdSource, ParseDisposition, ParsedEpisodeMetadata,
+    ParsedEpisodeReleaseType, ParsedReleaseMetadata, ParsedSpecialKind, ReleaseParseAnalysis,
+    ReleaseParseContext, ReleaseSource, StreamingService, TargetedReleaseParseAnalysis, VideoCodec,
+    analyze_release_against_targets, analyze_release_for_target, best_parse_for_target,
 };
 
 pub fn parse_release_metadata(raw: &str) -> ParsedReleaseMetadata {
@@ -191,37 +191,90 @@ fn push_unique_hint(hints: &mut Vec<String>, value: String) {
     }
 }
 
-fn synthesize_release_parse_context(raw: &str) -> ReleaseParseContext {
-    let tokens = raw
-        .split(|ch: char| {
-            matches!(
-                ch,
-                '.' | '_' | ' ' | '-' | '/' | '[' | ']' | '(' | ')' | '{' | '}'
-            )
-        })
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+/// Strip leading `[group]` tags (and separator noise after them) from a raw
+/// release name, returning the remainder and each stripped group's content so
+/// a bracket-styled *title* can still be recovered from it.
+fn strip_leading_bracket_groups(raw_title: &str) -> (&str, Vec<&str>) {
+    let mut groups = Vec::new();
+    let mut rest = raw_title.trim_start();
+    loop {
+        if let Some(stripped) = rest.strip_prefix('[')
+            && let Some(end) = stripped.find(']')
+        {
+            groups.push(stripped[..end].trim());
+            rest = stripped[end + 1..]
+                .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '-' | '_' | '.'));
+            continue;
+        }
+        return (rest, groups);
+    }
+}
 
-    let title_start = usize::from(raw.trim_start().starts_with('[') && tokens.len() > 1);
-    let title_boundary = tokens
+fn synthesize_release_parse_context(raw: &str) -> ReleaseParseContext {
+    let tokenize = |value: &str| {
+        value
+            .split(|ch: char| {
+                matches!(
+                    ch,
+                    '.' | '_' | ' ' | '-' | '/' | '[' | ']' | '(' | ')' | '{' | '}'
+                )
+            })
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    let tokens = tokenize(raw);
+
+    // Leading `[group]` tags (including multi-token ones like `[Erai-raws]` or
+    // `[Anime Time]`, and stacked tags) are release provenance, not title text.
+    // Strip them bracket-aware before guessing the title span; a token-count
+    // skip cannot know how many tokens the bracket group spans.
+    let (stripped, leading_groups) = strip_leading_bracket_groups(raw);
+    let stripped_tokens = tokenize(stripped);
+    let (scan_tokens, title_start) = if stripped_tokens.is_empty() {
+        // Nothing but bracket groups — fall back to the raw token stream.
+        let title_start = usize::from(raw.trim_start().starts_with('[') && tokens.len() > 1);
+        (&tokens, title_start)
+    } else {
+        (&stripped_tokens, 0)
+    };
+    let title_boundary = scan_tokens
         .iter()
         .enumerate()
         .skip(title_start)
-        .find(|(_, token)| looks_like_release_metadata_token(token, &tokens))
+        .find(|(_, token)| looks_like_release_metadata_token(token, scan_tokens))
         .map(|(index, _)| index)
-        .unwrap_or(tokens.len());
-    let title_tokens = tokens
+        .unwrap_or(scan_tokens.len());
+    let title_tokens = scan_tokens
         .iter()
         .skip(title_start)
         .take(title_boundary.saturating_sub(title_start))
         .take(12)
         .cloned()
         .collect::<Vec<_>>();
-    let title = if title_tokens.is_empty() {
-        tokens
+    // A name whose only title text lives in a leading bracket group is a
+    // bracket-styled title (`[Oshi no Ko].S02E01...`), not a group tag — a
+    // group tag is always followed by title text. Prefer the last such group
+    // that carries non-metadata tokens (tags stack before the title).
+    let bracket_styled_title = if title_tokens.is_empty() {
+        leading_groups.iter().rev().find_map(|group| {
+            let group_tokens = tokenize(group);
+            (!group_tokens.is_empty()
+                && group_tokens
+                    .iter()
+                    .any(|token| !looks_like_release_metadata_token(token, &group_tokens)))
+            .then(|| group_tokens.join(" "))
+        })
+    } else {
+        None
+    };
+    let title = if let Some(bracket_styled_title) = bracket_styled_title {
+        bracket_styled_title
+    } else if title_tokens.is_empty() {
+        scan_tokens
             .get(title_start)
+            .or_else(|| scan_tokens.first())
             .or_else(|| tokens.first())
             .cloned()
             .unwrap_or_else(|| "Unknown".to_string())

@@ -59,6 +59,7 @@ export type DownloadDisplayState =
   | "IMPORT_PENDING"
   | "IMPORT_BLOCKED"
   | "IMPORT_FAILED"
+  | "IGNORED"
   | "REMOVING"
   | "REMOVE_FAILED";
 
@@ -101,6 +102,7 @@ export type DownloadQueueItem = {
   titleName: string;
   facet: string | null;
   isScryerOrigin: boolean;
+  sourceProvider: string | null;
   clientId: string;
   clientName: string;
   clientType: string;

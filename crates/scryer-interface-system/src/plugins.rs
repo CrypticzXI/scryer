@@ -1,15 +1,15 @@
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use scryer_domain::AppPermission;
 
-use crate::context::{app_from_ctx, require_config_app_permission, to_gql_error};
-use crate::mappers::{
+use scryer_interface_core::{app_from_ctx, require_config_app_permission, to_gql_error};
+use scryer_interface_media::mappers::{
     from_manual_plugin_preview, from_plugin_install_progress, from_plugin_installation,
     from_registry_plugin,
 };
-use crate::types::*;
+use scryer_interface_media::types::*;
 
 #[derive(Default)]
-pub(crate) struct PluginMutations;
+pub struct PluginMutations;
 
 #[Object]
 impl PluginMutations {

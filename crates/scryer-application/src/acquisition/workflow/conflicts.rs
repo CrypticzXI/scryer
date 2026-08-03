@@ -95,7 +95,7 @@ impl AppUseCase {
     /// A user-initiated "search this scope again": after the submission-conflict
     /// gate, re-open the scope's convergence (coverage pruned, state reset,
     /// acquisition woken) so the cursor searches it on the next cycle even if it
-    /// had converged (RFC 119 §D5 — a trigger overrides convergence).
+    /// had converged.
     pub(crate) async fn reopen_wanted_scope_with_policy(
         &self,
         title: &Title,

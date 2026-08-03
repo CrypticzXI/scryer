@@ -365,7 +365,7 @@ pub(super) fn recognize_season_folder_name(name: &str) -> Option<u32> {
     None
 }
 
-fn infer_target_season_number(target_episodes: &[Episode]) -> Option<u32> {
+pub(super) fn infer_target_season_number(target_episodes: &[Episode]) -> Option<u32> {
     let mut seasons = target_episodes
         .iter()
         .map(|episode| episode.season_number.as_deref()?.parse::<u32>().ok())
@@ -388,6 +388,7 @@ pub(super) fn classify_title_scan_layout(
     title_dir: &Path,
     file_path: &Path,
     target_episodes: &[Episode],
+    configured_folder_name: Option<&str>,
 ) -> TitleScanLayoutObservation {
     let Ok(relative) = file_path.strip_prefix(title_dir) else {
         return TitleScanLayoutObservation::Ambiguous;
@@ -406,11 +407,19 @@ pub(super) fn classify_title_scan_layout(
         return TitleScanLayoutObservation::Flat;
     };
 
+    let target_season = infer_target_season_number(target_episodes);
+    if let Some(configured_folder) = configured_folder_name
+        && normalize_layout_component(first_component)
+            == normalize_layout_component(configured_folder)
+    {
+        return TitleScanLayoutObservation::SeasonFolder;
+    }
+
     let Some(folder_season) = recognize_season_folder_name(first_component) else {
         return TitleScanLayoutObservation::Ambiguous;
     };
 
-    match infer_target_season_number(target_episodes) {
+    match target_season {
         Some(target_season) if target_season == folder_season => {
             TitleScanLayoutObservation::SeasonFolder
         }
@@ -553,8 +562,25 @@ mod tests {
         let target_episodes = vec![test_episode("1")];
 
         assert_eq!(
-            classify_title_scan_layout(&title_dir, &file_path, &target_episodes),
+            classify_title_scan_layout(&title_dir, &file_path, &target_episodes, None),
             TitleScanLayoutObservation::Ambiguous
+        );
+    }
+
+    #[test]
+    fn classify_title_scan_layout_accepts_configured_folder_name() {
+        let title_dir = PathBuf::from("/library/Example Show");
+        let file_path = title_dir.join("Example.Show.Season.1/Example.Show.S01E01.mkv");
+        let target_episodes = vec![test_episode("1")];
+
+        assert_eq!(
+            classify_title_scan_layout(
+                &title_dir,
+                &file_path,
+                &target_episodes,
+                Some("Example Show Season 1"),
+            ),
+            TitleScanLayoutObservation::SeasonFolder
         );
     }
 

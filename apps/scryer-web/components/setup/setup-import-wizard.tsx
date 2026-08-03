@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { continueExternalImportFromConnect } from "@/lib/external-import-wizard-orchestration";
 import { useExternalImportSetup } from "@/lib/hooks/use-external-import-setup";
 
 import {
@@ -114,7 +115,8 @@ export function SetupImportWizard({
   const arrSessionCount = wizard.connectedArrSessionIds.length;
   useEffect(() => {
     if (currentStep !== 2) return;
-    // Prowlarr-only (no arr warmups): one fetch, nothing to poll for.
+    // Prowlarr progress is polled by the setup hook, which refreshes this
+    // preview when discovery completes.
     if (arrSessionCount === 0) {
       void loadPreview();
       return;
@@ -220,9 +222,8 @@ export function SetupImportWizard({
     verifyInstance,
   ]);
 
-  const goConnectContinue = useCallback(async () => {
-    await loadPreview();
-    goToStep(2, "import");
+  const goConnectContinue = useCallback(() => {
+    continueExternalImportFromConnect(loadPreview, () => goToStep(2, "import"));
   }, [loadPreview, goToStep]);
 
   const goSourcesContinue = useCallback(async () => {

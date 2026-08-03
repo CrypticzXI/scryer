@@ -142,13 +142,8 @@ pub(crate) fn build_movie_search_queries(
     let anidb_id = anidb_id_from_external_ids(&title.external_ids);
     let mal_id = mal_id_from_external_ids(&title.external_ids);
     let mut queries = Vec::new();
-    let query_title = title.name.trim().to_string();
-    if !query_title.is_empty() {
-        let query = if let Some(year) = title.year {
-            format!("{query_title} {year}")
-        } else {
-            query_title
-        };
+    let query = movie_text_search_query(&title.name, title.year);
+    if !query.is_empty() {
         queries.push(query);
     }
     let mut seen = std::collections::HashSet::new();
@@ -167,6 +162,15 @@ pub(crate) fn build_movie_search_queries(
         season: None,
         episode: None,
     }
+}
+
+pub(crate) fn movie_text_search_query(title: &str, year: Option<i32>) -> String {
+    let title = title.trim();
+    if title.is_empty() {
+        return String::new();
+    }
+
+    year.map_or_else(|| title.to_string(), |year| format!("{title} {year}"))
 }
 
 pub(crate) fn tmdb_id_from_external_ids(external_ids: &[ExternalId]) -> Option<String> {
@@ -212,4 +216,22 @@ pub(crate) fn imdb_id_from_title(title: &Title) -> Option<String> {
         .as_deref()
         .and_then(crate::normalize::normalize_imdb_id)
         .or_else(|| imdb_id_from_external_ids(&title.external_ids))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn movie_text_search_query_includes_year_only_for_named_movies() {
+        assert_eq!(
+            movie_text_search_query(" Resident Evil ", Some(2026)),
+            "Resident Evil 2026"
+        );
+        assert_eq!(
+            movie_text_search_query("Resident Evil", None),
+            "Resident Evil"
+        );
+        assert_eq!(movie_text_search_query("  ", Some(2026)), "");
+    }
 }

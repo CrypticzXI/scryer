@@ -199,13 +199,13 @@ export default function SetupImportQualityView({
                     <span
                       style={{ fontSize: 13, fontWeight: 600, color: "#f1f5ff" }}
                     >
-                      {t(`setup.persona.${lib.scoringPersona}.name`)}
+                      {t(`setup.persona.${lib.scoringPersona.toLowerCase()}.name`)}
                     </span>
                     <span
                       className="truncate"
                       style={{ fontSize: 11, color: "var(--scry-muted3)" }}
                     >
-                      {t(`setup.persona.${lib.scoringPersona}.desc`)}
+                      {t(`setup.persona.${lib.scoringPersona.toLowerCase()}.desc`)}
                     </span>
                   </span>
                 </SelectTrigger>
@@ -214,7 +214,7 @@ export default function SetupImportQualityView({
                     <SelectItem key={persona} value={persona}>
                       <span className="flex min-w-0 flex-col">
                         <span style={{ fontSize: 13, fontWeight: 600 }}>
-                          {t(`setup.persona.${persona}.name`)}
+                          {t(`setup.persona.${persona.toLowerCase()}.name`)}
                         </span>
                         <span
                           className="truncate"
@@ -223,7 +223,7 @@ export default function SetupImportQualityView({
                             color: "var(--scry-muted3)",
                           }}
                         >
-                          {t(`setup.persona.${persona}.desc`)}
+                          {t(`setup.persona.${persona.toLowerCase()}.desc`)}
                         </span>
                       </span>
                     </SelectItem>

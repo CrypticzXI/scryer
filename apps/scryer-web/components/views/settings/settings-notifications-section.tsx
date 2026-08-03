@@ -1,7 +1,7 @@
 
 import * as React from "react";
 import { Bell, Edit, Loader2, Plus, Power, PowerOff, Send, Trash2 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { AddNewButton } from "@/components/common/add-new-button";
 import { InfoHelp } from "@/components/common/info-help";
 import { PluginVisualLabel } from "@/components/common/plugin-visual";

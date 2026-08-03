@@ -109,6 +109,11 @@ pub(crate) fn build_rule_input(
                 .map(|value| (chrono::Utc::now() - value.with_timezone(&chrono::Utc)).num_days()),
             thumbs_up: release_runtime.thumbs_up,
             thumbs_down: release_runtime.thumbs_down,
+            guide_facts: parsed
+                .guide_facts
+                .iter()
+                .map(|fact| fact.code.clone())
+                .collect(),
             extra: release_runtime.extra.cloned().unwrap_or_default(),
         },
         profile: ProfileDoc {
@@ -355,7 +360,7 @@ pub(crate) fn build_file_doc(analysis: &scryer_mediainfo::MediaAnalysis) -> scry
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{QualityProfileCriteria, ScoringSource};
+    use crate::{IndexerResponseAttributes, QualityProfileCriteria, ScoringSource};
     use std::collections::HashMap;
 
     fn test_profile() -> QualityProfile {
@@ -430,6 +435,7 @@ mod tests {
                 parsed_release_metadata: None,
                 quality_profile_decision: None,
                 extra: HashMap::from([("indexer".to_string(), serde_json::json!("test"))]),
+                response_attributes: IndexerResponseAttributes::default(),
                 guid: None,
                 info_url: None,
                 provenance: None,
@@ -492,6 +498,7 @@ mod tests {
                     parsed_release_metadata: None,
                     quality_profile_decision: None,
                     extra: HashMap::new(),
+                    response_attributes: IndexerResponseAttributes::default(),
                     guid: None,
                     info_url: None,
                     provenance: None,
@@ -553,6 +560,7 @@ mod tests {
                     "password_protected".to_string(),
                     serde_json::Value::from(true),
                 )]),
+                response_attributes: IndexerResponseAttributes::default(),
                 guid: None,
                 info_url: None,
                 provenance: None,

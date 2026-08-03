@@ -1,3 +1,4 @@
+use crate::integration::workflow::{extract_url_origin, source_provider_label};
 use crate::library_scan_progress::{
     reduce_library_scan_projection_event, replay_library_scan_projection,
 };
@@ -107,6 +108,14 @@ pub(crate) fn activity_event_from_domain_event(event: &DomainEvent) -> Option<Ac
                         .map(|title| format!("Blocklisted a release for '{}'.", title.title_name))
                 })
                 .unwrap_or_else(|| "Blocklisted a release.".to_string()),
+        ),
+        DomainEventPayload::DownloadIgnored(data) => (
+            ActivityKind::SystemNotice,
+            ActivitySeverity::Info,
+            data.title
+                .as_ref()
+                .map(|title| format!("Ignored a download for '{}'.", title.title_name))
+                .unwrap_or_else(|| "Ignored a download.".to_string()),
         ),
         DomainEventPayload::ImportCompleted(data) => (
             if data.title.facet == MediaFacet::Movie {
@@ -309,6 +318,13 @@ fn history_api_key_query_param_regex() -> &'static Regex {
     })
 }
 
+fn history_url_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r#"(?i)\bhttps?://[^\s\"'<>]+"#).expect("history URL regex should compile")
+    })
+}
+
 fn looks_like_history_secret_key(key: &str) -> bool {
     let normalized = key
         .chars()
@@ -325,13 +341,34 @@ fn redact_history_api_keys(raw: &str) -> String {
         .into_owned()
 }
 
+fn redact_history_urls(raw: &str) -> String {
+    history_url_regex()
+        .replace_all(raw, |captures: &regex::Captures<'_>| {
+            let matched = captures.get(0).expect("URL match").as_str();
+            let trimmed = matched.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}']);
+            let suffix = &matched[trimmed.len()..];
+            format!(
+                "{}{}",
+                extract_url_origin(trimmed).unwrap_or_else(|| "Origin unavailable".to_string()),
+                suffix
+            )
+        })
+        .into_owned()
+}
+
 fn sanitize_history_string(value: Option<String>) -> Option<String> {
-    value.map(|value| redact_history_api_keys(&value))
+    value.map(|value| redact_history_api_keys(&redact_history_urls(&value)))
+}
+
+fn history_source_provider(value: Option<String>) -> Option<String> {
+    source_provider_label(None, value.as_deref())
 }
 
 fn sanitize_history_json_value(value: Value) -> Value {
     match value {
-        Value::String(value) => Value::String(redact_history_api_keys(&value)),
+        Value::String(value) => {
+            Value::String(redact_history_api_keys(&redact_history_urls(&value)))
+        }
         Value::Array(values) => Value::Array(
             values
                 .into_iter()
@@ -342,10 +379,20 @@ fn sanitize_history_json_value(value: Value) -> Value {
             values
                 .into_iter()
                 .map(|(key, value)| {
-                    let value = if looks_like_history_secret_key(&key) {
-                        Value::String(REDACTED_HISTORY_SECRET.to_string())
-                    } else {
-                        sanitize_history_json_value(value)
+                    let value = match key.as_str() {
+                        "source_hint" => match value {
+                            Value::String(value) => source_provider_label(None, Some(&value))
+                                .map(Value::String)
+                                .unwrap_or(Value::Null),
+                            _ => Value::Null,
+                        },
+                        "request_signature" | "source_password" => {
+                            Value::String(REDACTED_HISTORY_SECRET.to_string())
+                        }
+                        _ if looks_like_history_secret_key(&key) => {
+                            Value::String(REDACTED_HISTORY_SECRET.to_string())
+                        }
+                        _ => sanitize_history_json_value(value),
                     };
                     (key, value)
                 })
@@ -522,6 +569,29 @@ pub(crate) fn title_history_record_from_domain_event(
             data.source_path.clone(),
             data.dest_path.clone(),
         ),
+        DomainEventPayload::DownloadIgnored(data) => (
+            data.title.as_ref().map(|title| title.title_name.clone()),
+            data.title.as_ref().map(|title| title.facet.clone()),
+            TitleHistoryEventType::DownloadIgnored,
+            data.source_title.clone(),
+            data.source_title
+                .clone()
+                .or_else(|| data.source_provider.clone()),
+            None,
+            None,
+            data.source_provider.clone(),
+            None,
+            Some(data.download_client_item_id.clone()),
+            data.client_id.clone(),
+            data.client_type.clone(),
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        ),
         DomainEventPayload::MediaFileDeleted(data) => (
             Some(data.title.title_name.clone()),
             Some(data.title.facet.clone()),
@@ -629,7 +699,7 @@ pub(crate) fn title_history_record_from_domain_event(
     let display_title = sanitize_history_string(display_title);
     let source_system = sanitize_history_string(source_system);
     let source_ref = sanitize_history_string(source_ref);
-    let source_hint = sanitize_history_string(source_hint);
+    let source_hint = history_source_provider(source_hint);
     let failure_reason = sanitize_history_string(failure_reason);
     let blocklist_reason = sanitize_history_string(blocklist_reason);
     let source_path = sanitize_history_string(source_path);
@@ -1209,10 +1279,7 @@ mod tests {
             sanitized["nested"]["provider_api_key"],
             REDACTED_HISTORY_SECRET
         );
-        assert_eq!(
-            sanitized["nested"]["source_hint"],
-            "http://api.nzbgeek.info/api?t=get&id=abc123&apikey=[redacted]"
-        );
+        assert_eq!(sanitized["nested"]["source_hint"], "api.nzbgeek.info");
     }
 
     #[test]
@@ -1239,14 +1306,12 @@ mod tests {
         ))
         .expect("download failed event should project to title history");
 
-        let expected_hint = "http://api.nzbgeek.info/api?t=get&id=abc123&apikey=[redacted]";
+        let expected_hint = "api.nzbgeek.info";
         assert_eq!(record.source_hint.as_deref(), Some(expected_hint));
         assert_eq!(record.display_title.as_deref(), Some(expected_hint));
         assert_eq!(
             record.failure_reason.as_deref(),
-            Some(
-                "grab failed while fetching http://api.nzbgeek.info/api?t=get&id=abc123&apikey=[redacted]"
-            )
+            Some("grab failed while fetching api.nzbgeek.info")
         );
 
         let data_json = record
@@ -1254,6 +1319,7 @@ mod tests {
             .expect("history payload should be serialized");
         assert!(data_json.contains(expected_hint));
         assert!(!data_json.contains("super-secret"));
+        assert!(!data_json.contains("/api?t=get"));
     }
 
     #[test]
@@ -1360,6 +1426,7 @@ mod tests {
             imported_at: None,
             delete_status: None,
             delete_error_message: None,
+            source_provider: None,
             is_scryer_origin: true,
             tracked_state: None,
             tracked_status: None,

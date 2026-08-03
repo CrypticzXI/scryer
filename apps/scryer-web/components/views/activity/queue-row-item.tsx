@@ -113,6 +113,12 @@ export const QueueRowItem = memo(function QueueRowItem({
             />
             <p className="mt-1 text-xs text-muted-foreground">
               {queueItem.clientName || queueItem.clientType} • {queueItem.clientType}
+              {queueItem.sourceProvider ? (
+                <span
+                  data-ui="activity-source-provider"
+                  data-source-provider={queueItem.sourceProvider}
+                >{` • ${queueItem.sourceProvider}`}</span>
+              ) : null}
             </p>
           </div>
         </div>
@@ -255,6 +261,7 @@ export const QueueRowItem = memo(function QueueRowItem({
         {row.canIgnore && (
           <Button
             type="button"
+            id={selectorId("activity", activeTab, "ignore", rowSelectorKey)}
             size="sm"
             variant="secondary"
             className={`flex-1 ${rowActionVisualClass}`}

@@ -1543,7 +1543,10 @@ fn ai_enhanced_gets_block_score() {
 fn trash_guides_blocked_title_gets_block_score() {
     let profile = QualityProfile::default();
     let w = balanced_weights();
-    let release = parse_release_metadata("Series.Name.2160p.BiTOR.WEB-DL");
+    let mut release = parse_release_metadata("Series.Name.2160p.BiTOR.WEB-DL");
+    release.guide_facts.push(scryer_release_parser::GuideFact {
+        code: "trash.blocked.lq_release_title".to_string(),
+    });
     let d = evaluate_against_profile_for_category(&profile, &release, false, &w, Some("series"));
     assert!(
         d.scoring_log
@@ -1638,7 +1641,8 @@ fn min_score_blocks_low_scoring_release() {
     let w = balanced_weights();
     // A basic 1080p WEB-DL will score well below 5000
     let release = parse_release_metadata("Movie.2024.1080p.WEB-DL.H.265");
-    let d = evaluate_against_profile(&profile, &release, false, &w);
+    let mut d = evaluate_against_profile(&profile, &release, false, &w);
+    apply_min_score_gate(&profile, &mut d);
     assert!(!d.allowed);
     assert!(d.block_codes.contains(&"score_below_minimum".to_string()));
 }
@@ -1650,7 +1654,8 @@ fn min_score_allows_high_scoring_release() {
     let w = balanced_weights();
     // Top-tier 2160p should easily exceed 100
     let release = parse_release_metadata("Movie.2024.2160p.BluRay.Remux.TrueHD.Atmos.7.1.H.265");
-    let d = evaluate_against_profile(&profile, &release, false, &w);
+    let mut d = evaluate_against_profile(&profile, &release, false, &w);
+    apply_min_score_gate(&profile, &mut d);
     assert!(d.allowed);
     assert!(!d.block_codes.contains(&"score_below_minimum".to_string()));
 }

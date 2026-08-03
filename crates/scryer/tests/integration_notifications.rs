@@ -5,7 +5,7 @@ mod common;
 use async_graphql::Request;
 use async_trait::async_trait;
 use chrono::Utc;
-use common::{TestContext, disabled_auth_runtime_handle};
+use common::{TestContext, disabled_auth_runtime_handle, initialize_wasm_runtime_for_tests};
 use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
     AppError, AppResult, MediaServerConnectionRepository, NotificationAppPayload,
@@ -352,6 +352,7 @@ fn jellyfin_dist_wasm_path() -> PathBuf {
 }
 
 fn load_jellyfin_dist_provider() -> Option<Arc<dyn NotificationPluginProvider>> {
+    initialize_wasm_runtime_for_tests();
     let wasm_path = jellyfin_dist_wasm_path();
     if !wasm_path.exists() {
         eprintln!(

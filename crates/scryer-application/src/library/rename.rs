@@ -20,9 +20,10 @@ use crate::media::release_labels::resolve_release_labels_from_analysis;
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
     AppError, AppResult, AppUseCase, CollectionUpdate, DEFAULT_FOLDER_TEMPLATE_ANIME,
-    DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES, DownloadSourceIdentity,
-    FOLDER_TEMPLATE_KEY, ParsedEpisodeMetadata, ParsedReleaseMetadata, TitleMediaFile,
-    parse_release_metadata, use_season_folders,
+    DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES, DEFAULT_SEASON_FOLDER_TEMPLATE,
+    DEFAULT_SPECIALS_FOLDER_TEMPLATE, DownloadSourceIdentity, FOLDER_TEMPLATE_KEY,
+    ParsedEpisodeMetadata, ParsedReleaseMetadata, TitleMediaFile, parse_release_metadata,
+    use_season_folders,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -815,6 +816,8 @@ impl AppUseCase {
                     media_files,
                     &import_paths.media_root,
                     folder_template,
+                    &import_paths.season_folder_template,
+                    &import_paths.specials_folder_template,
                     template,
                     collision_policy,
                     missing_metadata_policy,
@@ -1128,61 +1131,116 @@ pub fn render_title_folder_template(template: &str, tokens: &BTreeMap<String, St
 }
 
 pub(crate) fn validate_title_folder_template(template: &str) -> AppResult<()> {
+    validate_folder_component_template(
+        template,
+        "folder",
+        is_supported_title_folder_token,
+        None,
+        true,
+    )
+}
+
+pub(crate) fn validate_season_folder_template(template: &str) -> AppResult<()> {
+    validate_folder_component_template(
+        template,
+        "season folder",
+        is_supported_season_folder_token,
+        Some("season"),
+        false,
+    )
+}
+
+pub(crate) fn validate_specials_folder_template(template: &str) -> AppResult<()> {
+    validate_folder_component_template(
+        template,
+        "specials folder",
+        is_supported_season_folder_token,
+        None,
+        false,
+    )
+}
+
+fn is_illegal_folder_template_literal(ch: char) -> bool {
+    matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || ch.is_control()
+}
+
+fn validate_folder_component_template(
+    template: &str,
+    template_label: &str,
+    is_supported_token: impl Fn(&str) -> bool,
+    required_token: Option<&str>,
+    require_any_token: bool,
+) -> AppResult<()> {
     let trimmed = template.trim();
     if trimmed.is_empty() {
-        return Err(AppError::Validation(
-            "folder template is required".to_string(),
-        ));
+        return Err(AppError::Validation(format!(
+            "{template_label} template is required"
+        )));
     }
 
     let chars: Vec<char> = trimmed.chars().collect();
     let mut cursor = 0usize;
     let mut saw_token = false;
+    let mut saw_required_token = required_token.is_none();
 
     while cursor < chars.len() {
         let ch = chars[cursor];
         if ch == '}' {
-            return Err(AppError::Validation(
-                "folder template contains an unmatched '}'".to_string(),
-            ));
+            return Err(AppError::Validation(format!(
+                "{template_label} template contains an unmatched '}}'"
+            )));
         }
         if ch != '{' {
+            if is_illegal_folder_template_literal(ch) {
+                return Err(AppError::Validation(format!(
+                    "{template_label} template contains an illegal filesystem character: {ch:?}"
+                )));
+            }
             cursor += 1;
             continue;
         }
 
         let Some(end) = chars[cursor + 1..].iter().position(|value| *value == '}') else {
-            return Err(AppError::Validation(
-                "folder template contains an unmatched '{'".to_string(),
-            ));
+            return Err(AppError::Validation(format!(
+                "{template_label} template contains an unmatched '{{'"
+            )));
         };
         let end_index = cursor + 1 + end;
         let token_spec: String = chars[cursor + 1..end_index].iter().collect();
         if token_spec.contains('{') {
-            return Err(AppError::Validation(
-                "folder template contains an unmatched '{'".to_string(),
-            ));
+            return Err(AppError::Validation(format!(
+                "{template_label} template contains an unmatched '{{'"
+            )));
         }
         let Some(parsed_token) = parse_rename_template_token_spec(token_spec.trim()) else {
             return Err(AppError::Validation(format!(
-                "unsupported folder template token: {{{}}}",
+                "unsupported {template_label} template token: {{{}}}",
                 token_spec.trim()
             )));
         };
-        if !is_supported_title_folder_token(&parsed_token.name) {
+        if !is_supported_token(&parsed_token.name) {
             return Err(AppError::Validation(format!(
-                "unsupported folder template token: {{{}}}",
+                "unsupported {template_label} template token: {{{}}}",
                 token_spec.trim()
             )));
         }
         saw_token = true;
+        if required_token.is_some_and(|required| parsed_token.name == required) {
+            saw_required_token = true;
+        }
         cursor = end_index + 1;
     }
 
-    if !saw_token {
-        return Err(AppError::Validation(
-            "folder template must include at least one supported token".to_string(),
-        ));
+    if require_any_token && !saw_token {
+        return Err(AppError::Validation(format!(
+            "{template_label} template must include at least one supported token"
+        )));
+    }
+    if !saw_required_token {
+        return Err(AppError::Validation(format!(
+            "{template_label} template must include {{{}}}",
+            required_token.unwrap_or_default()
+        )));
     }
 
     Ok(())
@@ -1297,6 +1355,51 @@ pub(crate) fn normalize_title_folder_template_or_default(
     }
 }
 
+pub(crate) fn normalize_season_folder_template_or_default(raw: Option<String>) -> String {
+    normalize_episode_folder_template_or_default(
+        raw,
+        DEFAULT_SEASON_FOLDER_TEMPLATE,
+        validate_season_folder_template,
+        "season",
+    )
+}
+
+pub(crate) fn normalize_specials_folder_template_or_default(raw: Option<String>) -> String {
+    normalize_episode_folder_template_or_default(
+        raw,
+        DEFAULT_SPECIALS_FOLDER_TEMPLATE,
+        validate_specials_folder_template,
+        "specials",
+    )
+}
+
+fn normalize_episode_folder_template_or_default(
+    raw: Option<String>,
+    default_template: &str,
+    validate: impl Fn(&str) -> AppResult<()>,
+    template_kind: &str,
+) -> String {
+    let Some(template) = raw
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return default_template.to_string();
+    };
+
+    match validate(&template) {
+        Ok(()) => template,
+        Err(error) => {
+            warn!(
+                error = %error,
+                template = %template,
+                template_kind,
+                "invalid stored episode folder template; using default"
+            );
+            default_template.to_string()
+        }
+    }
+}
+
 fn strip_empty_folder_template_groups(raw: &str) -> String {
     let mut cleaned = raw.to_string();
     loop {
@@ -1325,6 +1428,27 @@ pub(crate) fn build_title_folder_tokens(
     ]);
     insert_title_external_id_tokens(&mut tokens, title);
     tokens
+}
+
+pub(crate) fn render_episode_folder_name(
+    title: &Title,
+    season: u32,
+    season_template: &str,
+    specials_template: &str,
+) -> String {
+    let (template, default_template) = if season == 0 {
+        (specials_template, DEFAULT_SPECIALS_FOLDER_TEMPLATE)
+    } else {
+        (season_template, DEFAULT_SEASON_FOLDER_TEMPLATE)
+    };
+    let mut tokens = build_title_folder_tokens(title, title.year);
+    tokens.insert("season".to_string(), season.to_string());
+    let rendered = render_title_folder_template(template, &tokens);
+    if rendered.is_empty() {
+        render_title_folder_template(default_template, &tokens)
+    } else {
+        rendered
+    }
 }
 
 pub(crate) fn configured_title_folder_path(
@@ -1392,6 +1516,35 @@ pub(crate) fn title_folder_path_for_renamed_file(
     } else {
         desired_root.join(relative_parent)
     }
+}
+
+fn episode_parent_path_for_renamed_file(
+    title: &Title,
+    current_file: &Path,
+    media_root: &str,
+    folder_template: &str,
+    season: Option<u32>,
+    season_folder_template: &str,
+    specials_folder_template: &str,
+) -> PathBuf {
+    let desired_root = configured_title_folder_path(media_root, title, folder_template, title.year);
+    if !crate::use_season_folders(title) {
+        return desired_root;
+    }
+    let Some(season) = season else {
+        return title_folder_path_for_renamed_file(
+            title,
+            current_file,
+            media_root,
+            folder_template,
+        );
+    };
+    desired_root.join(render_episode_folder_name(
+        title,
+        season,
+        season_folder_template,
+        specials_folder_template,
+    ))
 }
 
 fn infer_title_folder_path_after_rename(
@@ -1685,6 +1838,10 @@ fn is_supported_title_folder_token(token: &str) -> bool {
             .any(|(token_name, _)| *token_name == token)
 }
 
+fn is_supported_season_folder_token(token: &str) -> bool {
+    token == "season" || is_supported_title_folder_token(token)
+}
+
 fn insert_title_external_id_tokens(tokens: &mut BTreeMap<String, String>, title: &Title) {
     for (token_name, source) in TITLE_EXTERNAL_ID_TOKENS {
         let value = if source == "imdb" {
@@ -1943,6 +2100,8 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
     media_files: Vec<TitleMediaFile>,
     media_root: &str,
     folder_template: &str,
+    season_folder_template: &str,
+    specials_folder_template: &str,
     template: &str,
     collision_policy: &RenameCollisionPolicy,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
@@ -1979,6 +2138,8 @@ pub(crate) fn build_series_rename_plan_items_from_media_files(
                 source,
                 media_root,
                 folder_template,
+                season_folder_template,
+                specials_folder_template,
                 template,
                 collision_policy,
                 missing_metadata_policy,
@@ -2032,6 +2193,8 @@ fn build_series_media_file_rename_plan_item(
     source: GroupedTitleMediaFile,
     media_root: &str,
     folder_template: &str,
+    season_folder_template: &str,
+    specials_folder_template: &str,
     template: &str,
     collision_policy: &RenameCollisionPolicy,
     missing_metadata_policy: &RenameMissingMetadataPolicy,
@@ -2108,11 +2271,14 @@ fn build_series_media_file_rename_plan_item(
         Ok(rendered) => rendered,
         Err(item) => return *item,
     };
-    let target_parent = title_folder_path_for_renamed_file(
+    let target_parent = episode_parent_path_for_renamed_file(
         title,
         &source_file.current_file,
         media_root,
         folder_template,
+        rename_metadata.season.parse::<u32>().ok(),
+        season_folder_template,
+        specials_folder_template,
     );
 
     finalize_rename_plan_item(
@@ -2544,7 +2710,17 @@ fn parse_rename_template_token_spec(token_spec: &str) -> Option<RenameTemplateTo
         return None;
     }
     let (name, pad_width) = match token_core.split_once(':') {
-        Some((n, fmt)) => (n.trim().to_lowercase(), fmt.trim().parse::<usize>().ok()),
+        Some((n, fmt)) => {
+            let fmt = fmt.trim();
+            if fmt.is_empty() || !fmt.chars().all(|ch| ch.is_ascii_digit()) {
+                return None;
+            }
+            let pad_width = fmt.parse::<usize>().ok()?;
+            if pad_width > GENERATED_COMPONENT_MAX_BYTES {
+                return None;
+            }
+            (n.trim().to_lowercase(), Some(pad_width))
+        }
         None => (token_core.trim().to_lowercase(), None),
     };
     if name.is_empty() {

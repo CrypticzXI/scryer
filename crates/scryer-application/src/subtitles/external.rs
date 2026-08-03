@@ -439,12 +439,13 @@ mod tests {
     use chrono::Utc;
     use tokio::sync::Mutex;
 
+    #[cfg(unix)]
+    use super::parse_discovered_external_subtitle;
     use super::{
         DiscoveredExternalSubtitle, ExternalSubtitleDirectoryCache,
         discover_external_subtitles_for_video, discover_external_subtitles_for_video_with_cache,
-        parse_discovered_external_subtitle, parse_sidecar_suffix_tokens,
-        reconcile_external_subtitles_for_media_file, should_preserve_existing_discovered_record,
-        should_preserve_existing_probe_cache_entry,
+        parse_sidecar_suffix_tokens, reconcile_external_subtitles_for_media_file,
+        should_preserve_existing_discovered_record, should_preserve_existing_probe_cache_entry,
     };
     use crate::{
         AppResult, AppServices, AppUseCase, FacetRegistry, IndexerConfig, IndexerConfigRepository,

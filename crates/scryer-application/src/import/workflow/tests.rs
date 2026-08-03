@@ -4,11 +4,13 @@ mod tests {
         COMPLETED_ORIGIN_SCOPE_CONFLICT, CompletedDownloadOriginResolution,
         CompletedDownloadSubmissionMatch, CompletedDownloadSubmissionResolution,
         IMPORT_TRANSFER_HEARTBEAT_INTERVAL, ManualImportFileMapping,
-        completed_import_status_for_result, is_sample_file, resolve_completed_download_origin,
+        completed_import_status_for_result, resolve_completed_download_origin,
         resolved_episode_ids_are_within_expected, sanitized_title_folder_component,
         should_persist_import_transfer_heartbeat, skip_reason_for_import_check_code,
         validate_manual_import_mapping_targets, validate_path_manual_import_mappings,
     };
+    #[cfg(unix)]
+    use super::is_sample_file;
     use crate::{DownloadSubmission, DownloadSubmissionPurpose, SubmissionScope};
     use chrono::Utc;
     use scryer_domain::{
@@ -43,6 +45,9 @@ mod tests {
             &["ep-1".to_string(), "ep-2".to_string()],
             &expected
         ));
+        // A file that binds to no episode is not within the grabbed release
+        // either; the importer rejects it as `episode_not_found_for_title`.
+        assert!(!resolved_episode_ids_are_within_expected(&[], &expected));
     }
 
     fn completed_download_with_parameters(parameters: Vec<(&str, &str)>) -> CompletedDownload {
@@ -77,6 +82,8 @@ mod tests {
                     download_client_type: "sabnzbd".to_string(),
                     download_client_item_id: "item-1".to_string(),
                     source_hint: None,
+                    source_provider_id: None,
+                    source_provider_name: None,
                     source_kind: None,
                     source_title: None,
                     request_signature: None,
@@ -334,6 +341,57 @@ mod tests {
         assert_eq!(
             completed_import_status_for_result(&result, ImportStatus::Failed),
             ImportStatus::Pending
+        );
+    }
+
+    #[test]
+    fn held_replacement_import_result_stays_blocked_instead_of_retrying() {
+        // The replace guard parks an implausible overwrite for manual resolution.
+        // Its message must not read as a transient failure, or the tracked
+        // download would be scheduled for retry instead of landing blocked.
+        let mut analysis = crate::post_download_gate::build_stream_pointer_media_file_analysis();
+        analysis.duration_seconds = Some(1_495);
+        let accepted = crate::post_download_gate::ImportedFileAcceptance {
+            analysis: Some(analysis),
+            scan_error: None,
+            rule_file_doc: None,
+            audio_language_warning: None,
+        };
+        let message = crate::post_download_gate::replace_runtime_band_block(
+            crate::post_download_gate::RuntimeSampleValidation::automatic(None),
+            &accepted,
+            crate::post_download_gate::incumbent_replace_runtime_seconds([Some(3_300)]),
+        )
+        .expect("implausible replacement should be held");
+
+        assert_eq!(
+            crate::post_download_gate::REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE,
+            "replace_blocked_runtime_mismatch"
+        );
+
+        let source = tempfile::tempdir().expect("source tempdir");
+        let result = ImportResult {
+            import_id: "import-1".to_string(),
+            decision: ImportDecision::Skipped,
+            skip_reason: Some(ImportSkipReason::PolicyMismatch),
+            title_id: Some("title-1".to_string()),
+            source_system: Some("nzbget".to_string()),
+            source_ref: Some("item-1".to_string()),
+            source_title: Some("Release".to_string()),
+            source_path: source.path().to_string_lossy().into_owned(),
+            dest_path: None,
+            quality: None,
+            episode_ids: Vec::new(),
+            file_size_bytes: None,
+            link_type: None,
+            error_message: Some(message),
+            started_at: Utc::now(),
+            completed_at: Utc::now(),
+        };
+
+        assert_eq!(
+            completed_import_status_for_result(&result, ImportStatus::Skipped),
+            ImportStatus::Skipped
         );
     }
 

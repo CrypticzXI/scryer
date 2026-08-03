@@ -749,7 +749,6 @@ export function MobileSearchOverlay({
             title.monitored ? t("search.monitored") : t("search.unmonitored")
           }
           posterAlt={t("media.posterAlt", { name: title.name })}
-          posterSourceUrl={title.posterSourceUrl}
           posterUrl={posterUrl}
           resultAttribute="data-mobile-global-search-result"
           secondaryParts={secondaryParts}
@@ -970,7 +969,9 @@ export function MobileSearchOverlay({
             autoComplete="off"
             data-1p-ignore="true"
             data-lpignore="true"
+            data-bwignore="true"
             data-form-type="other"
+            data-protonpass-ignore="true"
             autoFocus
           />
           {globalSearch ? (

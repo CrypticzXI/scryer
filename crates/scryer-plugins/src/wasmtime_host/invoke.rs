@@ -8,6 +8,7 @@
 //! async path so WASI sleeps and polls can be cancelled by adapter timeouts
 //! without parking Tokio blocking threads.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use scryer_application::{AppError, AppResult};
@@ -17,7 +18,7 @@ use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 
 use crate::runtime_backing::PluginInstanceSpec;
 use crate::wasmtime_host::sandbox::{self, HostCtx, HostLimits, PreparedSandbox};
-use crate::wasmtime_host::{crypto_host, engine, error};
+use crate::wasmtime_host::{crypto_host, engine, error, module_cache};
 
 /// Amount of guest stderr forwarded to tracing / attached to error messages.
 const STDERR_TAIL_BYTES: usize = 8 * 1024;
@@ -34,6 +35,21 @@ pub(crate) struct SubtitleSyncInvocation<'a> {
     pub(crate) plugin_id: &'a str,
     pub(crate) plugin_version: &'a str,
     pub(crate) operation: &'a str,
+}
+
+async fn prepare_command_module(
+    wasm: Arc<Vec<u8>>,
+    timeout: Duration,
+) -> Result<Arc<Module>, String> {
+    let prepare = tokio::task::spawn_blocking(move || module_cache::command_module(&wasm));
+    match tokio::time::timeout(timeout, prepare).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(format!("plugin module preparation task failed: {error}")),
+        Err(_) => Err(format!(
+            "timed out waiting for plugin module rehydration after {} ms",
+            timeout.as_millis()
+        )),
+    }
 }
 
 /// Instantiate the archive guest and run one request→response exchange.
@@ -56,14 +72,14 @@ pub(crate) async fn process_archive(
 
     let engine = engine::shared_async_engine();
 
-    // TODO(RFC §9 / WP6): cache the compiled Module keyed by artifact digest;
-    // 0.17.0 compiles per request (one archive extraction runs at a time).
-    let module = Module::from_binary(engine, &spec.wasm).map_err(|error| {
-        AppError::Repository(format!(
-            "archive extractor plugin {}@{} failed to compile: {error:#}",
-            invocation.plugin_id, invocation.plugin_version
-        ))
-    })?;
+    let module = prepare_command_module(Arc::clone(&spec.wasm), spec.timeout)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "archive extractor plugin {}@{} failed to prepare: {error}",
+                invocation.plugin_id, invocation.plugin_version
+            ))
+        })?;
 
     let mut linker: Linker<HostCtx> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_async(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi)
@@ -205,12 +221,14 @@ pub(crate) async fn process_subtitle_sync(
     let request_len = request_bytes.len();
 
     let engine = engine::shared_async_engine();
-    let module = Module::from_binary(engine, &spec.wasm).map_err(|error| {
-        AppError::Repository(format!(
-            "subtitle sync plugin {}@{} failed to compile: {error:#}",
-            invocation.plugin_id, invocation.plugin_version
-        ))
-    })?;
+    let module = prepare_command_module(Arc::clone(&spec.wasm), spec.timeout)
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "subtitle sync plugin {}@{} failed to prepare: {error}",
+                invocation.plugin_id, invocation.plugin_version
+            ))
+        })?;
 
     let mut linker: Linker<HostCtx> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_async(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi)
@@ -452,13 +470,18 @@ mod tests {
     /// A guest demanding 100 pages (6.4 MiB) of initial memory — for the cap.
     const BIG_MEM_WAT: &str = r#"(module (memory (export "memory") 100))"#;
 
-    /// RFC §13.2 PROTOCOL GATE: request-on-stdin / response-on-stdout capture
+    fn module_from_wat(engine: &Engine, wat: &str, context: &str) -> Module {
+        let wasm = wat::parse_str(wat).unwrap_or_else(|error| panic!("{context}: {error}"));
+        Module::new(engine, wasm).unwrap_or_else(|error| panic!("{context}: {error}"))
+    }
+
+    /// PROTOCOL GATE: request-on-stdin / response-on-stdout capture
     /// under wasmtime-wasi p1 with a `Store<HostCtx>`. If this fails, the host
-    /// (and the PDK) must fall back to control files (RFC §7.2.5).
+    /// (and the PDK) must fall back to control files.
     #[test]
     fn stdin_stdout_round_trips_under_wasi_p1() {
         let engine = Engine::default();
-        let module = Module::new(&engine, ECHO_WAT).expect("compile echo guest");
+        let module = module_from_wat(&engine, ECHO_WAT, "compile echo guest");
         let mut linker: Linker<HostCtx> = Linker::new(&engine);
         wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |ctx: &mut HostCtx| &mut ctx.wasi)
             .unwrap();
@@ -496,7 +519,7 @@ mod tests {
     #[test]
     fn spinning_guest_hits_epoch_deadline() {
         let engine = engine::shared_engine();
-        let module = Module::new(engine, SPIN_WAT).expect("compile spin guest");
+        let module = module_from_wat(engine, SPIN_WAT, "compile spin guest");
         let linker: Linker<()> = Linker::new(engine);
         let mut store = Store::new(engine, ());
         // One tick: the ~100ms background ticker advances the epoch and fires.
@@ -564,7 +587,7 @@ mod tests {
     #[test]
     fn oversized_guest_is_denied_by_memory_cap() {
         let engine = Engine::default();
-        let module = Module::new(&engine, BIG_MEM_WAT).expect("compile big-mem guest");
+        let module = module_from_wat(&engine, BIG_MEM_WAT, "compile big-mem guest");
         let mut store = Store::new(&engine, HostLimits::new(Some(1024 * 1024)));
         store.limiter(|limits: &mut HostLimits| limits);
         let linker: Linker<HostLimits> = Linker::new(&engine);

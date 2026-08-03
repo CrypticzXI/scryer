@@ -1,4 +1,4 @@
-//! Derived acquisition targets (RFC 119 §D1). A scope is a target iff it is
+//! Derived acquisition targets. A scope is a target iff it is
 //! monitored and its current primary file does not satisfy the effective
 //! requirements — computed from library state on demand, never materialized.
 //! `missing` targets have no primary file; `cutoff_upgrade` targets have a file

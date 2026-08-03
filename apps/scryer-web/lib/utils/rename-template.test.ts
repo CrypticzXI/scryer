@@ -4,10 +4,12 @@ import assert from "node:assert/strict";
 import {
   applyRenameTemplatePreview,
   splitRenameTemplateSegments,
+  validateFolderTemplateSyntax,
   validateRenameTemplateSyntax,
 } from "./rename-template.ts";
 
 const VALID_TOKENS = new Set(["title", "season_order", "edition", "ext"]);
+const VALID_FOLDER_TOKENS = new Set(["title", "season"]);
 const SAMPLE_VALUES = {
   title: "The Dark Knight",
   edition: "IMAX",
@@ -30,6 +32,40 @@ test("validateRenameTemplateSyntax rejects invalid truncate filters", () => {
     kind: "invalidFilter",
     filter: "truncate:abc",
   });
+});
+
+test("validateFolderTemplateSyntax accepts deterministic season padding", () => {
+  for (const template of ["Season {season}", "Season {season:0}", "Season {season:2}"]) {
+    assert.equal(validateFolderTemplateSyntax(template, VALID_FOLDER_TOKENS, "season"), null);
+  }
+  assert.equal(
+    applyRenameTemplatePreview("Season {season:2}", VALID_FOLDER_TOKENS, { season: "3" }),
+    "Season 03",
+  );
+});
+
+test("validateFolderTemplateSyntax rejects malformed or excessive padding", () => {
+  for (const [template, padding] of [
+    ["Season {season:}", ""],
+    ["Season {season:abc}", "abc"],
+    ["Season {season:2x}", "2x"],
+    ["Season {season:241}", "241"],
+    ["Season {season:999999999999999999999999999999999999999}", "999999999999999999999999999999999999999"],
+  ]) {
+    assert.deepEqual(validateFolderTemplateSyntax(template, VALID_FOLDER_TOKENS, "season"), {
+      kind: "invalidPadding",
+      padding,
+    });
+  }
+});
+
+test("validateFolderTemplateSyntax rejects illegal literal characters", () => {
+  for (const character of ["<", ">", ":", "\"", "/", "\\", "|", "?", "*", "\n"]) {
+    assert.deepEqual(
+      validateFolderTemplateSyntax(`Season${character} {season}`, VALID_FOLDER_TOKENS, "season"),
+      { kind: "illegalCharacter", character },
+    );
+  }
 });
 
 test("validateRenameTemplateSyntax accepts literal brace escapes", () => {

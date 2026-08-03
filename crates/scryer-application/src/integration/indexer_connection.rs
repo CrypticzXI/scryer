@@ -2968,7 +2968,7 @@ mod tests {
                 })
                 .to_string(),
             ),
-            caps_snapshot_json: None,
+            caps_snapshot_json: Some(r#"{"search":{"available":true}}"#.to_string()),
             last_health_status: None,
             last_error_at: None,
             config_json: Some(r#"{"feed_url":"https://old.example/rss"}"#.to_string()),
@@ -3120,6 +3120,11 @@ mod tests {
         assert_eq!(
             keep_metadata["caps_snapshot"]["search"]["supported_params"],
             serde_json::json!(["q"])
+        );
+        assert_eq!(
+            keep.caps_snapshot_json.as_deref(),
+            Some(r#"{"search":{"available":true}}"#),
+            "a sync plan without caps must not clear the stored snapshot column"
         );
         assert!(
             configs

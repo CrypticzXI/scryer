@@ -148,12 +148,13 @@ impl IndexerProxyConfigRepository for IndexerProxyConfigStore {
         // Health is observational state: deliberately leave `updated_at`
         // untouched so plugin client cache revisions only change on config
         // edits.
-        let rows = SqlRuntime::execute(
-            self.datastore.read_exec(),
+        let rows = SqlRuntime::execute_write(
+            &self.datastore,
+            "record_indexer_proxy_health",
             "UPDATE indexer_proxy_configs SET
                     last_health_status = {}, last_error_message = {}, last_error_at = {}
                  WHERE id = {}",
-            &[
+            vec![
                 SqlArg::Text(status.as_str().to_string()),
                 SqlArg::OptText(error_message),
                 SqlArg::OptTimestamp(error_at),

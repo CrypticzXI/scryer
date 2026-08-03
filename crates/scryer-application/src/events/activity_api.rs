@@ -274,6 +274,7 @@ pub const SUPPORTED_TITLE_HISTORY_EVENT_TYPES: &[TitleHistoryEventType] = &[
     TitleHistoryEventType::FileRecycled,
     TitleHistoryEventType::FileDeleted,
     TitleHistoryEventType::FileRenamed,
+    TitleHistoryEventType::DownloadIgnored,
     TitleHistoryEventType::Rematched,
 ];
 
@@ -288,6 +289,7 @@ const TITLE_HISTORY_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::MediaFileDeleted,
     DomainEventType::MediaFileRenamed,
     DomainEventType::MediaRequestSubmitted,
+    DomainEventType::DownloadIgnored,
 ];
 
 pub fn supported_title_history_event_types() -> &'static [TitleHistoryEventType] {

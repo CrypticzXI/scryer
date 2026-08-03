@@ -37,6 +37,7 @@ import { formatUiDateTime } from "@/lib/utils/date-format";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import { HIGHLIGHT_COLOR_PRESETS } from "@/lib/theme";
+import { canSubmitJellyfinLink as canSubmitJellyfinLinkDraft } from "@/lib/utils/external-account-link-gate";
 
 const TOTP_CODE_LENGTH = 6;
 
@@ -247,11 +248,11 @@ export function SettingsProfileSection({
   const visibleLinkedAccounts = linkedAccounts.filter((account) =>
     isVisibleExternalAccountProvider(account.provider),
   );
-  const canSubmitJellyfinLink =
-    Boolean(linkAccountConnectionId) &&
-    linkAccountUsername.trim().length > 0 &&
-    linkAccountPassword.length > 0 &&
-    !linkAccountBusy;
+  const canSubmitJellyfinLink = canSubmitJellyfinLinkDraft({
+    connectionId: linkAccountConnectionId,
+    username: linkAccountUsername,
+    busy: linkAccountBusy,
+  });
   const canSubmitPlexLink =
     Boolean(linkAccountConnectionId) && !linkAccountBusy;
   const closeTotpActionDialog = () => {
@@ -936,7 +937,23 @@ export function SettingsProfileSection({
                     onLinkAccountPasswordChange(event.target.value)
                   }
                   disabled={linkAccountBusy}
+                  aria-describedby={
+                    linkAccountPassword.length === 0
+                      ? "profile-link-jellyfin-passwordless-hint"
+                      : undefined
+                  }
                 />
+                {/* Shown only while the field is blank, which is also the state
+                    the form opens in: it explains that blank is allowed and
+                    what linking a passwordless account does not buy you. */}
+                {linkAccountPassword.length === 0 ? (
+                  <p
+                    id="profile-link-jellyfin-passwordless-hint"
+                    className={PROFILE_MUTED_TEXT_CLASS}
+                  >
+                    {t("profile.linkAccountPasswordlessHint")}
+                  </p>
+                ) : null}
               </div>
             </div>
             {linkAccountError ? (

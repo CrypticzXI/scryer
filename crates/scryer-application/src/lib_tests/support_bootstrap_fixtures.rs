@@ -949,7 +949,7 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
-    // RFC 119 §D2: the convergence cursor only searches a scope's routed
+    // The convergence cursor only searches a scope's routed
     // indexers, so a background cycle needs at least one enabled indexer routed
     // to it. Seed a synthetic direct-Newznab indexer the core `indexer_client`
     // fake answers for.
@@ -999,7 +999,7 @@ pub(super) fn bootstrap_with_acquisition_tracking_and_indexer_and_release_attemp
     .with_pending_releases(pending_releases.clone())
     .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
     .with_libraries(Arc::new(MockLibraryRepo::default()))
-    // RFC 119 §D1: the convergence cursor derives targets from library state.
+    // The convergence cursor derives targets from library state.
     // With mock catalog stores, bridge the derivation to the seeded wanted
     // rows so `run_convergence_cycle_once` reaches each seeded monitored scope.
     .with_media_files(Arc::new(MockMediaFileRepo::with_missing_scope_source(
@@ -1450,6 +1450,8 @@ pub(super) fn empty_update_media_settings_with_roots(
         root_folders: Some(root_folders),
         required_audio_languages: None,
         folder_template: None,
+        season_folder_template: None,
+        specials_folder_template: None,
         rename_enabled: None,
         rename_template: None,
         rename_collision_policy: None,
@@ -1475,6 +1477,8 @@ pub(super) fn empty_update_media_settings() -> UpdateMediaSettings {
         root_folders: None,
         required_audio_languages: None,
         folder_template: None,
+        season_folder_template: None,
+        specials_folder_template: None,
         rename_enabled: None,
         rename_template: None,
         rename_collision_policy: None,
@@ -1635,6 +1639,7 @@ pub(super) fn queue_history_fixture_item(
         imported_at: None,
         delete_status: None,
         delete_error_message: None,
+        source_provider: None,
         is_scryer_origin: true,
         tracked_state: None,
         tracked_status: None,
@@ -1807,6 +1812,7 @@ pub(super) fn failed_history_item(
         imported_at: None,
         delete_status: None,
         delete_error_message: None,
+        source_provider: None,
         is_scryer_origin: true,
         tracked_state: None,
         tracked_status: None,

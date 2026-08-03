@@ -14,6 +14,22 @@ fn expected_runtime_seconds_for_episode_import(
         return Some(total_seconds as i32);
     }
 
+    // Specials routinely run far shorter (or longer) than the series' nominal
+    // runtime; falling back to it would put legitimate season-0 files outside
+    // the plausibility band. Without a real per-episode duration they stay
+    // permissive.
+    let targets_special = target_episodes.iter().any(|episode| {
+        episode
+            .season_number
+            .as_deref()
+            .map(str::trim)
+            .and_then(|season| season.parse::<u32>().ok())
+            == Some(0)
+    });
+    if targets_special {
+        return None;
+    }
+
     let episode_count = i32::try_from(target_episodes.len().max(1)).unwrap_or(i32::MAX);
     title
         .runtime_minutes
@@ -36,6 +52,8 @@ async fn execute_resolved_episode_import(
     import_id: &str,
     rename_enabled: bool,
     rename_template: &str,
+    season_folder_template: &str,
+    specials_folder_template: &str,
     title_folder_path: &Path,
     source_video: &Path,
     parsed: &crate::ParsedReleaseMetadata,
@@ -102,6 +120,8 @@ async fn execute_resolved_episode_import(
             title_folder_path,
             rename_enabled,
             rename_template,
+            season_folder_template,
+            specials_folder_template,
             rename_season,
             rename_episode_number,
             rename_absolute_number,
@@ -257,6 +277,8 @@ async fn execute_resolved_episode_import(
         title_folder_path,
         rename_enabled,
         rename_template,
+        season_folder_template,
+        specials_folder_template,
         rename_season,
         rename_episode_number,
         rename_absolute_number,
@@ -301,6 +323,17 @@ async fn execute_resolved_episode_import(
     {
         Ok(prepared) => prepared,
         Err(rejection) => {
+            // A band miss is held for the operator (ImportBlocked), not
+            // burned: expected runtimes are estimates and legitimate outliers
+            // must stay grabbable after review.
+            if rejection.recycle_reason == crate::post_download_gate::RUNTIME_OUT_OF_BAND_CODE {
+                return Ok(EpisodeImportOutcome::Skipped {
+                    message: rejection.message.clone(),
+                    reason_code: Some(rejection.recycle_reason.to_string()),
+                    skip_reason: Some(ImportSkipReason::PolicyMismatch),
+                    episode_ids: target_episode_ids.clone(),
+                });
+            }
             return Ok(EpisodeImportOutcome::Rejected {
                 rejection,
                 finalize_before_import: true,
@@ -340,6 +373,37 @@ async fn execute_resolved_episode_import(
         });
     }
 
+    // Replace guard: overwriting a library file is stricter than filling a gap.
+    // With no catalog runtime the band could not run at the gate, so compare the
+    // probed duration against what the incumbent file(s) actually hold and park
+    // an implausible replacement for manual resolution instead of burning it.
+    if !existing_incumbents.is_empty()
+        && let Some(message) = crate::post_download_gate::replace_runtime_band_block(
+            runtime_sample_validation,
+            prepared.accepted.as_ref(),
+            crate::post_download_gate::incumbent_replace_runtime_seconds(
+                existing_incumbents
+                    .iter()
+                    .map(|incumbent| incumbent.media_file.duration_seconds),
+            ),
+        )
+    {
+        tracing::info!(
+            title_id = %title.id,
+            file = %source_video.display(),
+            code = crate::post_download_gate::REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE,
+            "holding episode replacement for manual resolution"
+        );
+        return Ok(EpisodeImportOutcome::Skipped {
+            message,
+            reason_code: Some(
+                crate::post_download_gate::REPLACE_BLOCKED_RUNTIME_MISMATCH_CODE.to_string(),
+            ),
+            skip_reason: Some(ImportSkipReason::PolicyMismatch),
+            episode_ids: target_episode_ids.clone(),
+        });
+    }
+
     let ext = precheck_ext;
     let effective_quality_label = quality_override
         .as_deref()
@@ -355,6 +419,8 @@ async fn execute_resolved_episode_import(
         title_folder_path,
         rename_enabled,
         rename_template,
+        season_folder_template,
+        specials_folder_template,
         rename_season,
         rename_episode_number,
         rename_absolute_number,

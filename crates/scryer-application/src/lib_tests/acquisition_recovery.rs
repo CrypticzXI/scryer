@@ -230,6 +230,8 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-job".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Failed.Release.1080p.WEB-DL".to_string()),
             request_signature: None,
@@ -412,6 +414,8 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-job".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Failed.Release.1080p.WEB-DL".to_string()),
             request_signature: None,
@@ -601,6 +605,8 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-job".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Failed.Release.1080p.WEB-DL".to_string()),
             request_signature: None,
@@ -645,7 +651,7 @@ async fn tracked_download_failure_keeps_standby_when_submit_unavailable() {
         .await
         .expect("load wanted")
         .expect("wanted exists");
-    // RFC 119: a submit-unavailable failure defers to the standby recovery
+    // A submit-unavailable failure defers to the standby recovery
     // rather than re-opening — the grabbed state row is untouched (no reopen,
     // no reschedule) while the standby is preserved for the retry.
     assert_eq!(updated_wanted.status, AcquisitionScopeStatus::Grabbed);
@@ -735,6 +741,8 @@ async fn process_download_failure_returns_already_handled_for_duplicate_failed_d
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-duplicate".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Duplicate.Failed.Release.1080p.WEB-DL".to_string()),
             request_signature: None,
@@ -912,6 +920,8 @@ async fn process_download_failure_skip_reacquire_records_failure_without_due_sea
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-only".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Manual.Failed.Only.1080p.WEB-DL".to_string()),
             request_signature: None,
@@ -1012,6 +1022,8 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
                 download_client_type: "weaver".to_string(),
                 download_client_item_id: item_id.to_string(),
                 source_hint: Some(source_hint.to_string()),
+                source_provider_id: None,
+                source_provider_name: None,
                 source_kind: None,
                 source_title: Some(source_title.to_string()),
                 request_signature: None,
@@ -1126,6 +1138,8 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
             download_client_type: "weaver".to_string(),
             download_client_item_id: "job-1".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Friends.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
             request_signature: None,
@@ -1447,6 +1461,8 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-season-pack".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Season.Pack.Failure.Recovery.S07.1080p.WEB-DL".to_string()),
             request_signature: None,
@@ -1528,7 +1544,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             .await
             .expect("get wanted item")
             .expect("wanted item exists");
-        // RFC 119: the failed pack reopens each covered episode scope for
+        // The failed pack reopens each covered episode scope for
         // convergence (status back to `wanted`, grab cleared) instead of
         // rescheduling a cadence.
         assert_eq!(wanted.status, AcquisitionScopeStatus::Wanted);
@@ -1709,6 +1725,8 @@ async fn acquisition_cycle_looks_up_submissions_once_per_title_for_grabbed_items
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "shared-job".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Shared.Release".to_string()),
             request_signature: None,
@@ -1884,6 +1902,8 @@ async fn acquisition_cycle_records_failed_collection_submission_once() {
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "shared-failed-season-pack".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some(pack_title.to_string()),
             request_signature: None,
@@ -2144,6 +2164,8 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "episode-one-active".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Episode.Blocking.Scope.S01E01".to_string()),
             request_signature: None,
@@ -2185,6 +2207,7 @@ async fn acquisition_cycle_episode_submission_blocks_only_matching_episode() {
         imported_at: None,
         delete_status: None,
         delete_error_message: None,
+        source_provider: None,
         is_scryer_origin: true,
         tracked_state: None,
         tracked_status: None,
@@ -2346,6 +2369,8 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "season-one-pack".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Season.Pack.Blocking.Scope.S01".to_string()),
             request_signature: None,
@@ -2387,6 +2412,7 @@ async fn acquisition_cycle_collection_submission_blocks_same_season_only() {
         imported_at: None,
         delete_status: None,
         delete_error_message: None,
+        source_provider: None,
         is_scryer_origin: true,
         tracked_state: None,
         tracked_status: None,
@@ -2489,6 +2515,7 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
                         },
                     ),
                     extra: Default::default(),
+                    response_attributes: Default::default(),
                     guid: Some(format!("guid-{release_slug}")),
                     info_url: Some(format!("https://example.invalid/info/{release_slug}")),
                     provenance: None,
@@ -2947,6 +2974,8 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             download_client_type: "weaver".to_string(),
             download_client_item_id: "weaver-season-pack-1".to_string(),
             source_hint: Some("weaver://job/weaver-season-pack-1".to_string()),
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Friends.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
             request_signature: Some(
@@ -3187,6 +3216,135 @@ async fn acquisition_cycle_non_unavailable_submit_error_still_records_failed_sig
     assert_eq!(
         failed[0].source_title.as_deref(),
         Some("rejected.movie.2024.1080p.web-dl-grp")
+    );
+}
+
+#[tokio::test]
+async fn acquisition_cycle_category_mismatch_veto_burns_the_release_without_submitting() {
+    // Plan 136 §6 (D1): an NZB whose indexer-asserted category contradicts the
+    // subject is never handed to the download client, and the veto must reach
+    // the grab caller so the release is recorded Failed — that Failed attempt
+    // is what feeds the blocklist and burns the release. TV-vs-movie is a true
+    // contradiction; anime-vs-movie deliberately is NOT (anime films are
+    // legitimately filed under `TV > Anime` — see the companion allow test).
+    let release_title = "Counterfeit.Feature.2024.1080p.WEB-DL-GRP";
+    let tv_categorized_nzb = br#"<?xml version="1.0" encoding="iso-8859-1" ?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+<head>
+ <meta type="name">Counterfeit.Feature.2024.1080p.WEB-DL-GRP</meta>
+ <meta type="category">TV &gt; HD</meta>
+</head>
+<file poster="poster@example.invalid" date="1700000000" subject="[1/1]"></file>
+</nzb>"#;
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_category_gate_nzb(Some(tv_categorized_nzb))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+
+    let (title, _) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Counterfeit Feature", 2024)
+            .await;
+
+    app.run_convergence_cycle_once().await;
+
+    let attempts = release_attempts.attempts.lock().await.clone();
+    let vetoed = attempts
+        .iter()
+        .find(|attempt| attempt.outcome == ReleaseDownloadAttemptOutcome::Failed)
+        .expect("a category veto must be recorded as a failed release attempt");
+    assert!(
+        vetoed
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("category_mismatch")),
+        "the recorded failure must tell operators why: {:?}",
+        vetoed.error_message
+    );
+
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert_eq!(
+        failed.len(),
+        1,
+        "the vetoed release signature must be burned so it is never re-grabbed"
+    );
+
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty(),
+        "the download client must never receive a vetoed release"
+    );
+    assert!(
+        download_submissions.store.lock().await.is_empty(),
+        "a vetoed release must never be recorded as a download submission"
+    );
+}
+
+#[tokio::test]
+async fn acquisition_cycle_allows_anime_categorized_nzb_for_a_movie_subject() {
+    // Post-review fix: `TV > Anime` is how indexers legitimately file anime
+    // FILMS — the gate must not burn One Piece Film Red for being anime.
+    let release_title = "One.Piece.Film.Red.2024.1080p.WEB-DL-GRP";
+    let anime_categorized_nzb = br#"<?xml version="1.0" encoding="iso-8859-1" ?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+<head>
+ <meta type="name">One.Piece.Film.Red.2024.1080p.WEB-DL-GRP</meta>
+ <meta type="category">TV &gt; Anime</meta>
+</head>
+<file poster="poster@example.invalid" date="1700000000" subject="[1/1]"></file>
+</nzb>"#;
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_category_gate_nzb(Some(anime_categorized_nzb))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+
+    let (title, _) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "One Piece Film Red", 2024)
+            .await;
+
+    app.run_convergence_cycle_once().await;
+
+    assert_eq!(
+        download_client.submitted_release_titles.lock().await.len(),
+        1,
+        "an anime-categorized film must reach the download client"
+    );
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert!(
+        failed.is_empty(),
+        "nothing about this grab may be burned: {failed:?}"
     );
 }
 
@@ -3632,6 +3790,7 @@ impl IndexerClient for PendingStatusAssertingIndexerClient {
                 parsed_release_metadata: Some(crate::parse_release_metadata(&query)),
                 quality_profile_decision: None,
                 extra: Default::default(),
+                response_attributes: Default::default(),
                 guid: Some("guid-rss-ordering".to_string()),
                 info_url: Some("https://example.invalid/info/rss-ordering".to_string()),
                 provenance: None,
@@ -4329,6 +4488,8 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "movie-active".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Movie.Blocking.Scope".to_string()),
             request_signature: None,
@@ -4368,6 +4529,7 @@ async fn acquisition_cycle_title_submission_still_blocks_movie_search() {
         imported_at: None,
         delete_status: None,
         delete_error_message: None,
+        source_provider: None,
         is_scryer_origin: true,
         tracked_state: None,
         tracked_status: None,
@@ -4946,6 +5108,8 @@ async fn acquisition_cycle_retries_standby_candidate_during_unrelated_active_sca
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "failed-job".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Failed.Release.1080p.WEB-DL".to_string()),
             request_signature: None,
@@ -5230,7 +5394,7 @@ async fn trigger_title_mismatch_recovery_search_requeues_only_mismatch_only_item
 
     assert_eq!(queued, 1);
 
-    // RFC 119 §D5: mismatch recovery re-opens only the mismatch-only scope for
+    // Mismatch recovery re-opens only the mismatch-only scope for
     // convergence (state row reset + coverage pruned); the eligible scope is
     // left untouched. The re-open is the sole state write on the recovery item.
     let updated_recovery = wanted_items
@@ -5348,7 +5512,7 @@ async fn acquisition_cycle_prunes_stale_standby_rows_for_non_grabbed_items() {
     );
 }
 
-// ── RFC 119 §D5: RSS match-time targets + pack-granularity grabs ────────────
+// ── RSS match-time targets + pack-granularity grabs ────────────
 //
 // Target-ness is derived from library state at match time (monitored scope,
 // missing or below cutoff); a pre-existing wanted row no longer gates the grab.
@@ -5370,7 +5534,7 @@ async fn bootstrap_rss_with_media_files_and_profiles(
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
-    // RFC 119 §D2/§D5: RSS grabs and coverage need a routed indexer for the
+    // RSS grabs and coverage need a routed indexer for the
     // scope; seed a synthetic direct-Newznab indexer the fake client answers for.
     let indexer_configs = Arc::new(MockIndexerConfigRepo {
         store: Arc::new(Mutex::new(vec![synthetic_direct_nab_indexer_config(
@@ -6035,4 +6199,257 @@ async fn list_release_decisions_offset_paginates_within_title() {
     assert_eq!(tail_total, 5);
     assert_eq!(tail.len(), 1);
     assert_eq!(tail[0].id, "decision-page-4");
+}
+
+// ── Pillar A3: ambiguous-identity parking (NeedsReview) ──────────────────────
+
+/// Returns one bare, quality-allowed release for every search — the incident
+/// shape: a name that fits both colliding library titles equally well.
+struct AmbiguousIdentityIndexerClient {
+    release_title: String,
+}
+
+#[async_trait]
+impl IndexerClient for AmbiguousIdentityIndexerClient {
+    async fn search(
+        &self,
+        _query: String,
+        _ids: std::collections::HashMap<String, String>,
+        _category: Option<String>,
+        _facet: Option<String>,
+        _id_search_facet: Option<String>,
+        _newznab_categories: Option<Vec<String>>,
+        _indexer_routing: Option<IndexerRoutingPlan>,
+        _mode: SearchMode,
+        _season: Option<u32>,
+        _episode: Option<u32>,
+        _absolute_episode: Option<u32>,
+        _tagged_aliases: Vec<TaggedAlias>,
+        _learning_context: Option<crate::IndexerSearchLearningContext>,
+        _cancel_token: tokio_util::sync::CancellationToken,
+    ) -> AppResult<IndexerSearchResponse> {
+        let release_slug = self.release_title.replace(' ', ".");
+        Ok(IndexerSearchResponse {
+            indexer_outcomes: Vec::new(),
+            results: vec![IndexerSearchResult {
+                indexer_id: None,
+                source: "nzbgeek".into(),
+                title: self.release_title.clone(),
+                link: Some(format!("https://example.invalid/info/{release_slug}")),
+                download_url: Some(format!(
+                    "https://example.invalid/download/{release_slug}.nzb"
+                )),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                size_bytes: Some(1_000),
+                published_at: Some("1970-01-01T00:00:00Z".into()),
+                thumbs_up: None,
+                thumbs_down: None,
+                indexer_languages: None,
+                indexer_subtitles: None,
+                indexer_grabs: None,
+                password_hint: None,
+                parsed_release_metadata: Some(crate::parse_release_metadata(&self.release_title)),
+                quality_profile_decision: Some(crate::quality::profile::QualityProfileDecision {
+                    release_score: 100,
+                    scoring_log: Vec::new(),
+                    allowed: true,
+                    block_codes: Vec::new(),
+                    preference_score: 100,
+                }),
+                extra: Default::default(),
+                response_attributes: Default::default(),
+                guid: Some(format!("guid-{release_slug}")),
+                info_url: Some(format!("https://example.invalid/info/{release_slug}")),
+                provenance: None,
+                auto_eligible: None,
+                auto_decision_code: None,
+                auto_decision_summary: None,
+                candidate_token: None,
+                queue_scope: None,
+            }],
+            api_current: None,
+            api_max: None,
+            grab_current: None,
+            grab_max: None,
+        })
+    }
+}
+
+/// Seeds the One Piece incident pair — two monitored library titles sharing the
+/// canonical key `one piece` — and returns the app plus the wanted scope for the
+/// live-action title.
+async fn ambiguous_identity_fixture() -> (
+    AppUseCase,
+    User,
+    scryer_domain::Title,
+    String,
+    Arc<TrackingPendingReleaseRepo>,
+    Arc<MockReleaseAttemptRepo>,
+    Arc<StubDownloadClient>,
+) {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client: Arc<dyn IndexerClient> = Arc::new(AmbiguousIdentityIndexerClient {
+        release_title: "One.Piece.1080p.WEB-DL.x264-GRP".to_string(),
+    });
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions,
+            pending_releases.clone(),
+            wanted_items.clone(),
+            indexer_client,
+        );
+
+    let (title, wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "One Piece", 2023).await;
+    // The collider: same canonical key, different work, no wanted row of its
+    // own — it exists purely as library-local evidence that the name is shared.
+    app.add_title(
+        &user,
+        NewTitle {
+            name: "One Piece".into(),
+            facet: MediaFacet::Movie,
+            monitored: true,
+            year: Some(1999),
+            slug: Some("one-piece-anime".into()),
+            content_status: Some("Released".to_string()),
+            min_availability: Some("released".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create colliding title");
+
+    (
+        app,
+        user,
+        title,
+        wanted_id,
+        pending_releases,
+        release_attempts,
+        download_client,
+    )
+}
+
+#[tokio::test]
+async fn convergence_cycle_parks_ambiguous_best_candidate_for_review() {
+    let (app, _user, title, wanted_id, pending_releases, _release_attempts, download_client) =
+        ambiguous_identity_fixture().await;
+
+    app.run_convergence_cycle_once().await;
+
+    let parked = pending_releases
+        .list_pending_releases_for_title(&title.id)
+        .await
+        .expect("list pending releases for title");
+    assert_eq!(
+        parked.len(),
+        1,
+        "the best ambiguous candidate is parked once"
+    );
+    assert_eq!(parked[0].status, PendingReleaseStatus::NeedsReview);
+    assert_eq!(parked[0].wanted_item_id, wanted_id);
+    assert_eq!(parked[0].release_title, "One.Piece.1080p.WEB-DL.x264-GRP");
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty(),
+        "an ambiguous candidate must never be submitted"
+    );
+
+    // Repeated cycles must not pile up review rows for the same scope.
+    app.run_convergence_cycle_once().await;
+    assert_eq!(
+        pending_releases
+            .list_pending_releases_for_title(&title.id)
+            .await
+            .expect("list pending releases for title")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn needs_review_pending_release_is_never_auto_promoted() {
+    let (app, _user, title, _wanted_id, pending_releases, _release_attempts, download_client) =
+        ambiguous_identity_fixture().await;
+
+    app.run_convergence_cycle_once().await;
+    let parked_id = pending_releases
+        .list_pending_releases_for_title(&title.id)
+        .await
+        .expect("list pending releases for title")
+        .first()
+        .map(|release| release.id.clone())
+        .expect("parked review row exists");
+
+    let promoted = app
+        .process_expired_pending_releases()
+        .await
+        .expect("process expired pending releases");
+
+    assert_eq!(promoted, 0, "the delay processor must skip review rows");
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&parked_id)
+            .await
+            .expect("load parked release")
+            .expect("parked release exists")
+            .status,
+        PendingReleaseStatus::NeedsReview
+    );
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn dismissing_needs_review_pending_release_records_failed_attempt() {
+    let (app, user, title, _wanted_id, pending_releases, release_attempts, _download_client) =
+        ambiguous_identity_fixture().await;
+
+    app.run_convergence_cycle_once().await;
+    let parked_id = pending_releases
+        .list_pending_releases_for_title(&title.id)
+        .await
+        .expect("list pending releases for title")
+        .first()
+        .map(|release| release.id.clone())
+        .expect("parked review row exists");
+
+    assert!(
+        app.dismiss_pending_release(&user, &parked_id)
+            .await
+            .expect("dismiss parked review row")
+    );
+
+    assert_eq!(
+        pending_releases
+            .get_pending_release(&parked_id)
+            .await
+            .expect("load parked release")
+            .expect("parked release exists")
+            .status,
+        PendingReleaseStatus::Dismissed
+    );
+
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert!(
+        failed.iter().any(|attempt| {
+            attempt.source_title.as_deref() == Some("One.Piece.1080p.WEB-DL.x264-GRP")
+        }),
+        "dismissing a review row must burn the release signature"
+    );
 }

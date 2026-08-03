@@ -217,21 +217,6 @@ pub fn validate_plugin_descriptor_host_permissions(
     Ok(())
 }
 
-/// Returns true when the descriptor self-declares the notification host-process
-/// capability (`capabilities.requires_host_process`).
-///
-/// This capability lets a plugin spawn real host processes, so it is reserved for
-/// first-party / verified plugins. Callers must gate installation and runtime
-/// wiring on the plugin's resolved support tier — never on this self-declared
-/// flag alone.
-pub fn plugin_descriptor_requires_host_process(descriptor: &PluginDescriptor) -> bool {
-    matches!(
-        &descriptor.provider,
-        ProviderDescriptor::Notification(notification)
-            if notification.capabilities.requires_host_process
-    )
-}
-
 fn legacy_sdk_constraint(version: &str) -> String {
     let parsed = Version::parse(version.trim()).ok();
     let Some(version) = parsed else {

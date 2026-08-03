@@ -39,6 +39,7 @@ mod permissions_users_shows;
 mod plugins;
 mod scope_indexer_coverage;
 mod settings_and_writer;
+mod sql_runtime_gated_write;
 mod stores_migrations_regressions;
 mod title_images;
 mod titles_metadata;
@@ -218,6 +219,8 @@ fn orphan_test_submission(item_id: &str, source_title: &str) -> DownloadSubmissi
         download_client_type: "qbittorrent".to_string(),
         download_client_item_id: item_id.to_string(),
         source_hint: None,
+        source_provider_id: None,
+        source_provider_name: None,
         source_kind: None,
         source_title: Some(source_title.to_string()),
         request_signature: None,
@@ -234,6 +237,8 @@ fn managed_episode_set_test_submission(item_id: &str) -> DownloadSubmission {
         download_client_type: "qbittorrent".to_string(),
         download_client_item_id: item_id.to_string(),
         source_hint: Some("magnet:?xt=urn:btih:feedface".to_string()),
+        source_provider_id: None,
+        source_provider_name: None,
         source_kind: Some(scryer_application::DownloadSourceKind::TorrentFile),
         source_title: Some("Managed.Release.S01".to_string()),
         request_signature: Some("request-signature-1".to_string()),

@@ -11,7 +11,9 @@ fn main() {
     compile_windows_resources();
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR is not set");
     let output_path = Path::new(&out_dir).join("embedded_ui_assets.rs");
+    let blob_path = Path::new(&out_dir).join("embedded_ui_assets.bin");
     let mut output = String::new();
+    let mut blob = Vec::new();
 
     if let Some(raw_dir) = env::var_os("SCRYER_EMBED_UI_DIR") {
         let configured_dir = PathBuf::from(raw_dir);
@@ -76,14 +78,20 @@ fn main() {
         entries.sort_by(|(a, _), (b, _)| a.cmp(b));
 
         output.push_str("pub const HAS_EMBEDDED_WEB_UI: bool = true;\n");
-        output.push_str("pub static EMBEDDED_WEB_FILES: &[(&str, &[u8])] = &[\n");
+        output.push_str("pub static EMBEDDED_WEB_FILES: &[EmbeddedWebAsset] = &[\n");
         for (asset_path, asset_source) in &entries {
-            let source_str = asset_source.to_string_lossy().replace('\\', "/");
-            output.push_str("    (\"");
-            output.push_str(asset_path);
-            output.push_str("\", include_bytes!(r#\"");
-            output.push_str(&source_str);
-            output.push_str("\"#)),\n");
+            let bytes = fs::read(asset_source).unwrap_or_else(|error| {
+                panic!(
+                    "failed to read embedded web asset {}: {error}",
+                    asset_source.display()
+                )
+            });
+            let offset = blob.len();
+            let length = bytes.len();
+            blob.extend_from_slice(&bytes);
+            output.push_str(&format!(
+                "    EmbeddedWebAsset {{ path: {asset_path:?}, offset: {offset}, length: {length} }},\n"
+            ));
         }
         output.push_str("];\n");
         println!("cargo:rerun-if-changed={}", embed_dir.display());
@@ -96,13 +104,19 @@ fn main() {
         );
     } else {
         output.push_str("pub const HAS_EMBEDDED_WEB_UI: bool = false;\n");
-        output.push_str("pub static EMBEDDED_WEB_FILES: &[(&str, &[u8])] = &[];\n");
+        output.push_str("pub static EMBEDDED_WEB_FILES: &[EmbeddedWebAsset] = &[];\n");
     }
+
+    output.push_str(
+        "pub static EMBEDDED_WEB_BLOB: &[u8] = \
+         include_bytes!(concat!(env!(\"OUT_DIR\"), \"/embedded_ui_assets.bin\"));\n",
+    );
 
     let mut output_file = fs::File::create(&output_path).expect("create embedded asset index");
     output_file
         .write_all(output.as_bytes())
         .expect("write embedded asset index");
+    fs::write(&blob_path, blob).expect("write embedded asset blob");
     println!("cargo:rerun-if-env-changed=SCRYER_EMBED_UI_DIR");
 
     // SMG build-time assets (registration secret, gateway URL)

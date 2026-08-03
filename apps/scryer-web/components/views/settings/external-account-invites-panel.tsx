@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { Check, ChevronsUpDown, Loader2, Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -295,7 +295,9 @@ function MediaServerUserCombobox({
                 autoComplete="off"
                 data-1p-ignore="true"
                 data-lpignore="true"
+                data-bwignore="true"
                 data-form-type="other"
+                data-protonpass-ignore="true"
                 name="media-server-user-search"
                 className="w-full bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
               />

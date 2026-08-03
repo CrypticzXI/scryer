@@ -96,22 +96,72 @@ async fn graphql_title_history_rejects_unsupported_event_type_filters() {
 }
 
 #[tokio::test]
-async fn graphql_title_history_rejects_download_ignored_event_type_filters() {
+async fn graphql_title_history_includes_download_ignored_events() {
     let ctx = TestContext::new().await;
-    let body = gql(
+    let title = create_catalog_title(
         &ctx,
-        r#"{ titleHistory(filter: { eventTypes: [DOWNLOAD_IGNORED], limit: 10 }) { totalCount } }"#,
-        json!({}),
+        "Ignored Download History Fixture",
+        MediaFacet::Movie,
+        vec![],
+        vec![],
+        true,
     )
     .await;
+    ctx.app
+        .append_domain_event(NewDomainEvent {
+            event_id: Id::new().0,
+            occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::User,
+            actor_user_id: Some("user-1".to_string()),
+            actor_display_name: "Fixture User".to_string(),
+            title_id: Some(title.id.clone()),
+            facet: Some(MediaFacet::Movie),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: title.id.clone(),
+            },
+            payload: DomainEventPayload::DownloadIgnored(scryer_domain::DownloadIgnoredEventData {
+                title: Some(TitleContextSnapshot {
+                    title_name: title.name.clone(),
+                    facet: title.facet,
+                    external_ids: DomainExternalIds::default(),
+                    poster_url: title.poster_url.clone(),
+                    year: title.year,
+                }),
+                download_client_item_id: "ignored-job-1".to_string(),
+                client_id: Some("client-1".to_string()),
+                client_type: Some("nzbget".to_string()),
+                source_provider: Some("Fixture Indexer".to_string()),
+                source_title: Some("Fixture.Release.2026.1080p.WEB-DL".to_string()),
+            }),
+        })
+        .await
+        .expect("append download ignored event");
 
-    let errors = body["errors"].as_array().expect("graphql errors");
-    let message = errors[0]["message"]
-        .as_str()
-        .expect("graphql error message");
-    assert!(message.contains("unsupported title history event type `download_ignored`"));
-    assert!(message.contains("imported"));
-    assert!(message.contains("rematched"));
+    let body = gql(
+        &ctx,
+        r#"
+        query TitleHistory($titleId: ID!) {
+          titleHistory(filter: { titleIds: [$titleId], eventTypes: [DOWNLOAD_IGNORED], limit: 10 }) {
+            totalCount
+            items { eventType downloadId sourceTitle displayTitle sourceProvider sourceHint }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id }),
+    )
+    .await;
+    assert_no_errors(&body);
+    assert_eq!(body["data"]["titleHistory"]["totalCount"], 1);
+    let record = &body["data"]["titleHistory"]["items"][0];
+    assert_eq!(record["eventType"], "download_ignored");
+    assert_eq!(record["downloadId"], "ignored-job-1");
+    assert_eq!(record["sourceTitle"], "Fixture.Release.2026.1080p.WEB-DL");
+    assert_eq!(record["displayTitle"], "Fixture.Release.2026.1080p.WEB-DL");
+    assert_eq!(record["sourceProvider"], "Fixture Indexer");
+    assert_eq!(record["sourceHint"], "Fixture Indexer");
 }
 
 #[tokio::test]

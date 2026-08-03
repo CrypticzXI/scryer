@@ -38,6 +38,102 @@ fn to_u64<T: Into<u64>>(value: T) -> u64 {
     value.into()
 }
 
+const DISK_SPACE_RESERVE_BYTES: u64 = 500 * 1024 * 1024;
+
+fn disk_space_verdict(available: u64, source_size: u64) -> ImportVerdict {
+    let required = u128::from(source_size) + u128::from(DISK_SPACE_RESERVE_BYTES);
+    if u128::from(available) < required {
+        ImportVerdict::Reject {
+            reason: format!(
+                "insufficient disk space: {:.1} GB available, need {:.1} GB",
+                available as f64 / 1_073_741_824.0,
+                required as f64 / 1_073_741_824.0,
+            ),
+            code: "insufficient_disk_space",
+        }
+    } else {
+        ImportVerdict::Accept
+    }
+}
+
+fn disk_space_verdict_for_measurement(available: Option<u64>, source_size: u64) -> ImportVerdict {
+    available
+        .map(|available| disk_space_verdict(available, source_size))
+        .unwrap_or(ImportVerdict::Accept)
+}
+
+fn nearest_existing_ancestor(path: &Path) -> &Path {
+    path.ancestors()
+        .find(|candidate| candidate.exists())
+        .unwrap_or(path)
+}
+
+fn destination_directory(dest_path: &Path) -> &Path {
+    match dest_path.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
+        Some(parent) => parent,
+        None => dest_path,
+    }
+}
+
+#[cfg(unix)]
+fn available_disk_space(path: &Path) -> std::io::Result<u64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("disk-space path contains an interior NUL: {error}"),
+        )
+    })?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    let result = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(to_u64(stat.f_bavail).saturating_mul(to_u64(stat.f_frsize)))
+}
+
+#[cfg(windows)]
+fn windows_path_wide(path: &Path) -> Vec<u16> {
+    use std::iter;
+    use std::os::windows::ffi::OsStrExt;
+
+    path.as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect()
+}
+
+#[cfg(windows)]
+fn available_disk_space(path: &Path) -> std::io::Result<u64> {
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let wide_path = windows_path_wide(path);
+    let mut available = 0_u64;
+    let result = unsafe {
+        GetDiskFreeSpaceExW(
+            wide_path.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(available)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn available_disk_space(_path: &Path) -> std::io::Result<u64> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "disk-space queries are unsupported on this platform",
+    ))
+}
+
 // ── Individual checks ────────────────────────────────────────────────────────
 
 /// Reject files with extensions outside the known video set.
@@ -155,45 +251,20 @@ pub fn check_not_already_imported(ctx: &ImportCheckContext<'_>) -> ImportVerdict
 ///
 /// Requires at least `source_size + 500 MB` free on the destination volume.
 pub fn check_disk_space(ctx: &ImportCheckContext<'_>) -> ImportVerdict {
-    #[cfg(unix)]
-    {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-
-        let target_dir = ctx.dest_path.parent().unwrap_or(ctx.dest_path);
-
-        // Find an existing ancestor to stat (dest dir may not exist yet).
-        let stat_path = {
-            let mut p = target_dir.to_path_buf();
-            while !p.exists() {
-                if !p.pop() {
-                    break;
-                }
-            }
-            p
-        };
-
-        if let Ok(c_path) = CString::new(stat_path.as_os_str().as_bytes()) {
-            let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-            let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
-            if ret == 0 {
-                let available = to_u64(stat.f_bavail) * to_u64(stat.f_frsize);
-                let required = ctx.source_size + 500 * 1024 * 1024;
-                if available < required {
-                    return ImportVerdict::Reject {
-                        reason: format!(
-                            "insufficient disk space: {:.1} GB available, need {:.1} GB",
-                            available as f64 / 1_073_741_824.0,
-                            required as f64 / 1_073_741_824.0,
-                        ),
-                        code: "insufficient_disk_space",
-                    };
-                }
-            }
+    let target_dir = destination_directory(ctx.dest_path);
+    let stat_path = nearest_existing_ancestor(target_dir);
+    let available = match available_disk_space(stat_path) {
+        Ok(available) => Some(available),
+        Err(error) => {
+            tracing::debug!(
+                path = %stat_path.display(),
+                %error,
+                "unable to query available import destination space"
+            );
+            None
         }
-    }
-
-    ImportVerdict::Accept
+    };
+    disk_space_verdict_for_measurement(available, ctx.source_size)
 }
 
 // ── Pipeline ─────────────────────────────────────────────────────────────────
@@ -325,5 +396,96 @@ mod tests {
         let dst = PathBuf::from("/nonexistent/Movie (2024)/Movie.2024.1080p.BluRay.x264.mkv");
         let ctx = dummy_ctx(&src, &dst, 1_000_000, &parsed, &[]);
         assert!(run_import_checks(&ctx).is_accept());
+    }
+
+    #[test]
+    fn disk_space_accepts_exact_requirement() {
+        let source_size = 1_000_000;
+        let available = source_size + DISK_SPACE_RESERVE_BYTES;
+        assert!(disk_space_verdict(available, source_size).is_accept());
+    }
+
+    #[test]
+    fn disk_space_zero_length_source_still_requires_reserve() {
+        assert!(disk_space_verdict(DISK_SPACE_RESERVE_BYTES, 0).is_accept());
+        assert!(matches!(
+            disk_space_verdict(DISK_SPACE_RESERVE_BYTES - 1, 0),
+            ImportVerdict::Reject {
+                code: "insufficient_disk_space",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn disk_space_query_failure_is_non_blocking() {
+        assert!(disk_space_verdict_for_measurement(None, u64::MAX).is_accept());
+    }
+
+    #[test]
+    fn disk_space_rejects_one_byte_below_requirement() {
+        let source_size = 1_000_000;
+        let available = source_size + DISK_SPACE_RESERVE_BYTES - 1;
+        assert!(matches!(
+            disk_space_verdict(available, source_size),
+            ImportVerdict::Reject {
+                code: "insufficient_disk_space",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn disk_space_requirement_does_not_overflow_for_large_sources() {
+        assert!(matches!(
+            disk_space_verdict(u64::MAX - 1, u64::MAX),
+            ImportVerdict::Reject {
+                code: "insufficient_disk_space",
+                ..
+            }
+        ));
+        assert!(matches!(
+            disk_space_verdict(u64::MAX, u64::MAX),
+            ImportVerdict::Reject {
+                code: "insufficient_disk_space",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn disk_space_uses_nearest_existing_ancestor() {
+        let temp = tempfile::tempdir().expect("create temp directory");
+        let missing = temp.path().join("missing").join("destination");
+        assert_eq!(nearest_existing_ancestor(&missing), temp.path());
+    }
+
+    #[test]
+    fn disk_space_uses_current_directory_for_bare_destination_filename() {
+        assert_eq!(
+            destination_directory(Path::new("movie.mkv")),
+            Path::new(".")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_disk_space_path_is_null_terminated_utf16() {
+        use std::os::windows::ffi::OsStrExt;
+
+        let path = Path::new(r"C:\media\日本語");
+        let wide = windows_path_wide(path);
+        assert_eq!(wide.last(), Some(&0));
+        assert_eq!(
+            &wide[..wide.len() - 1],
+            path.as_os_str().encode_wide().collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_disk_space_query_smoke_test() {
+        let temp = tempfile::tempdir().expect("create temp directory");
+        assert!(available_disk_space(temp.path()).expect("query available space") > 0);
     }
 }

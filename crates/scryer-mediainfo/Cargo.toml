@@ -9,7 +9,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 # Container parsers
-matroska-demuxer = "0.7"
+matroska-demuxer = "0.8"
 mp4parse = "0.17"
 riff = "2"
 

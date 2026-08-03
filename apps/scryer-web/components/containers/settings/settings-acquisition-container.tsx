@@ -19,7 +19,7 @@ type UpdateAcquisitionSettingsResult = {
   updateAcquisitionSettings?: AcquisitionSettings | null;
 };
 
-// RFC 119 §7.5: the acquisition settings expose the convergence knobs — RSS is
+// The acquisition settings expose the convergence knobs — RSS is
 // the steady-state path; active search converges each scope once per indexer.
 export function SettingsAcquisitionContainer() {
   const t = useTranslate();

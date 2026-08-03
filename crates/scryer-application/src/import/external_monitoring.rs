@@ -372,6 +372,19 @@ impl AppUseCase {
             .await;
     }
 
+    pub async fn set_external_import_prowlarr_warmup_result(
+        &self,
+        session_id: &str,
+        result: ExternalImportProwlarrWarmupResult,
+    ) {
+        let _ = self
+            .runtime
+            .imports
+            .external_import_warmup_orchestrator
+            .set_prowlarr_result(session_id, result)
+            .await;
+    }
+
     pub async fn external_import_arr_source_warmup_result(
         &self,
         actor: &User,
@@ -388,6 +401,22 @@ impl AppUseCase {
             .ok_or_else(|| {
                 AppError::NotFound(format!("no arr source warmup result '{session_id}'"))
             })
+    }
+
+    pub async fn external_import_prowlarr_warmup_result(
+        &self,
+        actor: &User,
+        session_id: &str,
+    ) -> AppResult<ExternalImportProwlarrWarmupResult> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+
+        self.runtime
+            .imports
+            .external_import_warmup_orchestrator
+            .prowlarr_result(&actor.id, session_id)
+            .await
+            .ok_or_else(|| AppError::NotFound(format!("no prowlarr warmup result '{session_id}'")))
     }
 
     pub async fn external_import_monitor_warmup_scan_hints(

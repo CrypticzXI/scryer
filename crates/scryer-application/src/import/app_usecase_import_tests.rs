@@ -742,7 +742,9 @@ async fn post_download_score_uses_rescored_quality_and_records_negative_audit() 
             .as_array()
             .expect("rescore changes should be an array")
             .iter()
-            .any(|change| change.as_str().is_some_and(|value| value.contains("resolution")))
+            .any(|change| change
+                .as_str()
+                .is_some_and(|value| value.contains("resolution")))
     );
 }
 
@@ -792,7 +794,9 @@ async fn post_download_score_preserves_prepared_rescore_changes_when_parsed_alre
             .as_array()
             .expect("rescore changes should be an array")
             .iter()
-            .any(|change| change.as_str().is_some_and(|value| value.contains("resolution")))
+            .any(|change| change
+                .as_str()
+                .is_some_and(|value| value.contains("resolution")))
     );
 }
 
@@ -815,10 +819,11 @@ score_entry["dv_profile_bonus"] := 123 if {
 "#,
             "dv_profile",
         ),
+        origin: scryer_rules::PolicyOrigin::User,
         applied_facets: vec!["movie".to_string()],
     };
-    let engine = scryer_rules::UserRulesEngine::build(&[policy])
-        .expect("user rule engine should compile");
+    let engine =
+        scryer_rules::UserRulesEngine::build(&[policy]).expect("user rule engine should compile");
     *app.services
         .customization
         .user_rules
@@ -888,6 +893,8 @@ fn episode_import_dest_path_uses_rescored_parsed_quality_without_override() {
         std::path::Path::new("/library/Test Show"),
         true,
         "{title} - S{season:2}E{episode:2} - {quality}.{ext}",
+        "Season {season:2}",
+        "Specials",
         8,
         "7",
         None,
@@ -915,6 +922,8 @@ fn episode_import_dest_path_preserves_source_filename_when_renamer_disabled() {
         std::path::Path::new("/library/Test Show"),
         false,
         "{title} - S{season:2}E{episode:2} - {quality}.{ext}",
+        "Season {season:2}",
+        "Specials",
         8,
         "7",
         None,
@@ -925,6 +934,79 @@ fn episode_import_dest_path_preserves_source_filename_when_renamer_disabled() {
     assert_eq!(
         dest_path,
         std::path::PathBuf::from("/library/Test Show/Season 08/Obfuscated.Source.Name.mkv")
+    );
+}
+
+#[test]
+fn episode_import_dest_path_uses_configured_regular_and_specials_folders() {
+    let mut title = test_title(MediaFacet::Series);
+    title.name = "Test Show".to_string();
+    let parsed = crate::parse_release_metadata("Test.Show.S03E07.mkv");
+    let source = std::path::Path::new("/downloads/Test.Show.S03E07.mkv");
+    let title_folder = std::path::Path::new("/library/Test Show");
+
+    let regular = episode_import_dest_path(
+        &title,
+        &parsed,
+        "mkv",
+        source,
+        title_folder,
+        false,
+        "unused",
+        "{title|space:.}.S{season:2}",
+        "Extras",
+        3,
+        "7",
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        regular,
+        std::path::PathBuf::from("/library/Test Show/Test.Show.S03/Test.Show.S03E07.mkv")
+    );
+
+    let specials = episode_import_dest_path(
+        &title,
+        &parsed,
+        "mkv",
+        source,
+        title_folder,
+        false,
+        "unused",
+        "Season {season}",
+        "Extras",
+        0,
+        "7",
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        specials,
+        std::path::PathBuf::from("/library/Test Show/Extras/Test.Show.S03E07.mkv")
+    );
+
+    title.tags = vec!["scryer:season-folder:disabled".to_string()];
+    let flat = episode_import_dest_path(
+        &title,
+        &parsed,
+        "mkv",
+        source,
+        title_folder,
+        false,
+        "unused",
+        "Season {season}",
+        "Extras",
+        3,
+        "7",
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        flat,
+        std::path::PathBuf::from("/library/Test Show/Test.Show.S03E07.mkv")
     );
 }
 
@@ -1360,9 +1442,13 @@ fn build_episode_upgrade_plan_allows_pack_to_replace_singles_when_it_beats_all_o
         ),
     ];
 
-    let plan =
-        build_episode_upgrade_plan(&incumbents, &["ep-1".to_string(), "ep-2".to_string()], 900, false)
-            .expect("season pack should replace lower-scored singles");
+    let plan = build_episode_upgrade_plan(
+        &incumbents,
+        &["ep-1".to_string(), "ep-2".to_string()],
+        900,
+        false,
+    )
+    .expect("season pack should replace lower-scored singles");
 
     assert_eq!(plan.previous_best_score, 450);
     assert_eq!(plan.additional_superseded.len(), 1);

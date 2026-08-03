@@ -8,7 +8,7 @@ import {
   X,
 } from "lucide-react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { useClient } from "urql";
 import { Button } from "@/components/ui/button";
 import {
@@ -1095,7 +1095,6 @@ export const RootHeader = React.memo(function RootHeader({
               title.monitored ? t("search.monitored") : t("search.unmonitored")
             }
             posterAlt={t("media.posterAlt", { name: title.name })}
-            posterSourceUrl={title.posterSourceUrl}
             posterUrl={posterUrl}
             resultAttribute="data-global-search-result"
             secondaryParts={secondaryParts}
@@ -1391,7 +1390,9 @@ export const RootHeader = React.memo(function RootHeader({
                               autoComplete="off"
                               data-1p-ignore="true"
                               data-lpignore="true"
+                              data-bwignore="true"
                               data-form-type="other"
+                              data-protonpass-ignore="true"
                             />
                             {globalSearch ? (
                               <IconButton
@@ -1582,7 +1583,13 @@ export const RootHeader = React.memo(function RootHeader({
                                             {t("search.noMetadataMatches")}
                                           </p>
                                         ) : (
-                                          <div className="flex gap-3 overflow-x-auto overscroll-x-contain pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                                          <div
+                                            className={cn(
+                                              desktopSearchFilters.includes(f.id)
+                                                ? "flex flex-wrap gap-3 pb-1"
+                                                : "flex gap-3 overflow-x-auto overscroll-x-contain pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                                            )}
+                                          >
                                             {renderMetadataSection(
                                               items,
                                               f.id,

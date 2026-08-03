@@ -39,10 +39,7 @@ impl SqliteServices {
     }
 
     pub fn datastore(&self) -> StoreDatastore {
-        StoreDatastore::Sqlite {
-            pool: self.pool.clone(),
-            writer_gate: self.writer_gate.clone(),
-        }
+        StoreDatastore::sqlite(self.pool.clone(), self.writer_gate.clone())
     }
 
     pub async fn new(path: impl AsRef<str>) -> Result<Self, AppError> {
@@ -123,6 +120,10 @@ impl SqliteServices {
         if !is_memory {
             connect_opts = connect_opts
                 .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                // WAL pairs with synchronous=NORMAL to skip one fsync per commit;
+                // power loss may drop the last commit(s), never corrupts; needs
+                // product sign-off to enable.
+                // .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
                 .busy_timeout(std::time::Duration::from_millis(10_000));
         }
 

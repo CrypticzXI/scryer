@@ -10,7 +10,8 @@ export type PendingReleaseStatus =
   | "GRABBED"
   | "SUPERSEDED"
   | "EXPIRED"
-  | "DISMISSED";
+  | "DISMISSED"
+  | "NEEDS_REVIEW";
 
 export type WantedItem = {
   id: string;
@@ -29,6 +30,7 @@ export type WantedItem = {
   lastSearchAt: string | null;
   status: WantedStatus;
   grabbedRelease: string | null;
+  sourceProvider: string | null;
   currentScore: number | null;
   latestReleaseDecision?: {
     decisionCode: string;
@@ -44,7 +46,7 @@ export type WantedItem = {
 };
 
 // Progress snapshot of the server-side interactive acquisition-search job
-// (RFC 119 §7.3) — survives navigation/refresh, polled by id.
+// — survives navigation/refresh, polled by id.
 export type AcquisitionSearchJob = {
   id: string;
   state: "RUNNING" | "COMPLETED" | "CANCELLED" | "FAILED";

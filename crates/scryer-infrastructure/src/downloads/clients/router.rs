@@ -436,6 +436,18 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
         .await
     }
 
+    async fn list_recent_activity_for_client_types(
+        &self,
+        limit: usize,
+        client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        self.run_feedback_read(
+            self.inner
+                .list_recent_activity_for_client_types(limit, client_types),
+        )
+        .await
+    }
+
     async fn list_recent_completed_downloads_excluding_client_types(
         &self,
         limit: usize,
@@ -461,6 +473,20 @@ impl DownloadClient for FeedbackTimeoutDownloadClient {
                 excluded_client_types,
             )
             .await
+    }
+
+    async fn get_completed_download_for_source(
+        &self,
+        client_id: &str,
+        client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<scryer_domain::CompletedDownload>> {
+        self.run_feedback_read(self.inner.get_completed_download_for_source(
+            client_id,
+            client_type,
+            download_client_item_id,
+        ))
+        .await
     }
 
     async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
@@ -1866,6 +1892,21 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
     ) -> AppResult<DownloadGrabResult> {
         let request = self.prepare_proxied_download_request(request).await?;
         let request = &request;
+        // Pillar D1 for NZB bytes Scryer already holds (indexer-proxied
+        // artifacts). URL-sourced NZBs are gated as they stream in, inside
+        // `stage_nzb_from_url`, so no payload is ever fetched twice.
+        if let Some(ResolvedDownloadArtifact::Nzb { bytes, .. }) =
+            request.resolved_download_artifact.as_ref()
+        {
+            let head_len = bytes.len().min(scryer_application::NZB_HEAD_PROBE_BYTES);
+            scryer_application::enforce_nzb_category_gate(
+                &bytes[..head_len],
+                request
+                    .search_facet
+                    .as_ref()
+                    .unwrap_or(&request.title.facet),
+            )?;
+        }
         let resolved_artifact_kind = Self::request_artifact_kind(request);
         let selection = match self.list_clients_for_title(&request.title).await {
             Ok(configs) => configs,
@@ -2024,6 +2065,10 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                                         &self.staged_nzb_pipeline_limit,
                                         &source_hint,
                                         Some(&request.title.id),
+                                        request
+                                            .search_facet
+                                            .as_ref()
+                                            .unwrap_or(&request.title.facet),
                                     )
                                     .await?,
                                 );
@@ -2347,6 +2392,95 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     );
                     read_summary.record_error(&error);
                     tracing::warn!(client_id = %config.id, error = %error, "failed to list recent activity");
+                }
+            }
+        }
+
+        read_summary.finish()?;
+
+        let mut seen = HashSet::with_capacity(all_items.len());
+        all_items.retain(|item| seen.insert(download_queue_history_key(item)));
+        all_items.sort_by(compare_history_items_desc);
+        all_items.truncate(limit);
+        Ok(all_items)
+    }
+
+    async fn list_recent_activity_for_client_types(
+        &self,
+        limit: usize,
+        client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        if limit == 0 || client_types.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let clients = self
+            .list_enabled_clients_by_priority()
+            .await?
+            .into_iter()
+            .filter(|config| {
+                client_types.iter().any(|client_type| {
+                    config
+                        .client_type
+                        .trim()
+                        .eq_ignore_ascii_case(client_type.trim())
+                })
+            })
+            .collect::<Vec<_>>();
+        if clients.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut all_items = Vec::new();
+        let mut read_summary = FeedbackReadSummary::default();
+        for config in clients {
+            if let Some(remaining) = self
+                .feedback_backoff_remaining(&config.id, DownloadFeedbackReadKind::RecentActivity)
+            {
+                debug!(
+                    client_id = %config.id,
+                    client = %config.name,
+                    read_kind = Self::feedback_read_kind_label(
+                        DownloadFeedbackReadKind::RecentActivity
+                    ),
+                    remaining_ms = remaining.as_millis(),
+                    "skipping download client feedback read during backoff"
+                );
+                continue;
+            }
+            let client = match Self::client_from_config(
+                &config,
+                self.staged_nzb_store.clone(),
+                self.staged_nzb_pipeline_limit.clone(),
+                self.plugin_provider.as_ref(),
+                self.feedback_read_timeout,
+            ) {
+                Ok(client) => client,
+                Err(error) => {
+                    tracing::warn!(client_id = %config.id, error = %error, "skipping client for type-scoped recent activity listing");
+                    continue;
+                }
+            };
+            match client.list_recent_activity(limit).await {
+                Ok(mut items) => {
+                    self.record_feedback_read_success(
+                        &config.id,
+                        DownloadFeedbackReadKind::RecentActivity,
+                    );
+                    read_summary.record_success();
+                    for item in &mut items {
+                        item.client_id = config.id.clone();
+                        item.client_name = config.name.clone();
+                    }
+                    all_items.extend(items);
+                }
+                Err(error) => {
+                    self.record_feedback_read_failure(
+                        &config.id,
+                        DownloadFeedbackReadKind::RecentActivity,
+                    );
+                    read_summary.record_error(&error);
+                    tracing::warn!(client_id = %config.id, error = %error, "failed to list type-scoped recent activity");
                 }
             }
         }
@@ -2718,6 +2852,93 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         all_items.sort_by(compare_completed_downloads_desc);
         all_items.truncate(limit);
         Ok(all_items)
+    }
+
+    async fn get_completed_download_for_source(
+        &self,
+        client_id: &str,
+        client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<scryer_domain::CompletedDownload>> {
+        let reference = download_client_item_id.trim();
+        if reference.is_empty() {
+            return Ok(None);
+        }
+
+        let clients = self.list_enabled_clients_by_priority_excluding(&[]).await?;
+        let config = clients
+            .iter()
+            .find(|config| config.id.trim() == client_id.trim() && !client_id.trim().is_empty())
+            .or_else(|| {
+                clients.iter().find(|config| {
+                    config
+                        .client_type
+                        .trim()
+                        .eq_ignore_ascii_case(client_type.trim())
+                })
+            });
+        let Some(config) = config else {
+            return Ok(None);
+        };
+
+        if let Some(remaining) = self.feedback_backoff_remaining(
+            &config.id,
+            DownloadFeedbackReadKind::RecentCompletedDownloads,
+        ) {
+            debug!(
+                client_id = %config.id,
+                client = %config.name,
+                remaining_ms = remaining.as_millis(),
+                "skipping targeted completed download lookup during backoff"
+            );
+            return Ok(None);
+        }
+
+        let client = Self::client_from_config(
+            config,
+            self.staged_nzb_store.clone(),
+            self.staged_nzb_pipeline_limit.clone(),
+            self.plugin_provider.as_ref(),
+            self.feedback_read_timeout,
+        )?;
+        match client
+            .get_completed_download_for_source(&config.id, &config.client_type, reference)
+            .await
+        {
+            Ok(item) => {
+                self.record_feedback_read_success(
+                    &config.id,
+                    DownloadFeedbackReadKind::RecentCompletedDownloads,
+                );
+                Ok(item.map(|mut item| {
+                    item.client_id = config.id.clone();
+                    if let Some(mappings) = download_client_remote_path_mappings(config).as_deref()
+                    {
+                        apply_remote_path_mappings_to_completed_download(&mut item, mappings);
+                    }
+                    let accepts_torrents = Self::config_accepts_source_kind(
+                        config,
+                        DownloadSourceKind::TorrentFile,
+                        self.plugin_provider.as_ref(),
+                    ) || Self::config_accepts_source_kind(
+                        config,
+                        DownloadSourceKind::MagnetUri,
+                        self.plugin_provider.as_ref(),
+                    );
+                    if accepts_torrents {
+                        normalize_completed_download_import_dir(&mut item);
+                    }
+                    item
+                }))
+            }
+            Err(error) => {
+                self.record_feedback_read_failure(
+                    &config.id,
+                    DownloadFeedbackReadKind::RecentCompletedDownloads,
+                );
+                Err(error)
+            }
+        }
     }
 
     async fn pause_queue_item(&self, id: &str) -> AppResult<()> {
@@ -3514,6 +3735,7 @@ mod tests {
             imported_at: None,
             delete_status: None,
             delete_error_message: None,
+            source_provider: None,
             is_scryer_origin: false,
             tracked_state: None,
             tracked_status: None,
@@ -3578,6 +3800,7 @@ mod tests {
         let submit_error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
@@ -3644,6 +3867,7 @@ mod tests {
         let result = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
@@ -3669,6 +3893,115 @@ mod tests {
 
         assert_eq!(result.client_type, "qbittorrent");
         assert_eq!(torrent_client.submissions.lock().unwrap().len(), 1);
+    }
+
+    /// Head shape taken from the incident NZB: the indexer declared the
+    /// release as anime, and Scryer submitted it for a live-action series.
+    const ANIME_CATEGORY_NZB: &[u8] = br#"<?xml version="1.0" encoding="iso-8859-1" ?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+<head>
+ <meta type="name">One.Piece.S02.DANiSH.JAPANESE.1080p.WEB.H264</meta>
+ <meta type="category">TV &gt; Anime</meta>
+</head>
+<file poster="poster@example.invalid" date="1700000000" subject="[1/1] - &quot;one.piece.par2&quot;"></file>
+</nzb>"#;
+
+    fn nzb_bytes_router(client: Arc<MockDownloadClient>) -> PrioritizedDownloadClientRouter {
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb".to_string()],
+                clients: vec![("nzb".to_string(), client)],
+            });
+        PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("nzb", "Plugin NZB", "plugin-nzb", 0)],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        )
+    }
+
+    fn resolved_nzb_request(facet: MediaFacet) -> DownloadClientAddRequest {
+        DownloadClientAddRequest {
+            title: test_title_for_facet(facet),
+            search_facet: None,
+            purpose: scryer_application::DownloadSubmissionPurpose::Standard,
+            download_id: None,
+            source_hint: Some("https://example.invalid/release.nzb".to_string()),
+            staged_nzb: None,
+            resolved_download_artifact: Some(ResolvedDownloadArtifact::Nzb {
+                bytes: ANIME_CATEGORY_NZB.to_vec(),
+                file_name: Some("release.nzb".to_string()),
+                content_type: Some("application/x-nzb".to_string()),
+            }),
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("One.Piece.S02.DANiSH.JAPANESE.1080p.WEB.H264".to_string()),
+            source_password: None,
+            category: None,
+            queue_priority: None,
+            download_directory: None,
+            release_title: None,
+            indexer_name: None,
+            indexer_id: None,
+            info_hash_hint: None,
+            seed_goal_ratio: None,
+            seed_goal_seconds: None,
+            is_recent: None,
+            season_pack: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_download_blocks_nzb_bytes_whose_category_contradicts_the_subject() {
+        let client = Arc::new(MockDownloadClient::default());
+        let router = nzb_bytes_router(client.clone());
+
+        let error = router
+            .submit_download(&resolved_nzb_request(MediaFacet::Series))
+            .await
+            .expect_err("an anime-categorized nzb must not be submitted for a series subject");
+
+        assert!(
+            matches!(&error, AppError::Validation(message) if message.contains("category_mismatch")),
+            "expected a definitive category_mismatch veto, got {error:?}"
+        );
+        assert!(
+            client.submissions.lock().unwrap().is_empty(),
+            "the download client must never receive a vetoed release"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_download_passes_nzb_bytes_whose_category_matches_the_subject() {
+        let client = Arc::new(MockDownloadClient::default());
+        let router = nzb_bytes_router(client.clone());
+
+        router
+            .submit_download(&resolved_nzb_request(MediaFacet::Anime))
+            .await
+            .expect("the same bytes are exactly right for an anime subject");
+
+        assert_eq!(client.submissions.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn submit_download_gate_honors_search_facet_over_owner_facet() {
+        // Series-movie grabs: the owning title is a series, but the release
+        // was searched and validated as a movie. The gate must compare the
+        // search facet, or every correctly categorized linked film is vetoed.
+        let client = Arc::new(MockDownloadClient::default());
+        let router = nzb_bytes_router(client.clone());
+
+        let mut request = resolved_nzb_request(MediaFacet::Series);
+        request.search_facet = Some(MediaFacet::Anime);
+        router
+            .submit_download(&request)
+            .await
+            .expect("an anime-categorized nzb is right for an anime-faceted search");
+
+        assert_eq!(client.submissions.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -3700,6 +4033,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
@@ -3757,6 +4091,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
@@ -3815,6 +4150,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://tracker.example/file.torrent".to_string()),
@@ -3858,6 +4194,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("magnet:?xt=urn:btih:abcdef".to_string()),
@@ -3926,6 +4263,7 @@ mod tests {
         let result = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
@@ -4001,6 +4339,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title_for_facet(MediaFacet::Movie),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/movie.nzb".to_string()),
@@ -4027,6 +4366,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title_for_facet(MediaFacet::Anime),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/anime.nzb".to_string()),
@@ -4087,6 +4427,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
@@ -4147,6 +4488,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
@@ -4208,6 +4550,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
@@ -4263,6 +4606,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title: test_title(),
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
@@ -4343,6 +4687,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title,
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
@@ -4417,6 +4762,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title,
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
@@ -4479,6 +4825,7 @@ mod tests {
         router
             .submit_download(&DownloadClientAddRequest {
                 title,
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),
@@ -4536,6 +4883,7 @@ mod tests {
         let error = router
             .submit_download(&DownloadClientAddRequest {
                 title,
+                search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
                 source_hint: Some("https://example.invalid/release.nzb".to_string()),

@@ -66,6 +66,8 @@ async fn import_series_download(
         rename_enabled,
         rename_template,
         folder_template,
+        season_folder_template,
+        specials_folder_template,
     } = resolve_import_paths(app, title).await?;
     let full_folder_path = effective_title_folder_path(&media_root, title, &folder_template, None);
 
@@ -101,6 +103,8 @@ async fn import_series_download(
             import_id,
             rename_enabled,
             &rename_template,
+            &season_folder_template,
+            &specials_folder_template,
             &full_folder_path,
             completed,
             source_video,
@@ -364,8 +368,10 @@ fn resolved_episode_ids_are_within_expected(
     target_episode_ids: &[String],
     expected_episode_ids: &HashSet<String>,
 ) -> bool {
-    target_episode_ids.is_empty()
-        || target_episode_ids
+    // An unresolved file binds to nothing, so it is never "within" the grabbed
+    // release; the caller rejects that case first with a more precise reason.
+    !target_episode_ids.is_empty()
+        && target_episode_ids
             .iter()
             .all(|episode_id| expected_episode_ids.contains(episode_id))
 }
@@ -606,6 +612,8 @@ async fn import_single_episode_file(
     import_id: &str,
     rename_enabled: bool,
     rename_template: &str,
+    season_folder_template: &str,
+    specials_folder_template: &str,
     title_folder_path: &Path,
     completed: &CompletedDownload,
     source_video: &Path,
@@ -651,6 +659,44 @@ async fn import_single_episode_file(
         .iter()
         .map(|episode| episode.id.clone())
         .collect();
+    // Fail closed: a parseable episodic file that binds to no episode of this
+    // title is not part of what was grabbed and must never reach the library.
+    // Ordered ahead of the grabbed-release scope check so the reported reason
+    // names the missing episode instead of the broader scope violation, and
+    // returned before any destination rendering, scoring, media-file insertion,
+    // or source cleanup can run.
+    if target_episodes.is_empty() {
+        // The early return skips the shared outcome handling below, so record
+        // the rejected artifact here: the file must still be visible in the
+        // import results even though nothing was transferred.
+        persist_file_import_artifact(
+            app,
+            import_id,
+            completed,
+            title.id.as_str(),
+            source_video,
+            "episode",
+            "rejected",
+            Some("episode_not_found_for_title"),
+            None,
+            &target_episodes,
+        )
+        .await;
+        return Ok(EpisodeImportOutcome::Rejected {
+            rejection: crate::post_download_gate::ImportedFileRejection {
+                message: "file resolves to no episode of this title".to_string(),
+                recycle_reason: "episode_not_found_for_title",
+                skip_reason: Some(ImportSkipReason::PolicyMismatch),
+                blocking_rule_codes: vec!["episode_not_found_for_title".to_string()],
+            },
+            // The file stays in the completed-download directory: leaving the
+            // rest of the pack importable is Sonarr-compatible, and burning the
+            // release for one stray file would be wrong.
+            finalize_before_import: false,
+            reason_code: Some("episode_not_found_for_title".to_string()),
+            episode_ids: Vec::new(),
+        });
+    }
     if let Some(expected_episode_ids) = expected_episode_ids
         && !resolved_episode_ids_are_within_expected(&target_episode_ids, expected_episode_ids)
     {
@@ -691,6 +737,8 @@ async fn import_single_episode_file(
         import_id,
         rename_enabled,
         rename_template,
+        season_folder_template,
+        specials_folder_template,
         title_folder_path,
         source_video,
         &parsed,
@@ -872,14 +920,56 @@ pub(crate) async fn resolve_import_paths(
         default_folder_template,
         title.facet.as_str(),
     );
+    let season_folder_template = crate::normalize_season_folder_template_or_default(
+        app.read_setting_string_value_for_scope(
+            super::SETTINGS_SCOPE_SYSTEM,
+            super::SEASON_FOLDER_TEMPLATE_KEY,
+            Some(title.facet.as_str()),
+        )
+        .await?,
+    );
+    let specials_folder_template = crate::normalize_specials_folder_template_or_default(
+        app.read_setting_string_value_for_scope(
+            super::SETTINGS_SCOPE_SYSTEM,
+            super::SPECIALS_FOLDER_TEMPLATE_KEY,
+            Some(title.facet.as_str()),
+        )
+        .await?,
+    );
 
     Ok(ImportPathSettings {
         media_root,
         rename_enabled,
         rename_template,
         folder_template,
+        season_folder_template,
+        specials_folder_template,
     })
 }
+
+/// Compute the parent directory for an episode import: the season or specials
+/// folder beneath the title folder, or the title folder itself when the library
+/// is not configured to use season folders.
+pub(crate) fn episodic_import_parent_path(
+    title: &scryer_domain::Title,
+    title_folder_path: &Path,
+    season_folder_template: &str,
+    specials_folder_template: &str,
+    season_num: u32,
+) -> PathBuf {
+    if use_season_folders(title) {
+        let season_folder = crate::render_episode_folder_name(
+            title,
+            season_num,
+            season_folder_template,
+            specials_folder_template,
+        );
+        title_folder_path.join(season_folder)
+    } else {
+        title_folder_path.to_path_buf()
+    }
+}
+
 /// Compute the destination path for an episode import using the canonical
 /// token set: base tokens from parsed release metadata, overridden by the
 /// explicit episode values supplied by the caller.
@@ -900,6 +990,8 @@ pub(crate) fn episode_import_dest_path(
     title_folder_path: &Path,
     rename_enabled: bool,
     rename_template: &str,
+    season_folder_template: &str,
+    specials_folder_template: &str,
     season_num: u32,
     ep_num_str: &str,
     absolute_number: Option<&str>,
@@ -926,12 +1018,14 @@ pub(crate) fn episode_import_dest_path(
     } else {
         preserved_import_filename(source_path)
     };
-    if use_season_folders(title) {
-        let season_folder = format!("Season {:02}", season_num);
-        title_folder_path.join(&season_folder).join(&rendered)
-    } else {
-        title_folder_path.join(&rendered)
-    }
+    episodic_import_parent_path(
+        title,
+        title_folder_path,
+        season_folder_template,
+        specials_folder_template,
+        season_num,
+    )
+    .join(rendered)
 }
 /// Check whether the title's tags request season-folder organisation.
 /// Defaults to `true` (use season folders) when the tag is absent.

@@ -13,7 +13,7 @@ mod common;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::{TestContext, disable_platform_keystore_for_tests};
+use common::{TestContext, disable_platform_keystore_for_tests, initialize_wasm_runtime_for_tests};
 use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, INDEXER_ROUTING_SETTINGS_KEY, IndexerPluginProvider,
     InteractiveReleaseSearchIndexerStatus, InteractiveReleaseSearchRequest,
@@ -103,6 +103,7 @@ fn indexer_config(
 
 async fn setup_app(configs: Vec<IndexerConfig>) -> (AppUseCase, User) {
     disable_platform_keystore_for_tests();
+    initialize_wasm_runtime_for_tests();
 
     let db = SqliteServices::new(":memory:")
         .await

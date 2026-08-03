@@ -1,4 +1,4 @@
-//! Native wasmtime host for the archive-extractor plugin (RFC 123 §7.2, WP1).
+//! Native wasmtime host for the archive-extractor plugin.
 //!
 //! Replaces the Extism execution path for the archive kind: a process-wide
 //! engine with epoch cancellation and the full wasm feature surface
@@ -13,9 +13,12 @@ mod describe;
 pub(crate) mod engine;
 mod error;
 mod invoke;
+pub(crate) mod module_cache;
 mod sandbox;
 
-pub(crate) use describe::command_model_describe;
+pub(crate) use describe::{
+    command_model_describe, validate_archive_module, validate_subtitle_sync_module,
+};
 pub(crate) use invoke::{
     ArchiveInvocation, SubtitleSyncInvocation, process_archive, process_subtitle_sync,
 };

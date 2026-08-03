@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use crate::scoring_weights::ScoringWeights;
 
 /// Reputation tier for a release group.
@@ -55,38 +58,75 @@ pub struct GroupRule {
     pub entry: GroupEntry,
 }
 
+/// One upstream `trash_scores` entry, joined to the fact code its custom format
+/// produces. A code appears once per (app, score set) the upstream data scores
+/// it under, so callers pick the set their locale pack declares.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-pub struct TrashGuideRuleMetadata {
-    pub matcher: &'static str,
-    pub match_kind: GroupMatchKind,
-    pub tier: GroupTier,
-    pub facet: RuleFacet,
-    pub source_context: SourceContext,
+pub struct TrashFactScore {
+    pub code: &'static str,
     pub app: &'static str,
-    pub stem: &'static str,
-    pub trash_id: &'static str,
-    pub cf_name: &'static str,
-    pub spec_name: &'static str,
-    pub source_path: &'static str,
+    pub score_set: &'static str,
+    pub score: i64,
 }
 
+/// One `LanguageSpecification` value, distilled to something the rule input can
+/// answer directly.
+///
+/// `Named` is the canonical audio-language code
+/// `normalize_detected_audio_language_code` produces, so it compares against
+/// `input.release.languages_audio` with no further translation. `Original` is
+/// upstream's relative id `-2`: the title's own original language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrashLanguage {
+    Named(&'static str),
+    Original,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrashLanguageCondition {
+    pub language: TrashLanguage,
+    pub negate: bool,
+    /// Upstream's `required` flag, which drives `SpecificationMatchesGroup`:
+    /// no required specification may fail, and at least one must match.
+    pub required: bool,
+}
+
+/// One upstream language custom format, distilled to its language conditions.
+///
+/// Language formats are policy rather than detection — they need
+/// the title's original language, which the parser never sees — so they are
+/// evaluated by the managed locale packs against the rule input instead of
+/// being emitted as parser facts. Scores join through [`TrashFactScore`] under
+/// the same `code`.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-pub struct MetadataRuleRecord {
+pub struct TrashLanguageRule {
+    pub code: &'static str,
     pub app: &'static str,
-    pub facet: RuleFacet,
     pub stem: &'static str,
-    pub trash_id: &'static str,
-    pub cf_name: &'static str,
-    pub spec_name: &'static str,
-    pub implementation: &'static str,
-    pub value: &'static str,
-    pub reason: &'static str,
-    pub source_path: &'static str,
+    pub conditions: &'static [TrashLanguageCondition],
 }
 
 include!("trash_guides_release_groups.generated.rs");
+
+struct GroupRuleIndex {
+    exact: HashMap<String, Vec<usize>>,
+    prefixes: Vec<usize>,
+}
+
+static GROUP_RULE_INDEX: LazyLock<GroupRuleIndex> = LazyLock::new(|| {
+    let mut exact = HashMap::<String, Vec<usize>>::new();
+    let mut prefixes = Vec::new();
+    for (index, rule) in GROUP_RULES.iter().enumerate() {
+        match rule.match_kind {
+            GroupMatchKind::Exact => exact
+                .entry(rule.matcher.to_ascii_uppercase())
+                .or_default()
+                .push(index),
+            GroupMatchKind::Prefix => prefixes.push(index),
+        }
+    }
+    GroupRuleIndex { exact, prefixes }
+});
 
 /// Look up a release group's tier, considering source context.
 ///
@@ -107,25 +147,42 @@ pub fn lookup_group(
 
     for facet in facets {
         // Try source-specific match first
-        if let Some(rule) = GROUP_RULES.iter().find(|rule| {
-            group_rule_matches(rule, &name_upper)
-                && rule.entry.facet == *facet
-                && rule.entry.source_context == ctx
-        }) {
+        if let Some(rule) = indexed_group_rule(&name_upper, *facet, ctx) {
             return Some(&rule.entry);
         }
 
         // Fall back to Any context (banned groups, etc.).
-        if let Some(rule) = GROUP_RULES.iter().find(|rule| {
-            group_rule_matches(rule, &name_upper)
-                && rule.entry.facet == *facet
-                && rule.entry.source_context == SourceContext::Any
-        }) {
+        if let Some(rule) = indexed_group_rule(&name_upper, *facet, SourceContext::Any) {
             return Some(&rule.entry);
         }
     }
 
     None
+}
+
+fn indexed_group_rule(
+    candidate: &str,
+    facet: RuleFacet,
+    context: SourceContext,
+) -> Option<&'static GroupRule> {
+    let exact_index = GROUP_RULE_INDEX.exact.get(candidate).and_then(|indices| {
+        indices.iter().copied().find(|index| {
+            let entry = &GROUP_RULES[*index].entry;
+            entry.facet == facet && entry.source_context == context
+        })
+    });
+    let prefix_index = GROUP_RULE_INDEX.prefixes.iter().copied().find(|index| {
+        let rule = &GROUP_RULES[*index];
+        rule.entry.facet == facet
+            && rule.entry.source_context == context
+            && group_rule_matches(rule, candidate)
+    });
+
+    match (exact_index, prefix_index) {
+        (Some(exact), Some(prefix)) => Some(&GROUP_RULES[exact.min(prefix)]),
+        (Some(index), None) | (None, Some(index)) => Some(&GROUP_RULES[index]),
+        (None, None) => None,
+    }
 }
 
 fn candidate_facets(category_hint: Option<&str>) -> &'static [RuleFacet] {
@@ -180,6 +237,15 @@ fn group_rule_matches(rule: &GroupRule, candidate: &str) -> bool {
             .get(..rule.matcher.len())
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case(rule.matcher)),
     }
+}
+
+pub(crate) fn is_known_release_group(candidate: &str) -> bool {
+    let candidate_upper = candidate.to_ascii_uppercase();
+    GROUP_RULE_INDEX.exact.contains_key(&candidate_upper)
+        || GROUP_RULE_INDEX
+            .prefixes
+            .iter()
+            .any(|index| group_rule_matches(&GROUP_RULES[*index], candidate))
 }
 
 /// Apply release group scoring to a decision.

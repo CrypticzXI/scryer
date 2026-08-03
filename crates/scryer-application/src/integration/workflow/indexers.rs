@@ -115,12 +115,30 @@ pub(crate) fn derive_indexer_base_url_from_config_fields(
         .ok_or_else(|| AppError::Validation("indexer connection URL is required".into()))?;
 
     if (field.key.contains("feed") || field.key.contains("rss"))
-        && let Some(origin) = extract_url_origin(&raw)
+        && let Some(origin) = extract_base_url_origin(&raw)
     {
         return Ok(origin);
     }
 
     Ok(raw)
+}
+/// Scheme-preserving origin for base-URL derivation (`https://host[:port]`).
+/// Distinct from `extract_url_origin`, which was repurposed for display
+/// labels and returns the bare host — a base URL must keep its scheme or it
+/// fails downstream URL validation.
+fn extract_base_url_origin(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let (scheme, remainder) = trimmed.split_once("://")?;
+    if scheme.is_empty() {
+        return None;
+    }
+
+    let authority = remainder.split(['/', '?', '#']).next()?.trim();
+    if authority.is_empty() {
+        return None;
+    }
+
+    Some(format!("{scheme}://{authority}"))
 }
 pub(crate) fn normalize_indexer_config_json(
     fields: &[scryer_domain::ConfigFieldDef],
@@ -994,7 +1012,10 @@ impl AppUseCase {
                             managed_parent_config_id: Some(Some(parent.id.clone())),
                             managed_child_key: Some(Some(desired.child_key.clone())),
                             managed_metadata_json: Some(managed_metadata_json),
-                            caps_snapshot_json: Some(desired.caps_snapshot_json.clone()),
+                            // Sync plans no longer fetch caps, so a plan without a
+                            // snapshot must not clear the stored one — the background
+                            // enrichment pass owns caps_snapshot_json refreshes.
+                            caps_snapshot_json: desired.caps_snapshot_json.clone().map(Some),
                             config_json: Some(desired.config_json.clone()),
                         })
                         .await
@@ -1066,6 +1087,7 @@ impl AppUseCase {
         if indexers_changed {
             self.publish_indexers_changed();
         }
+        self.queue_managed_indexer_enrichment(actor, &parent.id);
         Ok(result)
     }
 }

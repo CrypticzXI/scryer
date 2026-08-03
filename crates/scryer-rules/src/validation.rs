@@ -471,6 +471,20 @@ pub fn validate_user_rule(
     }
 }
 
+/// Validate a system-managed score-only policy.
+///
+/// Managed packs are opt-in, so the source is no longer inspected
+/// for `scryer.block_score()`. That check only restricted the *spelling* of a
+/// veto — a pack could emit the sentinel as a literal and block identically —
+/// and the property it was reaching for now lives in `validate_managed_entries`
+/// at evaluation time, where it cannot be bypassed.
+pub fn validate_managed_rule(
+    rego_source: &str,
+    rule_set_id: &str,
+) -> Result<ValidationResult, RulesError> {
+    validate_user_rule(rego_source, rule_set_id)
+}
+
 /// Verify that the evaluation result is a map of string → integer.
 /// Floats and out-of-range values are rejected.
 fn validate_score_entry_shape(value: &Value) -> Result<(), String> {
@@ -558,6 +572,7 @@ fn synthetic_test_input() -> UserRuleInput {
             age_days: Some(5),
             thumbs_up: Some(10),
             thumbs_down: Some(0),
+            guide_facts: vec![],
             extra: Default::default(),
         },
         profile: ProfileDoc {
@@ -706,6 +721,7 @@ mod tests {
             id: policy_id,
             name: template_id.to_string(),
             rego_source,
+            origin: crate::PolicyOrigin::User,
             applied_facets: Vec::new(),
         }])
         .expect("template policy should compile");
@@ -724,6 +740,30 @@ mod tests {
             score_entry["bonus"] := 100
         "#;
         let result = validate_user_rule(source, "test_rule").unwrap();
+        assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn rule_input_contract_copies_are_byte_identical() {
+        assert_eq!(
+            include_str!("../rule-input-contract.json"),
+            include_str!("../../../apps/scryer-web/lib/contracts/rule-input-contract.json"),
+            "crates/scryer-rules/rule-input-contract.json and \
+             apps/scryer-web/lib/contracts/rule-input-contract.json must stay byte-identical"
+        );
+    }
+
+    /// Opt-in managed packs may veto, so the builtin is accepted
+    /// in managed source. The bound that still applies is evaluation-time.
+    #[test]
+    fn managed_rule_accepts_block_score_builtin() {
+        let source = r#"
+            package scryer.rules.user.managed_rule
+            import rego.v1
+            score_entry["blocked"] := scryer.block_score()
+        "#;
+
+        let result = validate_managed_rule(source, "managed_rule").unwrap();
         assert!(result.valid, "errors: {:?}", result.errors);
     }
 

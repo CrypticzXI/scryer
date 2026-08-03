@@ -1,5 +1,5 @@
 """
-Progress snapshot for the interactive acquisition-search job (RFC 119 §7.3).
+Progress snapshot for the interactive acquisition-search job.
 Survives navigation/refresh — the job runs server-side and its state is queried
 by `id` and pushed via `jobRunEvents`.
 """
@@ -16,7 +16,7 @@ type AcquisitionSearchJobPayload {
 }
 
 """
-Lifecycle of the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+Lifecycle of the interactive acquisition-search job.
 """
 enum AcquisitionSearchJobStateValue {
 	RUNNING
@@ -413,7 +413,7 @@ enum ContentScopeValue {
 }
 
 """
-Convergence state of an acquisition scope (RFC 119 §6/§7). Replaces the retired
+Convergence state of an acquisition scope. Replaces the retired
 cadence display (`searchPhase`/`nextSearchAt`): the operator sees whether a scope
 is still sweeping indexers, has converged onto RSS, is queued for the cursor, or
 is deferred because every uncovered indexer is currently unavailable.
@@ -548,6 +548,7 @@ input CreateRuleSetInput {
 	regoSource: String!
 	appliedFacets: [String!]
 	priority: Int
+	enabled: Boolean
 }
 
 input CreateSubtitleProviderConfigInput {
@@ -579,7 +580,7 @@ type CutoffUnmetItemPayload {
 	currentTier: String!
 	targetTier: String!
 	"""
-	Convergence progress for this upgrade scope (RFC 119 §6/§7) — the same
+	Convergence progress for this upgrade scope — the same
 	state the Missing/Upgrades views show.
 	"""
 	convergenceState: ConvergenceStateValue!
@@ -588,7 +589,7 @@ type CutoffUnmetItemPayload {
 }
 
 """
-RFC 119 bounded view: one page of cutoff-unmet targets + the full unmet
+Bounded view: one page of cutoff-unmet targets + the full unmet
 count, so the UI paginates instead of loading the whole set.
 """
 type CutoffUnmetTitlesPagePayload {
@@ -1057,6 +1058,7 @@ enum DomainEventTypeValue {
 	METADATA_HYDRATION_UPDATED
 	RELEASE_GRABBED
 	DOWNLOAD_FAILED
+	DOWNLOAD_IGNORED
 	RELEASE_BLOCKLISTED
 	IMPORT_COMPLETED
 	IMPORT_REJECTED
@@ -1166,6 +1168,7 @@ enum DownloadDisplayStateValue {
 	IMPORT_PENDING
 	IMPORT_BLOCKED
 	IMPORT_FAILED
+	IGNORED
 	REMOVING
 	REMOVE_FAILED
 }
@@ -1241,6 +1244,7 @@ type DownloadQueueItemPayload {
 	titleName: String!
 	facet: MediaFacetValue
 	isScryerOrigin: Boolean!
+	sourceProvider: String
 	clientId: ID!
 	clientName: String!
 	clientType: String!
@@ -1458,8 +1462,7 @@ input ExternalImportConnectionInput {
 """
 Connection kind for the lightweight, pre-warmup connection probe used by the
 setup wizard's Connect step. Unlike [`ExternalArrSourceKind`] this also
-covers Prowlarr, which has no warmup of its own but can still be
-connection-tested before preview.
+covers Prowlarr, whose child discovery starts separately after this probe.
 """
 enum ExternalImportConnectionKind {
 	SONARR
@@ -1511,6 +1514,7 @@ type ExternalImportIndexerPayload {
 }
 
 enum ExternalImportMonitorWarmupPhaseValue {
+	LOADING_INDEXERS
 	LOADING_MOVIES
 	LOADING_SERIES
 	LOADING_EPISODES
@@ -1717,6 +1721,10 @@ type ForceGrabPendingReleasePayload {
 type GeneralSettingsPayload {
 	keepHistoryForever: Boolean!
 	historyRetentionDays: Int!
+	imageCacheMaxSizeMb: Int!
+	effectiveImageCacheMaxSizeBytes: Long!
+	effectiveImageCacheMaxSizeMb: Float!
+	imageCacheMaxSizeEnvOverrideActive: Boolean!
 	pluginHttpCaBundlePem: String!
 	pluginHttpTrustedCertificates: [PluginHttpTrustedCertificatePayload!]!
 }
@@ -2575,6 +2583,8 @@ type MediaSettingsPayload {
 	rootFolders: [RootFolderPayload!]!
 	requiredAudioLanguages: [String!]!
 	folderTemplate: String!
+	seasonFolderTemplate: String
+	specialsFolderTemplate: String
 	renameEnabled: Boolean!
 	renameTemplate: String!
 	renameCollisionPolicy: RenameCollisionPolicyValue!
@@ -2824,31 +2834,31 @@ type MutationRoot {
 	cancelMyMediaRequest(requestId: ID!): MediaRequestActionPayload!
 	"""
 	Re-open the title's title-mismatch scopes for search after a rematch
-	(RFC 119 §D2). Retained: a rematch changes the scope fingerprint, so the
+	. Retained: a rematch changes the scope fingerprint, so the
 	re-open prunes coverage and the cursor re-converges.
 	"""
 	triggerTitleMismatchRecoverySearch(titleId: ID!): TriggerTitleMismatchRecoverySearchPayload!
 	"""
 	Pause acquisition for a scope. `id` is a state-row id or a convergence scope
-	key (RFC 119 §7.4) — a scope key with no row yet materializes one.
+	key — a scope key with no row yet materializes one.
 	"""
 	pauseWantedItem(id: ID!): PauseWantedItemPayload!
 	"""
 	Resume acquisition for a paused scope. `id` is a state-row id or a
-	convergence scope key (RFC 119 §7.4).
+	convergence scope key.
 	"""
 	resumeWantedItem(id: ID!): ResumeWantedItemPayload!
 	forceGrabPendingRelease(id: ID!): ForceGrabPendingReleasePayload!
 	dismissPendingRelease(id: ID!): DismissPendingReleasePayload!
 	"""
 	Start an interactive acquisition-search job over the selected wanted/upgrade
-	scopes (RFC 119 §7.3 / Phase 2). Replaces the retired per-item trigger
+	scopes. Replaces the retired per-item trigger
 	mutations: one server job (progress/cancel survive refresh) runs the
 	interactive best-release search+grab for every requested scope.
 	"""
 	triggerAcquisitionSearch(input: TriggerAcquisitionSearchInput!): AcquisitionSearchJobPayload!
 	"""
-	Cancel a running interactive acquisition-search job (RFC 119 §7.3).
+	Cancel a running interactive acquisition-search job.
 	"""
 	cancelAcquisitionSearch(id: ID!): CancelAcquisitionSearchPayload!
 	createRuleSet(input: CreateRuleSetInput!): RuleSetPayload!
@@ -2880,6 +2890,7 @@ type MutationRoot {
 	saveExternalImportSetupSecretDraft(input: SaveExternalImportSetupSecretDraftInput!): SaveExternalImportSetupSecretDraftPayload!
 	clearExternalImportSetupSecretDraft: ClearExternalImportSetupSecretDraftPayload!
 	startExternalImportArrSourceWarmup(input: StartExternalImportArrSourceWarmupInput!): ExternalImportMonitorWarmupProgressPayload!
+	startExternalImportProwlarrWarmup(input: StartExternalImportProwlarrWarmupInput!): ExternalImportMonitorWarmupProgressPayload!
 	cancelExternalImportArrSourceWarmup(sessionId: ID!): CancelExternalImportMonitorWarmupPayload!
 	"""
 	Lightweight connection probe for the Connect step. Tests reachability +
@@ -3144,6 +3155,7 @@ enum PendingReleaseStatusValue {
 	SUPERSEDED
 	EXPIRED
 	DISMISSED
+	NEEDS_REVIEW
 }
 
 type PendingReleasesPayload {
@@ -3298,7 +3310,8 @@ input PrepareBackupDownloadInput {
 
 input PreviewExternalImportInput {
 	sourceWarmupSessionIds: [ID!]!
-	prowlarr: ExternalImportConnectionInput
+	prowlarrWarmupSessionId: ID
+	prowlarr: ExternalImportConnectionInput @deprecated(reason: "use prowlarrWarmupSessionId")
 }
 
 input PreviewManualImportInput {
@@ -3489,7 +3502,12 @@ type QueryRoot {
 	activityEvents(limit: Int, offset: Int): [ActivityEventPayload!]!
 	auditLog(eventTypes: [DomainEventTypeValue!], titleId: ID, facet: MediaFacetValue, afterSequence: Long, beforeSequence: Long, limit: Int): [DomainEventEnvelopePayload!]!
 	activeLibraryScans: [LibraryScanProgressPayload!]!
-	externalImportArrSourceWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
+	externalImportArrSourceWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload! @deprecated(reason: "use externalImportWarmupStatus")
+	"""
+	Kind-neutral warmup status lookup — covers Arr source and Prowlarr
+	discovery sessions alike.
+	"""
+	externalImportWarmupStatus(sessionId: ID!): ExternalImportMonitorWarmupProgressPayload!
 	externalImportAggregateWarmupProgress(input: ExternalImportAggregateWarmupProgressInput!): ExternalImportAggregateWarmupProgressPayload!
 	pendingImportCounts: PendingImportCountsPayload!
 	navigationBadgeCounts: NavigationBadgeCountsPayload!
@@ -3551,7 +3569,7 @@ type QueryRoot {
 	previewManualImportPath(input: PreviewManualImportPathInput!): ManualImportPreviewPayload!
 	me: UserPayload
 	"""
-	RFC 119 §6/§7: the derived Missing / Upgrades view. `wantedKind` selects the
+	The derived Missing / Upgrades view. `wantedKind` selects the
 	target set (`MISSING` derived from fileless monitored scopes, `CUTOFF_UPGRADE`
 	from below-cutoff files). Results are the derived targets joined to the
 	activity-state row (when one exists) and enriched with per-scope convergence
@@ -3560,15 +3578,15 @@ type QueryRoot {
 	"""
 	wantedItems(wantedKind: WantedKindValue! = MISSING, facet: MediaFacetValue, libraryIds: [ID!], titleSearch: String, limit: Int! = 50, offset: Int! = 0): WantedItemsListPayload!
 	"""
-	RFC 119 bounded view: a single page of cutoff-unmet (Upgrades) targets plus
+	Bounded view: a single page of cutoff-unmet (Upgrades) targets plus
 	the full unmet count and per-item convergence progress, so the UI paginates
 	instead of loading the whole set. The unpaged `cutoffUnmetTitles` query was
-	removed in this release (RFC 119 §6): the full-array browser load is retired.
+	removed in this release: the full-array browser load is retired.
 	"""
 	cutoffUnmetTitlesPage(facet: MediaFacetValue, libraryIds: [ID!], limit: Int!, offset: Int!): CutoffUnmetTitlesPagePayload!
 	titleAcquisitionDiagnostics(titleId: ID!): TitleAcquisitionDiagnosticsPayload!
 	"""
-	Progress of an interactive acquisition-search job (RFC 119 §7.3), polled by
+	Progress of an interactive acquisition-search job, polled by
 	the UI alongside the `jobRunEvents` push. `None` when no such job exists.
 	"""
 	acquisitionSearchJob(id: ID!): AcquisitionSearchJobPayload
@@ -3705,7 +3723,7 @@ enum RecapPolicyValue {
 }
 
 """
-Recency lane of an acquisition scope (RFC 119 §D3): `Hot` scopes converge
+Recency lane of an acquisition scope: `Hot` scopes converge
 promptly (high candidate value to the scheduler); `Cold` scopes drain under
 backpressure.
 """
@@ -3918,6 +3936,11 @@ type RuleSetPayload {
 	appliedFacets: [String!]!
 	isManaged: Boolean!
 	managedKey: String
+	"""
+	Tags a managed pack is narrowed to. Null means it applies wherever its
+	facts match. Always null for user-authored rule sets.
+	"""
+	managedTagFilter: [String!]
 	createdAt: DateTime!
 	updatedAt: DateTime!
 }
@@ -4169,6 +4192,10 @@ enum SortDirectionValue {
 
 input StartExternalImportArrSourceWarmupInput {
 	kind: ExternalArrSourceKind!
+	connection: ExternalImportConnectionInput!
+}
+
+input StartExternalImportProwlarrWarmupInput {
 	connection: ExternalImportConnectionInput!
 }
 
@@ -4444,6 +4471,7 @@ type TitleHistoryEventPayload {
 	displayTitle: String
 	sourceSystem: String
 	sourceRef: String
+	sourceProvider: String
 	sourceHint: String
 	quality: String
 	downloadId: String
@@ -4732,7 +4760,7 @@ enum TrackedDownloadStatusValue {
 }
 
 """
-Scope selector for the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+Scope selector for the interactive acquisition-search job.
 A bare input searches every derived target of `wanted_kind`; narrowing fields
 filter that set. `wanted_item_id` (a state-row id or a convergence scope key)
 resolves a single scope.
@@ -4889,9 +4917,10 @@ input UpdateDownloadClientRoutingInput {
 }
 
 input UpdateGeneralSettingsInput {
-	keepHistoryForever: Boolean!
-	historyRetentionDays: Int!
-	pluginHttpCaBundlePem: String!
+	keepHistoryForever: Boolean
+	historyRetentionDays: Int
+	imageCacheMaxSizeMb: Int
+	pluginHttpCaBundlePem: String
 }
 
 input UpdateIndexerConfigInput {
@@ -4972,6 +5001,8 @@ input UpdateMediaSettingsInput {
 	rootFolders: [RootFolderInput!]
 	requiredAudioLanguages: [String!]
 	folderTemplate: String
+	seasonFolderTemplate: String
+	specialsFolderTemplate: String
 	renameEnabled: Boolean
 	renameTemplate: String
 	renameCollisionPolicy: RenameCollisionPolicyValue
@@ -5034,6 +5065,12 @@ input UpdateRuleSetInput {
 	regoSource: String
 	appliedFacets: [String!]
 	priority: Int
+	"""
+	Narrow a managed locale pack to titles carrying one of these tags. An
+	empty list clears the filter so the pack applies wherever its facts
+	match. Rejected for user-authored rule sets.
+	"""
+	managedTagFilter: [String!]
 }
 
 input UpdateSecuritySettingsInput {
@@ -5123,7 +5160,7 @@ input ValidateRuleSetInput {
 
 type WantedItemPayload {
 	"""
-	Scope identity (RFC 119 §6): the acquisition-state row id when a state row
+	Scope identity: the acquisition-state row id when a state row
 	exists for this scope, otherwise the convergence scope key itself
 	(`episode:<uuid>`, `title:<uuid>`, `series_movie:<uuid>`, …). A derived
 	target with no state row is still addressable by this id (pause/resume and
@@ -5145,11 +5182,15 @@ type WantedItemPayload {
 	lastSearchAt: DateTime
 	status: WantedStatusValue!
 	grabbedRelease: String
+	"""
+	Safe indexer/provider label for the grabbed release, when known.
+	"""
+	sourceProvider: String
 	currentScore: Int
 	latestReleaseDecision: ReleaseDecisionPayload
 	mismatchRecoveryEligible: Boolean!
 	"""
-	Convergence progress for this scope (RFC 119 §6/§7): whether the scope is
+	Convergence progress for this scope: whether the scope is
 	still sweeping indexers, has converged (watching RSS), is queued, or is
 	deferred because every uncovered indexer is currently unavailable.
 	"""
@@ -5163,7 +5204,7 @@ type WantedItemPayload {
 	"""
 	indexersRouted: Int!
 	"""
-	Recency lane (RFC 119 §D3): `Hot` converges promptly, `Cold` drains under
+	Recency lane: `Hot` converges promptly, `Cold` drains under
 	scheduler backpressure.
 	"""
 	recencyLane: RecencyLaneValue!
@@ -5187,7 +5228,7 @@ type WantedItemsPagePayload {
 }
 
 """
-Which derived acquisition-target set a wanted view lists (RFC 119 §6/§7):
+Which derived acquisition-target set a wanted view lists:
 `Missing` scopes have no primary file; `CutoffUpgrade` scopes have a file below
 the effective profile cutoff.
 """
@@ -5235,6 +5276,10 @@ input WebauthnRegisterCompleteInput {
 	friendlyName: String
 }
 
+"""
+Marks an element of a GraphQL schema as no longer supported.
+"""
+directive @deprecated(reason: String = "No longer supported") on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
 """
 Directs the executor to include this field or fragment only when the `if` argument is true.
 """

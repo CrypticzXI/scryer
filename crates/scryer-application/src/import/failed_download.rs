@@ -1,4 +1,4 @@
-//! FailedDownloadHandler — failure detection and processing (plan 055).
+//! FailedDownloadHandler — failure detection and processing.
 //!
 //! check(): detects downloads that failed in the client or are encrypted.
 //! process_failed(): records the failure, emits events, and optionally reacquires.

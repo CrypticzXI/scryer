@@ -200,6 +200,8 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
             username,
             display_name,
             avatar_url,
+            // Plex verifies through a PIN exchange, so no password fact exists.
+            remote_password_configured: None,
         })
     }
 
@@ -290,6 +292,10 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
             .map_err(|error| {
                 AppError::Repository(format!("invalid Jellyfin authentication response: {error}"))
             })?;
+        // Read before `auth.user.name` is moved out below.
+        // Reported, not enforced: linking a passwordless Jellyfin account is
+        // allowed. Only the login use case refuses one.
+        let remote_password_configured = jellyfin_remote_password_configured(&auth.user);
         let remote_username = auth
             .user
             .name
@@ -307,6 +313,7 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
             username: remote_username.clone(),
             display_name: Some(remote_username),
             avatar_url,
+            remote_password_configured,
         })
     }
 
@@ -639,6 +646,23 @@ struct JellyfinUser {
     primary_image_tag: Option<String>,
     #[serde(rename = "Policy")]
     policy: Option<JellyfinUserPolicy>,
+    #[serde(rename = "HasPassword")]
+    has_password: Option<bool>,
+    #[serde(rename = "HasConfiguredPassword")]
+    has_configured_password: Option<bool>,
+}
+
+/// Jellyfin reports both flags as `false` for an account with no password, and
+/// both as `true` once one is set. Treat an explicit `false` from either as
+/// "no password", and absence of both as unknown so servers that omit the
+/// fields keep working.
+fn jellyfin_remote_password_configured(user: &JellyfinUser) -> Option<bool> {
+    match (user.has_password, user.has_configured_password) {
+        (None, None) => None,
+        (has_password, has_configured_password) => {
+            Some(has_password.unwrap_or(true) && has_configured_password.unwrap_or(true))
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -964,6 +988,45 @@ mod tests {
             verified.avatar_url.as_deref(),
             Some(expected_avatar_url.as_str())
         );
+        // Payload omits the password flags, so the fact is unknown rather than
+        // "no password" — a server that never reports it must stay usable.
+        assert_eq!(verified.remote_password_configured, None);
+    }
+
+    #[tokio::test]
+    async fn jellyfin_verification_reports_whether_the_account_has_a_password() {
+        // Field names and values here match what Jellyfin 10.11.5 actually
+        // returns from Users/AuthenticateByName.
+        for (has_password, has_configured_password, expected) in
+            [(false, false, Some(false)), (true, true, Some(true))]
+        {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/Users/AuthenticateByName"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "User": {
+                        "Id": "jf-user",
+                        "Name": "Jelly User",
+                        "HasPassword": has_password,
+                        "HasConfiguredPassword": has_configured_password
+                    }
+                })))
+                .mount(&server)
+                .await;
+            let verifier = HttpExternalIdentityVerifier::new();
+
+            let verified = verifier
+                .verify_jellyfin("jellyfin-main", &server.uri(), "jelly", "secret")
+                .await
+                .expect("verify jellyfin");
+
+            // The verifier reports the fact and never refuses on it; refusing is
+            // the login use case's job, so linking keeps working either way.
+            assert_eq!(
+                verified.remote_password_configured, expected,
+                "HasPassword={has_password} HasConfiguredPassword={has_configured_password}"
+            );
+        }
     }
 
     #[tokio::test]

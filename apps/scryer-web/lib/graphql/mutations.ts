@@ -722,6 +722,10 @@ export const updateGeneralSettingsMutation = `mutation UpdateGeneralSettings($in
   updateGeneralSettings(input: $input) {
     keepHistoryForever
     historyRetentionDays
+    imageCacheMaxSizeMb
+    effectiveImageCacheMaxSizeBytes
+    effectiveImageCacheMaxSizeMb
+    imageCacheMaxSizeEnvOverrideActive
     pluginHttpCaBundlePem
     pluginHttpTrustedCertificates {
       fingerprintSha256
@@ -990,6 +994,9 @@ const mediaSettingsFieldSelection = `
       isDefault
     }
     requiredAudioLanguages
+    folderTemplate
+    seasonFolderTemplate
+    specialsFolderTemplate
     renameEnabled
     renameTemplate
     renameCollisionPolicy
@@ -1390,7 +1397,7 @@ export const setPrimaryMovieFileMutation = `mutation SetPrimaryMovieFile($input:
   }
 }`;
 
-// RFC 119 §7.3: one server-side interactive search job replaces the retired
+// One server-side interactive search job replaces the retired
 // per-item trigger mutations; progress is polled via acquisitionSearchJobQuery.
 export const triggerAcquisitionSearchMutation = `mutation TriggerAcquisitionSearch($input: TriggerAcquisitionSearchInput!) {
   triggerAcquisitionSearch(input: $input) {
@@ -1894,6 +1901,11 @@ export const startExternalImportArrSourceWarmupMutation = `mutation StartExterna
   }
 }`;
 
+export const startExternalImportProwlarrWarmupMutation = `mutation StartExternalImportProwlarrWarmup($input: StartExternalImportProwlarrWarmupInput!) {
+  startExternalImportProwlarrWarmup(input: $input) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
 export const cancelExternalImportArrSourceWarmupMutation = `mutation CancelExternalImportArrSourceWarmup($sessionId: ID!) {
   cancelExternalImportArrSourceWarmup(sessionId: $sessionId) {
     sessionId
@@ -2031,8 +2043,13 @@ export type StartExternalImportArrSourceWarmupInput = {
   connection: ExternalImportConnectionInput;
 };
 
+export type StartExternalImportProwlarrWarmupInput = {
+  connection: ExternalImportConnectionInput;
+};
+
 export type PreviewExternalImportInput = {
   sourceWarmupSessionIds: string[];
+  prowlarrWarmupSessionId?: string | null;
   prowlarr?: ExternalImportConnectionInput | null;
 };
 

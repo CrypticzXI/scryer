@@ -415,6 +415,7 @@ pub enum DownloadDisplayStateValue {
     ImportPending,
     ImportBlocked,
     ImportFailed,
+    Ignored,
     Removing,
     RemoveFailed,
 }
@@ -481,6 +482,7 @@ pub enum DomainEventTypeValue {
     MetadataHydrationUpdated,
     ReleaseGrabbed,
     DownloadFailed,
+    DownloadIgnored,
     ReleaseBlocklisted,
     ImportCompleted,
     ImportRejected,
@@ -529,6 +531,7 @@ impl DomainEventTypeValue {
             DomainEventType::MetadataHydrationUpdated => Self::MetadataHydrationUpdated,
             DomainEventType::ReleaseGrabbed => Self::ReleaseGrabbed,
             DomainEventType::DownloadFailed => Self::DownloadFailed,
+            DomainEventType::DownloadIgnored => Self::DownloadIgnored,
             DomainEventType::ReleaseBlocklisted => Self::ReleaseBlocklisted,
             DomainEventType::ImportCompleted => Self::ImportCompleted,
             DomainEventType::ImportRejected => Self::ImportRejected,
@@ -577,6 +580,7 @@ impl DomainEventTypeValue {
             Self::MetadataHydrationUpdated => DomainEventType::MetadataHydrationUpdated,
             Self::ReleaseGrabbed => DomainEventType::ReleaseGrabbed,
             Self::DownloadFailed => DomainEventType::DownloadFailed,
+            Self::DownloadIgnored => DomainEventType::DownloadIgnored,
             Self::ReleaseBlocklisted => DomainEventType::ReleaseBlocklisted,
             Self::ImportCompleted => DomainEventType::ImportCompleted,
             Self::ImportRejected => DomainEventType::ImportRejected,
@@ -1188,7 +1192,7 @@ impl WantedMediaTypeValue {
     }
 }
 
-/// Convergence state of an acquisition scope (RFC 119 §6/§7). Replaces the retired
+/// Convergence state of an acquisition scope. Replaces the retired
 /// cadence display (`searchPhase`/`nextSearchAt`): the operator sees whether a scope
 /// is still sweeping indexers, has converged onto RSS, is queued for the cursor, or
 /// is deferred because every uncovered indexer is currently unavailable.
@@ -1209,7 +1213,7 @@ pub enum ConvergenceStateValue {
     Deferred,
 }
 
-/// Recency lane of an acquisition scope (RFC 119 §D3): `Hot` scopes converge
+/// Recency lane of an acquisition scope: `Hot` scopes converge
 /// promptly (high candidate value to the scheduler); `Cold` scopes drain under
 /// backpressure.
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -1219,7 +1223,7 @@ pub enum RecencyLaneValue {
     Cold,
 }
 
-/// Which derived acquisition-target set a wanted view lists (RFC 119 §6/§7):
+/// Which derived acquisition-target set a wanted view lists:
 /// `Missing` scopes have no primary file; `CutoffUpgrade` scopes have a file below
 /// the effective profile cutoff.
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Default)]
@@ -1249,6 +1253,7 @@ pub enum PendingReleaseStatusValue {
     Superseded,
     Expired,
     Dismissed,
+    NeedsReview,
 }
 
 #[derive(InputObject)]
@@ -2792,6 +2797,10 @@ pub struct PluginHttpTrustedCertificatePayload {
 pub struct GeneralSettingsPayload {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+    pub image_cache_max_size_mb: i32,
+    pub effective_image_cache_max_size_bytes: Long,
+    pub effective_image_cache_max_size_mb: f64,
+    pub image_cache_max_size_env_override_active: bool,
     pub plugin_http_ca_bundle_pem: String,
     pub plugin_http_trusted_certificates: Vec<PluginHttpTrustedCertificatePayload>,
 }
@@ -3052,6 +3061,8 @@ pub struct MediaSettingsPayload {
     pub root_folders: Vec<RootFolderPayload>,
     pub required_audio_languages: Vec<String>,
     pub folder_template: String,
+    pub season_folder_template: Option<String>,
+    pub specials_folder_template: Option<String>,
     pub rename_enabled: bool,
     pub rename_template: String,
     pub rename_collision_policy: RenameCollisionPolicyValue,
@@ -3194,7 +3205,7 @@ pub struct QueueBestReleaseInput {
     pub replace_in_progress: Option<bool>,
 }
 
-/// Scope selector for the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+/// Scope selector for the interactive acquisition-search job.
 /// A bare input searches every derived target of `wanted_kind`; narrowing fields
 /// filter that set. `wanted_item_id` (a state-row id or a convergence scope key)
 /// resolves a single scope.
@@ -3352,6 +3363,8 @@ pub struct UpdateMediaSettingsInput {
     pub root_folders: Option<Vec<RootFolderInput>>,
     pub required_audio_languages: Option<Vec<String>>,
     pub folder_template: Option<String>,
+    pub season_folder_template: Option<String>,
+    pub specials_folder_template: Option<String>,
     pub rename_enabled: Option<bool>,
     pub rename_template: Option<String>,
     pub rename_collision_policy: Option<RenameCollisionPolicyValue>,
@@ -3385,9 +3398,10 @@ pub struct UpdateServiceSettingsInput {
 
 #[derive(InputObject, Clone)]
 pub struct UpdateGeneralSettingsInput {
-    pub keep_history_forever: bool,
-    pub history_retention_days: i32,
-    pub plugin_http_ca_bundle_pem: String,
+    pub keep_history_forever: Option<bool>,
+    pub history_retention_days: Option<i32>,
+    pub image_cache_max_size_mb: Option<i32>,
+    pub plugin_http_ca_bundle_pem: Option<String>,
 }
 
 #[derive(InputObject, Clone)]
@@ -4129,14 +4143,14 @@ pub struct CutoffUnmetItemPayload {
     pub episode_number: Option<String>,
     pub current_tier: String,
     pub target_tier: String,
-    /// Convergence progress for this upgrade scope (RFC 119 §6/§7) — the same
+    /// Convergence progress for this upgrade scope — the same
     /// state the Missing/Upgrades views show.
     pub convergence_state: ConvergenceStateValue,
     pub indexers_covered: i32,
     pub indexers_routed: i32,
 }
 
-/// RFC 119 bounded view: one page of cutoff-unmet targets + the full unmet
+/// Bounded view: one page of cutoff-unmet targets + the full unmet
 /// count, so the UI paginates instead of loading the whole set.
 #[derive(SimpleObject, Clone)]
 pub struct CutoffUnmetTitlesPagePayload {
@@ -4161,7 +4175,7 @@ pub struct TriggerTitleMismatchRecoverySearchPayload {
     pub queued_count: i32,
 }
 
-/// Lifecycle of the interactive acquisition-search job (RFC 119 §7.3/Phase 2).
+/// Lifecycle of the interactive acquisition-search job.
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum AcquisitionSearchJobStateValue {
@@ -4171,7 +4185,7 @@ pub enum AcquisitionSearchJobStateValue {
     Failed,
 }
 
-/// Progress snapshot for the interactive acquisition-search job (RFC 119 §7.3).
+/// Progress snapshot for the interactive acquisition-search job.
 /// Survives navigation/refresh — the job runs server-side and its state is queried
 /// by `id` and pushed via `jobRunEvents`.
 #[derive(SimpleObject, Clone)]
@@ -4252,6 +4266,9 @@ pub struct RuleSetPayload {
     pub applied_facets: Vec<String>,
     pub is_managed: bool,
     pub managed_key: Option<String>,
+    /// Tags a managed pack is narrowed to. Null means it applies wherever its
+    /// facts match. Always null for user-authored rule sets.
+    pub managed_tag_filter: Option<Vec<String>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -4274,6 +4291,7 @@ pub struct CreateRuleSetInput {
     pub rego_source: String,
     pub applied_facets: Option<Vec<String>>,
     pub priority: Option<i32>,
+    pub enabled: Option<bool>,
 }
 
 #[derive(InputObject)]
@@ -4284,6 +4302,10 @@ pub struct UpdateRuleSetInput {
     pub rego_source: Option<String>,
     pub applied_facets: Option<Vec<String>>,
     pub priority: Option<i32>,
+    /// Narrow a managed locale pack to titles carrying one of these tags. An
+    /// empty list clears the filter so the pack applies wherever its facts
+    /// match. Rejected for user-authored rule sets.
+    pub managed_tag_filter: Option<Vec<String>>,
 }
 
 #[derive(InputObject)]
@@ -4934,8 +4956,7 @@ pub enum ExternalArrSourceKind {
 
 /// Connection kind for the lightweight, pre-warmup connection probe used by the
 /// setup wizard's Connect step. Unlike [`ExternalArrSourceKind`] this also
-/// covers Prowlarr, which has no warmup of its own but can still be
-/// connection-tested before preview.
+/// covers Prowlarr, whose child discovery starts separately after this probe.
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalImportConnectionKind {
@@ -5019,6 +5040,11 @@ pub struct StartExternalImportArrSourceWarmupInput {
 }
 
 #[derive(InputObject)]
+pub struct StartExternalImportProwlarrWarmupInput {
+    pub connection: ExternalImportConnectionInput,
+}
+
+#[derive(InputObject)]
 pub struct ExternalImportAggregateWarmupProgressInput {
     pub source_warmup_session_ids: Vec<ID>,
 }
@@ -5026,6 +5052,8 @@ pub struct ExternalImportAggregateWarmupProgressInput {
 #[derive(InputObject)]
 pub struct PreviewExternalImportInput {
     pub source_warmup_session_ids: Vec<ID>,
+    pub prowlarr_warmup_session_id: Option<ID>,
+    #[graphql(deprecation = "use prowlarrWarmupSessionId")]
     pub prowlarr: Option<ExternalImportConnectionInput>,
 }
 
@@ -5207,6 +5235,7 @@ pub enum ExternalImportMonitorWarmupStatusValue {
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum ExternalImportMonitorWarmupPhaseValue {
+    LoadingIndexers,
     LoadingMovies,
     LoadingSeries,
     LoadingEpisodes,
@@ -5446,6 +5475,7 @@ pub struct TitleHistoryEventPayload {
     pub display_title: Option<String>,
     pub source_system: Option<String>,
     pub source_ref: Option<String>,
+    pub source_provider: Option<String>,
     pub source_hint: Option<String>,
     pub quality: Option<String>,
     pub download_id: Option<String>,

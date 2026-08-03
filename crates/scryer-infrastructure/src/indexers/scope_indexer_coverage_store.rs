@@ -8,7 +8,7 @@ fn placeholders(count: usize) -> String {
     (0..count).map(|_| "{}").collect::<Vec<_>>().join(", ")
 }
 
-/// RFC 119 convergence ledger store (SQLite + Postgres via the shared runtime).
+/// Convergence ledger store (SQLite + Postgres via the shared runtime).
 ///
 /// Upsert uses portable `INSERT … ON CONFLICT (pk) DO UPDATE SET … = excluded.…`
 /// which both dialects support; a re-search under a new fingerprint overwrites
@@ -33,13 +33,14 @@ impl ScopeIndexerCoverageRepository for ScopeIndexerCoverageStore {
         indexer_id: &str,
         fingerprint: &str,
     ) -> AppResult<()> {
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "record_scope_indexer_coverage",
             "INSERT INTO scope_indexer_coverage (scope_key, facet, indexer_id, fingerprint, searched_at)
              VALUES ({}, {}, {}, {}, {})
              ON CONFLICT (scope_key, facet, indexer_id)
              DO UPDATE SET fingerprint = excluded.fingerprint, searched_at = excluded.searched_at",
-            &[
+            vec![
                 SqlArg::Text(scope_key.to_string()),
                 SqlArg::Text(facet.to_string()),
                 SqlArg::Text(indexer_id.to_string()),
@@ -86,7 +87,7 @@ impl ScopeIndexerCoverageRepository for ScopeIndexerCoverageStore {
         if scope_keys.is_empty() {
             return Ok(Vec::new());
         }
-        // One round-trip for a whole page (RFC 119 §6 #12): fingerprint staleness
+        // One round-trip for a whole page: fingerprint staleness
         // is decided in memory against the live per-scope fingerprint, so the query
         // returns every row and does no fingerprint filtering itself.
         let sql = format!(

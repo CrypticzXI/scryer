@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::TestContext;
+use common::{TestContext, initialize_wasm_runtime_for_tests};
 use scryer_application::{
     IndexerPluginProvider, NotificationPluginProvider, PluginInstallationRepository,
 };
@@ -229,6 +229,7 @@ fn email_dist_fixture() -> Option<RealPluginFixture> {
 }
 
 fn assert_real_plugin_artifact_exposes_provider_type(fixture: &RealPluginFixture) {
+    initialize_wasm_runtime_for_tests();
     let wasm_bytes = load_wasm_fixture(&fixture.wasm_path);
     let provider_types = match fixture.plugin_type {
         "notification" => scryer_plugins::WasmNotificationPluginProvider::empty()

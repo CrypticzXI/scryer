@@ -98,10 +98,21 @@ fn parser_beam_dedupe_bench(c: &mut Criterion) {
     });
 }
 
+fn parser_trash_fact_index_bench(c: &mut Criterion) {
+    let target = starfall_context();
+    let raw =
+        "[Studio Nova] Starfall - Iron Eclipse - 014 [1080p][WEB-DL][The Upscaler][PROPER][REPACK]";
+
+    c.bench_function("parser/trash_fact_anchor_index", |b| {
+        b.iter(|| analyze_release_for_target(black_box(raw), black_box(&target)))
+    });
+}
+
 criterion_group!(
     benches,
     parser_single_target_bench,
     parser_multi_target_bench,
-    parser_beam_dedupe_bench
+    parser_beam_dedupe_bench,
+    parser_trash_fact_index_bench
 );
 criterion_main!(benches);

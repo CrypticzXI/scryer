@@ -23,7 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Loader2, Search, Zap } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import { buildOverviewDetailPath } from "@/lib/utils/routing";

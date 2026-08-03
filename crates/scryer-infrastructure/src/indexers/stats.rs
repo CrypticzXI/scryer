@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use scryer_application::{IndexerQueryStats, IndexerStatsTracker};
-use sqlx::SqlitePool;
+
+use crate::queries::sql_runtime::StoreDatastore;
 
 const QUOTA_FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -51,6 +52,14 @@ impl PendingQuotaUpdate {
         }
         self.query_delta = self.query_delta.saturating_add(1);
     }
+
+    fn merge_requeued(&mut self, older: Self) {
+        self.api_current = self.api_current.or(older.api_current);
+        self.api_max = self.api_max.or(older.api_max);
+        self.grab_current = self.grab_current.or(older.grab_current);
+        self.grab_max = self.grab_max.or(older.grab_max);
+        self.query_delta = self.query_delta.saturating_add(older.query_delta);
+    }
 }
 
 /// Thread-safe indexer stats tracker with in-memory 24-hour rolling window
@@ -58,7 +67,7 @@ impl PendingQuotaUpdate {
 #[derive(Clone)]
 pub struct InMemoryIndexerStatsTracker {
     entries: Arc<Mutex<HashMap<String, IndexerEntry>>>,
-    pool: Option<SqlitePool>,
+    datastore: Option<StoreDatastore>,
     pending_quota_updates: Arc<Mutex<HashMap<String, PendingQuotaUpdate>>>,
     quota_flush_scheduled: Arc<AtomicBool>,
 }
@@ -70,10 +79,10 @@ impl Default for InMemoryIndexerStatsTracker {
 }
 
 impl InMemoryIndexerStatsTracker {
-    pub fn new(pool: Option<SqlitePool>) -> Self {
+    pub fn new(datastore: Option<StoreDatastore>) -> Self {
         Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
-            pool,
+            datastore,
             pending_quota_updates: Arc::new(Mutex::new(HashMap::new())),
             quota_flush_scheduled: Arc::new(AtomicBool::new(false)),
         }
@@ -85,7 +94,7 @@ impl InMemoryIndexerStatsTracker {
     }
 
     fn schedule_quota_flush(&self) {
-        if self.pool.is_none() || self.quota_flush_scheduled.swap(true, Ordering::AcqRel) {
+        if self.datastore.is_none() || self.quota_flush_scheduled.swap(true, Ordering::AcqRel) {
             return;
         }
 
@@ -97,11 +106,11 @@ impl InMemoryIndexerStatsTracker {
     }
 
     pub async fn flush_pending_quota_updates(&self) {
-        let Some(pool) = &self.pool else {
+        let Some(datastore) = &self.datastore else {
             self.quota_flush_scheduled.store(false, Ordering::Release);
             return;
         };
-        let pool = pool.clone();
+        let datastore = datastore.clone();
         let updates = {
             let mut pending = self.pending_quota_updates.lock().unwrap();
             if pending.is_empty() {
@@ -111,12 +120,13 @@ impl InMemoryIndexerStatsTracker {
             pending.drain().collect::<Vec<_>>()
         };
 
+        let mut failed_updates = Vec::new();
         for (indexer_id, update) in updates {
             if update.query_delta == 0 {
                 continue;
             }
             if let Err(error) = crate::queries::indexer::upsert_indexer_quota(
-                &pool,
+                &datastore,
                 &indexer_id,
                 update.api_current,
                 update.api_max,
@@ -129,8 +139,19 @@ impl InMemoryIndexerStatsTracker {
                 tracing::warn!(
                     indexer_id,
                     error = %error,
-                    "failed to flush coalesced indexer quota update"
+                    "failed to flush coalesced indexer quota update; requeueing"
                 );
+                failed_updates.push((indexer_id, update));
+            }
+        }
+
+        if !failed_updates.is_empty() {
+            let mut pending = self.pending_quota_updates.lock().unwrap();
+            for (indexer_id, update) in failed_updates {
+                pending
+                    .entry(indexer_id)
+                    .or_default()
+                    .merge_requeued(update);
             }
         }
 
@@ -184,7 +205,7 @@ impl IndexerStatsTracker for InMemoryIndexerStatsTracker {
         }
         drop(entries);
 
-        if self.pool.is_some() {
+        if self.datastore.is_some() {
             let mut pending = self.pending_quota_updates.lock().unwrap();
             pending.entry(indexer_id.to_string()).or_default().merge(
                 api_current,
@@ -227,7 +248,31 @@ impl IndexerStatsTracker for InMemoryIndexerStatsTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::{Row, sqlite::SqlitePoolOptions};
+    use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
+    use tokio::time::{Duration, timeout};
+
+    fn tracker_with_gate(
+        pool: &SqlitePool,
+        writer_gate: Arc<tokio::sync::Mutex<()>>,
+    ) -> InMemoryIndexerStatsTracker {
+        InMemoryIndexerStatsTracker::new(Some(StoreDatastore::sqlite(pool.clone(), writer_gate)))
+    }
+
+    #[test]
+    fn requeued_updates_preserve_newer_limits_and_sum_deltas() {
+        let mut older = PendingQuotaUpdate::default();
+        older.merge(Some(1), Some(100), Some(2), Some(20));
+
+        let mut newer = PendingQuotaUpdate::default();
+        newer.merge(Some(5), None, None, Some(50));
+        newer.merge_requeued(older);
+
+        assert_eq!(newer.api_current, Some(5));
+        assert_eq!(newer.api_max, Some(100));
+        assert_eq!(newer.grab_current, Some(2));
+        assert_eq!(newer.grab_max, Some(50));
+        assert_eq!(newer.query_delta, 2);
+    }
 
     async fn create_quota_table(pool: &SqlitePool) {
         sqlx::query(
@@ -257,7 +302,7 @@ mod tests {
             .expect("in-memory sqlite should open");
         create_quota_table(&pool).await;
 
-        let tracker = InMemoryIndexerStatsTracker::new(Some(pool.clone()));
+        let tracker = tracker_with_gate(&pool, Arc::new(tokio::sync::Mutex::new(())));
         tracker.record_query("idx-1", "Indexer One", true);
         tracker.record_api_limits("idx-1", Some(1), Some(100), None, None);
         tracker.record_api_limits("idx-1", Some(2), None, Some(3), Some(50));
@@ -293,5 +338,89 @@ mod tests {
         assert_eq!(row.get::<i64, _>("api_current"), 2);
         assert_eq!(row.get::<i64, _>("api_max"), 101);
         assert_eq!(row.get::<i64, _>("queries_today"), 3);
+    }
+
+    #[tokio::test]
+    async fn quota_flush_waits_for_the_shared_sqlite_writer_gate() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should open");
+        create_quota_table(&pool).await;
+
+        let writer_gate = Arc::new(tokio::sync::Mutex::new(()));
+        let tracker = tracker_with_gate(&pool, Arc::clone(&writer_gate));
+        let guard = writer_gate.lock().await;
+        tracker.record_api_limits("idx-gated", Some(7), Some(100), None, None);
+
+        let flushing_tracker = tracker.clone();
+        let mut flush_task = tokio::spawn(async move {
+            flushing_tracker.flush_pending_quota_updates().await;
+        });
+        assert!(
+            timeout(Duration::from_millis(100), &mut flush_task)
+                .await
+                .is_err(),
+            "quota persistence must wait for the shared writer gate"
+        );
+
+        let count_while_held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM indexer_api_quotas")
+            .fetch_one(&pool)
+            .await
+            .expect("quota table should remain readable");
+        assert_eq!(count_while_held, 0);
+
+        drop(guard);
+        timeout(Duration::from_secs(5), flush_task)
+            .await
+            .expect("quota flush should finish after releasing the writer gate")
+            .expect("quota flush task should not panic");
+
+        let queries_today: i64 =
+            sqlx::query_scalar("SELECT queries_today FROM indexer_api_quotas WHERE indexer_id = ?")
+                .bind("idx-gated")
+                .fetch_one(&pool)
+                .await
+                .expect("gated quota update should persist");
+        assert_eq!(queries_today, 1);
+    }
+
+    #[tokio::test]
+    async fn quota_flush_requeues_failed_updates() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should open");
+        let tracker = tracker_with_gate(&pool, Arc::new(tokio::sync::Mutex::new(())));
+        tracker.record_api_limits("idx-retry", Some(9), Some(200), None, None);
+
+        tracker.flush_pending_quota_updates().await;
+        assert_eq!(tracker.pending_quota_updates.lock().unwrap().len(), 1);
+
+        create_quota_table(&pool).await;
+        let row = timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(row) = sqlx::query(
+                    "SELECT api_current, api_max, queries_today
+                     FROM indexer_api_quotas WHERE indexer_id = ?",
+                )
+                .bind("idx-retry")
+                .fetch_optional(&pool)
+                .await
+                .expect("query requeued quota update")
+                {
+                    break row;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("requeued quota update should flush without new indexer activity");
+        assert_eq!(row.get::<i64, _>("api_current"), 9);
+        assert_eq!(row.get::<i64, _>("api_max"), 200);
+        assert_eq!(row.get::<i64, _>("queries_today"), 1);
+        assert!(tracker.pending_quota_updates.lock().unwrap().is_empty());
     }
 }

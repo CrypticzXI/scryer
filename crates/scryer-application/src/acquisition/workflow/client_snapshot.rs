@@ -787,7 +787,7 @@ pub(crate) async fn process_download_failure(
     } else if let Some(items) = failed_collection_items.as_ref() {
         // A failed season pack re-opens every covered episode scope: coverage
         // pruned, state reset, acquisition woken. The cursor re-converges them
-        // individually (RFC 119 §11 #8 — never a cadence write).
+        // individually.
         for item in items {
             app.reopen_wanted_scope_for_acquisition(item).await;
         }
@@ -843,7 +843,7 @@ pub(crate) async fn process_download_failure(
                     // (coverage pruned, state reset) so the cursor re-searches it.
                     // The failed release is blocklisted below, and standby-first +
                     // scheduler pacing keep this from tight-looping — never a
-                    // cadence write (RFC 119 §11 #8).
+                    // cadence write.
                     app.reopen_wanted_scope_for_acquisition(item).await;
 
                     (

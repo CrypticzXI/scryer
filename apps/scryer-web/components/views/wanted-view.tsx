@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
 import { TitleAutocompletePicker } from "@/components/common/title-autocomplete-picker";
 import type { OverviewTitleTarget, ViewId, WantedSection } from "@/components/root/types";
@@ -8,7 +8,7 @@ import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { Translate } from "@/components/root/types";
 import { buildViewPath } from "@/lib/utils/routing";
 import { formatUiDateTime } from "@/lib/utils/date-format";
-import { wantedItemRowId, wantedItemSearchNowId } from "@/lib/utils/dom-ids";
+import { selectorId, wantedItemRowId, wantedItemSearchNowId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
@@ -135,6 +135,9 @@ function formatWantedDecisionCode(code: string, t: Translate) {
   const key = {
     eligible: "wanted.decision.eligible",
     title_mismatch: "wanted.decision.titleMismatch",
+    episode_mismatch: "wanted.decision.episodeMismatch",
+    category_mismatch: "wanted.decision.categoryMismatch",
+    ambiguous_identity: "wanted.decision.ambiguousIdentity",
     quality_blocked: "wanted.decision.qualityBlocked",
     upgrade_rejected: "wanted.decision.upgradeRejected",
     pending_delay: "wanted.decision.pendingDelay",
@@ -229,6 +232,9 @@ function decisionBadge(code: string, t: Translate) {
   const colors: Record<string, string> = {
     eligible: "bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]",
     title_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
+    episode_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
+    category_mismatch: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
+    ambiguous_identity: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
     quality_blocked: "bg-[var(--scry-danger-bg-strong)] text-[var(--scry-danger-text-soft)]",
     upgrade_rejected: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
     pending_delay: "bg-[var(--scry-warning-bg-strong)] text-[var(--scry-warning-text)]",
@@ -591,6 +597,11 @@ function WantedItemsCard({
                         <p className="mt-1 text-xs text-muted-foreground">
                           {item.libraryName ?? item.libraryId ?? "Library"}
                         </p>
+                        {item.sourceProvider ? (
+                          <p className="mt-1 truncate text-xs text-muted-foreground">
+                            {item.sourceProvider}
+                          </p>
+                        ) : null}
                       </button>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {statusBadge(item.status, t)}
@@ -796,6 +807,11 @@ function WantedItemsCard({
                           <div className="truncate text-xs text-muted-foreground">
                             {wantedItemSubtitle(item, t)}
                           </div>
+                          {item.sourceProvider ? (
+                            <div className="truncate text-xs text-muted-foreground">
+                              {item.sourceProvider}
+                            </div>
+                          ) : null}
                         </button>
                       </TableCell>
                       <TableCell className="text-center text-xs text-muted-foreground">
@@ -1073,14 +1089,17 @@ function formatTimeRemaining(delayUntil: string, t: Translate): string {
   return t("wanted.timeMinutes", { minutes });
 }
 
-function formatPendingStatus(status: PendingReleaseStatus): string {
+function formatPendingStatus(status: PendingReleaseStatus, t: Translate): string {
+  if (status === "NEEDS_REVIEW") {
+    return t("pending.status.needsReview");
+  }
   return status
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
 }
 
-function pendingStatusBadge(status: PendingReleaseStatus) {
+function pendingStatusBadge(status: PendingReleaseStatus, t: Translate) {
   const cls =
     status === "GRABBED"
       ? "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)]"
@@ -1088,17 +1107,17 @@ function pendingStatusBadge(status: PendingReleaseStatus) {
         ? "border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] text-[var(--scry-danger-text)]"
         : status === "PROCESSING"
           ? "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]"
-          : status === "SUPERSEDED"
+          : status === "SUPERSEDED" || status === "NEEDS_REVIEW"
             ? "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]"
             : "border-[var(--scry-border2)] bg-[var(--scry-chip)] text-[var(--scry-muted2)]";
   return (
     <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium ${cls}`}>
-      {formatPendingStatus(status)}
+      {formatPendingStatus(status, t)}
     </span>
   );
 }
 
-function pendingPhaseBadge(status: PendingReleaseStatus) {
+function pendingPhaseBadge(status: PendingReleaseStatus, t: Translate) {
   const label =
     status === "PROCESSING"
       ? "Processing"
@@ -1108,7 +1127,9 @@ function pendingPhaseBadge(status: PendingReleaseStatus) {
           ? "Closed"
           : status === "SUPERSEDED"
             ? "Superseded"
-            : "Scheduled";
+            : status === "NEEDS_REVIEW"
+              ? t("pending.phase.needsReview")
+              : "Scheduled";
   return (
     <span className="inline-flex rounded-full border border-[rgba(var(--scry-accent-rgb),0.24)] bg-[rgba(var(--scry-accent-rgb),0.13)] px-2 py-0.5 text-xs font-medium text-[var(--scry-accent-text)]">
       {label}
@@ -1187,7 +1208,14 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
               {items.map((item) => {
                 const expanded = expandedPendingId === item.id;
                 return (
-                <div key={item.id} className="rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] p-3 shadow-[0_12px_28px_rgba(2,6,23,0.10)]">
+                <div
+                  key={item.id}
+                  id={selectorId("pending-release", "card", item.id)}
+                  data-ui="pending-release-row"
+                  data-release-title={item.releaseTitle}
+                  data-pending-status={item.status}
+                  className="rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] p-3 shadow-[0_12px_28px_rgba(2,6,23,0.10)]"
+                >
                   <div className="flex items-start gap-2">
                     <button
                       type="button"
@@ -1203,8 +1231,8 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     <div className="min-w-0 flex-1">
                       <p className="break-words text-sm font-medium text-foreground">{item.releaseTitle}</p>
                       <div className="mt-2 flex flex-wrap gap-2">
-                        {pendingStatusBadge(item.status)}
-                        {pendingPhaseBadge(item.status)}
+                        {pendingStatusBadge(item.status, t)}
+                        {pendingPhaseBadge(item.status, t)}
                       </div>
                     </div>
                   </div>
@@ -1249,11 +1277,23 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     </div>
                   ) : null}
                   <div className="mt-3 flex gap-2">
-                    <Button size="sm" variant="secondary" className="flex-1" onClick={() => void forceGrab(item.id)}>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      id={selectorId("pending-release", "force-grab-card", item.id)}
+                      className="flex-1"
+                      onClick={() => void forceGrab(item.id)}
+                    >
                       <Download className="h-4 w-4" />
                       <span>{t("pending.forceGrab")}</span>
                     </Button>
-                    <Button size="sm" variant="outline" className="flex-1" onClick={() => void dismiss(item.id)}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      id={selectorId("pending-release", "dismiss-card", item.id)}
+                      className="flex-1"
+                      onClick={() => void dismiss(item.id)}
+                    >
                       <X className="h-4 w-4" />
                       <span>{t("pending.dismiss")}</span>
                     </Button>
@@ -1285,10 +1325,16 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                   const expanded = expandedPendingId === item.id;
                   return (
                     <Fragment key={item.id}>
-                      <TableRow>
+                      <TableRow
+                        id={selectorId("pending-release", "row", item.id)}
+                        data-ui="pending-release-row"
+                        data-release-title={item.releaseTitle}
+                        data-pending-status={item.status}
+                      >
                         <TableCell className="text-center">
                           <button
                             type="button"
+                            id={selectorId("pending-release", "expand", item.id)}
                             className="p-0.5 text-muted-foreground hover:text-foreground"
                             onClick={() => togglePendingExpanded(item.id)}
                           >
@@ -1302,8 +1348,8 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                         <TableCell className="truncate text-sm" title={item.releaseTitle}>
                           {item.releaseTitle}
                         </TableCell>
-                        <TableCell className="text-center">{pendingStatusBadge(item.status)}</TableCell>
-                        <TableCell className="text-center">{pendingPhaseBadge(item.status)}</TableCell>
+                        <TableCell className="text-center">{pendingStatusBadge(item.status, t)}</TableCell>
+                        <TableCell className="text-center">{pendingPhaseBadge(item.status, t)}</TableCell>
                         <TableCodeCell className="text-center">{item.releaseScore}</TableCodeCell>
                         <TableCodeCell className="text-center text-xs">
                           {item.releaseSizeBytes == null ? "—" : formatBytes(item.releaseSizeBytes)}
@@ -1320,6 +1366,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                         <TableActionsCell className="w-24">
                           <div className="flex justify-center gap-1">
                             <IconButton
+                              id={selectorId("pending-release", "force-grab", item.id)}
                               label={t("pending.forceGrab")}
                               appearance="ghost"
                               className="h-7 w-7"
@@ -1328,6 +1375,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                               <Download className="h-3.5 w-3.5" />
                             </IconButton>
                             <IconButton
+                              id={selectorId("pending-release", "dismiss", item.id)}
                               label={t("pending.dismiss")}
                               appearance="ghost"
                               className="h-7 w-7"

@@ -197,7 +197,6 @@ type TitleBulkPosterStackItem = {
   id: string;
   name: string;
   posterUrl?: string | null;
-  posterSourceUrl?: string | null;
   metadataFetchedAt?: string | null;
   createdAt?: string | null;
 };
@@ -260,10 +259,6 @@ export function TitleBulkPosterStack({
           >
             <TitlePosterSlot
               src={selectPosterVariantUrl(title.posterUrl, "w250")}
-              sourceSrc={selectPosterVariantUrl(
-                title.posterSourceUrl,
-                "w250",
-              )}
               metadataFetchedAt={title.metadataFetchedAt}
               createdAt={title.createdAt}
               emptyLabel=""

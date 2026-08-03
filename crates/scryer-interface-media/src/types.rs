@@ -298,6 +298,7 @@ pub struct DownloadQueueItemPayload {
     pub title_name: String,
     pub facet: Option<MediaFacetValue>,
     pub is_scryer_origin: bool,
+    pub source_provider: Option<String>,
     pub client_id: ID,
     pub client_name: String,
     pub client_type: String,
@@ -399,7 +400,7 @@ pub struct ManualImportPreviewPayload {
 #[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct WantedItemPayload {
-    /// Scope identity (RFC 119 §6): the acquisition-state row id when a state row
+    /// Scope identity: the acquisition-state row id when a state row
     /// exists for this scope, otherwise the convergence scope key itself
     /// (`episode:<uuid>`, `title:<uuid>`, `series_movie:<uuid>`, …). A derived
     /// target with no state row is still addressable by this id (pause/resume and
@@ -420,10 +421,12 @@ pub struct WantedItemPayload {
     pub last_search_at: Option<DateTime<Utc>>,
     pub status: WantedStatusValue,
     pub grabbed_release: Option<String>,
+    /// Safe indexer/provider label for the grabbed release, when known.
+    pub source_provider: Option<String>,
     pub current_score: Option<i32>,
     pub latest_release_decision: Option<ReleaseDecisionPayload>,
     pub mismatch_recovery_eligible: bool,
-    /// Convergence progress for this scope (RFC 119 §6/§7): whether the scope is
+    /// Convergence progress for this scope: whether the scope is
     /// still sweeping indexers, has converged (watching RSS), is queued, or is
     /// deferred because every uncovered indexer is currently unavailable.
     pub convergence_state: ConvergenceStateValue,
@@ -431,7 +434,7 @@ pub struct WantedItemPayload {
     pub indexers_covered: i32,
     /// Routed-enabled indexers for this scope.
     pub indexers_routed: i32,
-    /// Recency lane (RFC 119 §D3): `Hot` converges promptly, `Cold` drains under
+    /// Recency lane: `Hot` converges promptly, `Cold` drains under
     /// scheduler backpressure.
     pub recency_lane: RecencyLaneValue,
     pub created_at: DateTime<Utc>,

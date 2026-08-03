@@ -382,6 +382,12 @@ impl<'de> Deserialize<'de> for AudioCodec {
     }
 }
 
+/// A streaming service a release can be tagged with.
+///
+/// The membership follows the distilled TRaSH alias table plus the curated
+/// supplement; `service_display_names_round_trip_through_parse`
+/// keeps the two in step, so a service admitted to the alias table can always be
+/// projected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StreamingService {
     Amazon,
@@ -401,6 +407,53 @@ pub enum StreamingService {
     Hotstar,
     BbcIplayer,
     Youtube,
+    Abema,
+    AbcIview,
+    Adn,
+    Atv,
+    Bcore,
+    BGlobal,
+    CanalPlus,
+    CbcGem,
+    Channel4,
+    CoupangPlay,
+    Crave,
+    DcUniverse,
+    DiscoveryPlus,
+    DisneyPlusHotstar,
+    DmmTv,
+    Fod,
+    FridayVideo,
+    HamiVideo,
+    Iqiyi,
+    Itvx,
+    Kktv,
+    Kocowa,
+    LineTv,
+    My5,
+    MyTvSuper,
+    Nlziet,
+    Now,
+    OvidTv,
+    PatheThuis,
+    Play,
+    Quibi,
+    RokuChannel,
+    Salto,
+    Showtime,
+    StarPlus,
+    Syfy,
+    Tver,
+    Tving,
+    Videoland,
+    Viki,
+    Viu,
+    Vrv,
+    Wakanim,
+    Wavve,
+    WeTv,
+    Youku,
+    YoutubePremium,
 }
 
 impl StreamingService {
@@ -424,6 +477,53 @@ impl StreamingService {
             Self::Hotstar => "Hotstar",
             Self::BbcIplayer => "BBC iPlayer",
             Self::Youtube => "YouTube",
+            Self::Abema => "ABEMA",
+            Self::AbcIview => "ABC iview",
+            Self::Adn => "ADN",
+            Self::Atv => "ATV",
+            Self::Bcore => "BCORE",
+            Self::BGlobal => "B-Global",
+            Self::CanalPlus => "CANAL+",
+            Self::CbcGem => "CBC Gem",
+            Self::Channel4 => "Channel 4",
+            Self::CoupangPlay => "Coupang Play",
+            Self::Crave => "Crave",
+            Self::DcUniverse => "DC Universe",
+            Self::DiscoveryPlus => "Discovery+",
+            Self::DisneyPlusHotstar => "Disney+ Hotstar",
+            Self::DmmTv => "DMM TV",
+            Self::Fod => "FOD",
+            Self::FridayVideo => "friDay Video",
+            Self::HamiVideo => "Hami Video",
+            Self::Iqiyi => "iQIYI",
+            Self::Itvx => "ITVX",
+            Self::Kktv => "KKTV",
+            Self::Kocowa => "KOCOWA",
+            Self::LineTv => "LINE TV",
+            Self::My5 => "My5",
+            Self::MyTvSuper => "myTV SUPER",
+            Self::Nlziet => "NLZiet",
+            Self::Now => "NOW",
+            Self::OvidTv => "OVID.tv",
+            Self::PatheThuis => "Pathé Thuis",
+            Self::Play => "PLAY",
+            Self::Quibi => "Quibi",
+            Self::RokuChannel => "The Roku Channel",
+            Self::Salto => "Salto",
+            Self::Showtime => "Showtime",
+            Self::StarPlus => "Star+",
+            Self::Syfy => "SYFY",
+            Self::Tver => "TVer",
+            Self::Tving => "TVING",
+            Self::Videoland => "Videoland",
+            Self::Viki => "Viki",
+            Self::Viu => "Viu",
+            Self::Vrv => "VRV",
+            Self::Wakanim => "Wakanim",
+            Self::Wavve => "Wavve",
+            Self::WeTv => "WeTV",
+            Self::Youku => "Youku",
+            Self::YoutubePremium => "YouTube Premium",
         }
     }
 
@@ -451,6 +551,55 @@ impl StreamingService {
             "HOTSTAR" => Some(Self::Hotstar),
             "BBC" | "BBCI" | "IPLAYER" | "BBCIPLAYER" => Some(Self::BbcIplayer),
             "YOUTUBE" => Some(Self::Youtube),
+            "ABEMA" | "ABEMATV" => Some(Self::Abema),
+            "ABCIVIEW" | "AUBC" => Some(Self::AbcIview),
+            "ADN" => Some(Self::Adn),
+            "ATV" => Some(Self::Atv),
+            "BCORE" => Some(Self::Bcore),
+            "BGLOBAL" => Some(Self::BGlobal),
+            "CANAL" | "CNLP" => Some(Self::CanalPlus),
+            "CBC" | "CBCGEM" => Some(Self::CbcGem),
+            "CHANNEL4" | "4OD" | "ALL4" => Some(Self::Channel4),
+            "COUPANGPLAY" | "CPNG" => Some(Self::CoupangPlay),
+            "CRAV" | "CRAVE" => Some(Self::Crave),
+            "DCU" | "DCUNIVERSE" => Some(Self::DcUniverse),
+            "DISCOVERY" | "DSCP" | "DSCV" => Some(Self::DiscoveryPlus),
+            "DISNEYHOTSTAR" | "DSNPHS" | "HTSR" => Some(Self::DisneyPlusHotstar),
+            "DMM" | "DMMTV" => Some(Self::DmmTv),
+            "FOD" => Some(Self::Fod),
+            "FRIDAY" | "FRIDAYVIDEO" => Some(Self::FridayVideo),
+            "HAMI" | "HAMIVIDEO" => Some(Self::HamiVideo),
+            "IQIY" | "IQIYI" => Some(Self::Iqiyi),
+            "ITV" | "ITVX" => Some(Self::Itvx),
+            "KKTV" => Some(Self::Kktv),
+            "KCW" | "KOCOWA" => Some(Self::Kocowa),
+            "LINETV" => Some(Self::LineTv),
+            "MY5" => Some(Self::My5),
+            "MYTVSUPER" => Some(Self::MyTvSuper),
+            "NLZ" | "NLZIET" => Some(Self::Nlziet),
+            "NOW" => Some(Self::Now),
+            "OVID" | "OVIDTV" => Some(Self::OvidTv),
+            // `Pathé Thuis` keeps its accent through `to_ascii_uppercase`, so
+            // the display name normalizes with a lowercase `é`.
+            "PATHE" | "PATHETHUIS" | "PATHéTHUIS" => Some(Self::PatheThuis),
+            "PLAY" => Some(Self::Play),
+            "QIBI" | "QUIBI" => Some(Self::Quibi),
+            "ROKU" | "THEROKUCHANNEL" => Some(Self::RokuChannel),
+            "SALTO" => Some(Self::Salto),
+            "SHO" | "SHOWTIME" => Some(Self::Showtime),
+            "STAR" | "STRP" => Some(Self::StarPlus),
+            "SYFY" => Some(Self::Syfy),
+            "TVER" => Some(Self::Tver),
+            "TVING" => Some(Self::Tving),
+            "VDL" | "VIDEOLAND" => Some(Self::Videoland),
+            "VIKI" => Some(Self::Viki),
+            "VIU" => Some(Self::Viu),
+            "VRV" => Some(Self::Vrv),
+            "WAKA" | "WAKANIM" | "WKN" => Some(Self::Wakanim),
+            "WAVVE" => Some(Self::Wavve),
+            "WETV" => Some(Self::WeTv),
+            "YOUKU" => Some(Self::Youku),
+            "RED" | "YOUTUBEPREMIUM" => Some(Self::YoutubePremium),
             _ => None,
         }
     }
@@ -619,10 +768,17 @@ pub enum ParseDisposition {
     Unparseable,
 }
 
+/// Stable TRaSH Guides fact derived from a raw release title.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct GuideFact {
+    pub code: String,
+}
+
 /// Structured release parse returned by the v2 parser.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ParsedReleaseMetadata {
     pub raw_title: String,
+    pub guide_facts: Vec<GuideFact>,
     pub normalized_title: String,
     pub normalized_title_variants: Vec<String>,
     pub release_group: Option<String>,
@@ -678,6 +834,7 @@ impl ParsedReleaseMetadata {
     pub fn empty(raw: &str, parser_version: &'static str) -> Self {
         Self {
             raw_title: raw.to_string(),
+            guide_facts: Vec::new(),
             normalized_title: String::new(),
             normalized_title_variants: Vec::new(),
             release_group: None,
@@ -803,6 +960,24 @@ pub struct TitleSegment {
     pub normalized: String,
 }
 
+/// The kind of context evidence that matched a title-bearing token span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextTitleMatchKind {
+    CanonicalTitle,
+    TitleAlias,
+    EpisodeTitle,
+}
+
+/// A typed context match retained before target projection rewrites the title.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ContextTitleMatch {
+    pub kind: ContextTitleMatchKind,
+    pub token_range: TokenRange,
+    pub raw: String,
+    pub normalized: String,
+}
+
 /// Metadata AST collected before projection.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct MetadataAst {
@@ -869,6 +1044,7 @@ pub enum ReleaseIdentity {
 pub struct ReleaseParseCandidate {
     pub family: ParseFamily,
     pub title_segments: Vec<TitleSegment>,
+    pub context_title_matches: Vec<ContextTitleMatch>,
     pub identity: ReleaseIdentity,
     pub metadata: MetadataAst,
     pub zones: CandidateZones,
@@ -936,6 +1112,7 @@ pub struct MetadataEnrichment {
 pub struct ReleaseParseAnalysis {
     pub raw_input: String,
     pub sanitized_input: String,
+    pub guide_facts: Vec<GuideFact>,
     pub parse_hints: Vec<String>,
     pub tokens: Vec<Token>,
     pub annotations: Vec<TokenAnnotations>,

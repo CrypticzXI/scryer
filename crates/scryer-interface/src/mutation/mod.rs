@@ -1,21 +1,20 @@
-mod backup;
 mod collections;
 mod config;
-mod downloads;
-mod external_import;
 mod interactive_search;
-mod jobs;
 mod library;
-mod media_requests;
 mod notifications;
-mod plugins;
-mod post_processing;
 mod recycle_bin;
 mod rules;
 mod subtitle;
 mod titles;
-mod users;
-mod wanted;
+
+use scryer_interface_acquisition::{
+    DownloadMutations, JobMutations, MediaRequestMutations, PostProcessingMutations,
+    WantedMutations,
+};
+use scryer_interface_import::ExternalImportMutations;
+use scryer_interface_security::UserMutations;
+use scryer_interface_system::{BackupMutations, PluginMutations};
 
 use async_graphql::MergedObject;
 use scryer_interface_settings::SettingsMutations;
@@ -24,20 +23,20 @@ use scryer_interface_settings::SettingsMutations;
 pub struct MutationRoot(
     titles::TitleMutations,
     collections::CollectionMutations,
-    downloads::DownloadMutations,
-    jobs::JobMutations,
+    DownloadMutations,
+    JobMutations,
     config::ConfigMutations,
     SettingsMutations,
-    users::UserMutations,
+    UserMutations,
     library::LibraryMutations,
-    media_requests::MediaRequestMutations,
-    wanted::WantedMutations,
+    MediaRequestMutations,
+    WantedMutations,
     rules::RulesMutations,
-    plugins::PluginMutations,
+    PluginMutations,
     notifications::NotificationMutations,
-    backup::BackupMutations,
-    external_import::ExternalImportMutations,
-    post_processing::PostProcessingMutations,
+    BackupMutations,
+    ExternalImportMutations,
+    PostProcessingMutations,
     subtitle::SubtitleMutations,
     recycle_bin::RecycleBinMutations,
     interactive_search::InteractiveSearchMutations,

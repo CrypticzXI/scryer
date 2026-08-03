@@ -1,6 +1,10 @@
+mod image_proxy_runtime;
+pub(crate) mod image_proxy_store;
 #[cfg(feature = "image-processing")]
 pub(crate) mod processor;
 pub(crate) mod title_image_store;
+pub use image_proxy_runtime::{ImageProxyBlob, ImageProxyRuntime};
+pub use image_proxy_store::ImageProxyStore;
 
 use scryer_application::{AppError, AppResult, TitleImageKind};
 
@@ -44,8 +48,11 @@ pub(crate) fn normalize_title_image_source_url(source_url: &str) -> AppResult<St
         .collect::<Vec<_>>()
         .join("/");
     parsed.set_path(&format!("/{normalized_path}"));
-
-    Ok(parsed.to_string())
+    image_proxy_store::approved_upstream_url(parsed.as_str()).ok_or_else(|| {
+        AppError::Validation(
+            "title image URL host must be image.tmdb.org or artworks.thetvdb.com".into(),
+        )
+    })
 }
 
 pub(crate) fn normalized_base_path_from_env() -> String {

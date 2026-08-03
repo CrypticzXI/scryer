@@ -82,11 +82,15 @@ impl AppUseCase {
             minimum_score_series: self
                 .read_setting_i64_value(SUBTITLES_MINIMUM_SCORE_SERIES_KEY, None)
                 .await?
-                .unwrap_or(90) as i32,
+                .and_then(|value| i32::try_from(value).ok())
+                .filter(|value| (0..=100).contains(value))
+                .unwrap_or(90),
             minimum_score_movie: self
                 .read_setting_i64_value(SUBTITLES_MINIMUM_SCORE_MOVIE_KEY, None)
                 .await?
-                .unwrap_or(70) as i32,
+                .and_then(|value| i32::try_from(value).ok())
+                .filter(|value| (0..=100).contains(value))
+                .unwrap_or(70),
             search_interval_hours: self
                 .read_setting_i64_value(SUBTITLES_SEARCH_INTERVAL_HOURS_KEY, None)
                 .await?

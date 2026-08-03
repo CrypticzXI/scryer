@@ -1,759 +1,278 @@
-# Scryer Architecture Manifesto
+# Scryer Architecture
 
 ## Purpose
 
-This document is the architectural contract for Scryer.
+This document is the durable architectural contract for Scryer. It describes
+system boundaries, ownership, and invariants. It is not a map of the current
+repository, dependency graph, framework stack, or deployment scripts.
 
-It is written for humans and agents alike. If you are adding, changing, or reviewing a feature, this document is the default source of truth for how that work should fit into the system.
+When code and this contract diverge, resolve the mismatch deliberately. Change
+this document only when the architecture itself changes, not whenever an
+implementation is reorganized.
 
-This document is intentionally opinionated. Scryer should feel coherent because the architecture is coherent. We do not let each feature invent its own model, lifecycle, source of truth, or boundary rules.
+## Product Model
 
-If the code and this document diverge, stop and resolve the mismatch deliberately. Do not silently accept architectural drift. If the architecture changes intentionally, update this document in the same work. If runtime contracts change, also update the external documentation in the `scryer-docs` repo.
-
-## What Scryer Is
-
-Scryer is a single-node media management system for movies, series, and anime.
-
-It monitors a user's library, searches indexers, evaluates releases against quality and policy rules, acquires releases through download engines, imports completed downloads into the library, fetches metadata and subtitles, and keeps the library organized.
-
-The backend is authoritative. The web app is a projection client, not a second source of truth.
+Scryer is a self-hosted, single-node media management system for movies,
+series, and anime. It discovers and evaluates releases, coordinates
+acquisition, imports completed downloads, maintains organized libraries, and
+projects that state to operators and integrations.
 
 Scryer is intentionally:
 
-- a single deployable binary
-- datastore-backed, with SQLite as the default engine and PostgreSQL as a first-class BYO engine
-- GraphQL-first
+- backend-authoritative
+- relationally persisted
 - event-driven internally
-- plugin-extensible at specific boundaries
-- optimized for one homelab node rather than distributed deployment
+- GraphQL-primary at its application interface
+- extensible through constrained plugins
+- designed for one reliable node rather than distributed coordination
 
-## Architectural Priorities
+## Architectural Principles
 
-When tradeoffs appear, prefer:
+### 1. The Backend Owns Product Truth
 
-- the smallest coherent change over the largest ambitious change
-- coherence over local cleverness
-- durability over convenience
-- explicit flows over hidden coupling
-- semantic models over storage-shaped models
-- one strong path over multiple overlapping paths
-- typed boundaries over stringly glue
-- bounded memory over convenience shortcuts
-- reducing code over growing code when functionality is preserved
-- simple homelab operations over premature distributed complexity
+Authoritative product state and policy live in the backend. This includes
+library identity, monitoring, acquisition, imports, quality decisions,
+settings, permissions, event history, and plugin-mediated changes.
 
-## Non-Negotiable Principles
+Media files, artwork, backups, and other large payloads may live on the
+filesystem. Protected credentials may live in an operating-system secret store
+or encrypted backend-managed storage. These remain explicit backend-owned
+resources rather than alternate sources of product policy.
 
-### 0. Xtask Is The Canonical Task Interface
+The frontend and plugins may request, project, and present changes. They do not
+become independent authorities.
 
-Repository automation lives behind `cargo xtask`.
+### 2. Dependencies Point Toward Policy
 
-For humans and agents alike, `cargo xtask` is the default interface for:
+Scryer follows conceptual layers:
 
-- release automation
-- CI-like local validation
-- Docker stack orchestration
-- profiling and developer workflows
-- other repo-owned operational commands
+- domain types and invariants
+- application policy, workflows, and ports
+- infrastructure adapters for persistence and external systems
+- transport adapters for public interfaces
+- process composition and startup
 
-The root `xtask` package is intentionally thin. Heavy release and migration
-flows keep the same `cargo xtask ...` UX, but delegate internally to the
-dedicated `xtask-release` / `xtask-migrations` packages. Optional direct
-aliases exist for advanced debugging, but operator-facing docs should keep
-pointing at `cargo xtask ...`.
+Dependencies point toward domain and application policy. Inner layers do not
+depend on transport, persistence engines, runtime composition, or user
+interface details. Adapters translate at boundaries; they do not acquire
+business policy merely because they can reach an external system.
 
-Compatibility scripts may remain during migration, but they are wrappers around xtask rather than the source of truth. New repo automation belongs in xtask, not in fresh shell glue.
+The physical organization may evolve. The dependency direction may not drift
+with it.
 
-The only deliberate shell exceptions are true runtime/container entrypoints under `docker/`, such as the dev seed container bootstrap. Those are execution surfaces for Docker, not the canonical human or agent interface.
+### 3. One Durable Domain Event Vocabulary
 
-### 1. The Backend Is Authoritative
+Every meaningful durable state transition must be representable as a domain
+event. Domain events are product facts, not payloads designed for one consumer.
 
-All durable truth lives in the backend.
+The same event vocabulary drives activity, history, subscriptions,
+notifications, and background reactions. Scryer does not create shadow event
+systems for individual features.
 
-That includes:
+Events require stable identity, ordering, actor context, and enough domain
+context for authorized consumers to understand what happened. Consumers must
+be idempotent because delivery, retries, and restart recovery may repeat work.
 
-- title, collection, and episode state
-- import and acquisition state
-- quality and rules decisions
-- user and notification settings
-- domain event history
-- plugin-mediated changes
+### 4. Durable State Precedes Live Fanout
 
-The frontend may project, filter, and present state, but it does not invent durable truth. Plugins may extend behavior, but they do not become alternate authorities.
+State changes and their durable event intent are established before live
+wake-up or fanout is considered successful. When they form one persistence
+unit, they should commit atomically.
 
-If a feature cannot clearly answer "who is authoritative for this state?", the design is not ready.
+Transient channels are wake mechanisms, not records of truth. Subscribers and
+background processors recover by reading durable state from a cursor or
+checkpoint. A restart must not erase the explanation of what happened.
 
-### 2. Dependency Direction Is Strict
+### 5. Public Interfaces Express Intent
 
-Scryer uses explicit layer boundaries, and the dependency direction is enforced:
+GraphQL is the primary application query, mutation, and subscription
+interface. Its operations describe user and integration intent rather than
+tables, storage records, or internal orchestration.
 
-```text
-scryer-domain         (types only)
-     ^
-scryer-application    (business logic, ports)
-     ^
-scryer-infrastructure (datastore engines, HTTP, WASM implementations)
-     ^
-scryer-interface      (GraphQL boundary)
-     ^
-scryer                (binary wiring and startup)
-```
+Narrow HTTP routes are appropriate for transport-specific concerns such as
+OAuth, health and metrics, binary transfer, images, and the web application
+shell. These routes remain adapters over the same authorization and product
+rules; they are not a second application layer.
 
-Supporting crates such as `scryer-release-parser`, `scryer-mediainfo`, `scryer-rules`, and `scryer-plugins` exist below or beside this flow according to their concern, but they must not punch holes through it.
+Boundary models are explicit and typed. Storage encodings and internal
+implementation details do not become public contracts by accident.
 
-Rules:
+### 6. Persistence Engines Preserve One Product Model
 
-- domain depends on nothing except foundational utility crates
-- application depends on domain plus narrowly-scoped support crates that remain below the interface layer, such as parsing, mediainfo, and rules engines
-- infrastructure depends on domain and application
-- interface depends on domain and application, with the current narrow infrastructure dependency kept as an exception rather than a precedent
-- the binary crate wires concrete implementations together
+Every first-class relational datastore engine implements the same logical
+product behavior. Engine-specific SQL, connection handling, retries, and
+maintenance remain behind persistence boundaries.
 
-Never add an upward dependency. Never import infrastructure types into application. Never import interface types into application or infrastructure.
+Durable datastore changes require equivalent treatment across supported
+engines unless the behavior is explicitly engine-local. Multi-step mutations
+use transactions. Dynamic SQL remains parameterized and bounded.
 
-### 3. One Canonical Domain Event Spine
+Historical migrations are immutable after release. New behavior or correction
+uses a new migration.
 
-Scryer has one canonical domain event story.
+Backup bundles are logical, validated, and portable across supported engines.
+Restore is a product workflow with explicit compatibility, integrity, secret,
+and restart behavior.
 
-Every meaningful state change must be representable as a durable domain event. Those events are the shared language for:
+Scryer's single-node design does not require Redis, external queues, message
+brokers, or a distributed control plane.
 
-- GraphQL subscriptions
-- activity projections
-- notification dispatch
-- history views
-- background coordination
+### 7. Media Workflows Keep Distinct Ownership
 
-We do not create separate shadow event systems for different subsystems. We do not let notifications, subscriptions, and activity feeds each invent their own private notion of what happened.
+Related media workflows must not collapse into one generic processing layer:
 
-If a feature changes durable state but emits no meaningful event, that feature is incomplete.
+- acquisition decides what to search for and obtain
+- external integration tracks work owned by other systems
+- import decides what completed work means and how it enters a library
+- library management owns the durable organized result
+- metadata and artwork own identity enrichment and presentation assets
+- quality, parsing, scoring, and rules own release evaluation
 
-### 4. Durable Before Live
+Movies, series, and anime are explicit facets of the domain. Facet-specific
+behavior belongs in deliberate policy, not scattered string checks and
+one-off branches.
 
-Live delivery matters, but durability comes first.
+### 8. Concurrency and Memory Are Bounded
 
-The rule is:
+Every queue, channel, cache, buffer, retry loop, scan, and batch has an explicit
+bound and lifecycle. Background work supports cancellation and orderly
+shutdown. Retry behavior has limits, backoff, and an observable terminal state.
 
-- durable state changes happen first
-- durable domain events are recorded with them
-- live wake-up and fanout happen after durable intent exists
+Large datasets are filtered and paginated near their source. The system does
+not rely on assumptions that a library, event stream, or result set will remain
+small.
 
-This is why subscriptions re-query the database by cursor after wake-up rather than trusting transient in-memory delivery.
+### 9. Mutable Runtime State Has One Owner
 
-A real-time system that cannot explain what happened after a restart is not reliable enough for Scryer.
+Runtime channels, trackers, wake handles, caches, and coordination guards have
+clear ownership and construction. They do not become hidden product state.
 
-### 5. The API Describes Intent, Not Storage
+Durable dependencies and mutable runtime coordination remain conceptually
+separate. Process-wide state is acceptable only when its lifecycle is explicit,
+its scope is narrow, and durable correctness does not depend on its survival.
 
-Scryer uses a semantic GraphQL API.
+### 10. Internal Boundaries Stay Typed
 
-Queries should describe the views the frontend needs. Mutations should describe business actions. Subscriptions should describe meaningful streams of change.
+Stable statuses, event types, permissions, settings identifiers, media facets,
+and policy decisions use typed representations internally.
 
-We do not expose raw tables, ad hoc status strings, plugin internals, or SQLite implementation details merely because doing so is easy.
+Persistence and public interfaces use explicit mappings. Serialized tokens are
+durable contracts and require migration or compatibility treatment when they
+change. Free-form strings and generic JSON are reserved for genuinely
+open-ended data, diagnostics, or compatibility boundaries.
 
-The public model should reflect how people think about wanted titles, releases, imports, library items, jobs, notifications, and settings, not how the storage happens to be laid out.
+### 11. The Frontend Is a Projection Client
 
-### 6. Datastore Support Is Dual-Engine By Default
+The frontend owns presentation, interaction, navigation, and local ephemeral
+state. The backend owns durable state and policy.
 
-Scryer's application boundary is datastore-engine neutral.
+Frontend code consumes public interfaces and does not share backend
+implementation types. It may perform local projection and optimistic
+interaction only when authoritative backend state can reconcile the result.
+User-visible behavior remains accessible, localizable, and recoverable after a
+refresh.
 
-SQLite remains the default local and self-hosted engine. PostgreSQL is a first-class BYO engine. This is still a single-node product architecture, not permission to add Redis, external queues, or unrelated persistence systems. Any change that touches durable datastore behavior must implement and verify both engines in the same work unless the change is explicitly engine-local operational behavior.
+### 12. Plugins Are Constrained Guests
 
-That means:
+Plugins extend explicit host capabilities. They are sandboxed, versioned,
+observable, and subject to host authorization, resource, and compatibility
+rules.
 
-- application and domain code must not import engine-specific pools, rows, paths, URLs, services, stores, or maintenance methods
-- new repository methods, schema columns, seed data, migrations, backup catalog entries, restore behavior, derived-state rebuilds, and search projection changes need SQLite and PostgreSQL treatment
-- engine-specific SQL belongs under the engine implementation namespace; shared Rust mapping logic may be shared only when the logical behavior is identical
-- SQLite keeps its serialized writer, busy retry/deadline policy, WAL behavior, and `spellfix` search support
-- PostgreSQL uses pooled connections, explicit transactions for multi-step mutation units, and no required extensions
-- migration steps must declare explicit treatment for both engines, including deliberate no-op treatment when one engine does not need a step
-- logical JSON remains an application value, but storage/query details are engine-local: SQLite stores JSON as text and PostgreSQL stores logical JSON as `JSONB`
-- backup bundles are the engine-neutral interchange format; import/export code must preserve all supported SQLite and PostgreSQL restore paths
+Plugins do not access core storage directly, bypass policy, or establish hidden
+side channels. New plugin power is introduced through a reviewed host
+capability or hook with a stable contract.
 
-If a datastore-affecting change cannot be implemented for both engines, stop and narrow the feature, add an explicit guarded engine-local exception, or split the work. Do not silently land a normal runtime path that only works on one engine.
+### 13. Security and Side Effects Are Product Behavior
 
-The datastore is part of the product's reliability story, not an implementation detail to ignore.
+Every operation answers who may perform it, on whose behalf it runs, which
+resources it may reach, what secrets it may access, and how it behaves after
+failure or restart.
 
-### 7. Memory Must Be Bounded
+Filesystem operations stay within validated roots. Destructive actions require
+explicit intent and verified preconditions. Secrets do not enter logs, metrics,
+public errors, or unencrypted persistence.
 
-Every in-memory collection, channel, cache, buffer, and loop must have an explicit bound and a clear lifecycle.
+Host-owned remote HTTP uses a shared transport policy for trust, rate limits,
+timeouts, retries, and observability. Safe redirects are normal upstream
+service behavior for indexers, metadata and image providers, download clients,
+and similar integrations. The shared transport may follow them when hop count
+is bounded and its normal timeout, retry, per-hop rate-limit, and observability
+rules remain in effect. Redirect rejection is an explicit protocol exception,
+not the default security posture. Callers remain responsible for validating
+the initial endpoint and the response they consume.
 
-That means:
+A specialized helper protocol may own different transport semantics only when
+the exception is explicit, bounded, tested, and observable.
 
-- event queries push filtering and pagination to SQL
-- broadcast channels have explicit capacity
-- caches have eviction
-- background tasks have shutdown paths
-- no feature is allowed to assume "the dataset is probably small enough"
+### 14. Operations Are Part of the Product
 
-If memory growth is unbounded, the feature is not done.
+Startup, migrations, key bootstrap, backup and restore, health reporting,
+shutdown, and upgrades are first-class workflows. They fail clearly, preserve
+recoverability, and expose enough state for an operator to understand what the
+system is doing.
 
-### 8. Shared Mutable Runtime State Must Be Explicit
+Operational shortcuts must not create a second source of truth or bypass the
+same invariants enforced during normal runtime.
 
-Shared mutable runtime coordination must stay explicit and centralized.
+### 15. Use the Least Necessary Code
 
-We do not spread mutable global state across module-level singletons, thread-local business state, or hidden coordination points. Runtime channels, trackers, wake handles, and caches must have an obvious owner and an obvious construction path.
+Prefer extending a coherent path over creating a parallel subsystem. Add an
+abstraction only when it removes real complexity, enforces a meaningful
+boundary, or eliminates material duplication.
 
-Scryer keeps feature dependencies in grouped `AppServices` structs and keeps mutable coordination in `AppRuntimeState`. New work should preserve that split instead of pushing runtime state back into the dependency graph.
+Deleting or consolidating code while preserving behavior is a successful
+architectural outcome. Compactness is not an excuse for obscure logic; the goal
+is less unnecessary surface area.
 
-### 9. Typed Boundaries Are Mandatory
+## Canonical Change Flow
 
-Scryer should not rely on free-floating string identifiers at internal boundaries.
+A state-changing feature should follow this recognizable flow:
 
-Setting keys, event types, statuses, enum-like values, and GraphQL-exposed domain states should be represented by:
+1. A semantic request enters through a public or internal boundary.
+2. Actor, authorization, and context are established.
+3. Application policy validates the request and invariants.
+4. Authoritative state and durable event intent are persisted.
+5. The transaction commits before live wake-up or downstream dispatch.
+6. Consumers re-read durable state and project authorized results.
+7. Retry, cancellation, restart, and partial failure remain explainable.
 
-- Rust enums with serde where appropriate
-- typed constants defined once where enum modeling is not appropriate
-- explicit boundary mappings at GraphQL and persistence edges
+Not every feature uses every stage, but deviations require an explicit reason.
 
-Internal code should pass typed values. Serialization happens at the boundary, not in the middle of the codebase.
+## Verification Contract
 
-### 10. Frontend Boundaries Are Real
+Tests follow the boundary being protected. Changes should prove, where
+relevant:
 
-The frontend is not allowed to become a second application layer.
+- domain and policy behavior
+- datastore-engine parity
+- public interface contracts and authorization
+- event durability, ordering, and projection
+- plugin capability and compatibility boundaries
+- cancellation, retry, restart, and partial-failure behavior
+- bounded resource use for large inputs
+- integrity of imports, backups, restores, and destructive filesystem actions
 
-The rules are:
-
-- containers own data fetching and hook composition
-- views are presentational
-- GraphQL is the boundary, not shared internal backend types
-- all user-visible strings go through i18n
-- urql remains network-only; there is no GraphQL cache layer
-
-The web app is a projection client over backend truth. It should stay that way.
-
-### 11. Plugins Are Guests, Not Peers
-
-Plugins are powerful extensions of Scryer, not alternate cores of Scryer.
-
-That means plugins must be:
-
-- capability-based
-- sandboxed
-- versioned
-- observable
-- host-mediated
-
-Plugins do not get to bypass policy, mutate core storage directly, or invent hidden side channels that the rest of the system cannot observe.
-
-If a plugin needs new power, the answer is to design a new host capability or hook, not to punch a hole through the architecture.
-
-### 12. Security and Permissions Are Core Behavior
-
-Authentication, authorization, encryption bootstrap, admin flows, and external integration credentials are not wrappers around the real system. They are part of the real system.
-
-Every feature must have a clear answer to:
-
-- who can do this
-- on whose behalf it runs
-- what external systems it can touch
-- what user data or secrets it can expose
-- how it behaves across restart and recovery
-
-### 13. Solve Problems With the Least Necessary Code
-
-Scryer should not equate progress with code growth.
-
-New features should be implemented with the smallest amount of code that cleanly solves the problem and fits the architecture.
-
-That means:
-
-- prefer extending an existing coherent path over creating a parallel subsystem
-- prefer deleting, simplifying, or consolidating code when that preserves behavior
-- prefer a narrow solution that fits the real requirement over a broad framework for hypothetical future needs
-- treat reduction in overall codebase size, while retaining functionality, as a success
-
-This is not a license for clever compression or unreadable shortcuts. The goal is not fewer lines at any cost. The goal is less unnecessary code, less duplication, and less surface area to maintain.
-
-If a feature adds a large amount of code, the change should be able to explain why that code is truly necessary and why a smaller design would not have worked.
-
-## Durable Domain Commitments
-
-These are the product areas that must remain explicit as Scryer grows.
-
-They are here so the codebase does not slowly collapse into a giant generic "media manager" blob.
-
-### Facets and Media Taxonomy Must Stay Explicit
-
-Scryer treats movies, series, and anime as first-class facets. That is not superficial labeling.
-
-The title, collection, and episode model is part of the architecture. Matching, organization, imports, release evaluation, and UI behavior all depend on it.
-
-Facet-specific behavior should go through explicit facet handling rather than match statements and one-off exceptions scattered throughout the system.
-
-### Acquisition, Import, and Library Organization Are Distinct Domains
-
-Searching for a release, grabbing it, tracking it in download clients, importing completed downloads, and maintaining the organized library are related concerns, but they are not the same concern.
-
-Scryer must keep these boundaries explicit:
-
-- acquisition decides what to search and grab
-- integration tracks external download client state
-- import decides what completed downloads mean and how they enter the library
-- library management decides how the durable library is organized and maintained
-
-When these responsibilities blur, the code becomes hard to reason about and regressions multiply.
-
-### Metadata and Artwork Are First-Class Domains
-
-Metadata is not an incidental side effect.
-
-Scryer must treat metadata and artwork as real domains with clear ownership over:
-
-- hydration from the metadata gateway
-- title and episode identity enrichment
-- images and visual assets
-- local metadata integration where applicable
-- post-hydration follow-up work
-
-### Quality, Scoring, and Rules Are First-Class
-
-Release parsing, quality scoring, rule evaluation, and upgrade policy are central product behavior.
-
-They should not be hidden behind opaque helper chains or casually duplicated in multiple workflows. Scryer wins or loses on this logic being understandable and reliable.
-
-### Notifications Are Projections, Not Alternate Truth
-
-Notifications matter, but they are downstream of domain facts.
-
-Notification text, delivery channels, and plugin dispatch are projections over domain events. They must not become a second event system or a hidden source of state transitions.
-
-### Operations Are Part of the Product
-
-Startup, migrations, key bootstrap, backup and restore, job execution, health reporting, and version upgrades are not side chores.
-
-They are part of the product and must remain legible in the architecture.
-
-Historical database migrations are immutable. Once a migration ships in any release, that file must never be edited in place, even for comments, examples, or formatting. If behavior, data shape, or documentation needs to change after release, add a new migration or update non-migration documentation instead.
-
-### Plugin Lifecycle Is Part of the Core Product
-
-The plugin runtime is not enough by itself.
-
-Scryer should keep plugin discovery, configuration, compatibility, installation, built-in plugin behavior, and notification/indexer/download-client plugin lifecycles explicit and observable.
-
-### Verification Should Follow Domain Boundaries
-
-Tests should grow with the architecture rather than against it.
-
-Scryer should prefer:
-
-- domain-focused test suites
-- boundary tests for GraphQL and plugin interfaces
-- end-to-end tests for the canonical flow from action to durable state to event to projection
-- parallel test directory structures over large inline test blocks in production files
-
-What Scryer should avoid is one catch-all test bucket that mirrors no domain and teaches contributors nothing about where new verification belongs.
-
-## Patterns
-
-Patterns are reusable implementation rules that help contributors make local decisions without re-litigating architecture every time.
-
-### 1. Serde Defines Enum Boundaries
-
-Rust enums are the canonical representation of discrete state in Scryer, and their serde form is the default boundary contract when those enums cross persistence or API boundaries.
-
-In practice:
-
-- enums stay typed internally
-- persistence stores the serialized form rather than ad hoc encodings
-- GraphQL gets explicit mapped enums instead of raw strings
-- internal code does not normalize or re-stringify values just to pass them around
-
-Serialized enum variants are durable contract surface. Renaming them is a migration concern, not a casual refactor.
-
-### 2. GraphQL Enums Must Mirror Domain Enums Explicitly
-
-Every domain enum exposed through GraphQL must have a corresponding GraphQL enum with explicit `from_domain()` and `into_domain()` conversions.
-
-This is a deliberate compile-time safety mechanism. When a domain enum changes, the mapping should fail loudly until the GraphQL boundary is updated in lockstep.
-
-Never pass enum-shaped state through GraphQL as free-form strings or `serde_json::Value`.
-
-### 3. Resolver Pattern Is Fixed
-
-Resolvers are boundary adapters, not business logic hosts.
-
-The resolver pattern is:
-
-1. extract application context and actor
-2. map GraphQL input into domain input
-3. delegate to `AppUseCase`
-4. map domain output back into GraphQL output
-
-Resolvers should not perform policy decisions, repository access, or orchestration logic themselves.
-
-### 4. Workflow Modules Grow by Domain
-
-Business logic should grow in grouped domain modules such as acquisition, catalog, import, library, notifications, quality, rules, and settings.
-
-Do not reintroduce giant horizontal buckets like:
-
-- generic `services/`
-- cross-domain `usecases/`
-- helper junk drawers that quietly become alternative architecture
-
-If a workflow grows too large, split further inside that domain rather than creating a cross-domain sink.
-
-### 5. Tests Should Live Beside Domains, Not Inside Production Files
-
-Scryer should prefer a parallel test tree that mirrors the domain structure rather than scattering large `#[cfg(test)] mod tests` blocks through production files.
-
-Small truly local tests are not forbidden, but the default convention is:
-
-- behavior and regression tests live in `tests/` trees
-- test file names describe scenarios and contracts
-- production files stay focused on production code
-
-This is a deliberate convention even though inline Rust tests are common elsewhere.
-
-### 6. Settings Keys Have One Source of Truth
-
-When a setting is identified by a string key, that key must be defined exactly once in the canonical settings key module and imported everywhere else.
-
-Never duplicate setting key string literals across bootstrap, application logic, interface, and frontend code.
-
-### 7. Native Outbound HTTP Must Use the Canonical Transport
-
-All host-owned outbound HTTP in Scryer must go through the shared `scryer-outbound-http` transport.
-
-That transport is the mandatory owner of:
-
-- `429 Too Many Requests` handling
-- `Retry-After` parsing
-- per-upstream cooldown tracking
-- bounded retry policy
-- typed rate-limit failures
-- shared outbound HTTP observability
-
-The rules are:
-
-- production code must not hand-roll `429` handling around raw `reqwest` calls
-- production code must not issue direct `reqwest::get(...)` or raw `.send()` calls outside the canonical transport crate
-- callers choose a request policy such as safe-read or no-retry, but they do not reimplement transport behavior
-- provider-specific semantics such as auth refresh, quota messages, or non-429 status handling stay above the shared transport
-- any new native outbound integration is incomplete until it uses this path
-
-This is a mandatory pattern, not a suggestion. If a new outbound caller cannot fit the canonical transport, stop and resolve that design mismatch before shipping.
-
-## Canonical Feature Flow
-
-New backend features should fit the same general shape:
-
-1. Accept a semantic action or request.
-2. Extract actor and context at the boundary.
-3. Validate permissions, policy, and invariants in `AppUseCase`.
-4. Change authoritative state through application ports.
-5. Persist a durable domain event describing what happened.
-6. Wake subscribers and downstream processors.
-7. Re-query and project durable state into GraphQL, activity, history, or notifications.
-
-Not every feature touches every stage equally, but the shape should remain recognizable.
-
-If a feature needs a second side channel because it does not fit this flow, that is a design smell and should be challenged.
-
-## What Good Additions Look Like
-
-A feature fits Scryer well when it:
-
-- has one obvious source of truth
-- respects the crate dependency direction
-- emits clear domain events
-- uses GraphQL as a semantic boundary rather than a storage mirror
-- keeps memory bounded
-- keeps acquisition, import, library, metadata, notifications, and rules in their proper homes
-- remains understandable after restart, retry, or replay
-- solves the problem without unnecessary new layers or wrappers
+Performance claims require equivalent work, verified outputs, reproducible
+workloads, and enough measurements to support the conclusion.
 
 ## Red Flags
 
-Stop and reconsider when a change introduces any of these patterns:
-
-- upward crate dependencies
-- durable state changes with no corresponding domain event
-- load-all-then-filter event queries
-- plugin logic that bypasses host-mediated boundaries
-- raw strings standing in for typed state at internal boundaries
-- resolver or frontend code containing business logic
-- acquisition/import/library behavior duplicated in multiple places
-- unbounded channels, queues, or caches
-- notification logic becoming a second event system
-- native outbound HTTP that bypasses the canonical transport or reimplements `429` handling locally
-- new abstractions that exist mostly to feel more "architected"
-
-## Crate Responsibilities
-
-### `scryer-domain`
-
-Pure type library.
-
-Responsibilities:
-
-- core model types such as titles, collections, episodes, users, events, policies, notifications, and files
-- domain enums and value objects
-- basic parsing helpers and lightweight invariants
-
-Non-responsibilities:
-
-- business orchestration
-- persistence
-- HTTP or GraphQL concerns
-
-The title hierarchy remains a core part of the architecture:
-
-```text
-Title
-  +-- Collection
-  +-- Episode
-  +-- TitleHistoryRecord
-  +-- BlocklistEntry
-```
-
-### `scryer-application`
-
-Business logic layer.
-
-Responsibilities:
-
-- defines repository and integration ports
-- owns `AppServices` and `AppUseCase`
-- implements workflow logic for acquisition, catalog, import, library, jobs, notifications, rules, settings, health, and security
-- owns the domain event factory and projection logic
-- runs background loops by orchestrating ports rather than directly touching infrastructure details
-
-Important structural rules:
-
-- `AppServices` is a private grouped dependency graph organized by concern such as catalog, library, integrations, workflow, config, customization, notifications, identity, and events
-- `AppRuntimeState` owns mutable coordination such as channels, trackers, wakes, and bounded caches
-- `AppUseCase` is the main application-facing orchestration surface
-- workflow entry modules stay grouped by domain
-- business logic belongs here, not in infrastructure or interface crates
-
-Key grouped workflow areas today include:
-
-- `acquisition/`
-- `catalog/`
-- `events/`
-- `import/`
-- `integration/`
-- `jobs/`
-- `library/`
-- `notifications/`
-- `quality/`
-- `rules/`
-- `settings/`
-- `subtitles/`
-
-Domain events are persisted facts first and consumer projections second.
-
-### `scryer-infrastructure`
-
-Implements application ports and external integrations.
-
-Responsibilities:
-
-- engine-specific datastore implementations grouped by concern under explicit engine namespaces
-- shared datastore assembly that hides concrete engines from the application and binary crates
-- SQLite runtime support through `SqliteServices`, `StoreDatastore`, and the shared SQL runtime
-- one canonical serialized SQLite writer gate owned by `SqliteServices`
-- PostgreSQL runtime support through `PgPool`-backed services and explicit transactions
-- engine-specific read-query modules
-- download client integrations
-- metadata gateway integration
-- multi-indexer orchestration
-- WASM/plugin host integration support where applicable
-
-Persistence rules:
-
-- application code talks to repository ports and datastore info/backup ports, not concrete engine types
-- SQLite reads query the pool directly through the store/query modules
-- production SQLite mutations are sent through the serialized writer, not executed directly from stores
-- SQLite stores may keep both `db` and `pool`, but `pool` is for reads and inspections while `db` owns writes
-- the SQLite writer is the only place that applies busy retry/deadline policy for serialized commands
-- SQLite batch and maintenance writes remain single commands on the writer rather than hand-rolled loops from callers
-- PostgreSQL reads and writes use pooled connections, with explicit transactions around equivalent multi-step mutation units
-- SQL is parameterized and explicit
-- dynamic SQL goes through `QueryBuilder`
-- migrations are embedded, engine-aware, and applied at startup
-- embedded migration files are append-only and immutable after release; never edit a historical migration in place
-- every new datastore change must include SQLite and PostgreSQL implementation, tests, or an explicit engine-scoped no-op with a guard
-
-### `scryer-interface`
-
-GraphQL boundary using `async-graphql`.
-
-Responsibilities:
-
-- query, mutation, and subscription resolvers
-- GraphQL input/output types
-- mapping between domain types and wire types
-- auth extraction and request context
-- settings graph bridge
-
-Rules:
-
-- no business logic in resolvers
-- explicit enum mapping
-- subscriptions tail domain events via cursor and re-query
-- no raw JSON pass-through for structured domain contracts
-
-### `scryer`
-
-Binary crate and startup orchestration.
-
-Responsibilities:
-
-- CLI dispatch
-- environment and data-dir bootstrap
-- tracing and logging setup
-- database initialization and migrations
-- settings seeding
-- encryption key bootstrap
-- service construction
-- GraphQL schema construction
-- background task spawning
-- axum router construction
-
-### Supporting Crates
-
-#### `scryer-release-parser`
-
-Token-based release title parser used in acquisition and import flows.
-
-#### `scryer-mediainfo`
-
-Pure-Rust media analyzer providing ground-truth media inspection without an external `ffprobe` dependency.
-
-#### `scryer-rules`
-
-Pure-Rust policy/rules engine used for user-authored rule evaluation.
-
-#### `scryer-plugins`
-
-WASM plugin system for indexers, download clients, and notification providers. Plugins run under capability and runtime restrictions rather than as trusted peers.
-
-## Frontend Architecture
-
-The frontend lives under `apps/scryer-web/`.
-
-### Stack
-
-React, React Router, urql, Tailwind CSS, shadcn/ui, Vite, and strict TypeScript.
-
-### Component Structure
-
-Scryer uses a strict container/view pattern:
-
-- containers own data fetching, mutations, and hook composition
-- views are presentational
-- common components are shared app-level UI
-- `components/ui/` contains primitive UI building blocks rather than product logic
-
-### State Rules
-
-The frontend does not have a general-purpose global state store.
-
-State flows through:
-
-- URL-derived routing state
-- focused React contexts
-- custom hooks by concern
-- JWT-backed auth state in session storage
-
-### GraphQL Rules
-
-- query and mutation documents are explicit
-- types are hand-maintained and must stay aligned with backend enums and payloads
-- subscriptions use `graphql-ws`
-- urql stays network-only
-
-### Frontend Product Rules
-
-- all user-visible strings go through i18n
-- frontend types mirror backend contract values explicitly
-- media facets stay data-driven through the facet registry
-- the frontend remains a projection client rather than a second business layer
-
-## Contributor Conventions
-
-### Adding a New Setting
-
-1. Add the key constant to the canonical settings key module.
-2. Use that constant everywhere instead of duplicating string literals.
-3. Seed the setting during bootstrap.
-4. Load and persist it in application logic.
-5. Expose it through the GraphQL boundary if needed.
-6. Add frontend types and UI if it is user-facing.
-
-### Adding a New Domain Event Type
-
-1. Add the type and payload in `scryer-domain`.
-2. Add factory support in the application event factory.
-3. Add projection support for activity/history or other views as needed.
-4. Add notification projection support if it should dispatch externally.
-5. Keep the event a pure domain fact rather than a consumer-specific payload.
-
-### Adding a New Repository Trait
-
-1. Define the trait in application ports.
-2. Add it to the smallest relevant grouped dependency struct inside `AppServices`.
-3. Implement it in infrastructure for every first-class datastore engine.
-4. Add explicit query support in the appropriate engine namespace.
-5. If the trait mutates database state, route that mutation through `SqlRuntime::run_in_transaction` so SQLite uses the shared writer gate and PostgreSQL uses an explicit transaction.
-6. If the trait performs a multi-step PostgreSQL mutation, wrap it in an explicit transaction.
-7. Add testing/null implementations as needed.
-8. Add parity coverage proving SQLite and PostgreSQL produce the same logical behavior.
-9. Wire the concrete implementation through the datastore assembly, not by constructing engine stores directly in the binary crate.
-
-### Adding a New GraphQL Query or Mutation
-
-1. Add the use case to the appropriate application workflow.
-2. Add GraphQL types and mappings.
-3. Add the resolver following the fixed resolver pattern.
-4. Add frontend query/mutation documents, types, and UI.
-
-## Testing
-
-Testing should mirror domain and boundary ownership.
-
-Rules:
-
-- prefer parallel `tests/` trees over large inline test blocks in production files
-- use real in-memory SQLite with migrations where integration behavior matters
-- use hand-rolled test doubles rather than a mock framework
-- keep null/default repository implementations available for wiring focused tests
-- use `cargo nextest run` rather than `cargo test`
-
-Integration coverage should validate the canonical flow from API action to durable state to domain event to projection or subscription.
-
-## Build and Release
-
-Use `cargo xtask` for repo automation. The only convenience shell wrapper intentionally kept in this repo is `scripts/stack-restart.sh`.
-
-Typical commands:
-
-```bash
-cargo build --workspace --locked
-cargo nextest run --workspace --locked
-cargo xtask --help
-cargo xtask ci clippy
-cargo xtask stack up
-cargo xtask stack up --seed
-./scripts/stack-restart.sh
-cd apps/scryer-web && npm ci && npm run build
-```
-
-## Things That Will Bite You
-
-1. Concurrent Cargo invocations can explode workspace disk usage.
-2. The domain event table is append-only; queries must filter at SQL level.
-3. Non-terminal tracked download state is re-derived on restart.
-4. `scryer:`-prefixed tags carry structured semantics and preserve case.
-5. The WASM plugin runtime is not `Send`; do not treat it like a normal async dependency.
-6. Settings use scope inheritance and the `__inherit__` sentinel.
-7. The metadata gateway has its own deployment lifecycle and compatibility window.
-8. Frontend dev behavior can differ from production because the React Compiler only runs in production builds.
-
-## Final Rule
-
-A good change should make Scryer more legible, not merely more capable.
-
-When in doubt, choose the design that preserves typed boundaries, keeps the event story coherent, respects the crate layering, and solves the real problem with the least necessary code.
+Stop and reconsider when a change introduces:
+
+- an inner layer depending on an adapter or transport
+- durable state changes with no meaningful domain event
+- live delivery treated as the source of truth
+- business policy in the frontend, transport, persistence, or plugin runtime
+- storage-shaped records or stringly state crossing internal boundaries
+- behavior implemented for only one first-class datastore engine
+- unbounded queues, caches, result sets, scans, or retries
+- plugin or external integration paths that bypass host policy
+- destructive work without verified scope and preconditions
+- a new framework or subsystem for a hypothetical future requirement
+
+## Change Rule
+
+Architecture changes are intentional product decisions. Update this document in
+the same change, explain the tradeoff, and update affected public contract
+documentation. Routine refactors should continue to satisfy this contract
+without rewriting it to mirror the latest repository shape.

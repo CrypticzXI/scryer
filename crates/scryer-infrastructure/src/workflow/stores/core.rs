@@ -26,7 +26,7 @@ use crate::queries::sql_runtime::{
 use crate::types::WorkflowOperationRecord;
 
 pub(crate) const DOMAIN_EVENT_COLUMNS: &str = "sequence, event_id, occurred_at, actor_kind, actor_user_id, actor_display_name, title_id, facet, correlation_id, causation_id, schema_version, stream_kind, stream_id, payload_json";
-pub(crate) const DOWNLOAD_SUBMISSION_COLUMNS: &str = "title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id";
+pub(crate) const DOWNLOAD_SUBMISSION_COLUMNS: &str = "title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_provider_id, source_provider_name, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id";
 pub(crate) const IMPORT_COLUMNS: &str = "id, source_client_id, source_system, source_ref, import_type, status, payload_json, result_json, download_id, import_transfer_phase, import_transfer_bytes, import_transfer_total_bytes, import_transfer_started_at, import_transfer_updated_at, started_at, finished_at, created_at, updated_at";
 pub(crate) const DOWNLOAD_QUEUE_COMMAND_COLUMNS: &str = "id, action, client_id, client_type, download_client_item_id, is_history, status, error_text, requested_by_user_id, started_at, finished_at, created_at, updated_at";
 
@@ -234,6 +234,8 @@ pub(crate) async fn record_download_submission_tx(
          SET title_id = excluded.title_id,
              facet = excluded.facet,
              source_hint = excluded.source_hint,
+             source_provider_id = excluded.source_provider_id,
+             source_provider_name = excluded.source_provider_name,
              source_kind = excluded.source_kind,
              source_title = excluded.source_title,
              request_signature = excluded.request_signature,
@@ -244,8 +246,8 @@ pub(crate) async fn record_download_submission_tx(
     };
     let sql = [
         "INSERT INTO download_submissions
-         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id)
-         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+         (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_hint, source_provider_id, source_provider_name, source_kind, source_title, request_signature, purpose, episode_id, collection_id, series_movie_link_id)
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
         conflict_clause,
     ]
     .join(" ");
@@ -260,6 +262,8 @@ pub(crate) async fn record_download_submission_tx(
             SqlArg::Text(submission.download_client_type.clone()),
             SqlArg::Text(submission.download_client_item_id.clone()),
             SqlArg::OptText(submission.source_hint.clone()),
+            SqlArg::OptText(submission.source_provider_id.clone()),
+            SqlArg::OptText(submission.source_provider_name.clone()),
             SqlArg::OptText(
                 submission
                     .source_kind
@@ -918,6 +922,7 @@ pub(crate) const TITLE_HISTORY_PAGE_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::ImportCompleted,
     DomainEventType::ImportRejected,
     DomainEventType::DownloadFailed,
+    DomainEventType::DownloadIgnored,
     DomainEventType::ReleaseBlocklisted,
     DomainEventType::MediaFileUpgraded,
     DomainEventType::MediaFileDeleted,
@@ -1150,6 +1155,8 @@ pub(crate) fn download_submission_from_row(row: &SqlRow) -> AppResult<DownloadSu
         download_client_type: row.text("download_client_type")?,
         download_client_item_id: row.text("download_client_item_id")?,
         source_hint: row.opt_text("source_hint")?,
+        source_provider_id: row.opt_text("source_provider_id")?,
+        source_provider_name: row.opt_text("source_provider_name")?,
         source_kind,
         source_title: row.opt_text("source_title")?,
         request_signature: row.opt_text("request_signature")?,

@@ -1,15 +1,34 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use scryer_application::{IndexerPluginProvider, SubtitlePluginProvider};
 use scryer_domain::IndexerConfig;
 
+static TEST_WASM_RUNTIME: Once = Once::new();
+
+fn initialize_wasm_runtime_for_tests() {
+    TEST_WASM_RUNTIME.call_once(|| {
+        let cache_dir = std::env::temp_dir().join(format!(
+            "scryer-wasmtime-integration-cache-{}",
+            std::process::id()
+        ));
+        scryer_plugins::initialize_wasm_runtime_at(cache_dir)
+            .expect("test Wasmtime cache must initialize");
+    });
+}
+
+fn fixtures_dir() -> std::path::PathBuf {
+    initialize_wasm_runtime_for_tests();
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
+}
+
 fn test_config(provider_type: &str) -> IndexerConfig {
+    initialize_wasm_runtime_for_tests();
     IndexerConfig {
         id: "idx-1".to_string(),
         name: "Test".to_string(),
@@ -37,7 +56,7 @@ fn test_config(provider_type: &str) -> IndexerConfig {
 
 #[test]
 fn load_test_indexer_plugin() {
-    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let fixtures_dir = fixtures_dir();
     let provider = scryer_plugins::load_indexer_plugins(&fixtures_dir).unwrap();
 
     let types = provider.available_provider_types();
@@ -46,7 +65,7 @@ fn load_test_indexer_plugin() {
 
 #[test]
 fn test_indexer_creates_client() {
-    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let fixtures_dir = fixtures_dir();
     let provider = scryer_plugins::load_indexer_plugins(&fixtures_dir).unwrap();
 
     let client = provider.client_for_provider(&test_config("test"));
@@ -58,7 +77,7 @@ fn test_indexer_creates_client() {
 
 #[test]
 fn unknown_provider_returns_none() {
-    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let fixtures_dir = fixtures_dir();
     let provider = scryer_plugins::load_indexer_plugins(&fixtures_dir).unwrap();
 
     assert!(
@@ -70,7 +89,7 @@ fn unknown_provider_returns_none() {
 
 #[tokio::test]
 async fn test_indexer_search() {
-    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let fixtures_dir = fixtures_dir();
     let provider = scryer_plugins::load_indexer_plugins(&fixtures_dir).unwrap();
 
     let client = provider.client_for_provider(&test_config("test")).unwrap();
@@ -113,7 +132,7 @@ fn empty_dir_loads_no_plugins() {
 
 #[test]
 fn scoring_policies_empty_for_test_plugin() {
-    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let fixtures_dir = fixtures_dir();
     let provider = scryer_plugins::load_indexer_plugins(&fixtures_dir).unwrap();
     // The test-indexer fixture has no scoring policies
     assert!(provider.scoring_policies().is_empty());
@@ -198,6 +217,7 @@ fn builtin_provider_exposes_expected_metadata_and_supports_removal() {
 
 #[test]
 fn external_overrides_builtin_same_provider() {
+    initialize_wasm_runtime_for_tests();
     let wasm_bytes =
         scryer_plugins::builtins::decode_builtin_wasm(scryer_plugins::builtins::NEWZNAB)
             .expect("builtin WASM should decode");
@@ -818,7 +838,7 @@ fn builtin_with_valid_descriptor_loads() {
 
 #[test]
 fn plugin_capabilities_accessible() {
-    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let fixtures_dir = fixtures_dir();
     let provider = scryer_plugins::load_indexer_plugins(&fixtures_dir).unwrap();
 
     let caps = provider.capabilities_for_provider("test");

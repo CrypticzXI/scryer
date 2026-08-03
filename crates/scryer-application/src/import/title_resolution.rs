@@ -1,6 +1,4 @@
-use crate::{
-    ParsedReleaseMetadata, analyze_release_against_targets, build_candidate_bank_contexts,
-};
+use crate::ParsedReleaseMetadata;
 use scryer_domain::{MediaFacet, Title, TitleMatchType};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -16,6 +14,15 @@ pub(crate) struct ResolvedMonitoredTitle<'a> {
 pub(crate) struct MonitoredTitleMatcherCache {
     pub matcher: Option<Arc<MonitoredTitleMatcher>>,
     pub dirty: bool,
+    /// Bumped on every invalidation; a rebuild only clears `dirty` when no
+    /// invalidation raced the build, so a mid-build title change is never
+    /// silently absorbed into a "clean" stale matcher.
+    pub generation: u64,
+    /// When the cached matcher was built. Title renames, alias updates, and
+    /// monitor toggles do not reliably reach the event-driven invalidation
+    /// (`TitleUpdated` has no production emitter), so age alone also dirties
+    /// the cache and bounds staleness.
+    pub built_at: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -24,11 +31,46 @@ pub(crate) struct MonitoredTitleMatcher {
     normalized_title_index: HashMap<String, Vec<usize>>,
     imdb_index: HashMap<String, Vec<usize>>,
     tmdb_index: HashMap<String, Vec<usize>>,
+    /// Pillar A tier 0 collision index over ALL library titles (monitored or
+    /// not — an unmonitored collider is still a collider), keyed by the
+    /// year-stripped lookup key so `one piece` and `one piece 2023` are the
+    /// same identity shape. Values are title ids, not `titles` indexes,
+    /// because unmonitored titles are not resolvable and live only here.
+    ambiguity_index: HashMap<String, Vec<String>>,
+}
+
+/// `Title (Year)` and bare `Title` are the same canonical identity for
+/// collision purposes: the matching loop bridges the two shapes, so the
+/// collision detector must too or a year-suffixed alias reads as "unique".
+pub(crate) fn strip_trailing_year_key(key: &str) -> &str {
+    if let Some((head, tail)) = key.rsplit_once(' ')
+        && tail.len() == 4
+        && tail.chars().all(|c| c.is_ascii_digit())
+        && (tail.starts_with("19") || tail.starts_with("20"))
+        && !head.is_empty()
+    {
+        return head;
+    }
+    key
 }
 
 impl MonitoredTitleMatcher {
     pub(crate) fn new(titles: Vec<Title>) -> Self {
         let mut matcher = Self::default();
+
+        for title in &titles {
+            for normalized in crate::acquisition_release_search::canonical_title_lookup_keys(title)
+            {
+                let stripped = strip_trailing_year_key(&normalized);
+                let entry = matcher
+                    .ambiguity_index
+                    .entry(stripped.to_string())
+                    .or_default();
+                if !entry.contains(&title.id) {
+                    entry.push(title.id.clone());
+                }
+            }
+        }
 
         for title in titles.into_iter().filter(|title| title.monitored) {
             let index = matcher.titles.len();
@@ -63,6 +105,33 @@ impl MonitoredTitleMatcher {
         }
 
         matcher
+    }
+
+    /// Pillar A tier 0: the subset of `keys` that at least one *other* library
+    /// title (monitored or not — an unmonitored collider is still a collider)
+    /// also claims, compared on the year-stripped shape so `X` collides with
+    /// `X <year>`. Index lookups only — no extra repository work.
+    pub(crate) fn shared_lookup_keys(&self, title_id: &str, keys: &[String]) -> Vec<String> {
+        keys.iter()
+            .filter(|key| {
+                self.ambiguity_index
+                    .get(strip_trailing_year_key(key))
+                    .is_some_and(|ids| ids.iter().any(|id| id != title_id))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// True when any of `keys` is a lookup key some *other* library title owns
+    /// — the raw name those keys came from positively asserts a different
+    /// subject's identity. Year-suffix bridged like
+    /// [`Self::shared_lookup_keys`].
+    pub(crate) fn keys_name_another_title(&self, title_id: &str, keys: &[String]) -> bool {
+        keys.iter().any(|key| {
+            self.ambiguity_index
+                .get(strip_trailing_year_key(key))
+                .is_some_and(|ids| ids.iter().any(|id| id != title_id))
+        })
     }
 
     pub(crate) fn resolve_movie<'a>(
@@ -549,57 +618,19 @@ fn find_unique_title_by_name<'a>(
 fn contextual_candidate_bank_match<'a>(
     titles: &[&'a Title],
     parsed: &ParsedReleaseMetadata,
-    facet_hint: Option<&str>,
+    _facet_hint: Option<&str>,
 ) -> Option<&'a Title> {
-    let shortlist = titles
-        .iter()
-        .copied()
-        .take(CONTEXT_CANDIDATE_LIMIT)
-        .collect::<Vec<_>>();
-    if shortlist.len() < 2 {
+    if titles.len() < 2 || titles.len() > CONTEXT_CANDIDATE_LIMIT {
         return None;
     }
 
-    let contexts = build_candidate_bank_contexts(
-        shortlist.iter().copied(),
-        None,
-        None,
-        facet_hint,
-        shortlist.len(),
-    );
-    let analysis = analyze_release_against_targets(&parsed.raw_title, &contexts);
-    if analysis.is_ambiguous() {
-        return None;
-    }
-    let best_target = analysis.best_target()?;
-    if best_target.analysis.is_unparseable() || best_target.analysis.is_ambiguous {
-        return None;
-    }
-    let best_context_index = best_target.target_index;
-    let best_candidate = best_target.analysis.best_candidate()?;
-
-    let parsed_candidates = {
-        let mut values = best_candidate
-            .projected
-            .normalized_title_variants
-            .iter()
-            .map(|title| crate::app_usecase_rss::normalize_for_matching(title))
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        let primary = crate::app_usecase_rss::normalize_for_matching(
-            &best_candidate.projected.normalized_title,
-        );
-        if !primary.is_empty() && !values.iter().any(|value| value == &primary) {
-            values.push(primary);
-        }
-        values
-    };
-
-    shortlist.get(best_context_index).copied().filter(|title| {
-        parsed_candidates
-            .iter()
-            .any(|candidate| title_matches_normalized_candidate(title, candidate))
-    })
+    let mut proven = titles.iter().copied().filter(|title| {
+        let evidence = crate::acquisition_release_search::canonical_title_evidence(title);
+        crate::acquisition_release_search::match_parsed_release_to_title_evidence(parsed, &evidence)
+            .is_some_and(|evidence_match| !evidence_match.requires_external_id)
+    });
+    let matched = proven.next()?;
+    proven.next().is_none().then_some(matched)
 }
 
 #[cfg(test)]
@@ -782,5 +813,43 @@ mod tests {
                 .expect("contextual match");
 
         assert_eq!(matched.id, titles[1].id);
+    }
+
+    #[test]
+    fn strip_trailing_year_key_strips_only_plausible_year_suffixes() {
+        assert_eq!(strip_trailing_year_key("one piece 2023"), "one piece");
+        assert_eq!(strip_trailing_year_key("one piece"), "one piece");
+        assert_eq!(
+            strip_trailing_year_key("blade runner 2049 2017"),
+            "blade runner 2049"
+        );
+        assert_eq!(strip_trailing_year_key("2023"), "2023");
+        assert_eq!(strip_trailing_year_key("area 5150"), "area 5150");
+    }
+
+    #[test]
+    fn shared_lookup_keys_bridges_year_suffixed_titles_and_sees_unmonitored_colliders() {
+        let mut anime = test_title("One Piece", MediaFacet::Anime, Some(1999), &[]);
+        anime.monitored = false;
+        let live_action = test_title(
+            "One Piece",
+            MediaFacet::Series,
+            Some(2023),
+            &["One Piece (2023)"],
+        );
+        let matcher = MonitoredTitleMatcher::new(vec![anime, live_action.clone()]);
+
+        let keys = crate::acquisition_release_search::canonical_title_lookup_keys(&live_action);
+        let shared = matcher.shared_lookup_keys(&live_action.id, &keys);
+        assert!(
+            !shared.is_empty(),
+            "live-action keys must collide with the bare (unmonitored) anime: {keys:?}"
+        );
+        // The year-suffixed alias itself is a shared shape — this is what kills
+        // the synthesized-unique-alias laundering in the matching loop.
+        assert!(
+            shared.iter().any(|key| key == "one piece 2023"),
+            "year-suffixed key must be recognized as shared: {shared:?}"
+        );
     }
 }

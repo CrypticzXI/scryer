@@ -585,7 +585,7 @@ async fn graphql_introspection_lists_title_fields() {
         assert_eq!(arg["type"]["name"], expected_name);
     }
 
-    // RFC 119: `wantedItems` is the derived view now — the state-row `titleId`
+    // `wantedItems` is the derived view now — the state-row `titleId`
     // filter was dropped (use `titleSearch` or the interactive job's `titleId`).
     let download_queue_title_id = query_arg("downloadQueue", "titleId");
     assert_eq!(download_queue_title_id["type"]["kind"], "SCALAR");
@@ -596,7 +596,7 @@ async fn graphql_introspection_lists_title_fields() {
             .expect("wantedItems args")
             .iter()
             .all(|arg| arg["name"] != "titleId"),
-        "wantedItems.titleId was removed in the RFC 119 derived view"
+        "wantedItems.titleId was removed in the derived view"
     );
     let subscription_title_id = subscription_arg("downloadQueue", "titleId");
     assert_eq!(subscription_title_id["type"]["kind"], "SCALAR");
@@ -1383,7 +1383,10 @@ async fn graphql_introspection_exposes_core_graph_relationship_fields() {
             "GRABBED",
             "SUPERSEDED",
             "EXPIRED",
-            "DISMISSED"
+            "DISMISSED",
+            // Pillar A3: a candidate parked because the canonical title is
+            // ambiguous. No delay timer, resolved only by grab-now / dismiss.
+            "NEEDS_REVIEW",
         ]
     );
 }
@@ -2501,7 +2504,7 @@ async fn graphql_introspection_exposes_wanted_enums() {
         field("mediaType")["type"]["ofType"]["name"],
         "WantedMediaTypeValue"
     );
-    // RFC 119: cadence display (searchPhase) is replaced by convergence + recency.
+    // Cadence display (searchPhase) is replaced by convergence + recency.
     assert!(fields.iter().all(|field| field["name"] != "searchPhase"));
     assert!(body["data"]["wantedSearchPhase"].is_null());
     assert_eq!(field("convergenceState")["type"]["kind"], "NON_NULL");

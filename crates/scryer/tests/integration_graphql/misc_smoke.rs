@@ -199,7 +199,7 @@ async fn graphql_runtime_browse_and_download_client_permissions() {
 #[tokio::test]
 async fn graphql_wanted_items_empty() {
     let ctx = TestContext::new().await;
-    // RFC 119: `wantedItems` is the derived Missing/Upgrades view selected by
+    // `wantedItems` is the derived Missing/Upgrades view selected by
     // `wantedKind`; the state-row status/media-type filters were removed.
     let body = gql(
         &ctx,

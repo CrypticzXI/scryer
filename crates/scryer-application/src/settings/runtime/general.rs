@@ -1,6 +1,26 @@
 const SMG_VERSION_COMPATIBILITY_NOTICE_KEY: &str = "smg.version_compatibility_notice";
 const SMG_SCRYER_UPDATE_NOTICE_KEY: &str = "smg.scryer_update_notice";
 const AUTO_BACKUP_KEY_MIN_LENGTH: usize = 8;
+const BYTES_PER_MIB: u64 = 1024 * 1024;
+
+fn configured_image_cache_max_bytes(image_cache_max_size_mb: i32) -> u64 {
+    u64::try_from(image_cache_max_size_mb)
+        .unwrap_or_default()
+        .saturating_mul(BYTES_PER_MIB)
+}
+
+fn effective_image_cache_limit(image_cache_max_size_mb: i32) -> (u64, f64, bool) {
+    let env_override = std::env::var(IMAGE_CACHE_MAX_BYTES_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+    let effective_bytes = env_override
+        .unwrap_or_else(|| configured_image_cache_max_bytes(image_cache_max_size_mb));
+    (
+        effective_bytes,
+        effective_bytes as f64 / BYTES_PER_MIB as f64,
+        env_override.is_some(),
+    )
+}
 
 fn normalize_auto_backup_daily_time_local(value: &str) -> AppResult<String> {
     let value = value.trim();
@@ -157,10 +177,14 @@ fn summarize_plugin_http_trusted_certificates(
     }
     Ok(certificates)
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GeneralSettings {
     pub keep_history_forever: bool,
     pub history_retention_days: i32,
+    pub image_cache_max_size_mb: i32,
+    pub effective_image_cache_max_size_bytes: u64,
+    pub effective_image_cache_max_size_mb: f64,
+    pub image_cache_max_size_env_override_active: bool,
     pub plugin_http_ca_bundle_pem: String,
     pub plugin_http_trusted_certificates: Vec<GeneralSettingsTrustedCertificate>,
 }
@@ -185,9 +209,10 @@ pub struct BackupSettings {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateGeneralSettings {
-    pub keep_history_forever: bool,
-    pub history_retention_days: i32,
-    pub plugin_http_ca_bundle_pem: String,
+    pub keep_history_forever: Option<bool>,
+    pub history_retention_days: Option<i32>,
+    pub image_cache_max_size_mb: Option<i32>,
+    pub plugin_http_ca_bundle_pem: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateAutoBackupSettings {
@@ -252,6 +277,16 @@ impl AppUseCase {
             .await?
             .map(|value| value.max(1) as i32)
             .unwrap_or(180);
+        let image_cache_max_size_mb = self
+            .read_setting_i64_value(IMAGE_CACHE_MAX_SIZE_MB_KEY, None)
+            .await?
+            .map(|value| value.clamp(1, i64::from(i32::MAX)) as i32)
+            .unwrap_or(DEFAULT_IMAGE_CACHE_MAX_SIZE_MB);
+        let (
+            effective_image_cache_max_size_bytes,
+            effective_image_cache_max_size_mb,
+            image_cache_max_size_env_override_active,
+        ) = effective_image_cache_limit(image_cache_max_size_mb);
         let stored_bundle = self
             .read_setting_string_value(PLUGIN_HTTP_CA_BUNDLE_PEM_KEY, None)
             .await?
@@ -276,6 +311,10 @@ impl AppUseCase {
         Ok(GeneralSettings {
             keep_history_forever,
             history_retention_days,
+            image_cache_max_size_mb,
+            effective_image_cache_max_size_bytes,
+            effective_image_cache_max_size_mb,
+            image_cache_max_size_env_override_active,
             plugin_http_ca_bundle_pem,
             plugin_http_trusted_certificates,
         })
@@ -360,6 +399,17 @@ impl AppUseCase {
     pub(crate) async fn general_settings(&self) -> AppResult<GeneralSettings> {
         self.load_general_settings().await
     }
+
+    pub async fn sync_image_cache_runtime_limit(&self) -> AppResult<()> {
+        let settings = self.load_general_settings().await?;
+        self.services
+            .library
+            .image_proxy_cache_control
+            .set_configured_max_bytes(configured_image_cache_max_bytes(
+                settings.image_cache_max_size_mb,
+            ))
+            .await
+    }
 }
 impl AppUseCase {
     pub async fn get_general_settings(&self, actor: &User) -> AppResult<GeneralSettings> {
@@ -391,60 +441,106 @@ impl AppUseCase {
             .await?;
 
         let current = self.load_general_settings().await?;
-        let history_retention_days =
-            if input.keep_history_forever && input.history_retention_days < 1 {
-                current.history_retention_days
-            } else {
-                input.history_retention_days
-            };
+        let keep_history_forever = input
+            .keep_history_forever
+            .unwrap_or(current.keep_history_forever);
+        let requested_history_retention_days = input
+            .history_retention_days
+            .unwrap_or(current.history_retention_days);
+        let history_retention_days = if keep_history_forever && requested_history_retention_days < 1
+        {
+            current.history_retention_days
+        } else {
+            requested_history_retention_days
+        };
+        let image_cache_max_size_mb = input
+            .image_cache_max_size_mb
+            .unwrap_or(current.image_cache_max_size_mb);
 
         if history_retention_days < 1 {
             return Err(AppError::Validation(
                 "history retention days must be at least 1".to_string(),
             ));
         }
-        let plugin_http_ca_bundle_pem =
-            normalize_plugin_http_ca_bundle_pem(&input.plugin_http_ca_bundle_pem)?;
+        if image_cache_max_size_mb < 1 {
+            return Err(AppError::Validation(
+                "image cache maximum size must be at least 1 MiB".to_string(),
+            ));
+        }
+        let plugin_http_ca_bundle_pem_update = input
+            .plugin_http_ca_bundle_pem
+            .as_deref()
+            .map(normalize_plugin_http_ca_bundle_pem)
+            .transpose()?;
+        let plugin_http_ca_bundle_pem = plugin_http_ca_bundle_pem_update
+            .clone()
+            .unwrap_or(current.plugin_http_ca_bundle_pem);
         let plugin_http_trusted_certificates =
             summarize_plugin_http_trusted_certificates(&plugin_http_ca_bundle_pem)?;
 
-        self.upsert_system_setting_json(
-            HISTORY_KEEP_FOREVER_KEY,
-            &input.keep_history_forever,
-            Some(actor.id.clone()),
-        )
-        .await?;
-        self.upsert_system_setting_json(
-            HISTORY_RETENTION_DAYS_KEY,
-            &history_retention_days,
-            Some(actor.id.clone()),
-        )
-        .await?;
-        self.upsert_system_setting_json(
-            PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
-            &plugin_http_ca_bundle_pem,
-            Some(actor.id.clone()),
-        )
-        .await?;
-        if let Some(runtime) = self.services.config.plugin_http_trust_runtime.available() {
-            runtime.set_plugin_http_ca_bundle_pem(plugin_http_ca_bundle_pem.clone())?;
+        let mut changed_keys = Vec::new();
+        if input.keep_history_forever.is_some() {
+            self.upsert_system_setting_json(
+                HISTORY_KEEP_FOREVER_KEY,
+                &keep_history_forever,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(HISTORY_KEEP_FOREVER_KEY.to_string());
+        }
+        if input.history_retention_days.is_some() {
+            self.upsert_system_setting_json(
+                HISTORY_RETENTION_DAYS_KEY,
+                &history_retention_days,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(HISTORY_RETENTION_DAYS_KEY.to_string());
+        }
+        if input.image_cache_max_size_mb.is_some() {
+            self.upsert_system_setting_json(
+                IMAGE_CACHE_MAX_SIZE_MB_KEY,
+                &image_cache_max_size_mb,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            self.services
+                .library
+                .image_proxy_cache_control
+                .set_configured_max_bytes(configured_image_cache_max_bytes(image_cache_max_size_mb))
+                .await?;
+            changed_keys.push(IMAGE_CACHE_MAX_SIZE_MB_KEY.to_string());
+        }
+        if let Some(plugin_http_ca_bundle_pem) = plugin_http_ca_bundle_pem_update {
+            self.upsert_system_setting_json(
+                PLUGIN_HTTP_CA_BUNDLE_PEM_KEY,
+                &plugin_http_ca_bundle_pem,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            if let Some(runtime) = self.services.config.plugin_http_trust_runtime.available() {
+                runtime.set_plugin_http_ca_bundle_pem(plugin_http_ca_bundle_pem)?;
+            }
+            changed_keys.push(PLUGIN_HTTP_CA_BUNDLE_PEM_KEY.to_string());
         }
 
-        self.emit_settings_saved(
-            actor,
-            "general_settings",
-            None,
-            vec![
-                HISTORY_KEEP_FOREVER_KEY.to_string(),
-                HISTORY_RETENTION_DAYS_KEY.to_string(),
-                PLUGIN_HTTP_CA_BUNDLE_PEM_KEY.to_string(),
-            ],
-        )
-        .await;
+        if !changed_keys.is_empty() {
+            self.emit_settings_saved(actor, "general_settings", None, changed_keys)
+                .await;
+        }
 
+        let (
+            effective_image_cache_max_size_bytes,
+            effective_image_cache_max_size_mb,
+            image_cache_max_size_env_override_active,
+        ) = effective_image_cache_limit(image_cache_max_size_mb);
         Ok(GeneralSettings {
-            keep_history_forever: input.keep_history_forever,
+            keep_history_forever,
             history_retention_days,
+            image_cache_max_size_mb,
+            effective_image_cache_max_size_bytes,
+            effective_image_cache_max_size_mb,
+            image_cache_max_size_env_override_active,
             plugin_http_ca_bundle_pem,
             plugin_http_trusted_certificates,
         })

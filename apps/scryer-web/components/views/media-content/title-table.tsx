@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation } from "react-router";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import {
@@ -627,7 +627,6 @@ export const TitleTable = React.memo(function TitleTable({
               >
                 <TitlePosterSlot
                   src={posterThumbUrl}
-                  sourceSrc={item.posterSourceUrl}
                   metadataFetchedAt={item.metadataFetchedAt}
                   createdAt={item.createdAt}
                   alt=""

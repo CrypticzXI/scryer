@@ -115,12 +115,14 @@ test("side panel queries omit recommendations", () => {
   assert.equal(seriesSidePanelOverviewQuery.includes("moreLikeThis("), false);
 });
 
-test("title more-like-this query uses lightweight card fields", () => {
+test("title more-like-this query fetches full discovery item detail", () => {
   assert.equal(titleMoreLikeThisQuery.includes("moreLikeThis(limit: $limit)"), true);
-  assert.equal(titleMoreLikeThisQuery.includes("externalRatings"), false);
-  assert.equal(titleMoreLikeThisQuery.includes("externalIds"), false);
-  assert.equal(titleMoreLikeThisQuery.includes("canonicalTags"), false);
-  assert.equal(titleMoreLikeThisQuery.includes("backgroundUrl"), false);
+  // Card actions feed metadataResultForDiscoveryItem directly instead of
+  // issuing a follow-up discoveryItemDetail fetch, so the strip query must
+  // carry the full detail projection.
+  assert.equal(titleMoreLikeThisQuery.includes("externalRatings"), true);
+  assert.equal(titleMoreLikeThisQuery.includes("externalIds"), true);
+  assert.equal(titleMoreLikeThisQuery.includes("canonicalTags"), true);
   assert.equal(titleMoreLikeThisQuery.includes("targetKey"), true);
   assert.equal(titleMoreLikeThisQuery.includes("ownedInInput"), true);
 });

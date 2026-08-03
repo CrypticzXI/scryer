@@ -49,9 +49,9 @@ use scryer_application::{
 use scryer_infrastructure::{
     BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
     DatastoreCustomizationStore, DatastoreEngine, FileSystemLibraryRenamer,
-    FileSystemLibraryScanner, FileSystemStagedNzbStore, MetadataGatewayClient, MigrationMode,
-    MultiIndexerSearchClient, PrioritizedDownloadClientRouter, SettingsStore, SmgEnrollmentConfig,
-    WeaverSubscriptionBridgeClient, resolve_datastore_config_from_env,
+    FileSystemLibraryScanner, FileSystemStagedNzbStore, ImageProxyRuntime, MetadataGatewayClient,
+    MigrationMode, MultiIndexerSearchClient, PrioritizedDownloadClientRouter, SettingsStore,
+    SmgEnrollmentConfig, WeaverSubscriptionBridgeClient, resolve_datastore_config_from_env,
     restore_backup_bundle_to_datastore_path, start_weaver_subscription_bridge, validate_datastore,
 };
 use scryer_interface::context::{
@@ -484,6 +484,12 @@ async fn main() {
     }
 
     let data_dir = resolve_data_dir(data_dir_override.as_deref());
+    let wasmtime_cache_dir = resolve_wasmtime_cache_dir(data_dir_override.as_deref(), &data_dir);
+
+    if let Err(error) = scryer_plugins::initialize_wasm_runtime_at(&wasmtime_cache_dir) {
+        eprintln!("failed to initialize required WASM plugin cache: {error}");
+        std::process::exit(1);
+    }
 
     load_env_file(Some(&data_dir), false);
 
@@ -946,6 +952,7 @@ async fn bootstrap_application(
         load_runtime_plugin_state(&customization_store)
             .await
             .map_err(|e| format!("failed to load runtime plugin state: {e}"))?;
+    scryer_plugins::schedule_plugin_rehydration(&runtime_plugins, &disabled_builtin_plugins);
     let indexer_runtime_plugins = runtime_plugins
         .iter()
         .filter(|plugin| plugin_type_belongs_to_indexer_family(plugin.descriptor.plugin_type()))
@@ -1033,6 +1040,11 @@ async fn bootstrap_application(
 
     let indexer_client = Arc::new(indexer_client);
     let title_images_for_route: Arc<dyn TitleImageRepository> = datastore.title_images();
+    let image_proxy_runtime = Arc::new(ImageProxyRuntime::new(
+        datastore.image_proxy(),
+        title_images_for_route.clone(),
+        &data_dir,
+    ));
     let metadata_gateway_url = std::env::var("SCRYER_METADATA_GATEWAY_GRAPHQL_URL")
         .ok()
         .filter(|v| !v.is_empty())
@@ -1148,6 +1160,7 @@ async fn bootstrap_application(
                 .unwrap_or_else(|| "http://127.0.0.1:8090/graphql".to_string()),
         ))
         .with_metadata_gateway(metadata_gateway)
+        .with_image_proxy_cache_control(image_proxy_runtime.clone())
         .with_library_scanner(library_scanner)
         .with_library_renamer(library_renamer)
         .with_file_importer(Arc::new(scryer_infrastructure::FsFileImporter::new()))
@@ -1185,6 +1198,55 @@ async fn bootstrap_application(
         facet_registry,
         webauthn,
     );
+    if let Err(error) = app_use_case.sync_image_cache_runtime_limit().await {
+        tracing::warn!(error = %error, "failed to apply configured image cache limit");
+    }
+    if let Err(error) = image_proxy_runtime.prune().await {
+        tracing::warn!(error = %error, "failed to run startup image cache maintenance");
+    }
+    {
+        let source_repository = app_use_case.image_proxy_repository();
+        let source_flush_shutdown = shutdown_token.child_token();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = source_flush_shutdown.cancelled() => {
+                        if let Err(error) = source_repository.flush_image_proxy_sources().await {
+                            tracing::warn!(error = %error, "final image proxy source flush failed");
+                        }
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        if let Err(error) = source_repository.flush_image_proxy_sources().await {
+                            tracing::warn!(error = %error, "periodic image proxy source flush failed");
+                        }
+                    }
+                }
+            }
+        });
+    }
+    {
+        let runtime = image_proxy_runtime.clone();
+        let maintenance_shutdown = shutdown_token.child_token();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = maintenance_shutdown.cancelled() => break,
+                    _ = interval.tick() => {
+                        if let Err(error) = runtime.prune().await {
+                            tracing::warn!(error = %error, "periodic image cache maintenance failed");
+                        }
+                    }
+                }
+            }
+        });
+    }
     tokio::spawn(flush_upstream_scheduler_after_shutdown(
         shutdown_token.child_token(),
         {
@@ -1276,8 +1338,14 @@ async fn bootstrap_application(
     {
         tracing::warn!(error = %e, "failed to migrate canonical audio/persona settings on startup");
     }
-    if let Err(e) = app_use_case.rebuild_user_rules_engine().await {
-        tracing::warn!(error = %e, "failed to rebuild user rules engine on startup");
+    if let Err(e) = app_use_case
+        .reconcile_and_activate_managed_trash_rule_packs()
+        .await
+    {
+        tracing::warn!(
+            error = %e,
+            "failed to reconcile managed TRaSH rule packs; managed packs stay excluded from the active rules engine until the next successful reconciliation"
+        );
     }
     if let Err(e) = app_use_case
         .migrate_legacy_opensubtitles_provider_config()
@@ -1544,6 +1612,10 @@ async fn bootstrap_application(
             post(graphql_handler).with_state(auth_state.clone()),
         )
         .route(
+            "/images/media/{token}/{variant}",
+            get(image_proxy_handler).with_state(image_proxy_runtime),
+        )
+        .route(
             "/images/titles/{title_id}/{kind}/{variant}",
             get(title_image_handler).with_state(title_images_for_route),
         )
@@ -1599,6 +1671,48 @@ async fn bootstrap_application(
     }
 
     Ok(app)
+}
+
+async fn image_proxy_handler(
+    State(runtime): State<Arc<ImageProxyRuntime>>,
+    headers: HeaderMap,
+    AxumPath((token, variant)): AxumPath<(String, String)>,
+) -> Response {
+    let blob = runtime.resolve(&token, &variant).await;
+    let bare_etag = blob.etag.trim_matches('"');
+    let cache_control = if blob.fallback {
+        HeaderValue::from_static("public, max-age=60")
+    } else {
+        HeaderValue::from_static("public, max-age=86400, must-revalidate")
+    };
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| if_none_match_matches(value, &blob.etag, bare_etag))
+    {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        let headers = response.headers_mut();
+        if let Ok(value) = HeaderValue::from_str(&blob.etag) {
+            headers.insert(header::ETAG, value);
+        }
+        headers.insert(header::CACHE_CONTROL, cache_control);
+        return response;
+    }
+
+    let body_len = blob.bytes.len();
+    let mut response = blob.bytes.into_response();
+    let headers = response.headers_mut();
+    if let Ok(value) = HeaderValue::from_str(&blob.content_type) {
+        headers.insert(header::CONTENT_TYPE, value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&body_len.to_string()) {
+        headers.insert(header::CONTENT_LENGTH, value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&blob.etag) {
+        headers.insert(header::ETAG, value);
+    }
+    headers.insert(header::CACHE_CONTROL, cache_control);
+    response
 }
 
 async fn title_image_handler(
@@ -1824,6 +1938,26 @@ fn resolve_data_dir(cli_override: Option<&Path>) -> PathBuf {
     directories::ProjectDirs::from("", "", "scryer")
         .map(|p| p.data_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Resolve the private native-code cache independently from the persistent
+/// database directory. On Windows the database remains in Roaming AppData for
+/// backward compatibility, while Wasmtime artifacts stay in Local AppData so
+/// they never roam between incompatible machines. Explicit `--data-dir`
+/// instances keep their cache below that directory on every platform.
+fn resolve_wasmtime_cache_dir(data_dir_override: Option<&Path>, data_dir: &Path) -> PathBuf {
+    if data_dir_override.is_some() {
+        return data_dir.join("cache").join("wasmtime");
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(project_dirs) = directories::ProjectDirs::from("", "", "scryer") {
+            return project_dirs.data_local_dir().join("cache").join("wasmtime");
+        }
+    }
+
+    data_dir.join("cache").join("wasmtime")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2764,8 +2898,8 @@ mod tests {
         bootstrap_plugin_installations, collect_runtime_plugin_load_candidates,
         comma_separated_env_has_entries, extract_data_dir, extract_log_file,
         flush_upstream_scheduler_after_shutdown, load_runtime_plugin_state, resolve_auth_mode,
-        resolve_log_file_config, restart_spec_from_parts, title_image_handler,
-        validate_unauthenticated_public_access_allowlist_config,
+        resolve_log_file_config, resolve_wasmtime_cache_dir, restart_spec_from_parts,
+        title_image_handler, validate_unauthenticated_public_access_allowlist_config,
     };
     use chrono::Utc;
     use std::ffi::OsString;
@@ -2965,6 +3099,36 @@ mod tests {
 
         assert_eq!(path, PathBuf::from("/config"));
         assert_eq!(args, vec!["scryer".to_string(), "--version".to_string()]);
+    }
+
+    #[test]
+    fn explicit_data_dir_keeps_wasmtime_cache_in_the_instance_directory() {
+        let data_dir = PathBuf::from("/instance-data");
+        assert_eq!(
+            resolve_wasmtime_cache_dir(Some(data_dir.as_path()), &data_dir),
+            data_dir.join("cache").join("wasmtime")
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn default_wasmtime_cache_is_below_the_platform_data_dir() {
+        let data_dir = PathBuf::from("/platform-data");
+        assert_eq!(
+            resolve_wasmtime_cache_dir(None, &data_dir),
+            data_dir.join("cache").join("wasmtime")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_wasmtime_cache_uses_local_app_data() {
+        let data_dir = PathBuf::from(r"C:\Roaming\scryer\data");
+        let resolved = resolve_wasmtime_cache_dir(None, &data_dir);
+        let expected = directories::ProjectDirs::from("", "", "scryer")
+            .map(|project_dirs| project_dirs.data_local_dir().join("cache").join("wasmtime"))
+            .unwrap_or_else(|| data_dir.join("cache").join("wasmtime"));
+        assert_eq!(resolved, expected);
     }
 
     #[test]

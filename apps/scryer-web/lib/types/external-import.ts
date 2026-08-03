@@ -96,6 +96,7 @@ export type ExternalImportMonitorWarmupStatus =
   | "FAILED";
 
 export type ExternalImportMonitorWarmupPhase =
+  | "LOADING_INDEXERS"
   | "LOADING_MOVIES"
   | "LOADING_SERIES"
   | "LOADING_EPISODES"

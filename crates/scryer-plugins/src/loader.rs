@@ -3,6 +3,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
+use std::time::Instant;
 
 use scryer_application::{
     AppError, AppResult, ArchiveExtractorClient, ArchiveExtractorPluginProvider, DownloadClient,
@@ -18,8 +19,9 @@ use tracing::{debug, info, warn};
 
 use crate::archive_adapter::WasmArchiveExtractorClient;
 use crate::download_client_adapter::WasmDownloadClient;
+use crate::embedded_descriptor::embedded_descriptor_from_wasm;
 use crate::indexer_adapter::WasmIndexerClient;
-use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec};
+use crate::legacy_runtime::{LegacyPlugin, LegacyPluginSpec, validate_legacy_module};
 use crate::notification_adapter::WasmNotificationClient;
 use crate::process_host::ProcessHost;
 use crate::runtime_backing::PluginRuntimeBacking;
@@ -37,8 +39,75 @@ use crate::types::{
     SubtitleProviderMode, config_fields_to_domain, indexer_capabilities_to_domain,
     plugin_descriptor_sdk_constraint, validate_plugin_descriptor_sdk_contract,
 };
+use crate::wasmtime_host::module_cache::{self, ModuleFlavor, RehydrationArtifact};
 
 const INDEXER_PLUGIN_TYPES: &[&str] = &["indexer", "usenet_indexer", "torrent_indexer"];
+
+/// Schedule process-local module rehydration for all enabled persisted and
+/// built-in plugins. Registration happens synchronously before the background
+/// worker starts so a request can wait for its own shared task instead of
+/// compiling an artifact independently.
+pub fn schedule_plugin_rehydration(
+    runtime_plugins: &[RuntimePluginLoad],
+    disabled_builtins: &[String],
+) {
+    let mut artifacts = runtime_plugins
+        .iter()
+        .map(|plugin| RehydrationArtifact {
+            plugin_id: plugin.descriptor.id.clone(),
+            plugin_version: plugin.descriptor.version.clone(),
+            flavor: module_flavor_for_descriptor(&plugin.descriptor),
+            wasm: plugin.wasm_bytes.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let builtin_assets = crate::builtins::INDEXER_BUILTINS
+        .iter()
+        .chain(crate::builtins::SUBTITLE_BUILTINS.iter())
+        .chain(crate::builtins::DOWNLOAD_CLIENT_BUILTINS.iter())
+        .chain(crate::builtins::NOTIFICATION_BUILTINS.iter());
+    for asset in builtin_assets {
+        let descriptor = match parse_builtin_descriptor(*asset) {
+            Ok(descriptor) => descriptor,
+            Err(error) => {
+                warn!(error = %error, "skipping built-in plugin module rehydration");
+                continue;
+            }
+        };
+        if disabled_builtins
+            .iter()
+            .any(|provider_type| provider_type.eq_ignore_ascii_case(descriptor.provider_type()))
+        {
+            continue;
+        }
+        let flavor = module_flavor_for_descriptor(&descriptor);
+        match crate::builtins::decode_builtin_wasm(*asset) {
+            Ok(wasm) => artifacts.push(RehydrationArtifact {
+                plugin_id: descriptor.id,
+                plugin_version: descriptor.version,
+                flavor,
+                wasm,
+            }),
+            Err(error) => warn!(
+                plugin_id = descriptor.id.as_str(),
+                plugin_version = descriptor.version.as_str(),
+                error = %error,
+                "skipping built-in plugin module rehydration"
+            ),
+        }
+    }
+
+    module_cache::schedule_rehydration(artifacts);
+}
+
+fn module_flavor_for_descriptor(descriptor: &PluginDescriptor) -> ModuleFlavor {
+    match PluginRuntimeBacking::for_descriptor(descriptor) {
+        PluginRuntimeBacking::LegacyReactor => ModuleFlavor::LegacyReactor,
+        PluginRuntimeBacking::WasmtimeArchive | PluginRuntimeBacking::WasmtimeSubtitleSync => {
+            ModuleFlavor::Command
+        }
+    }
+}
 
 type IndexerClientCacheKey = (String, String, String, String, String);
 type IndexerClientCache = std::sync::Mutex<HashMap<IndexerClientCacheKey, Arc<dyn IndexerClient>>>;
@@ -516,6 +585,22 @@ impl WasmIndexerPluginProvider {
         ))
     }
 
+    fn prepare_builtin_provider_type(&self, provider_type: &str) -> Result<(), String> {
+        let asset = builtin_indexer_asset_for_provider(provider_type).ok_or_else(|| {
+            format!("no built-in indexer plugin is available for provider '{provider_type}'")
+        })?;
+        let wasm_bytes = crate::builtins::decode_builtin_wasm(asset)?;
+        let (descriptor, _) = load_from_bytes(&wasm_bytes)?;
+        if !validate_indexer_descriptor(&descriptor, PluginLoadSource::Builtin)
+            || !descriptor
+                .provider_type()
+                .eq_ignore_ascii_case(provider_type)
+        {
+            return Err("built-in indexer descriptor rejected".to_string());
+        }
+        Ok(())
+    }
+
     fn upsert_runtime_plugin_record(
         &mut self,
         plugin: RuntimePluginLoad,
@@ -624,6 +709,7 @@ impl IndexerPluginProvider for WasmIndexerPluginProvider {
                             id,
                             name: sp.name.clone(),
                             rego_source: sp.rego_source.clone(),
+                            origin: scryer_rules::PolicyOrigin::User,
                             applied_facets: sp.applied_facets.clone(),
                         }
                     })
@@ -996,6 +1082,13 @@ impl IndexerPluginProvider for DynamicPluginProvider {
         };
         self.invalidate_provider_keys(&affected);
         Ok(())
+    }
+
+    fn prepare_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        self.inner
+            .read()
+            .expect("DynamicPluginProvider lock poisoned")
+            .prepare_builtin_provider_type(provider_type)
     }
 }
 
@@ -1938,6 +2031,25 @@ impl WasmSubtitlePluginProvider {
         ))
     }
 
+    fn prepare_builtin_provider_type(&self, provider_type: &str) -> Result<(), String> {
+        let asset = builtin_subtitle_asset_for_provider(provider_type).ok_or_else(|| {
+            format!("no built-in subtitle plugin is available for provider '{provider_type}'")
+        })?;
+        let wasm_bytes = crate::builtins::decode_builtin_wasm(asset)?;
+        let (descriptor, _) = load_from_bytes(&wasm_bytes)?;
+        if !validate_descriptor_for_type(
+            &descriptor,
+            Some("subtitle_provider"),
+            PluginLoadSource::Builtin,
+        ) || !descriptor
+            .provider_type()
+            .eq_ignore_ascii_case(provider_type)
+        {
+            return Err("built-in subtitle provider descriptor rejected".to_string());
+        }
+        Ok(())
+    }
+
     fn upsert_runtime_plugin_record(
         &mut self,
         plugin: RuntimePluginLoad,
@@ -2309,6 +2421,13 @@ impl SubtitlePluginProvider for DynamicSubtitlePluginProvider {
         };
         self.invalidate_provider_keys(&affected);
         Ok(())
+    }
+
+    fn prepare_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        self.inner
+            .read()
+            .expect("DynamicSubtitlePluginProvider lock poisoned")
+            .prepare_builtin_provider_type(provider_type)
     }
 }
 
@@ -2915,7 +3034,34 @@ fn validate_required_exports(
 }
 
 fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), String> {
+    let started_at = Instant::now();
+    module_cache::reset_failed_modules(wasm_bytes);
     let bytes = wasm_bytes.to_vec();
+
+    if let Some(embedded) = embedded_descriptor_from_wasm(&bytes)? {
+        match PluginRuntimeBacking::for_descriptor(&embedded.descriptor) {
+            PluginRuntimeBacking::LegacyReactor => {
+                validate_legacy_module(
+                    &bytes,
+                    &required_exports_for_descriptor(&embedded.descriptor),
+                )?;
+            }
+            PluginRuntimeBacking::WasmtimeArchive => {
+                crate::wasmtime_host::validate_archive_module(&bytes)?;
+            }
+            PluginRuntimeBacking::WasmtimeSubtitleSync => {
+                crate::wasmtime_host::validate_subtitle_sync_module(&bytes)?;
+            }
+        }
+        let descriptor = embedded.descriptor;
+        debug!(
+            descriptor_source = "embedded",
+            descriptor_load_ms = started_at.elapsed().as_millis() as u64,
+            plugin_id = descriptor.id.as_str(),
+            "loaded plugin descriptor"
+        );
+        return Ok((descriptor, bytes));
+    }
 
     // Command-model artifacts (wasip1 command: `_start` + `memory`, no
     // `scryer_describe` export) self-describe via argv ["describe"] on the
@@ -2924,7 +3070,14 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
     // the classifier), not legacy reactor exports. Legacy fleet plugins fall
     // through to the unchanged describe path below.
     if let Some(result) = crate::wasmtime_host::command_model_describe(&bytes) {
-        return result.map(|descriptor| (descriptor, bytes));
+        let descriptor = result?;
+        debug!(
+            descriptor_source = "command",
+            descriptor_load_ms = started_at.elapsed().as_millis() as u64,
+            plugin_id = descriptor.id.as_str(),
+            "loaded plugin descriptor"
+        );
+        return Ok((descriptor, bytes));
     }
 
     // Descriptor extraction for legacy fleet plugins still calls the
@@ -2950,6 +3103,13 @@ fn load_from_bytes(wasm_bytes: &[u8]) -> Result<(PluginDescriptor, Vec<u8>), Str
     }
 
     validate_required_exports(&mut plugin, &descriptor)?;
+
+    debug!(
+        descriptor_source = "legacy_reactor",
+        descriptor_load_ms = started_at.elapsed().as_millis() as u64,
+        plugin_id = descriptor.id.as_str(),
+        "loaded plugin descriptor"
+    );
 
     Ok((descriptor, bytes))
 }
@@ -3723,6 +3883,48 @@ mod tests {
                 provider.allowed_hosts = allowed_hosts
             }
         }
+    }
+
+    #[test]
+    fn embedded_descriptor_avoids_guest_descriptor_execution() {
+        fn encode_u32_leb(mut value: u32, output: &mut Vec<u8>) {
+            loop {
+                let mut byte = (value & 0x7f) as u8;
+                value >>= 7;
+                if value != 0 {
+                    byte |= 0x80;
+                }
+                output.push(byte);
+                if value == 0 {
+                    break;
+                }
+            }
+        }
+
+        let mut wasm = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "scryer_describe") (result i32) unreachable)
+                (func (export "scryer_indexer_search") (result i32) unreachable))"#,
+        )
+        .unwrap();
+        let descriptor_json = serde_json::to_vec(&descriptor("indexer")).unwrap();
+        let section_name = crate::embedded_descriptor::PLUGIN_DESCRIPTOR_CUSTOM_SECTION_V1;
+        let mut section = Vec::new();
+        encode_u32_leb(section_name.len() as u32, &mut section);
+        section.extend_from_slice(section_name.as_bytes());
+        section.extend_from_slice(&descriptor_json);
+        wasm.push(0);
+        encode_u32_leb(section.len() as u32, &mut wasm);
+        wasm.extend_from_slice(&section);
+
+        let (loaded_descriptor, loaded_wasm) = load_from_bytes(&wasm).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(loaded_descriptor).unwrap(),
+            serde_json::to_value(descriptor("indexer")).unwrap()
+        );
+        assert_eq!(loaded_wasm, wasm);
     }
 
     fn runtime_plugin_load(

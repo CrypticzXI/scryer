@@ -460,7 +460,7 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
         table: "upstream_scheduler_rss_cadence",
         classification: BackupTableClassification::Ignore,
     },
-    // RFC 119 convergence coverage records durable observations of external
+    // Convergence coverage records durable observations of external
     // indexer searches. Internal state transitions must not erase that evidence.
     BackupTableCatalogEntry {
         table: "scope_indexer_coverage",
@@ -656,6 +656,14 @@ pub const BACKUP_TABLE_CATALOG: &[BackupTableCatalogEntry] = &[
     },
     BackupTableCatalogEntry {
         table: "history_events",
+        classification: BackupTableClassification::Export,
+    },
+    BackupTableCatalogEntry {
+        table: "image_proxy_cache_entries",
+        classification: BackupTableClassification::ResetOnRestore,
+    },
+    BackupTableCatalogEntry {
+        table: "image_proxy_sources",
         classification: BackupTableClassification::Export,
     },
     BackupTableCatalogEntry {
@@ -1748,6 +1756,24 @@ mod tests {
             .map(|entry| entry.classification);
 
         assert_eq!(classification, Some(BackupTableClassification::Export));
+    }
+
+    #[test]
+    fn backup_table_catalog_preserves_image_proxy_sources_but_resets_cached_bytes() {
+        for (table, expected) in [
+            ("image_proxy_sources", BackupTableClassification::Export),
+            (
+                "image_proxy_cache_entries",
+                BackupTableClassification::ResetOnRestore,
+            ),
+        ] {
+            let classification = BACKUP_TABLE_CATALOG
+                .iter()
+                .find(|entry| entry.table == table)
+                .map(|entry| entry.classification);
+
+            assert_eq!(classification, Some(expected), "{table}");
+        }
     }
 
     #[test]

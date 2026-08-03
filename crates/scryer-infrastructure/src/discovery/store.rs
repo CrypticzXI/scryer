@@ -180,14 +180,15 @@ impl DiscoveryRepository for DiscoveryStore {
 
     async fn upsert_discovery_sync_state(&self, state: &DiscoverySyncStateRecord) -> AppResult<()> {
         let args = sync_state_args(state);
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "upsert_discovery_sync_state",
             &upsert_sql(
                 "discovery_sync_state",
                 &split_columns(DISCOVERY_SYNC_STATE_COLUMNS),
                 &["scope_key"],
             ),
-            &args,
+            args,
         )
         .await?;
         Ok(())
@@ -200,8 +201,9 @@ impl DiscoveryRepository for DiscoveryStore {
         lease_expires_at: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> AppResult<bool> {
-        let rows = SqlRuntime::execute(
-            self.datastore.read_exec(),
+        let rows = SqlRuntime::execute_write(
+            &self.datastore,
+            "try_acquire_discovery_sync_lease",
             "INSERT INTO discovery_sync_state
                 (scope_key, lease_owner_id, lease_expires_at, updated_at)
              VALUES ({}, {}, {}, {})
@@ -213,7 +215,7 @@ impl DiscoveryRepository for DiscoveryStore {
                 OR discovery_sync_state.lease_expires_at IS NULL
                 OR discovery_sync_state.lease_expires_at <= {}
                 OR discovery_sync_state.lease_owner_id = {}",
-            &[
+            vec![
                 SqlArg::Text(scope_key.to_string()),
                 SqlArg::Text(owner_id.to_string()),
                 SqlArg::Timestamp(lease_expires_at),
@@ -233,12 +235,13 @@ impl DiscoveryRepository for DiscoveryStore {
         lease_expires_at: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> AppResult<bool> {
-        let rows = SqlRuntime::execute(
-            self.datastore.read_exec(),
+        let rows = SqlRuntime::execute_write(
+            &self.datastore,
+            "renew_discovery_sync_lease",
             "UPDATE discovery_sync_state
              SET lease_expires_at = {}, updated_at = {}
              WHERE scope_key = {} AND lease_owner_id = {}",
-            &[
+            vec![
                 SqlArg::Timestamp(lease_expires_at),
                 SqlArg::Timestamp(now),
                 SqlArg::Text(scope_key.to_string()),
@@ -255,12 +258,13 @@ impl DiscoveryRepository for DiscoveryStore {
         owner_id: &str,
         now: DateTime<Utc>,
     ) -> AppResult<()> {
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "release_discovery_sync_lease",
             "UPDATE discovery_sync_state
              SET lease_owner_id = NULL, lease_expires_at = NULL, updated_at = {}
              WHERE scope_key = {} AND lease_owner_id = {}",
-            &[
+            vec![
                 SqlArg::Timestamp(now),
                 SqlArg::Text(scope_key.to_string()),
                 SqlArg::Text(owner_id.to_string()),
@@ -326,10 +330,11 @@ impl DiscoveryRepository for DiscoveryStore {
 
     async fn upsert_discovery_sync_run(&self, run: &DiscoverySyncRunRecord) -> AppResult<()> {
         let columns = split_columns(DISCOVERY_SYNC_RUN_COLUMNS);
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "upsert_discovery_sync_run",
             &upsert_sql("discovery_sync_runs", &columns, &["id"]),
-            &sync_run_args(&self.datastore, run)?,
+            sync_run_args(&self.datastore, run)?,
         )
         .await?;
         Ok(())
@@ -342,7 +347,7 @@ impl DiscoveryRepository for DiscoveryStore {
         let datastore = self.datastore.clone();
         // Own the payload once; share it across SQLite busy-retries via Arc so the
         // retryable `Fn` closure does a cheap refcount bump instead of a whole-snapshot
-        // deep clone on every attempt (RFC 121 SW4.2).
+        // deep clone on every attempt.
         let commit = std::sync::Arc::new(commit.clone());
         SqlRuntime::run_in_transaction(
             &self.datastore,
@@ -364,9 +369,16 @@ impl DiscoveryRepository for DiscoveryStore {
                     for item in &commit.items {
                         insert_item_tx(tx, &datastore, item, &commit.run.language).await?;
                     }
-                    for facet in &commit.facets {
-                        insert_facet_tx(tx, &datastore, facet).await?;
-                    }
+                    let facet_rows: Vec<Vec<SqlArg>> =
+                        commit.facets.iter().map(facet_row).collect();
+                    SqlRuntime::execute_batch_insert(
+                        tx,
+                        &insert_into_prefix("discovery_facets", FACET_COLUMNS),
+                        FACET_COLUMNS.len(),
+                        facet_rows,
+                        "",
+                    )
+                    .await?;
                     if let Some(sequence) = commit.clear_pending_through_sequence {
                         clear_pending_discovery_context_changes_tx(
                             tx,
@@ -388,7 +400,7 @@ impl DiscoveryRepository for DiscoveryStore {
         commit: &DiscoveryContextIncrementalCommit,
     ) -> AppResult<()> {
         let datastore = self.datastore.clone();
-        // Arc-share the payload across SQLite busy-retries (RFC 121 SW4.2).
+        // Arc-share the payload across SQLite busy-retries.
         let commit = std::sync::Arc::new(commit.clone());
         SqlRuntime::run_in_transaction(
             &self.datastore,
@@ -432,7 +444,7 @@ impl DiscoveryRepository for DiscoveryStore {
         commit: &DiscoveryPublicFeedCommit,
     ) -> AppResult<()> {
         let datastore = self.datastore.clone();
-        // Arc-share the payload across SQLite busy-retries (RFC 121 SW4.2).
+        // Arc-share the payload across SQLite busy-retries.
         let commit = std::sync::Arc::new(commit.clone());
         SqlRuntime::run_in_transaction(&self.datastore, "commit_discovery_public_feed", move |tx| {
             let datastore = datastore.clone();
@@ -558,14 +570,15 @@ impl DiscoveryRepository for DiscoveryStore {
         &self,
         change: &DiscoveryPendingContextChangeRecord,
     ) -> AppResult<()> {
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "upsert_pending_discovery_context_change",
             &upsert_sql(
                 "discovery_pending_context_changes",
                 &split_columns(PENDING_CONTEXT_CHANGE_COLUMNS),
                 &["id"],
             ),
-            &pending_context_change_args(&self.datastore, change)?,
+            pending_context_change_args(&self.datastore, change)?,
         )
         .await?;
         Ok(())
@@ -591,10 +604,11 @@ impl DiscoveryRepository for DiscoveryStore {
     }
 
     async fn delete_pending_discovery_context_change(&self, id: &str) -> AppResult<u64> {
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "delete_pending_discovery_context_change",
             "DELETE FROM discovery_pending_context_changes WHERE id = {}",
-            &[SqlArg::Text(id.to_string())],
+            vec![SqlArg::Text(id.to_string())],
         )
         .await
     }
@@ -653,13 +667,14 @@ impl DiscoveryRepository for DiscoveryStore {
         scope_key: &str,
         last_seen_sequence: i64,
     ) -> AppResult<u64> {
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "clear_pending_discovery_context_changes_through_sequence",
             "DELETE FROM discovery_pending_context_changes
              WHERE scope_key = {}
                AND last_seen_sequence IS NOT NULL
                AND last_seen_sequence <= {}",
-            &[
+            vec![
                 SqlArg::Text(scope_key.to_string()),
                 SqlArg::I64(last_seen_sequence),
             ],
@@ -724,18 +739,22 @@ impl DiscoveryRepository for DiscoveryStore {
         run_id: &str,
         facets: &[DiscoveryFacetRecord],
     ) -> AppResult<()> {
-        let datastore = self.datastore.clone();
         let run_id = run_id.to_string();
         let facets = facets.to_vec();
         SqlRuntime::run_in_transaction(&self.datastore, "replace_discovery_facets", move |tx| {
-            let datastore = datastore.clone();
             let run_id = run_id.clone();
             let facets = facets.clone();
             Box::pin(async move {
                 delete_for_run_tx(tx, "discovery_facets", &run_id).await?;
-                for facet in &facets {
-                    insert_facet_tx(tx, &datastore, facet).await?;
-                }
+                let facet_rows: Vec<Vec<SqlArg>> = facets.iter().map(facet_row).collect();
+                SqlRuntime::execute_batch_insert(
+                    tx,
+                    &insert_into_prefix("discovery_facets", FACET_COLUMNS),
+                    FACET_COLUMNS.len(),
+                    facet_rows,
+                    "",
+                )
+                .await?;
                 Ok(())
             })
         })
@@ -1104,7 +1123,7 @@ impl DiscoveryRepository for DiscoveryStore {
         retain_successful_per_kind: usize,
         diagnostic_cutoff: DateTime<Utc>,
     ) -> AppResult<DiscoveryPruneReport> {
-        // RFC 121 SW4.5: prune runs from the housekeeping job, NOT under the
+        // Prune runs from the housekeeping job, NOT under the
         // discovery sync lease, so it can race a concurrent commit. The whole
         // candidate read + keep-set decision + delete loop now runs inside one
         // transaction. On SQLite `run_in_transaction` holds the app-wide writer
@@ -4379,24 +4398,14 @@ async fn insert_title_more_like_this_item_tx(
     Ok(())
 }
 
-async fn insert_facet_tx(
-    tx: &mut SqlTx<'_>,
-    _datastore: &StoreDatastore,
-    facet: &DiscoveryFacetRecord,
-) -> AppResult<()> {
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        &insert_sql("discovery_facets", FACET_COLUMNS),
-        &[
-            SqlArg::Text(facet.run_id.clone()),
-            SqlArg::Text(facet.facet_name.clone()),
-            SqlArg::Text(facet.facet_value.clone()),
-            SqlArg::OptI64(facet.smg_count),
-            SqlArg::OptI64(facet.local_count),
-        ],
-    )
-    .await?;
-    Ok(())
+fn facet_row(facet: &DiscoveryFacetRecord) -> Vec<SqlArg> {
+    vec![
+        SqlArg::Text(facet.run_id.clone()),
+        SqlArg::Text(facet.facet_name.clone()),
+        SqlArg::Text(facet.facet_value.clone()),
+        SqlArg::OptI64(facet.smg_count),
+        SqlArg::OptI64(facet.local_count),
+    ]
 }
 
 fn insert_sql(table: &str, columns: &[&str]) -> String {
@@ -4405,6 +4414,12 @@ fn insert_sql(table: &str, columns: &[&str]) -> String {
         columns.join(", "),
         placeholders(columns.len())
     )
+}
+
+/// Column-list prefix (`INSERT INTO t (a, b, c)`) for `execute_batch_insert`,
+/// which supplies the multi-row `VALUES (..),(..)` tail itself.
+fn insert_into_prefix(table: &str, columns: &[&str]) -> String {
+    format!("INSERT INTO {table} ({})", columns.join(", "))
 }
 
 async fn upsert_discovery_title_tx(
@@ -4536,15 +4551,39 @@ async fn insert_item_children_tx(tx: &mut SqlTx<'_>, item: &DiscoveryItemRecord)
         .await?;
     }
 
-    for rank_component in &item.rank_components {
-        insert_rank_component_tx(tx, item, rank_component).await?;
-    }
+    let rank_rows: Vec<Vec<SqlArg>> = item
+        .rank_components
+        .iter()
+        .map(|component| rank_component_row(item, component))
+        .collect();
+    SqlRuntime::execute_batch_insert(
+        tx,
+        "INSERT INTO discovery_item_rank_components \
+         (item_id, run_id, component_index, component_name, component_value)",
+        5,
+        rank_rows,
+        "ON CONFLICT DO NOTHING",
+    )
+    .await?;
+
     insert_subject_links_tx(tx, item, "matched", &item.matched_subject_keys).await?;
     insert_subject_links_tx(tx, item, "change", &item.change_subject_keys).await?;
     insert_subject_links_tx(tx, item, "removed", &item.removed_subject_keys).await?;
-    for provenance in &item.library_provenance {
-        insert_library_provenance_tx(tx, item, provenance).await?;
-    }
+
+    let provenance_rows: Vec<Vec<SqlArg>> = item
+        .library_provenance
+        .iter()
+        .map(|provenance| library_provenance_row(item, provenance))
+        .collect();
+    SqlRuntime::execute_batch_insert(
+        tx,
+        "INSERT INTO discovery_item_library_provenance \
+         (item_id, run_id, subject_key, title_id, library_id)",
+        5,
+        provenance_rows,
+        "ON CONFLICT DO NOTHING",
+    )
+    .await?;
     Ok(())
 }
 
@@ -4613,7 +4652,7 @@ async fn insert_title_children_tx(
     if let Some(media_kind) = discovery_item_authoritative_media_kind(item) {
         insert_title_terms_tx(tx, discovery_title_id, "media_kind", None, &[media_kind]).await?;
     }
-    // RFC 121 SW3: project SMG studio_slug / person_ids into the reverse-indexed
+    // Project SMG studio_slug / person_ids into the reverse-indexed
     // terms table so "more from studio / person" lookups reuse the existing
     // idx_discovery_title_terms_kind_value index (zero schema migration).
     if let Some(studio_slug) = &item.studio_slug {
@@ -4650,27 +4689,31 @@ async fn insert_title_terms_tx(
     term_category: Option<&str>,
     values: &[String],
 ) -> AppResult<()> {
+    // Accumulate one row per non-empty term, preserving the trim/skip-empty
+    // rule and the original enumerate index as sort_index, then batch-insert.
+    let mut rows: Vec<Vec<SqlArg>> = Vec::with_capacity(values.len());
     for (index, value) in values.iter().enumerate() {
         let value = value.trim();
         if value.is_empty() {
             continue;
         }
-        SqlRuntime::execute(
-            SqlExec::Tx(tx),
-            "INSERT INTO discovery_title_terms
-             (discovery_title_id, term_kind, term_category, term_value, sort_index)
-             VALUES ({}, {}, {}, {}, {})
-             ON CONFLICT DO NOTHING",
-            &[
-                SqlArg::Text(discovery_title_id.to_string()),
-                SqlArg::Text(term_kind.to_string()),
-                SqlArg::Text(storage_text(term_category)),
-                SqlArg::Text(value.to_string()),
-                SqlArg::I32(index as i32),
-            ],
-        )
-        .await?;
+        rows.push(vec![
+            SqlArg::Text(discovery_title_id.to_string()),
+            SqlArg::Text(term_kind.to_string()),
+            SqlArg::Text(storage_text(term_category)),
+            SqlArg::Text(value.to_string()),
+            SqlArg::I32(index as i32),
+        ]);
     }
+    SqlRuntime::execute_batch_insert(
+        tx,
+        "INSERT INTO discovery_title_terms \
+         (discovery_title_id, term_kind, term_category, term_value, sort_index)",
+        5,
+        rows,
+        "ON CONFLICT DO NOTHING",
+    )
+    .await?;
     Ok(())
 }
 
@@ -4712,36 +4755,28 @@ async fn insert_title_source_tag_tx(
         &source_tag.values,
     )
     .await?;
+    // Accumulate one row per non-empty value (preserving the trim/skip-empty
+    // rule and the original enumerate index as value_sort_index), then batch.
+    let mut value_rows: Vec<Vec<SqlArg>> = Vec::with_capacity(source_tag.values.len());
     for (value_index, value) in source_tag.values.iter().enumerate() {
         let value = value.trim();
         if value.is_empty() {
             continue;
         }
-        insert_title_source_tag_value_tx(tx, discovery_title_id, index, value, value_index as i32)
-            .await?;
-    }
-    Ok(())
-}
-
-async fn insert_title_source_tag_value_tx(
-    tx: &mut SqlTx<'_>,
-    discovery_title_id: &str,
-    source_tag_sort_index: i32,
-    value: &str,
-    value_sort_index: i32,
-) -> AppResult<()> {
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "INSERT INTO discovery_title_source_tag_values
-         (discovery_title_id, source_tag_sort_index, source_tag_value, value_sort_index)
-         VALUES ({}, {}, {}, {})
-         ON CONFLICT DO NOTHING",
-        &[
+        value_rows.push(vec![
             SqlArg::Text(discovery_title_id.to_string()),
-            SqlArg::I32(source_tag_sort_index),
+            SqlArg::I32(index),
             SqlArg::Text(value.to_string()),
-            SqlArg::I32(value_sort_index),
-        ],
+            SqlArg::I32(value_index as i32),
+        ]);
+    }
+    SqlRuntime::execute_batch_insert(
+        tx,
+        "INSERT INTO discovery_title_source_tag_values \
+         (discovery_title_id, source_tag_sort_index, source_tag_value, value_sort_index)",
+        4,
+        value_rows,
+        "ON CONFLICT DO NOTHING",
     )
     .await?;
     Ok(())
@@ -4786,27 +4821,17 @@ async fn insert_title_external_id_tx(
     Ok(())
 }
 
-async fn insert_rank_component_tx(
-    tx: &mut SqlTx<'_>,
+fn rank_component_row(
     item: &DiscoveryItemRecord,
     component: &DiscoveryRankComponentRecord,
-) -> AppResult<()> {
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "INSERT INTO discovery_item_rank_components
-         (item_id, run_id, component_index, component_name, component_value)
-         VALUES ({}, {}, {}, {}, {})
-         ON CONFLICT DO NOTHING",
-        &[
-            SqlArg::Text(item.id.clone()),
-            SqlArg::Text(item.run_id.clone()),
-            SqlArg::I32(component.component_index),
-            SqlArg::Text(storage_text(component.component_name.as_deref())),
-            SqlArg::Text(storage_text(component.component_value.as_deref())),
-        ],
-    )
-    .await?;
-    Ok(())
+) -> Vec<SqlArg> {
+    vec![
+        SqlArg::Text(item.id.clone()),
+        SqlArg::Text(item.run_id.clone()),
+        SqlArg::I32(component.component_index),
+        SqlArg::Text(storage_text(component.component_name.as_deref())),
+        SqlArg::Text(storage_text(component.component_value.as_deref())),
+    ]
 }
 
 async fn insert_subject_links_tx(
@@ -4815,51 +4840,46 @@ async fn insert_subject_links_tx(
     link_type: &str,
     subject_keys: &[String],
 ) -> AppResult<()> {
+    // Accumulate one row per non-empty subject key, preserving the
+    // trim/skip-empty rule and the original enumerate index as sort_index,
+    // then batch-insert.
+    let mut rows: Vec<Vec<SqlArg>> = Vec::with_capacity(subject_keys.len());
     for (index, subject_key) in subject_keys.iter().enumerate() {
         let subject_key = subject_key.trim();
         if subject_key.is_empty() {
             continue;
         }
-        SqlRuntime::execute(
-            SqlExec::Tx(tx),
-            "INSERT INTO discovery_item_subject_links
-             (item_id, run_id, link_type, subject_key, sort_index)
-             VALUES ({}, {}, {}, {}, {})
-             ON CONFLICT DO NOTHING",
-            &[
-                SqlArg::Text(item.id.clone()),
-                SqlArg::Text(item.run_id.clone()),
-                SqlArg::Text(link_type.to_string()),
-                SqlArg::Text(subject_key.to_string()),
-                SqlArg::I32(index as i32),
-            ],
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-async fn insert_library_provenance_tx(
-    tx: &mut SqlTx<'_>,
-    item: &DiscoveryItemRecord,
-    provenance: &DiscoveryItemLibraryProvenanceRecord,
-) -> AppResult<()> {
-    SqlRuntime::execute(
-        SqlExec::Tx(tx),
-        "INSERT INTO discovery_item_library_provenance
-         (item_id, run_id, subject_key, title_id, library_id)
-         VALUES ({}, {}, {}, {}, {})
-         ON CONFLICT DO NOTHING",
-        &[
+        rows.push(vec![
             SqlArg::Text(item.id.clone()),
             SqlArg::Text(item.run_id.clone()),
-            SqlArg::Text(provenance.subject_key.clone()),
-            SqlArg::Text(storage_text(provenance.title_id.as_deref())),
-            SqlArg::Text(storage_text(provenance.library_id.as_deref())),
-        ],
+            SqlArg::Text(link_type.to_string()),
+            SqlArg::Text(subject_key.to_string()),
+            SqlArg::I32(index as i32),
+        ]);
+    }
+    SqlRuntime::execute_batch_insert(
+        tx,
+        "INSERT INTO discovery_item_subject_links \
+         (item_id, run_id, link_type, subject_key, sort_index)",
+        5,
+        rows,
+        "ON CONFLICT DO NOTHING",
     )
     .await?;
     Ok(())
+}
+
+fn library_provenance_row(
+    item: &DiscoveryItemRecord,
+    provenance: &DiscoveryItemLibraryProvenanceRecord,
+) -> Vec<SqlArg> {
+    vec![
+        SqlArg::Text(item.id.clone()),
+        SqlArg::Text(item.run_id.clone()),
+        SqlArg::Text(provenance.subject_key.clone()),
+        SqlArg::Text(storage_text(provenance.title_id.as_deref())),
+        SqlArg::Text(storage_text(provenance.library_id.as_deref())),
+    ]
 }
 
 fn json_arg(datastore: &StoreDatastore, raw: &str) -> AppResult<SqlArg> {
@@ -5377,7 +5397,7 @@ mod tests {
 
     #[tokio::test]
     async fn discovery_item_projects_studio_slug_and_person_ids_into_terms() {
-        // RFC 121 SW3: studio_slug + person_ids project into discovery_title_terms
+        // studio_slug + person_ids project into discovery_title_terms
         // (term_kind 'studio' / 'person') on write and hydrate back onto the item.
         let db = std::env::temp_dir().join(format!(
             "scryer_discovery_studio_person_terms_{}.db",

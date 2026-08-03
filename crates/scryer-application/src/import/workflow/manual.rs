@@ -1047,6 +1047,8 @@ async fn execute_manual_series_movie_import(
     mapping: &ManualImportFileMapping,
     series_movie_link_id: &str,
     full_folder_path: &Path,
+    season_folder_template: &str,
+    specials_folder_template: &str,
     rename_enabled: bool,
 ) -> AppResult<ManualImportFileResult> {
     let link = match app
@@ -1111,7 +1113,14 @@ async fn execute_manual_series_movie_import(
     } else {
         preserved_import_filename(source)
     };
-    let dest_path = full_folder_path.join("Season 00").join(rendered_filename);
+    let dest_path = episodic_import_parent_path(
+        title,
+        full_folder_path,
+        season_folder_template,
+        specials_folder_template,
+        0,
+    )
+    .join(rendered_filename);
     if let Some(parent) = dest_path.parent()
         && let Err(error) = tokio::fs::create_dir_all(parent).await
     {
@@ -1337,6 +1346,8 @@ pub async fn execute_manual_import(
         rename_enabled,
         rename_template,
         folder_template,
+        season_folder_template,
+        specials_folder_template,
     } = resolve_import_paths(app, &title).await?;
     let full_folder_path = effective_title_folder_path(&media_root, &title, &folder_template, None);
     let quality_profile = resolve_import_quality_profile(app, &title).await;
@@ -1398,6 +1409,8 @@ pub async fn execute_manual_import(
                     mapping,
                     series_movie_link_id,
                     &full_folder_path,
+                    &season_folder_template,
+                    &specials_folder_template,
                     rename_enabled,
                 )
                 .await?;
@@ -1466,6 +1479,8 @@ pub async fn execute_manual_import(
             import_id,
             rename_enabled,
             &rename_template,
+            &season_folder_template,
+            &specials_folder_template,
             &full_folder_path,
             &source,
             &parsed,

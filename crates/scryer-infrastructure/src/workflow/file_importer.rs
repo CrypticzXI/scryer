@@ -446,9 +446,9 @@ struct ImportFileOptions {
     force_transient_copy_failures: u8,
     #[cfg(test)]
     force_non_transient_copy_failure: bool,
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     force_foreign_source_uid: bool,
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     force_destination_uid_mismatch: bool,
 }
 
@@ -512,22 +512,22 @@ fn force_copy_attempt_error(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn force_foreign_source_uid(options: &ImportFileOptions) -> bool {
     options.force_foreign_source_uid
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), unix))]
 fn force_foreign_source_uid(_: &ImportFileOptions) -> bool {
     false
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn force_destination_uid_mismatch(options: &ImportFileOptions) -> bool {
     options.force_destination_uid_mismatch
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), unix))]
 fn force_destination_uid_mismatch(_: &ImportFileOptions) -> bool {
     false
 }
@@ -1575,11 +1575,13 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
+    #[cfg(unix)]
     #[derive(Clone)]
     struct SharedLogWriter {
         buffer: Arc<Mutex<Vec<u8>>>,
     }
 
+    #[cfg(unix)]
     impl Write for SharedLogWriter {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             self.buffer.lock().expect("lock log buffer").extend(buf);
@@ -1591,6 +1593,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl<'a> MakeWriter<'a> for SharedLogWriter {
         type Writer = SharedLogWriter;
 
@@ -1599,6 +1602,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn capture_logs<R>(f: impl FnOnce() -> R) -> (R, String) {
         let buffer = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::fmt()

@@ -59,7 +59,7 @@ function NumberField({
   );
 }
 
-// RFC 119 §7.5: convergence-era acquisition settings. RSS is the steady-state
+// Convergence-era acquisition settings. RSS is the steady-state
 // acquisition path; active search converges each scope once per indexer and the
 // backfill cursor is paced and finite — these knobs bound that work.
 export function SettingsAcquisitionSection({

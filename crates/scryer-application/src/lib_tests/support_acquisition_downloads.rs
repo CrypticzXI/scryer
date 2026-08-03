@@ -943,6 +943,8 @@ impl DownloadSubmissionRepository for TrackingDownloadSubmissionRepo {
                 download_client_type: identity.client_type.clone(),
                 download_client_item_id: identity.item_id.clone(),
                 source_hint: None,
+                source_provider_id: None,
+                source_provider_name: None,
                 source_kind: None,
                 source_title: None,
                 request_signature: None,
@@ -1005,7 +1007,7 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
             .lock()
             .await
             .iter()
-            .filter(|release| release.status == PendingReleaseStatus::Waiting)
+            .filter(|release| release.status.is_open_for_review())
             .cloned()
             .collect())
     }
@@ -1060,7 +1062,7 @@ impl PendingReleaseRepository for TrackingPendingReleaseRepo {
             .lock()
             .await
             .iter()
-            .filter(|release| release.status == PendingReleaseStatus::Waiting)
+            .filter(|release| release.status.is_open_for_review())
             .filter(|release| {
                 query
                     .title_id
@@ -1342,6 +1344,10 @@ pub(super) struct StubDownloadClient {
     pub(super) deleted_requests: DeletedDownloadRequests,
     pub(super) delete_error: Arc<Mutex<Option<String>>>,
     pub(super) submit_error: Arc<Mutex<Option<StubSubmitError>>>,
+    /// NZB payload the real pre-submission category gate is run against, so a
+    /// caller-level test can exercise the production veto instead of a
+    /// hand-written error string.
+    pub(super) category_gate_nzb: Arc<Mutex<Option<Vec<u8>>>>,
     pub(super) grab_info_hash: Arc<Mutex<Option<String>>>,
     pub(super) submitted_release_titles: Arc<Mutex<Vec<String>>>,
     pub(super) submitted_source_passwords: Arc<Mutex<Vec<Option<String>>>>,
@@ -1352,6 +1358,8 @@ pub(super) struct StubDownloadClient {
     pub(super) recent_activity_for_title_calls: Arc<Mutex<Vec<(String, usize)>>>,
     pub(super) completed_download_calls: Arc<Mutex<usize>>,
     pub(super) recent_completed_download_calls: Arc<Mutex<Vec<usize>>>,
+    pub(super) targeted_completed_downloads: Arc<Mutex<HashMap<String, CompletedDownload>>>,
+    pub(super) targeted_completed_download_calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl StubDownloadClient {
@@ -1365,6 +1373,12 @@ impl StubDownloadClient {
 
     pub(super) async fn set_grab_info_hash(&self, info_hash: Option<&str>) {
         *self.grab_info_hash.lock().await = info_hash.map(str::to_string);
+    }
+
+    /// Serve `nzb` as the payload every submission would download, gated by the
+    /// production pre-submission category check.
+    pub(super) async fn set_category_gate_nzb(&self, nzb: Option<&[u8]>) {
+        *self.category_gate_nzb.lock().await = nzb.map(<[u8]>::to_vec);
     }
 
     pub(super) async fn record_delete(
@@ -1397,6 +1411,11 @@ impl DownloadClient for StubDownloadClient {
         &self,
         request: &DownloadClientAddRequest,
     ) -> AppResult<DownloadGrabResult> {
+        // Mirrors production ordering: the NZB payload is inspected before the
+        // client is ever handed the job, so a vetoed release leaves no trace.
+        if let Some(nzb) = self.category_gate_nzb.lock().await.as_deref() {
+            crate::enforce_nzb_category_gate(nzb, &request.title.facet)?;
+        }
         let job_id = format!("job-for-{}", request.title.id);
         self.submitted_release_titles.lock().await.push(
             request
@@ -1497,6 +1516,33 @@ impl DownloadClient for StubDownloadClient {
             None => self.completed_downloads.lock().await.clone(),
         };
         Ok(items.into_iter().take(limit).collect())
+    }
+
+    async fn get_completed_download_for_source(
+        &self,
+        _client_id: &str,
+        _client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<CompletedDownload>> {
+        self.targeted_completed_download_calls
+            .lock()
+            .await
+            .push(download_client_item_id.to_string());
+        if let Some(found) = self
+            .targeted_completed_downloads
+            .lock()
+            .await
+            .get(download_client_item_id)
+        {
+            return Ok(Some(found.clone()));
+        }
+        let items = match self.recent_completed_downloads.lock().await.clone() {
+            Some(items) => items,
+            None => self.completed_downloads.lock().await.clone(),
+        };
+        Ok(items
+            .into_iter()
+            .find(|item| item.download_client_item_id == download_client_item_id))
     }
 
     async fn delete_queue_item(&self, id: &str, is_history: bool) -> AppResult<()> {

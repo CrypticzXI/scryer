@@ -1,11 +1,11 @@
-/// Scheduler value hint for a hot convergence target (recent air/release/add,
-/// RFC 119 §D3): high value so the scope converges promptly and keeps admitting
+/// Scheduler value hint for a hot convergence target (recent air/release/add):
+/// high value so the scope converges promptly and keeps admitting
 /// even while the account's API quota is under pressure. Equals the neutral
-/// baseline, so hot work is never shed by plan 112's low-value pressure gate.
+/// baseline, so hot work is never shed by the low-value pressure gate.
 const BACKGROUND_HOT_TARGET_VALUE: f64 = 1.0;
 
-/// Scheduler value hint for a cold convergence target (long-tail / upgrades,
-/// RFC 119 §D3): low value so plan 112 drains it first under quota pressure,
+/// Scheduler value hint for a cold convergence target (long-tail / upgrades):
+/// low value so the quota-pressure gate drains it first,
 /// yielding shared account quota to RSS polls and hot acquisition. Above the
 /// absolute `LOW_VALUE_BACKGROUND_THRESHOLD` floor, so a cold scope still
 /// admits when quota is healthy — it only defers once quota tightens.
@@ -54,7 +54,7 @@ async fn blocked_acquisition_facets_after_quiet_wait(app: &AppUseCase) -> Vec<Me
 
     blocked_facets
 }
-/// Run one convergence cycle (RFC 119 §D3): recover failed downloads, derive
+/// Run one convergence cycle: recover failed downloads, derive
 /// the target set, rotate the cursor over it, and search each selected scope's
 /// uncovered indexers. Plan-112 admission inside the search is the only rate
 /// authority; the cycle merely bounds evaluation cost and pre-skips scopes the
@@ -356,7 +356,7 @@ async fn process_single_target(
         .await;
     let search_season = subject.season;
 
-    // Convergence gate (RFC 119 §D2/§D3): a converged scope rides RSS; an
+    // Convergence gate: a converged scope rides RSS; an
     // unconverged one is searched against exactly its uncovered indexer subset.
     // Resolved once here and reused for the restricted search below.
     let Some(convergence) = app
@@ -496,7 +496,7 @@ async fn process_single_target(
                     )
                     .await?;
 
-                // The pack is its own convergence unit (RFC 119 §D2 #1): a
+                // The pack is its own convergence unit: a
                 // converged pack scope rides RSS, an unconverged one is searched
                 // against its uncovered subset.
                 let pack_uncovered = match app
@@ -681,6 +681,7 @@ async fn process_single_target(
                                 .download_client
                                 .submit_download(&DownloadClientAddRequest {
                                     title: title.clone(),
+                                    search_facet: None,
                                     purpose: crate::DownloadSubmissionPurpose::Standard,
                                     download_id: Some(download_id),
                                     source_hint: pack_url.clone(),
@@ -763,6 +764,7 @@ async fn process_single_target(
                                             .unwrap_or(0),
                                         "grabbed_at": now.to_rfc3339(),
                                         "season_pack": true,
+                                        "source_provider": best_pack.source.clone(),
                                     })
                                     .to_string();
                                     app.services
@@ -782,6 +784,8 @@ async fn process_single_target(
                                                 download_client_type: grab.client_type.clone(),
                                                 download_client_item_id: grab.job_id.clone(),
                                                 source_hint: None,
+                                                source_provider_id: best_pack.indexer_id.clone(),
+                                                source_provider_name: Some(best_pack.source.clone()),
                                                 source_kind: None,
                                                 source_title: Some(best_pack.title.clone()),
                                                 request_signature: request_signature.clone(),
@@ -1035,6 +1039,10 @@ async fn process_single_target(
     let mut had_quality_allowed_candidate = false;
     let mut skipped_for_failed = false;
     let mut skipped_for_title_mismatch = false;
+    // Candidates iterate best-first, so the first `ambiguous_identity` rejection
+    // is the scope's best ambiguous candidate — the only one worth parking for
+    // review this cycle (Pillar A3).
+    let mut parked_ambiguous_identity = false;
     let mut grab_attempts: usize = 0;
     // Track source kinds where ALL download clients failed.  Avoids hammering
     // dead clients with more candidates of the same protocol.
@@ -1071,10 +1079,22 @@ async fn process_single_target(
             .map(|d| d.preference_score)
             .unwrap_or(0);
 
-        if !matches!(decision_code, ReleaseAutoDecisionCode::TitleMismatch) {
+        if !matches!(
+            decision_code,
+            ReleaseAutoDecisionCode::TitleMismatch
+                | ReleaseAutoDecisionCode::EpisodeMismatch
+                | ReleaseAutoDecisionCode::CategoryMismatch
+                | ReleaseAutoDecisionCode::AmbiguousIdentity
+        ) {
             had_allowed_candidate = true;
         }
-        if matches!(decision_code, ReleaseAutoDecisionCode::TitleMismatch) {
+        if matches!(
+            decision_code,
+            ReleaseAutoDecisionCode::TitleMismatch
+                | ReleaseAutoDecisionCode::EpisodeMismatch
+                | ReleaseAutoDecisionCode::CategoryMismatch
+                | ReleaseAutoDecisionCode::AmbiguousIdentity
+        ) {
             skipped_for_title_mismatch = true;
         }
         if matches!(decision_code, ReleaseAutoDecisionCode::DbBlocklisted) {
@@ -1098,6 +1118,22 @@ async fn process_single_target(
                     | ReleaseAutoDecisionCode::CutoffReached
             ) {
                 break;
+            }
+            if matches!(decision_code, ReleaseAutoDecisionCode::AmbiguousIdentity)
+                && !parked_ambiguous_identity
+            {
+                parked_ambiguous_identity = true;
+                app.park_pending_release_for_review(
+                    item,
+                    &title,
+                    candidate,
+                    candidate_score,
+                    serialize_decision_explanation(candidate),
+                )
+                .await;
+                // Keep walking the ranked list: a lower-scored candidate that
+                // does present a disambiguator is still grabbable this cycle.
+                continue;
             }
             if matches!(decision_code, ReleaseAutoDecisionCode::PendingDelay) {
                 let scoring_json = candidate.quality_profile_decision.as_ref().map(|decision| {
@@ -1240,6 +1276,8 @@ async fn process_single_target(
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                search_facet: (target.media_type == "series_movie")
+                    .then_some(MediaFacet::Movie),
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 download_id: Some(download_id),
                 source_hint: source_hint.clone(),
@@ -1307,6 +1345,7 @@ async fn process_single_target(
                     "title": candidate.title,
                     "score": candidate_score,
                     "grabbed_at": now.to_rfc3339(),
+                    "source_provider": candidate.source.clone(),
                 })
                 .to_string();
                 let download_job_id = grab.job_id.clone();
@@ -1364,6 +1403,8 @@ async fn process_single_target(
                             download_client_type: grab.client_type.clone(),
                             download_client_item_id: grab.job_id.clone(),
                             source_hint: None,
+                            source_provider_id: candidate.indexer_id.clone(),
+                            source_provider_name: Some(candidate.source.clone()),
                             source_kind: None,
                             source_title: source_title.clone(),
                             request_signature: request_signature.clone(),
@@ -1585,7 +1626,7 @@ pub async fn start_background_acquisition_poller(
 
     info!("background acquisition poller started");
 
-    // Run-once cutover seed (RFC 119 §12.3): recently-searched legacy scopes
+    // Run-once cutover seed: recently-searched legacy scopes
     // start converged so first boot does not re-sweep the back-catalog.
     // Spawned so startup stays non-blocking; the cycle racing the seed is
     // harmless (either path only causes a safe converge).
@@ -1975,6 +2016,8 @@ mod task_runner_tests {
             download_client_type: "nzbget".to_string(),
             download_client_item_id: job_id.to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
             request_signature: None,

@@ -491,6 +491,8 @@ async fn commit_successful_grab_supersedes_all_pending_siblings_for_normal_grab(
                 download_client_type: "nzbget".to_string(),
                 download_client_item_id: "job-1".to_string(),
                 source_hint: None,
+                source_provider_id: None,
+                source_provider_name: None,
                 source_kind: None,
                 source_title: Some("Best.Release.1080p.WEB-DL".to_string()),
                 request_signature: None,
@@ -603,6 +605,8 @@ async fn commit_successful_grab_marks_selected_pending_release_grabbed() {
                 download_client_type: "nzbget".to_string(),
                 download_client_item_id: "job-2".to_string(),
                 source_hint: None,
+                source_provider_id: None,
+                source_provider_name: None,
                 source_kind: None,
                 source_title: Some(claimed.release_title.clone()),
                 request_signature: None,
@@ -651,6 +655,8 @@ async fn download_submission_roundtrips_episode_scope() {
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "job-episode-scope".to_string(),
             source_hint: Some("https://example.invalid/releases/episode-scope.nzb".to_string()),
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: Some(DownloadSourceKind::NzbUrl),
             source_title: Some("Episode.Scope.S01E01.1080p.WEB-DL".to_string()),
             request_signature: Some("episode-scope-signature".to_string()),
@@ -769,7 +775,7 @@ async fn ensure_wanted_state_row_preserves_completed_status() {
         .await
         .expect("complete wanted item");
 
-    // RFC 119 §D3: `ensure_acquisition_scope_state` is a pure get-or-create — a scope
+    // `ensure_acquisition_scope_state` is a pure get-or-create — a scope
     // that already owns a row gets that row back untouched, never re-seeded.
     let reseed = scryer_application::AcquisitionScopeState {
         id: scryer_domain::Id::new().0,
@@ -825,7 +831,7 @@ async fn direct_upsert_wanted_item_still_preserves_guarded_state() {
         .await
         .expect("pause wanted item");
 
-    // RFC 119 §D3: a raw upsert must not clobber the guarded status of an
+    // A raw upsert must not clobber the guarded status of an
     // existing scope — a re-seed carrying `Wanted` leaves a paused row paused.
     ctx.library_state
         .upsert_acquisition_scope_state(&scryer_application::AcquisitionScopeState {

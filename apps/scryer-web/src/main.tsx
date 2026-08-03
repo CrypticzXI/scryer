@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { RouterProvider } from "react-router-dom";
+import { RouterProvider } from "react-router/dom";
 import { Provider as UrqlProvider } from "urql";
 import { ThemeProvider } from "next-themes";
 import { backendClient } from "@/lib/graphql/urql-client";

@@ -88,6 +88,42 @@ pub async fn start_background_download_delete_poller(
 
             match result {
                 Ok(()) => {
+                    let actor = command
+                        .requested_by_user_id
+                        .clone()
+                        .map(crate::domain_events::DomainEventActor::user_id)
+                        .unwrap_or_else(crate::domain_events::DomainEventActor::system);
+                    let source_identity = crate::DownloadSourceIdentity::new(
+                        command.client_id.as_deref(),
+                        &command.client_type,
+                        &command.download_client_item_id,
+                    );
+                    match crate::integration::workflow::finalize_scryer_download_ignored(
+                        &app,
+                        actor,
+                        source_identity,
+                    )
+                    .await
+                    {
+                        Ok(crate::integration::workflow::FinalizeIgnoredOutcome::Finalized)
+                        | Ok(crate::integration::workflow::FinalizeIgnoredOutcome::NoSubmission) => {
+                        }
+                        Ok(
+                            crate::integration::workflow::FinalizeIgnoredOutcome::PreservedTerminal(
+                                state,
+                            ),
+                        ) => {
+                            tracing::debug!(
+                                client_type = %command.client_type,
+                                download_client_item_id = %command.download_client_item_id,
+                                preserved_state = %state,
+                                "delete finalization preserved existing terminal download state"
+                            );
+                        }
+                        Err(error) => {
+                            worker.warn_error("finalize_scryer_download_ignored", &error);
+                        }
+                    }
                     if let Err(error) = app
                         .services
                         .workflow

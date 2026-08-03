@@ -159,6 +159,8 @@ fn submission_for_scope(title_id: &str, scope: &SubmissionScope) -> DownloadSubm
         download_client_type: String::new(),
         download_client_item_id: String::new(),
         source_hint: None,
+        source_provider_id: None,
+        source_provider_name: None,
         source_kind: None,
         source_title: None,
         request_signature: None,
@@ -366,6 +368,16 @@ impl AppUseCase {
             source_title,
             source_password,
         } = queued_release;
+        let source_provider_name = if let Some(indexer_id) = indexer_id.as_deref() {
+            self.services
+                .integrations
+                .indexer_configs
+                .get_by_id(indexer_id)
+                .await?
+                .map(|config| config.name)
+        } else {
+            None
+        };
         let source_hint_for_attempt = normalize_release_attempt_value(source_hint.as_deref());
         let source_title_for_attempt = normalize_release_attempt_value(source_title.as_deref());
         let request_signature = normalize_release_selection_signature(
@@ -472,6 +484,8 @@ impl AppUseCase {
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
+                search_facet: matches!(scope, SubmissionScope::SeriesMovie { .. })
+                    .then_some(scryer_domain::MediaFacet::Movie),
                 purpose,
                 download_id: Some(download_id),
                 source_hint,
@@ -530,6 +544,8 @@ impl AppUseCase {
                             download_client_type: grab.client_type.clone(),
                             download_client_item_id: grab.job_id.clone(),
                             source_hint: source_hint_for_attempt.clone(),
+                            source_provider_id: indexer_id.clone(),
+                            source_provider_name: source_provider_name.clone(),
                             source_kind,
                             source_title: source_title_for_attempt.clone(),
                             request_signature: request_signature.clone(),
@@ -857,7 +873,8 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
-        self.blocklist_replaced_primary_release(&title, &scope).await;
+        self.blocklist_replaced_primary_release(&title, &scope)
+            .await;
         self.queue_manual_release_for_title(
             actor,
             &title,

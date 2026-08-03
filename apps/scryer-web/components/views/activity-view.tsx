@@ -970,7 +970,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         open={deleteConfirmItem !== null}
         title={t("queue.deleteConfirmTitle")}
         description={t("queue.deleteConfirmDescription")}
-        confirmLabel={t("label.delete")}
+        confirmLabel={t("queue.removeFromDownloader")}
         cancelLabel={t("label.cancel")}
         isBusy={deleteInProgress}
         onConfirm={handleDelete}
@@ -987,7 +987,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
         description={t("queue.bulkDeleteConfirmDescription", {
           count: bulkDeleteConfirmItems.length,
         })}
-        confirmLabel={t("label.delete")}
+        confirmLabel={t("queue.removeFromDownloader")}
         cancelLabel={t("label.cancel")}
         isBusy={deleteInProgress}
         onConfirm={handleBulkDelete}
@@ -1069,7 +1069,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                   ) : (
                     <Trash2 className="mr-2 h-4 w-4" />
                   )}
-                  {t("label.delete")}
+                  {t("queue.removeFromDownloader")}
                 </Button>
               </div>
             ) : null}

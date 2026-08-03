@@ -826,24 +826,36 @@ impl AppUseCase {
                 match user_evaluator.evaluate(&user_input, facet) {
                     Ok(eval_result) => {
                         for entry in eval_result.entries {
-                            decision.log_with_source(
-                                &entry.code,
-                                entry.delta,
-                                ScoringSource::UserRule {
+                            let source = match entry.origin {
+                                scryer_rules::PolicyOrigin::User => ScoringSource::UserRule {
                                     id: entry.rule_set_id,
                                     name: entry.rule_set_name,
                                 },
-                            );
+                                scryer_rules::PolicyOrigin::System => ScoringSource::SystemRule {
+                                    id: entry.rule_set_id,
+                                    name: entry.rule_set_name,
+                                },
+                            };
+                            decision.log_with_source(&entry.code, entry.delta, source);
                         }
                         for err in eval_result.errors {
-                            decision.log_with_source(
-                                "user_rule_error",
-                                0,
-                                ScoringSource::UserRule {
-                                    id: err.rule_set_id,
-                                    name: err.rule_set_name,
-                                },
-                            );
+                            let (code, source) = match err.origin {
+                                scryer_rules::PolicyOrigin::User => (
+                                    "user_rule_error",
+                                    ScoringSource::UserRule {
+                                        id: err.rule_set_id,
+                                        name: err.rule_set_name,
+                                    },
+                                ),
+                                scryer_rules::PolicyOrigin::System => (
+                                    "system_rule_error",
+                                    ScoringSource::SystemRule {
+                                        id: err.rule_set_id,
+                                        name: err.rule_set_name,
+                                    },
+                                ),
+                            };
+                            decision.log_with_source(code, 0, source);
                         }
                     }
                     Err(error) => {
@@ -851,6 +863,8 @@ impl AppUseCase {
                     }
                 }
             }
+
+            crate::quality_profile::apply_min_score_gate(&resolved_profile, &mut decision);
 
             scored.push(IndexerSearchResult {
                 parsed_release_metadata: Some(scored_release_metadata),
@@ -874,9 +888,9 @@ impl AppUseCase {
     /// Internal search+score pipeline shared by both user-facing search and background acquisition.
     /// Returns the scored releases plus the set of indexer ids that actually
     /// **fired** a query and returned a response (empty included), aggregated across
-    /// all queries (RFC 119 §D2: fired iff ≥1 query returned a response). The fired
+    /// all queries. The fired
     /// set — never the routed set — is what background acquisition records as
-    /// convergence coverage.
+    /// Convergence coverage.
     pub(crate) async fn search_and_score_releases(
         &self,
         request: ReleaseSearchRequest<'_>,
@@ -926,7 +940,7 @@ impl AppUseCase {
             .resolve_indexer_routing(library_id, scope_id.as_deref())
             .await;
         // Restrict the search to the requested indexer subset (the convergence
-        // cursor's uncovered indexers, RFC 119 §D3). With no routing plan
+        // cursor's uncovered indexers). With no routing plan
         // configured, synthesize one over the enabled indexers so the
         // restriction still applies.
         if let Some(allowed) = restrict_to_indexer_ids.as_ref() {
@@ -1053,7 +1067,7 @@ impl AppUseCase {
                 facet: search_facet.as_str().to_string(),
                 subject_kind: search_subject_kind,
                 // The convergence value hint rides the Auto background context so
-                // the scheduler can lane-rank this scope (RFC 119 §D3).
+                // the scheduler can lane-rank this scope.
                 background_value,
             })
         } else {
@@ -1101,7 +1115,7 @@ impl AppUseCase {
         let mut successful_searches = 0usize;
         let mut first_failure: Option<String> = None;
         let mut raw_results: Vec<IndexerSearchResult> = Vec::new();
-        // RFC 119: indexers that fired a query and returned a response (empty
+        // Indexers that fired a query and returned a response (empty
         // included) across any query. Aggregated here so the coverage write-hook
         // records exactly the fired subset, never the routed set.
         let mut fired_indexers: std::collections::HashSet<String> =
@@ -1214,7 +1228,7 @@ impl AppUseCase {
 
     /// Search and evaluate `subject`, optionally restricted to a subset of
     /// indexers. The convergence cursor passes the scope's uncovered subset
-    /// (RFC 119 §D3) — a covered indexer's catalog holds no new information
+    /// — a covered indexer's catalog holds no new information
     /// for this scope, so re-querying it is pure spend.
     #[expect(
         clippy::too_many_arguments,
@@ -1265,7 +1279,7 @@ impl AppUseCase {
         let evaluated = self
             .evaluate_search_results_for_subject(title, subject, results)
             .await;
-        // A search is a search (RFC 119 §D5): every scoped search — background,
+        // A search is a search: every scoped search — background,
         // interactive, season-pack — records per-indexer convergence coverage
         // for the indexers that actually fired. Best-effort.
         self.record_search_coverage(title, subject, &fired_indexer_ids)
@@ -1619,11 +1633,11 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) parse_context: &'a ReleaseParseContext,
     pub(crate) cancel_token: CancellationToken,
     /// When set, only these indexer ids are queried (the convergence cursor's
-    /// uncovered subset, RFC 119 §D3). `None` = every routed indexer.
+    /// uncovered subset). `None` = every routed indexer.
     pub(crate) restrict_to_indexer_ids: Option<std::collections::HashSet<String>>,
-    /// Background convergence value hint (RFC 119 §D3): the target's recency
+    /// Background convergence value hint: the target's recency
     /// lane maps to a scheduler candidate value (hot → high, cold → low) so
-    /// plan 112 can drain cold work first under quota pressure. Only the Auto
+    /// the quota-pressure gate can drain cold work first. Only the Auto
     /// background path carries it; interactive/RSS leave it `None` (neutral).
     pub(crate) background_value: Option<f64>,
 }

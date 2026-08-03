@@ -1,4 +1,4 @@
-//! RFC 119 convergence model: search-criteria fingerprints and the settings
+//! Convergence model: search-criteria fingerprints and the settings
 //! that pace the background convergence cursor.
 //!
 //! A scope's *fingerprint* captures what a "correct" search is — the effective
@@ -71,7 +71,7 @@ impl AppUseCase {
 pub(crate) const ACQUISITION_CONVERGENCE_RESUME_AFTER_KEY: &str =
     "acquisition.convergence_resume_after";
 
-/// Marker set once the run-once cutover seed has completed (RFC 119 §12.3).
+/// Marker set once the run-once cutover seed has completed.
 pub(crate) const ACQUISITION_CONVERGENCE_SEEDED_AT_KEY: &str = "acquisition.convergence_seeded_at";
 
 /// Scopes the legacy scheduler searched within this window start converged at
@@ -79,7 +79,7 @@ pub(crate) const ACQUISITION_CONVERGENCE_SEEDED_AT_KEY: &str = "acquisition.conv
 const CUTOVER_SEED_RECENT_SEARCH_DAYS: i64 = 14;
 
 impl AppUseCase {
-    /// Run-once cutover reconciliation (RFC 119 §12.3): scopes with a recent
+    /// Run-once cutover reconciliation: scopes with a recent
     /// legacy search start *converged* — coverage recorded for every routed
     /// indexer under the current fingerprint — so the first convergence sweep
     /// only covers what the old scheduler had genuinely not searched.
@@ -339,7 +339,7 @@ impl AppUseCase {
 /// acceptance criteria (cutoff, allowed qualities, scoring) change, and
 /// `match_identity` (the scope's SMG match — its resolved external ids) must change
 /// on a rematch; either re-opens convergence for still-unsatisfied scopes
-/// (RFC 119 §D2). The profile inputs are the *effective* profile (resolved with
+///. The profile inputs are the *effective* profile (resolved with
 /// library/tag/category scoping), so overrides fold in.
 pub(crate) fn compute_search_fingerprint(
     profile_id: &str,
@@ -366,7 +366,7 @@ pub(crate) fn compute_search_fingerprint(
 
 /// Canonical identity of a scope's SMG match — its resolved external ids. A rematch
 /// re-maps the title to a different canonical subject, changing these ids, so folding
-/// them into the fingerprint re-opens convergence (RFC 119 §D2). Plain metadata edits
+/// them into the fingerprint re-opens convergence. Plain metadata edits
 /// that leave the match unchanged do not.
 fn scope_match_identity(subject: &ResolvedReleaseSearchSubject) -> String {
     fn part(label: &str, value: &Option<String>) -> String {
@@ -437,7 +437,7 @@ pub(crate) struct ScopeConvergence {
 /// Stable coverage key for a submission scope, or `None` for a true `Orphan` (no
 /// derivable target identity), which is never a convergence unit. Episode sets /
 /// season packs converge as first-class units keyed on their canonical member set
-/// (RFC 119 §D2 #1); a member-set change yields a new key (re-converges).
+///; a member-set change yields a new key (re-converges).
 pub(crate) fn convergence_scope_key(scope: &SubmissionScope, title_id: &str) -> Option<String> {
     match scope {
         SubmissionScope::Episode { episode_id } => Some(format!("episode:{episode_id}")),
@@ -610,7 +610,7 @@ impl AppUseCase {
         };
         // Only routed indexers that actually fired are recorded as covered; a
         // deferred/skipped/errored routed indexer stays uncovered so the cursor
-        // retries it (RFC 119 §D2).
+        // retries it.
         let fired: std::collections::HashSet<&str> =
             fired_indexer_ids.iter().map(String::as_str).collect();
         for indexer_id in &convergence.routed_indexer_ids {
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn fingerprint_changes_on_rematch() {
         // A rematch changes the scope's external-id identity → new fingerprint →
-        // convergence re-opens (RFC 119 §D2 #2).
+        // convergence re-opens.
         let a = compute_search_fingerprint("p1", "v1", &["en".into()], "imdb=tt1");
         let b = compute_search_fingerprint("p1", "v1", &["en".into()], "imdb=tt2");
         assert_ne!(

@@ -54,7 +54,7 @@ function secondarySourceLabel(event: TitleHistoryEvent): string | null {
   const values = [
     event.sourceSystem,
     event.sourceRef,
-    event.sourceHint,
+    event.sourceProvider ?? event.sourceHint,
   ]
     .filter((value): value is string => Boolean(value))
     .map((value) => redactHistoryApiKeys(value));

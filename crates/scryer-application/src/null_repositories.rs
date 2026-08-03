@@ -39,11 +39,13 @@ use crate::{
     ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,
     ExternalImportSetupSecretDraft, ExternalImportSetupSecretDraftInput,
     ExternalImportSetupSecretDraftRepository, ExternalImportSetupSecretDraftSaveResult,
-    ExternalImportSetupSecretDraftStatus, FileImporter, HousekeepingRepository, ImportArtifact,
-    ImportArtifactRepository, ImportRepository, IndexerProxyConfigRepository, IndexerQueryStats,
-    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
-    IndexerStatsTracker, JobKey, JobRunRecord, JobRunRepository, LibraryProbeRepository,
-    LibraryProbeSignature, LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
+    ExternalImportSetupSecretDraftStatus, FileImporter, HousekeepingRepository,
+    ImageProxyCacheControl, ImageProxyCacheEntryRecord, ImageProxyRegistration,
+    ImageProxyRepository, ImageProxySourceRecord, ImportArtifact, ImportArtifactRepository,
+    ImportRepository, IndexerProxyConfigRepository, IndexerQueryStats, IndexerSearchLearningKey,
+    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerStatsTracker, JobKey,
+    JobRunRecord, JobRunRepository, LibraryProbeRepository, LibraryProbeSignature,
+    LibraryRepository, LibraryRootDraft, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, MediaFileRepository, MediaRequestCounts, MediaRequestQuery,
     MediaRequestRepository, MediaRequestResolution, NewBlocklistEntry, NewMediaRequest,
     NotificationChannelRepository, NotificationSubscriptionRepository,
@@ -941,6 +943,95 @@ impl TitleImageRepository for NullTitleImageRepository {
         _variant_key: &str,
     ) -> AppResult<Option<TitleImageBlob>> {
         Ok(None)
+    }
+}
+
+#[derive(Default)]
+pub struct NullImageProxyRepository;
+
+#[async_trait]
+impl ImageProxyRepository for NullImageProxyRepository {
+    fn register_image_source(&self, registration: ImageProxyRegistration) -> String {
+        let token = crate::image_proxy_source_token(
+            registration.upstream_url.as_deref(),
+            registration.owner_type.as_deref(),
+            registration.owner_id.as_deref(),
+            registration.image_kind,
+        );
+        format!("/images/media/{token}/{}", registration.default_variant)
+    }
+
+    async fn flush_image_proxy_sources(&self) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn clear_image_proxy_memory(&self) {}
+
+    async fn get_image_proxy_source(
+        &self,
+        _token: &str,
+    ) -> AppResult<Option<ImageProxySourceRecord>> {
+        Ok(None)
+    }
+
+    async fn get_image_proxy_cache_entry(
+        &self,
+        _token: &str,
+        _variant: &str,
+    ) -> AppResult<Option<ImageProxyCacheEntryRecord>> {
+        Ok(None)
+    }
+
+    async fn upsert_image_proxy_cache_entry(
+        &self,
+        _entry: &ImageProxyCacheEntryRecord,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn touch_image_proxy_cache_entry(
+        &self,
+        _token: &str,
+        _variant: &str,
+        _observed_fetched_at: chrono::DateTime<chrono::Utc>,
+        _last_accessed_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn delete_image_proxy_cache_entry(&self, _token: &str, _variant: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn list_image_proxy_cache_entries_lru(
+        &self,
+    ) -> AppResult<Vec<ImageProxyCacheEntryRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn clear_image_proxy_cache_entries(&self) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn prune_image_proxy_sources_before(
+        &self,
+        _cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u64> {
+        Ok(0)
+    }
+}
+
+#[derive(Default)]
+pub struct NullImageProxyCacheControl;
+
+#[async_trait]
+impl ImageProxyCacheControl for NullImageProxyCacheControl {
+    async fn clear_cache(&self) -> AppResult<()> {
+        Ok(())
+    }
+
+    async fn set_configured_max_bytes(&self, _value: u64) -> AppResult<()> {
+        Ok(())
     }
 }
 

@@ -16,10 +16,10 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
-aws-lc-sys = "0.42"
+aws-lc-sys = "0.43"
 crc32fast = "1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider", "http2"] }
-base64 = "0.22"
+base64 = "0.23"
 glob = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
 rustls-native-certs = "0.8"
@@ -27,12 +27,15 @@ url = "2"
 zstd = { version = "0.13", default-features = false }
 tempfile = "3"
 libc = "0.2"
+blake3 = "1"
 # RFC 123 WP1: native wasmtime archive host (crypto ABI + command protocol).
+wasmparser = "0.255"
 wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
 
+[build-dependencies]
+wat = "1"
+
 [dev-dependencies]
-# WAT guests are authored inline: `wasmtime::Module::new` compiles text directly
-# (wasmtime's default `wat` feature), and `wat::parse_str` yields raw wasm bytes
-# for tests that feed the descriptor-shape classifier.
+# Tests keep readable inline WAT and explicitly translate it to bytes.
 wat = "1"

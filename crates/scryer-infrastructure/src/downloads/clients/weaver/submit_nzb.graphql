@@ -1,6 +1,19 @@
+# `jobId` and `errorCode` arrived with Weaver's duplicate-detection release
+# (2026-07-10); `accepted`, `status` and `message` are older (2026-04-09).
+# Selecting all of them therefore REQUIRES Weaver >= 2026-07-10 — anything older
+# fails validation and drops to the legacy SubmitNzbCompat mutation, losing
+# streaming multipart upload and clientRequestId idempotency.
+#
+# That trade is deliberate and accepted: Weaver's install base is small, and
+# versions older than the duplicate-detection release cannot produce
+# IDEMPOTENT_REPLAY or PARKED at all, so they lose nothing this fix provides.
 mutation SubmitNzb($input: SubmitNzbInput!) {
   submitNzb(input: $input) {
     accepted
+    status
+    jobId
+    errorCode
+    message
     item {
       id
     }

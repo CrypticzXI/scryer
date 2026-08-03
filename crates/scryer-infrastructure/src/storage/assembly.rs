@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, AppServices, AppServicesBuilder, DiscoveryRepository, DownloadClient,
-    DownloadClientConfigRepository, IndexerClient, IndexerConfigRepository,
+    DownloadClientConfigRepository, ImageProxyRepository, IndexerClient, IndexerConfigRepository,
     IndexerSearchLearningRepository, IndexerStatsTracker, LibraryRepository, LogicalBackupExporter,
     MediaRequestRepository, MediaServerConnectionRepository, OAuthRepository,
     PluginInstallationRepository, PostProcessingScriptRepository, QualityProfileRepository,
@@ -19,6 +19,7 @@ use crate::HttpTitleImageProcessor;
 use crate::discovery::store::DiscoveryStore;
 use crate::external_identity::HttpExternalIdentityVerifier;
 use crate::indexers::scope_indexer_coverage_store::ScopeIndexerCoverageStore;
+use crate::media::images::image_proxy_store::ImageProxyStore;
 use crate::postgres::{
     PostgresLogicalBackupExporter, PostgresServices, restore_backup_bundle_into_postgres_pool,
     restore_prepared_backup_directory_into_postgres_pool,
@@ -642,6 +643,7 @@ enum DatastoreStores {
         subtitle_download_store: Arc<SubtitleDownloadStore>,
         housekeeping_store: Arc<HousekeepingStore>,
         title_image_store: Arc<TitleImageStore>,
+        image_proxy_store: Arc<ImageProxyStore>,
         notification_store: Arc<NotificationStore>,
         release_store: Arc<ReleaseStore>,
         settings_store: Arc<SettingsStore>,
@@ -684,6 +686,7 @@ enum DatastoreStores {
         subtitle_download_store: Arc<SubtitleDownloadStore>,
         housekeeping_store: Arc<HousekeepingStore>,
         title_image_store: Arc<TitleImageStore>,
+        image_proxy_store: Arc<ImageProxyStore>,
         notification_store: Arc<NotificationStore>,
         release_store: Arc<ReleaseStore>,
         settings_store: Arc<SettingsStore>,
@@ -763,6 +766,7 @@ impl DatastoreAssembly {
         let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
         let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
         let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
+        let image_proxy_store = Arc::new(ImageProxyStore::new(datastore.clone()));
         let release_store = Arc::new(ReleaseStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -816,6 +820,7 @@ impl DatastoreAssembly {
             subtitle_download_store,
             housekeeping_store,
             title_image_store,
+            image_proxy_store,
             notification_store,
             release_store,
             settings_store,
@@ -889,6 +894,7 @@ impl DatastoreAssembly {
         let subtitle_download_store = Arc::new(SubtitleDownloadStore::new(datastore.clone()));
         let housekeeping_store = Arc::new(HousekeepingStore::new(datastore.clone()));
         let title_image_store = Arc::new(TitleImageStore::new(datastore.clone()));
+        let image_proxy_store = Arc::new(ImageProxyStore::new(datastore.clone()));
         let release_store = Arc::new(ReleaseStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -940,6 +946,7 @@ impl DatastoreAssembly {
             subtitle_download_store,
             housekeeping_store,
             title_image_store,
+            image_proxy_store,
             notification_store,
             release_store,
             settings_store,
@@ -1184,6 +1191,17 @@ impl DatastoreAssembly {
         }
     }
 
+    pub fn image_proxy(&self) -> Arc<dyn ImageProxyRepository> {
+        match &self.stores {
+            DatastoreStores::Sqlite {
+                image_proxy_store, ..
+            } => image_proxy_store.clone(),
+            DatastoreStores::Postgres {
+                image_proxy_store, ..
+            } => image_proxy_store.clone(),
+        }
+    }
+
     pub fn logical_backup_exporter(&self) -> Arc<dyn LogicalBackupExporter> {
         match &self.stores {
             DatastoreStores::Sqlite {
@@ -1198,7 +1216,7 @@ impl DatastoreAssembly {
     pub fn indexer_stats_tracker(&self) -> Arc<dyn IndexerStatsTracker> {
         match &self.stores {
             DatastoreStores::Sqlite { db, .. } => {
-                Arc::new(InMemoryIndexerStatsTracker::new(Some(db.pool().clone())))
+                Arc::new(InMemoryIndexerStatsTracker::new(Some(db.datastore())))
             }
             DatastoreStores::Postgres { .. } => Arc::new(InMemoryIndexerStatsTracker::new(None)),
         }
@@ -1289,6 +1307,7 @@ impl DatastoreAssembly {
                 subtitle_download_store,
                 housekeeping_store,
                 title_image_store,
+                image_proxy_store,
                 rule_set_store,
                 post_processing_script_store,
                 plugin_store,
@@ -1347,6 +1366,7 @@ impl DatastoreAssembly {
                 .with_library_probe_signatures(library_probe_store.clone())
                 .with_library_scan_unmatched_items(library_scan_unmatched_store.clone())
                 .with_title_images(title_image_store.clone())
+                .with_image_proxy(image_proxy_store.clone())
                 .with_housekeeping(housekeeping_store.clone())
                 .with_subtitle_downloads(subtitle_download_store.clone())
                 .with_rule_set_store(rule_set_store.clone())
@@ -1392,6 +1412,7 @@ impl DatastoreAssembly {
                 subtitle_download_store,
                 housekeeping_store,
                 title_image_store,
+                image_proxy_store,
                 notification_store,
                 release_store,
                 settings_store,
@@ -1448,6 +1469,7 @@ impl DatastoreAssembly {
                 .with_library_probe_signatures(library_probe_store.clone())
                 .with_library_scan_unmatched_items(library_scan_unmatched_store.clone())
                 .with_title_images(title_image_store.clone())
+                .with_image_proxy(image_proxy_store.clone())
                 .with_housekeeping(housekeeping_store.clone())
                 .with_subtitle_downloads(subtitle_download_store.clone())
                 .with_rule_set_store(rule_set_store.clone())
@@ -2537,8 +2559,9 @@ mod tests {
                 "backup-lattice-title",
                 TitleImageSourceResult {
                     kind: TitleImageKind::Poster,
-                    requested_source_url: "https://example.invalid/poster.jpg".to_string(),
-                    source_url: "https://example.invalid/poster.jpg".to_string(),
+                    requested_source_url: "https://image.tmdb.org/t/p/original/poster.jpg"
+                        .to_string(),
+                    source_url: "https://image.tmdb.org/t/p/original/poster.jpg".to_string(),
                     source_etag: Some("matrix-etag".to_string()),
                     source_last_modified: Some("Wed, 12 Jun 2026 03:00:00 GMT".to_string()),
                     source_format: "jpeg".to_string(),
@@ -2633,7 +2656,7 @@ mod tests {
         assert_eq!(title.external_ids[0].value, "424242");
         assert_eq!(
             title.poster_url.as_deref(),
-            Some("https://example.invalid/poster.jpg"),
+            Some("https://image.tmdb.org/t/p/original/poster.jpg"),
             "durable remote artwork URL should survive restore"
         );
         Ok(())
@@ -2658,7 +2681,10 @@ mod tests {
                 task.title_id == "backup-lattice-title" && task.kind == TitleImageKind::Poster
             })
             .expect("restored title image metadata should queue refresh work");
-        assert_eq!(task.source_url, "https://example.invalid/poster.jpg");
+        assert_eq!(
+            task.source_url,
+            "https://image.tmdb.org/t/p/original/poster.jpg"
+        );
         assert!(
             task.variants
                 .iter()
@@ -2778,7 +2804,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             year: Some(2026),
             overview: Some("Logical backup lattice fixture".to_string()),
-            poster_url: Some("https://example.invalid/poster.jpg".to_string()),
+            poster_url: Some("https://image.tmdb.org/t/p/original/poster.jpg".to_string()),
             poster_source_url: None,
             background_url: None,
             background_source_url: None,

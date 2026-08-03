@@ -1,10 +1,12 @@
-import { ExternalLink, Loader2, Merge } from "lucide-react";
+import { AlertCircle, ExternalLink, Loader2, Merge } from "lucide-react";
 
 import { ImportInstancePill } from "@/components/setup/import/import-instance-pill";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { canRetryProwlarrDiscovery } from "@/lib/external-import-wizard-orchestration";
 import type { ImportInstanceKind } from "@/lib/hooks/use-external-import-setup";
 import type { UseExternalImportSetupReturn } from "@/lib/hooks/use-external-import-setup";
 import type {
@@ -123,7 +125,18 @@ export default function SetupImportSourcesView({
     setDownloadClientApiKeyOverride,
     setDownloadClientPasswordOverride,
     setIndexerApiKeyOverride,
+    prowlarrWarmupSessionId,
+    prowlarrWarmupProgress,
+    retryProwlarrWarmup,
   } = wizard;
+  const prowlarrDiscoveryActive =
+    Boolean(prowlarrWarmupSessionId) &&
+    (!prowlarrWarmupProgress ||
+      prowlarrWarmupProgress.status === "QUEUED" ||
+      prowlarrWarmupProgress.status === "RUNNING");
+  const prowlarrDiscoveryFailed = canRetryProwlarrDiscovery(
+    prowlarrWarmupProgress?.status ?? null,
+  );
 
   if (!preview) {
     return (
@@ -139,6 +152,35 @@ export default function SetupImportSourcesView({
 
   return (
     <div id="setup-import-sources-view" className="flex flex-col gap-6">
+      {prowlarrDiscoveryActive ? (
+        <div
+          data-slot="prowlarr-discovery-loading"
+          className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm text-muted-foreground"
+        >
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Discovering Prowlarr indexers…
+        </div>
+      ) : null}
+      {prowlarrDiscoveryFailed ? (
+        <div
+          data-slot="prowlarr-discovery-error"
+          className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"
+        >
+          <span className="flex items-center gap-2 text-destructive">
+            <AlertCircle className="h-4 w-4" />
+            {prowlarrWarmupProgress?.errorMessage ||
+              "Prowlarr indexer discovery failed."}
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => void retryProwlarrWarmup()}
+          >
+            Retry
+          </Button>
+        </div>
+      ) : null}
       {/* ── Download Clients ─────────────────────────────────────────────── */}
       <Card data-slot="import-sources-clients">
         <CardHeader className="mb-3 flex items-center justify-between gap-3">

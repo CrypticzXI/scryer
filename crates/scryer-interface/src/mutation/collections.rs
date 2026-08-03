@@ -27,7 +27,10 @@ impl CollectionMutations {
         Ok(SetCollectionMonitoredPayload {
             id: collection.id.into(),
             monitored: collection.monitored,
-            episodes: episodes.into_iter().map(from_episode).collect(),
+            episodes: episodes
+                .into_iter()
+                .map(|episode| from_episode(&app, episode))
+                .collect(),
         })
     }
 
@@ -43,7 +46,7 @@ impl CollectionMutations {
             .set_episode_monitored(&actor, &episode_id, input.monitored)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_episode(episode))
+        Ok(from_episode(&app, episode))
     }
 
     async fn set_series_movie_monitored(
@@ -58,6 +61,6 @@ impl CollectionMutations {
             .set_series_movie_monitored(&actor, &series_movie_link_id, input.monitored)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_series_movie_link(link))
+        Ok(from_series_movie_link(&app, link))
     }
 }

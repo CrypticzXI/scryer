@@ -21,7 +21,13 @@ pub mod fs_integrity;
 mod fs_safety;
 mod health;
 mod helpers;
+mod image_proxy;
 mod import;
+mod indexer_category;
+pub use indexer_category::{
+    CATEGORY_MISMATCH_CODE, IndexerCategoryFamily, NZB_HEAD_PROBE_BYTES, enforce_nzb_category_gate,
+    indexer_category_contradicts_facet, indexer_category_family, nzb_head_category,
+};
 mod integration;
 mod jobs;
 mod library;
@@ -96,6 +102,7 @@ pub(crate) use quality::profile as quality_profile;
 pub(crate) use quality::release_group_db;
 pub(crate) use quality::release_parser;
 pub(crate) use quality::scoring_weights;
+pub(crate) use quality::trash_scores;
 pub(crate) use rules::user_rule_input;
 
 pub use download_client_config::resolve_download_client_base_url_from_config_json;
@@ -276,8 +283,11 @@ pub use library::rename::{
     sanitize_filesystem_component,
 };
 pub(crate) use library::rename::{
-    effective_title_folder_path, normalize_title_folder_template_or_default,
-    validate_rename_template_for_facet, validate_title_folder_template,
+    effective_title_folder_path, normalize_season_folder_template_or_default,
+    normalize_specials_folder_template_or_default, normalize_title_folder_template_or_default,
+    render_episode_folder_name, validate_rename_template_for_facet,
+    validate_season_folder_template, validate_specials_folder_template,
+    validate_title_folder_template,
 };
 pub use media::language::{
     normalize_detected_audio_language_code, normalize_detected_audio_languages,
@@ -341,6 +351,7 @@ pub(crate) use helpers::{
     to_hex,
 };
 pub use helpers::{accepted_inputs_for_client, nice_thread, normalize_release_password};
+pub use image_proxy::image_proxy_source_token;
 pub use jobs::definitions::{
     JobCategory, JobDefinition, JobKey, JobRun, JobRunRecord, JobRunStatus, JobRunTracker,
     JobScheduleInfo, JobScheduleKind, JobSection, JobTriggerSource, LibraryProbeSignature,
@@ -396,15 +407,16 @@ pub use ports::{
     ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretDraftStatus,
     ExternalImportSetupSecretInstanceKind, ExternalImportSetupSecretOverrideDraft,
     ExternalPluginWasm, FileImporter, HousekeepingMediaFileRootRow, HousekeepingRepository,
-    ImportArtifactRepository, ImportFilePermissions, ImportFileTransferProgress,
-    ImportFileTransferProgressSender, ImportRepository, IndexerCapsSnapshotRefresher,
-    IndexerClient, IndexerConfigRepository, IndexerManagementClient, IndexerPluginProvider,
-    IndexerProxyConfigRepository, IndexerSearchLearningContext, IndexerSearchLearningKey,
-    IndexerSearchLearningRecord, IndexerSearchLearningRepository, IndexerStatsTracker,
-    IndexerSystemBackoff, JellyfinServerUser, JobRunRepository, LibraryProbeRepository,
-    LibraryRepository, LibraryScanUnmatchedItemRepository, LogicalBackupExporter, MediaAnalyzer,
-    MediaFileRepository, MediaRequestQuery, MediaRequestRepository,
-    MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
+    ImageProxyCacheControl, ImageProxyCacheEntryRecord, ImageProxyKind, ImageProxyRegistration,
+    ImageProxyRepository, ImageProxySourceRecord, ImportArtifactRepository, ImportFilePermissions,
+    ImportFileTransferProgress, ImportFileTransferProgressSender, ImportRepository,
+    IndexerCapsSnapshotRefresher, IndexerClient, IndexerConfigRepository, IndexerManagementClient,
+    IndexerPluginProvider, IndexerProxyConfigRepository, IndexerSearchLearningContext,
+    IndexerSearchLearningKey, IndexerSearchLearningRecord, IndexerSearchLearningRepository,
+    IndexerStatsTracker, IndexerSystemBackoff, JellyfinServerUser, JobRunRepository,
+    LibraryProbeRepository, LibraryRepository, LibraryScanUnmatchedItemRepository,
+    LogicalBackupExporter, MediaAnalyzer, MediaFileRepository, MediaRequestQuery,
+    MediaRequestRepository, MediaServerConnectionRepository, MediaServerUser, MediaServerUserGroup,
     MediaServerUserGroupStatus, NOTIFICATION_REQUEST_SCHEMA_VERSION, NewMediaRequest,
     NotificationActorPayload, NotificationAppPayload, NotificationApplicationUpdatePayload,
     NotificationChannelRepository, NotificationClient, NotificationDownloadPayload,
@@ -450,7 +462,7 @@ pub use services::{
     ExternalImportArrSourceSeriesEntry, ExternalImportArrSourceWarmupResult,
     ExternalImportMonitorWarmupBeginResult, ExternalImportMonitorWarmupPhase,
     ExternalImportMonitorWarmupPhaseProgress, ExternalImportMonitorWarmupProgressSnapshot,
-    ExternalImportMonitorWarmupStatus, ProviderCatalogFamily,
+    ExternalImportMonitorWarmupStatus, ExternalImportProwlarrWarmupResult, ProviderCatalogFamily,
 };
 pub use settings::keys::{
     ANIME_FILLER_POLICY_KEY, ANIME_INTER_SEASON_MOVIES_KEY, ANIME_MONITOR_FILLER_MOVIES_KEY,
@@ -460,12 +472,14 @@ pub use settings::keys::{
     AUTO_BACKUP_POST_UPGRADE_PENDING_VERSION_KEY, BACKUP_PATH_KEY, CHOWN_GROUP_KEY,
     DEFAULT_ANIME_LIBRARY_PATH, DEFAULT_AUTO_BACKUP_DAILY_TIME_LOCAL, DEFAULT_FILLER_POLICY,
     DEFAULT_FOLDER_TEMPLATE_ANIME, DEFAULT_FOLDER_TEMPLATE_MOVIE, DEFAULT_FOLDER_TEMPLATE_SERIES,
-    DEFAULT_MOVIE_LIBRARY_PATH, DEFAULT_RECAP_POLICY, DEFAULT_RENAME_COLLISION_POLICY,
-    DEFAULT_RENAME_MISSING_METADATA_POLICY, DEFAULT_RENAME_TEMPLATE_ANIME,
-    DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES, DEFAULT_SERIES_LIBRARY_PATH,
+    DEFAULT_IMAGE_CACHE_MAX_SIZE_MB, DEFAULT_MOVIE_LIBRARY_PATH, DEFAULT_RECAP_POLICY,
+    DEFAULT_RENAME_COLLISION_POLICY, DEFAULT_RENAME_MISSING_METADATA_POLICY,
+    DEFAULT_RENAME_TEMPLATE_ANIME, DEFAULT_RENAME_TEMPLATE_MOVIE, DEFAULT_RENAME_TEMPLATE_SERIES,
+    DEFAULT_SEASON_FOLDER_TEMPLATE, DEFAULT_SERIES_LIBRARY_PATH, DEFAULT_SPECIALS_FOLDER_TEMPLATE,
     DISCOVERY_REGION_KEY, DOWNLOAD_CLIENT_DEFAULT_CATEGORY_SETTING_KEY,
     DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY, FILE_CHMOD_KEY, FOLDER_CHMOD_KEY, FOLDER_TEMPLATE_KEY,
-    FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY, IMPORT_MODE_KEY,
+    FORM_LOGIN_ENABLED_KEY, HISTORY_KEEP_FOREVER_KEY, HISTORY_RETENTION_DAYS_KEY,
+    IMAGE_CACHE_MAX_BYTES_ENV, IMAGE_CACHE_MAX_SIZE_MB_KEY, IMPORT_MODE_KEY,
     INDEXER_ROUTING_SETTINGS_KEY, LEGACY_NZBGET_CATEGORY_SETTING_KEY,
     LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY, METADATA_LANGUAGE_KEY,
     MFA_REQUIRE_CONFIG_STEP_UP_KEY, MFA_REQUIRE_PASSWORD_LOGIN_KEY, MOVIES_PATH_KEY,
@@ -484,11 +498,11 @@ pub use settings::keys::{
     RENAME_MISSING_METADATA_POLICY_MOVIE_GLOBAL_KEY,
     RENAME_MISSING_METADATA_POLICY_SERIES_GLOBAL_KEY, RENAME_TEMPLATE_ANIME_GLOBAL_KEY,
     RENAME_TEMPLATE_KEY, RENAME_TEMPLATE_MOVIE_GLOBAL_KEY, RENAME_TEMPLATE_SERIES_GLOBAL_KEY,
-    REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SERIES_PATH_KEY, SERIES_ROOT_FOLDERS_KEY,
-    SET_PERMISSIONS_LINUX_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
-    SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY,
-    TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY, TLS_KEY_PATH_KEY,
-    TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
+    REQUIRED_AUDIO_LANGUAGES_KEY, SCORING_PERSONA_KEY, SEASON_FOLDER_TEMPLATE_KEY, SERIES_PATH_KEY,
+    SERIES_ROOT_FOLDERS_KEY, SET_PERMISSIONS_LINUX_KEY, SETTINGS_SCOPE_MEDIA,
+    SETTINGS_SCOPE_SYSTEM, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
+    SKIP_LOGIN_FOR_LOCAL_IPS_KEY, SPECIALS_FOLDER_TEMPLATE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
+    TLS_CERT_PATH_KEY, TLS_KEY_PATH_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
 };
 pub use settings::runtime::is_bootstrap_default_library_root_set;
 pub(crate) use types::JwtClaims;
@@ -543,8 +557,8 @@ pub use types::{
     library_scan_file_leaf_key, library_scan_folder_full_path_key, library_scan_folder_leaf_key,
 };
 pub use types::{
-    IndexerQueryOutcome, IndexerSearchOutcome, IndexerSearchResponse, IndexerSearchResult,
-    ReleaseCandidateProvenance, ReleaseSearchSubjectKind, ReleaseStrategyKind,
+    IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchOutcome, IndexerSearchResponse,
+    IndexerSearchResult, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, ReleaseStrategyKind,
 };
 pub use types::{SmgScryerUpdateNotice, SmgVersionCompatibilityNotice};
 

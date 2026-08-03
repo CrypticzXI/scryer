@@ -243,7 +243,11 @@ fn ensure_host_process_capability_allowed(
     descriptor: &PluginDescriptor,
     support_tier: PluginSupportTier,
 ) -> AppResult<()> {
-    if plugin_descriptor_requires_host_process(descriptor)
+    if matches!(
+        &descriptor.provider,
+        ProviderDescriptor::Notification(notification)
+            if notification.capabilities.requires_host_process
+    )
         && !support_tier_permits_host_process(support_tier)
     {
         warn!(

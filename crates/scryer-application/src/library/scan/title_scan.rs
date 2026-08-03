@@ -355,7 +355,7 @@ fn score_movie_media_file_for_primary(
     file: &TitleMediaFile,
 ) -> i32 {
     let parsed = parsed_release_for_movie_media_file(file);
-    crate::post_download_gate::build_import_profile_decision(
+    let mut decision = crate::post_download_gate::build_import_profile_decision(
         profile,
         required_audio_languages,
         persona,
@@ -364,8 +364,9 @@ fn score_movie_media_file_for_primary(
         title.runtime_minutes,
         Some(file.size_bytes),
         false,
-    )
-    .preference_score
+    );
+    crate::quality_profile::apply_min_score_gate(profile, &mut decision);
+    decision.preference_score
 }
 
 async fn normalize_movie_file_roles_after_scan(
@@ -2385,8 +2386,24 @@ impl AppUseCase {
                 for episode in &target_episodes {
                     role_normalization_episode_ids.insert(episode.id.clone());
                 }
-                let layout_observation =
-                    classify_title_scan_layout(&title_dir, &source_path, &target_episodes);
+                let configured_folder_name =
+                    crate::library::workflow::scan_title_files::infer_target_season_number(
+                        &target_episodes,
+                    )
+                    .map(|season| {
+                        crate::render_episode_folder_name(
+                            &title,
+                            season,
+                            &import_paths.season_folder_template,
+                            &import_paths.specials_folder_template,
+                        )
+                    });
+                let layout_observation = classify_title_scan_layout(
+                    &title_dir,
+                    &source_path,
+                    &target_episodes,
+                    configured_folder_name.as_deref(),
+                );
                 layout_summary.observe(layout_observation);
 
                 let record = if let Some(existing) = existing {

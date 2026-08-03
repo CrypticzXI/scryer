@@ -381,7 +381,10 @@ impl TitlePayload {
                 .title_more_like_this(&actor, self.id.as_ref(), i64::from(limit.clamp(0, 100)))
                 .await
                 .map_err(to_gql_error)?;
-            Ok(items.into_iter().map(from_discovery_item).collect())
+            Ok(items
+                .into_iter()
+                .map(|item| from_discovery_item(&app, item))
+                .collect())
         })
         .await
     }
@@ -499,13 +502,17 @@ impl TitlePayload {
         &self,
         ctx: &Context<'_>,
     ) -> GqlResult<Vec<SeriesMovieLinkPayload>> {
+        let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let links = loaders
                 .series_movie_links_for_title
                 .load_one(self.id.to_string())
                 .await?
                 .unwrap_or_default();
-            return Ok(links.into_iter().map(from_series_movie_link).collect());
+            return Ok(links
+                .into_iter()
+                .map(|link| from_series_movie_link(&image_app, link))
+                .collect());
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -514,7 +521,10 @@ impl TitlePayload {
                 .list_series_movie_links(&actor, self.id.as_ref())
                 .await
                 .map_err(to_gql_error)?;
-            Ok(links.into_iter().map(from_series_movie_link).collect())
+            Ok(links
+                .into_iter()
+                .map(|link| from_series_movie_link(&app, link))
+                .collect())
         })
         .await
     }
@@ -750,9 +760,10 @@ impl CollectionPayload {
     }
 
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
+        let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let title = loaders.title.load_one(self.title_id.to_string()).await?;
-            return Ok(title.map(from_title));
+            return Ok(title.map(|title| from_title(&image_app, title)));
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -761,20 +772,24 @@ impl CollectionPayload {
                 .get_title(&actor, self.title_id.as_ref())
                 .await
                 .map_err(to_gql_error)?
-                .map(from_title);
+                .map(|title| from_title(&app, title));
             Ok(title)
         })
         .await
     }
 
     async fn episodes(&self, ctx: &Context<'_>) -> GqlResult<Vec<EpisodePayload>> {
+        let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let episodes = loaders
                 .episodes_for_collection
                 .load_one(self.id.to_string())
                 .await?
                 .unwrap_or_default();
-            return Ok(episodes.into_iter().map(from_episode).collect());
+            return Ok(episodes
+                .into_iter()
+                .map(|episode| from_episode(&image_app, episode))
+                .collect());
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -783,7 +798,10 @@ impl CollectionPayload {
                 .list_episodes(&actor, self.id.as_ref())
                 .await
                 .map_err(to_gql_error)?;
-            Ok(episodes.into_iter().map(from_episode).collect())
+            Ok(episodes
+                .into_iter()
+                .map(|episode| from_episode(&app, episode))
+                .collect())
         })
         .await
     }
@@ -792,9 +810,10 @@ impl CollectionPayload {
 #[ComplexObject]
 impl EpisodePayload {
     async fn parent_title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
+        let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let title = loaders.title.load_one(self.title_id.to_string()).await?;
-            return Ok(title.map(from_title));
+            return Ok(title.map(|title| from_title(&image_app, title)));
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -803,7 +822,7 @@ impl EpisodePayload {
                 .get_title(&actor, self.title_id.as_ref())
                 .await
                 .map_err(to_gql_error)?
-                .map(from_title);
+                .map(|title| from_title(&app, title));
             Ok(title)
         })
         .await
@@ -884,9 +903,10 @@ impl EpisodePayload {
 #[ComplexObject]
 impl TitleMediaFilePayload {
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
+        let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let title = loaders.title.load_one(self.title_id.to_string()).await?;
-            return Ok(title.map(from_title));
+            return Ok(title.map(|title| from_title(&image_app, title)));
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -895,7 +915,7 @@ impl TitleMediaFilePayload {
                 .get_title(&actor, self.title_id.as_ref())
                 .await
                 .map_err(to_gql_error)?
-                .map(from_title);
+                .map(|title| from_title(&app, title));
             Ok(title)
         })
         .await
@@ -905,9 +925,10 @@ impl TitleMediaFilePayload {
         let Some(episode_id) = self.episode_id.as_deref() else {
             return Ok(None);
         };
+        let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let episode = loaders.episode.load_one(episode_id.to_string()).await?;
-            return Ok(episode.map(from_episode));
+            return Ok(episode.map(|episode| from_episode(&image_app, episode)));
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -916,7 +937,7 @@ impl TitleMediaFilePayload {
                 .get_episode(&actor, episode_id)
                 .await
                 .map_err(to_gql_error)?
-                .map(from_episode);
+                .map(|episode| from_episode(&app, episode));
             Ok(episode)
         })
         .await
@@ -926,9 +947,10 @@ impl TitleMediaFilePayload {
 #[ComplexObject]
 impl WantedItemPayload {
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
+        let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let title = loaders.title.load_one(self.title_id.to_string()).await?;
-            return Ok(title.map(from_title));
+            return Ok(title.map(|title| from_title(&image_app, title)));
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -937,7 +959,7 @@ impl WantedItemPayload {
                 .get_title(&actor, self.title_id.as_ref())
                 .await
                 .map_err(to_gql_error)?
-                .map(from_title);
+                .map(|title| from_title(&app, title));
             Ok(title)
         })
         .await
@@ -971,9 +993,10 @@ impl WantedItemPayload {
         let Some(episode_id) = self.episode_id.as_deref() else {
             return Ok(None);
         };
+        let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let episode = loaders.episode.load_one(episode_id.to_string()).await?;
-            return Ok(episode.map(from_episode));
+            return Ok(episode.map(|episode| from_episode(&image_app, episode)));
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -982,7 +1005,7 @@ impl WantedItemPayload {
                 .get_episode(&actor, episode_id)
                 .await
                 .map_err(to_gql_error)?
-                .map(from_episode);
+                .map(|episode| from_episode(&app, episode));
             Ok(episode)
         })
         .await
@@ -1066,9 +1089,10 @@ impl WantedItemPayload {
 #[ComplexObject]
 impl ReleaseDecisionPayload {
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
+        let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let title = loaders.title.load_one(self.title_id.to_string()).await?;
-            return Ok(title.map(from_title));
+            return Ok(title.map(|title| from_title(&image_app, title)));
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -1077,7 +1101,7 @@ impl ReleaseDecisionPayload {
                 .get_title(&actor, self.title_id.as_ref())
                 .await
                 .map_err(to_gql_error)?
-                .map(from_title);
+                .map(|title| from_title(&app, title));
             Ok(title)
         })
         .await
@@ -1146,12 +1170,13 @@ impl DownloadQueueItemPayload {
         let Some(title_id) = self.title_id.as_deref() else {
             return Ok(None);
         };
+        let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let title = loaders
                 .title_for_management
                 .load_one(title_id.to_string())
                 .await?;
-            return Ok(title.map(from_title));
+            return Ok(title.map(|title| from_title(&image_app, title)));
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -1160,7 +1185,7 @@ impl DownloadQueueItemPayload {
                 .get_title_for_management(&actor, title_id)
                 .await
                 .map_err(to_gql_error)?
-                .map(from_title);
+                .map(|title| from_title(&app, title));
             Ok(title)
         })
         .await
@@ -1170,12 +1195,13 @@ impl DownloadQueueItemPayload {
 #[ComplexObject]
 impl PendingReleasePayload {
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
+        let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let title = loaders
                 .title_for_management
                 .load_one(self.title_id.to_string())
                 .await?;
-            return Ok(title.map(from_title));
+            return Ok(title.map(|title| from_title(&image_app, title)));
         }
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -1184,7 +1210,7 @@ impl PendingReleasePayload {
                 .get_title_for_management(&actor, self.title_id.as_ref())
                 .await
                 .map_err(to_gql_error)?
-                .map(from_title);
+                .map(|title| from_title(&app, title));
             Ok(title)
         })
         .await

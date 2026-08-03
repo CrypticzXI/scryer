@@ -1,5 +1,4 @@
-//! Trap / exit / protocol error mapping for the native wasmtime archive host
-//! (RFC 123 §7.2.8).
+//! Trap / exit / protocol error mapping for the native wasmtime archive host.
 //!
 //! `AppError` has no dedicated timeout/resource-limit/protocol variant, so every
 //! failure category maps to `AppError::Repository` with a distinct, categorized

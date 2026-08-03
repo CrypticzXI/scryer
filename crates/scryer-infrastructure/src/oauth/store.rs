@@ -24,13 +24,14 @@ impl OAuthRepository for OAuthStore {
         &self,
         record: OAuthAuthorizationCodeRecord,
     ) -> AppResult<OAuthAuthorizationCodeRecord> {
-        SqlRuntime::execute(
-            self.datastore.read_exec(),
+        SqlRuntime::execute_write(
+            &self.datastore,
+            "create_oauth_authorization_code",
             "INSERT INTO oauth_authorization_codes
                 (id, code_hash, client_id, user_id, redirect_uri, scope, code_challenge,
                  code_challenge_method, authorization_source, created_at, expires_at, consumed_at)
              VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
-            &[
+            vec![
                 SqlArg::Text(record.id.clone()),
                 SqlArg::Text(record.code_hash.clone()),
                 SqlArg::Text(record.client_id.clone()),
@@ -61,13 +62,14 @@ impl OAuthRepository for OAuthStore {
         id: &str,
         consumed_at: chrono::DateTime<chrono::Utc>,
     ) -> AppResult<bool> {
-        let rows = SqlRuntime::execute(
-            self.datastore.read_exec(),
+        let rows = SqlRuntime::execute_write(
+            &self.datastore,
+            "consume_oauth_authorization_code",
             "UPDATE oauth_authorization_codes
                 SET consumed_at = {}
               WHERE id = {}
                 AND consumed_at IS NULL",
-            &[SqlArg::Timestamp(consumed_at), SqlArg::Text(id.to_string())],
+            vec![SqlArg::Timestamp(consumed_at), SqlArg::Text(id.to_string())],
         )
         .await?;
         Ok(rows > 0)
@@ -174,8 +176,9 @@ impl OAuthRepository for OAuthStore {
         revoked_at: chrono::DateTime<chrono::Utc>,
         reason: &str,
     ) -> AppResult<bool> {
-        let rows = SqlRuntime::execute(
-            self.datastore.read_exec(),
+        let rows = SqlRuntime::execute_write(
+            &self.datastore,
+            "revoke_oauth_refresh_grant",
             "UPDATE oauth_refresh_grants
                 SET revoked_at = COALESCE(revoked_at, {}),
                     revoked_reason = COALESCE(revoked_reason, {}),
@@ -183,7 +186,7 @@ impl OAuthRepository for OAuthStore {
               WHERE id = {}
                 AND user_id = {}
                 AND revoked_at IS NULL",
-            &[
+            vec![
                 SqlArg::Timestamp(revoked_at),
                 SqlArg::Text(reason.to_string()),
                 SqlArg::Timestamp(revoked_at),
@@ -341,15 +344,16 @@ impl OAuthRepository for OAuthStore {
         client_id: &str,
         used_at: chrono::DateTime<chrono::Utc>,
     ) -> AppResult<bool> {
-        let rows = SqlRuntime::execute(
-            self.datastore.read_exec(),
+        let rows = SqlRuntime::execute_write(
+            &self.datastore,
+            "touch_oauth_refresh_grant_last_used",
             "UPDATE oauth_refresh_grants
                 SET updated_at = {},
                     last_used_at = {}
               WHERE id = {}
                 AND client_id = {}
                 AND revoked_at IS NULL",
-            &[
+            vec![
                 SqlArg::Timestamp(used_at),
                 SqlArg::Timestamp(used_at),
                 SqlArg::Text(grant_id.to_string()),

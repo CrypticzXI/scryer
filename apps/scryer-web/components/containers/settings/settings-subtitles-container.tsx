@@ -2,7 +2,6 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import { Loader2, Subtitles } from "lucide-react";
 import { useClient } from "urql";
-import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
 import { SETTINGS_REFERENCE_SLOT_ID } from "@/components/containers/settings/settings-container";
@@ -244,6 +243,7 @@ export function SettingsSubtitlesContainer({
     React.useState(false);
   const [subtitlesExpanded, setSubtitlesExpanded] = React.useState(true);
   const loadedRef = React.useRef(false);
+  const lastSubmittedSettingsRef = React.useRef<SubtitleSettings | null>(null);
   const providerCatalogVersionRef = React.useRef(providerCatalogVersion);
   const syncPluginProgressSubscriptionRef = React.useRef<(() => void) | null>(
     null,
@@ -407,10 +407,12 @@ export function SettingsSubtitlesContainer({
         }
 
         const payload = data?.subtitleSettings;
-        setSettings({
+        const nextSettings = {
           ...DEFAULTS,
           ...(payload ?? {}),
-        });
+        };
+        lastSubmittedSettingsRef.current = nextSettings;
+        setSettings(nextSettings);
         setProviderTypes(
           (data?.subtitleProviderTypes ?? []) as SubtitleProviderTypeInfo[],
         );
@@ -598,10 +600,14 @@ export function SettingsSubtitlesContainer({
   ]);
 
   React.useEffect(() => {
-    if (!loadedRef.current) {
+    if (
+      !loadedRef.current ||
+      settings === lastSubmittedSettingsRef.current
+    ) {
       return;
     }
 
+    lastSubmittedSettingsRef.current = settings;
     setSaving(true);
     client
       .mutation(updateSubtitleSettingsMutation, {
@@ -629,14 +635,12 @@ export function SettingsSubtitlesContainer({
         if (error) {
           const message = error.message || t("status.failedToUpdate");
           setGlobalStatus(message);
-          toast.error(message);
         }
       })
       .catch((error: unknown) => {
         const message =
           error instanceof Error ? error.message : t("status.failedToUpdate");
         setGlobalStatus(message);
-        toast.error(message);
       })
       .finally(() => setSaving(false));
   }, [client, setGlobalStatus, settings, t]);

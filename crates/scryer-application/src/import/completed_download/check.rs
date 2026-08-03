@@ -116,6 +116,51 @@ pub(crate) async fn check_with_lookup(
         }
     }
 
+    match completed_download_proves_assigned_title(app, td, &completed).await {
+        AssignedTitleProof::Proven => {}
+        AssignedTitleProof::Unknown => {
+            // Infrastructure failed, not the proof. A durable block here would
+            // turn a transient title-repo or matcher error into a permanent
+            // identity verdict, so leave the download untouched and let the
+            // next check tick retry.
+            tracing::warn!(
+                id = %td.id,
+                "completed download identity gate hit an infrastructure error; retrying next tick"
+            );
+            return;
+        }
+        AssignedTitleProof::MissingTitle => {
+            let detail = "The title assigned to this download at grab time no longer exists in the library. Automatic import is blocked until the download is reassigned or removed.";
+            block_tracked_download_identity_for_manual_review(
+                app,
+                td,
+                "assigned_title_missing",
+                detail,
+            )
+            .await;
+            if td.state != TrackedDownloadState::ImportBlocked {
+                td.warn(detail);
+                set_state_to_import_blocked(app, td).await;
+            }
+            return;
+        }
+        AssignedTitleProof::Disproven => {
+            let detail = "The completed release name no longer proves the title assigned at grab time. Automatic import is blocked to prevent replacing media for a different series.";
+            block_tracked_download_identity_for_manual_review(
+                app,
+                td,
+                "completed_title_identity_mismatch",
+                detail,
+            )
+            .await;
+            if td.state != TrackedDownloadState::ImportBlocked {
+                td.warn(detail);
+                set_state_to_import_blocked(app, td).await;
+            }
+            return;
+        }
+    }
+
     // Auto-import safety gating.
     match td.match_type {
         TitleMatchType::Unmatched => {
@@ -297,6 +342,232 @@ async fn completed_download_allows_automatic_import(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AssignedTitleProof {
+    /// A raw name proved the assigned title; import may proceed.
+    Proven,
+    /// Every raw name failed the proof — block for manual review.
+    Disproven,
+    /// The assigned title no longer exists — block under its own reason.
+    MissingTitle,
+    /// Infrastructure error while proving — retry next tick, never block.
+    Unknown,
+}
+
+async fn completed_download_proves_assigned_title(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    completed: &CompletedDownload,
+) -> AssignedTitleProof {
+    if !matches!(
+        td.match_type,
+        TitleMatchType::Submission | TitleMatchType::ClientParameter
+    ) && !td.client_item.is_scryer_origin
+    {
+        return AssignedTitleProof::Proven;
+    }
+
+    let Some(title_id) = td
+        .title_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return AssignedTitleProof::Disproven;
+    };
+    let title = match app.services.catalog.titles.get_by_id(title_id).await {
+        Ok(Some(title)) => title,
+        Ok(None) => return AssignedTitleProof::MissingTitle,
+        Err(error) => {
+            tracing::warn!(
+                title_id,
+                error = %error,
+                "completed download identity gate could not load assigned title"
+            );
+            return AssignedTitleProof::Unknown;
+        }
+    };
+    let matcher = match app.monitored_title_matcher().await {
+        Ok(matcher) => matcher,
+        Err(error) => {
+            tracing::warn!(
+                title_id,
+                error = %error,
+                "completed download identity gate could not load title matcher"
+            );
+            return AssignedTitleProof::Unknown;
+        }
+    };
+    let mut evidence = crate::acquisition_release_search::canonical_title_evidence(&title);
+    evidence.ambiguity =
+        crate::acquisition_release_search::TitleIdentityAmbiguity::from_shared_keys(
+            matcher.shared_lookup_keys(title_id, &evidence.lookup_keys),
+        );
+
+    // A series movie is searched and grabbed under the *movie's* identity —
+    // `series_movie_search_title` swaps in the movie's name, facet, year and
+    // ids — so the gate must accept proof against that same identity.
+    // Validating a linked movie's release against the parent series alone
+    // would let the series' year veto every legitimately grabbed series movie.
+    let mut proof_subjects = vec![(title.clone(), evidence)];
+    match app
+        .services
+        .catalog
+        .shows
+        .list_series_movie_links_for_title(title_id)
+        .await
+    {
+        Ok(links) => {
+            for link in links {
+                let link_title =
+                    crate::acquisition_release_search::series_movie_search_title(&title, &link);
+                let mut link_evidence =
+                    crate::acquisition_release_search::canonical_title_evidence(&link_title);
+                link_evidence.ambiguity =
+                    crate::acquisition_release_search::TitleIdentityAmbiguity::from_shared_keys(
+                        matcher.shared_lookup_keys(title_id, &link_evidence.lookup_keys),
+                    );
+                proof_subjects.push((link_title, link_evidence));
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                title_id,
+                error = %error,
+                "completed download identity gate could not load series movie links"
+            );
+            return AssignedTitleProof::Unknown;
+        }
+    }
+
+    let proves_assigned_title = |raw_title: &str| -> bool {
+        proof_subjects.iter().any(|(subject_title, evidence)| {
+            let parsed =
+                crate::parse_release_metadata_for_target(raw_title, &evidence.parse_context);
+            let Some(evidence_match) =
+                crate::acquisition_release_search::match_parsed_release_to_title_evidence(
+                    &parsed, evidence,
+                )
+            else {
+                return false;
+            };
+            let external_id_matches = parsed
+                .imdb_id
+                .as_deref()
+                .zip(
+                    crate::acquisition_search_queries::imdb_id_from_title(subject_title).as_deref(),
+                )
+                .is_some_and(|(observed, expected)| observed.eq_ignore_ascii_case(expected))
+                || parsed
+                    .tmdb_id
+                    .as_deref()
+                    .zip(
+                        crate::acquisition_search_queries::tmdb_id_from_external_ids(
+                            &subject_title.external_ids,
+                        )
+                        .as_deref(),
+                    )
+                    .is_some_and(|(observed, expected)| observed == expected)
+                || parsed
+                    .tvdb_id
+                    .as_deref()
+                    .zip(
+                        crate::acquisition_search_queries::tvdb_id_from_external_ids(
+                            &subject_title.external_ids,
+                        )
+                        .as_deref(),
+                    )
+                    .is_some_and(|(observed, expected)| observed == expected);
+
+            if evidence_match.requires_external_id && !external_id_matches {
+                return false;
+            }
+            if evidence.ambiguity.requires_disambiguator()
+                && !evidence_match.year_corroborated
+                && !external_id_matches
+                && !evidence
+                    .ambiguity
+                    .key_is_unique_to_title(&evidence_match.matched_key)
+            {
+                return false;
+            }
+            true
+        })
+    };
+
+    let folder_name = std::path::Path::new(&completed.dest_dir)
+        .file_name()
+        .and_then(|value| value.to_str());
+    let mut completion_sources = Vec::<&str>::new();
+    for raw_title in [Some(completed.name.as_str()), folder_name]
+        .into_iter()
+        .flatten()
+    {
+        let raw_title = raw_title.trim();
+        if !raw_title.is_empty() && !completion_sources.contains(&raw_title) {
+            completion_sources.push(raw_title);
+        }
+    }
+
+    // What actually finished on disk outranks every other signal: a completion
+    // name that positively asserts a *different* library title's identity —
+    // and not the assigned one — is a contradiction, not obfuscation. Neither
+    // the durable submission linkage nor the historical source_title may
+    // override it.
+    let completion_contradicts_assignment = completion_sources.iter().any(|raw_title| {
+        let anchor_keys =
+            crate::acquisition_release_search::context_free_identity_anchor_keys(raw_title);
+        matcher.keys_name_another_title(title_id, &anchor_keys)
+            && !proof_subjects.iter().any(|(_, evidence)| {
+                anchor_keys.iter().any(|anchor_key| {
+                    crate::acquisition_release_search::evidence_key_for_normalized(
+                        evidence, anchor_key,
+                    )
+                    .is_some()
+                })
+            })
+    });
+    if completion_contradicts_assignment {
+        return AssignedTitleProof::Disproven;
+    }
+
+    // A Submission or ClientParameter match is Scryer's own durable grab-time
+    // identity: the submission row / embedded client parameters were written
+    // when the grab passed the full disambiguator discipline, with strictly
+    // more evidence (indexer ids, year, uniqueness) than a filename can carry.
+    // Re-deriving identity from the release name can only lose information, so
+    // with no contradiction on disk the linkage stands as proof.
+    if matches!(
+        td.match_type,
+        TitleMatchType::Submission | TitleMatchType::ClientParameter
+    ) {
+        return AssignedTitleProof::Proven;
+    }
+
+    for raw_title in &completion_sources {
+        if proves_assigned_title(raw_title) {
+            return AssignedTitleProof::Proven;
+        }
+    }
+
+    // The grabbed release name is fallback proof for clients that obfuscate the
+    // completed name and folder mid-flight; a Scryer-origin grab must not lose
+    // its identity to that. Junk cannot ride in on it — the matcher rejects a
+    // non-proving source_title exactly like any other raw name.
+    if let Some(source_title) = td
+        .source_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && !completion_sources.contains(&source_title)
+        && proves_assigned_title(source_title)
+    {
+        return AssignedTitleProof::Proven;
+    }
+
+    AssignedTitleProof::Disproven
+}
+
 fn normalized_download_category(category: Option<&str>) -> Option<&str> {
     category.map(str::trim).filter(|value| !value.is_empty())
 }
@@ -308,9 +579,21 @@ pub(super) fn has_id_only_conflict(td: &TrackedDownload) -> bool {
 }
 
 async fn set_state_to_import_blocked(app: &AppUseCase, td: &mut TrackedDownload) {
+    let was_blocked = td.state == TrackedDownloadState::ImportBlocked;
     td.state = TrackedDownloadState::ImportBlocked;
     td.waiting_for_completed_history = false;
     td.status = TrackedDownloadStatus::Warning;
+
+    if !was_blocked {
+        crate::tracked_downloads::persist_tracked_download_state_marker(
+            app,
+            td,
+            TrackedDownloadState::ImportBlocked,
+            Some("import_blocked_pre_import"),
+            td.status_messages.first().map(String::as_str),
+        )
+        .await;
+    }
 
     if td.notified_manual_interaction {
         return;
@@ -402,6 +685,13 @@ async fn block_tracked_download_identity_for_manual_review(
     if crate::download_submission_identity_is_empty(&observed_identity) {
         return;
     }
+    if !td.status_messages.iter().any(|message| message == detail) {
+        td.status_messages.clear();
+        td.status_messages.push(detail.to_string());
+    }
+    // set_state_to_import_blocked writes the generic blocked marker; record
+    // the specific identity reason afterwards so it wins the upsert.
+    set_state_to_import_blocked(app, td).await;
     let source_identity = DownloadSourceIdentity::new(
         Some(td.client_id.as_str()),
         &td.client_type,
@@ -429,9 +719,4 @@ async fn block_tracked_download_identity_for_manual_review(
             "failed to persist durable tracked-download manual-review state"
         );
     }
-    if !td.status_messages.iter().any(|message| message == detail) {
-        td.status_messages.clear();
-        td.status_messages.push(detail.to_string());
-    }
-    set_state_to_import_blocked(app, td).await;
 }

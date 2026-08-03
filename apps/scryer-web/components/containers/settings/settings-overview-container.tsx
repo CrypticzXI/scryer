@@ -3,6 +3,7 @@ import { SettingsOverviewSection } from "@/components/views/settings/settings-ov
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { generalSettingsQuery } from "@/lib/graphql/queries";
 import {
+  clearTitleImageCacheMutation,
   rehydrateAllMetadataMutation,
   setMyUiSettingsMutation,
   updateGeneralSettingsMutation,
@@ -15,11 +16,20 @@ import {
   useUiSettings,
 } from "@/lib/context/ui-settings-context";
 import type { LocaleCode, LanguageOption } from "@/lib/i18n";
-import type { GeneralSettings, UiDateTimeFormat, UiSettings } from "@/lib/types/settings";
+import type {
+  GeneralSettings,
+  GeneralSettingsUpdate,
+  UiDateTimeFormat,
+  UiSettings,
+} from "@/lib/types/settings";
 
 const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   keepHistoryForever: false,
   historyRetentionDays: 180,
+  imageCacheMaxSizeMb: 256,
+  effectiveImageCacheMaxSizeBytes: 256 * 1024 * 1024,
+  effectiveImageCacheMaxSizeMb: 256,
+  imageCacheMaxSizeEnvOverrideActive: false,
   pluginHttpCaBundlePem: "",
   pluginHttpTrustedCertificates: [],
 };
@@ -54,6 +64,7 @@ export function SettingsOverviewContainer({
   );
   const [generalLoading, setGeneralLoading] = React.useState(true);
   const [generalSaving, setGeneralSaving] = React.useState(false);
+  const [imageCacheClearing, setImageCacheClearing] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -162,9 +173,13 @@ export function SettingsOverviewContainer({
     ],
   );
 
-  const handleSaveGeneralSettings = React.useCallback(async () => {
-    if (!generalSettings.keepHistoryForever && generalSettings.historyRetentionDays < 1) {
+  const handleSaveGeneralSettings = React.useCallback(async (update: GeneralSettingsUpdate) => {
+    if (update.historyRetentionDays !== undefined && update.historyRetentionDays < 1) {
       setGlobalStatus(t("settings.historyRetentionValidation"));
+      return;
+    }
+    if (update.imageCacheMaxSizeMb !== undefined && update.imageCacheMaxSizeMb < 1) {
+      setGlobalStatus(t("settings.imageCacheMaxSizeValidation"));
       return;
     }
 
@@ -172,11 +187,7 @@ export function SettingsOverviewContainer({
     try {
       const { data, error } = await client
         .mutation(updateGeneralSettingsMutation, {
-          input: {
-            keepHistoryForever: generalSettings.keepHistoryForever,
-            historyRetentionDays: generalSettings.historyRetentionDays,
-            pluginHttpCaBundlePem: generalSettings.pluginHttpCaBundlePem,
-          },
+          input: update,
         })
         .toPromise();
       if (error) throw error;
@@ -192,7 +203,23 @@ export function SettingsOverviewContainer({
     } finally {
       setGeneralSaving(false);
     }
-  }, [client, generalSettings, setGlobalStatus, t]);
+  }, [client, setGlobalStatus, t]);
+
+  const handleClearImageCache = React.useCallback(async () => {
+    if (imageCacheClearing) return;
+    setImageCacheClearing(true);
+    try {
+      const { error } = await client.mutation(clearTitleImageCacheMutation, {}).toPromise();
+      if (error) throw error;
+      setGlobalStatus(t("settings.imageCacheClearQueued"));
+    } catch (error) {
+      setGlobalStatus(
+        error instanceof Error ? error.message : t("status.failedToUpdate"),
+      );
+    } finally {
+      setImageCacheClearing(false);
+    }
+  }, [client, imageCacheClearing, setGlobalStatus, t]);
 
   return (
     <>
@@ -209,7 +236,9 @@ export function SettingsOverviewContainer({
         onGeneralSettingsChange={setGeneralSettings}
         generalLoading={generalLoading}
         generalSaving={generalSaving}
-        onSaveGeneralSettings={handleSaveGeneralSettings}
+        imageCacheClearing={imageCacheClearing}
+        onGeneralSettingsCommit={handleSaveGeneralSettings}
+        onClearImageCache={handleClearImageCache}
       />
       <ConfirmDialog
         open={pendingLanguage !== null}

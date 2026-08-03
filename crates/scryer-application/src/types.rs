@@ -118,7 +118,7 @@ pub struct CutoffUnmetItem {
     pub target_tier: String,
 }
 
-/// One bounded page of cutoff-unmet targets (RFC 119: bounded views). `total` is
+/// One bounded page of cutoff-unmet targets. `total` is
 /// the full unmet count for the query so the UI can paginate without loading the
 /// whole set into the browser.
 #[derive(Clone, Debug)]
@@ -675,6 +675,7 @@ pub enum DownloadDisplayState {
     ImportPending,
     ImportBlocked,
     ImportFailed,
+    Ignored,
     Removing,
     RemoveFailed,
 }
@@ -1027,7 +1028,7 @@ pub struct LibraryScanUnmatchedItem {
     pub updated_at: String,
 }
 
-/// Per-scope acquisition state (RFC 119). A row exists because something
+/// Per-scope acquisition state. A row exists because something
 /// *happened* to the scope — a search recorded decisions, a release was
 /// grabbed or went pending, the user paused it — never because a sweep
 /// materialized it. What to search is the derived target set
@@ -1142,6 +1143,10 @@ pub enum PendingReleaseStatus {
     Superseded,
     Expired,
     Dismissed,
+    /// Parked for a human decision (Pillar A3): the best candidate for the scope
+    /// was rejected as `ambiguous_identity`. Carries no delay-timer semantics and
+    /// is never auto-promoted — only an explicit grab-now or dismiss resolves it.
+    NeedsReview,
 }
 
 impl PendingReleaseStatus {
@@ -1154,6 +1159,7 @@ impl PendingReleaseStatus {
             Self::Superseded => "superseded",
             Self::Expired => "expired",
             Self::Dismissed => "dismissed",
+            Self::NeedsReview => "needs_review",
         }
     }
 
@@ -1166,8 +1172,16 @@ impl PendingReleaseStatus {
             "superseded" => Some(Self::Superseded),
             "expired" => Some(Self::Expired),
             "dismissed" => Some(Self::Dismissed),
+            "needs_review" => Some(Self::NeedsReview),
             _ => None,
         }
+    }
+
+    /// True for statuses the pending-releases view still lists as open work.
+    /// `needs_review` joins `waiting` in the listing base set so a parked row is
+    /// visible; it deliberately stays out of the delay-expiry processor.
+    pub fn is_open_for_review(self) -> bool {
+        matches!(self, Self::Waiting | Self::NeedsReview)
     }
 }
 
@@ -1185,6 +1199,7 @@ mod pending_release_status_tests {
             PendingReleaseStatus::Superseded,
             PendingReleaseStatus::Expired,
             PendingReleaseStatus::Dismissed,
+            PendingReleaseStatus::NeedsReview,
         ];
 
         for status in statuses {
@@ -1389,6 +1404,27 @@ pub struct ReleaseCandidateProvenance {
     pub title_validated_upstream: bool,
 }
 
+/// Indexer-asserted attributes read off a newznab/torznab response item: the
+/// `tvdbid`/`tmdbid`/`imdbid` attrs and the item's categories (raw numeric
+/// newznab ids and/or names, in indexer order). Both are *indexer* claims of the
+/// same trust tier — they feed the identity disambiguator (A2(2)) and the
+/// category veto (D2), never a title match on their own. Empty whenever the
+/// indexer asserted nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexerResponseAttributes {
+    pub tvdb_id: Option<String>,
+    pub tmdb_id: Option<String>,
+    pub imdb_id: Option<String>,
+    pub categories: Vec<String>,
+}
+
+impl IndexerResponseAttributes {
+    /// Whether the indexer asserted any external id on this result.
+    pub fn has_external_ids(&self) -> bool {
+        self.tvdb_id.is_some() || self.tmdb_id.is_some() || self.imdb_id.is_some()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct IndexerSearchResult {
     pub indexer_id: Option<String>,
@@ -1410,6 +1446,9 @@ pub struct IndexerSearchResult {
     /// Arbitrary indexer-specific metadata from WASM plugins.
     /// Passed through to OPA scoring as `input.release.extra`.
     pub extra: HashMap<String, serde_json::Value>,
+    /// Typed counterpart to `extra` for the response attrs the auto evaluator
+    /// consumes directly.
+    pub response_attributes: IndexerResponseAttributes,
     pub guid: Option<String>,
     pub info_url: Option<String>,
     pub provenance: Option<ReleaseCandidateProvenance>,
@@ -1420,7 +1459,7 @@ pub struct IndexerSearchResult {
     pub auto_decision_summary: Option<String>,
 }
 
-/// Per-indexer outcome of a single search query (RFC 119 convergence). Determines
+/// Per-indexer outcome of a single search query. Determines
 /// which routed indexers may be recorded as coverage: only an indexer that actually
 /// fired a query and returned a response (empty included) counts — never one the
 /// scheduler deferred/skipped, and never one whose query errored.
@@ -1438,7 +1477,7 @@ pub enum IndexerSearchOutcome {
 
 impl IndexerSearchOutcome {
     /// Whether this indexer actually executed a query and returned a response.
-    /// Only a fired indexer may be recorded as convergence coverage (RFC 119 §D2).
+    /// Only a fired indexer may be recorded as convergence coverage.
     pub fn fired(&self) -> bool {
         matches!(self, Self::Fired { .. })
     }
@@ -1460,7 +1499,7 @@ pub struct IndexerSearchResponse {
     pub api_max: Option<u32>,
     pub grab_current: Option<u32>,
     pub grab_max: Option<u32>,
-    /// Per-indexer outcomes for this query (RFC 119): which routed indexers fired
+    /// Per-indexer outcomes for this query: which routed indexers fired
     /// (empty or not), were skipped/deferred, or errored. Empty for synthetic or
     /// no-eligible-indexer responses.
     pub indexer_outcomes: Vec<IndexerQueryOutcome>,
@@ -1841,7 +1880,7 @@ pub struct CutoffUnmetQualitySummary {
     pub quality_tier: String,
 }
 
-/// The two derived acquisition-target kinds (RFC 119 §D1). `Missing` scopes have
+/// The two derived acquisition-target kinds. `Missing` scopes have
 /// no primary file; `CutoffUpgrade` scopes have a file whose quality is strictly
 /// below the effective profile cutoff. Both converge the same way — they differ
 /// only in which derived query produces them and in recency lane (upgrades are
@@ -1870,8 +1909,7 @@ impl WantedKind {
 }
 
 /// A monitored episode with no live primary media file — a raw candidate for the
-/// derived missing-target set (RFC 119 §D1: targets are computed from library
-/// state, never materialized). Policy gates (air-date window, recency lane) are
+/// derived missing-target set. Policy gates (air-date window, recency lane) are
 /// applied by the application layer.
 #[derive(Clone, Debug)]
 pub struct MissingEpisodeCandidate {
@@ -1914,7 +1952,7 @@ pub struct MissingSeriesMovieLinkCandidate {
 }
 
 /// Raw candidates for the derived missing-target set: monitored, fileless
-/// scopes straight from library state, in one sweep (RFC 119 §D1).
+/// scopes straight from library state, in one sweep.
 #[derive(Clone, Debug, Default)]
 pub struct MissingScopeCandidates {
     pub episodes: Vec<MissingEpisodeCandidate>,

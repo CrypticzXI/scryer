@@ -2149,6 +2149,12 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    /// Cooldown-isolation tests assert that a just-recorded cooldown is still
+    /// pending when it is read back. `wait_*_if_needed` reports `None` once the
+    /// deadline has lapsed, so the window has to outlast any scheduling stall on
+    /// a loaded CI runner; sub-100ms windows race and fail intermittently.
+    const COOLDOWN_ISOLATION_TEST_WINDOW: Duration = Duration::from_secs(1);
+
     #[test]
     fn parses_http_date_retry_after_first() {
         let retry_at = DateTime::<Utc>::from(SystemTime::now() + Duration::from_secs(60));
@@ -2377,7 +2383,7 @@ mod tests {
         let _ = registry
             .record_cooldown(
                 &alpha,
-                Duration::from_millis(25),
+                COOLDOWN_ISOLATION_TEST_WINDOW,
                 RetryAfterSource::FallbackBackoff,
             )
             .await;
@@ -2967,7 +2973,7 @@ mod tests {
         let _ = registry
             .record_destination_cooldown(
                 &destination,
-                Duration::from_millis(10),
+                COOLDOWN_ISOLATION_TEST_WINDOW,
                 RetryAfterSource::Seconds,
             )
             .await;

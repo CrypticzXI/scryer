@@ -33,9 +33,23 @@ export type AcquisitionSettings = {
 export type GeneralSettings = {
   keepHistoryForever: boolean;
   historyRetentionDays: number;
+  imageCacheMaxSizeMb: number;
+  effectiveImageCacheMaxSizeBytes: number;
+  effectiveImageCacheMaxSizeMb: number;
+  imageCacheMaxSizeEnvOverrideActive: boolean;
   pluginHttpCaBundlePem: string;
   pluginHttpTrustedCertificates: TrustedCertificateEntry[];
 };
+
+export type GeneralSettingsUpdate = Partial<
+  Pick<
+    GeneralSettings,
+    | "keepHistoryForever"
+    | "historyRetentionDays"
+    | "imageCacheMaxSizeMb"
+    | "pluginHttpCaBundlePem"
+  >
+>;
 
 export type UiDateTimeFormat = "LOCALE" | "ISO24H";
 
@@ -261,6 +275,8 @@ export type MediaSettings = {
   rootFolders: { path: string; isDefault: boolean }[];
   requiredAudioLanguages: string[];
   folderTemplate: string;
+  seasonFolderTemplate: string | null;
+  specialsFolderTemplate: string | null;
   renameEnabled: boolean;
   renameTemplate: string;
   renameCollisionPolicy: string;

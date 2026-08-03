@@ -10,7 +10,7 @@ import {
   RotateCcw,
   Trash2,
 } from "lucide-react";
-import { useBeforeUnload, useBlocker } from "react-router-dom";
+import { useBeforeUnload, useBlocker } from "react-router";
 import { useClient } from "urql";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { InfoHelp } from "@/components/common/info-help";

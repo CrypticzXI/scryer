@@ -297,6 +297,7 @@ pub use indexers::stats::InMemoryIndexerStatsTracker;
 #[cfg(feature = "image-processing")]
 pub use media::images::processor::HttpTitleImageProcessor;
 pub use media::images::title_image_store::TitleImageStore;
+pub use media::images::{ImageProxyBlob, ImageProxyRuntime, ImageProxyStore};
 pub use media::libraries::renamer::FileSystemLibraryRenamer;
 pub use media::libraries::scan_unmatched_store::LibraryScanUnmatchedStore;
 pub use media::libraries::scanner::FileSystemLibraryScanner;

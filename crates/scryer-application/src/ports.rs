@@ -1653,6 +1653,110 @@ pub trait TitleImageRepository: Send + Sync {
     ) -> AppResult<Option<TitleImageBlob>>;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImageProxyKind {
+    Poster,
+    Fanart,
+    EpisodeStill,
+    Person,
+}
+
+impl ImageProxyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Poster => "poster",
+            Self::Fanart => "fanart",
+            Self::EpisodeStill => "episode_still",
+            Self::Person => "person",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageProxyRegistration {
+    pub upstream_url: Option<String>,
+    pub owner_type: Option<String>,
+    pub owner_id: Option<String>,
+    pub image_kind: ImageProxyKind,
+    pub fallback_class: String,
+    pub default_variant: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageProxySourceRecord {
+    pub token: String,
+    pub upstream_url: Option<String>,
+    pub owner_type: Option<String>,
+    pub owner_id: Option<String>,
+    pub image_kind: String,
+    pub fallback_class: String,
+    pub last_seen_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageProxyCacheEntryRecord {
+    pub token: String,
+    pub variant: String,
+    pub content_type: String,
+    pub byte_size: i64,
+    pub upstream_etag: Option<String>,
+    pub upstream_last_modified: Option<String>,
+    pub fetched_at: chrono::DateTime<chrono::Utc>,
+    pub last_accessed_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[async_trait]
+pub trait ImageProxyRepository: Send + Sync {
+    /// Registers a server-approved image source and returns its Scryer-owned URL.
+    /// Implementations must never accept registrations from the HTTP image route.
+    fn register_image_source(&self, registration: ImageProxyRegistration) -> String;
+    async fn flush_image_proxy_sources(&self) -> AppResult<()>;
+    fn clear_image_proxy_memory(&self);
+
+    async fn get_image_proxy_source(
+        &self,
+        token: &str,
+    ) -> AppResult<Option<ImageProxySourceRecord>>;
+
+    async fn get_image_proxy_cache_entry(
+        &self,
+        token: &str,
+        variant: &str,
+    ) -> AppResult<Option<ImageProxyCacheEntryRecord>>;
+
+    async fn upsert_image_proxy_cache_entry(
+        &self,
+        entry: &ImageProxyCacheEntryRecord,
+    ) -> AppResult<()>;
+
+    async fn touch_image_proxy_cache_entry(
+        &self,
+        token: &str,
+        variant: &str,
+        observed_fetched_at: chrono::DateTime<chrono::Utc>,
+        last_accessed_at: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<()>;
+
+    async fn delete_image_proxy_cache_entry(&self, token: &str, variant: &str) -> AppResult<()>;
+
+    async fn list_image_proxy_cache_entries_lru(
+        &self,
+    ) -> AppResult<Vec<ImageProxyCacheEntryRecord>>;
+
+    async fn clear_image_proxy_cache_entries(&self) -> AppResult<()>;
+
+    async fn prune_image_proxy_sources_before(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<u64>;
+}
+
+#[async_trait]
+pub trait ImageProxyCacheControl: Send + Sync {
+    async fn clear_cache(&self) -> AppResult<()>;
+    async fn set_configured_max_bytes(&self, value: u64) -> AppResult<()>;
+}
+
 #[async_trait]
 pub trait TitleImageProcessor: Send + Sync {
     async fn fetch_and_process_image(
@@ -1916,6 +2020,11 @@ pub struct VerifiedExternalIdentity {
     pub username: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+    /// Whether the remote account has a password configured, when the provider
+    /// reports it. `None` means the provider does not expose the fact (Plex
+    /// verifies through a PIN exchange, not a password), so callers must not
+    /// treat unknown as "no password".
+    pub remote_password_configured: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2273,7 +2382,7 @@ pub trait IndexerCapsSnapshotRefresher: Send + Sync {
     ) -> AppResult<Option<IndexerCapsSnapshot>>;
 }
 
-/// One coverage-ledger row (RFC 119 §6 #12): the raw `(scope_key, indexer_id)`
+/// One coverage-ledger row: the raw `(scope_key, indexer_id)`
 /// coverage a batched page fetch returns, so the wanted views can compute
 /// covered/routed counts in memory for a whole page in one round-trip instead of
 /// a per-row lookup.
@@ -2285,7 +2394,7 @@ pub struct ScopeCoverageRow {
     pub searched_at: String,
 }
 
-/// RFC 119 convergence ledger: which indexers an acquisition scope's catalog has
+/// Convergence ledger: which indexers an acquisition scope's catalog has
 /// been actively searched against, under which search-criteria fingerprint. A
 /// scope is "converged" (RSS-only) once every routed indexer has a
 /// current-fingerprint coverage row; a fingerprint change or a new indexer
@@ -2317,7 +2426,7 @@ pub trait ScopeIndexerCoverageRepository: Send + Sync {
     ) -> AppResult<Vec<String>>;
 
     /// All coverage rows for the given scope keys, fetched in one round-trip
-    /// (RFC 119 §6 #12). The wanted views group these by scope key and compare
+    ///. The wanted views group these by scope key and compare
     /// each row's `fingerprint` to the live one in memory, so a full page's
     /// convergence progress costs a single query — never a per-row lookup. Rows
     /// for scope keys with no coverage are simply absent.
@@ -2513,7 +2622,7 @@ pub struct IndexerSearchLearningContext {
     pub title_id: String,
     pub facet: String,
     pub subject_kind: ReleaseSearchSubjectKind,
-    /// Background convergence value hint for this scope (RFC 119 §D3): the
+    /// Background convergence value hint for this scope: the
     /// convergence cursor sets it from the target's recency lane (hot → high,
     /// cold → low). Rides the Auto-only background search path into the
     /// scheduler candidate's `ExpectedValueHint`; RSS and interactive searches
@@ -2684,12 +2793,52 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         Ok(())
     }
 
+    /// Upsert the durable identity tracked state, returning the previous
+    /// state. When the previous state is listed in `preserve_previous` the
+    /// row is left untouched and that state is returned — this is how a
+    /// terminal outcome (imported/failed) survives a later ignore attempt.
+    async fn upsert_identity_tracked_state_returning_previous(
+        &self,
+        identity: &DownloadSubmissionIdentity,
+        source_identity: Option<&DownloadSourceIdentity>,
+        tracked_state: &str,
+        preserve_previous: &[&str],
+        reason: Option<&str>,
+        detail: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        let previous = self
+            .get_identity_tracked_state(identity, source_identity)
+            .await?;
+        if let Some(previous) = previous
+            .as_deref()
+            .filter(|previous| preserve_previous.contains(previous))
+        {
+            return Ok(Some(previous.to_string()));
+        }
+        self.record_identity_tracked_state(
+            identity,
+            source_identity,
+            tracked_state,
+            reason,
+            detail,
+        )
+        .await?;
+        Ok(previous)
+    }
+
     async fn get_identity_tracked_state(
         &self,
         _identity: &DownloadSubmissionIdentity,
         _source_identity: Option<&DownloadSourceIdentity>,
     ) -> AppResult<Option<String>> {
         Ok(None)
+    }
+
+    async fn list_identity_tracked_states_for_client_items(
+        &self,
+        _client_items: &[DownloadSourceIdentity],
+    ) -> AppResult<Vec<(DownloadSourceIdentity, String)>> {
+        Ok(Vec::new())
     }
 
     async fn list_for_client_items(
@@ -3239,7 +3388,7 @@ pub trait MediaFileRepository: Send + Sync {
 
     /// One sweep over library state returning every monitored, fileless scope —
     /// the raw candidates the derived missing-target set is computed from
-    /// (RFC 119 §D1). Facet shape, availability windows, and filler opt-ins are
+    ///. Facet shape, availability windows, and filler opt-ins are
     /// application-layer policy applied on top of these rows.
     async fn list_missing_scope_candidates(&self) -> AppResult<MissingScopeCandidates> {
         Ok(MissingScopeCandidates::default())
@@ -3847,6 +3996,10 @@ pub trait IndexerPluginProvider: Send + Sync {
         let _ = provider_type;
         Err("this provider does not support single-plugin runtime mutation".to_string())
     }
+    fn prepare_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support builtin runtime preparation".to_string())
+    }
     fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
         let _ = provider_type;
         Err("this provider does not support builtin runtime restoration".to_string())
@@ -3924,6 +4077,12 @@ pub trait IndexerManagementClient: Send + Sync {
         Err(AppError::Repository(
             "managed child sync is not supported for this provider".to_string(),
         ))
+    }
+    async fn enrichment_sync_plan(
+        &self,
+        _parent_config_id: &str,
+    ) -> AppResult<Option<IndexerSyncPlan>> {
+        Ok(None)
     }
     fn name(&self) -> &str;
 }
@@ -4380,6 +4539,10 @@ pub trait SubtitlePluginProvider: Send + Sync {
         let _ = provider_type;
         Err("this provider does not support single-plugin runtime mutation".to_string())
     }
+    fn prepare_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
+        let _ = provider_type;
+        Err("this provider does not support builtin runtime preparation".to_string())
+    }
     fn restore_builtin_plugin(&self, provider_type: &str) -> Result<(), String> {
         let _ = provider_type;
         Err("this provider does not support builtin runtime restoration".to_string())
@@ -4595,6 +4758,28 @@ pub trait DownloadClient: Send + Sync {
         self.list_recent_activity(limit).await
     }
 
+    /// Recent activity restricted to the given client types.
+    ///
+    /// Used to reconcile clients that are excluded from generic polling
+    /// because a realtime bridge owns their live queue: the bridge can miss
+    /// terminal events, so history still needs a bounded sweep.
+    async fn list_recent_activity_for_client_types(
+        &self,
+        limit: usize,
+        client_types: &[&str],
+    ) -> AppResult<Vec<DownloadQueueItem>> {
+        if limit == 0 || client_types.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut items = self.list_recent_activity(limit).await?;
+        items.retain(|item| {
+            client_types
+                .iter()
+                .any(|client_type| item.client_type.eq_ignore_ascii_case(client_type.trim()))
+        });
+        Ok(items)
+    }
+
     async fn list_completed_downloads(&self) -> AppResult<Vec<CompletedDownload>> {
         Err(AppError::Repository(
             "completed download listing is not supported for this client".to_string(),
@@ -4668,6 +4853,47 @@ pub trait DownloadClient: Send + Sync {
             excluded_client_types,
         )
         .await
+    }
+
+    /// Fetch a single completed download by its client-scoped source
+    /// reference.
+    ///
+    /// The default scans the bounded recent window, so an item that has aged
+    /// out of that window is not found. Clients whose backend supports a
+    /// direct per-item history lookup should override this — callers rely on
+    /// it to recover long-stuck items past the recent listing.
+    async fn get_completed_download_for_source(
+        &self,
+        client_id: &str,
+        client_type: &str,
+        download_client_item_id: &str,
+    ) -> AppResult<Option<CompletedDownload>> {
+        let reference = download_client_item_id.trim();
+        if reference.is_empty() {
+            return Ok(None);
+        }
+
+        let client_ids = Some(client_id.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let client_types = Some(client_type.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let items = self
+            .list_recent_completed_downloads_for_client_scope(
+                crate::DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT,
+                &client_ids,
+                &client_types,
+                &[],
+            )
+            .await?;
+        Ok(items
+            .into_iter()
+            .find(|item| item.download_client_item_id == reference))
     }
 
     async fn pause_queue_item(&self, _id: &str) -> AppResult<()> {

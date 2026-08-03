@@ -101,6 +101,12 @@ fn from_general_settings(settings: scryer_application::GeneralSettings) -> Gener
     GeneralSettingsPayload {
         keep_history_forever: settings.keep_history_forever,
         history_retention_days: settings.history_retention_days,
+        image_cache_max_size_mb: settings.image_cache_max_size_mb,
+        effective_image_cache_max_size_bytes: Long::from_u64_saturating(
+            settings.effective_image_cache_max_size_bytes,
+        ),
+        effective_image_cache_max_size_mb: settings.effective_image_cache_max_size_mb,
+        image_cache_max_size_env_override_active: settings.image_cache_max_size_env_override_active,
         plugin_http_ca_bundle_pem: settings.plugin_http_ca_bundle_pem,
         plugin_http_trusted_certificates: settings
             .plugin_http_trusted_certificates
@@ -707,6 +713,7 @@ impl SettingsMutations {
                 AppUpdateGeneralSettings {
                     keep_history_forever: input.keep_history_forever,
                     history_retention_days: input.history_retention_days,
+                    image_cache_max_size_mb: input.image_cache_max_size_mb,
                     plugin_http_ca_bundle_pem: input.plugin_http_ca_bundle_pem,
                 },
             )
@@ -1040,6 +1047,8 @@ impl SettingsMutations {
                 }),
                 required_audio_languages: input.required_audio_languages,
                 folder_template: input.folder_template,
+                season_folder_template: input.season_folder_template,
+                specials_folder_template: input.specials_folder_template,
                 rename_enabled: input.rename_enabled,
                 rename_template: input.rename_template,
                 rename_collision_policy: input

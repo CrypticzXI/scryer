@@ -1,9 +1,9 @@
-//! The frozen crypto/CRC host ABI (RFC 123 §5), served natively on wasmtime.
+//! The frozen crypto/CRC host ABI, served natively on wasmtime.
 //!
 //! The AES-CBC (aws-lc, stateless per call) and CRC-32 (`crc32fast`, seeded)
 //! cores are moved verbatim from the former `archive_crypto_host.rs` — only the
 //! guest-memory plumbing changes. The Extism version addressed guest offsets as
-//! kernel `MemoryHandle`s (the SIGBUS defect, RFC §1); here we slice the guest's
+//! kernel `MemoryHandle`s (the SIGBUS defect); here we slice the guest's
 //! exported linear memory directly (`Memory::data_mut`) for true zero-copy, with
 //! the `[ptr, ptr+len)` range validated against the real memory size using
 //! overflow-checked arithmetic (§5).
@@ -16,7 +16,7 @@ use wasmtime::{Caller, Extern, Linker};
 /// Import module string both functions live under. The weaver-unrar guest's
 /// default namespace is the embedder-neutral `host`; Scryer's plugin artifacts
 /// opt into `extism:host/user` via weaver-unrar's `host-abi-extism` feature, so
-/// the host serves that namespace and both sides agree (RFC §5). No extism
+/// the host serves that namespace and both sides agree. No extism
 /// dependency is involved — the string is just the agreed module name.
 const CRYPTO_HOST_NAMESPACE: &str = "extism:host/user";
 
@@ -148,7 +148,7 @@ fn checked_range(ptr: i64, len: usize, mem_len: usize) -> Option<Range<usize>> {
     (end <= mem_len).then_some(ptr..end)
 }
 
-// ── Cores moved verbatim from archive_crypto_host.rs (RFC §7.2.6) ──────────
+// ── Cores moved verbatim from archive_crypto_host.rs ──────────
 
 fn crc32(seed: u32, buf: &[u8]) -> u32 {
     // `new_with_initial` resumes from a finalized IEEE CRC value, which is the
@@ -303,9 +303,14 @@ mod tests {
           (memory (export "memory") 1))
     "#;
 
+    fn module_from_wat(engine: &Engine, wat: &str, context: &str) -> Module {
+        let wasm = wat::parse_str(wat).unwrap_or_else(|error| panic!("{context}: {error}"));
+        Module::new(engine, wasm).unwrap_or_else(|error| panic!("{context}: {error}"))
+    }
+
     fn crypto_guest() -> (Store<()>, wasmtime::Instance) {
         let engine = Engine::default();
-        let module = Module::new(&engine, CRYPTO_GUEST_WAT).expect("compile crypto guest");
+        let module = module_from_wat(&engine, CRYPTO_GUEST_WAT, "compile crypto guest");
         let mut linker: Linker<()> = Linker::new(&engine);
         add_to_linker(&mut linker).expect("register crypto host fns");
         let mut store = Store::new(&engine, ());
@@ -318,7 +323,7 @@ mod tests {
     #[test]
     fn legacy_crypto_import_aliases_still_instantiate() {
         let engine = Engine::default();
-        let module = Module::new(&engine, LEGACY_CRYPTO_GUEST_WAT).expect("compile legacy guest");
+        let module = module_from_wat(&engine, LEGACY_CRYPTO_GUEST_WAT, "compile legacy guest");
         let mut linker: Linker<()> = Linker::new(&engine);
         add_to_linker(&mut linker).expect("register crypto host fns");
         let mut store = Store::new(&engine, ());
@@ -461,7 +466,7 @@ mod tests {
     #[test]
     fn host_reports_missing_memory_export() {
         let engine = Engine::default();
-        let module = Module::new(&engine, NO_MEMORY_GUEST_WAT).expect("compile no-memory guest");
+        let module = module_from_wat(&engine, NO_MEMORY_GUEST_WAT, "compile no-memory guest");
         let mut linker: Linker<()> = Linker::new(&engine);
         add_to_linker(&mut linker).unwrap();
         let mut store = Store::new(&engine, ());

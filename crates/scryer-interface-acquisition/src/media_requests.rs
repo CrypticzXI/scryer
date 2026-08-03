@@ -1,16 +1,16 @@
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use scryer_domain::ExternalId;
 
-use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
-use crate::mappers::from_media_request;
-use crate::types::{
+use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
+use scryer_interface_media::mappers::from_media_request;
+use scryer_interface_media::types::{
     ApproveMediaRequestInput, ApproveMediaRequestPayload, MediaRequestActionPayload,
     MediaRequestPayload, SubmitMediaRequestInput, SubmitMediaRequestPayload,
     UpdateMediaRequestInput,
 };
 
 #[derive(Default)]
-pub(crate) struct MediaRequestMutations;
+pub struct MediaRequestMutations;
 
 #[Object]
 impl MediaRequestMutations {
@@ -126,7 +126,7 @@ impl MediaRequestMutations {
             .await
             .map_err(to_gql_error)?;
 
-        Ok(from_media_request(request))
+        Ok(from_media_request(&app, request))
     }
 
     async fn cancel_my_media_request(

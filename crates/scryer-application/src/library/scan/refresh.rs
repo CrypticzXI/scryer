@@ -561,7 +561,8 @@ pub(super) async fn background_refresh_movies(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    #[cfg(unix)]
+    use super::list_child_directories;
 
     #[cfg(unix)]
     #[tokio::test]

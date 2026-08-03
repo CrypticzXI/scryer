@@ -451,6 +451,7 @@ impl ExternalImportMonitorWarmupStatus {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExternalImportMonitorWarmupPhase {
+    LoadingIndexers,
     LoadingMovies,
     LoadingSeries,
     LoadingEpisodes,
@@ -567,6 +568,17 @@ pub struct ExternalImportArrSourceWarmupResult {
     pub indexers: Vec<crate::external_import::ArrIndexer>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ExternalImportProwlarrWarmupResult {
+    pub base_url: String,
+    /// The operator-entered Prowlarr API key the discovery ran with. Preview
+    /// merges it into the import group so downstream consumers see the real
+    /// credential, never a placeholder.
+    pub api_key: String,
+    pub version: Option<String>,
+    pub plan: crate::IndexerSyncPlan,
+}
+
 #[derive(Clone)]
 pub struct ExternalImportMonitorWarmupBeginResult {
     pub snapshot: ExternalImportMonitorWarmupProgressSnapshot,
@@ -584,6 +596,7 @@ struct ExternalImportMonitorWarmupSessionHandle {
     tx: tokio::sync::watch::Sender<ExternalImportMonitorWarmupProgressSnapshot>,
     scan_hints: Option<crate::LibraryScanHintSet>,
     arr_source_result: Option<ExternalImportArrSourceWarmupResult>,
+    prowlarr_result: Option<ExternalImportProwlarrWarmupResult>,
 }
 
 #[derive(Default)]
@@ -652,6 +665,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
                 tx,
                 scan_hints: None,
                 arr_source_result: None,
+                prowlarr_result: None,
             },
         );
 
@@ -724,6 +738,7 @@ impl ExternalImportMonitorWarmupOrchestrator {
                     tx,
                     scan_hints: None,
                     arr_source_result: None,
+                    prowlarr_result: None,
                 },
             );
         }
@@ -772,6 +787,32 @@ impl ExternalImportMonitorWarmupOrchestrator {
         state.sessions_by_id.get(session_id).and_then(|handle| {
             (handle.actor_user_id == actor_user_id)
                 .then(|| handle.arr_source_result.clone())
+                .flatten()
+        })
+    }
+
+    pub async fn set_prowlarr_result(
+        &self,
+        session_id: &str,
+        result: ExternalImportProwlarrWarmupResult,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(handle) = state.sessions_by_id.get_mut(session_id) else {
+            return false;
+        };
+        handle.prowlarr_result = Some(result);
+        true
+    }
+
+    pub async fn prowlarr_result(
+        &self,
+        actor_user_id: &str,
+        session_id: &str,
+    ) -> Option<ExternalImportProwlarrWarmupResult> {
+        let state = self.state.lock().await;
+        state.sessions_by_id.get(session_id).and_then(|handle| {
+            (handle.actor_user_id == actor_user_id)
+                .then(|| handle.prowlarr_result.clone())
                 .flatten()
         })
     }
@@ -850,7 +891,11 @@ impl ExternalImportMonitorWarmupOrchestrator {
             let Some(handle) = state.sessions_by_id.get(&session_id) else {
                 continue;
             };
-            if !handle.connection_fingerprint.starts_with("arr-source=") {
+            if !handle.connection_fingerprint.starts_with("arr-source=")
+                && !handle
+                    .connection_fingerprint
+                    .starts_with("prowlarr-source=")
+            {
                 continue;
             }
             let snapshot = handle.tx.borrow().clone();
@@ -945,7 +990,7 @@ pub struct AppRuntimeAcquisitionState {
     pub tracked_download_snapshot:
         Arc<tokio::sync::RwLock<HashMap<String, tracked_downloads::TrackedDownloadQueueMetadata>>>,
     /// Cancellation tokens for in-flight interactive acquisition-search jobs
-    /// (RFC 119 §7.3), keyed by job-run id — mirrors the library-scan cancel map.
+    ///, keyed by job-run id — mirrors the library-scan cancel map.
     pub acquisition_search_cancellation_tokens:
         Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     /// In-memory registry of interactive release-search jobs (hotfix 0.17.1),
@@ -995,8 +1040,7 @@ pub struct AppRuntimeJobState {
     pub discovery_sync_wake: Arc<tokio::sync::Notify>,
     pub backup_execution_guards: BackupExecutionGuardTable,
     pub title_deletion_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Single-flight guard for the interactive acquisition-search job (RFC 119
-    /// §7.3) — mirrors `title_deletion_lock`.
+    /// Single-flight guard for the interactive acquisition-search job — mirrors `title_deletion_lock`.
     pub acquisition_search_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -1303,6 +1347,8 @@ pub struct AppLibraryServices {
     pub(crate) media_files: Arc<dyn MediaFileRepository>,
     pub(crate) media_analyzer: Arc<dyn MediaAnalyzer>,
     pub(crate) title_images: Arc<dyn TitleImageRepository>,
+    pub(crate) image_proxy: Arc<dyn ImageProxyRepository>,
+    pub(crate) image_proxy_cache_control: Arc<dyn ImageProxyCacheControl>,
     pub(crate) title_image_processor: Arc<dyn TitleImageProcessor>,
     pub(crate) library_probe_signatures: Arc<dyn LibraryProbeRepository>,
     pub(crate) library_scan_unmatched_items: Arc<dyn LibraryScanUnmatchedItemRepository>,
@@ -1531,6 +1577,8 @@ impl AppServices {
                 media_files: Arc::new(NullMediaFileRepository),
                 media_analyzer: Arc::new(NativeMediaAnalyzer),
                 title_images: Arc::new(NullTitleImageRepository),
+                image_proxy: Arc::new(null_repositories::NullImageProxyRepository),
+                image_proxy_cache_control: Arc::new(null_repositories::NullImageProxyCacheControl),
                 title_image_processor: Arc::new(NullTitleImageProcessor),
                 library_probe_signatures: Arc::new(null_repositories::NullLibraryProbeRepository),
                 library_scan_unmatched_items: Arc::new(
@@ -2090,6 +2138,16 @@ impl AppServicesBuilder {
         Arc<dyn TitleImageRepository>
     );
     app_services_builder_setter!(
+        with_image_proxy,
+        library.image_proxy,
+        Arc<dyn ImageProxyRepository>
+    );
+    app_services_builder_setter!(
+        with_image_proxy_cache_control,
+        library.image_proxy_cache_control,
+        Arc<dyn ImageProxyCacheControl>
+    );
+    app_services_builder_setter!(
         with_title_image_processor,
         library.title_image_processor,
         Arc<dyn TitleImageProcessor>
@@ -2262,19 +2320,27 @@ impl AppUseCase {
     async fn invalidate_monitored_title_matcher(&self) {
         let mut state = self.runtime.catalog.monitored_title_matcher.write().await;
         state.dirty = true;
+        state.generation = state.generation.wrapping_add(1);
     }
 
     pub(crate) async fn monitored_title_matcher(
         &self,
     ) -> AppResult<Arc<crate::import_title_resolution::MonitoredTitleMatcher>> {
-        {
+        const MATCHER_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+        let observed_generation = {
             let state = self.runtime.catalog.monitored_title_matcher.read().await;
+            let fresh = state
+                .built_at
+                .is_some_and(|built_at| built_at.elapsed() <= MATCHER_MAX_AGE);
             if !state.dirty
+                && fresh
                 && let Some(matcher) = state.matcher.clone()
             {
                 return Ok(matcher);
             }
-        }
+            state.generation
+        };
 
         let titles = self
             .services
@@ -2287,13 +2353,15 @@ impl AppUseCase {
         ));
 
         let mut state = self.runtime.catalog.monitored_title_matcher.write().await;
-        if state.dirty || state.matcher.is_none() {
-            state.matcher = Some(matcher.clone());
+        state.matcher = Some(matcher.clone());
+        state.built_at = Some(std::time::Instant::now());
+        // Only clear dirty when no invalidation raced the rebuild; a bumped
+        // generation means this matcher may already be stale, so the next
+        // caller rebuilds again rather than trusting it.
+        if state.generation == observed_generation {
             state.dirty = false;
-            return Ok(matcher);
         }
-
-        Ok(state.matcher.clone().unwrap_or(matcher))
+        Ok(matcher)
     }
 
     pub fn runtime_build_lane(&self) -> BinaryLane {
@@ -3634,13 +3702,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn external_import_warmup_prune_only_removes_arr_source_sessions() {
+    async fn external_import_prowlarr_warmup_deduplicates_per_actor_and_isolates_results() {
+        let orchestrator = ExternalImportMonitorWarmupOrchestrator::default();
+        let first = orchestrator
+            .begin(
+                "user-1",
+                "prowlarr-source=http://prowlarr|key",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-1".into()),
+            )
+            .await;
+        let reused = orchestrator
+            .begin(
+                "user-1",
+                "prowlarr-source=http://prowlarr|key",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-2".into()),
+            )
+            .await;
+        let other_actor = orchestrator
+            .begin(
+                "user-2",
+                "prowlarr-source=http://prowlarr|key",
+                ExternalImportMonitorWarmupProgressSnapshot::new("session-3".into()),
+            )
+            .await;
+
+        assert!(first.created);
+        assert!(!reused.created);
+        assert_eq!(reused.snapshot.session_id, first.snapshot.session_id);
+        assert!(other_actor.created);
+        assert_ne!(other_actor.snapshot.session_id, first.snapshot.session_id);
+
+        assert!(
+            orchestrator
+                .set_prowlarr_result(
+                    &first.snapshot.session_id,
+                    ExternalImportProwlarrWarmupResult {
+                        base_url: "http://prowlarr".into(),
+                        api_key: "key".into(),
+                        version: Some("2.0.0".into()),
+                        plan: crate::IndexerSyncPlan {
+                            children: Vec::new(),
+                        },
+                    },
+                )
+                .await
+        );
+        assert!(
+            orchestrator
+                .prowlarr_result("user-1", &first.snapshot.session_id)
+                .await
+                .is_some()
+        );
+        assert!(
+            orchestrator
+                .prowlarr_result("user-2", &first.snapshot.session_id)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn external_import_warmup_prune_only_removes_import_source_sessions() {
         let orchestrator = ExternalImportMonitorWarmupOrchestrator::default();
         let source = orchestrator
             .begin(
                 "user-1",
                 "arr-source=sonarr|http://sonarr|key",
                 ExternalImportMonitorWarmupProgressSnapshot::new("source-session".into()),
+            )
+            .await;
+        let prowlarr_source = orchestrator
+            .begin(
+                "user-1",
+                "prowlarr-source=http://prowlarr|key",
+                ExternalImportMonitorWarmupProgressSnapshot::new("prowlarr-session".into()),
             )
             .await;
         let apply = orchestrator
@@ -3654,7 +3789,7 @@ mod tests {
             .await;
         let old_updated_at = (Utc::now() - chrono::Duration::hours(3)).to_rfc3339();
 
-        for snapshot in [&source.snapshot, &apply.snapshot] {
+        for snapshot in [&source.snapshot, &prowlarr_source.snapshot, &apply.snapshot] {
             let mut completed = snapshot.clone();
             completed.status = ExternalImportMonitorWarmupStatus::Completed;
             completed.updated_at = old_updated_at.clone();
@@ -3666,7 +3801,9 @@ mod tests {
             .prune_terminal_older_than(chrono::Duration::hours(2))
             .await;
 
-        assert_eq!(removed, vec!["source-session".to_string()]);
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&"source-session".to_string()));
+        assert!(removed.contains(&"prowlarr-session".to_string()));
         assert!(
             orchestrator
                 .snapshot("user-1", crate::EXTERNAL_IMPORT_MONITOR_APPLY_SESSION_ID)

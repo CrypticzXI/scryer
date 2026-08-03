@@ -27,6 +27,16 @@ query GetMovie($tvdbId: Int!, $language: String!) {
       }
       studio
       tmdb_release_date
+      rating
+      rating_sources
+      external_ratings {
+        source
+        value
+        score
+        normalized
+        votes
+        url
+      }
       artworks {
         kind
         url

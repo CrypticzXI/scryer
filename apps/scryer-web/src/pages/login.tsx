@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router";
 import { Fingerprint, KeyRound, Loader2 } from "lucide-react";
 import { TotpQrCode } from "@/components/common/totp-qr-code";
 import { useAuth, type AuthUser } from "@/lib/hooks/use-auth";
@@ -111,7 +111,12 @@ export default function LoginPage() {
     effectiveFormLoginEnabled,
     passkeyEnabled,
   } = useAuth();
-  const [activeMethod, setActiveMethod] = useState<LoginMethod>(null);
+  // Default to the Scryer password method so its form is in the DOM and visible
+  // at first paint. Password managers detect credential fields on load; a form
+  // that only mounts after a chooser click is never offered for autofill. This
+  // also pins the form across the async settings load below, which would
+  // otherwise raise the method count and unmount an already-detected form.
+  const [activeMethod, setActiveMethod] = useState<LoginMethod>("password");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -788,7 +793,17 @@ export default function LoginPage() {
                   onCancel={resetJellyfinTotpChallenge}
                 />
               ) : jellyfinFormVisible ? (
-                <div id="jellyfin-login-form" className="space-y-3">
+                // Jellyfin credentials are a separate account from the Scryer
+                // login, so this form opts out of password-manager autofill and
+                // save prompts. It is still a real form so Enter submits.
+                <form
+                  id="jellyfin-login-form"
+                  className="space-y-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void handleJellyfinSignIn();
+                  }}
+                >
                   {jellyfinConnections.length > 1 ? (
                     <select
                       id="login-jellyfin-connection"
@@ -816,7 +831,7 @@ export default function LoginPage() {
                   <Input
                     id="jellyfin-username"
                     type="text"
-                    autoComplete="username"
+                    ignorePasswordManagers
                     value={jellyfinUsername}
                     onChange={(event) => {
                       setJellyfinUsername(event.target.value);
@@ -828,7 +843,7 @@ export default function LoginPage() {
                   <Input
                     id="jellyfin-password"
                     type="password"
-                    autoComplete="current-password"
+                    ignorePasswordManagers
                     value={jellyfinPassword}
                     onChange={(event) => {
                       setJellyfinPassword(event.target.value);
@@ -839,8 +854,7 @@ export default function LoginPage() {
                   />
                   <button
                     id="jellyfin-login-submit"
-                    type="button"
-                    onClick={handleJellyfinSignIn}
+                    type="submit"
                     disabled={
                       anySubmitting ||
                       !jellyfinConnectionId ||
@@ -855,7 +869,7 @@ export default function LoginPage() {
                     ) : null}
                     {jellyfinSubmitting ? t("auth.signingIn") : t("auth.signIn")}
                   </button>
-                </div>
+                </form>
               ) : null}
             </>
           ) : null}

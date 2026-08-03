@@ -9,7 +9,7 @@ mod tests {
         prepare_next_tracked_download_background_work_dispatch,
         prepare_tracked_download_background_work_dispatch,
         reconcile_duplicate_terminal_source_states, synthetic_tracked_snapshot_queue_item,
-        tracked_download_queue_snapshot,
+        source_provider_label, tracked_download_queue_snapshot,
     };
     use crate::DownloadDisplayState;
     use chrono::{Duration, Utc};
@@ -51,6 +51,7 @@ mod tests {
             imported_at: None,
             delete_status: None,
             delete_error_message: None,
+            source_provider: None,
             is_scryer_origin: true,
             tracked_state: None,
             tracked_status: None,
@@ -554,6 +555,45 @@ mod tests {
             DownloadDisplayState::Failed
         );
         assert_eq!(classified.bucket, DownloadQueueBucket::HistoryFailed);
+    }
+
+    #[test]
+    fn ignored_state_overrides_a_stale_failed_import_overlay() {
+        let mut queue_item = item("job-ignored", DownloadQueueState::Failed);
+        queue_item.import_status = Some(ImportStatus::Failed);
+        queue_item.tracked_state = Some(TrackedDownloadState::Ignored);
+
+        let classified = classify_download_queue_item(&queue_item);
+
+        assert_eq!(
+            derive_download_queue_display_state(&queue_item),
+            DownloadDisplayState::Ignored
+        );
+        assert_eq!(classified.bucket, DownloadQueueBucket::HistorySuccess);
+    }
+
+    #[test]
+    fn source_provider_label_prefers_a_name_and_never_returns_a_url() {
+        assert_eq!(
+            source_provider_label(
+                Some("Fixture Indexer"),
+                Some("https://indexer.example/api?t=get&apikey=secret"),
+            )
+            .as_deref(),
+            Some("Fixture Indexer")
+        );
+        assert_eq!(
+            source_provider_label(
+                None,
+                Some("https://indexer.example/api?t=get&apikey=secret"),
+            )
+            .as_deref(),
+            Some("indexer.example")
+        );
+        assert_eq!(
+            source_provider_label(None, Some("Historic RSS Indexer")).as_deref(),
+            Some("Historic RSS Indexer")
+        );
     }
 
     #[test]

@@ -2808,7 +2808,7 @@ async fn graphql_add_title_default_root_id_stores_library_default() {
     );
 }
 
-/// RFC 119: the per-item `triggerTitleWantedSearch`/`triggerSeasonWantedSearch`
+/// The per-item `triggerTitleWantedSearch`/`triggerSeasonWantedSearch`
 /// mutations were removed. A fileless monitored movie is a *derived* Missing
 /// target (no seeding, no state row required): it appears directly in
 /// `wantedItems(wantedKind: MISSING)` with convergence progress, and the
@@ -2956,6 +2956,8 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
             download_client_type: "sabnzbd".to_string(),
             download_client_item_id: "queue-delete".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Delete With Cleanup".to_string()),
             request_signature: None,

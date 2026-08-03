@@ -4,7 +4,12 @@ use super::*;
 async fn clear_title_image_cache_collapses_duplicate_requests_and_waits_for_scans() {
     let (app, admin) = bootstrap_with_user_repo(Arc::new(MockUserRepo::default()));
     let title_images = Arc::new(BlockingTitleImageRepo::default());
-    let app = app.with_test_overrides(|services| services.with_title_images(title_images.clone()));
+    let proxy_cache = Arc::new(RecordingImageProxyCacheControl::default());
+    let app = app.with_test_overrides(|services| {
+        services
+            .with_title_images(title_images.clone())
+            .with_image_proxy_cache_control(proxy_cache.clone())
+    });
 
     let scan = app
         .runtime
@@ -54,6 +59,7 @@ async fn clear_title_image_cache_collapses_duplicate_requests_and_waits_for_scan
 
     title_images.release_clear.notify_waiters();
     wait_for_title_image_cache_clear_idle(&app).await;
+    assert_eq!(proxy_cache.clear_calls.load(Ordering::SeqCst), 1);
 
     assert!(
         app.clear_title_image_cache(&admin)
@@ -63,6 +69,24 @@ async fn clear_title_image_cache_collapses_duplicate_requests_and_waits_for_scan
     wait_for_title_image_clear_calls(&title_images, 2).await;
     title_images.release_clear.notify_waiters();
     wait_for_title_image_cache_clear_idle(&app).await;
+    assert_eq!(proxy_cache.clear_calls.load(Ordering::SeqCst), 2);
+}
+
+#[derive(Default)]
+struct RecordingImageProxyCacheControl {
+    clear_calls: AtomicUsize,
+}
+
+#[async_trait]
+impl ImageProxyCacheControl for RecordingImageProxyCacheControl {
+    async fn clear_cache(&self) -> AppResult<()> {
+        self.clear_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn set_configured_max_bytes(&self, _value: u64) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 struct ChunkedTitleImageRepo {

@@ -21,11 +21,14 @@ pub(crate) const INDEXER_ROUTING_MOVIE_DEFAULT_CATEGORIES: &[&str] = &["2000"];
 pub(crate) const INDEXER_ROUTING_SERIES_DEFAULT_CATEGORIES: &[&str] = &["5000"];
 pub(crate) const INDEXER_ROUTING_ANIME_DEFAULT_CATEGORIES: &[&str] = &["5070"];
 pub const METADATA_LANGUAGE_KEY: &str = "metadata_language";
-// RFC 121 SW5: discovery region seam. Read like metadata_language; a future
+// Discovery region seam. Read like metadata_language; a future
 // preferences UI only has to write this key (defaults to "US" -> unchanged).
 pub const DISCOVERY_REGION_KEY: &str = "discovery.region";
 pub const HISTORY_KEEP_FOREVER_KEY: &str = "history.keep_forever";
 pub const HISTORY_RETENTION_DAYS_KEY: &str = "history.retention_days";
+pub const IMAGE_CACHE_MAX_SIZE_MB_KEY: &str = "images.cache.max_size_mb";
+pub const DEFAULT_IMAGE_CACHE_MAX_SIZE_MB: i32 = 256;
+pub const IMAGE_CACHE_MAX_BYTES_ENV: &str = "SCRYER_IMAGE_CACHE_MAX_BYTES";
 pub const PLUGIN_HTTP_CA_BUNDLE_PEM_KEY: &str = "plugins.http.ca_bundle_pem";
 pub const AUTO_BACKUP_ENABLED_KEY: &str = "backup.auto.enabled";
 pub const AUTO_BACKUP_DAILY_TIME_LOCAL_KEY: &str = "backup.auto.daily_time_local";
@@ -76,6 +79,8 @@ pub const RENAME_TEMPLATE_MOVIE_GLOBAL_KEY: &str = "rename.template.movie.global
 pub const RENAME_TEMPLATE_SERIES_GLOBAL_KEY: &str = "rename.template.series.global";
 pub const RENAME_TEMPLATE_ANIME_GLOBAL_KEY: &str = "rename.template.anime.global";
 pub const FOLDER_TEMPLATE_KEY: &str = "folder.template";
+pub const SEASON_FOLDER_TEMPLATE_KEY: &str = "folder.season_template";
+pub const SPECIALS_FOLDER_TEMPLATE_KEY: &str = "folder.specials_template";
 
 pub const RENAME_COLLISION_POLICY_KEY: &str = "rename.collision_policy";
 pub const RENAME_COLLISION_POLICY_GLOBAL_KEY: &str = "rename.collision_policy.global";
@@ -126,6 +131,8 @@ pub const DEFAULT_RENAME_TEMPLATE_ANIME: &str =
 pub const DEFAULT_FOLDER_TEMPLATE_MOVIE: &str = "{title} ({year})";
 pub const DEFAULT_FOLDER_TEMPLATE_SERIES: &str = "{title} ({year})";
 pub const DEFAULT_FOLDER_TEMPLATE_ANIME: &str = "{title} ({year})";
+pub const DEFAULT_SEASON_FOLDER_TEMPLATE: &str = "Season {season}";
+pub const DEFAULT_SPECIALS_FOLDER_TEMPLATE: &str = "Specials";
 pub const DEFAULT_RENAME_COLLISION_POLICY: &str = "skip";
 pub const DEFAULT_RENAME_MISSING_METADATA_POLICY: &str = "fallback_title";
 pub const DEFAULT_FILLER_POLICY: &str = "download_all";

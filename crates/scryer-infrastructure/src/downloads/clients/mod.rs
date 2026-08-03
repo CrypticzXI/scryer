@@ -14,9 +14,10 @@ use futures_util::StreamExt;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use scryer_application::{
-    AppError, AppResult, DownloadClientAddRequest, RateLimitCooldownAction, StagedNzbRef,
-    StagedNzbStore,
+    AppError, AppResult, DownloadClientAddRequest, NZB_HEAD_PROBE_BYTES, RateLimitCooldownAction,
+    StagedNzbRef, StagedNzbStore, enforce_nzb_category_gate,
 };
+use scryer_domain::MediaFacet;
 use scryer_outbound_http::{OutboundHttpClient, OutboundHttpError, RequestPolicy};
 use serde_json::{Value, json};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -29,6 +30,7 @@ pub use weaver_subscription::{WeaverSubscriptionBridgeClient, start_weaver_subsc
 
 const MAX_NZB_BYTES: u64 = 32 * 1024 * 1024;
 const STAGED_NZB_ZSTD_LEVEL: i32 = 3;
+const NZB_HEAD_CLOSE_TAG: &[u8] = b"</head>";
 
 #[derive(Clone, Default)]
 pub struct BuiltinDownloadClientConnectionTester;
@@ -521,12 +523,78 @@ pub(crate) fn request_source_hint_for_nzb(request: &DownloadClientAddRequest) ->
     Ok(source_hint)
 }
 
+/// Accumulates the leading bytes of a streaming NZB download so the
+/// indexer-asserted `<meta type="category">` can be enforced against the
+/// submitted subject before the payload reaches a download client
+/// (plan 136 §6, Pillar D1).
+struct NzbCategoryProbe<'a> {
+    expected_facet: &'a MediaFacet,
+    head_bytes: Vec<u8>,
+    scanned_bytes: usize,
+    decided: bool,
+}
+
+impl<'a> NzbCategoryProbe<'a> {
+    fn new(expected_facet: &'a MediaFacet) -> Self {
+        Self {
+            expected_facet,
+            head_bytes: Vec::new(),
+            scanned_bytes: 0,
+            decided: false,
+        }
+    }
+
+    /// Feed a downloaded chunk, deciding as soon as the head has closed or the
+    /// probe window is full.
+    fn observe(&mut self, chunk: &[u8]) -> AppResult<()> {
+        if self.decided {
+            return Ok(());
+        }
+
+        let remaining = NZB_HEAD_PROBE_BYTES.saturating_sub(self.head_bytes.len());
+        if remaining > 0 {
+            self.head_bytes
+                .extend_from_slice(&chunk[..remaining.min(chunk.len())]);
+        }
+
+        if self.head_bytes.len() >= NZB_HEAD_PROBE_BYTES || self.head_closed() {
+            return self.finish();
+        }
+
+        Ok(())
+    }
+
+    /// Decide on whatever was collected, for payloads that ended before the
+    /// head close tag or the probe window was reached.
+    fn finish(&mut self) -> AppResult<()> {
+        if self.decided {
+            return Ok(());
+        }
+        self.decided = true;
+        enforce_nzb_category_gate(&self.head_bytes, self.expected_facet)
+    }
+
+    /// Scan only the bytes added since the last call, keeping a tag-sized
+    /// overlap so a close tag split across chunks is still found.
+    fn head_closed(&mut self) -> bool {
+        let scan_from = self
+            .scanned_bytes
+            .saturating_sub(NZB_HEAD_CLOSE_TAG.len().saturating_sub(1));
+        let closed = self.head_bytes[scan_from..]
+            .windows(NZB_HEAD_CLOSE_TAG.len())
+            .any(|window| window.eq_ignore_ascii_case(NZB_HEAD_CLOSE_TAG));
+        self.scanned_bytes = self.head_bytes.len();
+        closed
+    }
+}
+
 pub(crate) async fn stage_nzb_from_url(
     client: &OutboundHttpClient,
     store: &Arc<dyn StagedNzbStore>,
     pipeline_limit: &Arc<Semaphore>,
     url: &str,
     title_id: Option<&str>,
+    expected_facet: &MediaFacet,
 ) -> AppResult<StagedNzbLease> {
     let permit = pipeline_limit
         .clone()
@@ -572,6 +640,7 @@ pub(crate) async fn stage_nzb_from_url(
         let mut raw_size_bytes = 0u64;
         let mut stream = response.bytes_stream();
         let mut stream_result = Ok(());
+        let mut category_probe = NzbCategoryProbe::new(expected_facet);
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = match chunk_result {
@@ -593,6 +662,14 @@ pub(crate) async fn stage_nzb_from_url(
                     "nzb download payload exceeded {} bytes",
                     MAX_NZB_BYTES
                 )));
+                break;
+            }
+
+            // Pillar D1: the indexer's own category assertion lives in the
+            // head, so it is decided as soon as the head has streamed in —
+            // before the payload is ever handed to a download client.
+            if let Err(error) = category_probe.observe(&chunk) {
+                stream_result = Err(error);
                 break;
             }
 
@@ -629,6 +706,9 @@ pub(crate) async fn stage_nzb_from_url(
             ));
         }
         validator_result?;
+        // A payload shorter than the probe window never tripped the in-loop
+        // check; decide it now that the whole head is known to be present.
+        category_probe.finish()?;
 
         store
             .finalize_pending_staged_nzb(pending, raw_size_bytes)
@@ -751,6 +831,10 @@ pub(crate) async fn resolve_staged_nzb_for_request(
         pipeline_limit,
         &source_hint,
         Some(&request.title.id),
+        request
+            .search_facet
+            .as_ref()
+            .unwrap_or(&request.title.facet),
     )
     .await?;
     staged.self_staged = true;
@@ -1016,6 +1100,7 @@ mod tests {
             &pipeline_limit,
             &format!("http://{origin_addr}/getnzb?id=1"),
             Some("redirect-test"),
+            &scryer_domain::MediaFacet::Movie,
         )
         .await
         .expect("nzb download should follow the 301 redirect");
@@ -1052,5 +1137,137 @@ mod tests {
                 .is_some_and(|name| name.to_string_lossy().ends_with(".nzb.zst")),
             "staged artifact should use the same .nzb.zst suffix as production"
         );
+    }
+
+    /// Head shape taken from the incident NZB: the indexer declared the
+    /// release as anime, and Scryer submitted it for a live-action series.
+    fn anime_categorized_nzb() -> Vec<u8> {
+        br#"<?xml version="1.0" encoding="iso-8859-1" ?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
+<head>
+ <meta type="name">One.Piece.S02.DANiSH.JAPANESE.1080p.WEB.H264</meta>
+ <meta type="title">One.Piece.S02.DANiSH.JAPANESE.1080p.WEB.H264</meta>
+ <meta type="category">TV &gt; Anime</meta>
+</head>
+<file poster="poster@example.invalid" date="1700000000" subject="[1/1] - &quot;one.piece.par2&quot; yEnc (1/1)">
+<groups><group>alt.binaries.test</group></groups>
+<segments><segment bytes="1024" number="1">segment@example.invalid</segment></segments>
+</file>
+</nzb>"#
+            .to_vec()
+    }
+
+    async fn serve_nzb_once(body: Vec<u8>) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("nzb listener should bind");
+        let addr = listener.local_addr().expect("nzb listener addr");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept nzb request");
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/x-nzb\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            socket
+                .write_all(header.as_bytes())
+                .await
+                .expect("write nzb header");
+            socket.write_all(&body).await.expect("write nzb body");
+        });
+
+        addr
+    }
+
+    async fn stage_served_nzb(
+        body: Vec<u8>,
+        facet: scryer_domain::MediaFacet,
+        tempdir: &TempDir,
+    ) -> scryer_application::AppResult<super::StagedNzbLease> {
+        use std::sync::Arc;
+
+        use scryer_outbound_http::{
+            OutboundHttpClient, RateLimitRegistry, no_redirect_reqwest_client,
+        };
+
+        let addr = serve_nzb_once(body).await;
+        let outbound =
+            OutboundHttpClient::new(no_redirect_reqwest_client(), RateLimitRegistry::isolated());
+        let store: Arc<dyn StagedNzbStore> = Arc::new(
+            FileSystemStagedNzbStore::new(tempdir.path())
+                .await
+                .expect("staged nzb store"),
+        );
+        let pipeline_limit = Arc::new(tokio::sync::Semaphore::new(1));
+
+        super::stage_nzb_from_url(
+            &outbound,
+            &store,
+            &pipeline_limit,
+            &format!("http://{addr}/getnzb?id=1"),
+            Some("category-gate-test"),
+            &facet,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn stage_nzb_from_url_blocks_an_anime_categorized_nzb_for_a_series_subject() {
+        let tempdir = TempDir::new().expect("tempdir");
+
+        let error = match stage_served_nzb(
+            anime_categorized_nzb(),
+            scryer_domain::MediaFacet::Series,
+            &tempdir,
+        )
+        .await
+        {
+            Ok(_) => panic!("an anime-categorized nzb must not be staged for a series subject"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.to_string().contains("category_mismatch"),
+            "gate error must name the category_mismatch code: {error}"
+        );
+        assert!(
+            matches!(error, AppError::Validation(_)),
+            "a category veto is definitive, never a failover-eligible transport error: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stage_nzb_from_url_allows_an_anime_categorized_nzb_for_an_anime_subject() {
+        let tempdir = TempDir::new().expect("tempdir");
+
+        let staged = stage_served_nzb(
+            anime_categorized_nzb(),
+            scryer_domain::MediaFacet::Anime,
+            &tempdir,
+        )
+        .await
+        .expect("the same bytes are exactly right for an anime subject");
+
+        let compressed =
+            std::fs::read(&staged.staged_nzb.compressed_path).expect("staged file should exist");
+        let decompressed = zstd::stream::decode_all(std::io::Cursor::new(compressed))
+            .expect("staged artifact should decode");
+        assert_eq!(decompressed, anime_categorized_nzb());
+    }
+
+    #[tokio::test]
+    async fn stage_nzb_from_url_allows_an_nzb_without_a_category_meta() {
+        let tempdir = TempDir::new().expect("tempdir");
+
+        stage_served_nzb(
+            load_real_nzb_fixture_bytes(),
+            scryer_domain::MediaFacet::Series,
+            &tempdir,
+        )
+        .await
+        .expect("an nzb that asserts no category stays permissive");
     }
 }

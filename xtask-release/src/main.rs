@@ -60,10 +60,16 @@ const SCRYER_CI_CLIPPY_PACKAGES: &[&str] = &[
     "scryer-domain",
     "scryer-infrastructure",
     "scryer-interface",
+    "scryer-interface-acquisition",
     "scryer-interface-core",
+    "scryer-interface-import",
     "scryer-interface-media",
     "scryer-interface-metadata",
+    "scryer-interface-query",
+    "scryer-interface-security",
     "scryer-interface-settings",
+    "scryer-interface-subscription",
+    "scryer-interface-system",
     "scryer-mediainfo",
     "scryer-plugins",
     "scryer-release-parser",
@@ -2054,14 +2060,14 @@ fn pem_encode_certificate(der: &[u8]) -> String {
 }
 
 fn cert_extension_utf8(cert: &Certificate, oid: &str) -> Result<Option<String>> {
-    let Some(extensions) = cert.tbs_certificate.extensions.as_ref() else {
+    let Some(extensions) = cert.tbs_certificate().extensions() else {
         return Ok(None);
     };
     extensions
         .iter()
         .find(|ext: &&Extension| ext.extn_id.to_string() == oid)
         .map(|ext| {
-            String::from_utf8(ext.extn_value.clone().into_bytes())
+            String::from_utf8(ext.extn_value.clone().into_bytes().into_vec())
                 .map_err(|_| anyhow!("Sigstore certificate extension {oid} is not valid UTF-8"))
         })
         .transpose()
@@ -2069,8 +2075,8 @@ fn cert_extension_utf8(cert: &Certificate, oid: &str) -> Result<Option<String>> 
 
 fn cert_subject_uri(cert: &Certificate) -> Result<Option<String>> {
     let san = cert
-        .tbs_certificate
-        .get::<SubjectAltName>()
+        .tbs_certificate()
+        .get_extension::<SubjectAltName>()
         .map_err(|error| anyhow!("failed to read certificate SAN: {error}"))?
         .map(|(_, san)| san);
     let Some(san) = san else {
@@ -2274,6 +2280,17 @@ fn require_builtin_descriptor_sdk_version(plugin_id: &str, sdk_version: &str) ->
     Ok(())
 }
 
+fn release_builtin_descriptor_loader(ctx: &TaskContext) -> Result<WasmPluginDescriptorLoader> {
+    let cache_dir = ctx.path("tmp/xtask-release-wasmtime");
+    scryer_plugins::initialize_wasm_runtime_at(&cache_dir).map_err(|error| {
+        anyhow!(
+            "failed to initialize release WASM plugin cache at {}: {error}",
+            cache_dir.display()
+        )
+    })?;
+    Ok(WasmPluginDescriptorLoader)
+}
+
 fn existing_builtin_wasm_digest(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> Result<String> {
     let paths = builtin_asset_paths(ctx, spec);
     let compressed_wasm = fs::read(&paths.wasm)
@@ -2284,7 +2301,7 @@ fn existing_builtin_wasm_digest(ctx: &TaskContext, spec: &BuiltinPluginSpec) -> 
             paths.wasm.display()
         )
     })?;
-    let descriptor = WasmPluginDescriptorLoader
+    let descriptor = release_builtin_descriptor_loader(ctx)?
         .load_descriptor_from_wasm_bytes(&wasm_bytes)
         .map_err(|error| {
             anyhow!(
@@ -2366,7 +2383,7 @@ fn sync_builtin_plugin(
     })?;
     let wasm_digest = required_blake3_digest("builtin wasm", &artifact.wasm_digests)?;
     require_blake3_bytes("builtin wasm", wasm_digest, &wasm_bytes)?;
-    let mut descriptor = WasmPluginDescriptorLoader
+    let mut descriptor = release_builtin_descriptor_loader(ctx)?
         .load_descriptor_from_wasm_bytes(&wasm_bytes)
         .map_err(|error| anyhow!("failed to describe builtin {}: {error}", spec.plugin_id))?;
     if descriptor.id != spec.plugin_id {
@@ -2540,7 +2557,13 @@ fn release_cache_key(path: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(path.to_string_lossy().as_bytes());
     let digest = hasher.finalize();
-    format!("{digest:x}").chars().take(12).collect()
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+        .chars()
+        .take(12)
+        .collect()
 }
 
 fn docker_cache_key_component(value: &str) -> String {
@@ -3452,6 +3475,30 @@ mod tests {
     const TIMED_COMMAND_CHILD_ENV: &str = "SCRYER_XTASK_TIMED_COMMAND_CHILD";
 
     #[test]
+    fn release_version_bump_targets_include_split_interface_crates() {
+        let ctx = TaskContext::new();
+        let members = scryer_release_member_tomls(&ctx)
+            .expect("resolve release workspace members")
+            .into_iter()
+            .map(|path| package_name(&path).expect("read release package name"))
+            .collect::<BTreeSet<_>>();
+
+        for expected in [
+            "scryer-interface-acquisition",
+            "scryer-interface-import",
+            "scryer-interface-query",
+            "scryer-interface-security",
+            "scryer-interface-subscription",
+            "scryer-interface-system",
+        ] {
+            assert!(
+                members.contains(expected),
+                "release workspace members must include {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn timed_command_reports_success_and_failure() {
         let executable = std::env::current_exe().unwrap();
         let mut success = Command::new(&executable);
@@ -3623,6 +3670,15 @@ mod tests {
                 .contains(&format!("expected {}", scryer_plugin_sdk::SDK_VERSION)),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn release_builtin_descriptor_loader_initializes_wasm_runtime() {
+        let ctx = TaskContext::new();
+        let digest = existing_builtin_wasm_digest(&ctx, &BUILTIN_PLUGINS[0])
+            .expect("release builtin descriptor should load");
+        assert!(digest.starts_with("blake3:"));
+        assert_eq!(digest.len(), 71);
     }
 
     #[test]

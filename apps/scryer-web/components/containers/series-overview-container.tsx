@@ -1063,7 +1063,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
     setSearchMonitoredLoading(true);
     try {
-      // RFC 119 §7.3: one interactive acquisition-search job for this title
+      // One interactive acquisition-search job for this title
       // replaces the retired per-title trigger mutation.
       const { error } = await client
         .mutation(triggerAcquisitionSearchMutation, {
@@ -1367,7 +1367,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
 
       setSeasonSearchLoadingByCollection((prev) => ({ ...prev, [collection.id]: true }));
       try {
-        // RFC 119 §7.3: a season search is the interactive job scoped to one season.
+        // A season search is the interactive job scoped to one season.
         const { error } = await client
           .mutation(triggerAcquisitionSearchMutation, {
             input: { titleId: title.id, seasonNumber: seasonNum },

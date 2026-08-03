@@ -3,22 +3,22 @@ use async_graphql::ID;
 use chrono::{DateTime, Utc};
 use scryer_application::stored_paths::stored_path_to_path_buf;
 use scryer_application::{
-    ActivityEvent, BackupInfo, CatalogDiscoveryGroup, CatalogDiscoveryGroupKind,
+    ActivityEvent, AppUseCase, BackupInfo, CatalogDiscoveryGroup, CatalogDiscoveryGroupKind,
     CatalogDiscoveryQuery, CatalogDiscoveryResult, CatalogDiscoverySurface, DeletePreview,
     DiscoveryFacetRecord, DiscoveryHomeFilterOptions, DiscoveryHomeFilters, DiscoveryHomeQuery,
     DiscoveryHomeResult, DiscoveryItemDetailQuery, DiscoveryItemRecord, DiscoveryItemsQuery,
     DiscoveryItemsResult, DiscoverySectionResult, DiscoverySyncStateRecord, DiscoverySyncStatus,
     DownloadClientRoutingSettingsEntry, FacetScoringPersonaSelection, IgnorePendingImportResult,
-    IndexerProxyTestResult, IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition,
-    JobRun, LibraryPathsSettings, LibraryScanSummary, LibrarySettings, ManualPluginPreview,
-    MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata, ParsedReleaseMetadata,
-    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
-    PendingRelease, PluginCatalogStatus, QualityProfile, QualityProfileCriteria,
-    QualityProfileDecision, QualityProfileSelection, QualityProfileSettings, RegistryPlugin,
-    RenameApplyItemResult, RenameApplyResult, RenamePlan, RenamePlanItem,
-    ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource, ServiceSettings,
-    SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope, SystemHealth,
-    TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
+    ImageProxyKind, IndexerProxyTestResult, IndexerRoutingSettingsEntry, IndexerSearchResult,
+    JobDefinition, JobRun, LibraryPathsSettings, LibraryScanSummary, LibrarySettings,
+    ManualPluginPreview, MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata,
+    ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
+    PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
+    QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
+    QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
+    RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
+    ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
+    SystemHealth, TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
@@ -554,6 +554,8 @@ pub fn from_media_settings(
             .collect(),
         required_audio_languages: settings.required_audio_languages,
         folder_template: settings.folder_template,
+        season_folder_template: settings.season_folder_template,
+        specials_folder_template: settings.specials_folder_template,
         rename_enabled: settings.rename_enabled,
         rename_template: settings.rename_template,
         rename_collision_policy: RenameCollisionPolicyValue::from_app_str(
@@ -1135,6 +1137,7 @@ pub fn from_download_queue_item(item: DownloadQueueItem) -> DownloadQueueItemPay
         title_name: item.title_name,
         facet: item.facet.as_deref().and_then(MediaFacetValue::parse),
         is_scryer_origin: item.is_scryer_origin,
+        source_provider: item.source_provider,
         tracked_state: item
             .tracked_state
             .map(TrackedDownloadStateValue::from_domain),
@@ -1207,7 +1210,7 @@ fn extract_tag_bool(tags: &[String], prefix: &str) -> Option<bool> {
         .map(|value| !value.trim().eq_ignore_ascii_case("false"))
 }
 
-pub fn from_title(title: Title) -> TitlePayload {
+pub fn from_title(app: &AppUseCase, title: Title) -> TitlePayload {
     let quality_profile_id = extract_tag_string(&title.tags, "scryer:quality-profile:");
     let monitor_type = extract_tag_string(&title.tags, "scryer:monitor-type:")
         .as_deref()
@@ -1222,6 +1225,28 @@ pub fn from_title(title: Title) -> TitlePayload {
     let recap_policy = extract_tag_string(&title.tags, "scryer:recap-policy:")
         .as_deref()
         .and_then(RecapPolicyValue::from_app_str);
+    let poster_upstream = title.poster_source_url.as_deref().or(title
+        .poster_url
+        .as_deref()
+        .filter(|url| url.starts_with("http")));
+    let background_upstream = title.background_source_url.as_deref().or(title
+        .background_url
+        .as_deref()
+        .filter(|url| url.starts_with("http")));
+    let poster_url = app.media_image_url(
+        poster_upstream,
+        Some("title"),
+        Some(&title.id),
+        ImageProxyKind::Poster,
+        "w250",
+    );
+    let background_url = app.media_image_url(
+        background_upstream,
+        Some("title"),
+        Some(&title.id),
+        ImageProxyKind::Fanart,
+        "w1280",
+    );
 
     TitlePayload {
         id: title.id.into(),
@@ -1241,10 +1266,10 @@ pub fn from_title(title: Title) -> TitlePayload {
         created_at: title.created_at,
         year: title.year,
         overview: title.overview,
-        poster_url: title.poster_url,
-        poster_source_url: title.poster_source_url,
-        background_url: title.background_url,
-        background_source_url: title.background_source_url,
+        poster_url: poster_url.clone(),
+        poster_source_url: poster_url,
+        background_url: background_url.clone(),
+        background_source_url: background_url,
         sort_title: title.sort_title,
         slug: title.slug,
         imdb_id: title.imdb_id,
@@ -1303,7 +1328,15 @@ pub fn from_title_rating_summary(ratings: TitleRatingSummary) -> TitleRatingPayl
     }
 }
 
-pub fn from_media_request(request: MediaRequest) -> MediaRequestPayload {
+pub fn from_media_request(app: &AppUseCase, request: MediaRequest) -> MediaRequestPayload {
+    let owner_id = request.id.to_string();
+    let poster_url = app.media_image_url(
+        request.poster_url.as_deref(),
+        Some("media_request"),
+        Some(&owner_id),
+        ImageProxyKind::Poster,
+        "w250",
+    );
     MediaRequestPayload {
         id: request.id.into(),
         library_id: request.library_id.into(),
@@ -1313,7 +1346,7 @@ pub fn from_media_request(request: MediaRequest) -> MediaRequestPayload {
         title: request.title,
         sort_title: request.sort_title,
         slug: request.slug,
-        poster_url: request.poster_url,
+        poster_url,
         year: request.year,
         overview: request.overview,
         runtime_minutes: request.runtime_minutes,
@@ -1454,10 +1487,11 @@ pub fn from_pending_import_connection(
 }
 
 pub fn from_resolve_pending_import_result(
+    app: &AppUseCase,
     result: ResolvePendingImportResult,
 ) -> ResolvePendingImportPayload {
     ResolvePendingImportPayload {
-        title: from_title(result.title),
+        title: from_title(app, result.title),
         created: result.created,
         library_scan: result.library_scan.map(from_library_scan_summary),
         metadata_hydration_state: AddTitleHydrationStateValue::from_application(
@@ -1711,21 +1745,23 @@ pub fn catalog_discovery_query_from_input(input: CatalogDiscoveryInput) -> Catal
     }
 }
 
-pub fn from_discovery_home(result: DiscoveryHomeResult) -> DiscoveryHomePayload {
+pub fn from_discovery_home(app: &AppUseCase, result: DiscoveryHomeResult) -> DiscoveryHomePayload {
     DiscoveryHomePayload {
         status: from_discovery_sync_status(result.status),
-        hero_item: result.hero_item.map(from_discovery_item),
+        hero_item: result.hero_item.map(|item| from_discovery_item(app, item)),
         public_sections: result
             .public_sections
             .into_iter()
-            .map(from_discovery_section)
+            .map(|section| from_discovery_section(app, section))
             .collect(),
         personalized_sections: result
             .personalized_sections
             .into_iter()
-            .map(from_discovery_section)
+            .map(|section| from_discovery_section(app, section))
             .collect(),
-        complete_collection: result.complete_collection.map(from_discovery_section),
+        complete_collection: result
+            .complete_collection
+            .map(|section| from_discovery_section(app, section)),
         facets: result
             .facets
             .into_iter()
@@ -1736,22 +1772,26 @@ pub fn from_discovery_home(result: DiscoveryHomeResult) -> DiscoveryHomePayload 
 }
 
 pub fn from_discovery_home_cards(
+    app: &AppUseCase,
     result: DiscoveryHomeResult,
 ) -> scryer_application::AppResult<DiscoveryHomeCardsPayload> {
-    let hero_item = result.hero_item.map(from_discovery_home_hero).transpose()?;
+    let hero_item = result
+        .hero_item
+        .map(|item| from_discovery_home_hero(app, item))
+        .transpose()?;
     let public_sections = result
         .public_sections
         .into_iter()
-        .map(from_discovery_home_section)
+        .map(|section| from_discovery_home_section(app, section))
         .collect::<scryer_application::AppResult<Vec<_>>>()?;
     let personalized_sections = result
         .personalized_sections
         .into_iter()
-        .map(from_discovery_home_section)
+        .map(|section| from_discovery_home_section(app, section))
         .collect::<scryer_application::AppResult<Vec<_>>>()?;
     let complete_collection = result
         .complete_collection
-        .map(from_discovery_home_section)
+        .map(|section| from_discovery_home_section(app, section))
         .transpose()?;
 
     Ok(DiscoveryHomeCardsPayload {
@@ -1788,33 +1828,50 @@ pub fn from_discovery_home_filter_options(
     }
 }
 
-pub fn from_discovery_items_result(result: DiscoveryItemsResult) -> DiscoveryItemsPayload {
+pub fn from_discovery_items_result(
+    app: &AppUseCase,
+    result: DiscoveryItemsResult,
+) -> DiscoveryItemsPayload {
     DiscoveryItemsPayload {
-        items: result.items.into_iter().map(from_discovery_item).collect(),
+        items: result
+            .items
+            .into_iter()
+            .map(|item| from_discovery_item(app, item))
+            .collect(),
         total_count: Long(result.total_count),
         can_view_personalized: result.can_view_personalized,
     }
 }
 
-pub fn from_catalog_discovery(result: CatalogDiscoveryResult) -> CatalogDiscoveryPayload {
+pub fn from_catalog_discovery(
+    app: &AppUseCase,
+    result: CatalogDiscoveryResult,
+) -> CatalogDiscoveryPayload {
     CatalogDiscoveryPayload {
         can_view_personalized: result.can_view_personalized,
         groups: result
             .groups
             .into_iter()
-            .map(from_catalog_discovery_group)
+            .map(|group| from_catalog_discovery_group(app, group))
             .collect(),
     }
 }
 
-fn from_catalog_discovery_group(group: CatalogDiscoveryGroup) -> CatalogDiscoveryGroupPayload {
+fn from_catalog_discovery_group(
+    app: &AppUseCase,
+    group: CatalogDiscoveryGroup,
+) -> CatalogDiscoveryGroupPayload {
     CatalogDiscoveryGroupPayload {
         id: group.id,
         kind: from_catalog_discovery_group_kind(group.kind),
         surface: from_catalog_discovery_surface(group.surface),
         label_value: group.label_value,
         total_count: Long(group.total_count),
-        items: group.items.into_iter().map(from_discovery_item).collect(),
+        items: group
+            .items
+            .into_iter()
+            .map(|item| from_discovery_item(app, item))
+            .collect(),
     }
 }
 
@@ -1843,14 +1900,21 @@ fn from_catalog_discovery_surface(
     }
 }
 
-pub fn from_discovery_section(section: DiscoverySectionResult) -> DiscoverySectionPayload {
+pub fn from_discovery_section(
+    app: &AppUseCase,
+    section: DiscoverySectionResult,
+) -> DiscoverySectionPayload {
     DiscoverySectionPayload {
         section_id: section.section_id,
         section_type: section.section_type,
         title: section.title,
         surface: section.surface,
         total_count: Long(section.total_count),
-        items: section.items.into_iter().map(from_discovery_item).collect(),
+        items: section
+            .items
+            .into_iter()
+            .map(|item| from_discovery_item(app, item))
+            .collect(),
     }
 }
 
@@ -1866,22 +1930,14 @@ fn discovery_home_media_facet(
 }
 
 fn from_discovery_home_section(
+    app: &AppUseCase,
     section: DiscoverySectionResult,
 ) -> scryer_application::AppResult<DiscoveryHomeSectionPayload> {
-    let surface = match section.surface.as_str() {
-        "public" => DiscoverySurfaceValue::Public,
-        "personalized" => DiscoverySurfaceValue::Personalized,
-        "mixed" => DiscoverySurfaceValue::Mixed,
-        value => {
-            return Err(scryer_application::AppError::Validation(format!(
-                "discovery home section has an unsupported surface: {value}"
-            )));
-        }
-    };
+    let surface = discovery_surface_value(&section.surface)?;
     let items = section
         .items
         .into_iter()
-        .map(from_discovery_home_card)
+        .map(|item| from_discovery_home_card(app, item))
         .collect::<scryer_application::AppResult<Vec<_>>>()?;
 
     Ok(DiscoveryHomeSectionPayload {
@@ -1894,7 +1950,22 @@ fn from_discovery_home_section(
     })
 }
 
+fn discovery_surface_value(value: &str) -> scryer_application::AppResult<DiscoverySurfaceValue> {
+    let surface = match value {
+        "public" => DiscoverySurfaceValue::Public,
+        "personalized" => DiscoverySurfaceValue::Personalized,
+        "mixed" => DiscoverySurfaceValue::Mixed,
+        value => {
+            return Err(scryer_application::AppError::Validation(format!(
+                "discovery home section has an unsupported surface: {value}"
+            )));
+        }
+    };
+    Ok(surface)
+}
+
 fn from_discovery_home_card(
+    app: &AppUseCase,
     item: DiscoveryItemRecord,
 ) -> scryer_application::AppResult<DiscoveryHomeCardPayload> {
     let target_kind = discovery_home_media_facet(&item.target_kind, "card targetKind")?;
@@ -1905,6 +1976,7 @@ fn from_discovery_home_card(
         "card contentType",
     )?;
 
+    let (poster_url, _) = discovery_image_urls(app, &item);
     Ok(DiscoveryHomeCardPayload {
         id: item.id.into(),
         target_key: item.target_key,
@@ -1913,13 +1985,14 @@ fn from_discovery_home_card(
         original_title: item.original_title,
         sort_title: item.sort_title,
         year: item.year,
-        poster_url: item.poster_url,
+        poster_url,
         content_type,
         owned_in_input: item.owned_in_input,
     })
 }
 
 fn from_discovery_home_hero(
+    app: &AppUseCase,
     item: DiscoveryItemRecord,
 ) -> scryer_application::AppResult<DiscoveryHomeHeroPayload> {
     let target_kind = discovery_home_media_facet(&item.target_kind, "hero targetKind")?;
@@ -1930,6 +2003,7 @@ fn from_discovery_home_hero(
         "hero contentType",
     )?;
 
+    let (poster_url, background_url) = discovery_image_urls(app, &item);
     Ok(DiscoveryHomeHeroPayload {
         id: item.id.into(),
         target_key: item.target_key,
@@ -1938,8 +2012,8 @@ fn from_discovery_home_hero(
         original_title: item.original_title,
         sort_title: item.sort_title,
         year: item.year,
-        poster_url: item.poster_url,
-        background_url: item.background_url,
+        poster_url,
+        background_url,
         overview: item.overview,
         content_type,
         rating: item.rating,
@@ -1976,7 +2050,61 @@ fn from_discovery_home_hero(
     })
 }
 
-pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
+fn discovery_image_urls(
+    app: &AppUseCase,
+    item: &DiscoveryItemRecord,
+) -> (Option<String>, Option<String>) {
+    let (owner_type, owner_id) = item
+        .resolved_title_id
+        .as_deref()
+        .map(|title_id| ("title", title_id))
+        .unwrap_or(("discovery", item.id.as_str()));
+    let poster_source =
+        preferred_discovery_poster_source(item.poster_path.as_deref(), item.poster_url.as_deref());
+    let poster = app.media_image_url(
+        poster_source.as_deref(),
+        Some(owner_type),
+        Some(owner_id),
+        ImageProxyKind::Poster,
+        "w250",
+    );
+    let background = app.media_image_url(
+        item.background_url.as_deref(),
+        Some(owner_type),
+        Some(owner_id),
+        ImageProxyKind::Fanart,
+        "w1280",
+    );
+    (poster, background)
+}
+
+fn preferred_discovery_poster_source(
+    poster_path: Option<&str>,
+    poster_url: Option<&str>,
+) -> Option<String> {
+    let tmdb_source = poster_path.and_then(|value| {
+        let value = value.trim();
+        if value.starts_with("https://image.tmdb.org/")
+            || value.starts_with("http://image.tmdb.org/")
+        {
+            Some(value.to_string())
+        } else if value.starts_with('/') && !value.starts_with("//") {
+            Some(format!("https://image.tmdb.org/t/p/original{value}"))
+        } else {
+            None
+        }
+    });
+
+    tmdb_source.or_else(|| {
+        poster_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+pub fn from_discovery_item(app: &AppUseCase, item: DiscoveryItemRecord) -> DiscoveryItemPayload {
+    let (poster_url, background_url) = discovery_image_urls(app, &item);
     DiscoveryItemPayload {
         id: item.id.into(),
         target_key: item.target_key,
@@ -1987,8 +2115,8 @@ pub fn from_discovery_item(item: DiscoveryItemRecord) -> DiscoveryItemPayload {
         original_title: item.original_title,
         sort_title: item.sort_title,
         year: item.year,
-        poster_url: item.poster_url,
-        background_url: item.background_url,
+        poster_url,
+        background_url,
         overview: item.overview,
         content_type: item.content_type,
         canonical_tags: item
@@ -2164,14 +2292,25 @@ pub fn from_collection(collection: Collection) -> CollectionPayload {
     }
 }
 
-pub fn from_movie_entity(movie: scryer_domain::MovieEntity) -> MovieEntityPayload {
+pub fn from_movie_entity(
+    app: &AppUseCase,
+    movie: scryer_domain::MovieEntity,
+) -> MovieEntityPayload {
+    let owner_id = movie.id.to_string();
+    let poster_url = app.media_image_url(
+        movie.poster_url.as_deref(),
+        Some("movie"),
+        Some(&owner_id),
+        ImageProxyKind::Poster,
+        "w250",
+    );
     MovieEntityPayload {
         id: movie.id.into(),
         title: movie.title,
         slug: movie.slug,
         year: movie.year,
         overview: movie.overview,
-        poster_url: movie.poster_url,
+        poster_url,
         runtime_minutes: movie.runtime_minutes,
         content_status: movie.content_status,
         imdb_id: movie.imdb_id,
@@ -2182,10 +2321,13 @@ pub fn from_movie_entity(movie: scryer_domain::MovieEntity) -> MovieEntityPayloa
     }
 }
 
-pub fn from_series_movie_link(link: scryer_domain::SeriesMovieLink) -> SeriesMovieLinkPayload {
+pub fn from_series_movie_link(
+    app: &AppUseCase,
+    link: scryer_domain::SeriesMovieLink,
+) -> SeriesMovieLinkPayload {
     SeriesMovieLinkPayload {
         id: link.id.into(),
-        movie: from_movie_entity(link.movie),
+        movie: from_movie_entity(app, link.movie),
         narrative_order: link.narrative_order,
         after_season: link.after_season,
         before_season: link.before_season,
@@ -2197,7 +2339,14 @@ pub fn from_series_movie_link(link: scryer_domain::SeriesMovieLink) -> SeriesMov
     }
 }
 
-pub fn from_episode(episode: Episode) -> EpisodePayload {
+pub fn from_episode(app: &AppUseCase, episode: Episode) -> EpisodePayload {
+    let image_url = app.media_image_url(
+        episode.image_url.as_deref(),
+        Some("episode"),
+        Some(&episode.id),
+        ImageProxyKind::EpisodeStill,
+        "original",
+    );
     EpisodePayload {
         id: episode.id.into(),
         title_id: episode.title_id.into(),
@@ -2215,7 +2364,7 @@ pub fn from_episode(episode: Episode) -> EpisodePayload {
         is_filler: episode.is_filler,
         is_recap: episode.is_recap,
         absolute_number: episode.absolute_number,
-        image_url: episode.image_url,
+        image_url,
         monitored: episode.monitored,
         created_at: episode.created_at,
     }
@@ -2564,6 +2713,7 @@ pub fn from_import_record(record: scryer_domain::ImportRecord) -> ImportRecordPa
 pub fn from_wanted_item(
     item: scryer_application::AcquisitionScopeState,
 ) -> scryer_application::AppResult<WantedItemPayload> {
+    let source_provider = source_provider_from_grabbed_release(item.grabbed_release.as_deref());
     Ok(WantedItemPayload {
         id: item.id.into(),
         title_id: item.title_id.into(),
@@ -2586,6 +2736,7 @@ pub fn from_wanted_item(
         last_search_at: parse_optional_datetime(item.last_search_at, "wanted item last_search_at"),
         status: WantedStatusValue::from_application(item.status),
         grabbed_release: item.grabbed_release,
+        source_provider,
         current_score: item.current_score,
         latest_release_decision: item
             .latest_release_decision
@@ -2593,7 +2744,7 @@ pub fn from_wanted_item(
             .transpose()?,
         mismatch_recovery_eligible: item.mismatch_recovery_eligible,
         // Relation-field state rows (`title.wantedItems`, `episode.wantedItem`) are
-        // not the convergence display surface (RFC 119 §6): the derived Missing /
+        // not the convergence display surface: the derived Missing /
         // Upgrades views carry live convergence; here we present a neutral default
         // so the shared payload stays well-typed off a bare state row.
         convergence_state: ConvergenceStateValue::Queued,
@@ -2608,7 +2759,7 @@ pub fn from_wanted_item(
 }
 
 /// Map a derived Missing/Upgrades view row onto the shared `WantedItemPayload`
-/// (RFC 119 §6). The payload `id` is the scope identity: the state-row id when a
+///. The payload `id` is the scope identity: the state-row id when a
 /// state row exists, else the convergence scope key — so a derived target with no
 /// state row is still addressable (pause/resume and the interactive search job both
 /// accept a scope key). Convergence progress and the recency lane come from the
@@ -2622,6 +2773,10 @@ pub fn from_wanted_scope_view(
         .map(|state| state.id.clone())
         .unwrap_or_else(|| view.scope_key.clone());
     let state = view.state;
+    let grabbed_release = state
+        .as_ref()
+        .and_then(|state| state.grabbed_release.clone());
+    let source_provider = source_provider_from_grabbed_release(grabbed_release.as_deref());
     Ok(WantedItemPayload {
         id: id.into(),
         title_id: view.title_id.into(),
@@ -2648,9 +2803,8 @@ pub fn from_wanted_scope_view(
             .as_ref()
             .map(|state| WantedStatusValue::from_application(state.status))
             .unwrap_or(WantedStatusValue::Wanted),
-        grabbed_release: state
-            .as_ref()
-            .and_then(|state| state.grabbed_release.clone()),
+        grabbed_release,
+        source_provider,
         current_score: state.as_ref().and_then(|state| state.current_score),
         latest_release_decision: state
             .as_ref()
@@ -2677,6 +2831,18 @@ pub fn from_wanted_scope_view(
             .and_then(|state| parse_datetime(&state.updated_at, "wanted view updated_at").ok())
             .unwrap_or_else(chrono::Utc::now),
     })
+}
+
+fn source_provider_from_grabbed_release(grabbed_release: Option<&str>) -> Option<String> {
+    let grabbed_release = serde_json::from_str::<Value>(grabbed_release?).ok()?;
+    let source_provider = grabbed_release
+        .get("source_provider")
+        .or_else(|| grabbed_release.get("indexer"))
+        .and_then(Value::as_str)?;
+    let source_provider = source_provider.trim();
+    (!source_provider.is_empty()
+        && !source_provider.contains([':', '/', '\\', '?', '#', '@', '|', '=']))
+    .then(|| source_provider.to_string())
 }
 
 fn convergence_state_value(
@@ -2866,6 +3032,7 @@ pub fn from_rule_set(rs: RuleSet) -> RuleSetPayload {
             .collect(),
         is_managed: rs.is_managed,
         managed_key: rs.managed_key,
+        managed_tag_filter: rs.managed_tag_filter,
         created_at: rs.created_at,
         updated_at: rs.updated_at,
     }
@@ -2965,6 +3132,9 @@ pub fn from_external_import_monitor_warmup_progress(
             }
         },
         phase: match snapshot.phase {
+            scryer_application::ExternalImportMonitorWarmupPhase::LoadingIndexers => {
+                ExternalImportMonitorWarmupPhaseValue::LoadingIndexers
+            }
             scryer_application::ExternalImportMonitorWarmupPhase::LoadingMovies => {
                 ExternalImportMonitorWarmupPhaseValue::LoadingMovies
             }
@@ -3267,6 +3437,7 @@ pub fn from_title_history_record(
         display_title: record.display_title,
         source_system: record.source_system,
         source_ref: record.source_ref,
+        source_provider: record.source_hint.clone(),
         source_hint: record.source_hint,
         quality: record.quality,
         download_id: record.download_id,
@@ -3327,9 +3498,9 @@ pub fn json_string_to_value(raw: String) -> async_graphql::Json<serde_json::Valu
 #[cfg(test)]
 mod tests {
     use super::{
-        discovery_home_query_from_input, from_discovery_home_section, from_import_record,
-        from_title_history_record, from_wanted_item, provider_config_values_from_json_with_fields,
-        provider_config_values_to_json,
+        discovery_home_query_from_input, discovery_surface_value, from_import_record,
+        from_title_history_record, from_wanted_item, preferred_discovery_poster_source,
+        provider_config_values_from_json_with_fields, provider_config_values_to_json,
     };
     use crate::types::{
         BoolConfigValuePayload, DiscoveryHomeFiltersInput, DiscoveryHomeInput,
@@ -3337,9 +3508,7 @@ mod tests {
         PluginConfigFieldTypeValue, ProviderConfigFieldValue, ProviderConfigValueInput,
         SecretConfigValuePayload,
     };
-    use scryer_application::{
-        AcquisitionScopeState, AcquisitionScopeStatus, DiscoverySectionResult,
-    };
+    use scryer_application::{AcquisitionScopeState, AcquisitionScopeStatus};
     use scryer_domain::{
         CompletedDownload, ConfigFieldDef, ConfigFieldType, ConfigFieldValueSource, ImportRecord,
         ImportStatus, ImportType, TitleHistoryEventType, TitleHistoryRecord,
@@ -3371,6 +3540,30 @@ mod tests {
             secret_value: None,
             clear_secret: None,
         }
+    }
+
+    #[test]
+    fn discovery_posters_prefer_tmdb_paths_over_tvdb_urls() {
+        assert_eq!(
+            preferred_discovery_poster_source(
+                Some("/poster.jpg"),
+                Some("https://artworks.thetvdb.com/banners/poster.jpg"),
+            )
+            .as_deref(),
+            Some("https://image.tmdb.org/t/p/original/poster.jpg")
+        );
+    }
+
+    #[test]
+    fn discovery_posters_retain_the_supplied_url_without_a_tmdb_path() {
+        assert_eq!(
+            preferred_discovery_poster_source(
+                Some("not-a-tmdb-path"),
+                Some("https://artworks.thetvdb.com/banners/poster.jpg"),
+            )
+            .as_deref(),
+            Some("https://artworks.thetvdb.com/banners/poster.jpg")
+        );
     }
 
     fn wanted_item_fixture() -> AcquisitionScopeState {
@@ -3683,31 +3876,17 @@ mod tests {
 
     #[test]
     fn discovery_home_section_maps_mixed_surface() {
-        let section = from_discovery_home_section(DiscoverySectionResult {
-            section_id: "top_rated".to_string(),
-            section_type: "TOP_RATED".to_string(),
-            title: "Top Rated".to_string(),
-            surface: "mixed".to_string(),
-            total_count: 0,
-            items: Vec::new(),
-        })
-        .expect("mixed is a supported discovery home surface");
+        let surface =
+            discovery_surface_value("mixed").expect("mixed is a supported discovery home surface");
 
-        assert!(matches!(section.surface, DiscoverySurfaceValue::Mixed));
+        assert!(matches!(surface, DiscoverySurfaceValue::Mixed));
     }
 
     #[test]
     fn discovery_home_section_rejects_unknown_surface_without_panicking() {
-        let error = from_discovery_home_section(DiscoverySectionResult {
-            section_id: "invalid".to_string(),
-            section_type: "PUBLIC_SECTION".to_string(),
-            title: "Invalid".to_string(),
-            surface: "unknown".to_string(),
-            total_count: 0,
-            items: Vec::new(),
-        })
-        .err()
-        .expect("unknown surfaces must be returned as validation errors");
+        let error = discovery_surface_value("unknown")
+            .err()
+            .expect("unknown surfaces must be returned as validation errors");
 
         assert!(error.to_string().contains("unsupported surface"));
     }

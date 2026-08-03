@@ -1,6 +1,6 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { useBeforeUnload, useBlocker } from "react-router-dom";
+import { useBeforeUnload, useBlocker } from "react-router";
 import {
   FileText,
   Folder,
@@ -1197,7 +1197,10 @@ export const MediaLibrarySettingsPanel = React.memo(function MediaLibrarySetting
                       >
                         <div className="flex items-center gap-2.5 rounded-[11px] border border-[var(--scry-border2)] bg-[var(--scry-bg)] py-1.5 pl-3.5 pr-2">
                           <FolderOpen className="h-4 w-4 shrink-0 text-[var(--scry-faint)]" />
-                          <span className="flex-1 truncate font-[var(--font-code)] text-[13.5px] text-[var(--scry-text2)]">
+                          <span
+                            className="flex-1 truncate font-[var(--font-code)] text-[13.5px] text-[var(--scry-text2)]"
+                            title={rf.path}
+                          >
                             {rf.path}
                           </span>
                           {pathIsInvalid ? (

@@ -502,10 +502,6 @@ mod tests {
                         variant_key: "w70".to_string(),
                         width: 70,
                     },
-                    TitleImageVariantSpec {
-                        variant_key: "w500".to_string(),
-                        width: 500,
-                    },
                 ],
             )
             .expect("processing should succeed");
@@ -519,7 +515,6 @@ mod tests {
             .iter()
             .map(|variant| (variant.variant_key.clone(), (variant.width, variant.height)))
             .collect::<HashMap<_, _>>();
-        assert_eq!(widths.get("w500"), Some(&(500, 750)));
         assert_eq!(widths.get("w250"), Some(&(250, 375)));
         assert_eq!(widths.get("w70"), Some(&(70, 105)));
         assert!(
@@ -600,10 +595,6 @@ mod tests {
                 &bytes,
                 vec![
                     TitleImageVariantSpec {
-                        variant_key: "w500".to_string(),
-                        width: 500,
-                    },
-                    TitleImageVariantSpec {
                         variant_key: "w250".to_string(),
                         width: 250,
                     },
@@ -620,7 +611,6 @@ mod tests {
             .iter()
             .map(|variant| (variant.variant_key.clone(), (variant.width, variant.height)))
             .collect::<HashMap<_, _>>();
-        assert_eq!(widths.get("w500"), Some(&(120, 180)));
         assert_eq!(widths.get("w250"), Some(&(120, 180)));
         assert_eq!(widths.get("w70"), Some(&(70, 105)));
     }

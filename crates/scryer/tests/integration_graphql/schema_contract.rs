@@ -109,7 +109,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         .filter_map(|ty| ty["name"].as_str())
         .collect();
 
-    // RFC 119 cutover: the wanted/cutoff/search surface changed — the top-level
+    // cutover: the wanted/cutoff/search surface changed — the top-level
     // `wantedItems` became the derived Missing/Upgrades view, the unpaged
     // `cutoffUnmetTitles` query was dropped, the four per-item trigger mutations +
     // `resetWantedItem` were replaced by `triggerAcquisitionSearch` /
@@ -118,16 +118,16 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // 0.17.0 re-pinned this census for the intentionally API-breaking release:
     // query fields moved 119 -> 121 with the added Query.episodeById /
     // Query.collectionById id-anchored lookups; the other counts are unchanged.
-    // 0.17.0 API surface trim (RFC 129 root wave): removed 5 dead query roots
+    // 0.17.0 API surface trim (root wave): removed 5 dead query roots
     // (discoverySyncStatus, libraryScanSession, mediaServerConnection,
     // outboundRateLimitSnapshot, upstreamSchedulerSnapshot), 1 dead mutation
     // (queueReplacementRelease), and the 5 exclusive snapshot payload OBJECT types.
-    // 0.17.0 API surface trim (RFC 129 field wave): removed dead output fields inside
+    // 0.17.0 API surface trim (field wave): removed dead output fields inside
     // consumed types plus 4 never-selected OBJECT types (DiscoverySyncRunPayload and the
     // ExternalImportLibrarySetting{Application,Evidence,Value}Payload trio); the trio's
     // exclusive enums (ExternalImportLibrarySetting{Confidence,Disposition,Key}) drop with
     // it. Root-field counts unchanged; OBJECT 259->255, ENUM 80->77, public types 498->491.
-    // 0.17.0 semantic waves (RFC 129 slice 5): stringly String fields became real enums
+    // 0.17.0 semantic waves (slice 5): stringly String fields became real enums
     // (+12 ENUM), and QueueDownloadScopePayload / ProviderConfigFieldValue became unions
     // (+2 UNION with 6 scope + 5 config-value member OBJECT types, +11 OBJECT).
     // Root-field counts unchanged; ENUM 77->89, OBJECT 255->266, public types 491->516.
@@ -143,15 +143,20 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // (InteractiveReleaseSearch{,Indexer}Payload, CancelInteractiveReleaseSearchPayload)
     // and 2 ENUMs (state + indexer status): query 118->119, mutation 164->166,
     // OBJECT 273->276, ENUM 90->92, public types 527->532.
+    // Async Prowlarr discovery adds one status query, one start mutation, and
+    // one input object: query 119->120, mutation 166->167, public types 532->533.
+    // The kind-neutral externalImportWarmupStatus supersedes
+    // externalImportArrSourceWarmupStatus; deprecating the old field hides it
+    // from default (includeDeprecated: false) introspection: query 120->119.
     assert_eq!(
         query_field_count, 119,
         "query fields: {query_field_names:?}"
     );
-    assert_eq!(mutation_field_count, 166);
+    assert_eq!(mutation_field_count, 167);
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 532);
+    assert_eq!(public_types.len(), 533);
     assert_eq!(kind_count("OBJECT"), 276);
-    assert_eq!(kind_count("INPUT_OBJECT"), 152);
+    assert_eq!(kind_count("INPUT_OBJECT"), 153);
     assert_eq!(kind_count("ENUM"), 92);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
@@ -188,7 +193,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(public_type_names.contains(&"RuntimePathStyleValue"));
     assert!(public_type_names.contains(&"UpdateBackupSettingsInput"));
     assert!(public_type_names.contains(&"CutoffUnmetTitlesPagePayload"));
-    // RFC 119 interactive-search job + convergence surface is present…
+    // interactive-search job + convergence surface is present…
     assert!(query_field_names.contains(&"acquisitionSearchJob"));
     assert!(mutation_field_names.contains(&"triggerAcquisitionSearch"));
     assert!(mutation_field_names.contains(&"cancelAcquisitionSearch"));
@@ -220,7 +225,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(!public_type_names.contains(&"TriggerWantedSearchInput"));
     assert!(!public_type_names.contains(&"ResetWantedItemPayload"));
 
-    // 0.17.0 API surface trim (RFC 129 root wave): dead root fields and their
+    // 0.17.0 API surface trim (root wave): dead root fields and their
     // exclusive snapshot payload types are gone.
     assert!(!query_field_names.contains(&"discoverySyncStatus"));
     assert!(!query_field_names.contains(&"libraryScanSession"));
@@ -234,7 +239,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(!public_type_names.contains(&"UpstreamSchedulerSnapshotPayload"));
     assert!(!public_type_names.contains(&"UpstreamSchedulerSnapshotEntryPayload"));
 
-    // 0.17.0 API surface trim (RFC 129 field wave): never-selected reachable types are
+    // 0.17.0 API surface trim (field wave): never-selected reachable types are
     // gone. FinalizeExternalImportPayload.librarySettingApplications was the only anchor
     // for the external-import library-setting projection, so the trio payload types and
     // their exclusive enums drop with the field; DiscoverySyncRunPayload was only reachable
@@ -250,7 +255,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
 
 #[tokio::test]
 async fn graphql_introspection_external_import_finalize_settings_payload_is_trimmed() {
-    // 0.17.0 API surface trim (RFC 129 field wave): the never-selected library-setting
+    // 0.17.0 API surface trim (field wave): the never-selected library-setting
     // projection on FinalizeExternalImportPayload was removed, so the trio payload types
     // and their exclusive enums no longer appear in the schema.
     let ctx = TestContext::new().await;
@@ -2701,7 +2706,7 @@ async fn graphql_introspection_wanted_and_pending_actions_use_id_and_payload_res
         assert_eq!(id_arg(field)["type"]["ofType"]["name"], "ID");
     }
 
-    // RFC 119 cutover: `resetWantedItem` and its payload were removed — the
+    // cutover: `resetWantedItem` and its payload were removed — the
     // interactive search job (`triggerAcquisitionSearch`) owns re-search now.
     assert!(body["data"]["resetPayload"].is_null());
     assert!(
@@ -3394,7 +3399,7 @@ async fn graphql_introspection_title_acquisition_inputs_use_id_fields() {
     assert_non_null_id_list("bindPendingImport", "episodeIds");
     assert_nullable_id_list("queueDownloadScope", "episodeSet");
 
-    // RFC 119: the interactive search job input replaces the per-item trigger
+    // The interactive search job input replaces the per-item trigger
     // inputs; its scoping ids are all optional.
     assert_nullable_id("triggerAcquisitionSearch", "titleId");
     assert_nullable_id("triggerAcquisitionSearch", "wantedItemId");
@@ -3923,7 +3928,7 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
         r#"
         {
           queryRoot: __type(name: "QueryRoot") {
-            fields {
+            fields(includeDeprecated: true) {
               name
               args {
                 name
@@ -4092,8 +4097,12 @@ async fn graphql_introspection_external_import_warmup_uses_session_ids() {
         !root_has_field("queryRoot", "externalImportMonitorWarmupStatus"),
         "legacy externalImportMonitorWarmupStatus query should not exist"
     );
+    // externalImportArrSourceWarmupStatus is deprecated (superseded by the
+    // kind-neutral externalImportWarmupStatus) but must keep its contract
+    // until removal — hence includeDeprecated: true on the queryRoot fields.
     for (root_alias, field_name) in [
         ("queryRoot", "externalImportArrSourceWarmupStatus"),
+        ("queryRoot", "externalImportWarmupStatus"),
         ("subscriptionRoot", "externalImportMonitorWarmupProgress"),
     ] {
         let arg = root_arg(root_alias, field_name, "sessionId");
@@ -4869,7 +4878,7 @@ async fn graphql_introspection_exposes_typed_settings_fields() {
         .filter_map(|field| field["name"].as_str())
         .collect();
     assert!(acquisition_names.contains(&"pollIntervalSeconds"));
-    // RFC 119: the wanted-scheduler cadence knobs (syncIntervalSeconds/batchSize)
+    // The wanted-scheduler cadence knobs (syncIntervalSeconds/batchSize)
     // were replaced by the convergence-cursor knobs.
     assert!(acquisition_names.contains(&"longTailBackfillMaxScopesPerCycle"));
     assert!(acquisition_names.contains(&"longTailReconvergeDays"));

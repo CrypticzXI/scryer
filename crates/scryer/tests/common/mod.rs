@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Once},
+};
 
 use async_graphql_axum::GraphQLRequest;
 use async_trait::async_trait;
@@ -29,7 +32,7 @@ use scryer_infrastructure::sqlite::{
 use scryer_infrastructure::{
     AcquisitionStore, DomainEventStore, DownloadClientConfigStore, DownloadQueueCommandStore,
     DownloadSubmissionStore, EncryptionKey, ExternalImportMonitorStore, FileSystemLibraryScanner,
-    FileSystemStagedNzbStore, HousekeepingStore, ImportStore, IndexerConfigStore,
+    FileSystemStagedNzbStore, HousekeepingStore, ImageProxyStore, ImportStore, IndexerConfigStore,
     LibraryProbeStore, LibraryScanUnmatchedStore, MediaFileStore, MediaServerConnectionStore,
     MetadataGatewayClient, MultiIndexerSearchClient, NzbgetDownloadClient, OAuthStore,
     PendingReleaseStore, ReleaseStore, SmgEnrollmentConfig, SqliteServices, SubtitleDownloadStore,
@@ -42,6 +45,19 @@ use scryer_interface::{ApiSchema, build_schema};
 
 pub fn disable_platform_keystore_for_tests() {
     scryer_infrastructure::keystore::disable_platform_keystore_for_tests();
+}
+
+static TEST_WASMTIME_RUNTIME: Once = Once::new();
+
+pub fn initialize_wasm_runtime_for_tests() {
+    TEST_WASMTIME_RUNTIME.call_once(|| {
+        let cache_dir = std::env::temp_dir().join(format!(
+            "scryer-wasmtime-integration-cache-{}",
+            std::process::id()
+        ));
+        scryer_plugins::initialize_wasm_runtime_at(cache_dir)
+            .expect("test Wasmtime cache must initialize");
+    });
 }
 
 /// Shared integration-test context.
@@ -617,6 +633,7 @@ pub fn disabled_auth_runtime_handle() -> AuthRuntimeStateHandle {
 impl TestContext {
     pub async fn new() -> Self {
         disable_platform_keystore_for_tests();
+        initialize_wasm_runtime_for_tests();
 
         // Start wiremock mock servers for each external API
         let nzbget_server = MockServer::start().await;
@@ -732,6 +749,7 @@ impl TestContext {
         let library_scan_unmatched_store = LibraryScanUnmatchedStore::new(datastore.clone());
         let media_file_store = MediaFileStore::new(datastore.clone());
         let title_image_store = TitleImageStore::new(datastore.clone());
+        let image_proxy_store = ImageProxyStore::new(datastore.clone());
         let rule_set_store = RuleSetStore::new(datastore.clone());
         let post_processing_script_store = PostProcessingScriptStore::new(datastore.clone());
         let plugin_store = PluginStore::new(datastore.clone());
@@ -771,6 +789,7 @@ impl TestContext {
         .with_library_probe_signatures(Arc::new(library_probe_store.clone()))
         .with_library_scan_unmatched_items(Arc::new(library_scan_unmatched_store.clone()))
         .with_title_images(Arc::new(title_image_store))
+        .with_image_proxy(Arc::new(image_proxy_store))
         .with_housekeeping(Arc::new(housekeeping_store))
         .with_subtitle_downloads(Arc::new(subtitle_download_store))
         .with_libraries(Arc::new(library_store.clone()))
@@ -1280,8 +1299,16 @@ async fn test_graphql_handler(
         }
         request = request.data(user);
     }
-    let mut response =
-        async_graphql_axum::GraphQLResponse::from(schema.execute(request).await).into_response();
+    let graphql_response = schema.execute(request).await;
+    if app
+        .image_proxy_repository()
+        .flush_image_proxy_sources()
+        .await
+        .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    let mut response = async_graphql_axum::GraphQLResponse::from(graphql_response).into_response();
     *response.status_mut() = response_status;
     response
 }

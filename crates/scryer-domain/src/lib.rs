@@ -1184,7 +1184,7 @@ pub enum DownloadQueueState {
     Failed,
 }
 
-// ── TrackedDownloads (plan 055) ──────────────────────────────────────────────
+// ── TrackedDownloads ──────────────────────────────────────────────
 
 /// Scryer's internal workflow state for a download, independent of the
 /// download client's reported status.
@@ -1357,6 +1357,8 @@ pub struct DownloadQueueItem {
     #[serde(default)]
     pub delete_error_message: Option<String>,
     pub is_scryer_origin: bool,
+    #[serde(default)]
+    pub source_provider: Option<String>,
     /// Scryer's tracked workflow state (populated by TrackedDownloadService).
     #[serde(default)]
     pub tracked_state: Option<TrackedDownloadState>,
@@ -2152,6 +2154,7 @@ pub enum DomainEventType {
     JobNextRunUpdated,
     DownloadQueueItemUpserted,
     DownloadQueueItemRemoved,
+    DownloadIgnored,
 }
 
 impl DomainEventType {
@@ -2200,6 +2203,7 @@ impl DomainEventType {
             Self::JobNextRunUpdated => "job_next_run_updated",
             Self::DownloadQueueItemUpserted => "download_queue_item_upserted",
             Self::DownloadQueueItemRemoved => "download_queue_item_removed",
+            Self::DownloadIgnored => "download_ignored",
         }
     }
 
@@ -2248,6 +2252,7 @@ impl DomainEventType {
             "job_next_run_updated" => Some(Self::JobNextRunUpdated),
             "download_queue_item_upserted" => Some(Self::DownloadQueueItemUpserted),
             "download_queue_item_removed" => Some(Self::DownloadQueueItemRemoved),
+            "download_ignored" => Some(Self::DownloadIgnored),
             _ => None,
         }
     }
@@ -2817,6 +2822,19 @@ pub struct DownloadQueueItemRemovedEventData {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DownloadIgnoredEventData {
+    pub title: Option<TitleContextSnapshot>,
+    pub download_client_item_id: String,
+    pub client_id: Option<String>,
+    pub client_type: Option<String>,
+    pub source_provider: Option<String>,
+    /// Release title the download was grabbed under; `default` so events
+    /// appended before this field existed still deserialize.
+    #[serde(default)]
+    pub source_title: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum DomainEventPayload {
     MediaRequestSubmitted(MediaRequestSubmittedEventData),
@@ -2862,6 +2880,7 @@ pub enum DomainEventPayload {
     JobNextRunUpdated(JobNextRunUpdatedEventData),
     DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData),
     DownloadQueueItemRemoved(DownloadQueueItemRemovedEventData),
+    DownloadIgnored(DownloadIgnoredEventData),
 }
 
 impl DomainEventPayload {
@@ -2912,6 +2931,7 @@ impl DomainEventPayload {
             Self::JobNextRunUpdated(_) => DomainEventType::JobNextRunUpdated,
             Self::DownloadQueueItemUpserted(_) => DomainEventType::DownloadQueueItemUpserted,
             Self::DownloadQueueItemRemoved(_) => DomainEventType::DownloadQueueItemRemoved,
+            Self::DownloadIgnored(_) => DomainEventType::DownloadIgnored,
         }
     }
 }
@@ -3174,6 +3194,10 @@ pub struct RuleSet {
     pub updated_at: DateTime<Utc>,
     pub is_managed: bool,
     pub managed_key: Option<String>,
+    /// Tags a managed pack narrows itself to. `None` or empty means the pack
+    /// applies wherever its facts match; tags restrict it to titles carrying
+    /// one of them. Only meaningful for managed rows.
+    pub managed_tag_filter: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]

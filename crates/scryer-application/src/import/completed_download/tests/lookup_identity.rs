@@ -112,6 +112,8 @@ async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
                 download_client_type: "qbittorrent".to_string(),
                 download_client_item_id: info_hash.to_string(),
                 source_hint: Some("http://torrent-indexer/download/paperman.torrent".to_string()),
+                source_provider_id: None,
+                source_provider_name: None,
                 source_kind: Some(crate::DownloadSourceKind::TorrentFile),
                 source_title: Some(release_title.to_string()),
                 request_signature: Some(

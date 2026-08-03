@@ -135,7 +135,7 @@ impl AppUseCase {
 impl AppUseCase {
     /// Pause acquisition for a scope: user intent persisted on the state row.
     /// A paused scope is excluded from the derived target set until resumed. The
-    /// identifier is a state-row id or a convergence scope key (RFC 119 §7.4); a
+    /// identifier is a state-row id or a convergence scope key; a
     /// scope key with no row yet materializes one so the pause has somewhere to live.
     pub async fn pause_wanted_item(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let item = self
@@ -172,7 +172,7 @@ impl AppUseCase {
     /// Resume acquisition for a paused scope: it re-enters the derived target
     /// set. Existing coverage stays valid — the cursor only searches indexers
     /// it has not already searched under the current fingerprint. Accepts a
-    /// state-row id or a convergence scope key (RFC 119 §7.4).
+    /// state-row id or a convergence scope key.
     pub async fn resume_wanted_item(&self, actor: &User, wanted_item_id: &str) -> AppResult<()> {
         let item = self
             .resolve_or_create_wanted_state_row(wanted_item_id)
@@ -263,6 +263,8 @@ impl AppUseCase {
             download_client_type: String::new(),
             download_client_item_id: String::new(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: None,
             request_signature: None,

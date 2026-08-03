@@ -83,7 +83,6 @@ const IMAGE_REFRESH_PRIORITIES: &[(TitleImageKind, &str, u32)] = &[
     (TitleImageKind::Poster, "w250", 250),
     (TitleImageKind::Poster, "w70", 70),
     (TitleImageKind::Fanart, "w1280", 1280),
-    (TitleImageKind::Poster, "w500", 500),
 ];
 
 async fn list_prioritized_refresh_work(

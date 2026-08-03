@@ -181,6 +181,14 @@ enum TitleGuardMode {
     ExactTitleMatch,
 }
 
+fn title_guard_mode_for_strategy(strategy: &SearchStrategy) -> TitleGuardMode {
+    if !strategy.ids.is_empty() || strategy.request_query.trim().is_empty() {
+        TitleGuardMode::SkipTitleMatch
+    } else {
+        TitleGuardMode::ExactTitleMatch
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct ManagedIndexerMetadata {
     enable_rss: Option<bool>,
@@ -1812,12 +1820,7 @@ impl MultiIndexerSearchClient {
                 None
             };
             let strategy_label = strategy.label.clone();
-            let title_guard_mode =
-                if !strategy.ids.is_empty() || strategy.request_query.trim().is_empty() {
-                    TitleGuardMode::SkipTitleMatch
-                } else {
-                    TitleGuardMode::ExactTitleMatch
-                };
+            let title_guard_mode = title_guard_mode_for_strategy(&strategy);
 
             set.spawn(async move {
                 let StrategyTierContext {
@@ -2311,10 +2314,10 @@ impl IndexerClient for MultiIndexerSearchClient {
             } else {
                 None
             };
-            // Candidate value (RFC 119 §D3, consumed by plan 112): the
+            // Candidate value: the
             // convergence cursor's per-scope lane hint takes precedence — hot
             // scopes carry the high value that keeps admitting under quota
-            // pressure, cold scopes the low value plan 112 sheds first. When no
+            // pressure, cold scopes the low value the quota gate sheds first. When no
             // hint is supplied (interactive/RSS, or a background scope with no
             // hint), fall back to the historically-useful boost, then neutral.
             let expected_value = if let Some(score) = learning_context
@@ -2464,7 +2467,7 @@ impl IndexerClient for MultiIndexerSearchClient {
         // TV/series searches we run ID searches first and only fall back to a
         // broad freetext query if that indexer returned no releases.
         //
-        // RFC 119: per-indexer outcome for convergence coverage. Deferred/skipped
+        // Per-indexer outcome for convergence coverage. Deferred/skipped
         // indexers (never queried) are recorded below; fired/errored are recorded as
         // their tasks complete in the join loop.
         let mut indexer_outcomes: Vec<IndexerQueryOutcome> = Vec::new();
@@ -3515,7 +3518,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                     }
                     let empty = response.results.is_empty();
                     if should_record_feedback {
-                        // RFC 119 §D5: a fired query that returned nothing is an
+                        // A fired query that returned nothing is an
                         // EmptySuccess, distinct from a hitful Success. Plan 112
                         // treats both as a successful observation for quota and
                         // cadence; the convergence ledger reads emptiness from
@@ -4194,6 +4197,41 @@ mod tests {
 
         assert!(entry.claim_feedback());
         assert!(!entry.claim_feedback());
+    }
+
+    #[test]
+    fn id_strategies_skip_the_text_title_guard() {
+        let mut ids = HashMap::new();
+        ids.insert("tmdb".to_string(), "123".to_string());
+        let id_strategy = SearchStrategy {
+            request_query: "Resident Evil 2026".to_string(),
+            request_facet: "movie".to_string(),
+            ids,
+            season: None,
+            episode: None,
+            absolute_episode: None,
+            generic_query_only: false,
+            label: "ids_tmdb".to_string(),
+        };
+        let text_strategy = SearchStrategy {
+            request_query: "Resident Evil 2026".to_string(),
+            request_facet: "movie".to_string(),
+            ids: HashMap::new(),
+            season: None,
+            episode: None,
+            absolute_episode: None,
+            generic_query_only: false,
+            label: "freetext".to_string(),
+        };
+
+        assert_eq!(
+            title_guard_mode_for_strategy(&id_strategy),
+            TitleGuardMode::SkipTitleMatch
+        );
+        assert_eq!(
+            title_guard_mode_for_strategy(&text_strategy),
+            TitleGuardMode::ExactTitleMatch
+        );
     }
 
     struct MockIndexerConfigRepository {
@@ -5015,6 +5053,7 @@ mod tests {
             parsed_release_metadata: None,
             quality_profile_decision: None,
             extra: HashMap::new(),
+            response_attributes: Default::default(),
             guid: None,
             info_url: None,
             provenance: None,

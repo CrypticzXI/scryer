@@ -330,7 +330,7 @@ impl AppUseCase {
             .await
     }
 
-    /// Actor-less core of the cutoff-unmet derivation (RFC 119 §D1): scopes
+    /// Actor-less core of the cutoff-unmet derivation: scopes
     /// whose primary file sits strictly below the effective profile cutoff.
     /// The convergence cursor derives upgrade targets from every library
     /// (`library_filter: None`); the API path passes the actor's authorized
@@ -543,7 +543,7 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    /// RFC 119 bounded view: one page of cutoff-unmet targets plus the full
+    /// Bounded view: one page of cutoff-unmet targets plus the full
     /// count. Computes the unmet set then slices — this bounds what reaches the
     /// browser (the immediate large-library pain); paging the server-side
     /// compute is a follow-up. `limit == 0` returns just the total with no items.
@@ -563,8 +563,7 @@ impl AppUseCase {
         Ok(CutoffUnmetPage { items, total })
     }
 
-    /// One page of cutoff-unmet targets plus per-item convergence progress (RFC 119
-    /// §6/§7). The page's convergence is derived in one batched coverage round-trip,
+    /// One page of cutoff-unmet targets plus per-item convergence progress. The page's convergence is derived in one batched coverage round-trip,
     /// so the Upgrades table shows the same convergence state as the derived
     /// Missing/Upgrades views.
     pub async fn list_cutoff_unmet_titles_page_with_convergence(

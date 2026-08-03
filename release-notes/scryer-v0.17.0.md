@@ -167,6 +167,10 @@ Scryer's plugin platform expands substantially in 0.17.
 
 ## Upgrade considerations
 
+### Review existing season folder layouts
+
+Series and Anime season-folder defaults now follow Sonarr: regular seasons use `Season {season}` and season-zero content uses `Specials`. Existing `Season 01` and `Season 00` directories are not moved automatically, so libraries may temporarily contain both naming styles. Use the rename preview and apply workflow when you are ready to reorganize existing files.
+
 ### Plan for a longer first startup
 
 The 0.17 database upgrade is materially heavier than a typical patch migration. Back up the datastore, leave migrations enabled, avoid interrupting the first start, and allow additional database, disk, and metadata-gateway activity.

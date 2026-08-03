@@ -14,6 +14,7 @@ export type TitleHistoryEvent = {
   displayTitle: string | null;
   sourceSystem: string | null;
   sourceRef: string | null;
+  sourceProvider: string | null;
   sourceHint: string | null;
   quality: string | null;
   downloadId: string | null;

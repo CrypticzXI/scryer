@@ -64,6 +64,8 @@ async fn foreign_title_parse_with_orphan_submission_still_requires_scryer_catego
             download_client_type: "nzbget".to_string(),
             download_client_item_id: "dl-1".to_string(),
             source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
             source_kind: None,
             source_title: Some("Paper.Lantern.2012.1080p.WEB-DL".to_string()),
             request_signature: None,
@@ -317,4 +319,321 @@ async fn manual_assignment_allows_retry_after_category_block() {
     td.state = TrackedDownloadState::Downloading;
     check(&app, &mut td).await;
     assert_eq!(td.state, TrackedDownloadState::ImportPending);
+}
+
+async fn run_scryer_submission_identity_check(
+    titles: Vec<Title>,
+    assigned_title_id: &str,
+    facet: &str,
+    release_name: &str,
+) -> TrackedDownload {
+    run_scryer_origin_identity_check(
+        titles,
+        assigned_title_id,
+        facet,
+        release_name,
+        TitleMatchType::Submission,
+    )
+    .await
+}
+
+async fn run_scryer_origin_identity_check(
+    titles: Vec<Title>,
+    assigned_title_id: &str,
+    facet: &str,
+    release_name: &str,
+    match_type: TitleMatchType,
+) -> TrackedDownload {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let completed = build_completed_download(
+        release_name,
+        temp_dir.path().to_string_lossy().as_ref(),
+        Some(facet),
+    );
+    let download_client = test_download_client_with_completed(completed);
+    let app = build_app_with_download_client(titles, vec![], vec![], vec![], download_client);
+    let mut td = build_tracked_download(assigned_title_id, facet, release_name);
+    td.client_item.is_scryer_origin = true;
+    td.match_type = match_type;
+
+    check(&app, &mut td).await;
+    td
+}
+
+#[tokio::test]
+async fn scryer_origin_name_proof_blocks_electric_bloom_before_import() {
+    // Weaker scryer-origin provenance (no durable submission linkage) must
+    // still prove identity from the release name — Electric Bloom cannot
+    // prove the BLOOM alias.
+    let mut title = build_title(
+        "fragrant-flower",
+        "The Fragrant Flower Blooms with Dignity",
+        MediaFacet::Series,
+    );
+    title.year = Some(2025);
+    title.aliases.push("BLOOM".to_string());
+
+    let td = run_scryer_origin_identity_check(
+        vec![title],
+        "fragrant-flower",
+        "series",
+        "Electric.Bloom.S01E09.How.it.all.came.out.of.the.wash.MULTI.1080p.DSNP.WEB-DL.DDP5.1.H.264",
+        TitleMatchType::TitleParse,
+    )
+    .await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+    assert!(
+        td.status_messages.iter().any(|message| {
+            message.contains("no longer proves the title assigned at grab time")
+        })
+    );
+}
+
+#[tokio::test]
+async fn scryer_submission_linkage_imports_unknown_completed_name() {
+    // A Submission match is Scryer's own durable grab-time identity. A
+    // completed name that names no library title is indistinguishable from
+    // obfuscation, so the linkage stands as proof; only a completion that
+    // positively asserts a *different* library title contradicts it.
+    let mut title = build_title(
+        "fragrant-flower",
+        "The Fragrant Flower Blooms with Dignity",
+        MediaFacet::Series,
+    );
+    title.year = Some(2025);
+    title.aliases.push("BLOOM".to_string());
+
+    let td = run_scryer_submission_identity_check(
+        vec![title],
+        "fragrant-flower",
+        "series",
+        "Electric.Bloom.S01E09.How.it.all.came.out.of.the.wash.MULTI.1080p.DSNP.WEB-DL.DDP5.1.H.264",
+    )
+    .await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+}
+
+#[tokio::test]
+async fn scryer_origin_name_proof_blocks_ambiguous_one_piece() {
+    let mut live = build_title("one-piece-live", "One Piece", MediaFacet::Series);
+    live.year = Some(2023);
+    let mut anime = build_title("one-piece-anime", "One Piece", MediaFacet::Anime);
+    anime.year = Some(1999);
+
+    let td = run_scryer_origin_identity_check(
+        vec![live, anime],
+        "one-piece-live",
+        "series",
+        "ONE.PIECE.S02E22.1080p.WEB-DL",
+        TitleMatchType::TitleParse,
+    )
+    .await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+}
+
+#[tokio::test]
+async fn scryer_submission_linkage_imports_ambiguous_one_piece() {
+    // The grab already passed the full disambiguator discipline; the linkage
+    // carries that identity. A name both twins share is consistent with the
+    // assignment, not a contradiction, so the import proceeds.
+    let mut live = build_title("one-piece-live", "One Piece", MediaFacet::Series);
+    live.year = Some(2023);
+    let mut anime = build_title("one-piece-anime", "One Piece", MediaFacet::Anime);
+    anime.year = Some(1999);
+
+    let td = run_scryer_submission_identity_check(
+        vec![live, anime],
+        "one-piece-live",
+        "series",
+        "ONE.PIECE.S02E22.1080p.WEB-DL",
+    )
+    .await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+}
+
+#[tokio::test]
+async fn scryer_submission_with_complete_title_proof_reaches_import_pending() {
+    let title = build_title("spy-family", "Spy x Family", MediaFacet::Series);
+    let td = run_scryer_submission_identity_check(
+        vec![title],
+        "spy-family",
+        "series",
+        "ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
+    )
+    .await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+}
+
+#[tokio::test]
+async fn obfuscated_completed_name_proves_via_source_title() {
+    let title = build_title("spy-family", "Spy x Family", MediaFacet::Series);
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let completed = build_completed_download(
+        "abc123xyz987",
+        temp_dir.path().to_string_lossy().as_ref(),
+        Some("series"),
+    );
+    let download_client = test_download_client_with_completed(completed);
+    let app = build_app_with_download_client(vec![title], vec![], vec![], vec![], download_client);
+    let mut td = build_tracked_download("spy-family", "series", "abc123xyz987");
+    td.client_item.is_scryer_origin = true;
+    // Weaker scryer-origin provenance — no durable linkage — so proof must come
+    // from a raw name. The client obfuscated the completed name and folder
+    // mid-flight; the grabbed release name Scryer recorded still proves the
+    // identity.
+    td.match_type = TitleMatchType::TitleParse;
+    td.source_title =
+        Some("ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264".to_string());
+
+    check(&app, &mut td).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+}
+
+#[tokio::test]
+async fn contradictory_completed_name_blocks_despite_valid_source_title() {
+    let spy = build_title("spy-family", "Spy x Family", MediaFacet::Series);
+    let mut one_piece = build_title("one-piece-anime", "One Piece", MediaFacet::Anime);
+    one_piece.year = Some(1999);
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    // The client's completed item positively names a different library title —
+    // that is a contradiction, not obfuscation, and the historical grabbed
+    // name must not override what actually finished on disk.
+    let completed = build_completed_download(
+        "One.Piece.1071.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG",
+        temp_dir.path().to_string_lossy().as_ref(),
+        Some("series"),
+    );
+    let download_client = test_download_client_with_completed(completed);
+    let app = build_app_with_download_client(
+        vec![spy, one_piece],
+        vec![],
+        vec![],
+        vec![],
+        download_client,
+    );
+    let mut td = build_tracked_download(
+        "spy-family",
+        "series",
+        "One.Piece.1071.1080p.CR.WEB-DL.AAC2.0.H.264-VARYG",
+    );
+    td.client_item.is_scryer_origin = true;
+    td.match_type = TitleMatchType::Submission;
+    td.source_title =
+        Some("ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264".to_string());
+
+    check(&app, &mut td).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+}
+
+#[tokio::test]
+async fn series_movie_release_proves_against_link_identity() {
+    let mut series = build_title("psycho-pass", "Psycho Pass", MediaFacet::Series);
+    series.year = Some(2012);
+    let release_name = "Psycho-Pass.Sinners.of.the.System.Case.3.2019.1080p.BluRay.x264";
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let completed = build_completed_download(
+        release_name,
+        temp_dir.path().to_string_lossy().as_ref(),
+        Some("series"),
+    );
+    let download_client = test_download_client_with_completed(completed);
+    let app = build_app_with_download_client(vec![series], vec![], vec![], vec![], download_client);
+    let now = chrono::Utc::now();
+    // The search grabbed this release under the linked movie's own identity
+    // (name, year 2019); the gate must validate against that same identity
+    // instead of letting the parent series' year (2012) veto it.
+    app.services
+        .catalog
+        .shows
+        .upsert_series_movie_link(scryer_domain::SeriesMovieLink {
+            id: "link-1".to_string(),
+            series_title_id: "psycho-pass".to_string(),
+            movie: scryer_domain::MovieEntity {
+                id: "movie-1".to_string(),
+                title: "Psycho-Pass Sinners of the System Case 3".to_string(),
+                sort_title: None,
+                slug: None,
+                year: Some(2019),
+                overview: None,
+                poster_url: None,
+                background_url: None,
+                language: None,
+                runtime_minutes: None,
+                content_status: None,
+                studio: None,
+                digital_release_date: None,
+                imdb_id: None,
+                tvdb_id: None,
+                tmdb_id: None,
+                mal_id: None,
+                anidb_id: None,
+                created_at: now,
+                updated_at: now,
+            },
+            placement: None,
+            narrative_order: None,
+            after_season: None,
+            before_season: None,
+            linked_episode_id: None,
+            association_confidence: None,
+            continuity_status: None,
+            movie_form: None,
+            confidence: None,
+            signal_summary: None,
+            source: None,
+            monitored: true,
+            legacy_collection_id: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("seed series movie link");
+    let mut td = build_tracked_download("psycho-pass", "series", release_name);
+    td.client_item.is_scryer_origin = true;
+    // Name-proof provenance, so the link-identity evidence is what passes the
+    // gate — a Submission match would be trusted by linkage before proving.
+    td.match_type = TitleMatchType::TitleParse;
+
+    check(&app, &mut td).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+}
+
+#[tokio::test]
+async fn junk_source_title_is_not_an_identity_bypass() {
+    let mut title = build_title(
+        "fragrant-flower",
+        "The Fragrant Flower Blooms with Dignity",
+        MediaFacet::Series,
+    );
+    title.year = Some(2025);
+    title.aliases.push("BLOOM".to_string());
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let completed = build_completed_download(
+        "abc123xyz987",
+        temp_dir.path().to_string_lossy().as_ref(),
+        Some("series"),
+    );
+    let download_client = test_download_client_with_completed(completed);
+    let app = build_app_with_download_client(vec![title], vec![], vec![], vec![], download_client);
+    let mut td = build_tracked_download("fragrant-flower", "series", "abc123xyz987");
+    td.client_item.is_scryer_origin = true;
+    // Name-proof provenance: without durable linkage, a junk source_title must
+    // not become the identity proof.
+    td.match_type = TitleMatchType::TitleParse;
+    td.source_title = Some(
+        "Electric.Bloom.S01E09.How.it.all.came.out.of.the.wash.MULTI.1080p.DSNP.WEB-DL.DDP5.1.H.264"
+            .to_string(),
+    );
+
+    check(&app, &mut td).await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
 }

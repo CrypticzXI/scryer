@@ -34,6 +34,17 @@ const en: LocaleDictionary = {
   "label.actions": "Actions",
   "label.create": "Create",
   "label.cancel": "Cancel",
+  "folderBrowser.selectPath": "Select path",
+  "folderBrowser.go": "Go",
+  "folderBrowser.descriptionFileOrFolder": "Browse paths on the Scryer host and select a file or folder.",
+  "folderBrowser.descriptionFile": "Browse paths on the Scryer host and select a file.",
+  "folderBrowser.descriptionFolder": "Browse paths on the Scryer host and select a folder.",
+  "folderBrowser.loading": "Loading folders",
+  "folderBrowser.emptyFilesAndFolders": "No files or subdirectories",
+  "folderBrowser.emptyFolders": "No subdirectories",
+  "folderBrowser.error": "Unable to browse path.",
+  "folderBrowser.browseRoot": "Browse /",
+  "folderBrowser.selectFolder": "Select folder",
   "label.discard": "Discard changes",
   "label.clear": "Clear",
   "label.add": "Add",
@@ -138,6 +149,18 @@ const en: LocaleDictionary = {
   "discovery.studio": "Studio",
   "discovery.section.newOnStreaming": "New to Streaming",
   "discovery.section.newOnPhysical": "New on Blu-ray",
+  "discovery.section.allTimeFavorites": "All-Time Favorites",
+  "discovery.section.rightNow": "Right Now",
+  "discovery.section.fromYourTaste": "From Your Taste",
+  "discovery.section.almostComplete": "Almost Complete",
+  "discovery.section.nextAnimeSeason": "Next Anime Season",
+  "discovery.section.popularInAnime": "Popular in Anime",
+  "discovery.section.thisSeasonInAnime": "This Season in Anime",
+  "discovery.section.comingSoonMovies": "Coming Soon: Movies",
+  "discovery.section.comingSoonSeries": "Coming Soon: Series",
+  "discovery.section.topRatedForYou": "Top Rated for You",
+  "discovery.section.topRated": "Top Rated",
+  "discovery.section.recommended": "Recommended",
   "discovery.recency.newThisWeek": "New this week",
   "discovery.recency.newThisMonth": "New this month",
   "discovery.recency.new": "New",
@@ -752,11 +775,23 @@ const en: LocaleDictionary = {
   "settings.folderTemplateLabel": "Folder template",
   "settings.folderTemplatePlaceholder": "Placeholder",
   "settings.folderTemplateRequired": "Folder template is required.",
+  "settings.seasonFolderTemplateLabel": "Season folder template",
+  "settings.seasonFolderTemplatePlaceholder": "Season {season}",
+  "settings.seasonFolderTemplateRequired": "Season folder template is required.",
+  "settings.specialsFolderTemplateLabel": "Specials folder template",
+  "settings.specialsFolderTemplatePlaceholder": "Specials",
+  "settings.specialsFolderTemplateRequired": "Specials folder template is required.",
+  "settings.seasonFolderTemplateMustContainSeason":
+    "Season folder template must include {season}.",
+  "settings.seasonFolderValidationUnknownToken":
+    "Season folder templates support {season}, title, year, and external ID tokens. Invalid token: {{token}}",
   "settings.folderAvailableTokens": "Folder tokens",
   "settings.folderRenameSectionTitle": "Folder Renaming",
   "settings.folderValidationUnknownToken":
     "Folder templates support {title}, {year}, and external ID tokens. Invalid token: {{token}}",
   "settings.folderValidationEmpty": "Folder template cannot be empty",
+  "settings.folderValidationIllegalCharacter":
+    "Folder template contains an illegal filesystem character: {{character}}",
   "settings.renameTemplateLabel": "Rename template",
   "settings.renameTemplatePlaceholder": "Placeholder",
   "settings.renameTemplateHelp":
@@ -816,6 +851,8 @@ const en: LocaleDictionary = {
   "settings.renameValidationUnmatchedOpen": "Unmatched opening bracket '{'",
   "settings.renameValidationUnmatchedClose": "Unmatched closing bracket '}'",
   "settings.renameValidationUnknownToken": "Unknown token: {{token}}",
+  "settings.renameValidationInvalidPadding":
+    "Numeric padding must be an ASCII integer from 0 to 240: {{padding}}",
   "settings.renameValidationInvalidFilter": "Invalid token filter: {{filter}}",
   "settings.renameValidationEmpty": "Rename template cannot be empty",
   "settings.renameComingSoon": "Renaming rules are coming soon.",
@@ -852,6 +889,16 @@ const en: LocaleDictionary = {
   "settings.uiSaved": "Display settings saved.",
   "settings.historyRetentionValidation":
     "History retention days must be at least 1 unless history is kept forever.",
+  "settings.imageCacheTitle": "Image cache",
+  "settings.imageCacheMaxSizeLabel": "Image cache size",
+  "settings.imageCacheMbSuffix": "MiB",
+  "settings.imageCacheEnvOverride":
+    "SCRYER_IMAGE_CACHE_MAX_BYTES is active. Its value is effective; the saved limit applies after the environment override is removed.",
+  "settings.imageCacheMaxSizeValidation":
+    "Image cache maximum size must be at least 1 MiB.",
+  "settings.clearImageCache": "Clear image cache",
+  "settings.clearingImageCache": "Clearing image cache…",
+  "settings.imageCacheClearQueued": "Image cache reset queued.",
   "settings.pluginHttpTrustTitle": "Plugin HTTPS trusted certificates",
   "settings.pluginHttpTrustAdvancedLabel": "Advanced feature",
   "settings.pluginHttpTrustStoredCount": "{{count}} stored",
@@ -1300,6 +1347,8 @@ const en: LocaleDictionary = {
   "nzb.blockedResults": "{{count}} blocked release(s)",
   "nzb.showScoringLog": "Show scoring log",
   "nzb.hideScoringLog": "Hide scoring log",
+  "nzb.score": "Score",
+  "nzb.size": "Size",
   "nzb.scoringLog": "Scoring log",
   "nzb.total": "Total",
 
@@ -1362,6 +1411,7 @@ const en: LocaleDictionary = {
   "queue.state.importPending": "Import Pending",
   "queue.state.importBlocked": "Import Blocked",
   "queue.state.failed": "Failed",
+  "queue.state.ignored": "Ignored",
   "queue.state.unknown": "Unknown",
   "queue.empty": "No active or pending downloads.",
   "queue.error": "Failed to load download queue.",
@@ -1418,18 +1468,19 @@ const en: LocaleDictionary = {
   "queue.resumeFailed": "Failed to resume download.",
   "queue.deleting": "Deleting…",
   "queue.deleteSuccess": "Download removed.",
-  "queue.deleteQueued": "Removal queued.",
-  "queue.deleteFailed": "Failed to delete download.",
-  "queue.deleteConfirmTitle": "Remove Download",
+  "queue.deleteQueued": "Removal from downloader queued.",
+  "queue.deleteFailed": "Failed to remove download from downloader.",
+  "queue.removeFromDownloader": "Remove from downloader",
+  "queue.deleteConfirmTitle": "Remove from downloader",
   "queue.deleteConfirmDescription":
-    "Are you sure you want to remove this download from the queue? This cannot be undone.",
-  "queue.bulkDeleteQueued": "Removal queued for {{count}} downloads.",
+    "Remove this download from the downloader? It will be ignored after the downloader confirms removal.",
+  "queue.bulkDeleteQueued": "Removal from downloader queued for {{count}} downloads.",
   "queue.bulkDeletePartial":
     "Removal queued for {{count}} downloads; {{failed}} failed.",
   "queue.bulkDeleteFailed": "Failed to delete selected downloads.",
-  "queue.bulkDeleteConfirmTitle": "Remove Selected Downloads",
+  "queue.bulkDeleteConfirmTitle": "Remove selected from downloader",
   "queue.bulkDeleteConfirmDescription":
-    "Are you sure you want to remove {{count}} selected downloads from the queue? This cannot be undone.",
+    "Remove {{count}} selected downloads from the downloader? They will be ignored after removal succeeds.",
   "queue.manualUnavailableForResult":
     "Manual queue unavailable for this result.",
 
@@ -1564,6 +1615,7 @@ const en: LocaleDictionary = {
   "settings.noRulesFound": "No custom rules configured.",
   "settings.ruleCreate": "Create Rule",
   "settings.ruleCreateNew": "Create new rule",
+  "settings.ruleCopyAsCustom": "Copy as custom rule",
   "settings.ruleUpdate": "Update Rule",
   "settings.ruleApplyTemplate": "Apply template",
   "settings.ruleConfirmDiscardTitle": "Discard current rule edits?",
@@ -1609,6 +1661,7 @@ const en: LocaleDictionary = {
   "settings.refReleaseVideoCodec": "Video codec (e.g. H.265, H.264, AV1)",
   "settings.refReleaseAudio": "Primary audio codec (e.g. DDP, AAC, TrueHD)",
   "settings.refReleaseAudioCodecs": "All detected audio codecs as an array",
+  "settings.refReleaseGuideFacts": "Guide facts detected from the release metadata",
   "settings.refReleaseAudioChannels":
     "Audio channel configuration (e.g. 5.1, 7.1, 2.0)",
   "settings.refReleaseLangsAudio":
@@ -2593,6 +2646,7 @@ const en: LocaleDictionary = {
   "profile.linkAccountConnection": "Connection",
   "profile.linkAccountUsername": "Username",
   "profile.linkAccountPassword": "Password",
+  "profile.linkAccountPasswordlessHint": "Leave blank if this Jellyfin account has no password. Passwordless accounts can be linked, but cannot be used to sign in to Scryer.",
   "profile.linkAccountSubmit": "Link account",
   "profile.linkAccountCancel": "Cancel",
   "profile.linkAccountNoConnections": "No eligible connection available.",
@@ -2712,6 +2766,9 @@ const en: LocaleDictionary = {
   "wanted.type.seriesMovie": "Series movie",
   "wanted.decision.eligible": "Eligible",
   "wanted.decision.titleMismatch": "Title mismatch",
+  "wanted.decision.episodeMismatch": "Episode mismatch",
+  "wanted.decision.categoryMismatch": "Category mismatch",
+  "wanted.decision.ambiguousIdentity": "Ambiguous identity",
   "wanted.decision.qualityBlocked": "Quality blocked",
   "wanted.decision.upgradeRejected": "Upgrade rejected",
   "wanted.decision.pendingDelay": "Pending delay",
@@ -2855,6 +2912,8 @@ const en: LocaleDictionary = {
   "pending.colIndexer": "Indexer",
   "pending.colAddedAt": "Added",
   "pending.colDelayUntil": "Available",
+  "pending.status.needsReview": "Needs review",
+  "pending.phase.needsReview": "Review",
   "pending.forceGrab": "Grab now",
   "pending.dismiss": "Dismiss",
   "pending.grabbed": "Release grabbed.",
@@ -3039,6 +3098,7 @@ const en: LocaleDictionary = {
   "setup.monitorWarmupDescription":
     "Scryer is pulling monitored status in the background so the final import step is faster.",
   "setup.monitorWarmupQueued": "Waiting for progress details…",
+  "setup.monitorWarmupLoadingIndexers": "Discovering indexers",
   "setup.monitorWarmupLoadingMovies": "Loading movies",
   "setup.monitorWarmupLoadingSeries": "Loading series",
   "setup.monitorWarmupLoadingEpisodes": "Loading episodes",
@@ -3140,6 +3200,15 @@ const en: LocaleDictionary = {
   "setup.remapScryerHostPath": "Path on Scryer host",
   "setup.remapResetToSource": "Reset to source",
   "setup.remapSave": "Save remap",
+  "setup.mappedPathValidationChecking":
+    "Checking that Scryer can access every mapped source path…",
+  "setup.invalidMappedPathTitle":
+    "Scryer can’t access this mapped source path",
+  "setup.invalidMappedPathsTitle":
+    "Scryer can’t access {{count}} mapped source paths",
+  "setup.invalidMappedPathsHelp":
+    "These roots are assigned, but their paths are not visible to Scryer. Remap each one to the equivalent folder on the Scryer host before continuing.",
+  "setup.remapInvalidRootAria": "Remap {{name}} from {{path}}",
   "setup.noPath": "(no path)",
   // Quality & persona
   "setup.library": "Library",
@@ -3200,8 +3269,6 @@ const en: LocaleDictionary = {
     "Some detected source folders still need a library. Go back to the Libraries step to map them before finishing.",
 
   "settings.manageConfiguration": "Manage configuration",
-  "settings.clearTitleImageCache": "Clear Title Image Cache",
-  "settings.titleImageCacheClearQueued": "Title image cache reset queued.",
   "settings.runSetupWizard": "Run setup wizard",
 
   "history.title": "History",

@@ -395,6 +395,7 @@ const WANTED_ITEM_FIELDS = `
       lastSearchAt
       status
       grabbedRelease
+      sourceProvider
       currentScore
       convergenceState
       indexersCovered
@@ -411,6 +412,7 @@ const DOWNLOAD_QUEUE_ITEM_FIELDS = `
     titleName
     facet
     isScryerOrigin
+    sourceProvider
     clientId
     clientName
     clientType
@@ -2167,6 +2169,8 @@ const mediaSettingsFieldSelection = `
     }
     requiredAudioLanguages
     folderTemplate
+    seasonFolderTemplate
+    specialsFolderTemplate
     renameEnabled
     renameTemplate
     renameCollisionPolicy
@@ -2403,6 +2407,10 @@ export const generalSettingsQuery = `query GeneralSettings {
   generalSettings {
     keepHistoryForever
     historyRetentionDays
+    imageCacheMaxSizeMb
+    effectiveImageCacheMaxSizeBytes
+    effectiveImageCacheMaxSizeMb
+    imageCacheMaxSizeEnvOverrideActive
     pluginHttpCaBundlePem
     pluginHttpTrustedCertificates {
       fingerprintSha256
@@ -2705,6 +2713,11 @@ const EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS = `
 
 export const externalImportArrSourceWarmupStatusQuery = `query ExternalImportArrSourceWarmupStatus($sessionId: ID!) {
   externalImportArrSourceWarmupStatus(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
+  }
+}`;
+
+export const externalImportWarmupStatusQuery = `query ExternalImportWarmupStatus($sessionId: ID!) {
+  externalImportWarmupStatus(sessionId: $sessionId) {${EXTERNAL_IMPORT_MONITOR_WARMUP_PROGRESS_FIELDS}
   }
 }`;
 
@@ -3415,6 +3428,7 @@ export const titleHistoryQuery = `query TitleHistory($filter: TitleHistoryFilter
       displayTitle
       sourceSystem
       sourceRef
+      sourceProvider
       sourceHint
       quality
       downloadId

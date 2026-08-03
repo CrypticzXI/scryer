@@ -218,7 +218,6 @@ type SearchCatalogResultButtonProps = {
   onClick: () => void;
   onKeyDown: React.KeyboardEventHandler<HTMLButtonElement>;
   posterAlt: string;
-  posterSourceUrl?: string | null;
   posterUrl?: string | null;
   resultAttribute: SearchResultDataAttribute;
   secondaryParts: Array<string | null | undefined>;
@@ -242,7 +241,6 @@ export function SearchCatalogResultButton({
   onClick,
   onKeyDown,
   posterAlt,
-  posterSourceUrl,
   posterUrl,
   resultAttribute,
   secondaryParts,
@@ -285,7 +283,6 @@ export function SearchCatalogResultButton({
       <div className="relative h-16 w-11 flex-none overflow-hidden rounded-[7px] border border-[var(--scry-border2)] bg-muted">
         <TitlePosterSlot
           src={posterUrl}
-          sourceSrc={posterSourceUrl}
           metadataFetchedAt={metadataFetchedAt}
           createdAt={createdAt}
           alt={posterAlt}
@@ -499,7 +496,9 @@ export function SearchEmptyState({
       <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-[15px] border border-[var(--scry-border2)] bg-[var(--scry-chip)] text-[var(--scry-faint2)]">
         <Icon className="h-6 w-6" />
       </div>
-      <p className="text-[17px] font-bold text-[var(--scry-ink2)]">{title}</p>
+      <p className="max-w-full break-all text-[17px] font-bold text-[var(--scry-ink2)]">
+        {title}
+      </p>
       <p className="mt-1 max-w-sm text-sm leading-6 text-[var(--scry-muted3)]">
         {description}
       </p>

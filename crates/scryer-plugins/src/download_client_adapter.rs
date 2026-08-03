@@ -238,6 +238,7 @@ fn map_queue_item(
         imported_at: None,
         delete_status: None,
         delete_error_message: None,
+        source_provider: None,
         is_scryer_origin: false,
         tracked_state: None,
         tracked_status: None,
@@ -326,6 +327,7 @@ fn map_history_item_from_completed(
         imported_at: None,
         delete_status: None,
         delete_error_message: None,
+        source_provider: None,
         is_scryer_origin: false,
         tracked_state: None,
         tracked_status: None,
@@ -1243,6 +1245,7 @@ mod tests {
 
     fn sample_request() -> DownloadClientAddRequest {
         DownloadClientAddRequest {
+            search_facet: None,
             title: scryer_domain::Title {
                 id: "title-1".to_string(),
                 name: "Example".to_string(),

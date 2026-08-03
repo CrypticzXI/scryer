@@ -6,7 +6,7 @@ use scryer_application::{
     ExternalImportMonitorWarmupStatus,
     ExternalImportSetupSecretDraft as AppExternalImportSetupSecretDraft,
     ExternalImportSetupSecretDraftStatus, ExternalImportSetupSecretInstanceKind,
-    ExternalImportSetupSecretOverrideDraft, JwtSessionScope, MediaRequestCounts,
+    ExternalImportSetupSecretOverrideDraft, ImageProxyKind, JwtSessionScope, MediaRequestCounts,
     OAuthAuthorizationSource, PendingImportCounts, RuntimePathStyle, SCRYER_VERSION, SortDirection,
     TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey,
     TitleHistoryFilter, is_supported_title_history_event_type, supported_title_history_event_types,
@@ -16,12 +16,14 @@ use scryer_interface_metadata::MetadataQueries;
 use scryer_interface_settings::SettingsQueries;
 use std::{fs, io, path::Path};
 
-use crate::context::{
+use scryer_interface_core as context;
+use scryer_interface_core::{
     actor_from_ctx, actor_has_any_library_permission, actor_has_app_permission, app_from_ctx,
     current_user_from_ctx, mfa_verification_from_ctx, require_app_permission,
     require_config_app_permission, to_gql_error,
 };
-use crate::mappers::{
+use scryer_interface_media::mappers;
+use scryer_interface_media::mappers::{
     catalog_discovery_query_from_input, discovery_home_filter_options_query_from_input,
     discovery_home_query_from_input, discovery_item_detail_query_from_input,
     discovery_items_query_from_input, from_activity_event, from_backup_info,
@@ -38,11 +40,20 @@ use crate::mappers::{
     from_title_release_blocklist_entry, from_user_with_auth_factor_status, from_wanted_item,
     from_wanted_scope_view,
 };
-use crate::types::*;
+use scryer_interface_media::types::*;
 
 fn from_metadata_search_item(
+    app: &scryer_application::AppUseCase,
     item: scryer_application::RichMetadataSearchItem,
 ) -> MetadataSearchItemPayload {
+    let owner_id = item.tvdb_id.to_string();
+    let poster_url = app.media_image_url(
+        item.poster_url.as_deref(),
+        Some("metadata_search"),
+        Some(&owner_id),
+        ImageProxyKind::Poster,
+        "w250",
+    );
     MetadataSearchItemPayload {
         tvdb_id: item.tvdb_id,
         name: item.name,
@@ -53,7 +64,7 @@ fn from_metadata_search_item(
         status: item.status,
         overview: item.overview,
         popularity: item.popularity,
-        poster_url: item.poster_url,
+        poster_url,
         language: item.language,
         runtime_minutes: item.runtime_minutes,
         sort_title: item.sort_title,
@@ -340,7 +351,7 @@ fn from_acquisition_search_job_view(
     })
 }
 
-pub(crate) fn from_interactive_release_search_snapshot(
+pub fn from_interactive_release_search_snapshot(
     snapshot: scryer_application::InteractiveReleaseSearchSnapshot,
 ) -> InteractiveReleaseSearchPayload {
     let state = match snapshot.state {
@@ -656,7 +667,11 @@ impl CatalogQueries {
         let total_count = page.total_count;
         let filter_counts = page.filter_counts.clone();
         let managed_bytes = page.managed_bytes;
-        let items = page.items.into_iter().map(from_title).collect();
+        let items = page
+            .items
+            .into_iter()
+            .map(|title| from_title(&app, title))
+            .collect();
 
         Ok(TitleCatalogPayload {
             items,
@@ -755,7 +770,10 @@ impl CatalogQueries {
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(requests.into_iter().map(from_media_request).collect())
+        Ok(requests
+            .into_iter()
+            .map(|request| from_media_request(&app, request))
+            .collect())
     }
 
     async fn my_media_requests(
@@ -778,7 +796,10 @@ impl CatalogQueries {
             )
             .await
             .map_err(to_gql_error)?;
-        Ok(requests.into_iter().map(from_media_request).collect())
+        Ok(requests
+            .into_iter()
+            .map(|request| from_media_request(&app, request))
+            .collect())
     }
 
     async fn library_settings(
@@ -809,7 +830,10 @@ impl CatalogQueries {
             .await
             .map_err(to_gql_error)?;
 
-        Ok(titles.into_iter().map(from_title).collect())
+        Ok(titles
+            .into_iter()
+            .map(|title| from_title(&app, title))
+            .collect())
     }
 
     async fn title(&self, ctx: &Context<'_>, id: ID) -> GqlResult<Option<TitlePayload>> {
@@ -823,7 +847,7 @@ impl CatalogQueries {
                 .await
         }
         .map_err(to_gql_error)?;
-        Ok(title.map(from_title))
+        Ok(title.map(|title| from_title(&app, title)))
     }
 
     async fn episode(
@@ -840,7 +864,7 @@ impl CatalogQueries {
             .map_err(to_gql_error)?;
         Ok(episode
             .filter(|episode| episode.title_id == title_id.as_ref())
-            .map(from_episode))
+            .map(|episode| from_episode(&app, episode)))
     }
 
     /// Fetch an episode by its globally unique id — targeted-refetch primitive;
@@ -852,7 +876,7 @@ impl CatalogQueries {
             .get_episode(&actor, id.as_ref())
             .await
             .map_err(to_gql_error)?;
-        Ok(episode.map(from_episode))
+        Ok(episode.map(|episode| from_episode(&app, episode)))
     }
 
     /// Fetch a collection by its globally unique id — targeted-refetch primitive.
@@ -886,7 +910,7 @@ impl CatalogQueries {
         else {
             return Ok(None);
         };
-        Ok(Some(from_title(title)))
+        Ok(Some(from_title(&app, title)))
     }
 
     async fn media_rename_preview(
@@ -1199,7 +1223,28 @@ impl ActivityQueries {
             .collect())
     }
 
+    #[graphql(deprecation = "use externalImportWarmupStatus")]
     async fn external_import_arr_source_warmup_status(
+        &self,
+        ctx: &Context<'_>,
+        session_id: ID,
+    ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.maintain_external_import_arr_source_sessions(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        let session_id = String::from(session_id);
+        let snapshot = app
+            .get_external_import_monitor_warmup_status(&actor, &session_id)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_external_import_monitor_warmup_progress(snapshot))
+    }
+
+    /// Kind-neutral warmup status lookup — covers Arr source and Prowlarr
+    /// discovery sessions alike.
+    async fn external_import_warmup_status(
         &self,
         ctx: &Context<'_>,
         session_id: ID,
@@ -1418,7 +1463,10 @@ impl ActivityQueries {
             .pending_import_title_search(&actor, &pending_import_id, &query, limit, &language, year)
             .await
             .map_err(to_gql_error)?;
-        Ok(results.into_iter().map(from_metadata_search_item).collect())
+        Ok(results
+            .into_iter()
+            .map(|item| from_metadata_search_item(&app, item))
+            .collect())
     }
 
     async fn pending_import_binding_preview(
@@ -1434,7 +1482,7 @@ impl ActivityQueries {
             .await
             .map_err(to_gql_error)?;
         Ok(PendingImportBindingPreviewPayload {
-            title: from_title(preview.title),
+            title: from_title(&app, preview.title),
             file: PendingImportBindingFilePreviewPayload {
                 file_path: preview.file.file_path,
                 file_name: preview.file.file_name,
@@ -1462,7 +1510,7 @@ impl ActivityQueries {
             available_episodes: preview
                 .available_episodes
                 .into_iter()
-                .map(from_episode)
+                .map(|episode| from_episode(&app, episode))
                 .collect(),
         })
     }
@@ -1530,7 +1578,7 @@ impl JobAndDownloadQueries {
             .discovery_home(&actor, query)
             .await
             .map_err(to_gql_error)?;
-        Ok(from_discovery_home(result))
+        Ok(from_discovery_home(&app, result))
     }
 
     async fn discovery_home_cards(
@@ -1545,7 +1593,7 @@ impl JobAndDownloadQueries {
             .discovery_home_cards(&actor, query)
             .await
             .map_err(to_gql_error)?;
-        from_discovery_home_cards(result).map_err(to_gql_error)
+        from_discovery_home_cards(&app, result).map_err(to_gql_error)
     }
 
     async fn discovery_home_filter_options(
@@ -1576,7 +1624,7 @@ impl JobAndDownloadQueries {
             .discovery_items(&actor, discovery_items_query_from_input(input))
             .await
             .map_err(to_gql_error)?;
-        Ok(from_discovery_items_result(result))
+        Ok(from_discovery_items_result(&app, result))
     }
 
     async fn discovery_item_detail(
@@ -1590,7 +1638,7 @@ impl JobAndDownloadQueries {
             .discovery_item_detail(&actor, discovery_item_detail_query_from_input(input))
             .await
             .map_err(to_gql_error)?;
-        Ok(item.map(from_discovery_item))
+        Ok(item.map(|item| from_discovery_item(&app, item)))
     }
 
     async fn catalog_discovery(
@@ -1604,7 +1652,7 @@ impl JobAndDownloadQueries {
             .catalog_discovery(&actor, catalog_discovery_query_from_input(input))
             .await
             .map_err(to_gql_error)?;
-        Ok(from_catalog_discovery(result))
+        Ok(from_catalog_discovery(&app, result))
     }
 
     async fn download_queue(
@@ -1919,7 +1967,7 @@ impl SystemQueries {
             available_episodes: preview
                 .available_episodes
                 .into_iter()
-                .map(from_episode)
+                .map(|episode| from_episode(&app, episode))
                 .collect(),
             available_series_movies: preview
                 .available_series_movies
@@ -1969,7 +2017,7 @@ impl SystemQueries {
             available_episodes: preview
                 .available_episodes
                 .into_iter()
-                .map(from_episode)
+                .map(|episode| from_episode(&app, episode))
                 .collect(),
             available_series_movies: preview
                 .available_series_movies
@@ -2021,7 +2069,7 @@ impl SystemQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl AcquisitionQueries {
-    /// RFC 119 §6/§7: the derived Missing / Upgrades view. `wantedKind` selects the
+    /// The derived Missing / Upgrades view. `wantedKind` selects the
     /// target set (`MISSING` derived from fileless monitored scopes, `CUTOFF_UPGRADE`
     /// from below-cutoff files). Results are the derived targets joined to the
     /// activity-state row (when one exists) and enriched with per-scope convergence
@@ -2064,10 +2112,10 @@ impl AcquisitionQueries {
         })
     }
 
-    /// RFC 119 bounded view: a single page of cutoff-unmet (Upgrades) targets plus
+    /// Bounded view: a single page of cutoff-unmet (Upgrades) targets plus
     /// the full unmet count and per-item convergence progress, so the UI paginates
     /// instead of loading the whole set. The unpaged `cutoffUnmetTitles` query was
-    /// removed in this release (RFC 119 §6): the full-array browser load is retired.
+    /// removed in this release: the full-array browser load is retired.
     async fn cutoff_unmet_titles_page(
         &self,
         ctx: &Context<'_>,
@@ -2114,7 +2162,7 @@ impl AcquisitionQueries {
         Ok(from_title_acquisition_diagnostics(diagnostics).map_err(to_gql_error)?)
     }
 
-    /// Progress of an interactive acquisition-search job (RFC 119 §7.3), polled by
+    /// Progress of an interactive acquisition-search job, polled by
     /// the UI alongside the `jobRunEvents` push. `None` when no such job exists.
     async fn acquisition_search_job(
         &self,
