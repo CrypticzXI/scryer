@@ -193,7 +193,85 @@ struct SubmissionPayload {
 #[serde(rename_all = "camelCase")]
 struct SubmissionResultPayload {
     accepted: bool,
+    /// Weaver's `SubmissionStatus`. Kept as a string rather than an enum so a
+    /// Weaver that adds a new variant does not fail deserialization here.
+    /// `Option` because older Weavers do not select it (see the compat path).
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    job_id: Option<u64>,
+    #[serde(default)]
+    error_code: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
     item: Option<SubmissionQueueItemPayload>,
+}
+
+/// Weaver returns `accepted: false` for EXACTLY ONE status — `IDEMPOTENT_REPLAY`
+/// — and that status means the submission already succeeded earlier: the job
+/// exists, and Weaver hands back its live `item`/`jobId`. Scryer sends a
+/// `clientRequestId` on every submit, so any resubmission of the same release
+/// (retry after a blip, RSS re-grab, interactive re-grab) lands here.
+///
+/// Treating it as a failure loses a grab that actually worked — Scryer never
+/// tracks or imports the download while Weaver happily runs it — and the
+/// resulting failover can push the same release into a second client as a
+/// duplicate.
+const WEAVER_STATUS_IDEMPOTENT_REPLAY: &str = "IDEMPOTENT_REPLAY";
+
+/// A semantic-duplicate candidate held pending resolution. Weaver reports
+/// `accepted: true` but deliberately returns no `item`, so keying off `item`
+/// alone turned this into a hard error too; `jobId` is always populated.
+const WEAVER_STATUS_PARKED: &str = "PARKED";
+
+impl SubmissionResultPayload {
+    fn status_is(&self, expected: &str) -> bool {
+        self.status
+            .as_deref()
+            .is_some_and(|status| status.trim().eq_ignore_ascii_case(expected))
+    }
+
+    /// The queue item id, falling back to `jobId` for statuses that carry a job
+    /// without an item (PARKED).
+    fn resolved_job_id(&self) -> Option<u64> {
+        self.item.as_ref().map(|item| item.id).or(self.job_id)
+    }
+
+    /// Weaver's own reason, for operators. Without this the only thing Scryer
+    /// could report was "did not accept the submission", which is why this
+    /// defect stayed invisible in logs.
+    fn rejection_detail(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(status) = self
+            .status
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            parts.push(format!("status={status}"));
+        }
+        if let Some(code) = self
+            .error_code
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            parts.push(format!("errorCode={code}"));
+        }
+        if let Some(message) = self
+            .message
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            parts.push(format!("message={message}"));
+        }
+        if parts.is_empty() {
+            "weaver reported no reason".to_string()
+        } else {
+            parts.join(" ")
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1128,20 +1206,41 @@ impl DownloadClient for WeaverDownloadClient {
                 .await
             {
                 Ok(data) => {
-                    if !data.submit_nzb.accepted {
-                        return Err(AppError::download_submit_unavailable(
-                            "weaver submitNzb did not accept the submission",
-                        ));
+                    let submission = data.submit_nzb;
+                    // Branch on STATUS, not on `accepted`. `accepted: false` is
+                    // Weaver's idempotent-replay signal, not a rejection — the
+                    // job already exists and is returned to us.
+                    let replayed = submission.status_is(WEAVER_STATUS_IDEMPOTENT_REPLAY);
+                    if !submission.accepted && !replayed {
+                        return Err(AppError::download_submit_unavailable(format!(
+                            "weaver submitNzb did not accept the submission ({})",
+                            submission.rejection_detail()
+                        )));
                     }
-                    let job_id = data
-                        .submit_nzb
-                        .item
-                        .ok_or_else(|| {
-                            AppError::download_submit_unavailable(
-                                "weaver submitNzb accepted the submission without a queue item",
-                            )
-                        })?
-                        .id;
+
+                    let job_id = submission.resolved_job_id().ok_or_else(|| {
+                        AppError::download_submit_unavailable(format!(
+                            "weaver submitNzb returned no queue item or job id ({})",
+                            submission.rejection_detail()
+                        ))
+                    })?;
+
+                    if replayed {
+                        debug!(
+                            endpoint = self.graphql_url.as_str(),
+                            job_id,
+                            title = title.name.as_str(),
+                            "weaver submitNzb replayed an existing submission; adopting the existing job"
+                        );
+                    } else if submission.status_is(WEAVER_STATUS_PARKED) {
+                        debug!(
+                            endpoint = self.graphql_url.as_str(),
+                            job_id,
+                            title = title.name.as_str(),
+                            detail = submission.rejection_detail().as_str(),
+                            "weaver submitNzb parked the submission as a duplicate candidate"
+                        );
+                    }
 
                     debug!(
                         endpoint = self.graphql_url.as_str(),
@@ -1160,7 +1259,14 @@ impl DownloadClient for WeaverDownloadClient {
                 Err(error)
                     if is_weaver_schema_error(&error, "Unknown type \"SubmitNzbInput\"")
                         || is_weaver_schema_error(&error, "Unknown argument \"input\"")
-                        || is_weaver_schema_error(&error, "Unknown field \"accepted\"") =>
+                        || is_weaver_schema_error(&error, "Unknown field \"accepted\"")
+                        // Fields added alongside the idempotent-replay fix. A
+                        // Weaver old enough to expose `accepted` but not these
+                        // must still fall back instead of hard-failing the grab.
+                        || is_weaver_schema_error(&error, "Unknown field \"status\"")
+                        || is_weaver_schema_error(&error, "Unknown field \"jobId\"")
+                        || is_weaver_schema_error(&error, "Unknown field \"errorCode\"")
+                        || is_weaver_schema_error(&error, "Unknown field \"message\"") =>
                 {
                     let compressed_bytes = tokio::fs::read(&staged.staged_nzb.compressed_path)
                         .await
@@ -1583,6 +1689,58 @@ mod tests {
 
         assert!(!payload.submit_nzb.accepted);
         assert!(payload.submit_nzb.item.is_none());
+    }
+
+    #[test]
+    fn idempotent_replay_is_a_successful_submission_carrying_the_existing_job() {
+        // Weaver sets `accepted: false` for EXACTLY ONE status, IDEMPOTENT_REPLAY,
+        // and it means the submission already succeeded: the job exists and the
+        // live item comes back with it. Reading `accepted` alone made Scryer
+        // discard a grab that had worked and fail over into a duplicate.
+        let payload: SubmissionPayload = WeaverDownloadClient::parse_graphql_response(
+            reqwest::StatusCode::OK,
+            r#"{"data":{"submitNzb":{"accepted":false,"status":"IDEMPOTENT_REPLAY","jobId":4242,"errorCode":null,"message":null,"item":{"id":4242}}}}"#,
+        )
+        .expect("idempotent replay should remain valid GraphQL JSON");
+
+        let submission = payload.submit_nzb;
+        assert!(!submission.accepted);
+        assert!(submission.status_is(super::WEAVER_STATUS_IDEMPOTENT_REPLAY));
+        assert_eq!(submission.resolved_job_id(), Some(4242));
+    }
+
+    #[test]
+    fn parked_submission_resolves_its_job_id_without_a_queue_item() {
+        // A parked semantic-duplicate reports accepted with NO item, which used
+        // to trip the "accepted without a queue item" error. jobId is always
+        // populated, so the submission is still trackable.
+        let payload: SubmissionPayload = WeaverDownloadClient::parse_graphql_response(
+            reqwest::StatusCode::OK,
+            r#"{"data":{"submitNzb":{"accepted":true,"status":"PARKED","jobId":77,"errorCode":null,"message":"semantic duplicate candidate parked","item":null}}}"#,
+        )
+        .expect("parked submission should remain valid GraphQL JSON");
+
+        let submission = payload.submit_nzb;
+        assert!(submission.item.is_none());
+        assert!(submission.status_is(super::WEAVER_STATUS_PARKED));
+        assert_eq!(submission.resolved_job_id(), Some(77));
+        assert!(submission.rejection_detail().contains("PARKED"));
+    }
+
+    #[test]
+    fn submission_fields_stay_optional_for_older_weavers() {
+        // Older Weavers select neither status nor jobId. Deserialization must
+        // still succeed so the compat fallback governs, not a parse error.
+        let payload: SubmissionPayload = WeaverDownloadClient::parse_graphql_response(
+            reqwest::StatusCode::OK,
+            r#"{"data":{"submitNzb":{"accepted":true,"item":{"id":9}}}}"#,
+        )
+        .expect("legacy submission payload should still parse");
+
+        let submission = payload.submit_nzb;
+        assert!(submission.status.is_none());
+        assert_eq!(submission.resolved_job_id(), Some(9));
+        assert!(!submission.status_is(super::WEAVER_STATUS_IDEMPOTENT_REPLAY));
     }
 
     #[test]

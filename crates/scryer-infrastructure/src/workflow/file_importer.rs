@@ -1575,11 +1575,13 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
+    #[cfg(unix)]
     #[derive(Clone)]
     struct SharedLogWriter {
         buffer: Arc<Mutex<Vec<u8>>>,
     }
 
+    #[cfg(unix)]
     impl Write for SharedLogWriter {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             self.buffer.lock().expect("lock log buffer").extend(buf);
@@ -1591,6 +1593,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     impl<'a> MakeWriter<'a> for SharedLogWriter {
         type Writer = SharedLogWriter;
 
@@ -1599,6 +1602,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn capture_logs<R>(f: impl FnOnce() -> R) -> (R, String) {
         let buffer = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::fmt()

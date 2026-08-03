@@ -4,11 +4,13 @@ mod tests {
         COMPLETED_ORIGIN_SCOPE_CONFLICT, CompletedDownloadOriginResolution,
         CompletedDownloadSubmissionMatch, CompletedDownloadSubmissionResolution,
         IMPORT_TRANSFER_HEARTBEAT_INTERVAL, ManualImportFileMapping,
-        completed_import_status_for_result, is_sample_file, resolve_completed_download_origin,
+        completed_import_status_for_result, resolve_completed_download_origin,
         resolved_episode_ids_are_within_expected, sanitized_title_folder_component,
         should_persist_import_transfer_heartbeat, skip_reason_for_import_check_code,
         validate_manual_import_mapping_targets, validate_path_manual_import_mappings,
     };
+    #[cfg(unix)]
+    use super::is_sample_file;
     use crate::{DownloadSubmission, DownloadSubmissionPurpose, SubmissionScope};
     use chrono::Utc;
     use scryer_domain::{

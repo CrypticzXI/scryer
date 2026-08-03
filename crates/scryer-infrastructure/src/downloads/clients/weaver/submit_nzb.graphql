@@ -1,6 +1,10 @@
 mutation SubmitNzb($input: SubmitNzbInput!) {
   submitNzb(input: $input) {
     accepted
+    status
+    jobId
+    errorCode
+    message
     item {
       id
     }
