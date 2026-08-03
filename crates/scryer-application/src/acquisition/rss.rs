@@ -282,9 +282,18 @@ fn match_release_to_title_context<'a>(
         };
 
         // The matched key's specificity ranks colliding candidates: a longer
-        // key names the release more precisely than a shared bare key.
-        let key_score = i32::try_from(evidence_match.matched_key.split_whitespace().count())
-            .unwrap_or(i32::MAX / 10)
+        // key names the release more precisely than a shared bare key. Score
+        // the year-stripped shape — a year-suffixed twin (`DuckTales (2017)`)
+        // is not more specific than its bare twin when the release itself
+        // carries no year, and an undisambiguated twin tie must keep the
+        // deterministic title-id winner so ambiguity parking downstream has a
+        // stable subject.
+        let key_score = i32::try_from(
+            crate::import_title_resolution::strip_trailing_year_key(&evidence_match.matched_key)
+                .split_whitespace()
+                .count(),
+        )
+        .unwrap_or(i32::MAX / 10)
             * 10;
         titles_per_matched_key
             .entry(evidence_match.matched_key.clone())
@@ -2444,6 +2453,37 @@ mod tests {
             )
             .is_none(),
             "an unknown multi-token prefix is containment junk, not a group tag"
+        );
+    }
+
+    #[test]
+    fn bare_release_between_year_twins_keeps_deterministic_winner() {
+        // A bare release naming two year-distinguished twins must resolve the
+        // same way it always has — smallest title id — so the ambiguity
+        // parking downstream has a stable subject. The year-suffixed lookup
+        // key must not make one twin "more specific" than the other when the
+        // release itself carries no year.
+        let classic = make_series_title("ducktales-1987", "DuckTales", Some(1987));
+        let reboot = make_series_title("ducktales-2017", "DuckTales (2017)", Some(2017));
+        for titles in [
+            vec![classic.clone(), reboot.clone()],
+            vec![reboot.clone(), classic.clone()],
+        ] {
+            let bank = build_title_context_bank(&titles);
+            let result = match_release("DuckTales.S01E01.1080p.WEB-DL.AAC2.0.H.264", &bank);
+            assert_eq!(
+                result.map(|info| info.title_id.as_str()),
+                Some("ducktales-1987"),
+                "bare twin release must keep the deterministic title-id tiebreak"
+            );
+        }
+
+        // The year-stamped control still resolves by year, not by tiebreak.
+        let bank = build_title_context_bank(&[classic, reboot]);
+        let result = match_release("DuckTales.2017.S01E03.1080p.WEB-DL", &bank);
+        assert_eq!(
+            result.map(|info| info.title_id.as_str()),
+            Some("ducktales-2017"),
         );
     }
 
