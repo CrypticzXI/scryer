@@ -51,12 +51,6 @@ pub fn initialize_wasm_runtime(data_dir: impl AsRef<Path>) -> Result<(), String>
 /// platform-resolved directory. The caller must choose an instance-local path;
 /// this function never falls back to Wasmtime's user-global cache.
 pub fn initialize_wasm_runtime_at(cache_dir: impl AsRef<Path>) -> Result<(), String> {
-    if SHARED_ENGINE.get().is_some() || SHARED_ASYNC_ENGINE.get().is_some() {
-        return Err(
-            "WASM runtime was initialized before its cache directory was configured".into(),
-        );
-    }
-
     let cache_dir = cache_dir.as_ref().to_path_buf();
     fs::create_dir_all(&cache_dir).map_err(|error| {
         format!(
@@ -72,6 +66,24 @@ pub fn initialize_wasm_runtime_at(cache_dir: impl AsRef<Path>) -> Result<(), Str
     })?;
     restrict_cache_directory(&cache_dir)?;
     probe_cache_directory(&cache_dir)?;
+
+    if let Some(configured) = WASM_RUNTIME_CONFIG.get() {
+        return if configured.cache_dir == cache_dir {
+            Ok(())
+        } else {
+            Err(format!(
+                "WASM runtime cache is already configured for {}; cannot reconfigure it for {}",
+                configured.cache_dir.display(),
+                cache_dir.display()
+            ))
+        };
+    }
+
+    if SHARED_ENGINE.get().is_some() || SHARED_ASYNC_ENGINE.get().is_some() {
+        return Err(
+            "WASM runtime was initialized before its cache directory was configured".into(),
+        );
+    }
 
     let mut cache_config = CacheConfig::new();
     cache_config.with_directory(cache_dir.clone());

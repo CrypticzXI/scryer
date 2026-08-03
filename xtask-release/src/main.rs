@@ -3673,12 +3673,14 @@ mod tests {
     }
 
     #[test]
-    fn release_builtin_descriptor_loader_initializes_wasm_runtime() {
+    fn release_builtin_descriptor_loader_reuses_wasm_runtime_for_multiple_builtins() {
         let ctx = TaskContext::new();
-        let digest = existing_builtin_wasm_digest(&ctx, &BUILTIN_PLUGINS[0])
-            .expect("release builtin descriptor should load");
-        assert!(digest.starts_with("blake3:"));
-        assert_eq!(digest.len(), 71);
+        for spec in &BUILTIN_PLUGINS[..2] {
+            let digest = existing_builtin_wasm_digest(&ctx, spec)
+                .expect("release builtin descriptor should load");
+            assert!(digest.starts_with("blake3:"));
+            assert_eq!(digest.len(), 71);
+        }
     }
 
     #[test]
