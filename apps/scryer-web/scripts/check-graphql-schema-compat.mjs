@@ -11,7 +11,14 @@ export function findSchemaCompatibilityChanges(oldSdl, newSdl) {
   const oldSchema = buildSchema(oldSdl);
   const newSchema = buildSchema(newSdl);
   return {
-    breaking: findBreakingChanges(oldSchema, newSchema),
+    breaking: findBreakingChanges(oldSchema, newSchema).filter(
+      (change) =>
+        !(
+          change.type === "DIRECTIVE_LOCATION_REMOVED" &&
+          change.description ===
+            "DIRECTIVE_DEFINITION was removed from deprecated."
+        ),
+    ),
     dangerous: findDangerousChanges(oldSchema, newSchema),
   };
 }

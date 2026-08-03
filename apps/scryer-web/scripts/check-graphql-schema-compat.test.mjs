@@ -76,6 +76,28 @@ test("allows additive nullable fields", () => {
   assert.equal(hasSchemaCompatibilityFailure(changes), false);
 });
 
+test("allows the deprecated directive location that only affects schema authors", () => {
+  const oldSchema = `
+    directive @deprecated(reason: String = "No longer supported") on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE | DIRECTIVE_DEFINITION
+
+    type Query {
+      title: String
+    }
+  `;
+  const newSchema = `
+    directive @deprecated(reason: String = "No longer supported") on FIELD_DEFINITION | ARGUMENT_DEFINITION | INPUT_FIELD_DEFINITION | ENUM_VALUE
+
+    type Query {
+      title: String
+    }
+  `;
+
+  const changes = findSchemaCompatibilityChanges(oldSchema, newSchema);
+
+  assert.equal(changes.breaking.length, 0);
+  assert.equal(hasSchemaCompatibilityFailure(changes), false);
+});
+
 test("rejects removed fields", () => {
   const changes = changesFor(`
     type Query {
