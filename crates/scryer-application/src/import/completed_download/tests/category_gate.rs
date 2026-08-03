@@ -320,3 +320,83 @@ async fn manual_assignment_allows_retry_after_category_block() {
     check(&app, &mut td).await;
     assert_eq!(td.state, TrackedDownloadState::ImportPending);
 }
+
+async fn run_scryer_submission_identity_check(
+    titles: Vec<Title>,
+    assigned_title_id: &str,
+    facet: &str,
+    release_name: &str,
+) -> TrackedDownload {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let completed = build_completed_download(
+        release_name,
+        temp_dir.path().to_string_lossy().as_ref(),
+        Some(facet),
+    );
+    let download_client = test_download_client_with_completed(completed);
+    let app = build_app_with_download_client(titles, vec![], vec![], vec![], download_client);
+    let mut td = build_tracked_download(assigned_title_id, facet, release_name);
+    td.client_item.is_scryer_origin = true;
+    td.match_type = TitleMatchType::Submission;
+
+    check(&app, &mut td).await;
+    td
+}
+
+#[tokio::test]
+async fn scryer_submission_blocks_electric_bloom_before_import() {
+    let mut title = build_title(
+        "fragrant-flower",
+        "The Fragrant Flower Blooms with Dignity",
+        MediaFacet::Series,
+    );
+    title.year = Some(2025);
+    title.aliases.push("BLOOM".to_string());
+
+    let td = run_scryer_submission_identity_check(
+        vec![title],
+        "fragrant-flower",
+        "series",
+        "Electric.Bloom.S01E09.How.it.all.came.out.of.the.wash.MULTI.1080p.DSNP.WEB-DL.DDP5.1.H.264",
+    )
+    .await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+    assert!(
+        td.status_messages.iter().any(|message| {
+            message.contains("no longer proves the title assigned at grab time")
+        })
+    );
+}
+
+#[tokio::test]
+async fn scryer_submission_blocks_ambiguous_one_piece_before_import() {
+    let mut live = build_title("one-piece-live", "One Piece", MediaFacet::Series);
+    live.year = Some(2023);
+    let mut anime = build_title("one-piece-anime", "One Piece", MediaFacet::Anime);
+    anime.year = Some(1999);
+
+    let td = run_scryer_submission_identity_check(
+        vec![live, anime],
+        "one-piece-live",
+        "series",
+        "ONE.PIECE.S02E22.1080p.WEB-DL",
+    )
+    .await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+}
+
+#[tokio::test]
+async fn scryer_submission_with_complete_title_proof_reaches_import_pending() {
+    let title = build_title("spy-family", "Spy x Family", MediaFacet::Series);
+    let td = run_scryer_submission_identity_check(
+        vec![title],
+        "spy-family",
+        "series",
+        "ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
+    )
+    .await;
+
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+}

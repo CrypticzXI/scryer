@@ -2,9 +2,10 @@ use chrono::NaiveDate;
 
 use crate::enrichment::{enrich_candidate, project_final_metadata};
 use crate::{
-    AudioCodec, ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle, ExternalIdSource,
-    ParseFamily, ParsedEpisodeReleaseType, ReleaseParseContext, ReleaseSource, StreamingService,
-    VideoCodec, analyze_release_against_targets, analyze_release_for_target,
+    AudioCodec, ContextAlias, ContextEpisode, ContextFacetHint, ContextTitle,
+    ContextTitleMatchKind, ExternalIdSource, ParseFamily, ParsedEpisodeReleaseType,
+    ReleaseParseContext, ReleaseSource, StreamingService, VideoCodec,
+    analyze_release_against_targets, analyze_release_for_target,
 };
 
 fn source_label(source: Option<&ReleaseSource>) -> Option<&str> {
@@ -338,6 +339,31 @@ fn context_does_not_invent_absent_titles() {
             .iter()
             .any(|title| title == "COMPLETELY DIFFERENT SHOW")
     );
+}
+
+#[test]
+fn context_match_retains_pre_projection_span_for_identity_proof() {
+    let mut target = context(
+        ContextFacetHint::Series,
+        "The Fragrant Flower Blooms with Dignity",
+    );
+    target.aliases = vec![ContextAlias {
+        name: "BLOOM".to_string(),
+    }];
+
+    let analysis = analyze_release_for_target("Electric.Bloom.S01E09.1080p.DSNP.WEB-DL", &target);
+    let candidate = analysis.best_candidate().expect("best candidate");
+    let alias_match = candidate
+        .context_title_matches
+        .iter()
+        .find(|context_match| context_match.kind == ContextTitleMatchKind::TitleAlias)
+        .expect("BLOOM context match");
+
+    assert_eq!(alias_match.normalized, "BLOOM");
+    assert_eq!(alias_match.token_range.start_token, 1);
+    assert_eq!(alias_match.token_range.end_token, 2);
+    assert_eq!(candidate.zones.title_zones[0].start_token, 0);
+    assert_eq!(candidate.zones.title_zones[0].end_token, 2);
 }
 
 #[test]

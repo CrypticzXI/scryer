@@ -47,6 +47,7 @@ impl TitleIdentityAmbiguity {
 #[derive(Clone, Debug)]
 pub(crate) struct CanonicalTitleEvidence {
     pub(crate) lookup_keys: Vec<String>,
+    pub(crate) canonical_key: String,
     pub(crate) year: Option<i32>,
     pub(crate) parse_context: crate::ReleaseParseContext,
     /// Library-local collision data. Defaults to "not ambiguous" so every
@@ -70,17 +71,15 @@ pub(crate) struct TitleEvidenceMatch {
     pub(crate) matched_key: String,
     /// The release carries the title's year (A2(1)).
     pub(crate) year_corroborated: bool,
+    /// A one-word alias is too weak to establish identity without an external
+    /// id (or the title year, represented by `year_corroborated`).
+    pub(crate) requires_external_id: bool,
 }
 
-/// A candidate's title match, including the id-backed provenance shortcut that
-/// bypasses parsing entirely.
+/// A candidate's title match proven from the raw release title.
 #[derive(Clone, Debug)]
 pub(crate) struct CandidateTitleMatch {
-    /// Present when the match came from parsing the release name.
     pub(crate) evidence_match: Option<TitleEvidenceMatch>,
-    /// Match came from a `title_validated_upstream` strategy — disambiguated by
-    /// construction (A2(4)).
-    pub(crate) provenance_validated: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -261,15 +260,31 @@ fn canonical_title_evidence_for_episode(
     title: &Title,
     episode: Option<&Episode>,
 ) -> CanonicalTitleEvidence {
+    let lookup_keys = canonical_title_lookup_keys(title);
+    let canonical_key = crate::title_matching::canonical_lookup_key(&title.name);
+    let mut parse_context =
+        crate::build_release_parse_context(title, episode, None, Some(title.facet.as_str()));
+    if title.year.is_some() {
+        let stripped_key = crate::import_title_resolution::strip_trailing_year_key(&canonical_key);
+        if stripped_key != canonical_key
+            && !stripped_key.is_empty()
+            && !parse_context.aliases.iter().any(|alias| {
+                crate::title_matching::canonical_lookup_key(&alias.name) == stripped_key
+            })
+        {
+            parse_context
+                .aliases
+                .push(crate::release_parser::ContextAlias {
+                    name: stripped_key.to_string(),
+                });
+        }
+    }
+
     CanonicalTitleEvidence {
-        lookup_keys: canonical_title_lookup_keys(title),
+        lookup_keys,
+        canonical_key,
         year: title.year,
-        parse_context: crate::build_release_parse_context(
-            title,
-            episode,
-            None,
-            Some(title.facet.as_str()),
-        ),
+        parse_context,
         ambiguity: TitleIdentityAmbiguity::default(),
     }
 }
@@ -441,29 +456,6 @@ fn series_movie_newznab_categories(owner_facet: &MediaFacet) -> Vec<String> {
     categories
 }
 
-fn extract_titles_from_release(parsed: &ParsedReleaseMetadata) -> Vec<String> {
-    let mut titles = if parsed.normalized_title_variants.is_empty() {
-        vec![parsed.normalized_title.clone()]
-    } else {
-        parsed.normalized_title_variants.clone()
-    };
-
-    if titles.is_empty() {
-        titles.push(parsed.normalized_title.clone());
-    }
-
-    titles
-        .into_iter()
-        .map(|title| crate::title_matching::canonical_lookup_key(&title))
-        .filter(|title| !title.is_empty())
-        .fold(Vec::<String>::new(), |mut acc, value| {
-            if !acc.iter().any(|existing| existing == &value) {
-                acc.push(value);
-            }
-            acc
-        })
-}
-
 /// Strip leading `[group]` tags (and separator noise after them) from a raw
 /// release name so head-anchoring sees the actual title span first.
 pub(crate) fn strip_leading_bracket_groups(raw_title: &str) -> &str {
@@ -525,65 +517,8 @@ pub(crate) fn match_parsed_release_to_title_evidence(
         return None;
     }
 
-    // Target-biased parses can project the target title out of a name that
-    // merely contains it, so bare key equality is not independent evidence.
-    // Require the matched key at the head of the release name, or a year
-    // agreement between release and title.
     let year_corroborated =
         parsed.year.is_some() && evidence.year.is_some() && parsed.year == evidence.year;
-    let accepts_key = |key: &str| -> bool {
-        year_corroborated
-            || title_key_head_anchored(&parsed.raw_title, key, TITLE_MATCH_HEAD_ANCHOR_MAX_START)
-    };
-    // Several of the title's keys can match one release name. Keep the most
-    // specific hit — a key unique to this title outranks the shared bare key,
-    // and a longer key outranks a shorter one — so A2(3) sees the alias that
-    // actually carries identity rather than whichever variant came first.
-    let mut best: Option<TitleEvidenceMatch> = None;
-    let mut consider = |key: &str| {
-        let rank = |key: &str| (evidence.ambiguity.key_is_unique_to_title(key), key.len());
-        if best
-            .as_ref()
-            .is_none_or(|current| rank(key) > rank(&current.matched_key))
-        {
-            best = Some(TitleEvidenceMatch {
-                matched_key: key.to_string(),
-                year_corroborated,
-            });
-        }
-    };
-
-    for release_title in extract_titles_from_release(parsed) {
-        if evidence.lookup_keys.iter().any(|key| key == &release_title)
-            && accepts_key(&release_title)
-        {
-            consider(&release_title);
-        }
-
-        if let Some(year) = parsed.year {
-            let year_suffix = format!(" {year}");
-            if let Some(without_year) = release_title.strip_suffix(&year_suffix)
-                && evidence.lookup_keys.iter().any(|key| key == without_year)
-                && accepts_key(without_year)
-            {
-                consider(without_year);
-            }
-        }
-
-        if let Some(year) = evidence.year {
-            let with_year = format!("{release_title} {year}");
-            if evidence.lookup_keys.iter().any(|key| key == &with_year)
-                && accepts_key(&release_title)
-            {
-                consider(&with_year);
-            }
-        }
-    }
-
-    if best.is_some() {
-        return best;
-    }
-
     contextual_release_matches_title_evidence(parsed, evidence, year_corroborated)
 }
 
@@ -593,7 +528,7 @@ fn contextual_release_matches_title_evidence(
     year_corroborated: bool,
 ) -> Option<TitleEvidenceMatch> {
     let contextual = crate::analyze_release_for_target(&parsed.raw_title, &evidence.parse_context);
-    if contextual.is_unparseable() || contextual.is_ambiguous {
+    if contextual.is_unparseable() {
         return None;
     }
     let best_candidate = contextual.best_candidate()?;
@@ -603,29 +538,140 @@ fn contextual_release_matches_title_evidence(
             && evidence.year.is_some()
             && best_candidate.projected.year == evidence.year);
 
-    let mut titles = best_candidate.projected.normalized_title_variants.clone();
-    if !titles
-        .iter()
-        .any(|title| title == &best_candidate.projected.normalized_title)
-    {
-        titles.push(best_candidate.projected.normalized_title.clone());
-    }
+    let title_zone_is_fully_explained = |zone: &crate::release_parser::TokenRange| {
+        let mut cursor = zone.start_token;
+        let first_title_match = best_candidate
+            .context_title_matches
+            .iter()
+            .filter(|context_match| {
+                !matches!(
+                    context_match.kind,
+                    crate::release_parser::ContextTitleMatchKind::EpisodeTitle
+                )
+            })
+            .filter(|context_match| {
+                context_match.token_range.start_token >= zone.start_token
+                    && context_match.token_range.end_token <= zone.end_token
+            })
+            .min_by_key(|context_match| context_match.token_range.start_token);
 
-    titles.into_iter().find_map(|title| {
-        let normalized = crate::title_matching::canonical_lookup_key(&title);
-        let accepted = !normalized.is_empty()
-            && evidence.lookup_keys.iter().any(|key| key == &normalized)
-            && (year_corroborated
-                || title_key_head_anchored(
-                    &parsed.raw_title,
-                    &normalized,
-                    TITLE_MATCH_HEAD_ANCHOR_MAX_START,
-                ));
-        accepted.then_some(TitleEvidenceMatch {
-            matched_key: normalized,
-            year_corroborated,
+        if first_title_match.is_some_and(|context_match| {
+            context_match.token_range.start_token == zone.start_token + 1
+        }) && let Some(prefix_span) = best_candidate
+            .unconsumed_tokens
+            .iter()
+            .find(|span| span.start == 0)
+            && let Some(prefix) = parsed.raw_title.get(prefix_span.start..prefix_span.end)
+        {
+            let prefix = prefix.trim_matches(|character: char| {
+                character.is_whitespace()
+                    || matches!(character, '[' | ']' | '(' | ')' | '.' | '-' | '_')
+            });
+            let bracketed_prefix = contextual
+                .tokens
+                .get(zone.start_token)
+                .is_some_and(|token| token.bracket_depth > 0);
+            if bracketed_prefix
+                || (!prefix.is_empty() && crate::release_group_db::is_known_release_group(prefix))
+            {
+                cursor += 1;
+            }
+        }
+
+        for context_match in best_candidate
+            .context_title_matches
+            .iter()
+            .filter(|context_match| {
+                context_match.token_range.start_token >= zone.start_token
+                    && context_match.token_range.end_token <= zone.end_token
+            })
+        {
+            if context_match.token_range.end_token <= cursor {
+                continue;
+            }
+            if context_match.token_range.start_token > cursor {
+                let connector = contextual.tokens[cursor..context_match.token_range.start_token]
+                    .iter()
+                    .map(|token| token.normalized.as_str())
+                    .collect::<String>();
+                if !connector.eq_ignore_ascii_case("AKA") {
+                    return false;
+                }
+                cursor = context_match.token_range.start_token;
+            }
+            cursor = cursor.max(context_match.token_range.end_token);
+        }
+        if cursor + 1 == zone.end_token
+            && contextual.tokens.get(cursor).is_some_and(|token| {
+                token
+                    .normalized
+                    .chars()
+                    .all(|character| character.is_ascii_digit())
+                    && matches!(
+                        token.separator_before,
+                        crate::release_parser::SeparatorKind::Hyphen
+                            | crate::release_parser::SeparatorKind::Other
+                    )
+            })
+        {
+            cursor += 1;
+        }
+        cursor == zone.end_token
+    };
+
+    // Context may explain a release, but it may not prove itself by projecting
+    // the target title. The union of its pre-projection canonical/alias spans
+    // must cover the complete title zone. `Electric Bloom` therefore cannot
+    // prove `BLOOM`, while stacked aliases for the same target remain valid.
+    best_candidate
+        .context_title_matches
+        .iter()
+        .filter(|context_match| {
+            !matches!(
+                context_match.kind,
+                crate::release_parser::ContextTitleMatchKind::EpisodeTitle
+            )
         })
-    })
+        .filter(|context_match| {
+            best_candidate.zones.title_zones.iter().any(|zone| {
+                context_match.token_range.start_token >= zone.start_token
+                    && context_match.token_range.end_token <= zone.end_token
+                    && title_zone_is_fully_explained(zone)
+            })
+        })
+        .filter_map(|context_match| {
+            let normalized = crate::title_matching::canonical_lookup_key(&context_match.normalized);
+            let matched_key = evidence
+                .lookup_keys
+                .iter()
+                .find(|key| {
+                    **key == normalized
+                        || evidence.year.is_some_and(|year| {
+                            key.strip_suffix(&format!(" {year}")) == Some(normalized.as_str())
+                        })
+                })?
+                .clone();
+            let canonical_shape =
+                crate::import_title_resolution::strip_trailing_year_key(&evidence.canonical_key);
+            let is_single_word_alias = context_match.kind
+                == crate::release_parser::ContextTitleMatchKind::TitleAlias
+                && normalized.split_whitespace().count() == 1
+                && normalized != evidence.canonical_key
+                && normalized != canonical_shape;
+            Some(TitleEvidenceMatch {
+                matched_key,
+                year_corroborated,
+                requires_external_id: is_single_word_alias && !year_corroborated,
+            })
+        })
+        .max_by_key(|evidence_match| {
+            (
+                evidence
+                    .ambiguity
+                    .key_is_unique_to_title(&evidence_match.matched_key),
+                evidence_match.matched_key.len(),
+            )
+        })
 }
 
 #[cfg(test)]
@@ -637,23 +683,11 @@ pub(crate) fn candidate_matches_title_subject(
 }
 
 /// Matching counterpart of [`candidate_matches_title_subject`] that retains the
-/// Pillar A disambiguator inputs (matched key, year agreement, id-backed
-/// provenance).
+/// Pillar A disambiguator inputs (matched key and year agreement).
 pub(crate) fn candidate_title_match(
     candidate: &IndexerSearchResult,
     evidence: &CanonicalTitleEvidence,
 ) -> Option<CandidateTitleMatch> {
-    if candidate
-        .provenance
-        .as_ref()
-        .is_some_and(|provenance| provenance.title_validated_upstream)
-    {
-        return Some(CandidateTitleMatch {
-            evidence_match: None,
-            provenance_validated: true,
-        });
-    }
-
     let parsed_owned;
     let parsed = if let Some(parsed) = candidate.parsed_release_metadata.as_ref() {
         parsed
@@ -666,7 +700,6 @@ pub(crate) fn candidate_title_match(
     match_parsed_release_to_title_evidence(parsed, evidence).map(|evidence_match| {
         CandidateTitleMatch {
             evidence_match: Some(evidence_match),
-            provenance_validated: false,
         }
     })
 }
@@ -684,11 +717,6 @@ pub(crate) fn candidate_presents_identity_disambiguator(
     title_match: &CandidateTitleMatch,
     external_id_agreement: Option<bool>,
 ) -> bool {
-    // A2(4) — id-backed strategies are disambiguated by construction.
-    if title_match.provenance_validated {
-        return true;
-    }
-
     if let Some(evidence_match) = title_match.evidence_match.as_ref() {
         // A2(1) — the release carries the title's year.
         if evidence_match.year_corroborated {
@@ -704,7 +732,8 @@ pub(crate) fn candidate_presents_identity_disambiguator(
         }
     }
 
-    // A2(2) — external id agreement.
+    // A2(2) — external id agreement. `title_validated_upstream` remains
+    // diagnostic provenance and cannot break an identity tie.
     external_id_agreement.unwrap_or(false)
 }
 
@@ -987,6 +1016,16 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::DbBlocklisted;
     }
 
+    let external_id_agreement = candidate_external_id_agreement(candidate, context.subject);
+    if title_match
+        .evidence_match
+        .as_ref()
+        .is_some_and(|evidence_match| evidence_match.requires_external_id)
+        && external_id_agreement != Some(true)
+    {
+        return ReleaseAutoDecisionCode::AmbiguousIdentity;
+    }
+
     // Pillar A3: a bare release name is not identity evidence when the subject's
     // canonical title collides with another library title.
     if context
@@ -997,7 +1036,7 @@ pub(crate) fn evaluate_auto_candidate(
         && !candidate_presents_identity_disambiguator(
             &context.subject.title_evidence,
             &title_match,
-            candidate_external_id_agreement(candidate, context.subject),
+            external_id_agreement,
         )
     {
         return ReleaseAutoDecisionCode::AmbiguousIdentity;
@@ -1852,7 +1891,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_matches_title_subject_trusts_upstream_validation() {
+    fn upstream_validation_cannot_bypass_raw_title_proof() {
         let mut title = make_title();
         title.name = "Resident Evil".to_string();
         title.facet = MediaFacet::Movie;
@@ -1866,7 +1905,7 @@ mod tests {
             }),
         );
 
-        assert!(candidate_matches_title_subject(
+        assert!(!candidate_matches_title_subject(
             &candidate,
             &canonical_title_evidence(&title)
         ));
@@ -2248,8 +2287,7 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_title_accepts_id_backed_provenance() {
-        // A2(4): id-backed strategies are disambiguated by construction.
+    fn ambiguous_title_rejects_upstream_provenance_without_release_id() {
         let (live_action, library) = one_piece_library(Vec::new());
         let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
         let candidate = make_candidate(
@@ -2263,7 +2301,7 @@ mod tests {
 
         assert_eq!(
             decision_for(&live_action, &subject, &candidate),
-            ReleaseAutoDecisionCode::QualityBlocked
+            ReleaseAutoDecisionCode::AmbiguousIdentity
         );
     }
 

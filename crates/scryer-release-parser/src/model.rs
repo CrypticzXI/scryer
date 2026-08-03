@@ -960,6 +960,24 @@ pub struct TitleSegment {
     pub normalized: String,
 }
 
+/// The kind of context evidence that matched a title-bearing token span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextTitleMatchKind {
+    CanonicalTitle,
+    TitleAlias,
+    EpisodeTitle,
+}
+
+/// A typed context match retained before target projection rewrites the title.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ContextTitleMatch {
+    pub kind: ContextTitleMatchKind,
+    pub token_range: TokenRange,
+    pub raw: String,
+    pub normalized: String,
+}
+
 /// Metadata AST collected before projection.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct MetadataAst {
@@ -1026,6 +1044,7 @@ pub enum ReleaseIdentity {
 pub struct ReleaseParseCandidate {
     pub family: ParseFamily,
     pub title_segments: Vec<TitleSegment>,
+    pub context_title_matches: Vec<ContextTitleMatch>,
     pub identity: ReleaseIdentity,
     pub metadata: MetadataAst,
     pub zones: CandidateZones,

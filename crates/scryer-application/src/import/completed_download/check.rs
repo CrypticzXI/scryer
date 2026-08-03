@@ -116,6 +116,22 @@ pub(crate) async fn check_with_lookup(
         }
     }
 
+    if !completed_download_proves_assigned_title(app, td, &completed).await {
+        let detail = "The completed release name no longer proves the title assigned at grab time. Automatic import is blocked to prevent replacing media for a different series.";
+        block_tracked_download_identity_for_manual_review(
+            app,
+            td,
+            "completed_title_identity_mismatch",
+            detail,
+        )
+        .await;
+        if td.state != TrackedDownloadState::ImportBlocked {
+            td.warn(detail);
+            set_state_to_import_blocked(app, td).await;
+        }
+        return;
+    }
+
     // Auto-import safety gating.
     match td.match_type {
         TitleMatchType::Unmatched => {
@@ -295,6 +311,119 @@ async fn completed_download_allows_automatic_import(
             false
         }
     }
+}
+
+async fn completed_download_proves_assigned_title(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    completed: &CompletedDownload,
+) -> bool {
+    if !matches!(
+        td.match_type,
+        TitleMatchType::Submission | TitleMatchType::ClientParameter
+    ) && !td.client_item.is_scryer_origin
+    {
+        return true;
+    }
+
+    let Some(title_id) = td
+        .title_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    let title = match app.services.catalog.titles.get_by_id(title_id).await {
+        Ok(Some(title)) => title,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::warn!(
+                title_id,
+                error = %error,
+                "completed download identity gate could not load assigned title"
+            );
+            return false;
+        }
+    };
+    let matcher = match app.monitored_title_matcher().await {
+        Ok(matcher) => matcher,
+        Err(error) => {
+            tracing::warn!(
+                title_id,
+                error = %error,
+                "completed download identity gate could not load title matcher"
+            );
+            return false;
+        }
+    };
+    let mut evidence = crate::acquisition_release_search::canonical_title_evidence(&title);
+    evidence.ambiguity =
+        crate::acquisition_release_search::TitleIdentityAmbiguity::from_shared_keys(
+            matcher.shared_lookup_keys(title_id, &evidence.lookup_keys),
+        );
+
+    let folder_name = std::path::Path::new(&completed.dest_dir)
+        .file_name()
+        .and_then(|value| value.to_str());
+    for raw_title in [Some(completed.name.as_str()), folder_name]
+        .into_iter()
+        .flatten()
+    {
+        let raw_title = raw_title.trim();
+        if raw_title.is_empty() {
+            continue;
+        }
+        let parsed = crate::parse_release_metadata_for_target(raw_title, &evidence.parse_context);
+        let Some(evidence_match) =
+            crate::acquisition_release_search::match_parsed_release_to_title_evidence(
+                &parsed, &evidence,
+            )
+        else {
+            continue;
+        };
+        let external_id_matches = parsed
+            .imdb_id
+            .as_deref()
+            .zip(crate::acquisition_search_queries::imdb_id_from_title(&title).as_deref())
+            .is_some_and(|(observed, expected)| observed.eq_ignore_ascii_case(expected))
+            || parsed
+                .tmdb_id
+                .as_deref()
+                .zip(
+                    crate::acquisition_search_queries::tmdb_id_from_external_ids(
+                        &title.external_ids,
+                    )
+                    .as_deref(),
+                )
+                .is_some_and(|(observed, expected)| observed == expected)
+            || parsed
+                .tvdb_id
+                .as_deref()
+                .zip(
+                    crate::acquisition_search_queries::tvdb_id_from_external_ids(
+                        &title.external_ids,
+                    )
+                    .as_deref(),
+                )
+                .is_some_and(|(observed, expected)| observed == expected);
+
+        if evidence_match.requires_external_id && !external_id_matches {
+            continue;
+        }
+        if evidence.ambiguity.requires_disambiguator()
+            && !evidence_match.year_corroborated
+            && !external_id_matches
+            && !evidence
+                .ambiguity
+                .key_is_unique_to_title(&evidence_match.matched_key)
+        {
+            continue;
+        }
+        return true;
+    }
+
+    false
 }
 
 fn normalized_download_category(category: Option<&str>) -> Option<&str> {

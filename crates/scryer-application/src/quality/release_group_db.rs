@@ -239,6 +239,15 @@ fn group_rule_matches(rule: &GroupRule, candidate: &str) -> bool {
     }
 }
 
+pub(crate) fn is_known_release_group(candidate: &str) -> bool {
+    let candidate_upper = candidate.to_ascii_uppercase();
+    GROUP_RULE_INDEX.exact.contains_key(&candidate_upper)
+        || GROUP_RULE_INDEX
+            .prefixes
+            .iter()
+            .any(|index| group_rule_matches(&GROUP_RULES[*index], candidate))
+}
+
 /// Apply release group scoring to a decision.
 ///
 /// Uses the group database to look up the release group's tier for its source

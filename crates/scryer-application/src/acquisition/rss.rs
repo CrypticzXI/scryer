@@ -53,8 +53,25 @@ struct TitleContextCandidate {
     evidence: crate::acquisition_release_search::CanonicalTitleEvidence,
 }
 
-fn build_title_context_bank(titles: &[Title]) -> Vec<TitleContextCandidate> {
-    let mut bank = titles
+struct TitleContextBank {
+    candidates: Vec<TitleContextCandidate>,
+    key_index: HashMap<String, Vec<usize>>,
+    tvdb_index: HashMap<String, Vec<usize>>,
+    tmdb_index: HashMap<String, Vec<usize>>,
+    imdb_index: HashMap<String, Vec<usize>>,
+    max_key_tokens: usize,
+}
+
+impl std::ops::Deref for TitleContextBank {
+    type Target = [TitleContextCandidate];
+
+    fn deref(&self) -> &Self::Target {
+        &self.candidates
+    }
+}
+
+fn build_title_context_bank(titles: &[Title]) -> TitleContextBank {
+    let mut candidates = titles
         .iter()
         .filter(|title| title.monitored)
         .map(|title| TitleContextCandidate {
@@ -93,7 +110,7 @@ fn build_title_context_bank(titles: &[Title]) -> Vec<TitleContextCandidate> {
         .collect::<HashSet<_>>();
 
     if !shared_stripped_keys.is_empty() {
-        for candidate in &mut bank {
+        for candidate in &mut candidates {
             candidate.evidence.ambiguity =
                 crate::acquisition_release_search::TitleIdentityAmbiguity::from_shared_keys(
                     candidate
@@ -111,7 +128,49 @@ fn build_title_context_bank(titles: &[Title]) -> Vec<TitleContextCandidate> {
         }
     }
 
-    bank
+    let mut key_index = HashMap::<String, Vec<usize>>::new();
+    let mut tvdb_index = HashMap::<String, Vec<usize>>::new();
+    let mut tmdb_index = HashMap::<String, Vec<usize>>::new();
+    let mut imdb_index = HashMap::<String, Vec<usize>>::new();
+    let mut max_key_tokens = 0;
+    for (index, candidate) in candidates.iter().enumerate() {
+        for key in &candidate.evidence.lookup_keys {
+            for indexed_key in [
+                key.as_str(),
+                crate::import_title_resolution::strip_trailing_year_key(key),
+            ] {
+                if indexed_key.is_empty() {
+                    continue;
+                }
+                max_key_tokens = max_key_tokens.max(indexed_key.split_whitespace().count());
+                let indexes = key_index.entry(indexed_key.to_string()).or_default();
+                if !indexes.contains(&index) {
+                    indexes.push(index);
+                }
+            }
+        }
+        for (value, index_map) in [
+            (candidate.info.tvdb_id.as_ref(), &mut tvdb_index),
+            (candidate.info.tmdb_id.as_ref(), &mut tmdb_index),
+            (candidate.info.imdb_id.as_ref(), &mut imdb_index),
+        ] {
+            if let Some(value) = value {
+                index_map
+                    .entry(value.to_ascii_lowercase())
+                    .or_default()
+                    .push(index);
+            }
+        }
+    }
+
+    TitleContextBank {
+        candidates,
+        key_index,
+        tvdb_index,
+        tmdb_index,
+        imdb_index,
+        max_key_tokens,
+    }
 }
 
 /// Extract the series/movie title portion from a release name by taking
@@ -245,15 +304,57 @@ fn context_candidate_match_score(
 fn match_release_to_title_context<'a>(
     release_title: &str,
     response_attributes: &IndexerResponseAttributes,
-    context_bank: &'a [TitleContextCandidate],
+    context_bank: &'a TitleContextBank,
 ) -> Option<&'a TitleMatchInfo> {
     let release_tokens = release_tokens_for_matching(release_title);
     if release_tokens.is_empty() {
         return None;
     }
 
-    let mut candidates = context_bank
-        .iter()
+    let mut candidate_indexes = HashSet::<usize>::new();
+    for start in 0..release_tokens.len() {
+        let max_end = release_tokens
+            .len()
+            .min(start.saturating_add(context_bank.max_key_tokens));
+        for end in start + 1..=max_end {
+            let key = release_tokens[start..end].join(" ");
+            if let Some(indexes) = context_bank.key_index.get(&key) {
+                candidate_indexes.extend(indexes.iter().copied());
+            }
+        }
+    }
+    for (asserted_id, index) in [
+        (
+            response_attributes.tvdb_id.as_ref(),
+            &context_bank.tvdb_index,
+        ),
+        (
+            response_attributes.tmdb_id.as_ref(),
+            &context_bank.tmdb_index,
+        ),
+        (
+            response_attributes.imdb_id.as_ref(),
+            &context_bank.imdb_index,
+        ),
+    ] {
+        if let Some(asserted_id) = asserted_id
+            && let Some(indexes) = index.get(&asserted_id.to_ascii_lowercase())
+        {
+            candidate_indexes.extend(indexes.iter().copied());
+        }
+    }
+    if candidate_indexes.len() > RSS_TITLE_CONTEXT_CANDIDATE_LIMIT {
+        tracing::debug!(
+            release = release_title,
+            candidate_count = candidate_indexes.len(),
+            "RSS sync: skipping release — identity shortlist exceeds bounded context limit"
+        );
+        return None;
+    }
+
+    let mut candidates = candidate_indexes
+        .into_iter()
+        .filter_map(|index| context_bank.candidates.get(index))
         .filter_map(|candidate| {
             context_candidate_match_score(release_title, &release_tokens, candidate)
                 .map(|score| (candidate, score))
@@ -269,8 +370,6 @@ fn match_release_to_title_context<'a>(
             })
         },
     );
-    candidates.truncate(RSS_TITLE_CONTEXT_CANDIDATE_LIMIT);
-
     let mut best: Option<(&TitleMatchInfo, i32, bool)> = None;
     let mut titles_per_matched_key: HashMap<String, HashSet<&str>> = HashMap::new();
     for (candidate, lexical_score) in candidates {
@@ -291,18 +390,21 @@ fn match_release_to_title_context<'a>(
             .entry(evidence_match.matched_key.clone())
             .or_default()
             .insert(candidate.info.title_id.as_str());
+        let external_id_agreement = external_id_agreement(
+            response_attributes,
+            candidate.info.tvdb_id.as_deref(),
+            candidate.info.tmdb_id.as_deref(),
+            candidate.info.imdb_id.as_deref(),
+        );
+        if evidence_match.requires_external_id && external_id_agreement != Some(true) {
+            continue;
+        }
         let disambiguated = candidate_presents_identity_disambiguator(
             &candidate.evidence,
             &CandidateTitleMatch {
                 evidence_match: Some(evidence_match),
-                provenance_validated: false,
             },
-            external_id_agreement(
-                response_attributes,
-                candidate.info.tvdb_id.as_deref(),
-                candidate.info.tmdb_id.as_deref(),
-                candidate.info.imdb_id.as_deref(),
-            ),
+            external_id_agreement,
         );
 
         let year_bonus = i32::from(parsed.year.is_some() && parsed.year == candidate.info.year) * 8;
@@ -2034,7 +2136,7 @@ mod tests {
     /// matcher test wants. Tests that exercise A2(2) call the real function.
     fn match_release<'a>(
         release_title: &str,
-        context_bank: &'a [TitleContextCandidate],
+        context_bank: &'a TitleContextBank,
     ) -> Option<&'a TitleMatchInfo> {
         match_release_to_title_context(
             release_title,
@@ -2199,7 +2301,7 @@ mod tests {
 
     /// The incident pair on the RSS path: the live-action `One Piece` (2023)
     /// and the anime (1999) share the bare canonical key in one library.
-    fn one_piece_rss_bank() -> Vec<TitleContextCandidate> {
+    fn one_piece_rss_bank() -> TitleContextBank {
         let mut anime = make_series_title("one-piece-anime", "One Piece", Some(1999));
         anime.facet = MediaFacet::Anime;
         build_title_context_bank(&[
@@ -2272,6 +2374,41 @@ mod tests {
     }
 
     #[test]
+    fn electric_bloom_cannot_prove_the_bloom_alias() {
+        let titles = vec![make_title_with_aliases(
+            "fragrant-flower",
+            "The Fragrant Flower Blooms with Dignity",
+            Some(2025),
+            vec!["BLOOM"],
+        )];
+        let bank = build_title_context_bank(&titles);
+        let release = "Electric.Bloom.S01E09.How.it.all.came.out.of.the.wash.MULTI.1080p.DSNP.WEB-DL.DDP5.1.H.264";
+
+        assert!(
+            match_release(release, &bank).is_none(),
+            "a partial alias must not project the target over an unexplained title token"
+        );
+    }
+
+    #[test]
+    fn one_word_alias_requires_year_or_external_id() {
+        let titles = vec![make_title_with_aliases(
+            "fragrant-flower",
+            "The Fragrant Flower Blooms with Dignity",
+            Some(2025),
+            vec!["BLOOM"],
+        )];
+        let bank = build_title_context_bank(&titles);
+
+        assert!(match_release("Bloom.S01E01.1080p.WEB-DL", &bank).is_none());
+        assert_eq!(
+            match_release("Bloom.2025.S01E01.1080p.WEB-DL", &bank)
+                .map(|info| info.title_id.as_str()),
+            Some("fragrant-flower")
+        );
+    }
+
+    #[test]
     fn validator_accepts_head_anchored_release_without_year() {
         let title = make_series_title("friends", "Friends", Some(1994));
         let evidence = canonical_title_evidence(&title);
@@ -2286,12 +2423,34 @@ mod tests {
         // release name — must still head-anchor within the tolerance window.
         let titles = vec![make_series_title("spyxfamily", "Spy x Family", None)];
         let bank = build_title_context_bank(&titles);
+        let parsed = crate::parse_release_metadata_for_target(
+            "ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
+            &bank[0].evidence.parse_context,
+        );
+        assert!(parsed_release_matches_title_evidence(
+            &parsed,
+            &bank[0].evidence
+        ));
         let result = match_release(
             "ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
             &bank,
         );
         assert!(result.is_some(), "group-prefixed release must still match");
         assert_eq!(result.unwrap().title_id, "spyxfamily");
+    }
+
+    #[test]
+    fn unknown_unbracketed_prefix_does_not_count_as_a_release_group() {
+        let titles = vec![make_series_title("spyxfamily", "Spy x Family", None)];
+        let bank = build_title_context_bank(&titles);
+
+        assert!(
+            match_release(
+                "RandomTag.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
+                &bank,
+            )
+            .is_none()
+        );
     }
 
     #[test]

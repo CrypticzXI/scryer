@@ -8,7 +8,7 @@ import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
 import type { Translate } from "@/components/root/types";
 import { buildViewPath } from "@/lib/utils/routing";
 import { formatUiDateTime } from "@/lib/utils/date-format";
-import { wantedItemRowId, wantedItemSearchNowId } from "@/lib/utils/dom-ids";
+import { selectorId, wantedItemRowId, wantedItemSearchNowId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
@@ -1208,7 +1208,14 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
               {items.map((item) => {
                 const expanded = expandedPendingId === item.id;
                 return (
-                <div key={item.id} className="rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] p-3 shadow-[0_12px_28px_rgba(2,6,23,0.10)]">
+                <div
+                  key={item.id}
+                  id={selectorId("pending-release", "card", item.id)}
+                  data-ui="pending-release-row"
+                  data-release-title={item.releaseTitle}
+                  data-pending-status={item.status}
+                  className="rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)] p-3 shadow-[0_12px_28px_rgba(2,6,23,0.10)]"
+                >
                   <div className="flex items-start gap-2">
                     <button
                       type="button"
@@ -1270,11 +1277,23 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                     </div>
                   ) : null}
                   <div className="mt-3 flex gap-2">
-                    <Button size="sm" variant="secondary" className="flex-1" onClick={() => void forceGrab(item.id)}>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      id={selectorId("pending-release", "force-grab-card", item.id)}
+                      className="flex-1"
+                      onClick={() => void forceGrab(item.id)}
+                    >
                       <Download className="h-4 w-4" />
                       <span>{t("pending.forceGrab")}</span>
                     </Button>
-                    <Button size="sm" variant="outline" className="flex-1" onClick={() => void dismiss(item.id)}>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      id={selectorId("pending-release", "dismiss-card", item.id)}
+                      className="flex-1"
+                      onClick={() => void dismiss(item.id)}
+                    >
                       <X className="h-4 w-4" />
                       <span>{t("pending.dismiss")}</span>
                     </Button>
@@ -1306,10 +1325,16 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                   const expanded = expandedPendingId === item.id;
                   return (
                     <Fragment key={item.id}>
-                      <TableRow>
+                      <TableRow
+                        id={selectorId("pending-release", "row", item.id)}
+                        data-ui="pending-release-row"
+                        data-release-title={item.releaseTitle}
+                        data-pending-status={item.status}
+                      >
                         <TableCell className="text-center">
                           <button
                             type="button"
+                            id={selectorId("pending-release", "expand", item.id)}
                             className="p-0.5 text-muted-foreground hover:text-foreground"
                             onClick={() => togglePendingExpanded(item.id)}
                           >
@@ -1341,6 +1366,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                         <TableActionsCell className="w-24">
                           <div className="flex justify-center gap-1">
                             <IconButton
+                              id={selectorId("pending-release", "force-grab", item.id)}
                               label={t("pending.forceGrab")}
                               appearance="ghost"
                               className="h-7 w-7"
@@ -1349,6 +1375,7 @@ function PendingReleasesCard({ state }: { state: PendingViewState }) {
                               <Download className="h-3.5 w-3.5" />
                             </IconButton>
                             <IconButton
+                              id={selectorId("pending-release", "dismiss", item.id)}
                               label={t("pending.dismiss")}
                               appearance="ghost"
                               className="h-7 w-7"

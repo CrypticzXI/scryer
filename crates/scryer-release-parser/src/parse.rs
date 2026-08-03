@@ -15,11 +15,11 @@ use crate::lex::{
     normalize_token,
 };
 use crate::model::{
-    AudioCodec, CandidateZones, ExternalIdSource, MetadataAst, ParseDisposition, ParseFamily,
-    ParseReason, ParsedEpisodeMetadata, ParsedEpisodeReleaseType, ParsedExternalId,
-    ParsedReleaseMetadata, ParsedSpecialKind, ReleaseIdentity, ReleaseParseAnalysis,
-    ReleaseParseCandidate, ReleaseSource, StreamingService, TitleSegment, TitleSegmentKind,
-    TokenAnnotations, TokenRange, TokenRole, VideoCodec,
+    AudioCodec, CandidateZones, ContextTitleMatch, ContextTitleMatchKind, ExternalIdSource,
+    MetadataAst, ParseDisposition, ParseFamily, ParseReason, ParsedEpisodeMetadata,
+    ParsedEpisodeReleaseType, ParsedExternalId, ParsedReleaseMetadata, ParsedSpecialKind,
+    ReleaseIdentity, ReleaseParseAnalysis, ReleaseParseCandidate, ReleaseSource, StreamingService,
+    TitleSegment, TitleSegmentKind, TokenAnnotations, TokenRange, TokenRole, VideoCodec,
 };
 
 const BEAM_WIDTH: usize = 24;
@@ -2920,6 +2920,12 @@ fn build_candidate(
         state.accepted_alias_hits.as_slice(),
         alias_oracle,
     );
+    let context_title_matches = context_title_matches_for_state(
+        tokens,
+        state.title_token_indices.as_slice(),
+        state.accepted_alias_hits.as_slice(),
+        alias_oracle,
+    );
     let canonical_context_title = canonical_context_title(context_index);
     let title_context_matched = state.context_evidence.iter().any(|code| {
         matches!(
@@ -3108,6 +3114,7 @@ fn build_candidate(
     ReleaseParseCandidate {
         family: state.family,
         title_segments,
+        context_title_matches,
         identity: state.identity,
         metadata: state.metadata,
         zones,
@@ -3404,6 +3411,50 @@ fn title_segments_for_state(
         }
     }
     segments
+}
+
+fn context_title_matches_for_state(
+    tokens: &[Token],
+    title_indices: &[usize],
+    accepted_alias_hits: &[AliasHit],
+    alias_oracle: &AliasOracle,
+) -> Vec<ContextTitleMatch> {
+    let contextual_hits =
+        contextual_hits_within_title_zone(title_indices, accepted_alias_hits, alias_oracle);
+    let mut matches = accepted_alias_hits
+        .iter()
+        .chain(contextual_hits.iter())
+        .filter_map(|hit| {
+            let pattern = alias_oracle.patterns.get(hit.pattern_id)?;
+            let kind = match hit.evidence {
+                AliasEvidenceKind::CanonicalTitle => ContextTitleMatchKind::CanonicalTitle,
+                AliasEvidenceKind::TitleAlias => ContextTitleMatchKind::TitleAlias,
+                AliasEvidenceKind::EpisodeTitle => ContextTitleMatchKind::EpisodeTitle,
+            };
+            Some(ContextTitleMatch {
+                kind,
+                token_range: hit.token_range,
+                raw: render_token_indices(
+                    tokens,
+                    &(hit.token_range.start_token..hit.token_range.end_token).collect::<Vec<_>>(),
+                ),
+                normalized: pattern.text.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        left.token_range
+            .start_token
+            .cmp(&right.token_range.start_token)
+            .then(right.token_range.len().cmp(&left.token_range.len()))
+            .then(left.kind.cmp(&right.kind))
+    });
+    matches.dedup_by(|left, right| {
+        left.kind == right.kind
+            && left.token_range == right.token_range
+            && left.normalized == right.normalized
+    });
+    matches
 }
 
 fn extend_title_connector_variants(

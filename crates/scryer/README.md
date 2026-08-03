@@ -63,22 +63,12 @@ including:
 
 Common managed keys:
 
-- `system.service.nzbget.url`
-- `system.service.nzbget.username`
-- `system.service.nzbget.password` (sensitive)
-- `system.service.nzbget.dupe_mode`
 - `media.media.movies.path`
 - `media.media.series.path`
 
-Legacy bootstrap settings (still supported as fallback):
+Other bootstrap environment values:
 
-- `SCRYER_NZBGET_URL` (default `http://127.0.0.1:6789`)
-- `SCRYER_NZBGET_DUPE_MODE` / `SCRYER_NZBGET_DUPEMODE` (optional, defaults to `SCORE`)
-- `SCRYER_NZBGET_USERNAME`
-- `SCRYER_NZBGET_PASSWORD`
 - `SCRYER_BASE_PATH` (optional; serves the UI, GraphQL, health, and WebSocket endpoints under that prefix)
-- `SCRYER_WEB_UI_URL` (optional, default `http://127.0.0.1:3000`)
-- `SCRYER_WEB_DIST_DIR` (optional, default `./crates/scryer/ui`)
 
 MVP workflow: open the SPA on `http://127.0.0.1:3000` and use the nav/search experience for title add/queue actions.
 `addTitleAndQueueDownload` should return success only when NZBGet accepts the exact NZB URL.

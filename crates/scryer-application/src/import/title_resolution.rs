@@ -1,6 +1,4 @@
-use crate::{
-    ParsedReleaseMetadata, analyze_release_against_targets, build_candidate_bank_contexts,
-};
+use crate::ParsedReleaseMetadata;
 use scryer_domain::{MediaFacet, Title, TitleMatchType};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -608,57 +606,19 @@ fn find_unique_title_by_name<'a>(
 fn contextual_candidate_bank_match<'a>(
     titles: &[&'a Title],
     parsed: &ParsedReleaseMetadata,
-    facet_hint: Option<&str>,
+    _facet_hint: Option<&str>,
 ) -> Option<&'a Title> {
-    let shortlist = titles
-        .iter()
-        .copied()
-        .take(CONTEXT_CANDIDATE_LIMIT)
-        .collect::<Vec<_>>();
-    if shortlist.len() < 2 {
+    if titles.len() < 2 || titles.len() > CONTEXT_CANDIDATE_LIMIT {
         return None;
     }
 
-    let contexts = build_candidate_bank_contexts(
-        shortlist.iter().copied(),
-        None,
-        None,
-        facet_hint,
-        shortlist.len(),
-    );
-    let analysis = analyze_release_against_targets(&parsed.raw_title, &contexts);
-    if analysis.is_ambiguous() {
-        return None;
-    }
-    let best_target = analysis.best_target()?;
-    if best_target.analysis.is_unparseable() || best_target.analysis.is_ambiguous {
-        return None;
-    }
-    let best_context_index = best_target.target_index;
-    let best_candidate = best_target.analysis.best_candidate()?;
-
-    let parsed_candidates = {
-        let mut values = best_candidate
-            .projected
-            .normalized_title_variants
-            .iter()
-            .map(|title| crate::app_usecase_rss::normalize_for_matching(title))
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        let primary = crate::app_usecase_rss::normalize_for_matching(
-            &best_candidate.projected.normalized_title,
-        );
-        if !primary.is_empty() && !values.iter().any(|value| value == &primary) {
-            values.push(primary);
-        }
-        values
-    };
-
-    shortlist.get(best_context_index).copied().filter(|title| {
-        parsed_candidates
-            .iter()
-            .any(|candidate| title_matches_normalized_candidate(title, candidate))
-    })
+    let mut proven = titles.iter().copied().filter(|title| {
+        let evidence = crate::acquisition_release_search::canonical_title_evidence(title);
+        crate::acquisition_release_search::match_parsed_release_to_title_evidence(parsed, &evidence)
+            .is_some_and(|evidence_match| !evidence_match.requires_external_id)
+    });
+    let matched = proven.next()?;
+    proven.next().is_none().then_some(matched)
 }
 
 #[cfg(test)]
