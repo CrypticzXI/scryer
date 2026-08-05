@@ -351,7 +351,7 @@ function Invoke-WinGetManifestValidation {
   $wingetArchitecture = if ($Architecture -eq "x86_64") { "x64" } else { "arm64" }
 
   @"
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
 PackageIdentifier: ScryerMedia.Scryer
 PackageVersion: $PackageVersion
 DefaultLocale: en-US
@@ -360,7 +360,7 @@ ManifestVersion: 1.12.0
 "@ | Set-Content -Path (Join-Path $manifestRoot "ScryerMedia.Scryer.yaml") -Encoding utf8
 
   @"
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: ScryerMedia.Scryer
 PackageVersion: $PackageVersion
 PackageLocale: en-US
@@ -373,7 +373,7 @@ ManifestVersion: 1.12.0
 "@ | Set-Content -Path (Join-Path $manifestRoot "ScryerMedia.Scryer.locale.en-US.yaml") -Encoding utf8
 
   @"
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 PackageIdentifier: ScryerMedia.Scryer
 PackageVersion: $PackageVersion
 InstallerType: msi
@@ -387,9 +387,23 @@ ManifestType: installer
 ManifestVersion: 1.12.0
 "@ | Set-Content -Path (Join-Path $manifestRoot "ScryerMedia.Scryer.installer.yaml") -Encoding utf8
 
+  $expectedSchemaHeaders = @{
+    "ScryerMedia.Scryer.yaml" = '# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json'
+    "ScryerMedia.Scryer.locale.en-US.yaml" = '# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json'
+    "ScryerMedia.Scryer.installer.yaml" = '# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json'
+  }
+  foreach ($manifest in $expectedSchemaHeaders.GetEnumerator()) {
+    $manifestPath = Join-Path $manifestRoot $manifest.Key
+    $actualHeader = Get-Content -LiteralPath $manifestPath -TotalCount 1
+    if ($actualHeader -ne $manifest.Value) {
+      throw "Generated WinGet manifest '$($manifest.Key)' has an invalid schema header: '$actualHeader'"
+    }
+  }
+
   Write-Log $wingetLog "Validating generated MSI winget manifest from $manifestRoot"
   & $winget validate --manifest $manifestRoot --disable-interactivity *>> $wingetLog
   if ($LASTEXITCODE -ne 0) {
+    Get-Content -LiteralPath $wingetLog -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
     throw "winget manifest validation exited with code $LASTEXITCODE"
   }
 }
