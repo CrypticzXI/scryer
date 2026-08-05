@@ -434,12 +434,28 @@ async fn request_count(server: &MockServer) -> usize {
     server.received_requests().await.unwrap_or_default().len()
 }
 
-async fn wait_for_request(server: &MockServer, deadline: Duration) {
+async fn wait_for_request_or_terminal(
+    server: &MockServer,
+    app: &AppUseCase,
+    user: &User,
+    job_id: &str,
+    deadline: Duration,
+) {
     let started = Instant::now();
     while started.elapsed() < deadline {
         if request_count(server).await > 0 {
             return;
         }
+        let snapshot = app
+            .interactive_release_search(user, job_id)
+            .await
+            .expect("read interactive search")
+            .expect("interactive search should remain visible");
+        assert_eq!(
+            snapshot.state,
+            InteractiveReleaseSearchState::Running,
+            "interactive search ended before its indexer request reached the test server: {snapshot:?}"
+        );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
@@ -668,7 +684,7 @@ async fn cancel_mid_flight_stops_job_and_outbound_requests() {
         .await
         .expect("start job");
     // Cancel only after the delayed request is in flight.
-    wait_for_request(&slow, Duration::from_secs(2)).await;
+    wait_for_request_or_terminal(&slow, &app, &user, &start.id, Duration::from_secs(10)).await;
 
     let cancelled = app
         .cancel_interactive_release_search(&user, &start.id)
