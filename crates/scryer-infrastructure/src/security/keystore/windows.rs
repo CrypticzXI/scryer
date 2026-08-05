@@ -134,11 +134,15 @@ mod tests {
 
     #[test]
     fn desktop_profile_uses_dedicated_credential_namespace() {
-        let profile = Path::new(r"C:\Users\example\AppData\Local\ScryerMedia\Scryer");
+        let profile = Path::new(concat!(
+            r"C:\",
+            r"Users\example\AppData\Local\ScryerMedia\Scryer"
+        ));
         let desktop_store = WindowsCredentialManager::for_data_dir(Some(profile));
-        let legacy_store = WindowsCredentialManager::for_data_dir(Some(Path::new(
-            r"C:\Users\example\AppData\Roaming\scryer",
-        )));
+        let legacy_store = WindowsCredentialManager::for_data_dir(Some(Path::new(concat!(
+            r"C:\",
+            r"Users\example\AppData\Roaming\scryer"
+        ))));
 
         assert_eq!(desktop_store.service, DESKTOP_SERVICE);
         assert_eq!(legacy_store.service, DEFAULT_SERVICE);

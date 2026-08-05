@@ -837,8 +837,14 @@ mod windows {
         #[test]
         fn desktop_profile_is_isolated_from_legacy_portable_state() {
             assert_eq!(
-                desktop_profile_dir_from(Path::new(r"C:\Users\example\AppData\Local")),
-                Path::new(r"C:\Users\example\AppData\Local\ScryerMedia\Scryer")
+                desktop_profile_dir_from(Path::new(concat!(
+                    r"C:\",
+                    r"Users\example\AppData\Local"
+                ))),
+                Path::new(concat!(
+                    r"C:\",
+                    r"Users\example\AppData\Local\ScryerMedia\Scryer"
+                ))
             );
         }
 

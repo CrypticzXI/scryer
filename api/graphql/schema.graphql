@@ -827,6 +827,19 @@ type DirectoryEntryPayload {
 	isDirectory: Boolean!
 }
 
+type DiscoveryContentCertificationPayload {
+	value: String!
+	source: String!
+	releaseType: Int
+}
+
+type DiscoveryContentRatingPayload {
+	country: String!
+	certifications: [DiscoveryContentCertificationPayload!]!
+	ageRating: Int
+	ageRatingSource: String
+}
+
 type DiscoveryExternalIdPayload {
 	source: String!
 	kind: String!
@@ -860,6 +873,7 @@ type DiscoveryHomeCardPayload {
 	year: Int
 	posterUrl: String
 	contentType: MediaFacetValue!
+	isAdult: Boolean!
 	ownedInInput: Boolean!
 }
 
@@ -906,6 +920,7 @@ type DiscoveryHomeHeroPayload {
 	backgroundUrl: String
 	overview: String
 	contentType: MediaFacetValue!
+	isAdult: Boolean!
 	rating: Float
 	ratingSources: [String!]!
 	externalRatings: [DiscoveryExternalRatingPayload!]!
@@ -961,6 +976,8 @@ type DiscoveryItemPayload {
 	overview: String
 	contentType: String
 	canonicalTags: [CanonicalMediaTagPayload!]!
+	isAdult: Boolean!
+	contentRatings: [DiscoveryContentRatingPayload!]!
 	rating: Float
 	ratingSources: [String!]!
 	externalRatings: [DiscoveryExternalRatingPayload!]!
