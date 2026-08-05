@@ -322,7 +322,27 @@ function Invoke-WinGetManifestValidation {
 
   $winget = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
   if (-not $winget) {
-    throw "winget.exe was not found; MSI manifest validation is required."
+    try {
+      Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe -ErrorAction Stop
+    } catch {
+      throw "winget.exe was not found and the App Installer could not be registered: $($_.Exception.Message)"
+    }
+
+    $appInstaller = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if ($appInstaller) {
+      $candidate = Join-Path $appInstaller.InstallLocation "winget.exe"
+      if (Test-Path -LiteralPath $candidate) {
+        $winget = $candidate
+      }
+    }
+
+    if (-not $winget) {
+      $winget = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
+    }
+    if (-not $winget) {
+      throw "winget.exe was not found after registering the App Installer; MSI manifest validation is required."
+    }
   }
 
   $manifestRoot = Join-Path $validationRoot "winget-manifest"
@@ -331,6 +351,7 @@ function Invoke-WinGetManifestValidation {
   $wingetArchitecture = if ($Architecture -eq "x86_64") { "x64" } else { "arm64" }
 
   @"
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
 PackageIdentifier: ScryerMedia.Scryer
 PackageVersion: $PackageVersion
 DefaultLocale: en-US
@@ -339,6 +360,7 @@ ManifestVersion: 1.12.0
 "@ | Set-Content -Path (Join-Path $manifestRoot "ScryerMedia.Scryer.yaml") -Encoding utf8
 
   @"
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: ScryerMedia.Scryer
 PackageVersion: $PackageVersion
 PackageLocale: en-US
@@ -351,6 +373,7 @@ ManifestVersion: 1.12.0
 "@ | Set-Content -Path (Join-Path $manifestRoot "ScryerMedia.Scryer.locale.en-US.yaml") -Encoding utf8
 
   @"
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 PackageIdentifier: ScryerMedia.Scryer
 PackageVersion: $PackageVersion
 InstallerType: msi

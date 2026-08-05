@@ -920,7 +920,7 @@ jobs:
             export CC="clang"
             export CXX="clang++"
           fi
-          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=."
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=. -A linker-messages"
           if [ -n "${{ matrix.extra_rustflags }}" ]; then
             export RUSTFLAGS="${RUSTFLAGS} ${{ matrix.extra_rustflags }}"
           fi
