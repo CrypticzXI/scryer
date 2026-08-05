@@ -219,8 +219,22 @@ function Invoke-ScryerStartupSmoke {
           throw "SPA returned HTTP $($spa.StatusCode)"
         }
 
+        $proofResponse = Invoke-WebRequest -Uri "$baseUrl/authless-client" -Headers @{ Accept = "application/json" } -WebSession $session -TimeoutSec 5
+        if ($proofResponse.StatusCode -ne 200) {
+          throw "Authless web client proof returned HTTP $($proofResponse.StatusCode)"
+        }
+        $proofText = if ($proofResponse.Content -is [byte[]]) {
+          [System.Text.Encoding]::UTF8.GetString($proofResponse.Content)
+        } else {
+          [string]$proofResponse.Content
+        }
+        $proof = ($proofText | ConvertFrom-Json).proof
+        if ([string]::IsNullOrWhiteSpace($proof)) {
+          throw "Authless web client proof response did not include a proof"
+        }
+
         $payload = @{ query = "query { systemStatus { version } }" } | ConvertTo-Json -Compress
-        $api = Invoke-WebRequest -Uri "$baseUrl/graphql" -Method Post -ContentType "application/json" -Body $payload -WebSession $session -TimeoutSec 5
+        $api = Invoke-WebRequest -Uri "$baseUrl/graphql" -Method Post -ContentType "application/json" -Body $payload -Headers @{ "X-Scryer-Web-Client" = $proof } -WebSession $session -TimeoutSec 5
         $responseText = if ($api.Content -is [byte[]]) {
           [System.Text.Encoding]::UTF8.GetString($api.Content)
         } else {
