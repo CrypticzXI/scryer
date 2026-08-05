@@ -351,16 +351,16 @@ function Invoke-WinGetManifestValidation {
   $wingetArchitecture = if ($Architecture -eq "x86_64") { "x64" } else { "arm64" }
 
   @"
-# yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.version.1.10.0.schema.json
 PackageIdentifier: ScryerMedia.Scryer
 PackageVersion: $PackageVersion
 DefaultLocale: en-US
 ManifestType: version
-ManifestVersion: 1.12.0
+ManifestVersion: 1.10.0
 "@ | Set-Content -Path (Join-Path $manifestRoot "ScryerMedia.Scryer.yaml") -Encoding utf8
 
   @"
-# yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
 PackageIdentifier: ScryerMedia.Scryer
 PackageVersion: $PackageVersion
 PackageLocale: en-US
@@ -369,11 +369,11 @@ PackageName: Scryer
 License: GPL-3.0
 ShortDescription: Self-hosted media acquisition and management platform.
 ManifestType: defaultLocale
-ManifestVersion: 1.12.0
+ManifestVersion: 1.10.0
 "@ | Set-Content -Path (Join-Path $manifestRoot "ScryerMedia.Scryer.locale.en-US.yaml") -Encoding utf8
 
   @"
-# yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+# yaml-language-server: `$schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
 PackageIdentifier: ScryerMedia.Scryer
 PackageVersion: $PackageVersion
 InstallerType: msi
@@ -384,13 +384,13 @@ Installers:
   InstallerSha256: $msiHash
   ProductCode: '$ProductCode'
 ManifestType: installer
-ManifestVersion: 1.12.0
+ManifestVersion: 1.10.0
 "@ | Set-Content -Path (Join-Path $manifestRoot "ScryerMedia.Scryer.installer.yaml") -Encoding utf8
 
   $expectedSchemaHeaders = @{
-    "ScryerMedia.Scryer.yaml" = '# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.12.0.schema.json'
-    "ScryerMedia.Scryer.locale.en-US.yaml" = '# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json'
-    "ScryerMedia.Scryer.installer.yaml" = '# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json'
+    "ScryerMedia.Scryer.yaml" = '# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.10.0.schema.json'
+    "ScryerMedia.Scryer.locale.en-US.yaml" = '# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json'
+    "ScryerMedia.Scryer.installer.yaml" = '# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json'
   }
   foreach ($manifest in $expectedSchemaHeaders.GetEnumerator()) {
     $manifestPath = Join-Path $manifestRoot $manifest.Key
