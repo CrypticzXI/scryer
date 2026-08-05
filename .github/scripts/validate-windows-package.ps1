@@ -233,7 +233,7 @@ function Invoke-ScryerStartupSmoke {
           throw "Authless web client proof response did not include a proof"
         }
 
-        $payload = @{ query = "query { systemStatus { version } }" } | ConvertTo-Json -Compress
+        $payload = @{ query = "query { scryerVersion }" } | ConvertTo-Json -Compress
         $api = Invoke-WebRequest -Uri "$baseUrl/graphql" -Method Post -ContentType "application/json" -Body $payload -Headers @{ "X-Scryer-Web-Client" = $proof } -WebSession $session -TimeoutSec 5
         $responseText = if ($api.Content -is [byte[]]) {
           [System.Text.Encoding]::UTF8.GetString($api.Content)
@@ -244,11 +244,11 @@ function Invoke-ScryerStartupSmoke {
         if ($json.errors) {
           throw "GraphQL errors: $($json.errors | ConvertTo-Json -Compress -Depth 8)"
         }
-        if (-not $json.data.systemStatus.version) {
-          throw "GraphQL systemStatus did not include a version"
+        if ([string]::IsNullOrWhiteSpace($json.data.scryerVersion)) {
+          throw "GraphQL scryerVersion did not include a version"
         }
 
-        Write-Log $startupLog "$Label startup API smoke passed with version $($json.data.systemStatus.version)"
+        Write-Log $startupLog "$Label startup API smoke passed with version $($json.data.scryerVersion)"
         $ready = $true
         break
       } catch {
