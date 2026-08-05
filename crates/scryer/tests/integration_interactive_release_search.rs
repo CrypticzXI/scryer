@@ -661,13 +661,7 @@ async fn rate_limited_indexer_is_marked_failed_and_healthy_results_survive() {
 #[tokio::test]
 async fn cancel_mid_flight_stops_job_and_outbound_requests() {
     let slow = MockServer::start().await;
-    mount_delayed(
-        &slow,
-        "Paperman.2012.1080p.WEB-DL-GRP",
-        "slow-1",
-        Duration::from_secs(6),
-    )
-    .await;
+    mount_healthy(&slow, "Paperman.2012.1080p.WEB-DL-GRP", "slow-1").await;
 
     let now = chrono::Utc::now();
     let (app, user) = setup_app(vec![indexer_config(
@@ -678,6 +672,26 @@ async fn cancel_mid_flight_stops_job_and_outbound_requests() {
     )])
     .await;
     let title_id = add_movie(&app, &user, "Paperman", "tt2388725").await;
+
+    // Compile and initialize the real WASM plugin worker before starting the
+    // timed job. Under CI-wide test contention, doing this lazily inside the
+    // job can delay its first outbound request beyond the assertion window.
+    app.search_indexers_for_title(
+        &user,
+        title_id.clone(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("warmup search");
+
+    slow.reset().await;
+    mount_delayed(
+        &slow,
+        "Paperman.2012.1080p.WEB-DL-GRP",
+        "slow-1",
+        Duration::from_secs(6),
+    )
+    .await;
 
     let start = app
         .start_interactive_release_search(&user, title_request(&title_id))
