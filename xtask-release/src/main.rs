@@ -136,6 +136,7 @@ const WINGET_WINDOWS_ARM64_ASSET: &str = "scryer-windows-arm64.msi";
 const WINGET_WINDOWS_X64_METADATA: &str = "scryer-windows-x86_64.msi.json";
 const WINGET_WINDOWS_ARM64_METADATA: &str = "scryer-windows-arm64.msi.json";
 const REQUIRED_SCRYER_DRY_RUN_STEPS: &[&str] = &[
+    "release_container_contract",
     "builtin_refresh",
     "web_validation",
     "rust_validation",
@@ -2716,6 +2717,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         prompt_continue_if_dirty(ctx)?;
     }
     require_command("gh")?;
+    run_scryer_release_container_contract_validation(ctx, "[release] ")?;
     ok("Pre-flight OK");
 
     let builtin_plugin_paths = builtin_plugin_paths(ctx);
@@ -3477,6 +3479,18 @@ fn maybe_add_changed_graphql_schema_artifact(
     if changed_file(ctx, &artifact)? && !changed.iter().any(|path| path == &artifact) {
         changed.push(artifact);
     }
+    Ok(())
+}
+
+fn run_scryer_release_container_contract_validation(
+    ctx: &TaskContext,
+    prefix: &'static str,
+) -> Result<()> {
+    prefixed_step(prefix, "Checking Docker release publish contract");
+    let mut command = ctx.command("sh");
+    command.arg("docker/validate-release-build-config.sh");
+    run_checked(&mut command)?;
+    prefixed_ok(prefix, "Docker release publish contract passed");
     Ok(())
 }
 
