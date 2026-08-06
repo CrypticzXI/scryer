@@ -4,17 +4,18 @@ AI generated release notes
 
 ## Highlights
 
-- No end-user application changes are included in `v0.18.3`.
-- Simplified maintenance releases for docs-only and CI-only changes by skipping unnecessary full application validation.
-- Improved release reliability with stronger CI artifact handling and tighter multi-architecture container verification.
+- No end-user feature changes are included in `0.18.3`.
+- This release focuses on release automation and CI reliability.
+- Maintenance-only releases are now handled more efficiently, with lighter validation for CI-only, docs-only, and web-only changes.
 
 ## Release Engineering
 
-- `cargo xtask release` now classifies changes as full, web-only, or CI/docs-only and runs the required validation scope for each case.
-- Docs-only and CI-only releases can reuse checked-in builtin plugin assets instead of rebuilding them, while still enforcing release hygiene and dry-run cache validation.
-- Dry-run cache reuse now checks the expected validation scope before allowing a release to proceed.
+- Simplified the release flow by automatically classifying changes and choosing the appropriate validation scope instead of always running the full release path.
+- Improved dry-run cache validation so mismatched release notes or missing required validation steps are caught before publish.
+- Reused checked-in embedded plugin builtins for non-product releases to reduce unnecessary rebuild work during release preparation.
 
 ## CI and Verification
 
-- GitHub Actions now uploads Cargo timing artifacts separately so missing timing output does not fail the main artifact upload.
-- OCI verification was tightened to validate per-platform attestation manifests and confirm SPDX SBOM coverage for both published Linux image variants.
+- Split cargo timing uploads into a dedicated artifact, making CI diagnostics easier to inspect without breaking the main artifact upload when timings are unavailable.
+- Tightened OCI verification to explicitly check per-platform SBOM attestations for supported Linux image variants.
+- Included additional test coverage around release validation scope selection and dry-run cache acceptance rules.
