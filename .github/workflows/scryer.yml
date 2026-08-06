@@ -758,19 +758,27 @@ jobs:
             echo "sccache not installed; skipping stats" | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
           fi
 
-      - name: Upload build artifacts
-        if: ${{ always() }}
+      - name: Upload release package
+        if: ${{ success() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.artifact_name }}-${{ github.run_id }}
+          path: ${{ matrix.archive_name }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: build-diagnostics-${{ matrix.artifact_name }}-${{ github.run_id }}
           path: |
-            ${{ matrix.archive_name }}
             ${{ matrix.artifact_name }}-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
             ${{ matrix.artifact_name }}-heartbeat.log
             ${{ matrix.artifact_name }}-build-status.json
             ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Save sccache directory
@@ -984,19 +992,27 @@ jobs:
             echo "sccache not installed; skipping stats" | tee "${{ matrix.artifact_name }}-sccache-stats.txt"
           fi
 
-      - name: Upload build artifacts
-        if: ${{ always() }}
+      - name: Upload release package
+        if: ${{ success() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.artifact_name }}-${{ github.run_id }}
+          path: ${{ matrix.artifact_name }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: build-diagnostics-${{ matrix.artifact_name }}-${{ github.run_id }}
           path: |
-            ${{ matrix.artifact_name }}.tar.gz
             ${{ matrix.artifact_name }}-build.log
             ${{ matrix.artifact_name }}-sccache-stats.txt
             ${{ matrix.artifact_name }}-heartbeat.log
             ${{ matrix.artifact_name }}-build-status.json
             ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Save sccache directory
@@ -1339,8 +1355,8 @@ jobs:
             "sccache not installed; skipping stats" | Tee-Object -FilePath "${{ matrix.artifact_name }}-sccache-stats.txt"
           }
 
-      - name: Upload build artifacts
-        if: ${{ always() }}
+      - name: Upload release package
+        if: ${{ success() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ matrix.artifact_name }}-${{ github.run_id }}
@@ -1348,6 +1364,15 @@ jobs:
             ${{ matrix.artifact_name }}.zip
             ${{ matrix.artifact_name }}.msi
             ${{ matrix.artifact_name }}.msi.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: build-diagnostics-${{ matrix.artifact_name }}-${{ github.run_id }}
+          path: |
             ${{ matrix.artifact_name }}-build.log
             ${{ matrix.artifact_name }}-defender-scan.log
             ${{ matrix.artifact_name }}-attachment-services.log
@@ -1357,7 +1382,7 @@ jobs:
             ${{ matrix.artifact_name }}-sccache-stats.txt
             ${{ matrix.artifact_name }}-heartbeat.log
             ${{ matrix.artifact_name }}-build-status.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Upload cargo timings
@@ -1650,6 +1675,8 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository_owner }}/scryer
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=latest
             type=raw,value=${{ steps.docker_release_line.outputs.line_tag }}
