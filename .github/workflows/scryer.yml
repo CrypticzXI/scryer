@@ -1357,8 +1357,16 @@ jobs:
             ${{ matrix.artifact_name }}-sccache-stats.txt
             ${{ matrix.artifact_name }}-heartbeat.log
             ${{ matrix.artifact_name }}-build-status.json
-            ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload cargo timings
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cargo-timings-${{ matrix.artifact_name }}-${{ github.run_id }}
+          path: ${{ github.event_name == 'pull_request' && format('{0}/target/cargo-timings/*', github.workspace) || format('{0}/{1}/cargo-timings/*', runner.temp, env.COLD_TARGET_NAME) }}
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Save sccache directory
@@ -1752,7 +1760,24 @@ jobs:
           slsa-verifier verify-image "$immutable_image" \
             --source-uri "github.com/${{ github.repository }}" \
             --source-tag "${{ github.ref_name }}"
-          cosign download sbom "$immutable_image" > /dev/null
+          index="$(docker buildx imagetools inspect --raw "$immutable_image")"
+          for platform in linux/amd64 linux/arm64; do
+            os="${platform%/*}"
+            architecture="${platform#*/}"
+            subject_digest="$(jq -r \
+              --arg os "$os" \
+              --arg architecture "$architecture" \
+              '.manifests[] | select(.platform.os == $os and .platform.architecture == $architecture) | .digest' \
+              <<< "$index")"
+            test -n "$subject_digest" && test "$subject_digest" != null
+            attestation_digest="$(jq -r \
+              --arg subject "$subject_digest" \
+              '.manifests[] | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest" and .annotations["vnd.docker.reference.digest"] == $subject) | .digest' \
+              <<< "$index")"
+            test -n "$attestation_digest" && test "$attestation_digest" != null
+            docker buildx imagetools inspect --raw "${IMAGE}@${attestation_digest}" |
+              jq -e 'any(.layers[]; .mediaType == "application/vnd.in-toto+json" and .annotations["in-toto.io/predicate-type"] == "https://spdx.dev/Document")' > /dev/null
+          done
 
   release:
     name: publish-release
