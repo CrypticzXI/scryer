@@ -2794,7 +2794,15 @@ fn sync_trash_guides_for_release(ctx: &TaskContext) -> Result<()> {
         .collect::<Vec<_>>();
     let snapshots = snapshot_files(&generated_paths)?;
     let mut command = ctx.command_in("cargo", &ctx.repo_root);
-    command.args(["run", "-p", "xtask", "--", "trash-guides", "sync"]);
+    command.args([
+        "run",
+        "--locked",
+        "-p",
+        "xtask",
+        "--",
+        "trash-guides",
+        "sync",
+    ]);
 
     match run_command_with_timeout(&mut command, TRASH_GUIDES_SYNC_TIMEOUT) {
         Ok(TimedCommandOutcome::Success) => ok("TRaSH Guides sync complete"),
