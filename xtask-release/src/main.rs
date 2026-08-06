@@ -321,6 +321,80 @@ enum VersionBump {
     Major,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReleaseValidationScope {
+    Full,
+    WebOnly,
+    MetaOnly,
+}
+
+impl ReleaseValidationScope {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::WebOnly => "web-only",
+            Self::MetaOnly => "CI/docs-only",
+        }
+    }
+
+    fn required_steps(self) -> &'static [&'static str] {
+        match self {
+            Self::Full => REQUIRED_SCRYER_DRY_RUN_STEPS,
+            Self::WebOnly => &[
+                "release_container_contract",
+                "web_validation",
+                "release_hygiene",
+            ],
+            Self::MetaOnly => &["release_container_contract", "release_hygiene"],
+        }
+    }
+}
+
+fn release_meta_path(path: &Path) -> bool {
+    path.starts_with(".github")
+        || path.starts_with("docs")
+        || path.starts_with("release-notes")
+        || path.extension().is_some_and(|extension| extension == "md")
+        || matches!(
+            path.to_str(),
+            Some(
+                "LICENSE"
+                    | "NOTICE"
+                    | "CODEOWNERS"
+                    | ".editorconfig"
+                    | ".gitignore"
+                    | ".gitattributes"
+                    | ".markdownlint.json"
+                    | "renovate.json"
+                    | "dependabot.yml"
+            )
+        )
+}
+
+fn release_web_path(path: &Path) -> bool {
+    path.starts_with("apps/scryer-web")
+}
+
+fn classify_release_validation_paths<'a>(
+    paths: impl IntoIterator<Item = &'a Path>,
+) -> ReleaseValidationScope {
+    let paths = paths.into_iter().collect::<Vec<_>>();
+    if paths.is_empty() {
+        return ReleaseValidationScope::Full;
+    }
+    if paths.iter().all(|path| release_meta_path(path)) {
+        return ReleaseValidationScope::MetaOnly;
+    }
+    if paths
+        .iter()
+        .all(|path| release_meta_path(path) || release_web_path(path))
+        && paths.iter().any(|path| release_web_path(path))
+    {
+        return ReleaseValidationScope::WebOnly;
+    }
+    ReleaseValidationScope::Full
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ReleaseDryRunCache {
     success: bool,
@@ -347,6 +421,7 @@ struct ReleaseDryRunCache {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReleaseDryRunExpectations<'a> {
     git_commit: &'a str,
+    validation_scope: ReleaseValidationScope,
     release_args: &'a str,
     latest_tag_seen: Option<&'a str>,
     next_version: &'a str,
@@ -415,6 +490,51 @@ fn git_tracked_files(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
         .filter(|entry| !entry.is_empty())
         .map(|entry| ctx.path(String::from_utf8_lossy(entry).as_ref()))
         .collect())
+}
+
+fn git_path_output(ctx: &TaskContext, args: &[&str]) -> Result<Vec<PathBuf>> {
+    let mut command = ctx.command_in("git", &ctx.repo_root);
+    command.args(args);
+    let debug = format!("{command:?}");
+    let output = command.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("command failed: {debug}\n{stderr}");
+    }
+
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| ctx.path(String::from_utf8_lossy(entry).as_ref()))
+        .collect())
+}
+
+fn release_changed_paths(ctx: &TaskContext, latest_tag: Option<&str>) -> Result<Vec<PathBuf>> {
+    let Some(latest_tag) = latest_tag else {
+        return git_tracked_files(ctx);
+    };
+    let range = format!("{latest_tag}..HEAD");
+    let mut paths = BTreeSet::new();
+    for changed in [
+        git_path_output(ctx, &["diff", "--name-only", "-z", &range])?,
+        git_path_output(ctx, &["diff", "--name-only", "-z"])?,
+        git_path_output(ctx, &["diff", "--cached", "--name-only", "-z"])?,
+        git_path_output(ctx, &["ls-files", "--others", "--exclude-standard", "-z"])?,
+    ] {
+        paths.extend(changed);
+    }
+    Ok(paths.into_iter().collect())
+}
+
+fn release_validation_scope(
+    ctx: &TaskContext,
+    latest_tag: Option<&str>,
+) -> Result<ReleaseValidationScope> {
+    let paths = release_changed_paths(ctx, latest_tag)?;
+    Ok(classify_release_validation_paths(
+        paths.iter().map(PathBuf::as_path),
+    ))
 }
 
 fn git_tracked_cargo_lockfiles(ctx: &TaskContext) -> Result<Vec<PathBuf>> {
@@ -1339,6 +1459,29 @@ fn cache_builtin_artifacts(cache_dir: &Path, builtins: &[PathBuf]) -> Result<()>
     Ok(())
 }
 
+fn reuse_existing_builtin_plugins(ctx: &TaskContext) -> Result<BuiltinRefresh> {
+    step("Reusing checked-in embedded plugin builtins");
+    let mut catalog_wasm_blake3 = BTreeMap::new();
+    for spec in BUILTIN_PLUGINS {
+        let paths = builtin_asset_paths(ctx, spec);
+        for path in [&paths.wasm, &paths.descriptor_json, &paths.description] {
+            if !path.is_file() {
+                bail!("checked-in builtin asset is missing: {}", path.display());
+            }
+        }
+        let compressed = fs::read(&paths.wasm)
+            .with_context(|| format!("failed to read {}", paths.wasm.display()))?;
+        let wasm = zstd::decode_all(compressed.as_slice())
+            .with_context(|| format!("failed to decompress {}", paths.wasm.display()))?;
+        catalog_wasm_blake3.insert(spec.plugin_id.to_string(), blake3_hex(&wasm));
+    }
+    ok("Checked-in embedded plugin builtins are complete");
+    Ok(BuiltinRefresh {
+        paths: builtin_plugin_paths(ctx),
+        catalog_wasm_blake3,
+    })
+}
+
 fn builtin_cache_complete(cache_dir: &Path, builtins: &[PathBuf]) -> bool {
     cache_dir.is_dir()
         && builtins.iter().all(|built_wasm| {
@@ -1447,7 +1590,9 @@ fn release_dry_run_cache_rejection_reason(
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let missing_steps = REQUIRED_SCRYER_DRY_RUN_STEPS
+    let missing_steps = expected
+        .validation_scope
+        .required_steps()
         .iter()
         .copied()
         .filter(|step| !validated_steps.contains(step))
@@ -2678,10 +2823,9 @@ fn sync_trash_guides_for_release(ctx: &TaskContext) -> Result<()> {
 }
 
 fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
-    sync_trash_guides_for_release(ctx)?;
-
     step("Determining next version");
     let latest_tag = latest_prefixed_tag(ctx, "scryer-v")?;
+    let validation_scope = release_validation_scope(ctx, latest_tag.as_deref())?;
     let current_version = latest_tag
         .as_deref()
         .map(|tag| Version::parse(tag.trim_start_matches("scryer-v")))
@@ -2699,6 +2843,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         latest_tag.as_deref().unwrap_or("none")
     );
     println!("   Next tag   : {tag_name}");
+    println!("   Validation : {}", validation_scope.label());
     if args.dry_run {
         println!("   {YELLOW}(dry run — no commits, tags, or pushes){RESET}");
     }
@@ -2787,6 +2932,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
                 });
                 let expected = ReleaseDryRunExpectations {
                     git_commit: &git_commit,
+                    validation_scope,
                     release_args: &release_args,
                     latest_tag_seen: latest_tag.as_deref(),
                     next_version: &next_version_text,
@@ -2825,51 +2971,88 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
     }
 
     if !reused_dry_run_cache {
-        let refreshed_builtins = refresh_builtin_plugins(ctx, &next_version)?;
-        let validation_result = {
-            step("Running web and Rust validation in parallel");
-            let (web_tx, web_rx) = mpsc::channel();
-            let (rust_tx, rust_rx) = mpsc::channel();
-            let web_ctx = ctx.clone();
-            let rust_ctx = ctx.clone();
+        if validation_scope == ReleaseValidationScope::Full {
+            sync_trash_guides_for_release(ctx)?;
+        }
+        let refreshed_builtins = if validation_scope == ReleaseValidationScope::Full {
+            refresh_builtin_plugins(ctx, &next_version)?
+        } else {
+            reuse_existing_builtin_plugins(ctx)?
+        };
+        let validation_result = match validation_scope {
+            ReleaseValidationScope::Full => {
+                step("Running web and Rust validation in parallel");
+                let (web_tx, web_rx) = mpsc::channel();
+                let (rust_tx, rust_rx) = mpsc::channel();
+                let web_ctx = ctx.clone();
+                let rust_ctx = ctx.clone();
 
-            thread::spawn(move || {
-                let _ = web_tx.send(run_scryer_web_validation(&web_ctx, "[web] "));
-            });
-            thread::spawn(move || {
-                let _ = rust_tx.send(run_scryer_rust_validation(&rust_ctx, "[rust] "));
-            });
+                thread::spawn(move || {
+                    let _ = web_tx.send(run_scryer_web_validation(&web_ctx, "[web] "));
+                });
+                thread::spawn(move || {
+                    let _ = rust_tx.send(run_scryer_rust_validation(&rust_ctx, "[rust] "));
+                });
 
-            let web_result = web_rx
-                .recv()
-                .context("web validation thread ended unexpectedly")?;
-            let rust_result = rust_rx
-                .recv()
-                .context("rust validation thread ended unexpectedly")?;
-            if let Err(error) = &web_result {
-                warn(format!("Web validation failed: {error:#}"));
+                let web_result = web_rx
+                    .recv()
+                    .context("web validation thread ended unexpectedly")?;
+                let rust_result = rust_rx
+                    .recv()
+                    .context("rust validation thread ended unexpectedly")?;
+                if let Err(error) = &web_result {
+                    warn(format!("Web validation failed: {error:#}"));
+                }
+                if let Err(error) = &rust_result {
+                    warn(format!("Rust validation failed: {error:#}"));
+                }
+                web_result?;
+                rust_result?;
+                run_scryer_graphql_api_compat_validation(
+                    ctx,
+                    "[graphql] ",
+                    latest_tag.as_deref(),
+                    &next_version,
+                    args.allow_graphql_dangerous,
+                )?;
+                run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
+                ok("Full release validation passed");
+                Ok::<(BuiltinRefresh, Vec<String>), anyhow::Error>((
+                    refreshed_builtins,
+                    validation_scope
+                        .required_steps()
+                        .iter()
+                        .map(|step| (*step).to_string())
+                        .collect(),
+                ))
             }
-            if let Err(error) = &rust_result {
-                warn(format!("Rust validation failed: {error:#}"));
+            ReleaseValidationScope::WebOnly => {
+                step("Running web-only release validation");
+                run_scryer_web_validation(ctx, "[web] ")?;
+                run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
+                ok("Web-only release validation passed");
+                Ok((
+                    refreshed_builtins,
+                    validation_scope
+                        .required_steps()
+                        .iter()
+                        .map(|step| (*step).to_string())
+                        .collect(),
+                ))
             }
-            web_result?;
-            rust_result?;
-            run_scryer_graphql_api_compat_validation(
-                ctx,
-                "[graphql] ",
-                latest_tag.as_deref(),
-                &next_version,
-                args.allow_graphql_dangerous,
-            )?;
-            run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
-            ok("Parallel validation passed");
-            Ok::<(BuiltinRefresh, Vec<String>), anyhow::Error>((
-                refreshed_builtins,
-                REQUIRED_SCRYER_DRY_RUN_STEPS
-                    .iter()
-                    .map(|step| (*step).to_string())
-                    .collect(),
-            ))
+            ReleaseValidationScope::MetaOnly => {
+                step("Skipping application validation for CI/docs-only release");
+                run_scryer_release_hygiene_validation(ctx, "[hygiene] ")?;
+                ok("CI/docs-only release validation passed");
+                Ok((
+                    refreshed_builtins,
+                    validation_scope
+                        .required_steps()
+                        .iter()
+                        .map(|step| (*step).to_string())
+                        .collect(),
+                ))
+            }
         };
 
         if args.dry_run {
@@ -2999,12 +3182,20 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         ok("Reused dry-run cache for pre-bump validations");
     }
 
-    step("Running cargo check after version bump");
-    let mut cargo_check = ctx.release_command_in("cargo", &ctx.repo_root);
-    cargo_check.arg("check");
-    add_prod_package_args(&mut cargo_check);
-    run_checked(&mut cargo_check)?;
-    ok("cargo check passed");
+    if validation_scope == ReleaseValidationScope::Full {
+        step("Running cargo check after version bump");
+        let mut cargo_check = ctx.release_command_in("cargo", &ctx.repo_root);
+        cargo_check.arg("check");
+        add_prod_package_args(&mut cargo_check);
+        run_checked(&mut cargo_check)?;
+        ok("cargo check passed");
+    } else {
+        step("Validating Cargo metadata after version bump");
+        let mut cargo_metadata = ctx.release_command_in("cargo", &ctx.repo_root);
+        cargo_metadata.args(["metadata", "--locked", "--no-deps", "--format-version", "1"]);
+        run_checked(&mut cargo_metadata)?;
+        ok("Cargo metadata passed");
+    }
 
     step("Committing version bump");
     let mut changed = Vec::new();
@@ -3850,6 +4041,7 @@ mod tests {
     fn sample_release_dry_run_expectations<'a>() -> ReleaseDryRunExpectations<'a> {
         ReleaseDryRunExpectations {
             git_commit: "abc123",
+            validation_scope: ReleaseValidationScope::Full,
             release_args: "bump:patch",
             latest_tag_seen: Some("scryer-v0.13.1"),
             next_version: "0.13.2",
@@ -3857,6 +4049,44 @@ mod tests {
             release_notes_path: "release-notes/scryer-v0.13.2.md",
             release_notes_sha256: "sha256:release-notes",
         }
+    }
+
+    #[test]
+    fn release_validation_scope_is_meta_only_for_ci_and_docs() {
+        let paths = [
+            Path::new(".github/workflows/scryer.yml"),
+            Path::new("README.md"),
+            Path::new("docs/releasing.md"),
+        ];
+        assert_eq!(
+            classify_release_validation_paths(paths),
+            ReleaseValidationScope::MetaOnly
+        );
+    }
+
+    #[test]
+    fn release_validation_scope_is_web_only_for_web_and_ci_paths() {
+        let paths = [
+            Path::new("apps/scryer-web/src/app.tsx"),
+            Path::new("apps/scryer-web/package-lock.json"),
+            Path::new(".github/workflows/scryer.yml"),
+        ];
+        assert_eq!(
+            classify_release_validation_paths(paths),
+            ReleaseValidationScope::WebOnly
+        );
+    }
+
+    #[test]
+    fn release_validation_scope_fails_closed_for_non_web_product_paths() {
+        let paths = [
+            Path::new("apps/scryer-web/src/app.tsx"),
+            Path::new("crates/scryer/src/main.rs"),
+        ];
+        assert_eq!(
+            classify_release_validation_paths(paths),
+            ReleaseValidationScope::Full
+        );
     }
 
     #[test]
@@ -4384,6 +4614,19 @@ mod tests {
                 "dry run did not record required release-blocking validations: graphql_api_compat"
             )
         );
+    }
+
+    #[test]
+    fn release_dry_run_cache_accepts_ci_docs_only_required_steps() {
+        let mut cache = sample_release_dry_run_cache();
+        cache.validated_steps = ReleaseValidationScope::MetaOnly
+            .required_steps()
+            .iter()
+            .map(|step| (*step).to_string())
+            .collect();
+        let mut expectations = sample_release_dry_run_expectations();
+        expectations.validation_scope = ReleaseValidationScope::MetaOnly;
+        assert!(release_dry_run_cache_rejection_reason(&cache, &expectations, true).is_none());
     }
 
     #[test]
