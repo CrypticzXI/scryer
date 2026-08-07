@@ -5,7 +5,7 @@ edition.workspace = true
 
 [features]
 default = ["image-processing"]
-image-processing = ["dep:fast_image_resize", "dep:image", "dep:kamadak-exif", "dep:ravif"]
+image-processing = ["dep:fast_image_resize", "dep:image", "dep:kamadak-exif", "dep:ravif", "dep:zune-core"]
 runtime-backups = ["scryer-application/runtime-backups"]
 
 [dependencies]
@@ -39,6 +39,7 @@ futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 url = "2"
 image = { version = "0.25", default-features = false, features = ["avif", "jpeg", "png", "webp"], optional = true }
+zune-core = { version = "=0.5.1", optional = true }
 fast_image_resize = { version = "6", optional = true }
 kamadak-exif = { version = "0.6", optional = true }
 filetime = "0.2"
