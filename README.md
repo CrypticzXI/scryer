@@ -14,7 +14,6 @@
 
 [![Scryer overview](docs/img/scryer-overview.webp)](https://www.scryer.media/scryer/)
 
-
 <h3 align="center">
     <a href="https://www.scryer.media/scryer/docs/getting-started/">Getting Started Guide</a>
 </h3>
