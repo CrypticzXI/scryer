@@ -380,7 +380,7 @@ fn classify_release_validation_paths<'a>(
 ) -> ReleaseValidationScope {
     let paths = paths.into_iter().collect::<Vec<_>>();
     if paths.is_empty() {
-        return ReleaseValidationScope::Full;
+        return ReleaseValidationScope::MetaOnly;
     }
     if paths.iter().all(|path| release_meta_path(path)) {
         return ReleaseValidationScope::MetaOnly;
@@ -1699,6 +1699,20 @@ fn write_package_version(path: &Path, version: &Version) -> Result<()> {
         .with_context(|| format!("failed to parse {}", path.display()))?;
     document["package"]["version"] = value(version.to_string());
     fs::write(path, document.to_string())?;
+    Ok(())
+}
+
+fn refresh_release_cargo_lockfile(ctx: &TaskContext) -> Result<()> {
+    step("Refreshing Cargo.lock after version bump");
+    let mut generate_lockfile = ctx.release_command_in("cargo", &ctx.repo_root);
+    generate_lockfile.arg("generate-lockfile");
+    run_checked(&mut generate_lockfile)?;
+
+    let mut metadata = ctx.release_command_in("cargo", &ctx.repo_root);
+    metadata.args(["metadata", "--locked", "--format-version", "1"]);
+    metadata.stdout(Stdio::null());
+    run_checked(&mut metadata)?;
+    ok("Cargo.lock refreshed and locked metadata passed");
     Ok(())
 }
 
@@ -3185,6 +3199,7 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         workspace_tomls.len(),
         next_version
     ));
+    refresh_release_cargo_lockfile(ctx)?;
 
     if reused_dry_run_cache {
         ok("Reused dry-run cache for pre-bump validations");
@@ -3197,12 +3212,6 @@ fn run_release(ctx: &TaskContext, args: ReleaseArgs) -> Result<()> {
         add_prod_package_args(&mut cargo_check);
         run_checked(&mut cargo_check)?;
         ok("cargo check passed");
-    } else {
-        step("Validating Cargo metadata after version bump");
-        let mut cargo_metadata = ctx.release_command_in("cargo", &ctx.repo_root);
-        cargo_metadata.args(["metadata", "--locked", "--no-deps", "--format-version", "1"]);
-        run_checked(&mut cargo_metadata)?;
-        ok("Cargo metadata passed");
     }
 
     step("Committing version bump");
@@ -4068,6 +4077,14 @@ mod tests {
         ];
         assert_eq!(
             classify_release_validation_paths(paths),
+            ReleaseValidationScope::MetaOnly
+        );
+    }
+
+    #[test]
+    fn release_validation_scope_is_meta_only_without_product_changes() {
+        assert_eq!(
+            classify_release_validation_paths([]),
             ReleaseValidationScope::MetaOnly
         );
     }
