@@ -1891,6 +1891,14 @@ impl AppUseCase {
         let effective_next_incremental = state
             .next_incremental_reload_eligible_at
             .unwrap_or(next_incremental);
+        let effective_next_incremental = if state.last_success_generation_id.is_none() {
+            state
+                .bootstrap_quiet_until
+                .map(|quiet_until| effective_next_incremental.max(quiet_until))
+                .unwrap_or(effective_next_incremental)
+        } else {
+            effective_next_incremental
+        };
         let effective_next_context = state
             .next_context_snapshot_eligible_at
             .unwrap_or(next_context);
