@@ -50,11 +50,21 @@ if (-not (Test-Path $ManifestRoot)) {
   throw "WinGet manifest root does not exist: $ManifestRoot"
 }
 
+$manifestDirectories = @(
+  Get-ChildItem -Path $ManifestRoot -Recurse -File -Filter "*.yaml" |
+    ForEach-Object { $_.DirectoryName } |
+    Sort-Object -Unique
+)
+if ($manifestDirectories.Count -ne 1) {
+  throw "Expected exactly one directory containing WinGet manifest YAML files below $ManifestRoot; found $($manifestDirectories.Count)."
+}
+$manifestDirectory = $manifestDirectories[0]
+
 & $winget settings --enable LocalManifestFiles
 if ($LASTEXITCODE -ne 0) {
   throw "Unable to enable local manifest files in winget (exit code $LASTEXITCODE)."
 }
-& $winget validate --manifest $ManifestRoot --disable-interactivity
+& $winget validate --manifest $manifestDirectory --disable-interactivity
 if ($LASTEXITCODE -ne 0) {
   throw "Generated winget manifest validation failed with exit code $LASTEXITCODE."
 }
@@ -66,7 +76,7 @@ New-Item -ItemType Directory -Force -Path $desktopProfile | Out-Null
 
 $installed = $false
 try {
-  & $winget install --manifest $ManifestRoot --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+  & $winget install --manifest $manifestDirectory --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
   if ($LASTEXITCODE -ne 0) {
     throw "winget install of the release MSI failed with exit code $LASTEXITCODE."
   }
