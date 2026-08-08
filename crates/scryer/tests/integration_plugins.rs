@@ -174,16 +174,14 @@ async fn seed_official_catalog(
 }
 
 fn bundled_test_indexer_fixture() -> RealPluginFixture {
+    let fixtures_dir = std::env::var_os("SCRYER_TEST_PLUGIN_FIXTURES_DIR")
+        .map(std::path::PathBuf::from)
+        .expect("cargo nextest must generate the test plugin fixture before running this binary");
     RealPluginFixture {
         plugin_id: "test",
         plugin_type: "indexer",
         provider_type: "test",
-        wasm_path: repo_root()
-            .join("crates")
-            .join("scryer-plugins")
-            .join("fixtures")
-            .join("test-indexer")
-            .join("plugin.wasm"),
+        wasm_path: fixtures_dir.join("test-indexer/plugin.wasm"),
         optional_artifact: false,
     }
 }

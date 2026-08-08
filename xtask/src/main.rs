@@ -85,6 +85,7 @@ enum Commands {
     TrashGuides(TrashGuidesArgs),
     Migrations(MigrationsArgs),
     MediaFixtures(media_fixtures::MediaFixturesArgs),
+    BuildTestPluginFixture,
     #[command(name = "oauth")]
     OAuth(OAuthArgs),
     Sdk(SdkArgs),
@@ -312,6 +313,7 @@ fn main() -> Result<()> {
                 media_fixtures::generate(&ctx, &args)
             }
         },
+        Commands::BuildTestPluginFixture => build_test_plugin_fixture(&ctx),
         Commands::OAuth(args) => match args.command {
             OAuthCommand::DevFlow(args) => oauth_dev_flow::run(&ctx, args),
         },
@@ -415,6 +417,77 @@ fn delegate_ci(ctx: &TaskContext, args: &CiArgs) -> Result<()> {
         }
     }
     delegate_to_package(ctx, "xtask-release", &forwarded)
+}
+
+fn build_test_plugin_fixture(ctx: &TaskContext) -> Result<()> {
+    let manifest = ctx.repo_root.join("test-plugins/test-indexer/Cargo.toml");
+    let build_target = ctx.repo_root.join("target/test-plugin-build");
+    let fixtures_dir = ctx.repo_root.join("target/test-plugin-fixtures");
+    let fixture_dir = fixtures_dir.join("test-indexer");
+
+    step("Building test indexer WebAssembly fixture from source");
+    let mut locate_rustc = ctx.command_in("rustup", &ctx.repo_root);
+    locate_rustc.args(["which", "rustc", "--toolchain", "1.97.1"]);
+    let rustc = PathBuf::from(run_capture(&mut locate_rustc)?.trim());
+    let mut build = ctx.command_in("rustup", &ctx.repo_root);
+    build
+        .args([
+            "run",
+            "1.97.1",
+            "cargo",
+            "build",
+            "--locked",
+            "--release",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--manifest-path",
+        ])
+        .arg(&manifest)
+        .arg("--target-dir")
+        .arg(&build_target)
+        .env("RUSTC", rustc)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS");
+    run_checked(&mut build)?;
+
+    let built_wasm = build_target.join("wasm32-unknown-unknown/release/test_indexer.wasm");
+    if !built_wasm.is_file() {
+        bail!(
+            "test indexer build did not produce expected artifact: {}",
+            built_wasm.display()
+        );
+    }
+
+    fs::create_dir_all(&fixture_dir)
+        .with_context(|| format!("failed to create {}", fixture_dir.display()))?;
+    let fixture_wasm = fixture_dir.join("plugin.wasm");
+    fs::copy(&built_wasm, &fixture_wasm).with_context(|| {
+        format!(
+            "failed to copy test indexer fixture from {} to {}",
+            built_wasm.display(),
+            fixture_wasm.display()
+        )
+    })?;
+
+    if let Some(nextest_env) = std::env::var_os("NEXTEST_ENV") {
+        let mut nextest_env = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&nextest_env)
+            .context("failed to open NEXTEST_ENV for the generated fixture path")?;
+        writeln!(
+            nextest_env,
+            "SCRYER_TEST_PLUGIN_FIXTURES_DIR={}",
+            fixtures_dir.display()
+        )
+        .context("failed to export the generated fixture path through NEXTEST_ENV")?;
+    }
+
+    ok(format!(
+        "Generated test plugin fixture at {}",
+        fixture_wasm.display()
+    ));
+    Ok(())
 }
 
 fn delegate_migrations(ctx: &TaskContext, args: &MigrationsArgs) -> Result<()> {

@@ -1,0 +1,9 @@
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+ignoreUntil = 2026-11-08
+reason = "The rsa crate is transitively used only for Sigstore signature verification; Scryer does not perform attacker-observable private-key RSA decryption, which is the operation affected by the timing advisory."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2026-11-08
+reason = "The informational unmaintained-crate advisory is inherited through rav1e. Upstream rav1e has migrated to pastey, but no compatible release containing that migration is available yet."

@@ -1,6 +1,6 @@
 //! The frozen crypto/CRC host ABI, served natively on wasmtime.
 //!
-//! The AES-CBC (aws-lc, stateless per call) and CRC-32 (`crc32fast`, seeded)
+//! The AES-CBC (aws-lc, stateless per call) and CRC-32 (`crc-fast`, seeded)
 //! cores are moved verbatim from the former `archive_crypto_host.rs` — only the
 //! guest-memory plumbing changes. The Extism version addressed guest offsets as
 //! kernel `MemoryHandle`s (the SIGBUS defect); here we slice the guest's
@@ -151,11 +151,14 @@ fn checked_range(ptr: i64, len: usize, mem_len: usize) -> Option<Range<usize>> {
 // ── Cores moved verbatim from archive_crypto_host.rs ──────────
 
 fn crc32(seed: u32, buf: &[u8]) -> u32 {
-    // `new_with_initial` resumes from a finalized IEEE CRC value, which is the
-    // guest ABI contract for streaming archive verification.
-    let mut hasher = crc32fast::Hasher::new_with_initial(seed);
+    // `new_with_init_state` accepts the unfinalized state; invert the finalized
+    // IEEE CRC seed to preserve the guest ABI's streaming verification contract.
+    let mut hasher = crc_fast::Digest::new_with_init_state(
+        crc_fast::CrcAlgorithm::Crc32IsoHdlc,
+        u64::from(seed ^ u32::MAX),
+    );
     hasher.update(buf);
-    hasher.finalize()
+    hasher.finalize() as u32
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -19,11 +19,10 @@ use crate::{
 };
 use aws_lc_rs::digest as aws_lc_digest;
 use regex::Regex;
-use rustls_pemfile::{Item, read_one};
+use rustls_pki_types::{CertificateDer, pem::PemObject};
 use scryer_domain::RootFolderEntry;
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{HashMap, HashSet};
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use tracing::{info, warn};

@@ -1,3 +1,13 @@
+experimental = ["setup-scripts"]
+
+[scripts.setup.build-test-plugin-fixture]
+command = ["cargo", "xtask", "build-test-plugin-fixture"]
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[[profile.default.scripts]]
+filter = '(package(scryer-plugins) & binary(wasm_integration)) | (package(scryer) & binary(integration_plugins))'
+setup = "build-test-plugin-fixture"
+
 [test-groups.wasm-integration]
 max-threads = 2
 

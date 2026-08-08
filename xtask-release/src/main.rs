@@ -3484,6 +3484,8 @@ fn run_scryer_rust_validation(ctx: &TaskContext, prefix: &'static str) -> Result
             run_streaming(&mut install, prefix)?;
         }
         let ignores = [
+            // Sigstore reaches rsa for public-key verification only. Scryer does not
+            // perform the private-key RSA decryption affected by this timing advisory.
             "RUSTSEC-2023-0071",
             "RUSTSEC-2026-0006",
             "RUSTSEC-2026-0020",

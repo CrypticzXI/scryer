@@ -119,35 +119,36 @@ fn split_pem_certificate_blocks(bundle_pem: &str) -> AppResult<Vec<String>> {
     Ok(blocks)
 }
 fn parse_pem_certificate_der(block_pem: &str) -> AppResult<Vec<u8>> {
-    let mut cursor = Cursor::new(block_pem.as_bytes());
-    match read_one(&mut cursor).map_err(|error| {
-        AppError::Validation(format!(
-            "failed to parse trusted certificate PEM block: {error}"
-        ))
-    })? {
-        Some(Item::X509Certificate(cert)) => {
-            if read_one(&mut cursor)
-                .map_err(|error| {
-                    AppError::Validation(format!(
-                        "failed to parse trailing PEM content for trusted certificate: {error}"
-                    ))
-                })?
-                .is_some()
-            {
-                return Err(AppError::Validation(
-                    "each trusted certificate entry must contain exactly one X.509 certificate"
-                        .to_string(),
-                ));
-            }
-            Ok(cert.as_ref().to_vec())
-        }
-        Some(_) => Err(AppError::Validation(
-            "trusted certificate bundle may only contain X.509 certificates".to_string(),
-        )),
-        None => Err(AppError::Validation(
+    let mut certificates = CertificateDer::pem_slice_iter(block_pem.as_bytes());
+    let certificate = certificates
+        .next()
+        .ok_or_else(|| {
+            AppError::Validation(
             "trusted certificate bundle did not contain a readable X.509 certificate".to_string(),
-        )),
+            )
+        })?
+        .map_err(|error| {
+            AppError::Validation(format!(
+                "failed to parse trusted certificate PEM block: {error}"
+            ))
+        })?;
+
+    if certificates
+        .next()
+        .transpose()
+        .map_err(|error| {
+            AppError::Validation(format!(
+                "failed to parse trailing PEM content for trusted certificate: {error}"
+            ))
+        })?
+        .is_some()
+    {
+        return Err(AppError::Validation(
+            "each trusted certificate entry must contain exactly one X.509 certificate".to_string(),
+        ));
     }
+
+    Ok(certificate.as_ref().to_vec())
 }
 fn normalize_plugin_http_ca_bundle_pem(bundle_pem: &str) -> AppResult<String> {
     let blocks = split_pem_certificate_blocks(bundle_pem)?;
@@ -772,6 +773,42 @@ mod tests {
     fn validate_auto_backup_key_update_accepts_existing_key_without_replacement() {
         validate_auto_backup_key_update(true, true, None, false)
             .expect("existing saved key should allow enabling");
+    }
+
+    #[test]
+    fn parse_pem_certificate_der_accepts_one_certificate() {
+        let certificate = parse_pem_certificate_der(TEST_PLUGIN_HTTP_CA_CERT_PEM)
+            .expect("valid certificate PEM should parse");
+
+        assert!(!certificate.is_empty());
+    }
+
+    #[test]
+    fn parse_pem_certificate_der_rejects_malformed_base64() {
+        let error = parse_pem_certificate_der(
+            "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n",
+        )
+        .expect_err("malformed certificate PEM should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to parse trusted certificate PEM block"),
+        );
+    }
+
+    #[test]
+    fn parse_pem_certificate_der_rejects_multiple_certificates() {
+        let error = parse_pem_certificate_der(&format!(
+            "{TEST_PLUGIN_HTTP_CA_CERT_PEM}\n{TEST_PLUGIN_HTTP_CA_CERT_PEM}"
+        ))
+        .expect_err("multiple certificate PEM blocks should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("must contain exactly one X.509 certificate"),
+        );
     }
 
     #[test]

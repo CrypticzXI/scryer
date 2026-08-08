@@ -1,6 +1,5 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
@@ -23,7 +22,9 @@ fn initialize_wasm_runtime_for_tests() {
 
 fn fixtures_dir() -> std::path::PathBuf {
     initialize_wasm_runtime_for_tests();
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
+    std::env::var_os("SCRYER_TEST_PLUGIN_FIXTURES_DIR")
+        .map(std::path::PathBuf::from)
+        .expect("cargo nextest must generate the test plugin fixture before running this binary")
 }
 
 fn test_config(provider_type: &str) -> IndexerConfig {

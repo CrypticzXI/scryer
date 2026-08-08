@@ -145,7 +145,7 @@ opt-level = 3
 [profile.release-lean.package.brotli-decompressor]
 opt-level = 3
 
-[profile.release-lean.package.crc32fast]
+[profile.release-lean.package.crc-fast]
 opt-level = 3
 
 [profile.release-lean.package.fast_image_resize]
@@ -236,7 +236,7 @@ opt-level = 3
 [profile.rc.package.brotli-decompressor]
 opt-level = 3
 
-[profile.rc.package.crc32fast]
+[profile.rc.package.crc-fast]
 opt-level = 3
 
 [profile.rc.package.fast_image_resize]

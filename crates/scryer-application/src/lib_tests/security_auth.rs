@@ -6,6 +6,7 @@ fn hash_and_validate_password_round_trip() {
     let hashed = app
         .hash_password("P@ssw0rd")
         .expect("hash should be generated");
+    assert!(app.validate_password_hash(&hashed).is_ok());
     assert!(
         app.validate_password("P@ssw0rd", &hashed)
             .expect("hash should be valid")
@@ -30,6 +31,7 @@ fn v1_password_still_validates() {
     let salt = "abcdef0123456789abcdef0123456789";
     let digest = sha256_hex(format!("{salt}legacy-pass"));
     let v1_hash = format!("v1${salt}${digest}");
+    assert!(app.validate_password_hash(&v1_hash).is_ok());
     assert!(
         app.validate_password("legacy-pass", &v1_hash)
             .expect("v1 should validate")
@@ -427,6 +429,7 @@ fn validate_password_v1_malformed_no_salt_separator() {
     let (app, _) = bootstrap();
     // Only "v1" prefix, no $ after it
     let bad_hash = "v1nope";
+    assert!(app.validate_password_hash(bad_hash).is_err());
     let result = app.validate_password("anything", bad_hash);
     assert!(
         result.is_err(),
@@ -439,6 +442,7 @@ fn validate_password_v1_malformed_no_hash_component() {
     let (app, _) = bootstrap();
     // Has v1$salt but no third segment
     let bad_hash = "v1$somesalt";
+    assert!(app.validate_password_hash(bad_hash).is_err());
     let result = app.validate_password("anything", bad_hash);
     assert!(
         result.is_err(),
@@ -449,6 +453,7 @@ fn validate_password_v1_malformed_no_hash_component() {
 #[test]
 fn validate_password_unknown_version_returns_error() {
     let (app, _) = bootstrap();
+    assert!(app.validate_password_hash("v99$somehash").is_err());
     let result = app.validate_password("pass", "v99$somehash");
     assert!(result.is_err(), "unknown hash version should return Err");
 }

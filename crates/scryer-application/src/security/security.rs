@@ -297,6 +297,8 @@ impl AppUseCase {
     }
 
     pub(crate) fn validate_password(&self, password: &str, password_hash: &str) -> AppResult<bool> {
+        self.validate_password_hash(password_hash)?;
+
         if let Some(phc_string) = password_hash.strip_prefix("v2$") {
             let parsed = PasswordHash::new(phc_string)
                 .map_err(|err| AppError::Validation(format!("invalid v2 password hash: {err}")))?;
@@ -305,6 +307,28 @@ impl AppUseCase {
                 .is_ok())
         } else if password_hash.starts_with("v1$") {
             self.validate_password_v1(password, password_hash)
+        } else {
+            Err(AppError::Validation(
+                "unsupported password hash version".into(),
+            ))
+        }
+    }
+
+    pub(crate) fn validate_password_hash(&self, password_hash: &str) -> AppResult<()> {
+        if let Some(phc_string) = password_hash.strip_prefix("v2$") {
+            PasswordHash::new(phc_string)
+                .map(|_| ())
+                .map_err(|err| AppError::Validation(format!("invalid v2 password hash: {err}")))
+        } else if password_hash.starts_with("v1$") {
+            let mut parts = password_hash.splitn(3, '$');
+            let _ = parts.next(); // "v1"
+            parts.next().ok_or_else(|| {
+                AppError::Validation("invalid password hash: missing salt".into())
+            })?;
+            parts.next().ok_or_else(|| {
+                AppError::Validation("invalid password hash: missing hash".into())
+            })?;
+            Ok(())
         } else {
             Err(AppError::Validation(
                 "unsupported password hash version".into(),

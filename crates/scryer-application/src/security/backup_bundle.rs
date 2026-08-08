@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use aws_lc_rs::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
-use aws_lc_rs::rand::{SecureRandom, SystemRandom};
+use aws_lc_rs::rand::{SystemRandom, generate};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
@@ -71,18 +71,20 @@ struct BackupEncryptionMetadataV1 {
 impl BackupEncryptionMetadataV1 {
     fn generate() -> AppResult<Self> {
         let rng = SystemRandom::new();
-        let mut salt = [0_u8; BACKUP_ENCRYPTION_SALT_LEN];
-        let mut nonce_prefix = [0_u8; BACKUP_ENCRYPTION_NONCE_PREFIX_LEN];
-        rng.fill(&mut salt).map_err(|error| {
-            AppError::Repository(format!(
-                "failed to generate backup encryption salt: {error}"
-            ))
-        })?;
-        rng.fill(&mut nonce_prefix).map_err(|error| {
-            AppError::Repository(format!(
-                "failed to generate backup encryption nonce prefix: {error}"
-            ))
-        })?;
+        let salt = generate::<[u8; BACKUP_ENCRYPTION_SALT_LEN]>(&rng)
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to generate backup encryption salt: {error}"
+                ))
+            })?
+            .expose();
+        let nonce_prefix = generate::<[u8; BACKUP_ENCRYPTION_NONCE_PREFIX_LEN]>(&rng)
+            .map_err(|error| {
+                AppError::Repository(format!(
+                    "failed to generate backup encryption nonce prefix: {error}"
+                ))
+            })?
+            .expose();
         Ok(Self { salt, nonce_prefix })
     }
 

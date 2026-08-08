@@ -349,7 +349,7 @@ impl AppUseCase {
             if !user.account_kind.allows_local_credentials() {
                 continue;
             }
-            if self.validate_password("", password_hash).is_err() {
+            if self.validate_password_hash(password_hash).is_err() {
                 continue;
             }
 
@@ -860,7 +860,7 @@ impl AppUseCase {
                 && user
                     .password_hash
                     .as_deref()
-                    .is_some_and(|hash| self.validate_password("", hash).is_ok())
+                    .is_some_and(|hash| self.validate_password_hash(hash).is_ok())
                 && user.authorization.app.contains(full_admin_permissions);
             if target_is_usable_full_admin
                 && !self

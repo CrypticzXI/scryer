@@ -5403,6 +5403,30 @@ async fn usable_admin_login_rejects_passwordless_default_admin_only() {
 }
 
 #[tokio::test]
+async fn usable_admin_login_rejects_malformed_password_hash() {
+    let users = Arc::new(MockUserRepo::default());
+    let (app, _) = bootstrap_with_user_repo(users.clone());
+    let mut owner = User::new_admin("owner");
+    owner.password_hash = Some("v2$not-a-phc-hash".to_string());
+    let owner = users.create(owner).await.expect("seed owner");
+    app.services
+        .catalog
+        .libraries
+        .set_app_permission_mask_for_user(
+            &owner.id,
+            scryer_domain::UserAuthorization::full_admin().app,
+        )
+        .await
+        .expect("grant full admin permissions");
+
+    assert!(
+        !app.usable_admin_login_exists()
+            .await
+            .expect("check usable admin login")
+    );
+}
+
+#[tokio::test]
 async fn recover_reserved_admin_access_creates_recovery_admin() {
     let (app, _) = bootstrap();
     app.services
