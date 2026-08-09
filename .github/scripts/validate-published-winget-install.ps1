@@ -42,6 +42,41 @@ function Assert-PublishedMsiInstallation {
   }
 }
 
+function Get-PublishedMsiProductCode {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ManifestDirectory
+  )
+
+  $installerManifest = Join-Path $ManifestDirectory "$packageId.installer.yaml"
+  if (-not (Test-Path $installerManifest)) {
+    throw "Published WinGet installer manifest was not found at $installerManifest."
+  }
+
+  $x64Installer = $false
+  foreach ($line in Get-Content -LiteralPath $installerManifest) {
+    if ($line -match '^\s*-\s*Architecture:\s*(?<architecture>\S+)\s*$') {
+      $x64Installer = $Matches.architecture -eq "x64"
+      continue
+    }
+    if ($x64Installer -and $line -match '^\s*ProductCode:\s*''(?<productCode>\{[0-9A-Fa-f-]+\})''\s*$') {
+      return $Matches.productCode
+    }
+  }
+
+  throw "Published WinGet installer manifest did not declare an x64 MSI ProductCode."
+}
+
+function Assert-PublishedMsiRemoval {
+  $installDir = Join-Path (Get-ProgramFiles64) "Scryer Media\Scryer"
+  if (Test-Path $installDir) {
+    throw "MSI cleanup left the Scryer install directory at $installDir."
+  }
+  if (Get-CimInstance Win32_Service | Where-Object { $_.PathName -match [regex]::Escape($installDir) }) {
+    throw "MSI cleanup left a Scryer Windows service registered."
+  }
+}
+
 $winget = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
 if (-not $winget) {
   throw "winget.exe was not found; published MSI install validation is required."
@@ -76,6 +111,7 @@ $desktopProfile = Join-Path $env:LOCALAPPDATA "ScryerMedia\Scryer"
 $profileMarker = Join-Path $desktopProfile "preserve-on-uninstall.txt"
 New-Item -ItemType Directory -Force -Path $desktopProfile | Out-Null
 "preserve me" | Set-Content $profileMarker
+$msiProductCode = Get-PublishedMsiProductCode -ManifestDirectory $manifestDirectory
 
 $installed = $false
 try {
@@ -87,10 +123,11 @@ try {
   Assert-PublishedMsiInstallation
 } finally {
   if ($installed) {
-    & $winget uninstall --id $packageId --exact --silent --accept-source-agreements --disable-interactivity
-    if ($LASTEXITCODE -ne 0) {
-      throw "winget cleanup failed with exit code $LASTEXITCODE."
+    $uninstall = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList @("/x", $msiProductCode, "/qn", "/norestart") -Wait -PassThru
+    if ($uninstall.ExitCode -notin @(0, 3010)) {
+      throw "MSI cleanup failed with exit code $($uninstall.ExitCode)."
     }
+    Assert-PublishedMsiRemoval
     if (-not (Test-Path $profileMarker)) {
       throw "MSI uninstall removed Scryer desktop user data at $profileMarker."
     }

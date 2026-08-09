@@ -130,7 +130,7 @@ const GRAPHQL_SCHEMA_EXPORT_DIR: &str = "target/xtask-release/graphql";
 const WINGET_PACKAGE_IDENTIFIER: &str = "ScryerMedia.Scryer";
 const WINGET_PACKAGE_NAME: &str = "Scryer";
 const WINGET_MONIKER: &str = "scryer";
-const WINGET_MANIFEST_VERSION: &str = "1.12.0";
+const WINGET_MANIFEST_VERSION: &str = "1.10.0";
 const WINGET_WINDOWS_X64_ASSET: &str = "scryer-windows-x86_64.msi";
 const WINGET_WINDOWS_ARM64_ASSET: &str = "scryer-windows-arm64.msi";
 const WINGET_WINDOWS_X64_METADATA: &str = "scryer-windows-x86_64.msi.json";
@@ -4300,6 +4300,8 @@ mod tests {
 
         assert!(manifest.contains("PackageIdentifier: ScryerMedia.Scryer"));
         assert!(manifest.contains("PackageVersion: 0.16.5"));
+        assert!(manifest.contains("winget-manifest.installer.1.10.0.schema.json"));
+        assert!(manifest.contains("ManifestVersion: 1.10.0"));
         assert!(manifest.contains("InstallerType: msi"));
         assert!(manifest.contains("UpgradeBehavior: uninstallPrevious"));
         assert!(manifest.contains("ProductCode: '{12345678-1234-1234-1234-1234567890AB}'"));
@@ -4330,6 +4332,8 @@ mod tests {
         let manifest = winget_locale_manifest(&version);
 
         assert!(manifest.contains("PackageIdentifier: ScryerMedia.Scryer"));
+        assert!(manifest.contains("winget-manifest.defaultLocale.1.10.0.schema.json"));
+        assert!(manifest.contains("ManifestVersion: 1.10.0"));
         assert!(manifest.contains("Publisher: Scryer Media"));
         assert!(manifest.contains("PackageName: Scryer"));
         assert!(manifest.contains("License: GPL-3.0"));
@@ -4362,6 +4366,11 @@ mod tests {
                 .is_file()
         );
         assert!(manifest_dir.join("ScryerMedia.Scryer.yaml").is_file());
+        assert!(
+            fs::read_to_string(manifest_dir.join("ScryerMedia.Scryer.yaml"))
+                .unwrap()
+                .contains("winget-manifest.version.1.10.0.schema.json")
+        );
         assert!(
             manifest_dir
                 .join("ScryerMedia.Scryer.locale.en-US.yaml")
