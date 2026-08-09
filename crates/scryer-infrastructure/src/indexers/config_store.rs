@@ -19,17 +19,18 @@ const INDEXER_COLUMNS: &str =
     "id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
     rate_limit_burst, disabled_until, is_enabled, enable_interactive_search, enable_auto_search,
     indexer_proxy_config_id, managed_parent_config_id, managed_child_key, managed_metadata_json,
-    caps_snapshot_json, last_health_status, last_error_at, config_json, created_at, updated_at";
+    caps_snapshot_json, last_health_status, last_error_message, last_error_at, config_json,
+    created_at, updated_at";
 
 const INDEXER_INSERT_SQL: &str = "INSERT INTO indexers (
     id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
     rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
     enable_auto_search, indexer_proxy_config_id, managed_parent_config_id, managed_child_key,
-    managed_metadata_json, caps_snapshot_json, last_health_status,
+    managed_metadata_json, caps_snapshot_json, last_health_status, last_error_message,
     last_error_at, config_json, created_at, updated_at
 ) VALUES (
     {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 )";
 
 #[derive(Clone)]
@@ -232,6 +233,31 @@ impl IndexerConfigRepository for IndexerConfigStore {
         .await
     }
 
+    async fn record_last_error(&self, id: &str, message: Option<String>) -> AppResult<()> {
+        let id = id.to_string();
+        SqlRuntime::run_in_transaction(&self.datastore, "record_indexer_last_error", move |tx| {
+            let id = id.clone();
+            let message = message.clone();
+            Box::pin(async move {
+                let now = Utc::now();
+                SqlRuntime::execute(
+                    SqlExec::Tx(tx),
+                    "UPDATE indexers
+                     SET last_error_at = {}, last_error_message = {}
+                     WHERE id = {}",
+                    &[
+                        SqlArg::Timestamp(now),
+                        SqlArg::OptText(message),
+                        SqlArg::Text(id),
+                    ],
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
     async fn clear_last_error(&self, id: &str) -> AppResult<()> {
         let id = id.to_string();
         SqlRuntime::run_in_transaction(&self.datastore, "clear_indexer_last_error", move |tx| {
@@ -240,7 +266,7 @@ impl IndexerConfigRepository for IndexerConfigStore {
                 SqlRuntime::execute(
                     SqlExec::Tx(tx),
                     "UPDATE indexers
-                     SET last_error_at = NULL, last_health_status = NULL
+                     SET last_error_at = NULL, last_error_message = NULL, last_health_status = NULL
                      WHERE id = {}",
                     &[SqlArg::Text(id)],
                 )
@@ -465,6 +491,7 @@ fn indexer_insert_args(
         SqlArg::OptText(config.managed_metadata_json.clone()),
         SqlArg::OptText(config.caps_snapshot_json.clone()),
         SqlArg::OptText(config.last_health_status.clone()),
+        SqlArg::OptText(config.last_error_message.clone()),
         SqlArg::OptTimestamp(config.last_error_at),
         SqlArg::OptText(stored_config_json),
         SqlArg::Timestamp(config.created_at),
@@ -524,6 +551,7 @@ fn row_to_indexer_config(
         managed_metadata_json: row.opt_text("managed_metadata_json")?,
         caps_snapshot_json: row.opt_text("caps_snapshot_json")?,
         last_health_status: row.opt_text("last_health_status")?,
+        last_error_message: row.opt_text("last_error_message")?,
         last_error_at: row.opt_timestamp("last_error_at")?,
         config_json: decrypt_optional_value(
             encryption_key,
@@ -580,6 +608,7 @@ mod tests {
                 managed_metadata_json TEXT,
                 caps_snapshot_json TEXT,
                 last_health_status TEXT,
+                last_error_message TEXT,
                 last_error_at TEXT,
                 config_json TEXT,
                 created_at TEXT NOT NULL,
@@ -607,7 +636,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn touch_last_error_sets_last_error_at_without_changing_updated_at() {
+    async fn record_last_error_persists_message_without_changing_updated_at() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -658,9 +687,12 @@ mod tests {
         );
 
         store
-            .touch_last_error("idx-error")
+            .record_last_error(
+                "idx-error",
+                Some("HTTP 429: Indexer query limit reached; retry after 321s".to_string()),
+            )
             .await
-            .expect("touch should succeed");
+            .expect("record should succeed");
 
         let config = store
             .get_by_id("idx-error")
@@ -668,6 +700,10 @@ mod tests {
             .expect("query should succeed")
             .expect("config should exist");
         assert!(config.last_error_at.is_some());
+        assert_eq!(
+            config.last_error_message.as_deref(),
+            Some("HTTP 429: Indexer query limit reached; retry after 321s")
+        );
         assert_eq!(config.updated_at, updated_at);
     }
 
@@ -693,9 +729,9 @@ mod tests {
             "INSERT INTO indexers (
                 id, name, provider_type, base_url, api_key_encrypted, rate_limit_seconds,
                 rate_limit_burst, disabled_until, is_enabled, enable_interactive_search,
-                enable_auto_search, last_health_status, last_error_at, config_json, created_at,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                enable_auto_search, last_health_status, last_error_message, last_error_at,
+                config_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind("idx-recovered")
         .bind("Recovered Indexer")
@@ -709,6 +745,7 @@ mod tests {
         .bind(1_i64)
         .bind(1_i64)
         .bind(Some("Last search failed"))
+        .bind(Some("HTTP 429: query limit reached"))
         .bind(Some(error_at.to_rfc3339()))
         .bind(None::<String>)
         .bind(created_at.to_rfc3339())
@@ -736,6 +773,7 @@ mod tests {
             .expect("query should succeed")
             .expect("config should exist");
         assert!(config.last_error_at.is_none());
+        assert!(config.last_error_message.is_none());
         assert!(config.last_health_status.is_none());
         assert_eq!(config.updated_at, updated_at);
     }

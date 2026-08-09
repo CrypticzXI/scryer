@@ -12,6 +12,9 @@ struct PreparedManagedIndexerChild {
     caps_snapshot_json: Option<String>,
     routing_by_scope: HashMap<String, Vec<String>>,
 }
+
+const PROWLARR_MANAGED_CHILD_RATE_LIMIT_SECONDS: i64 = 2;
+
 fn merge_managed_caps_snapshot(existing: Option<&str>, desired: Option<&str>) -> Option<String> {
     let desired = desired?.trim();
     if desired.is_empty() {
@@ -479,6 +482,7 @@ impl AppUseCase {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(normalized_config_json),
             created_at: Utc::now(),
@@ -663,6 +667,7 @@ impl AppUseCase {
                 .unwrap_or_else(|| existing.managed_metadata_json.clone()),
             caps_snapshot_json: existing.caps_snapshot_json.clone(),
             last_health_status: existing.last_health_status.clone(),
+            last_error_message: existing.last_error_message.clone(),
             last_error_at: existing.last_error_at,
             config_json: normalized_config_json
                 .clone()
@@ -986,6 +991,10 @@ impl AppUseCase {
             parent_config_id: parent.id.clone(),
             ..Default::default()
         };
+        let managed_rate_limit_seconds = parent
+            .provider_type
+            .eq_ignore_ascii_case("prowlarr")
+            .then_some(PROWLARR_MANAGED_CHILD_RATE_LIMIT_SECONDS);
 
         for desired in desired_children {
             if let Some(existing) = existing_by_key.remove(&desired.child_key) {
@@ -1003,7 +1012,11 @@ impl AppUseCase {
                             name: Some(desired.name.clone()),
                             provider_type: Some(desired.provider_type.clone()),
                             derived_base_url: Some(desired.base_url.clone()),
-                            rate_limit_seconds: None,
+                            rate_limit_seconds: if existing.rate_limit_seconds.is_none() {
+                                managed_rate_limit_seconds
+                            } else {
+                                None
+                            },
                             rate_limit_burst: None,
                             is_enabled: Some(desired.is_enabled),
                             enable_interactive_search: Some(desired.enable_interactive_search),
@@ -1038,7 +1051,7 @@ impl AppUseCase {
                             provider_type: desired.provider_type.clone(),
                             base_url: desired.base_url.clone(),
                             api_key_encrypted: None,
-                            rate_limit_seconds: None,
+                            rate_limit_seconds: managed_rate_limit_seconds,
                             rate_limit_burst: None,
                             disabled_until: None,
                             is_enabled: desired.is_enabled,
@@ -1050,6 +1063,7 @@ impl AppUseCase {
                             managed_metadata_json: desired.managed_metadata_json.clone(),
                             caps_snapshot_json: desired.caps_snapshot_json.clone(),
                             last_health_status: None,
+                            last_error_message: None,
                             last_error_at: None,
                             config_json: Some(desired.config_json.clone()),
                             created_at: Utc::now(),

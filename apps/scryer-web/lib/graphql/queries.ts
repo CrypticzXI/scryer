@@ -1934,6 +1934,7 @@ export const indexersQuery = `query Indexers($providerType: String) {
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
+    lastErrorMessage
     lastErrorAt
     lastQueryAt
     config {${PROVIDER_CONFIG_VALUE_FIELDS}
@@ -2094,6 +2095,7 @@ const indexerFieldSelection = `
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
+    lastErrorMessage
     lastErrorAt
     lastQueryAt
     config {${PROVIDER_CONFIG_VALUE_FIELDS}

@@ -52,6 +52,7 @@ fn new_nzbgeek_client(uri: &str) -> Arc<dyn IndexerClient> {
         rate_limit_burst: None,
         disabled_until: None,
         last_health_status: None,
+        last_error_message: None,
         last_error_at: None,
         config_json: Some(
             serde_json::json!({
@@ -570,6 +571,7 @@ async fn nzbgeek_search_no_api_key_fails() {
         rate_limit_burst: None,
         disabled_until: None,
         last_health_status: None,
+        last_error_message: None,
         last_error_at: None,
         config_json: Some(
             serde_json::json!({

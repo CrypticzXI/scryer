@@ -127,6 +127,7 @@ impl AppUseCase {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(normalized_config_json),
             created_at: now,
@@ -279,6 +280,7 @@ impl AppUseCase {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(normalized_config_json),
             created_at: now,
@@ -1493,6 +1495,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(
                 r#"{"base_url":"https://api.nzbgeek.info/","api_key":"good-key"}"#.to_string(),
@@ -1582,6 +1585,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(
                 r#"{"base_url":"https://api.nzbgeek.info/","api_key":"good-key"}"#.to_string(),
@@ -1658,6 +1662,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: Some("Last search failed".to_string()),
+            last_error_message: Some("Last search failed".to_string()),
             last_error_at: Some(Utc::now()),
             config_json: Some(
                 r#"{"base_url":"https://api.nzbgeek.info/","api_key":"good-key"}"#.to_string(),
@@ -1733,6 +1738,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(
                 r#"{"base_url":"https://api.nzbgeek.info","api_key":"good-key"}"#.to_string(),
@@ -1797,6 +1803,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(
                 r#"{"base_url":"https://api.nzbgeek.info","api_key":"good-key"}"#.to_string(),
@@ -1907,6 +1914,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
             created_at: Utc::now(),
@@ -2453,6 +2461,7 @@ mod tests {
                 managed_metadata_json: None,
                 caps_snapshot_json: None,
                 last_health_status: None,
+                last_error_message: None,
                 last_error_at: None,
                 config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 created_at: now,
@@ -2479,6 +2488,7 @@ mod tests {
                 managed_metadata_json: None,
                 caps_snapshot_json: None,
                 last_health_status: None,
+                last_error_message: None,
                 last_error_at: None,
                 config_json: Some(r#"{"feed_url":"https://child.example/rss"}"#.to_string()),
                 created_at: now,
@@ -2537,6 +2547,7 @@ mod tests {
                 managed_metadata_json: None,
                 caps_snapshot_json: None,
                 last_health_status: None,
+                last_error_message: None,
                 last_error_at: None,
                 config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 created_at: now,
@@ -2563,6 +2574,7 @@ mod tests {
                 managed_metadata_json: None,
                 caps_snapshot_json: None,
                 last_health_status: None,
+                last_error_message: None,
                 last_error_at: None,
                 config_json: Some(r#"{"feed_url":"https://child.example/rss"}"#.to_string()),
                 created_at: now,
@@ -2636,6 +2648,7 @@ mod tests {
                 managed_metadata_json: None,
                 caps_snapshot_json: None,
                 last_health_status: None,
+                last_error_message: None,
                 last_error_at: None,
                 config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 created_at: now,
@@ -2695,6 +2708,7 @@ mod tests {
                 managed_metadata_json: None,
                 caps_snapshot_json: None,
                 last_health_status: None,
+                last_error_message: None,
                 last_error_at: None,
                 config_json: Some(
                     r#"{"base_url":"http://prowlarr.local","api_key":"secret"}"#.to_string(),
@@ -2723,6 +2737,7 @@ mod tests {
                 managed_metadata_json: None,
                 caps_snapshot_json: None,
                 last_health_status: None,
+                last_error_message: None,
                 last_error_at: None,
                 config_json: Some(
                     r#"{"base_url":"http://prowlarr.disabled","api_key":"secret"}"#.to_string(),
@@ -2779,6 +2794,7 @@ mod tests {
                 managed_metadata_json: None,
                 caps_snapshot_json: None,
                 last_health_status: None,
+                last_error_message: None,
                 last_error_at: None,
                 config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 created_at: now,
@@ -2805,6 +2821,7 @@ mod tests {
                 managed_metadata_json: None,
                 caps_snapshot_json: None,
                 last_health_status: None,
+                last_error_message: None,
                 last_error_at: None,
                 config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 created_at: now,
@@ -2862,6 +2879,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
             created_at: now,
@@ -2936,6 +2954,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some("{}".to_string()),
             created_at: now,
@@ -2970,6 +2989,7 @@ mod tests {
             ),
             caps_snapshot_json: Some(r#"{"search":{"available":true}}"#.to_string()),
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(r#"{"feed_url":"https://old.example/rss"}"#.to_string()),
             created_at: now,
@@ -2993,6 +3013,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(r#"{"feed_url":"https://delete.example/rss"}"#.to_string()),
             created_at: now,
@@ -3171,6 +3192,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prowlarr_sync_backfills_only_missing_child_pacing() {
+        let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
+        let now = Utc::now();
+        let parent = IndexerConfig {
+            id: "prowlarr-parent".to_string(),
+            name: "Prowlarr".to_string(),
+            provider_type: "prowlarr".to_string(),
+            base_url: "https://prowlarr.example".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: false,
+            enable_auto_search: false,
+            indexer_proxy_config_id: None,
+            managed_parent_config_id: None,
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_message: None,
+            last_error_at: None,
+            config_json: Some(r#"{"base_url":"https://prowlarr.example"}"#.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        indexer_repo.create(parent.clone()).await.unwrap();
+
+        let existing_template = IndexerConfig {
+            id: String::new(),
+            name: String::new(),
+            provider_type: "prowlarr".to_string(),
+            base_url: "https://child.example".to_string(),
+            api_key_encrypted: None,
+            rate_limit_seconds: None,
+            rate_limit_burst: None,
+            disabled_until: None,
+            is_enabled: true,
+            enable_interactive_search: true,
+            enable_auto_search: true,
+            indexer_proxy_config_id: None,
+            managed_parent_config_id: Some(parent.id.clone()),
+            managed_child_key: None,
+            managed_metadata_json: None,
+            caps_snapshot_json: None,
+            last_health_status: None,
+            last_error_message: None,
+            last_error_at: None,
+            config_json: Some(r#"{"base_url":"https://child.example"}"#.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        for (child_key, rate_limit_seconds) in
+            [("missing", None), ("zero", Some(0)), ("custom", Some(7))]
+        {
+            let mut child = existing_template.clone();
+            child.id = format!("child-{child_key}");
+            child.name = child_key.to_string();
+            child.managed_child_key = Some(child_key.to_string());
+            child.rate_limit_seconds = rate_limit_seconds;
+            indexer_repo.create(child).await.unwrap();
+        }
+
+        let children = ["missing", "zero", "custom", "new"]
+            .into_iter()
+            .map(|child_key| crate::ManagedIndexerChildPlan {
+                child_key: child_key.to_string(),
+                name: child_key.to_string(),
+                provider_type: "prowlarr".to_string(),
+                config_json: format!(r#"{{"base_url":"https://{child_key}.example"}}"#),
+                is_enabled: true,
+                enable_interactive_search: true,
+                enable_auto_search: true,
+                managed_metadata_json: None,
+                caps_snapshot_json: None,
+                routing_scopes: Vec::new(),
+            })
+            .collect();
+        let provider = Arc::new(RecordingPluginProvider::with_sync_plan_for_provider(
+            "prowlarr",
+            crate::IndexerSyncPlan { children },
+        ));
+        let app = test_app(
+            indexer_repo.clone(),
+            Some(provider),
+            Arc::new(RecordingSettingsRepository::default()),
+        );
+
+        app.sync_indexer_config(&test_admin(), &parent.id)
+            .await
+            .unwrap();
+
+        let configs = indexer_repo.list(None).await.unwrap();
+        let child_rate = |child_key: &str| {
+            configs
+                .iter()
+                .find(|config| config.managed_child_key.as_deref() == Some(child_key))
+                .expect("managed child should exist")
+                .rate_limit_seconds
+        };
+        assert_eq!(child_rate("missing"), Some(2));
+        assert_eq!(child_rate("zero"), Some(0));
+        assert_eq!(child_rate("custom"), Some(7));
+        assert_eq!(child_rate("new"), Some(2));
+    }
+
+    #[tokio::test]
     async fn sync_indexer_config_publishes_indexers_changed() {
         let indexer_repo = Arc::new(RecordingIndexerConfigRepo::new());
         let now = Utc::now();
@@ -3193,6 +3322,7 @@ mod tests {
                 managed_metadata_json: None,
                 caps_snapshot_json: None,
                 last_health_status: None,
+                last_error_message: None,
                 last_error_at: None,
                 config_json: Some("{}".to_string()),
                 created_at: now,
@@ -3254,6 +3384,7 @@ mod tests {
                 managed_metadata_json: None,
                 caps_snapshot_json: None,
                 last_health_status: None,
+                last_error_message: None,
                 last_error_at: None,
                 config_json: Some(r#"{"feed_url":"https://managed.example/rss"}"#.to_string()),
                 created_at: now,

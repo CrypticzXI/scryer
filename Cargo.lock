@@ -5944,6 +5944,7 @@ dependencies = [
  "glob",
  "libc",
  "postcard",
+ "quick-xml",
  "reqwest",
  "rustls",
  "rustls-native-certs",

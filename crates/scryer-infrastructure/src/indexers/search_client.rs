@@ -241,19 +241,19 @@ struct FilterStrategyContext<'a> {
     is_rss_request: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum SearchLane {
-    Interactive,
-    BackgroundAuto,
-}
+const MAX_INDEXER_ERROR_MESSAGE_BYTES: usize = 1024;
 
-impl SearchLane {
-    fn from_mode(mode: SearchMode) -> Self {
-        match mode {
-            SearchMode::Interactive => Self::Interactive,
-            SearchMode::Auto => Self::BackgroundAuto,
+fn sanitize_indexer_error_message(message: &str) -> String {
+    let redacted = scryer_application::challenge_solver::sanitize_indexer_proxy_error(message);
+    let mut sanitized = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
+    if sanitized.len() > MAX_INDEXER_ERROR_MESSAGE_BYTES {
+        let mut end = MAX_INDEXER_ERROR_MESSAGE_BYTES;
+        while !sanitized.is_char_boundary(end) {
+            end -= 1;
         }
+        sanitized.truncate(end);
     }
+    sanitized
 }
 
 #[derive(Default)]
@@ -263,6 +263,8 @@ struct StrategyBatchHealth {
     retry_after: Option<std::time::Duration>,
     had_rate_limit: bool,
     had_solver_failure: bool,
+    representative_error: Option<String>,
+    rate_limit_error: Option<String>,
 }
 
 impl StrategyBatchHealth {
@@ -270,9 +272,20 @@ impl StrategyBatchHealth {
         self.any_success = true;
     }
 
-    fn mark_error(&mut self, retry_after: Option<std::time::Duration>, rate_limited: bool) {
+    fn mark_error(
+        &mut self,
+        error: &AppError,
+        retry_after: Option<std::time::Duration>,
+        rate_limited: bool,
+    ) {
         self.any_error = true;
         self.had_rate_limit |= rate_limited;
+        let message = sanitize_indexer_error_message(&error.to_string());
+        if rate_limited {
+            self.rate_limit_error.get_or_insert(message);
+        } else {
+            self.representative_error.get_or_insert(message);
+        }
         if let Some(retry_after) = retry_after
             && self.retry_after.is_none_or(|current| retry_after > current)
         {
@@ -293,6 +306,12 @@ impl StrategyBatchHealth {
         had_persisted_system_backoff: bool,
     ) {
         if self.any_success {
+            MultiIndexerSearchClient::clear_indexer_last_error(
+                indexer_configs,
+                indexer_id,
+                indexer_name,
+            )
+            .await;
             let had_in_memory_backoff = backoff_tracker.record_success(indexer_id).await;
             if had_in_memory_backoff || had_persisted_system_backoff {
                 MultiIndexerSearchClient::clear_indexer_system_backoff(
@@ -302,7 +321,19 @@ impl StrategyBatchHealth {
                 )
                 .await;
             }
-        } else if self.any_error && !self.had_rate_limit && !self.had_solver_failure {
+        } else if self.any_error {
+            MultiIndexerSearchClient::record_indexer_last_error(
+                indexer_configs,
+                indexer_id,
+                indexer_name,
+                self.rate_limit_error
+                    .clone()
+                    .or_else(|| self.representative_error.clone()),
+            )
+            .await;
+        }
+
+        if self.any_error && !self.any_success && !self.had_rate_limit && !self.had_solver_failure {
             let backoff = backoff_tracker
                 .record_failure(indexer_id, self.retry_after)
                 .await;
@@ -319,14 +350,18 @@ impl StrategyBatchHealth {
                 escalation_level = backoff.escalation_level,
                 "indexer backoff escalated"
             );
-        } else if self.any_error && self.had_solver_failure && !self.had_rate_limit {
+        } else if self.any_error
+            && !self.any_success
+            && self.had_solver_failure
+            && !self.had_rate_limit
+        {
             // The challenge solver failed, not the indexer: keep the indexer
             // out of operational backoff and let proxy health carry the blame.
             warn!(
                 indexer = indexer_name,
                 "indexer proxy solver failure recorded without operational backoff"
             );
-        } else if self.any_error {
+        } else if self.any_error && !self.any_success {
             warn!(
                 indexer = indexer_name,
                 retry_after_secs = self.retry_after.map(|delay| delay.as_secs()),
@@ -946,42 +981,34 @@ fn is_romanized_alias(alias: &str) -> bool {
 /// only applies when an indexer config/plugin declares a positive interval.
 #[derive(Clone)]
 struct IndexerRateLimiter {
-    last_request: Arc<Mutex<HashMap<(String, SearchLane), tokio::time::Instant>>>,
+    next_request: Arc<Mutex<HashMap<String, tokio::time::Instant>>>,
 }
 
 impl IndexerRateLimiter {
     fn new() -> Self {
         Self {
-            last_request: Arc::new(Mutex::new(HashMap::new())),
+            next_request: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Wait until the configured rate limit period has elapsed for this
     /// indexer. Missing/zero values are ignored so the shared outbound host RPS
     /// limiter is the sole default pacing owner.
-    async fn acquire(&self, indexer_id: &str, rate_limit_seconds: Option<i64>, mode: SearchMode) {
+    async fn acquire(&self, indexer_id: &str, rate_limit_seconds: Option<i64>) {
         let interval_secs = rate_limit_seconds.unwrap_or_default().max(0) as u64;
         if interval_secs == 0 {
             return;
         }
 
         let interval = std::time::Duration::from_secs(interval_secs);
-        let now = tokio::time::Instant::now();
-        let lane_key = (indexer_id.to_string(), SearchLane::from_mode(mode));
-
-        let mut map = self.last_request.lock().await;
-        if let Some(last) = map.get(&lane_key) {
-            let elapsed = now.duration_since(*last);
-            if elapsed < interval {
-                let wait = interval - elapsed;
-                drop(map); // Release lock while sleeping
-                tokio::time::sleep(wait).await;
-                let mut map = self.last_request.lock().await;
-                map.insert(lane_key, tokio::time::Instant::now());
-                return;
-            }
-        }
-        map.insert(lane_key, now);
+        let scheduled_at = {
+            let now = tokio::time::Instant::now();
+            let mut map = self.next_request.lock().await;
+            let scheduled_at = map.get(indexer_id).copied().unwrap_or(now).max(now);
+            map.insert(indexer_id.to_string(), scheduled_at + interval);
+            scheduled_at
+        };
+        tokio::time::sleep_until(scheduled_at).await;
     }
 }
 
@@ -1553,8 +1580,9 @@ impl MultiIndexerSearchClient {
         indexer_configs: &Arc<dyn IndexerConfigRepository>,
         indexer_id: &str,
         indexer_name: &str,
+        message: Option<String>,
     ) {
-        if let Err(error) = indexer_configs.touch_last_error(indexer_id).await {
+        if let Err(error) = indexer_configs.record_last_error(indexer_id, message).await {
             warn!(
                 indexer = indexer_name,
                 error = %error,
@@ -1844,7 +1872,7 @@ impl MultiIndexerSearchClient {
                 let response = match permit {
                     Ok(_permit) => {
                         match within_search_window(
-                            rate_limiter.acquire(&indexer_id, rate_limit_seconds, mode),
+                            rate_limiter.acquire(&indexer_id, rate_limit_seconds),
                             &cancel_token,
                             deadline_at,
                         )
@@ -2769,7 +2797,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         },
                                     };
                                 match within_search_window(
-                                    rate_limiter.acquire(&indexer_id, rate_limit_seconds, mode),
+                                    rate_limiter.acquire(&indexer_id, rate_limit_seconds),
                                     &task_cancel_token,
                                     deadline_at,
                                 )
@@ -2864,6 +2892,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                             &indexer_configs,
                                             &indexer_id,
                                             &indexer_name,
+                                            Some(sanitize_indexer_error_message(&err.to_string())),
                                         )
                                         .await;
                                         Err(format!("RSS feed fetch failed: {err}"))
@@ -2887,6 +2916,7 @@ impl IndexerClient for MultiIndexerSearchClient {
                                             &indexer_configs,
                                             &indexer_id,
                                             &indexer_name,
+                                            Some("RSS feed fetch timed out".to_string()),
                                         )
                                         .await;
                                         Err("RSS feed fetch timed out".to_string())
@@ -3220,7 +3250,11 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 );
                             }
                             primary_had_error = true;
-                            batch_health.mark_error(outcome.retry_after, outcome.rate_limited);
+                            batch_health.mark_error(
+                                &err,
+                                outcome.retry_after,
+                                outcome.rate_limited,
+                            );
                             if scryer_application::challenge_solver::is_solver_service_error_message(
                                 &err.to_string(),
                             ) {
@@ -3233,12 +3267,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                                 "indexer search failed"
                             );
                             stats_tracker.record_query(&indexer_id, &indexer_name, false);
-                            Self::record_indexer_last_error(
-                                &indexer_configs,
-                                &indexer_id,
-                                &indexer_name,
-                            )
-                            .await;
 
                             record_strategy_metrics(
                                 &indexer_name,
@@ -3369,12 +3397,16 @@ impl IndexerClient for MultiIndexerSearchClient {
                                         true,
                                     );
                                 }
-                                batch_health.mark_error(outcome.retry_after, outcome.rate_limited);
-                            if scryer_application::challenge_solver::is_solver_service_error_message(
-                                &err.to_string(),
-                            ) {
-                                batch_health.mark_solver_failure();
-                            }
+                                batch_health.mark_error(
+                                    &err,
+                                    outcome.retry_after,
+                                    outcome.rate_limited,
+                                );
+                                if scryer_application::challenge_solver::is_solver_service_error_message(
+                                    &err.to_string(),
+                                ) {
+                                    batch_health.mark_solver_failure();
+                                }
                                 debug!(
                                     indexer = indexer_name.as_str(),
                                     strategy = outcome.label.as_str(),
@@ -3382,12 +3414,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                                     "indexer fallback search failed"
                                 );
                                 stats_tracker.record_query(&indexer_id, &indexer_name, false);
-                                Self::record_indexer_last_error(
-                                    &indexer_configs,
-                                    &indexer_id,
-                                    &indexer_name,
-                                )
-                                .await;
 
                                 record_strategy_metrics(
                                     &indexer_name,
@@ -3415,10 +3441,6 @@ impl IndexerClient for MultiIndexerSearchClient {
                         had_persisted_system_backoff,
                     )
                     .await;
-                if batch_had_success {
-                    Self::clear_indexer_last_error(&indexer_configs, &indexer_id, &indexer_name)
-                        .await;
-                }
 
                 if mode == SearchMode::Interactive
                     && collected_results.is_empty()
@@ -4200,6 +4222,43 @@ mod tests {
     }
 
     #[test]
+    fn strategy_batch_health_prefers_the_exact_rate_limit_error() {
+        let generic = AppError::Repository("upstream status 503".to_string());
+        let rate_limit = AppError::TemporaryUnavailable {
+            message: "HTTP 429: User configurable Indexer Query Limit reached; retry after 60s"
+                .to_string(),
+            retry_after: Some(std::time::Duration::from_secs(60)),
+            rate_limit_cooldown: RateLimitCooldownAction::AlreadyRecorded,
+        };
+        let mut health = StrategyBatchHealth::default();
+
+        health.mark_error(&generic, None, false);
+        health.mark_error(&rate_limit, Some(std::time::Duration::from_secs(60)), true);
+
+        assert_eq!(
+            health.rate_limit_error.as_deref(),
+            Some(sanitize_indexer_error_message(&rate_limit.to_string()).as_str())
+        );
+        assert_eq!(health.retry_after, Some(std::time::Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn indexer_error_diagnostics_redact_credentials_and_cap_length() {
+        let message = format!(
+            "HTTP 429 from https://prowlarr.example/api?t=search&apikey=SECRET&token=OTHER {}",
+            "x".repeat(MAX_INDEXER_ERROR_MESSAGE_BYTES * 2)
+        );
+
+        let sanitized = sanitize_indexer_error_message(&message);
+
+        assert!(!sanitized.contains("SECRET"));
+        assert!(!sanitized.contains("OTHER"));
+        assert!(sanitized.contains("apikey=REDACTED"));
+        assert!(sanitized.contains("token=REDACTED"));
+        assert!(sanitized.len() <= MAX_INDEXER_ERROR_MESSAGE_BYTES);
+    }
+
+    #[test]
     fn id_strategies_skip_the_text_title_guard() {
         let mut ids = HashMap::new();
         ids.insert("tmdb".to_string(), "123".to_string());
@@ -4271,6 +4330,7 @@ mod tests {
     struct RecordingTouchIndexerConfigRepository {
         configs: Vec<IndexerConfig>,
         touched_ids: StdArc<StdMutex<Vec<String>>>,
+        recorded_messages: StdArc<StdMutex<Vec<Option<String>>>>,
         cleared_ids: StdArc<StdMutex<Vec<String>>>,
     }
 
@@ -4293,6 +4353,15 @@ mod tests {
                 .lock()
                 .expect("touched ids mutex")
                 .push(id.to_string());
+            Ok(())
+        }
+
+        async fn record_last_error(&self, id: &str, message: Option<String>) -> AppResult<()> {
+            self.touch_last_error(id).await?;
+            self.recorded_messages
+                .lock()
+                .expect("recorded messages mutex")
+                .push(message);
             Ok(())
         }
 
@@ -4552,6 +4621,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: None,
             created_at: Utc::now(),
@@ -5476,6 +5546,7 @@ mod tests {
     #[tokio::test]
     async fn indexer_failure_records_last_error_for_config_id() {
         let touched_ids = StdArc::new(StdMutex::new(Vec::new()));
+        let recorded_messages = StdArc::new(StdMutex::new(Vec::new()));
         let cleared_ids = StdArc::new(StdMutex::new(Vec::new()));
         let client = Arc::new(ScriptedIndexerClient {
             calls: StdArc::new(StdMutex::new(Vec::new())),
@@ -5485,6 +5556,7 @@ mod tests {
             Arc::new(RecordingTouchIndexerConfigRepository {
                 configs: vec![mock_indexer_config()],
                 touched_ids: touched_ids.clone(),
+                recorded_messages: recorded_messages.clone(),
                 cleared_ids: cleared_ids.clone(),
             }),
             Arc::new(MockIndexerStatsTracker),
@@ -5525,12 +5597,17 @@ mod tests {
             *touched_ids.lock().expect("touched ids mutex"),
             vec!["idx-1".to_string()]
         );
+        assert_eq!(
+            *recorded_messages.lock().expect("recorded messages mutex"),
+            vec![Some("repository: upstream status 503".to_string())]
+        );
         assert!(cleared_ids.lock().expect("cleared ids mutex").is_empty());
     }
 
     #[tokio::test]
     async fn indexer_success_clears_last_error_for_config_id() {
         let touched_ids = StdArc::new(StdMutex::new(Vec::new()));
+        let recorded_messages = StdArc::new(StdMutex::new(Vec::new()));
         let cleared_ids = StdArc::new(StdMutex::new(Vec::new()));
         let client = Arc::new(ScriptedIndexerClient {
             calls: StdArc::new(StdMutex::new(Vec::new())),
@@ -5549,6 +5626,7 @@ mod tests {
             Arc::new(RecordingTouchIndexerConfigRepository {
                 configs: vec![mock_indexer_config()],
                 touched_ids: touched_ids.clone(),
+                recorded_messages: recorded_messages.clone(),
                 cleared_ids: cleared_ids.clone(),
             }),
             Arc::new(MockIndexerStatsTracker),
@@ -5586,6 +5664,12 @@ mod tests {
 
         assert_eq!(response.results.len(), 1);
         assert!(touched_ids.lock().expect("touched ids mutex").is_empty());
+        assert!(
+            recorded_messages
+                .lock()
+                .expect("recorded messages mutex")
+                .is_empty()
+        );
         assert_eq!(
             *cleared_ids.lock().expect("cleared ids mutex"),
             vec!["idx-1".to_string()]
@@ -5593,8 +5677,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn indexer_failure_then_fallback_success_records_and_clears_last_error() {
+    async fn indexer_failure_then_fallback_success_only_clears_last_error() {
         let touched_ids = StdArc::new(StdMutex::new(Vec::new()));
+        let recorded_messages = StdArc::new(StdMutex::new(Vec::new()));
         let cleared_ids = StdArc::new(StdMutex::new(Vec::new()));
         let calls = StdArc::new(StdMutex::new(Vec::new()));
         let attempts = StdArc::new(AtomicUsize::new(0));
@@ -5616,6 +5701,7 @@ mod tests {
             Arc::new(RecordingTouchIndexerConfigRepository {
                 configs: vec![mock_indexer_config()],
                 touched_ids: touched_ids.clone(),
+                recorded_messages: recorded_messages.clone(),
                 cleared_ids: cleared_ids.clone(),
             }),
             Arc::new(MockIndexerStatsTracker),
@@ -5646,9 +5732,12 @@ mod tests {
         let recorded_calls = calls.lock().expect("calls").clone();
         assert_eq!(recorded_calls.len(), 2);
         assert_eq!(response.results.len(), 1);
-        assert_eq!(
-            *touched_ids.lock().expect("touched ids mutex"),
-            vec!["idx-1".to_string()]
+        assert!(touched_ids.lock().expect("touched ids mutex").is_empty());
+        assert!(
+            recorded_messages
+                .lock()
+                .expect("recorded messages mutex")
+                .is_empty()
         );
         assert_eq!(
             *cleared_ids.lock().expect("cleared ids mutex"),
@@ -8405,52 +8494,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn indexer_rate_limiter_keeps_interactive_lane_independent_from_auto_lane() {
+    async fn indexer_rate_limiter_reserves_concurrent_slots_for_one_indexer() {
         let limiter = IndexerRateLimiter::new();
+        let started_at = std::time::Instant::now();
 
-        limiter.acquire("idx", Some(1), SearchMode::Auto).await;
+        let (first, second, third) = tokio::join!(
+            async {
+                limiter.acquire("idx", Some(2)).await;
+                started_at.elapsed()
+            },
+            async {
+                limiter.acquire("idx", Some(2)).await;
+                started_at.elapsed()
+            },
+            async {
+                limiter.acquire("idx", Some(2)).await;
+                started_at.elapsed()
+            },
+        );
+        let mut dispatches = [first, second, third];
+        dispatches.sort();
 
-        tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            limiter.acquire("idx", None, SearchMode::Interactive),
-        )
-        .await
-        .expect("interactive lane should not wait behind background auto pacing");
+        assert!(
+            dispatches[0] < std::time::Duration::from_millis(500),
+            "the first request should dispatch immediately: {dispatches:?}"
+        );
+        assert!(
+            dispatches[1] >= std::time::Duration::from_millis(1_900)
+                && dispatches[1] < std::time::Duration::from_secs(3),
+            "the second request should dispatch at roughly two seconds: {dispatches:?}"
+        );
+        assert!(
+            dispatches[2] >= std::time::Duration::from_millis(3_900)
+                && dispatches[2] < std::time::Duration::from_secs(6),
+            "the third request should dispatch at roughly four seconds: {dispatches:?}"
+        );
     }
 
     #[tokio::test]
-    async fn indexer_rate_limiter_only_paces_explicit_intervals() {
+    async fn indexer_rate_limiter_only_paces_explicit_intervals_per_indexer() {
         let limiter = IndexerRateLimiter::new();
 
-        limiter.acquire("idx", None, SearchMode::Auto).await;
+        limiter.acquire("idx", None).await;
 
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            limiter.acquire("idx", None, SearchMode::Auto),
+            limiter.acquire("idx", None),
         )
         .await
         .expect("missing per-indexer interval should not pace; host RPS owns default pacing");
 
-        limiter.acquire("idx", Some(1), SearchMode::Auto).await;
-
-        assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                limiter.acquire("idx", Some(1), SearchMode::Auto),
-            )
-            .await
-            .is_err(),
-            "immediate follow-up auto searches with explicit interval should still be paced"
-        );
-
-        tokio::time::sleep(std::time::Duration::from_millis(950)).await;
+        limiter.acquire("idx", Some(1)).await;
 
         tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            limiter.acquire("idx", Some(1), SearchMode::Auto),
+            std::time::Duration::from_millis(100),
+            limiter.acquire("other-idx", Some(1)),
         )
         .await
-        .expect("explicit auto interval should become available again after roughly one second");
+        .expect("a different indexer should have an independent pacing schedule");
     }
 
     #[test]

@@ -30,6 +30,7 @@ pub(crate) struct LegacyPluginSpec {
     pub(crate) allowed_hosts: Vec<String>,
     pub(crate) config: BTreeMap<String, String>,
     pub(crate) indexer_proxy_policy: Option<IndexerProxyPolicy>,
+    pub(crate) destination_cooldown_key: Option<String>,
     pub(crate) socket_host: SocketHost,
     pub(crate) process_host: ProcessHost,
     pub(crate) plugin_id: String,
@@ -47,6 +48,7 @@ impl LegacyPluginSpec {
             allowed_hosts: Vec::new(),
             config: BTreeMap::new(),
             indexer_proxy_policy: None,
+            destination_cooldown_key: None,
             socket_host: SocketHost::disabled(),
             process_host: ProcessHost::disabled(),
             plugin_id: plugin_id.into(),
@@ -165,11 +167,13 @@ impl LegacyPlugin {
         })?;
 
         if status != 0 {
-            let error = self
-                .store
-                .data()
-                .error
-                .clone()
+            let state = self.store.data();
+            let error = state
+                .http
+                .rate_limit_message(&state.plugin_id)
+                .ok()
+                .flatten()
+                .or_else(|| state.error.clone())
                 .unwrap_or_else(|| format!("plugin returned status {status}"));
             return Err(AppError::Repository(format!(
                 "plugin {export}() failed: {error}"
@@ -278,6 +282,7 @@ impl LegacyHostState {
             http: PluginHttpHost::new(
                 spec.allowed_hosts,
                 spec.indexer_proxy_policy,
+                spec.destination_cooldown_key,
                 spec.memory_max_bytes.map(|value| value as u64),
             ),
             socket_host: spec.socket_host,
