@@ -2357,6 +2357,7 @@ pub struct IndexerConfigPayload {
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
     pub last_health_status: Option<String>,
+    pub last_error_message: Option<String>,
     pub last_error_at: Option<DateTime<Utc>>,
     pub last_query_at: Option<DateTime<Utc>>,
     pub config: Vec<ProviderConfigValuePayload>,

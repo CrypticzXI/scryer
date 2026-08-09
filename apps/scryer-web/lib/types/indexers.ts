@@ -19,6 +19,7 @@ export type IndexerRecord = {
   enableInteractiveSearch: boolean;
   enableAutoSearch: boolean;
   lastHealthStatus: string | null;
+  lastErrorMessage: string | null;
   lastErrorAt: string | null;
   lastQueryAt: string | null;
   config: ProviderConfigValue[];

@@ -20,6 +20,7 @@ chrono = { workspace = true }
 aws-lc-sys = "0.43"
 crc-fast = "1.10.0"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider", "http2"] }
+quick-xml = { workspace = true }
 base64 = "0.23"
 glob = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }

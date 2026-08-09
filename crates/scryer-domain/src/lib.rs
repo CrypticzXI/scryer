@@ -943,6 +943,7 @@ pub struct IndexerConfig {
     pub managed_metadata_json: Option<String>,
     pub caps_snapshot_json: Option<String>,
     pub last_health_status: Option<String>,
+    pub last_error_message: Option<String>,
     pub last_error_at: Option<DateTime<Utc>>,
     pub config_json: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -1060,6 +1061,17 @@ pub fn is_nab_provider_type(provider_type: &str) -> bool {
 }
 
 impl IndexerConfig {
+    pub fn managed_destination_cooldown_key(&self) -> Option<String> {
+        let parent_id = self.managed_parent_config_id.as_deref()?.trim();
+        let child_key = self.managed_child_key.as_deref()?.trim();
+        if parent_id.is_empty() || child_key.is_empty() {
+            return None;
+        }
+        Some(managed_indexer_destination_cooldown_key(
+            parent_id, child_key,
+        ))
+    }
+
     pub fn nab_transport_kind(&self) -> Option<NabTransportKind> {
         if !is_nab_provider_type(&self.provider_type) {
             return None;
@@ -1079,6 +1091,10 @@ impl IndexerConfig {
     pub fn is_prowlarr_nab_proxy(&self) -> bool {
         self.nab_transport_kind() == Some(NabTransportKind::ProwlarrNabProxy)
     }
+}
+
+pub fn managed_indexer_destination_cooldown_key(parent_config_id: &str, child_key: &str) -> String {
+    format!("managed-indexer:{parent_config_id}:{child_key}")
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

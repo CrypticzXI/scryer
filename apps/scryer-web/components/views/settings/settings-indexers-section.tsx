@@ -198,7 +198,11 @@ function IndexerStatusCell({ indexer }: { indexer: IndexerRecord }) {
     return (
       <span
         className="text-[var(--scry-danger-text-soft)]"
-        title={indexer.lastErrorAt}
+        title={
+          indexer.lastErrorMessage
+            ? `${indexer.lastErrorMessage}\n${indexer.lastErrorAt}`
+            : indexer.lastErrorAt
+        }
       >
         {t("settings.indexerLastError", {
           time: formatRelativeTime(indexer.lastErrorAt),

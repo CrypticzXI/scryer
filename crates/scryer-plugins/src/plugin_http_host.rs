@@ -4,6 +4,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use glob::Pattern;
+use quick_xml::events::Event;
+use quick_xml::{Reader, XmlVersion};
 use reqwest::blocking::Client;
 use reqwest::{Method, StatusCode};
 use scryer_application::challenge_solver as solver;
@@ -34,6 +36,7 @@ struct PluginHttpHostState {
     runtime: PluginHttpRuntime,
     allowed_hosts: Option<Vec<String>>,
     indexer_proxy_policy: Option<IndexerProxyPolicy>,
+    destination_cooldown_key: Option<scryer_outbound_http::DestinationKey>,
     max_http_response_bytes: Option<u64>,
     last_responses: HashMap<String, PluginHttpLastResponse>,
 }
@@ -51,6 +54,7 @@ pub(crate) struct PluginHttpRequest {
 struct PluginHttpLastResponse {
     status_code: u16,
     headers: BTreeMap<String, String>,
+    rate_limit_message: Option<String>,
 }
 
 #[derive(Clone)]
@@ -136,6 +140,7 @@ impl PluginHttpHost {
     pub(crate) fn new(
         allowed_hosts: Vec<String>,
         indexer_proxy_policy: Option<IndexerProxyPolicy>,
+        destination_cooldown_key: Option<String>,
         max_http_response_bytes: Option<u64>,
     ) -> Self {
         Self {
@@ -143,6 +148,8 @@ impl PluginHttpHost {
                 runtime: shared_plugin_http_runtime(),
                 allowed_hosts: Some(allowed_hosts),
                 indexer_proxy_policy,
+                destination_cooldown_key: destination_cooldown_key
+                    .map(scryer_outbound_http::DestinationKey::from),
                 max_http_response_bytes,
                 last_responses: HashMap::new(),
             })),
@@ -156,7 +163,13 @@ impl PluginHttpHost {
         body: Option<Vec<u8>>,
         timeout: Option<Duration>,
     ) -> HostResult<Vec<u8>> {
-        let (runtime, allowed_hosts, indexer_proxy_policy, max_http_response_bytes) = {
+        let (
+            runtime,
+            allowed_hosts,
+            indexer_proxy_policy,
+            destination_cooldown_key,
+            max_http_response_bytes,
+        ) = {
             let mut host_state = self
                 .state
                 .lock()
@@ -168,6 +181,7 @@ impl PluginHttpHost {
                 host_state.runtime.clone(),
                 host_state.allowed_hosts.clone(),
                 host_state.indexer_proxy_policy.clone(),
+                host_state.destination_cooldown_key.clone(),
                 host_state.max_http_response_bytes,
             )
         };
@@ -200,21 +214,26 @@ impl PluginHttpHost {
             body.clone(),
             timeout,
             &session_headers,
+            destination_cooldown_key.as_ref(),
         )?;
         let status = response.status();
         let status_code = status.as_u16();
         let headers = response_headers(&response);
 
         if status == StatusCode::TOO_MANY_REQUESTS {
+            let direct_body = read_response_body(response, max_http_response_bytes)?;
+            let response_bytes = direct_body.len();
+            let rate_limit_message = direct_rate_limit_message(&headers, &direct_body);
             self.store_last_response(plugin_id, status_code, headers)?;
+            self.store_rate_limit_message(plugin_id, rate_limit_message)?;
             tracing::debug!(
                 plugin_id,
                 status = status_code,
                 elapsed_ms = started_at.elapsed().as_millis() as u64,
-                response_bytes = 0_u64,
+                response_bytes,
                 "plugin HTTP request skipped indexer proxy after direct rate limit"
             );
-            return Ok(Vec::new());
+            return Ok(direct_body);
         }
 
         let should_read_body = status.is_success()
@@ -258,9 +277,12 @@ impl PluginHttpHost {
                 &request_client,
                 policy,
                 &request,
-                body,
-                timeout,
-                max_http_response_bytes,
+                ChallengeSolverRequestOptions {
+                    original_body: body,
+                    original_timeout: timeout,
+                    max_http_response_bytes,
+                    destination_cooldown_key: destination_cooldown_key.as_ref(),
+                },
             ) {
                 Ok(solved) => {
                     solver::SolverHealthLedger::shared().record_success(&policy.config.id);
@@ -328,6 +350,28 @@ impl PluginHttpHost {
             .map(|response| response.headers.clone()))
     }
 
+    pub(crate) fn rate_limit_message(&self, plugin_id: &str) -> HostResult<Option<String>> {
+        let host_state = self
+            .state
+            .lock()
+            .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?;
+        Ok(host_state
+            .last_responses
+            .get(plugin_id)
+            .and_then(|response| response.rate_limit_message.clone()))
+    }
+
+    fn store_rate_limit_message(&self, plugin_id: &str, message: String) -> HostResult<()> {
+        let mut host_state = self
+            .state
+            .lock()
+            .map_err(|error| format!("plugin HTTP host state lock poisoned: {error}"))?;
+        if let Some(response) = host_state.last_responses.get_mut(plugin_id) {
+            response.rate_limit_message = Some(message);
+        }
+        Ok(())
+    }
+
     fn store_last_response(
         &self,
         plugin_id: &str,
@@ -343,6 +387,7 @@ impl PluginHttpHost {
             PluginHttpLastResponse {
                 status_code,
                 headers,
+                rate_limit_message: None,
             },
         );
         Ok(())
@@ -408,6 +453,7 @@ fn execute_request_with_extra_headers(
     body: Option<Vec<u8>>,
     timeout: Option<Duration>,
     extra_headers: &[(String, String)],
+    destination_cooldown_key: Option<&scryer_outbound_http::DestinationKey>,
 ) -> HostResult<reqwest::blocking::Response> {
     let method = Method::from_bytes(
         request
@@ -459,15 +505,17 @@ fn execute_request_with_extra_headers(
         builder = builder.body(body);
     }
 
-    scryer_outbound_http::send_blocking_reqwest_request_with_cooldown_budget(builder, timeout)
-        .map_err(|error| match error {
-            scryer_outbound_http::BlockingOutboundHttpError::Request(error)
-                if error.is_timeout() =>
-            {
-                "timeout".to_string()
-            }
-            other => other.to_string(),
-        })
+    scryer_outbound_http::send_blocking_reqwest_request_with_cooldown_policy(
+        builder,
+        timeout,
+        destination_cooldown_key.cloned(),
+    )
+    .map_err(|error| match error {
+        scryer_outbound_http::BlockingOutboundHttpError::Request(error) if error.is_timeout() => {
+            "timeout".to_string()
+        }
+        other => other.to_string(),
+    })
 }
 
 fn response_headers(response: &reqwest::blocking::Response) -> BTreeMap<String, String> {
@@ -478,6 +526,60 @@ fn response_headers(response: &reqwest::blocking::Response) -> BTreeMap<String, 
         }
     }
     headers
+}
+
+fn direct_rate_limit_message(headers: &BTreeMap<String, String>, body: &[u8]) -> String {
+    let mut message = prowlarr_xml_error_description(body)
+        .map(|description| format!("HTTP 429: {description}"))
+        .unwrap_or_else(|| "HTTP 429: rate limited".to_string());
+    let retry_after = headers
+        .get("retry-after")
+        .and_then(|value| scryer_outbound_http::parse_retry_after(value))
+        .map(|(delay, _)| delay);
+    if let Some(retry_after) = retry_after {
+        message.push_str(&format!("; retry after {}s", retry_after.as_secs()));
+    }
+    message
+}
+
+fn prowlarr_xml_error_description(body: &[u8]) -> Option<String> {
+    // Prowlarr's NewznabController::CreateErrorXML emits an XML declaration followed by
+    // one root element: <error code="429" description="..." />.
+    let mut reader = Reader::from_reader(body);
+    reader.config_mut().trim_text(true);
+    let mut buffer = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buffer).ok()? {
+            Event::Start(element) | Event::Empty(element) => {
+                if element.name().as_ref() != b"error" {
+                    return None;
+                }
+
+                let mut code = None;
+                let mut description = None;
+                for attribute in element.attributes() {
+                    let attribute = attribute.ok()?;
+                    let value = attribute
+                        .decoded_and_normalized_value(XmlVersion::Explicit1_0, reader.decoder())
+                        .ok()?
+                        .trim()
+                        .to_string();
+                    match attribute.key.as_ref() {
+                        b"code" => code = Some(value),
+                        b"description" => description = (!value.is_empty()).then_some(value),
+                        _ => {}
+                    }
+                }
+
+                return (code.as_deref() == Some("429"))
+                    .then_some(description)
+                    .flatten();
+            }
+            Event::Eof => return None,
+            _ => {}
+        }
+        buffer.clear();
+    }
 }
 
 fn read_response_body(
@@ -498,15 +600,27 @@ fn read_response_body(
     Ok(body)
 }
 
+#[derive(Default)]
+struct ChallengeSolverRequestOptions<'a> {
+    original_body: Option<Vec<u8>>,
+    original_timeout: Option<Duration>,
+    max_http_response_bytes: Option<u64>,
+    destination_cooldown_key: Option<&'a scryer_outbound_http::DestinationKey>,
+}
+
 fn execute_challenge_solver_request(
     proxy_client: &Client,
     request_client: &Client,
     policy: &IndexerProxyPolicy,
     request: &PluginHttpRequest,
-    original_body: Option<Vec<u8>>,
-    original_timeout: Option<Duration>,
-    max_http_response_bytes: Option<u64>,
+    options: ChallengeSolverRequestOptions<'_>,
 ) -> HostResult<ProxiedHttpResponse> {
+    let ChallengeSolverRequestOptions {
+        original_body,
+        original_timeout,
+        max_http_response_bytes,
+        destination_cooldown_key,
+    } = options;
     if !policy.config.is_enabled {
         return Err("Indexer proxy is disabled for this indexer.".to_string());
     }
@@ -612,6 +726,7 @@ fn execute_challenge_solver_request(
             original_body,
             original_timeout,
             &retry_headers,
+            destination_cooldown_key,
         )?;
         let status = retry.status();
         let headers = response_headers(&retry);
@@ -678,6 +793,94 @@ mod tests {
         "dlYNMnHca3kyT/MHY4oX5MmPsHY8ANxBBz0XSKw5ysN4cNpK/Q==\n",
         "-----END CERTIFICATE-----\n",
     );
+
+    #[test]
+    fn rate_limit_message_parses_prowlarr_newznab_429_contract() {
+        let mut headers = BTreeMap::new();
+        headers.insert("retry-after".to_string(), "321".to_string());
+        let body = br#"<?xml version="1.0" encoding="UTF-8"?>
+<error code="429" description="Indexer is disabled till 8/9/2026 4:30:00 PM due to recent failures." />"#;
+
+        assert_eq!(
+            direct_rate_limit_message(&headers, body),
+            "HTTP 429: Indexer is disabled till 8/9/2026 4:30:00 PM due to recent failures.; retry after 321s"
+        );
+    }
+
+    #[test]
+    fn rate_limit_message_does_not_guess_non_prowlarr_xml_shapes() {
+        let body = br#"<error><description>not Prowlarr's Newznab shape</description></error>"#;
+
+        assert_eq!(
+            direct_rate_limit_message(&BTreeMap::new(), body),
+            "HTTP 429: rate limited"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn eleven_managed_children_isolate_one_prowlarr_429() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        for child in 0..11 {
+            let template = if child == 0 {
+                ResponseTemplate::new(429)
+                    .insert_header("Content-Type", "application/rss+xml")
+                    .insert_header("Retry-After", "60")
+                    .set_body_raw(
+                        r#"<?xml version="1.0" encoding="UTF-8"?>
+<error code="429" description="User configurable Indexer Query Limit of 100 in last 1 hour(s) reached." />"#,
+                        "application/rss+xml",
+                    )
+            } else {
+                ResponseTemplate::new(200).set_body_string("ok")
+            };
+            Mock::given(method("GET"))
+                .and(path(format!("/api/{child}")))
+                .respond_with(template)
+                .mount(&server)
+                .await;
+        }
+
+        let server_uri = server.uri();
+        let errored_children = tokio::task::spawn_blocking(move || {
+            let mut errored_children = Vec::new();
+            for child in 0..11 {
+                let host = PluginHttpHost::new(
+                    vec!["127.0.0.1".to_string()],
+                    None,
+                    Some(format!("managed-indexer:parent:{child}")),
+                    Some(64 * 1024),
+                );
+                let body = host
+                    .request(
+                        "newznab",
+                        PluginHttpRequest {
+                            url: format!("{server_uri}/api/{child}"),
+                            method: Some("GET".to_string()),
+                            headers: BTreeMap::new(),
+                        },
+                        None,
+                        Some(Duration::from_secs(2)),
+                    )
+                    .expect("sibling child request should remain dispatchable");
+                let rate_limit_message = host.rate_limit_message("newznab").unwrap();
+                if rate_limit_message.is_some() {
+                    errored_children.push(child);
+                    assert!(String::from_utf8_lossy(&body).contains("Indexer Query Limit"));
+                } else {
+                    assert_eq!(body, b"ok");
+                }
+            }
+            errored_children
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(errored_children, vec![0]);
+        assert_eq!(server.received_requests().await.unwrap().len(), 11);
+    }
 
     #[test]
     fn build_plugin_http_client_accepts_empty_trust_bundle() {
@@ -848,9 +1051,10 @@ mod tests {
                 &request_client,
                 &policy,
                 &request,
-                None,
-                None,
-                Some(1024 * 1024),
+                ChallengeSolverRequestOptions {
+                    max_http_response_bytes: Some(1024 * 1024),
+                    ..Default::default()
+                },
             )
         })
         .await
@@ -936,9 +1140,10 @@ mod tests {
                 &request_client,
                 &policy,
                 &request,
-                None,
-                None,
-                Some(1024 * 1024),
+                ChallengeSolverRequestOptions {
+                    max_http_response_bytes: Some(1024 * 1024),
+                    ..Default::default()
+                },
             )
         })
         .await
@@ -1013,9 +1218,10 @@ mod tests {
                 &request_client,
                 &policy,
                 &request,
-                None,
-                None,
-                Some(1024 * 1024),
+                ChallengeSolverRequestOptions {
+                    max_http_response_bytes: Some(1024 * 1024),
+                    ..Default::default()
+                },
             )
         })
         .await

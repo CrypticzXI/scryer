@@ -2331,6 +2331,9 @@ pub trait IndexerConfigRepository: Send + Sync {
     async fn get_by_id(&self, id: &str) -> AppResult<Option<IndexerConfig>>;
     async fn create(&self, config: IndexerConfig) -> AppResult<IndexerConfig>;
     async fn touch_last_error(&self, id: &str) -> AppResult<()>;
+    async fn record_last_error(&self, id: &str, _message: Option<String>) -> AppResult<()> {
+        self.touch_last_error(id).await
+    }
     async fn clear_last_error(&self, _id: &str) -> AppResult<()> {
         Ok(())
     }
