@@ -1897,6 +1897,7 @@ type IndexerConfigPayload {
 	enableInteractiveSearch: Boolean!
 	enableAutoSearch: Boolean!
 	lastHealthStatus: String
+	lastErrorMessage: String
 	lastErrorAt: DateTime
 	lastQueryAt: DateTime
 	config: [ProviderConfigValuePayload!]!
