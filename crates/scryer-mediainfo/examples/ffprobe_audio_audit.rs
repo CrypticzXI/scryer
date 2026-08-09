@@ -354,7 +354,15 @@ fn is_media_file(path: &Path) -> bool {
         Some(ext)
             if matches!(
                 ext.as_str(),
-                "mkv" | "mp4" | "m2ts" | "mov" | "ts" | "avi"
+                "mkv"
+                    | "mp4"
+                    | "m2ts"
+                    | "mov"
+                    | "ts"
+                    | "avi"
+                    | "wmv"
+                    | "ogv"
+                    | "flv"
             )
     )
 }

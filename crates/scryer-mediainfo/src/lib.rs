@@ -2,10 +2,13 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
 
+mod asf;
 mod avi;
 mod codec;
+mod flv;
 mod mkv;
 mod mp4;
+mod ogg;
 mod probe;
 mod scan;
 mod ts;
@@ -171,6 +174,9 @@ pub fn analyze_file_with_options(
         Some(ContainerFormat::Mp4) => mp4::parse_mp4(file_path, options.profile)?,
         Some(ContainerFormat::Avi) => avi::parse_avi(file_path, options.profile)?,
         Some(ContainerFormat::Ts) => ts::parse_ts(file_path)?,
+        Some(ContainerFormat::Asf) => asf::parse_asf(file_path)?,
+        Some(ContainerFormat::Ogg) => ogg::parse_ogg(file_path)?,
+        Some(ContainerFormat::Flv) => flv::parse_flv(file_path)?,
         None => return Err(MediaInfoError::UnsupportedFormat(ext)),
     };
 
@@ -190,6 +196,9 @@ fn container_format_from_extension(ext: &str) -> Option<ContainerFormat> {
         "mp4" | "m4v" | "mov" => Some(ContainerFormat::Mp4),
         "avi" => Some(ContainerFormat::Avi),
         "ts" | "m2ts" => Some(ContainerFormat::Ts),
+        "wmv" => Some(ContainerFormat::Asf),
+        "ogv" => Some(ContainerFormat::Ogg),
+        "flv" => Some(ContainerFormat::Flv),
         _ => None,
     }
 }
@@ -200,6 +209,9 @@ enum ContainerFormat {
     Mp4,
     Avi,
     Ts,
+    Asf,
+    Ogg,
+    Flv,
 }
 
 fn sniff_container_format(file_path: &Path) -> Option<ContainerFormat> {
@@ -216,6 +228,21 @@ fn sniff_container_format_from_bytes(data: &[u8]) -> Option<ContainerFormat> {
 
     if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"AVI " {
         return Some(ContainerFormat::Avi);
+    }
+
+    if data.starts_with(&asf::ASF_HEADER_GUID) {
+        return Some(ContainerFormat::Asf);
+    }
+
+    if data.len() >= 5 && &data[..4] == b"OggS" && data[4] == 0 {
+        return Some(ContainerFormat::Ogg);
+    }
+
+    if data.len() >= 9 && &data[..3] == b"FLV" && data[3] < 5 {
+        let data_offset = u32::from_be_bytes([data[5], data[6], data[7], data[8]]);
+        if data_offset >= 9 {
+            return Some(ContainerFormat::Flv);
+        }
     }
 
     if looks_like_transport_stream(data) {
@@ -281,14 +308,18 @@ fn build_analysis(raw: RawContainer) -> MediaAnalysis {
 
     // --- Video ---
     let video_codec = video_track.and_then(|t| t.codec_name.clone());
-    let video_width = video_track.and_then(|t| t.width);
-    let video_height = video_track.and_then(|t| t.height);
     let video_bitrate_kbps = video_track
         .and_then(|t| t.bit_rate_bps)
         .map(|bps| (bps / 1000) as i32);
 
     // Extract profile + bit depth from codec private data
     let codec_info = video_track.map(extract_codec_info).unwrap_or_default();
+    let video_width = video_track
+        .and_then(|track| track.width)
+        .or(codec_info.width);
+    let video_height = video_track
+        .and_then(|track| track.height)
+        .or(codec_info.height);
 
     let video_bit_depth = codec_info.bit_depth;
     let video_profile = codec_info.profile;
@@ -309,14 +340,17 @@ fn build_analysis(raw: RawContainer) -> MediaAnalysis {
     let dovi_profile = dovi_info.as_ref().map(|d| d.profile);
     let dovi_bl_compat_id = dovi_info.as_ref().map(|d| d.bl_signal_compatibility_id);
 
-    let video_frame_rate = video_track.and_then(|t| t.frame_rate_fps).and_then(|fps| {
-        if fps <= 0.0 {
-            return None;
-        }
-        let s = format!("{fps:.3}");
-        let s = s.trim_end_matches('0').trim_end_matches('.');
-        Some(s.to_owned())
-    });
+    let video_frame_rate = video_track
+        .and_then(|track| track.frame_rate_fps)
+        .or(codec_info.frame_rate_fps)
+        .and_then(|fps| {
+            if fps <= 0.0 {
+                return None;
+            }
+            let s = format!("{fps:.3}");
+            let s = s.trim_end_matches('0').trim_end_matches('.');
+            Some(s.to_owned())
+        });
 
     // --- Audio ---
     let primary_audio = select_primary_audio_track(&audio_tracks);
@@ -587,6 +621,26 @@ mod tests {
             sniff_container_format_from_bytes(&bytes),
             Some(ContainerFormat::Mp4)
         );
+    }
+
+    #[test]
+    fn sniff_container_format_detects_asf_ogg_and_flv() {
+        assert_eq!(
+            sniff_container_format_from_bytes(&asf::ASF_HEADER_GUID),
+            Some(ContainerFormat::Asf)
+        );
+        assert_eq!(
+            sniff_container_format_from_bytes(b"OggS\0"),
+            Some(ContainerFormat::Ogg)
+        );
+
+        let mut flv = *b"FLV\x01\x05\0\0\0\x09";
+        assert_eq!(
+            sniff_container_format_from_bytes(&flv),
+            Some(ContainerFormat::Flv)
+        );
+        flv[8] = 8;
+        assert_eq!(sniff_container_format_from_bytes(&flv), None);
     }
 
     fn test_track(kind: TrackKind, codec_name: &str) -> RawTrack {

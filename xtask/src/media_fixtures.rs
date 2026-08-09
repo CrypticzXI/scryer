@@ -3,7 +3,7 @@ use clap::{Args, Subcommand};
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use xtask_support::{TaskContext, command_available, ok, require_command, step, warn};
+use xtask_support::{TaskContext, command_available, ok, step, warn};
 
 #[derive(Args)]
 pub(crate) struct MediaFixturesArgs {
@@ -23,6 +23,26 @@ pub(crate) struct MediaFixturesGenerateArgs {
         help = "Only rewrite media-fixtures.toml; do not invoke ffmpeg or touch media files"
     )]
     pub(crate) manifest_only: bool,
+    #[arg(
+        long = "fixture",
+        value_name = "NAME",
+        help = "Generate only the named fixture; repeat to select multiple fixtures"
+    )]
+    pub(crate) fixtures: Vec<String>,
+    #[arg(
+        long,
+        value_name = "PATH",
+        default_value = "ffmpeg",
+        help = "FFmpeg executable used for encoder checks and fixture generation"
+    )]
+    pub(crate) ffmpeg: std::path::PathBuf,
+    #[arg(
+        long,
+        value_name = "PATH",
+        default_value = "speexenc",
+        help = "speexenc executable used for the Speex FLV fixture"
+    )]
+    pub(crate) speexenc: std::path::PathBuf,
 }
 
 #[derive(Clone)]
@@ -44,6 +64,7 @@ struct FixtureCase {
     min_duration_seconds: i32,
     valid_video: bool,
     derive_ts_layout: Option<DerivedTsLayout>,
+    asf_wave_extensible: bool,
 }
 
 #[derive(Clone)]
@@ -59,6 +80,50 @@ const RATES: [i32; 5] = [12, 15, 24, 25, 30];
 const CHANNELS: [i32; 3] = [1, 2, 6];
 const LANGS: [&str; 4] = ["eng", "jpn", "spa", "und"];
 
+fn select_cases<'a>(
+    cases: &'a [FixtureCase],
+    requested: &[String],
+) -> Result<Vec<&'a FixtureCase>> {
+    for name in requested {
+        if !cases.iter().any(|case| &case.name == name) {
+            bail!("unknown media fixture {name}");
+        }
+    }
+    if requested.is_empty() {
+        Ok(cases.iter().collect())
+    } else {
+        Ok(cases
+            .iter()
+            .filter(|case| requested.contains(&case.name))
+            .collect())
+    }
+}
+
+fn require_ffmpeg_encoder(ffmpeg: &Path, encoder: &str, installation_hint: &str) -> Result<()> {
+    let output = Command::new(ffmpeg)
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .with_context(|| format!("failed to query encoders from {}", ffmpeg.display()))?;
+    if !output.status.success() {
+        bail!("ffmpeg -encoders failed with {}", output.status);
+    }
+    let listing = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+    let available = ffmpeg_encoder_listing_contains(&listing, encoder);
+    if !available {
+        bail!("ffmpeg encoder {encoder} is required; {installation_hint}");
+    }
+    Ok(())
+}
+
+fn ffmpeg_encoder_listing_contains(listing: &[u8], encoder: &str) -> bool {
+    listing.split(|byte| *byte == b'\n').any(|line| {
+        std::str::from_utf8(line)
+            .ok()
+            .and_then(|line| line.split_whitespace().nth(1))
+            == Some(encoder)
+    })
+}
+
 pub(crate) fn generate(ctx: &TaskContext, args: &MediaFixturesGenerateArgs) -> Result<()> {
     step("Generating scryer-mediainfo media fixtures");
 
@@ -68,10 +133,43 @@ pub(crate) fn generate(ctx: &TaskContext, args: &MediaFixturesGenerateArgs) -> R
     fs::create_dir_all(&media_dir)
         .with_context(|| format!("failed to create {}", media_dir.display()))?;
 
+    let mut cases = build_matrix();
+    cases.extend(build_dense_simd_cases());
+    let selected = select_cases(&cases, &args.fixtures)?;
+
     let ffprobe_available = if args.manifest_only {
         false
     } else {
-        require_command("ffmpeg").context("ffmpeg is required to generate media fixtures")?;
+        let status = Command::new(&args.ffmpeg)
+            .arg("-version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .with_context(|| format!("failed to execute {}", args.ffmpeg.display()))?;
+        if !status.success() {
+            bail!("{} -version failed with {status}", args.ffmpeg.display());
+        }
+        if selected.iter().any(|case| case.video_codec == "theora") {
+            require_ffmpeg_encoder(
+                &args.ffmpeg,
+                "libtheora",
+                "install or rebuild FFmpeg with libtheora encoder support",
+            )?;
+        }
+        if selected
+            .iter()
+            .any(|case| case.source_audio_codecs.contains(&"speex"))
+        {
+            let status = Command::new(&args.speexenc)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .with_context(|| format!("failed to execute {}", args.speexenc.display()))?;
+            if !status.success() {
+                bail!("{} --version failed with {status}", args.speexenc.display());
+            }
+        }
         let available = command_available("ffprobe").unwrap_or(false);
         if !available {
             warn("ffprobe was not found; generated fixtures will not get ffprobe validation");
@@ -79,8 +177,6 @@ pub(crate) fn generate(ctx: &TaskContext, args: &MediaFixturesGenerateArgs) -> R
         available
     };
 
-    let mut cases = build_matrix();
-    cases.extend(build_dense_simd_cases());
     write_manifest(&manifest_path, &cases)?;
 
     if args.manifest_only {
@@ -88,15 +184,24 @@ pub(crate) fn generate(ctx: &TaskContext, args: &MediaFixturesGenerateArgs) -> R
         return Ok(());
     }
 
-    for (index, case) in cases.iter().enumerate() {
-        generate_case(ctx, &media_dir, case, ffprobe_available)
-            .with_context(|| format!("failed to generate {} at case {}", case.name, index + 1))?;
+    for (index, case) in selected.iter().enumerate() {
+        generate_case(
+            ctx,
+            &media_dir,
+            case,
+            &args.ffmpeg,
+            &args.speexenc,
+            ffprobe_available,
+        )
+        .with_context(|| format!("failed to generate {} at case {}", case.name, index + 1))?;
     }
 
-    write_simd_scan_fixture(&media_dir)?;
+    if args.fixtures.is_empty() {
+        write_simd_scan_fixture(&media_dir)?;
+    }
     ok(format!(
         "generated {} media fixtures in {}",
-        cases.len(),
+        selected.len(),
         media_dir.display()
     ));
     Ok(())
@@ -133,7 +238,7 @@ fn supported_channels(codec: &str, requested: i32) -> i32 {
     if codec == "vorbis" {
         return 2;
     }
-    if matches!(codec, "mp3" | "mp2" | "vorbis") {
+    if matches!(codec, "mp3" | "mp2" | "vorbis" | "wmav1" | "wmav2") {
         return requested.min(2);
     }
     requested
@@ -191,7 +296,7 @@ fn build_case(
     let audio_languages = source_audio_languages
         .iter()
         .copied()
-        .filter(|language| *language != "und" && container != "avi")
+        .filter(|language| *language != "und" && !matches!(container, "avi" | "flv"))
         .map(str::to_string)
         .collect::<Vec<_>>();
 
@@ -218,6 +323,7 @@ fn build_case(
         min_duration_seconds: 1,
         valid_video: true,
         derive_ts_layout: None,
+        asf_wave_extensible: false,
     }
 }
 
@@ -329,7 +435,132 @@ fn build_matrix() -> Vec<FixtureCase> {
         ));
     }
 
-    assert_eq!(cases.len(), 200);
+    const WMV_SPECS: &[(&str, &str, &[&str], &[i32])] = &[
+        ("wmv_wmv1_wmav1.wmv", "wmv1", &["wmav1"], &[1]),
+        ("wmv_wmv2_wmav2.wmv", "wmv2", &["wmav2"], &[2]),
+        ("wmv_wmv2_pcm_s24le.wmv", "wmv2", &["pcm_s24le"], &[2]),
+        ("wmv_wmv1_mp3_mono.wmv", "wmv1", &["mp3"], &[1]),
+        ("wmv_wmv2_pcm_u8_mono.wmv", "wmv2", &["pcm_u8"], &[1]),
+        (
+            "wmv_wmv1_pcm_s16le_stereo.wmv",
+            "wmv1",
+            &["pcm_s16le"],
+            &[2],
+        ),
+        (
+            "wmv_wmv2_pcm_s32le_stereo.wmv",
+            "wmv2",
+            &["pcm_s32le"],
+            &[2],
+        ),
+        (
+            "wmv_wmv1_pcm_f32le_stereo.wmv",
+            "wmv1",
+            &["pcm_f32le"],
+            &[2],
+        ),
+        (
+            "wmv_wmv2_pcm_s24le_surround.wmv",
+            "wmv2",
+            &["pcm_s24le"],
+            &[6],
+        ),
+        ("wmv_wmv1_aac_surround.wmv", "wmv1", &["aac"], &[6]),
+        ("wmv_wmv2_ac3_surround.wmv", "wmv2", &["ac3"], &[6]),
+        (
+            "wmv_wmv1_dual_wma.wmv",
+            "wmv1",
+            &["wmav1", "wmav2"],
+            &[1, 2],
+        ),
+        ("wmv_wmv2_video_only.wmv", "wmv2", &[], &[]),
+    ];
+    for (index, &(name, video, audio, channels)) in WMV_SPECS.iter().enumerate() {
+        let mut case = build_case(
+            "wmv",
+            index + 1,
+            "wmv",
+            "asf",
+            video,
+            audio,
+            FixtureFlags {
+                subtitle: false,
+                dual: false,
+            },
+        );
+        case.name = name.into();
+        case.audio_channels = channels.to_vec();
+        case.asf_wave_extensible = name == "wmv_wmv2_pcm_s24le_surround.wmv";
+        cases.push(case);
+    }
+
+    const OGV_SPECS: &[(&str, &[&str], &[i32])] = &[
+        ("ogv_theora_vorbis.ogv", &["vorbis"], &[2]),
+        ("ogv_theora_opus.ogv", &["opus"], &[6]),
+        ("ogv_theora_opus_mono.ogv", &["opus"], &[1]),
+        ("ogv_theora_opus_stereo.ogv", &["opus"], &[2]),
+        ("ogv_theora_opus_surround.ogv", &["opus"], &[6]),
+        (
+            "ogv_theora_dual_vorbis_opus.ogv",
+            &["vorbis", "opus"],
+            &[2, 1],
+        ),
+        ("ogv_theora_dual_opus.ogv", &["opus", "opus"], &[1, 6]),
+        ("ogv_theora_dual_vorbis.ogv", &["vorbis", "vorbis"], &[2, 2]),
+        ("ogv_theora_vorbis_alt.ogv", &["vorbis"], &[2]),
+        ("ogv_theora_video_only.ogv", &[], &[]),
+    ];
+    for (index, &(name, audio, channels)) in OGV_SPECS.iter().enumerate() {
+        let mut case = build_case(
+            "ogv",
+            index + 1,
+            "ogv",
+            "ogg",
+            "theora",
+            audio,
+            FixtureFlags {
+                subtitle: false,
+                dual: false,
+            },
+        );
+        case.name = name.into();
+        case.audio_channels = channels.to_vec();
+        cases.push(case);
+    }
+
+    const FLV_SPECS: &[(&str, &str, &[&str], &[i32])] = &[
+        ("flv_flv1_mp3.flv", "flv1", &["mp3"], &[2]),
+        ("flv_h264_aac.flv", "h264", &["aac"], &[6]),
+        ("flv_flv1_pcm_s16le.flv", "flv1", &["pcm_s16le"], &[2]),
+        ("flv_h264_mp3.flv", "h264", &["mp3"], &[1]),
+        ("flv_flv1_pcm_u8.flv", "flv1", &["pcm_u8"], &[1]),
+        ("flv_flv1_adpcm_swf.flv", "flv1", &["adpcm_swf"], &[1]),
+        ("flv_flv1_nellymoser.flv", "flv1", &["nellymoser"], &[1]),
+        ("flv_flv1_aac_mono.flv", "flv1", &["aac"], &[1]),
+        ("flv_h264_pcm_alaw.flv", "h264", &["pcm_alaw"], &[1]),
+        ("flv_flv1_pcm_mulaw.flv", "flv1", &["pcm_mulaw"], &[1]),
+        ("flv_flv1_speex.flv", "flv1", &["speex"], &[1]),
+        ("flv_flv1_video_only.flv", "flv1", &[], &[]),
+    ];
+    for (index, &(name, video, audio, channels)) in FLV_SPECS.iter().enumerate() {
+        let mut case = build_case(
+            "flv",
+            index + 1,
+            "flv",
+            "flv",
+            video,
+            audio,
+            FixtureFlags {
+                subtitle: false,
+                dual: false,
+            },
+        );
+        case.name = name.into();
+        case.audio_channels = channels.to_vec();
+        cases.push(case);
+    }
+
+    assert_eq!(cases.len(), 235);
     cases
 }
 
@@ -365,6 +596,7 @@ fn build_dense_idx1_case() -> FixtureCase {
         min_duration_seconds: 8,
         valid_video: true,
         derive_ts_layout: None,
+        asf_wave_extensible: false,
     }
 }
 
@@ -392,6 +624,7 @@ fn build_dense_simd_case(
         min_duration_seconds: 7,
         valid_video: true,
         derive_ts_layout: None,
+        asf_wave_extensible: false,
     }
 }
 
@@ -562,10 +795,197 @@ fn derive_ts_layout_case(
     fs::write(&out, out_bytes).with_context(|| format!("failed to write {}", out.display()))
 }
 
+fn read_u16_le_at(data: &[u8], offset: usize) -> Result<u16> {
+    let Some(bytes) = data.get(offset..offset + 2) else {
+        bail!("truncated ASF field at offset {offset}");
+    };
+    Ok(u16::from_le_bytes(bytes.try_into().unwrap()))
+}
+
+fn read_u32_le_at(data: &[u8], offset: usize) -> Result<u32> {
+    let Some(bytes) = data.get(offset..offset + 4) else {
+        bail!("truncated ASF field at offset {offset}");
+    };
+    Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
+}
+
+fn read_u64_le_at(data: &[u8], offset: usize) -> Result<u64> {
+    let Some(bytes) = data.get(offset..offset + 8) else {
+        bail!("truncated ASF field at offset {offset}");
+    };
+    Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
+}
+
+fn write_le_at(data: &mut [u8], offset: usize, value: &[u8]) -> Result<()> {
+    let Some(target) = data.get_mut(offset..offset + value.len()) else {
+        bail!("truncated ASF field at offset {offset}");
+    };
+    target.copy_from_slice(value);
+    Ok(())
+}
+
+fn rewrite_asf_pcm_as_wave_extensible(path: &Path) -> Result<()> {
+    const FILE_PROPERTIES_GUID: [u8; 16] = [
+        0xa1, 0xdc, 0xab, 0x8c, 0x47, 0xa9, 0xcf, 0x11, 0x8e, 0xe4, 0x00, 0xc0, 0x0c, 0x20, 0x53,
+        0x65,
+    ];
+    const STREAM_PROPERTIES_GUID: [u8; 16] = [
+        0x91, 0x07, 0xdc, 0xb7, 0xb7, 0xa9, 0xcf, 0x11, 0x8e, 0xe6, 0x00, 0xc0, 0x0c, 0x20, 0x53,
+        0x65,
+    ];
+    const AUDIO_MEDIA_GUID: [u8; 16] = [
+        0x40, 0x9e, 0x69, 0xf8, 0x4d, 0x5b, 0xcf, 0x11, 0xa8, 0xfd, 0x00, 0x80, 0x5f, 0x5c, 0x44,
+        0x2b,
+    ];
+    const EXTENSIBLE_BYTES: u64 = 22;
+
+    let mut data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let header_size = usize::try_from(read_u64_le_at(&data, 16)?)
+        .context("ASF header size does not fit in memory")?;
+    if header_size > data.len() || header_size < 30 {
+        bail!("invalid ASF header size in {}", path.display());
+    }
+
+    let mut position = 30_usize;
+    let mut file_size_offset = None;
+    let mut target = None;
+    while position < header_size {
+        let object_end = usize::try_from(read_u64_le_at(&data, position + 16)?)
+            .ok()
+            .and_then(|size| position.checked_add(size))
+            .filter(|end| *end <= header_size)
+            .ok_or_else(|| anyhow::anyhow!("invalid ASF object size at offset {position}"))?;
+        let guid = &data[position..position + 16];
+        if guid == FILE_PROPERTIES_GUID {
+            file_size_offset = Some(position + 40);
+        } else if guid == STREAM_PROPERTIES_GUID
+            && data.get(position + 24..position + 40) == Some(AUDIO_MEDIA_GUID.as_slice())
+        {
+            let type_size_offset = position + 64;
+            let type_size = usize::try_from(read_u32_le_at(&data, type_size_offset)?)
+                .context("ASF type-specific data size does not fit in memory")?;
+            let type_data_offset = position + 78;
+            let format_tag = read_u16_le_at(&data, type_data_offset)?;
+            if type_size >= 40
+                && format_tag == 0xfffe
+                && read_u16_le_at(&data, type_data_offset + 24)? == 0x0001
+            {
+                return Ok(());
+            }
+            if type_size == 18
+                && format_tag == 0x0001
+                && read_u16_le_at(&data, type_data_offset + 2)? > 2
+                && read_u16_le_at(&data, type_data_offset + 14)? > 16
+            {
+                target = Some((position + 16, type_size_offset, type_data_offset));
+            }
+        }
+        position = object_end;
+    }
+
+    let file_size_offset = file_size_offset.context("ASF file properties object not found")?;
+    let (object_size_offset, type_size_offset, type_data_offset) =
+        target.context("eligible ASF PCM stream not found")?;
+    let old_file_size = read_u64_le_at(&data, file_size_offset)?;
+    let old_header_size = read_u64_le_at(&data, 16)?;
+    let old_object_size = read_u64_le_at(&data, object_size_offset)?;
+    let old_type_size = read_u32_le_at(&data, type_size_offset)?;
+    let bits_per_sample = read_u16_le_at(&data, type_data_offset + 14)?;
+
+    write_le_at(&mut data, type_data_offset, &0xfffe_u16.to_le_bytes())?;
+    write_le_at(&mut data, type_data_offset + 16, &22_u16.to_le_bytes())?;
+    write_le_at(
+        &mut data,
+        file_size_offset,
+        &old_file_size
+            .checked_add(EXTENSIBLE_BYTES)
+            .context("ASF file size overflow")?
+            .to_le_bytes(),
+    )?;
+    write_le_at(
+        &mut data,
+        16,
+        &old_header_size
+            .checked_add(EXTENSIBLE_BYTES)
+            .context("ASF header size overflow")?
+            .to_le_bytes(),
+    )?;
+    write_le_at(
+        &mut data,
+        object_size_offset,
+        &old_object_size
+            .checked_add(EXTENSIBLE_BYTES)
+            .context("ASF stream properties size overflow")?
+            .to_le_bytes(),
+    )?;
+    write_le_at(
+        &mut data,
+        type_size_offset,
+        &old_type_size
+            .checked_add(u32::try_from(EXTENSIBLE_BYTES).unwrap())
+            .context("ASF type-specific data size overflow")?
+            .to_le_bytes(),
+    )?;
+
+    let mut extension = Vec::with_capacity(EXTENSIBLE_BYTES as usize);
+    extension.extend_from_slice(&bits_per_sample.to_le_bytes());
+    extension.extend_from_slice(&0x3f_u32.to_le_bytes());
+    extension.extend_from_slice(&[
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b,
+        0x71,
+    ]);
+    data.splice(type_data_offset + 18..type_data_offset + 18, extension);
+
+    fs::write(path, data).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn generate_speex_input(
+    ffmpeg: &Path,
+    speexenc: &Path,
+    media_dir: &Path,
+    case: &FixtureCase,
+    duration: &str,
+) -> Result<std::path::PathBuf> {
+    let stem = output_stem(&case.name)?;
+    let wav_path = media_dir.join(format!(".{stem}.speex.wav"));
+    let speex_path = media_dir.join(format!(".{stem}.speex.spx"));
+    let mut wav_command = Command::new(ffmpeg);
+    wav_command
+        .arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-f")
+        .arg("lavfi")
+        .arg("-i")
+        .arg(format!(
+            "sine=frequency=440:sample_rate=16000:duration={duration}"
+        ))
+        .arg("-c:a")
+        .arg("pcm_s16le")
+        .arg(&wav_path);
+    if let Err(error) = crate::run_checked(&mut wav_command) {
+        let _ = fs::remove_file(&wav_path);
+        return Err(error);
+    }
+
+    let mut speex_command = Command::new(speexenc);
+    speex_command.arg(&wav_path).arg(&speex_path);
+    let result = crate::run_checked(&mut speex_command);
+    let _ = fs::remove_file(&wav_path);
+    if let Err(error) = result {
+        let _ = fs::remove_file(&speex_path);
+        return Err(error);
+    }
+    Ok(speex_path)
+}
+
 fn generate_case(
     ctx: &TaskContext,
     media_dir: &Path,
     case: &FixtureCase,
+    ffmpeg: &Path,
+    speexenc: &Path,
     ffprobe_available: bool,
 ) -> Result<()> {
     let out = media_dir.join(&case.name);
@@ -578,7 +998,12 @@ fn generate_case(
     }
 
     let duration = case.duration_seconds.unwrap_or(1.4).to_string();
-    let mut command = ctx.command("ffmpeg");
+    let speex_path = case
+        .source_audio_codecs
+        .contains(&"speex")
+        .then(|| generate_speex_input(ffmpeg, speexenc, media_dir, case, &duration))
+        .transpose()?;
+    let mut command = Command::new(ffmpeg);
     command
         .arg("-y")
         .arg("-hide_banner")
@@ -592,14 +1017,22 @@ fn generate_case(
             case.width, case.height, case.fps
         ));
 
-    for channels in &case.audio_channels {
-        command
-            .arg("-f")
-            .arg("lavfi")
-            .arg("-t")
-            .arg(&duration)
-            .arg("-i")
-            .arg(format!("anullsrc=r=48000:cl={}", channel_layout(*channels)));
+    for (stream, channels) in case.audio_channels.iter().enumerate() {
+        if case.source_audio_codecs.get(stream) == Some(&"speex") {
+            command.arg("-i").arg(
+                speex_path
+                    .as_ref()
+                    .context("Speex input was not generated")?,
+            );
+        } else {
+            command
+                .arg("-f")
+                .arg("lavfi")
+                .arg("-t")
+                .arg(&duration)
+                .arg("-i")
+                .arg(format!("anullsrc=r=48000:cl={}", channel_layout(*channels)));
+        }
     }
 
     let subtitle_path = if case.subtitle_stream_count > 0 {
@@ -649,14 +1082,21 @@ fn generate_case(
         }
     }
 
-    append_muxer_format(&mut command, output_ext(&case.name)?)?;
+    let extension = output_ext(&case.name)?;
+    append_muxer_format(&mut command, extension)?;
     command.arg("-shortest").arg(&out);
 
     let generate_result = crate::run_checked(&mut command);
     if let Some(path) = subtitle_path {
         let _ = fs::remove_file(path);
     }
+    if let Some(path) = speex_path {
+        let _ = fs::remove_file(path);
+    }
     generate_result?;
+    if case.asf_wave_extensible {
+        rewrite_asf_pcm_as_wave_extensible(&out)?;
+    }
 
     if ffprobe_available {
         verify_with_ffprobe(ctx, &out)?;
@@ -730,6 +1170,33 @@ fn append_video_encoder(command: &mut Command, codec: &str) -> Result<()> {
                 .arg("-pix_fmt")
                 .arg("yuv420p");
         }
+        "wmv1" | "wmv2" => {
+            command
+                .arg("-c:v")
+                .arg(codec)
+                .arg("-q:v")
+                .arg("8")
+                .arg("-pix_fmt")
+                .arg("yuv420p");
+        }
+        "theora" => {
+            command
+                .arg("-c:v")
+                .arg("libtheora")
+                .arg("-q:v")
+                .arg("5")
+                .arg("-pix_fmt")
+                .arg("yuv420p");
+        }
+        "flv1" => {
+            command
+                .arg("-c:v")
+                .arg("flv")
+                .arg("-q:v")
+                .arg("8")
+                .arg("-pix_fmt")
+                .arg("yuv420p");
+        }
         _ => bail!("unsupported video codec {codec}"),
     }
     Ok(())
@@ -752,8 +1219,32 @@ fn append_audio_encoder(command: &mut Command, codec: &str, stream: usize) -> Re
                 .arg(format!("-b{stream_spec}"))
                 .arg("64k");
         }
-        "pcm_s16le" => {
-            command.arg(format!("-c{stream_spec}")).arg("pcm_s16le");
+        "pcm_u8" | "pcm_s16le" | "pcm_alaw" | "pcm_mulaw" => {
+            command
+                .arg(format!("-c{stream_spec}"))
+                .arg(codec)
+                .arg(format!("-ar{stream_spec}"))
+                .arg("44100");
+        }
+        "pcm_s24le" | "pcm_s32le" | "pcm_f32le" => {
+            command.arg(format!("-c{stream_spec}")).arg(codec);
+        }
+        "adpcm_swf" => {
+            command
+                .arg(format!("-c{stream_spec}"))
+                .arg("adpcm_swf")
+                .arg(format!("-ar{stream_spec}"))
+                .arg("44100");
+        }
+        "nellymoser" => {
+            command
+                .arg(format!("-c{stream_spec}"))
+                .arg("nellymoser")
+                .arg(format!("-ar{stream_spec}"))
+                .arg("16000");
+        }
+        "speex" => {
+            command.arg(format!("-c{stream_spec}")).arg("copy");
         }
         "ac3" => {
             command
@@ -800,6 +1291,13 @@ fn append_audio_encoder(command: &mut Command, codec: &str, stream: usize) -> Re
                 .arg(format!("-strict{stream_spec}"))
                 .arg("-2");
         }
+        "wmav1" | "wmav2" => {
+            command
+                .arg(format!("-c{stream_spec}"))
+                .arg(codec)
+                .arg(format!("-b{stream_spec}"))
+                .arg("64k");
+        }
         _ => bail!("unsupported audio codec {codec}"),
     }
     Ok(())
@@ -812,6 +1310,9 @@ fn append_muxer_format(command: &mut Command, extension: &str) -> Result<()> {
         "mov" => command.arg("-f").arg("mov"),
         "ts" | "m2ts" => command.arg("-f").arg("mpegts"),
         "avi" => command.arg("-f").arg("avi"),
+        "wmv" => command.arg("-f").arg("asf"),
+        "ogv" => command.arg("-f").arg("ogg"),
+        "flv" => command.arg("-f").arg("flv"),
         _ => bail!("unsupported fixture extension {extension}"),
     };
     Ok(())
@@ -894,7 +1395,7 @@ mod tests {
     fn generated_manifest_matches_committed_fixture_manifest() {
         let mut cases = build_matrix();
         cases.extend(build_dense_simd_cases());
-        assert_eq!(cases.len(), 209);
+        assert_eq!(cases.len(), 244);
 
         let manifest_path =
             xtask_support::repo_root().join("crates/scryer-mediainfo/tests/media-fixtures.toml");
@@ -902,5 +1403,68 @@ mod tests {
             .unwrap_or_else(|err| panic!("failed to read {}: {err}", manifest_path.display()));
 
         assert_eq!(manifest_contents(&cases), committed);
+    }
+
+    #[test]
+    fn rejects_unknown_selective_fixture_before_generation() {
+        let cases = build_matrix();
+        let error = match select_cases(&cases, &["does-not-exist".into()]) {
+            Ok(_) => panic!("unknown fixture unexpectedly selected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unknown media fixture"));
+    }
+
+    #[test]
+    fn failed_speex_source_generation_removes_partial_wav() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "scryer-speex-cleanup-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&temp_dir).unwrap();
+        let case = build_matrix()
+            .into_iter()
+            .find(|case| case.name == "flv_flv1_speex.flv")
+            .unwrap();
+        let current_exe = std::env::current_exe().unwrap();
+
+        assert!(generate_speex_input(&current_exe, &current_exe, &temp_dir, &case, "0.1").is_err());
+        assert!(!temp_dir.join(".flv_flv1_speex.speex.wav").exists());
+        fs::remove_dir(temp_dir).unwrap();
+    }
+
+    #[test]
+    fn committed_asf_fixture_uses_wave_format_extensible() {
+        const AUDIO_MEDIA_GUID: [u8; 16] = [
+            0x40, 0x9e, 0x69, 0xf8, 0x4d, 0x5b, 0xcf, 0x11, 0xa8, 0xfd, 0x00, 0x80, 0x5f, 0x5c,
+            0x44, 0x2b,
+        ];
+        let path = xtask_support::repo_root()
+            .join("crates/scryer-mediainfo/tests/media/wmv_wmv2_pcm_s24le_surround.wmv");
+        let data = fs::read(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        let stream_type_offset = data
+            .windows(AUDIO_MEDIA_GUID.len())
+            .position(|window| window == AUDIO_MEDIA_GUID)
+            .expect("ASF audio stream GUID");
+        let type_data_offset = stream_type_offset + 54;
+
+        assert_eq!(read_u32_le_at(&data, stream_type_offset + 40).unwrap(), 40);
+        assert_eq!(read_u16_le_at(&data, type_data_offset).unwrap(), 0xfffe);
+        assert_eq!(
+            read_u16_le_at(&data, type_data_offset + 24).unwrap(),
+            0x0001
+        );
+    }
+
+    #[test]
+    fn recognizes_exact_ffmpeg_encoder_names() {
+        let listing = b" V....D libtheora  libtheora Theora encoder\n";
+        assert!(ffmpeg_encoder_listing_contains(listing, "libtheora"));
+        assert!(!ffmpeg_encoder_listing_contains(listing, "theora"));
     }
 }

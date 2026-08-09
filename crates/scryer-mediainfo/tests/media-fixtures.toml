@@ -3002,6 +3002,531 @@ min_duration_seconds = 1
 valid_video = true
 
 [[fixtures]]
+name = "wmv_wmv1_wmav1.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv1"
+width = 80
+height = 44
+fps = 15
+audio_codecs = ["wmav1"]
+audio_channels = [1]
+audio_languages = ["jpn"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv2_wmav2.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv2"
+width = 96
+height = 54
+fps = 24
+audio_codecs = ["wmav2"]
+audio_channels = [2]
+audio_languages = ["spa"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv2_pcm_s24le.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv2"
+width = 112
+height = 64
+fps = 25
+audio_codecs = ["pcm_s24le"]
+audio_channels = [2]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv1_mp3_mono.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv1"
+width = 64
+height = 36
+fps = 30
+audio_codecs = ["mp3"]
+audio_channels = [1]
+audio_languages = ["eng"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv2_pcm_u8_mono.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv2"
+width = 80
+height = 44
+fps = 12
+audio_codecs = ["pcm_u8"]
+audio_channels = [1]
+audio_languages = ["jpn"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv1_pcm_s16le_stereo.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv1"
+width = 96
+height = 54
+fps = 15
+audio_codecs = ["pcm_s16le"]
+audio_channels = [2]
+audio_languages = ["spa"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv2_pcm_s32le_stereo.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv2"
+width = 112
+height = 64
+fps = 24
+audio_codecs = ["pcm_s32le"]
+audio_channels = [2]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv1_pcm_f32le_stereo.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv1"
+width = 64
+height = 36
+fps = 25
+audio_codecs = ["pcm_f32le"]
+audio_channels = [2]
+audio_languages = ["eng"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv2_pcm_s24le_surround.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv2"
+width = 80
+height = 44
+fps = 30
+audio_codecs = ["pcm_s24le"]
+audio_channels = [6]
+audio_languages = ["jpn"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv1_aac_surround.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv1"
+width = 96
+height = 54
+fps = 12
+audio_codecs = ["aac"]
+audio_channels = [6]
+audio_languages = ["spa"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv2_ac3_surround.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv2"
+width = 112
+height = 64
+fps = 15
+audio_codecs = ["ac3"]
+audio_channels = [6]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv1_dual_wma.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv1"
+width = 64
+height = 36
+fps = 24
+audio_codecs = ["wmav1", "wmav2"]
+audio_channels = [1, 2]
+audio_languages = ["eng", "jpn"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "wmv_wmv2_video_only.wmv"
+generated = true
+container = "asf"
+video_codec = "wmv2"
+width = 80
+height = 44
+fps = 25
+audio_codecs = []
+audio_channels = []
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "ogv_theora_vorbis.ogv"
+generated = true
+container = "ogg"
+video_codec = "theora"
+width = 80
+height = 44
+fps = 15
+audio_codecs = ["vorbis"]
+audio_channels = [2]
+audio_languages = ["jpn"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "ogv_theora_opus.ogv"
+generated = true
+container = "ogg"
+video_codec = "theora"
+width = 96
+height = 54
+fps = 24
+audio_codecs = ["opus"]
+audio_channels = [6]
+audio_languages = ["spa"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "ogv_theora_opus_mono.ogv"
+generated = true
+container = "ogg"
+video_codec = "theora"
+width = 112
+height = 64
+fps = 25
+audio_codecs = ["opus"]
+audio_channels = [1]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "ogv_theora_opus_stereo.ogv"
+generated = true
+container = "ogg"
+video_codec = "theora"
+width = 64
+height = 36
+fps = 30
+audio_codecs = ["opus"]
+audio_channels = [2]
+audio_languages = ["eng"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "ogv_theora_opus_surround.ogv"
+generated = true
+container = "ogg"
+video_codec = "theora"
+width = 80
+height = 44
+fps = 12
+audio_codecs = ["opus"]
+audio_channels = [6]
+audio_languages = ["jpn"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "ogv_theora_dual_vorbis_opus.ogv"
+generated = true
+container = "ogg"
+video_codec = "theora"
+width = 96
+height = 54
+fps = 15
+audio_codecs = ["vorbis", "opus"]
+audio_channels = [2, 1]
+audio_languages = ["spa"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "ogv_theora_dual_opus.ogv"
+generated = true
+container = "ogg"
+video_codec = "theora"
+width = 112
+height = 64
+fps = 24
+audio_codecs = ["opus", "opus"]
+audio_channels = [1, 6]
+audio_languages = ["eng"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "ogv_theora_dual_vorbis.ogv"
+generated = true
+container = "ogg"
+video_codec = "theora"
+width = 64
+height = 36
+fps = 25
+audio_codecs = ["vorbis", "vorbis"]
+audio_channels = [2, 2]
+audio_languages = ["eng", "jpn"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "ogv_theora_vorbis_alt.ogv"
+generated = true
+container = "ogg"
+video_codec = "theora"
+width = 80
+height = 44
+fps = 30
+audio_codecs = ["vorbis"]
+audio_channels = [2]
+audio_languages = ["jpn"]
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "ogv_theora_video_only.ogv"
+generated = true
+container = "ogg"
+video_codec = "theora"
+width = 96
+height = 54
+fps = 12
+audio_codecs = []
+audio_channels = []
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_flv1_mp3.flv"
+generated = true
+container = "flv"
+video_codec = "flv1"
+width = 80
+height = 44
+fps = 15
+audio_codecs = ["mp3"]
+audio_channels = [2]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_h264_aac.flv"
+generated = true
+container = "flv"
+video_codec = "h264"
+width = 96
+height = 54
+fps = 24
+audio_codecs = ["aac"]
+audio_channels = [6]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_flv1_pcm_s16le.flv"
+generated = true
+container = "flv"
+video_codec = "flv1"
+width = 112
+height = 64
+fps = 25
+audio_codecs = ["pcm_s16le"]
+audio_channels = [2]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_h264_mp3.flv"
+generated = true
+container = "flv"
+video_codec = "h264"
+width = 64
+height = 36
+fps = 30
+audio_codecs = ["mp3"]
+audio_channels = [1]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_flv1_pcm_u8.flv"
+generated = true
+container = "flv"
+video_codec = "flv1"
+width = 80
+height = 44
+fps = 12
+audio_codecs = ["pcm_u8"]
+audio_channels = [1]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_flv1_adpcm_swf.flv"
+generated = true
+container = "flv"
+video_codec = "flv1"
+width = 96
+height = 54
+fps = 15
+audio_codecs = ["adpcm_swf"]
+audio_channels = [1]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_flv1_nellymoser.flv"
+generated = true
+container = "flv"
+video_codec = "flv1"
+width = 112
+height = 64
+fps = 24
+audio_codecs = ["nellymoser"]
+audio_channels = [1]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_flv1_aac_mono.flv"
+generated = true
+container = "flv"
+video_codec = "flv1"
+width = 64
+height = 36
+fps = 25
+audio_codecs = ["aac"]
+audio_channels = [1]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_h264_pcm_alaw.flv"
+generated = true
+container = "flv"
+video_codec = "h264"
+width = 80
+height = 44
+fps = 30
+audio_codecs = ["pcm_alaw"]
+audio_channels = [1]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_flv1_pcm_mulaw.flv"
+generated = true
+container = "flv"
+video_codec = "flv1"
+width = 96
+height = 54
+fps = 12
+audio_codecs = ["pcm_mulaw"]
+audio_channels = [1]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_flv1_speex.flv"
+generated = true
+container = "flv"
+video_codec = "flv1"
+width = 112
+height = 64
+fps = 15
+audio_codecs = ["speex"]
+audio_channels = [1]
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
+name = "flv_flv1_video_only.flv"
+generated = true
+container = "flv"
+video_codec = "flv1"
+width = 64
+height = 36
+fps = 24
+audio_codecs = []
+audio_channels = []
+audio_languages = []
+subtitle_stream_count = 0
+min_duration_seconds = 1
+valid_video = true
+
+[[fixtures]]
 name = "avi_idx1_dense_mpeg4.avi"
 generated = true
 container = "avi"

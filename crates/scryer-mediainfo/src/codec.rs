@@ -6,6 +6,9 @@ use crate::types::RawTrack;
 pub(crate) struct CodecInfo {
     pub profile: Option<String>,
     pub bit_depth: Option<i32>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub frame_rate_fps: Option<f64>,
     /// ITU-T H.273 TransferCharacteristics value extracted from bitstream VUI
     /// (e.g. 16 = SMPTE 2084/PQ, 18 = HLG). Used for HDR detection when the
     /// container doesn't carry this information.
@@ -1426,6 +1429,25 @@ impl<'a> AudioBitReader<'a> {
 ///
 /// The input bytes are the raw codec-private data stored in the container
 /// (e.g. MKV CodecPrivate or MP4 avcC box contents).
+pub(crate) fn is_valid_h264_avcc(codec_private: &[u8]) -> bool {
+    use bytes::Bytes;
+    use scuffle_h264::{AVCDecoderConfigurationRecord, Sps};
+    use std::io;
+
+    let Ok(config) = AVCDecoderConfigurationRecord::parse(&mut io::Cursor::new(
+        Bytes::copy_from_slice(codec_private),
+    )) else {
+        return false;
+    };
+    if config.configuration_version != 1 || config.sps.is_empty() || config.pps.is_empty() {
+        return false;
+    }
+    config.sps.iter().any(|sps_bytes| {
+        let rbsp = scan::h2645_unescape_rbsp(sps_bytes);
+        Sps::parse(io::Cursor::new(rbsp.as_ref())).is_ok()
+    })
+}
+
 pub(crate) fn extract_h264_info(codec_private: &[u8]) -> CodecInfo {
     use bytes::Bytes;
     use scuffle_h264::{AVCDecoderConfigurationRecord, Sps};
@@ -1450,9 +1472,12 @@ pub(crate) fn extract_h264_info(codec_private: &[u8]) -> CodecInfo {
             })
         };
 
-        let color_transfer = config.sps.first().and_then(|sps_bytes| {
-            let sps = parse_sps(sps_bytes)?;
-            let transfer = sps.color_config?.transfer_characteristics as u32;
+        let first_sps = config
+            .sps
+            .first()
+            .and_then(|sps_bytes| parse_sps(sps_bytes));
+        let color_transfer = first_sps.as_ref().and_then(|sps| {
+            let transfer = sps.color_config.as_ref()?.transfer_characteristics as u32;
             if transfer > 0 && transfer != 2 {
                 Some(transfer)
             } else {
@@ -1464,6 +1489,13 @@ pub(crate) fn extract_h264_info(codec_private: &[u8]) -> CodecInfo {
             profile,
             bit_depth: bit_depth.or(Some(8)),
             color_transfer,
+            width: first_sps
+                .as_ref()
+                .and_then(|sps| i32::try_from(sps.width()).ok()),
+            height: first_sps
+                .as_ref()
+                .and_then(|sps| i32::try_from(sps.height()).ok()),
+            frame_rate_fps: first_sps.as_ref().and_then(Sps::frame_rate),
         };
     }
 
@@ -1490,6 +1522,9 @@ pub(crate) fn extract_h264_info(codec_private: &[u8]) -> CodecInfo {
         profile: map_h264_profile(sps.profile_idc),
         bit_depth,
         color_transfer,
+        width: i32::try_from(sps.width()).ok(),
+        height: i32::try_from(sps.height()).ok(),
+        frame_rate_fps: sps.frame_rate(),
     }
 }
 
@@ -1524,6 +1559,7 @@ pub(crate) fn extract_h265_info(codec_private: &[u8]) -> CodecInfo {
             profile,
             bit_depth,
             color_transfer,
+            ..CodecInfo::default()
         };
     }
 
@@ -1544,6 +1580,7 @@ pub(crate) fn extract_h265_info(codec_private: &[u8]) -> CodecInfo {
         profile: map_h265_profile(sps.rbsp.profile_tier_level.general_profile.profile_idc),
         bit_depth: Some(sps.rbsp.bit_depth_luma_minus8 as i32 + 8),
         color_transfer,
+        ..CodecInfo::default()
     }
 }
 
@@ -1589,6 +1626,7 @@ pub(crate) fn extract_av1_info(codec_private: &[u8]) -> CodecInfo {
         profile,
         bit_depth: Some(bit_depth),
         color_transfer: None,
+        ..CodecInfo::default()
     }
 }
 
