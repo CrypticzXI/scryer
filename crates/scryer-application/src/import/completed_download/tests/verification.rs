@@ -36,6 +36,44 @@ async fn visible_file_count_reuses_resolved_completed_download() {
 }
 
 #[tokio::test]
+async fn verify_import_terminalizes_movie_after_one_successful_file() {
+    let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
+    let artifacts = vec![build_artifact(
+        "dl-1",
+        "movie-file",
+        "Paper.Lantern.2012.1080p.mkv",
+    )];
+    let app = build_app(vec![title], vec![], vec![], artifacts);
+    let td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+
+    assert!(verify_import(&app, &td, 1).await);
+}
+
+#[tokio::test]
+async fn verify_manual_import_keeps_partial_unresolved_series_blocked() {
+    let title = build_title("title-1", "Unparsed Series", MediaFacet::Series);
+    let artifacts = vec![build_artifact("dl-1", "file-1", "Part.One.mkv")];
+    let app = build_app(vec![title], vec![], vec![], artifacts);
+    let td = build_tracked_download("title-1", "series", "Unparsed.Release");
+
+    assert!(!verify_manual_import(&app, &td, 1, Some(2)).await);
+}
+
+#[tokio::test]
+async fn verify_manual_import_terminalizes_complete_series_movie_source() {
+    let title = build_title("title-1", "DuckTales", MediaFacet::Series);
+    let artifacts = vec![build_artifact(
+        "dl-1",
+        "movie-file",
+        "DuckTales.The.Movie.mkv",
+    )];
+    let app = build_app(vec![title], vec![], vec![], artifacts);
+    let td = build_tracked_download("title-1", "series", "DuckTales.The.Movie.1990");
+
+    assert!(verify_manual_import(&app, &td, 1, Some(1)).await);
+}
+
+#[tokio::test]
 async fn verify_import_requires_full_season_pack_coverage() {
     let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
     let collection = build_collection("season-2", "title-1", "2");

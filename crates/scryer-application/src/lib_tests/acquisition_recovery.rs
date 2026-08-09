@@ -6526,6 +6526,46 @@ async fn queue_best_release_parks_ambiguous_candidate_while_queuing_eligible_rel
 }
 
 #[tokio::test]
+async fn queue_best_release_materializes_missing_scope_before_parking_ambiguity() {
+    let (
+        app,
+        user,
+        title,
+        _wanted_id,
+        pending_releases,
+        _release_attempts,
+        _download_client,
+        wanted_items,
+    ) = ambiguous_identity_fixture_with_releases(&["One.Piece.1080p.WEB-DL.x264-GRP"]).await;
+    wanted_items.store.lock().await.clear();
+
+    for _ in 0..2 {
+        let error = app
+            .queue_best_release(
+                &user,
+                &title.id,
+                SubmissionScope::Title,
+                SubmissionConflictPolicy::Abort,
+            )
+            .await
+            .expect_err("an ambiguous-only search has no auto-eligible release");
+        assert!(error.to_string().contains("no auto-eligible release found"));
+    }
+
+    let states = wanted_items.store.lock().await.clone();
+    assert_eq!(states.len(), 1, "the title scope is materialized once");
+    assert_eq!(states[0].title_id, title.id);
+
+    let parked = pending_releases
+        .list_pending_releases_for_title(&title.id)
+        .await
+        .expect("list pending releases for title");
+    assert_eq!(parked.len(), 1, "the ambiguous release is deduplicated");
+    assert_eq!(parked[0].status, PendingReleaseStatus::NeedsReview);
+    assert_eq!(parked[0].wanted_item_id, states[0].id);
+}
+
+#[tokio::test]
 async fn needs_review_pending_release_is_never_auto_promoted() {
     let (app, _user, title, _wanted_id, pending_releases, _release_attempts, download_client) =
         ambiguous_identity_fixture().await;

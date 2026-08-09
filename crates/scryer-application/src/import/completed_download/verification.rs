@@ -15,6 +15,14 @@ enum SourceVideoEpisodeResolution {
     Resolved(HashSet<String>),
 }
 
+#[derive(Clone, Copy)]
+enum ImportVerificationMode {
+    Automatic,
+    Manual {
+        expected_source_video_files: Option<usize>,
+    },
+}
+
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 enum ImportArtifactSourceKey {
     RelativePath(String),
@@ -34,11 +42,46 @@ pub async fn verify_import(
     verify_import_inner(app, td, files_imported_this_pass, None).await
 }
 
+pub async fn verify_manual_import(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    files_imported_this_pass: usize,
+    expected_source_video_files: Option<usize>,
+) -> bool {
+    verify_import_with_mode(
+        app,
+        td,
+        files_imported_this_pass,
+        None,
+        ImportVerificationMode::Manual {
+            expected_source_video_files,
+        },
+    )
+    .await
+}
+
 pub(super) async fn verify_import_inner(
     app: &AppUseCase,
     td: &TrackedDownload,
     files_imported_this_pass: usize,
     completed: Option<&CompletedDownload>,
+) -> bool {
+    verify_import_with_mode(
+        app,
+        td,
+        files_imported_this_pass,
+        completed,
+        ImportVerificationMode::Automatic,
+    )
+    .await
+}
+
+async fn verify_import_with_mode(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    files_imported_this_pass: usize,
+    completed: Option<&CompletedDownload>,
+    mode: ImportVerificationMode,
 ) -> bool {
     let source_identity = DownloadSourceIdentity::new(
         Some(td.client_id.as_str()),
@@ -61,9 +104,15 @@ pub(super) async fn verify_import_inner(
         return false;
     }
 
-    let current_visible_files = current_visible_video_file_count(app, td, completed).await;
+    let current_visible_files = match mode {
+        ImportVerificationMode::Manual {
+            expected_source_video_files: Some(count),
+        } => count,
+        _ => current_visible_video_file_count(app, td, completed).await,
+    };
     let source_video_units = visible_source_episode_units(app, td, &artifacts, completed).await;
     let mut successful_units = HashSet::new();
+    let mut successful_source_files = HashSet::new();
     let mut rejected_units = HashSet::new();
 
     for artifact in &artifacts {
@@ -74,6 +123,9 @@ pub(super) async fn verify_import_inner(
         match artifact.result.as_str() {
             "imported" | "already_present" => {
                 successful_units.insert(logical_unit);
+                if let Some(source_key) = import_artifact_source_key(artifact) {
+                    successful_source_files.insert(source_key);
+                }
             }
             "rejected" => {
                 rejected_units.insert(logical_unit);
@@ -88,6 +140,17 @@ pub(super) async fn verify_import_inner(
 
     if td.facet.as_deref() == Some("movie") {
         return !successful_units.is_empty();
+    }
+
+    let manual_source_coverage = match mode {
+        ImportVerificationMode::Automatic => None,
+        ImportVerificationMode::Manual {
+            expected_source_video_files,
+        } => expected_source_video_files
+            .map(|expected| expected > 0 && successful_source_files.len() >= expected),
+    };
+    if manual_source_coverage == Some(false) {
+        return false;
     }
 
     match expected_episode_units(app, td).await {
@@ -122,20 +185,34 @@ pub(super) async fn verify_import_inner(
                 .any(|unit| successful_units.contains(unit));
         }
         ExpectedEpisodeResolution::Unresolved => {
-            if successful_units_cover_visible_files(successful_units.len(), current_visible_files) {
+            if matches!(mode, ImportVerificationMode::Automatic)
+                && successful_units_cover_visible_files(
+                    successful_units.len(),
+                    current_visible_files,
+                )
+            {
                 return true;
             }
 
-            return files_imported_this_pass > 0 && rejected_units.is_empty();
+            return match mode {
+                ImportVerificationMode::Automatic => {
+                    files_imported_this_pass > 0 && rejected_units.is_empty()
+                }
+                ImportVerificationMode::Manual { .. } => manual_source_coverage.unwrap_or(false),
+            };
         }
         ExpectedEpisodeResolution::NotApplicable => {}
     }
 
-    if successful_units_cover_visible_files(successful_units.len(), current_visible_files) {
-        return true;
+    match mode {
+        ImportVerificationMode::Automatic => {
+            if successful_units_cover_visible_files(successful_units.len(), current_visible_files) {
+                return true;
+            }
+            !successful_units.is_empty()
+        }
+        ImportVerificationMode::Manual { .. } => manual_source_coverage.unwrap_or(false),
     }
-
-    !successful_units.is_empty()
 }
 
 fn source_video_units_are_complete(

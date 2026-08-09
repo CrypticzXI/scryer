@@ -613,6 +613,7 @@ pub(super) fn bootstrap_with_cleanup_tracking_and_indexer(
     .with_domain_events(Arc::new(MockDomainEventRepo::default()))
     .with_download_submissions(download_submissions)
     .with_pending_releases(pending_releases)
+    .with_acquisition_scope_states(Arc::new(TrackingAcquisitionScopeStateRepo::default()))
     .with_blocklist_repo(Arc::new(MockBlocklistRepo::default()))
     .with_libraries(Arc::new(MockLibraryRepo::default()))
     .build_partial_for_tests();

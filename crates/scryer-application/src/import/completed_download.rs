@@ -45,7 +45,7 @@ pub(crate) use lookup::{
     CompletedDownloadLookup, load_completed_download_lookup_for_items_excluding_client_types,
     load_completed_download_lookup_for_tracked_client_items_excluding_client_types,
 };
-pub use verification::verify_import;
+pub use verification::{verify_import, verify_manual_import};
 
 #[cfg(test)]
 mod tests;

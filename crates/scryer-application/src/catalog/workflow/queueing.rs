@@ -1120,6 +1120,25 @@ impl AppUseCase {
             }
         };
 
+        let wanted = match &scope {
+            SubmissionScope::Title => self
+                .resolve_or_create_wanted_state_row(&format!("title:{}", title.id))
+                .await?,
+            SubmissionScope::Episode { episode_id } => self
+                .resolve_or_create_wanted_state_row(&format!("episode:{episode_id}"))
+                .await?,
+            SubmissionScope::SeriesMovie {
+                series_movie_link_id,
+            } => self
+                .resolve_or_create_wanted_state_row(&format!(
+                    "series_movie:{series_movie_link_id}"
+                ))
+                .await?,
+            SubmissionScope::Orphan
+            | SubmissionScope::EpisodeSet { .. }
+            | SubmissionScope::Collection { .. } => None,
+        };
+
         let results = self
             .search_and_evaluate_subject(
                 &search_title,
@@ -1131,40 +1150,21 @@ impl AppUseCase {
             .await?;
         if let Some(candidate) = results.iter().find(|candidate| {
             candidate.auto_decision_code.as_deref() == Some("ambiguous_identity")
-        }) {
-            let wanted = match &scope {
-                SubmissionScope::Title => self
-                    .services
-                    .workflow
-                    .acquisition_scope_states
-                    .get_acquisition_scope_state_for_title(&title.id, None)
-                    .await?,
-                SubmissionScope::Episode { episode_id } => self
-                    .services
-                    .workflow
-                    .acquisition_scope_states
-                    .get_acquisition_scope_state_for_title(&title.id, Some(episode_id))
-                    .await?,
-                SubmissionScope::Orphan
-                | SubmissionScope::EpisodeSet { .. }
-                | SubmissionScope::Collection { .. }
-                | SubmissionScope::SeriesMovie { .. } => None,
-            };
-            if let Some(wanted) = wanted {
-                let candidate_score = candidate
-                    .quality_profile_decision
-                    .as_ref()
-                    .map(|decision| decision.preference_score)
-                    .unwrap_or_default();
-                self.park_pending_release_for_review(
-                    &wanted,
-                    &title,
-                    candidate,
-                    candidate_score,
-                    None,
-                )
-                .await;
-            }
+        }) && let Some(wanted) = wanted.as_ref()
+        {
+            let candidate_score = candidate
+                .quality_profile_decision
+                .as_ref()
+                .map(|decision| decision.preference_score)
+                .unwrap_or_default();
+            self.park_pending_release_for_review(
+                wanted,
+                &title,
+                candidate,
+                candidate_score,
+                None,
+            )
+            .await;
         }
         let best = results
             .into_iter()

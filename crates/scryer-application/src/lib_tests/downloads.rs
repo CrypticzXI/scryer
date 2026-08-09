@@ -922,6 +922,138 @@ async fn manual_import_source_allows_orphan_submission_but_rejects_managed_reass
     );
 }
 
+#[tokio::test]
+async fn queued_manual_import_reports_prior_automatic_import_after_source_cleanup() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Already Imported Manual Target".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let mut permissions = scryer_domain::LibraryPermissionMask::NONE;
+    permissions.insert(scryer_domain::LibraryPermissionMask::RESOLVE_IMPORTS);
+    let actor = app
+        .create_user(
+            &user,
+            "manual_import_race_actor".to_string(),
+            "password123".to_string(),
+            scryer_domain::AppPermissionMask::NONE,
+            vec![scryer_domain::LibraryGrant {
+                user_id: String::new(),
+                library_id: title.library_id.clone(),
+                permissions,
+            }],
+        )
+        .await
+        .expect("create manual import actor");
+    let client_id = "weaver-primary";
+    let item_id = "manual-race-source";
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some(client_id.to_string()),
+            download_client_type: "weaver".to_string(),
+            download_client_item_id: item_id.to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some("Already.Imported.Manual.Target.2026".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record submission");
+
+    let manual_import_id = Id::new().0;
+    let now = Utc::now().to_rfc3339();
+    import_repo.records.lock().await.extend([
+        ImportRecord {
+            id: Id::new().0,
+            source_client_id: Some(client_id.to_string()),
+            source_system: "weaver".to_string(),
+            source_ref: item_id.to_string(),
+            import_type: ImportType::MovieDownload,
+            status: ImportStatus::Completed,
+            payload_json: String::new(),
+            result_json: None,
+            download_id: None,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
+            started_at: Some(now.clone()),
+            finished_at: Some(now.clone()),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+        ImportRecord {
+            id: manual_import_id.clone(),
+            source_client_id: Some(client_id.to_string()),
+            source_system: "weaver".to_string(),
+            source_ref: item_id.to_string(),
+            import_type: ImportType::ManualImport,
+            status: ImportStatus::Pending,
+            payload_json: String::new(),
+            result_json: None,
+            download_id: None,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
+            started_at: None,
+            finished_at: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        },
+    ]);
+    let payload = crate::import_workflow::ManualImportRequestPayload {
+        requested_by_user_id: Some(actor.id),
+        title_id: Some(title.id),
+        download_client_item_id: item_id.to_string(),
+        client_id: Some(client_id.to_string()),
+        client_type: "weaver".to_string(),
+        files: Vec::new(),
+        selection_id: None,
+        requested_at: now,
+    };
+
+    let (status, result_json) =
+        crate::import_workflow::execute_queued_manual_import(&app, &manual_import_id, &payload)
+            .await
+            .expect("prior import should win without a live source lookup");
+
+    assert_eq!(status, ImportStatus::Skipped);
+    let result: scryer_domain::ImportResult = serde_json::from_str(
+        result_json
+            .as_deref()
+            .expect("already-imported result json"),
+    )
+    .expect("parse already-imported result");
+    assert_eq!(result.decision, scryer_domain::ImportDecision::Skipped);
+    assert_eq!(result.skip_reason, Some(ImportSkipReason::AlreadyImported));
+}
+
 struct TrackedTitleAssignmentFixture {
     app: AppUseCase,
     user: User,
@@ -1051,13 +1183,10 @@ async fn assign_tracked_download_title_serializes_submission_and_runtime_assignm
         tracked.match_type,
         scryer_domain::TitleMatchType::Submission
     );
-    // A MOVIE must not stay parked for manual intervention. Manual import can
-    // only target an episode or a series-movie link, so a movie left in
-    // ImportBlocked has no action that can complete it — the user assigns the
-    // title and nothing further is possible. Assignment therefore releases it
-    // back to Downloading so the completed-download check re-runs and
-    // auto-imports it (Submission is high-confidence).
-    assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+    // Assignment records the movie target but does not itself start an import.
+    // The operator's manual-import action remains the transition out of the
+    // blocked state.
+    assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
 }
 
 #[tokio::test]

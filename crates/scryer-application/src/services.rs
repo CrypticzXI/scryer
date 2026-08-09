@@ -1078,8 +1078,47 @@ pub(crate) struct ReleaseCandidatePasswordTicket {
     pub expires_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct ImportExecutionCoordinator {
+    permit: Arc<tokio::sync::Mutex<()>>,
+}
+
+impl ImportExecutionCoordinator {
+    pub(crate) async fn acquire(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.permit.clone().lock_owned().await
+    }
+}
+
+#[cfg(test)]
+mod import_execution_coordinator_tests {
+    use super::ImportExecutionCoordinator;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn permits_only_one_import_execution_at_a_time() {
+        let coordinator = ImportExecutionCoordinator::default();
+        let first = coordinator.acquire().await;
+        let waiting = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                let _second = coordinator.acquire().await;
+            }
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("second import should acquire after the first completes")
+            .expect("waiting import task should complete");
+    }
+}
+
 #[derive(Clone)]
 pub struct AppRuntimeImportState {
+    pub(crate) execution_coordinator: ImportExecutionCoordinator,
     pub external_import_warmup_orchestrator: ExternalImportMonitorWarmupOrchestrator,
     pub external_import_apply_lock: Arc<tokio::sync::Mutex<()>>,
     pub external_import_source_chunk_cleanup_done: Arc<tokio::sync::Mutex<bool>>,
@@ -1306,6 +1345,7 @@ impl AppRuntimeState {
                 interactive_release_searches: Arc::new(Mutex::new(HashMap::new())),
             },
             imports: AppRuntimeImportState {
+                execution_coordinator: ImportExecutionCoordinator::default(),
                 external_import_warmup_orchestrator:
                     ExternalImportMonitorWarmupOrchestrator::default(),
                 external_import_apply_lock: Arc::new(tokio::sync::Mutex::new(())),

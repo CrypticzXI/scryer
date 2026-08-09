@@ -1121,6 +1121,54 @@ async fn handle_tracked_download_command(
     use scryer_domain::{TrackedDownloadState, TrackedDownloadStatus};
 
     match command {
+        TrackedDownloadCommand::ReconcileManualImport {
+            id,
+            files_imported_this_pass,
+            expected_source_video_files,
+            reply,
+        } => {
+            let requested_id = id;
+            let id = resolve_tracked_command_id(tracker, &requested_id);
+            if tracked_work_in_flight.contains(&id) {
+                let _ = reply.send(Err(AppError::Validation(format!(
+                    "tracked download {requested_id} is busy processing"
+                ))));
+                return;
+            }
+            let result = async {
+                let tracked = tracker.find(&id).cloned().ok_or_else(|| {
+                    AppError::NotFound(format!("tracked download {requested_id}"))
+                })?;
+                if !crate::completed_download_handler::verify_manual_import(
+                    app,
+                    &tracked,
+                    files_imported_this_pass,
+                    expected_source_video_files,
+                )
+                .await
+                {
+                    return Ok(false);
+                }
+
+                let td = tracker
+                    .find_mut(&id)
+                    .expect("serialized tracked download disappeared after import verification");
+                td.state = TrackedDownloadState::Imported;
+                td.status = TrackedDownloadStatus::Ok;
+                td.status_messages.clear();
+                tracker
+                    .persist_terminal_state(app, &id, TrackedDownloadState::Imported)
+                    .await;
+                finalize_tracked_terminal_state(app, tracker, &id, TrackedDownloadState::Imported)
+                    .await;
+                Ok(true)
+            }
+            .await;
+            if matches!(result, Ok(true)) {
+                publish_runtime_tracked_download_snapshot_cache(app, tracker).await;
+            }
+            let _ = reply.send(result);
+        }
         TrackedDownloadCommand::MarkImported { id, reply } => {
             let requested_id = id;
             let id = resolve_tracked_command_id(tracker, &requested_id);

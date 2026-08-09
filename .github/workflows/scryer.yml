@@ -404,7 +404,7 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-26.04
+            runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             sccache_lane: launcher-linux-x86_64-musl
             sccache_writer_id: launcher-linux-amd64
@@ -596,7 +596,7 @@ jobs:
           - arch: x86_64
             variant: portable
             build_lane: portable
-            runner: ubuntu-26.04
+            runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             sccache_lane: pr-linux-x86_64-cpu
             artifact_name: scryer-linux-x86_64-portable

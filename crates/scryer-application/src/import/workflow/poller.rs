@@ -3,6 +3,7 @@ pub async fn import_completed_download(
     actor: &User,
     completed: &CompletedDownload,
 ) -> AppResult<ImportResult> {
+    let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
     import_completed_download_with_identity_policy(
         app,
         actor,
@@ -13,6 +14,15 @@ pub async fn import_completed_download(
 }
 
 pub async fn import_completed_download_for_manual_review(
+    app: &AppUseCase,
+    actor: &User,
+    completed: &CompletedDownload,
+) -> AppResult<ImportResult> {
+    let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
+    import_completed_download_for_manual_review_with_permit(app, actor, completed).await
+}
+
+pub(crate) async fn import_completed_download_for_manual_review_with_permit(
     app: &AppUseCase,
     actor: &User,
     completed: &CompletedDownload,

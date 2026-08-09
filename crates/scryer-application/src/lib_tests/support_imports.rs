@@ -902,20 +902,18 @@ impl ImportRepository for TrackingImportRepo {
         identities: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>> {
         let records = self.records.lock().await;
-        Ok(identities
+        Ok(records
             .iter()
-            .filter_map(|identity| {
-                records
-                    .iter()
-                    .rev()
-                    .find(|record| {
-                        record.source_client_id.as_deref().unwrap_or("")
-                            == identity.client_id_or_empty()
-                            && record.source_system == identity.client_type
-                            && record.source_ref == identity.item_id
-                    })
-                    .cloned()
+            .rev()
+            .filter(|record| {
+                identities.iter().any(|identity| {
+                    record.source_client_id.as_deref().unwrap_or("")
+                        == identity.client_id_or_empty()
+                        && record.source_system == identity.client_type
+                        && record.source_ref == identity.item_id
+                })
             })
+            .cloned()
             .collect())
     }
 

@@ -917,19 +917,6 @@ fn should_retry_late_submission_resolution(
         && !download_submission_identity_is_empty(&observed_queue_item_identity(incoming))
 }
 
-/// Whether a manual import could express a target for this title.
-///
-/// Manual import can only map a file to an episode or a series-movie link, and
-/// both belong to series-shaped titles. A movie has neither, so leaving a movie
-/// download parked "for manual intervention" offers the user no action that can
-/// actually complete it.
-fn title_has_mappable_import_targets(title: &Title) -> bool {
-    match title.facet {
-        scryer_domain::MediaFacet::Series | scryer_domain::MediaFacet::Anime => true,
-        scryer_domain::MediaFacet::Movie => false,
-    }
-}
-
 /// Absence debounce for pruning: stamps the first tick an item goes missing
 /// and only reports true once the absence has outlived the grace window. A
 /// sighting (`seen_ids` hit) clears the stamp at the call sites.
@@ -957,25 +944,9 @@ pub(crate) async fn assign_title_to_tracked_download(
     td.status_messages.clear();
     td.import_attempted = false;
 
-    // A download that is already blocked for manual intervention should stay
-    // manually actionable after title assignment instead of being pushed
-    // straight back into auto-import.
-    //
-    // EXCEPT when the assigned title has no mappable import targets. Manual
-    // import exists to answer one question — which episode does this file
-    // belong to — and it can only express two targets: an episode, or a
-    // series-movie link (see ManualImportMappingTarget and
-    // manual_import_preview_targets, which returns exactly those two lists).
-    // A plain movie has neither, so "stay manually actionable" strands it:
-    // the user assigns the title and the only remaining action is a manual
-    // import that cannot represent a movie at all.
-    //
-    // Movies were always meant to resolve via assignment instead — Submission
-    // is in the high-confidence set that completed_download_allows_automatic_import
-    // waves through — so fall through to the re-check for them. Series and
-    // anime keep the early return, because for those the mapping decision is
-    // real and still waiting on the user.
-    if td.state == TrackedDownloadState::ImportBlocked && title_has_mappable_import_targets(title) {
+    // Assignment identifies the title but does not authorize import. Movies use
+    // the same explicit manual-import decision point as episodic downloads.
+    if td.state == TrackedDownloadState::ImportBlocked {
         return;
     }
 
@@ -988,6 +959,12 @@ pub(crate) async fn assign_title_to_tracked_download(
 
 /// Commands sent from GraphQL mutations to the poller's TrackedDownloadService.
 pub enum TrackedDownloadCommand {
+    ReconcileManualImport {
+        id: String,
+        files_imported_this_pass: usize,
+        expected_source_video_files: Option<usize>,
+        reply: oneshot::Sender<AppResult<bool>>,
+    },
     MarkImported {
         id: String,
         reply: oneshot::Sender<AppResult<()>>,
@@ -1129,6 +1106,29 @@ impl TrackedDownloadHandle {
         self.tx
             .send(TrackedDownloadCommand::MarkImported {
                 id,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| {
+                crate::AppError::Repository("tracked download service unavailable".into())
+            })?;
+        reply_rx.await.map_err(|_| {
+            crate::AppError::Repository("tracked download service dropped reply".into())
+        })?
+    }
+
+    pub async fn reconcile_manual_import(
+        &self,
+        id: String,
+        files_imported_this_pass: usize,
+        expected_source_video_files: Option<usize>,
+    ) -> AppResult<bool> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(TrackedDownloadCommand::ReconcileManualImport {
+                id,
+                files_imported_this_pass,
+                expected_source_video_files,
                 reply: reply_tx,
             })
             .await
@@ -3303,18 +3303,14 @@ mod tests {
             .expect("tracked download mut");
         assign_title_to_tracked_download(&app, tracked, &title).await;
 
-        // A MOVIE has no manual-import target (manual import maps files to
-        // episodes or series-movie links only), so keeping it ImportBlocked
-        // after assignment stranded it with no completable action. Assignment
-        // now releases movies back into auto-import: the embedded re-check runs
-        // against the completed download and, with the high-confidence
-        // Submission match, moves it to ImportPending.
-        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
+        // Movie assignment records the operator's target but remains blocked
+        // until the operator explicitly queues the manual import.
+        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
         assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
         assert_eq!(tracked.match_type, TitleMatchType::Submission);
 
         crate::completed_download_handler::check(&app, tracked).await;
-        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
+        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
     }
 
     #[tokio::test]
@@ -3459,17 +3455,15 @@ mod tests {
 
         assign_title_to_tracked_download(&app, tracked, &title).await;
 
-        // Movie: released from the manual-intervention park (see the
-        // completed-blocked variant above). The client is still Downloading, so
-        // the re-check is a no-op and the download simply resumes normal
-        // tracking until the client reports completion.
-        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        // Assignment records the movie target but does not release a blocked
+        // download into automatic import, even while the client is downloading.
+        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
         assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
         assert_eq!(tracked.match_type, TitleMatchType::Submission);
         assert!(!tracked.import_attempted);
 
         crate::completed_download_handler::check(&app, tracked).await;
-        assert_eq!(tracked.state, TrackedDownloadState::Downloading);
+        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
     }
 
     #[tokio::test]

@@ -84,41 +84,99 @@ pub async fn start_background_manual_import_poller(
                     }
                 };
 
-            let (status, result_json) =
-                match execute_queued_manual_import(&app, &record.id, &payload).await {
-                    Ok(result) => result,
-                    Err(error) => (
+            let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
+            let outcome =
+                match execute_queued_manual_import_with_outcome(&app, &record.id, &payload).await {
+                Ok(result) => result,
+                Err(error) => QueuedManualImportOutcome {
+                    status: ImportStatus::Failed,
+                    result_json: manual_import_result_json(
+                        &record.id,
+                        &payload,
                         ImportStatus::Failed,
-                        manual_import_result_json(
-                            &record.id,
-                            &payload,
-                            ImportStatus::Failed,
-                            Some(classify_manual_import_error_message(&error.to_string())),
-                            Some(error.to_string()),
-                            Vec::new(),
-                        ),
+                        Some(classify_manual_import_error_message(&error.to_string())),
+                        Some(error.to_string()),
+                        Vec::new(),
                     ),
-                };
+                    files_imported_this_pass: 0,
+                    completed: None,
+                    title_id: payload.title_id.clone(),
+                    expected_source_video_files: None,
+                    prior_import_proven: false,
+                },
+            };
 
             if let Err(error) = app
-                .update_import_status_and_notify(&record.id, status, result_json)
+                .update_import_status_and_notify(
+                    &record.id,
+                    outcome.status,
+                    outcome.result_json.clone(),
+                )
                 .await
             {
                 worker.warn_error("finalize_manual_import_request", &error);
                 continue;
             }
 
-            if status == ImportStatus::Completed
-                && let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref()
-            {
-                let _ = handle
-                    .mark_imported(crate::tracked_downloads::tracked_download_id(
+            let has_successful_import = outcome.files_imported_this_pass > 0
+                || outcome.status == ImportStatus::Completed
+                || outcome.prior_import_proven;
+            let terminalized = if has_successful_import {
+                if let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref() {
+                    let tracked_id = crate::tracked_downloads::tracked_download_id(
                         payload.client_id.as_deref(),
                         &payload.client_type,
                         &payload.download_client_item_id,
-                    ))
-                    .await;
+                    );
+                    let reconciliation = if outcome.prior_import_proven {
+                        handle.mark_imported(tracked_id).await.map(|()| true)
+                    } else {
+                        handle
+                            .reconcile_manual_import(
+                                tracked_id,
+                                outcome.files_imported_this_pass,
+                                outcome.expected_source_video_files,
+                            )
+                            .await
+                    };
+                    match reconciliation {
+                        Ok(terminalized) => terminalized,
+                        Err(error) => {
+                            worker.warn_error("reconcile_manual_import", &error);
+                            false
+                        }
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if terminalized {
+                let source_identity = DownloadSourceIdentity::new(
+                    payload.client_id.as_deref(),
+                    &payload.client_type,
+                    &payload.download_client_item_id,
+                );
+                if let Err(error) = app
+                    .services
+                    .workflow
+                    .imports
+                    .delete_manual_import_selections_for_source(&source_identity)
+                    .await
+                {
+                    worker.warn_error("cleanup_terminal_manual_import_selections", &error);
+                }
             }
+
+            maybe_remove_completed_manual_import_download(
+                &app,
+                outcome.completed.as_ref(),
+                outcome.title_id.as_deref(),
+                terminalized,
+            )
+            .await;
         }
     }
 }
@@ -282,6 +340,37 @@ pub(crate) async fn resolve_current_manual_import_source(
     let client_id = client_id.trim();
     let client_type = client_type.trim();
     let download_client_item_id = download_client_item_id.trim();
+    authorize_manual_import_source(
+        app,
+        actor,
+        client_id,
+        client_type,
+        download_client_item_id,
+        title_id,
+    )
+    .await?;
+    resolve_live_manual_import_source(
+        app,
+        client_id,
+        client_type,
+        download_client_item_id,
+    )
+    .await
+}
+
+struct AuthorizedManualImportSource {
+    identity: DownloadSourceIdentity,
+    facet: MediaFacet,
+}
+
+async fn authorize_manual_import_source(
+    app: &AppUseCase,
+    actor: &User,
+    client_id: &str,
+    client_type: &str,
+    download_client_item_id: &str,
+    title_id: &str,
+) -> AppResult<AuthorizedManualImportSource> {
     if client_id.is_empty() || client_type.is_empty() || download_client_item_id.is_empty() {
         return Err(manual_import_source_unavailable());
     }
@@ -318,6 +407,18 @@ pub(crate) async fn resolve_current_manual_import_source(
         return Err(manual_import_source_unavailable());
     }
 
+    Ok(AuthorizedManualImportSource {
+        identity: source_identity,
+        facet: title.facet,
+    })
+}
+
+async fn resolve_live_manual_import_source(
+    app: &AppUseCase,
+    client_id: &str,
+    client_type: &str,
+    download_client_item_id: &str,
+) -> AppResult<CompletedDownload> {
     let completed = match app
         .resolve_manual_import_source(
             Some(client_id),
@@ -341,6 +442,58 @@ pub(crate) async fn resolve_current_manual_import_source(
     }
 
     Ok(completed)
+}
+
+fn import_record_proves_prior_import(record: &ImportRecord, current_import_id: &str) -> bool {
+    if record.id == current_import_id {
+        return false;
+    }
+
+    let canonical_result = record
+        .result_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<scryer_domain::ImportResult>(json).ok());
+    match record.status {
+        ImportStatus::Completed if record.import_type != ImportType::ManualImport => true,
+        ImportStatus::Completed => canonical_result.is_some_and(|result| {
+            result.decision == ImportDecision::Imported
+                || result.skip_reason == Some(ImportSkipReason::AlreadyImported)
+        }),
+        ImportStatus::Skipped => canonical_result.is_some_and(|result| {
+            result.skip_reason == Some(ImportSkipReason::AlreadyImported)
+        }),
+        _ => false,
+    }
+}
+
+async fn manual_import_source_was_already_imported(
+    app: &AppUseCase,
+    source: &AuthorizedManualImportSource,
+    current_import_id: &str,
+) -> AppResult<bool> {
+    if app
+        .services
+        .workflow
+        .download_submissions
+        .get_tracked_state(&source.identity)
+        .await?
+        .as_deref()
+        == Some(TrackedDownloadState::Imported.as_str())
+    {
+        return Ok(true);
+    }
+    if source.facet != MediaFacet::Movie {
+        return Ok(false);
+    }
+
+    Ok(app
+        .services
+        .workflow
+        .imports
+        .list_imports_for_identities(std::slice::from_ref(&source.identity))
+        .await?
+        .iter()
+        .any(|record| import_record_proves_prior_import(record, current_import_id)))
 }
 
 fn source_path_canonical(source_path: &Path) -> AppResult<PathBuf> {
@@ -1591,11 +1744,71 @@ pub async fn execute_manual_import(
 
     Ok(results)
 }
-pub async fn execute_queued_manual_import(
+
+struct QueuedManualImportOutcome {
+    status: ImportStatus,
+    result_json: Option<String>,
+    files_imported_this_pass: usize,
+    completed: Option<CompletedDownload>,
+    title_id: Option<String>,
+    expected_source_video_files: Option<usize>,
+    prior_import_proven: bool,
+}
+
+impl QueuedManualImportOutcome {
+    fn source_unavailable(import_id: &str, payload: &ManualImportRequestPayload) -> Self {
+        Self {
+            status: ImportStatus::Failed,
+            result_json: manual_import_source_failed_result_json(
+                import_id,
+                payload,
+                MANUAL_IMPORT_SOURCE_UNAVAILABLE.to_string(),
+            ),
+            files_imported_this_pass: 0,
+            completed: None,
+            title_id: payload.title_id.clone(),
+            expected_source_video_files: None,
+            prior_import_proven: false,
+        }
+    }
+
+    fn already_imported(import_id: &str, payload: &ManualImportRequestPayload) -> Self {
+        let now = Utc::now();
+        let result = scryer_domain::ImportResult {
+            import_id: import_id.to_string(),
+            decision: ImportDecision::Skipped,
+            skip_reason: Some(ImportSkipReason::AlreadyImported),
+            title_id: payload.title_id.clone(),
+            source_system: Some(payload.client_type.clone()),
+            source_ref: Some(payload.download_client_item_id.clone()),
+            source_title: None,
+            source_path: String::new(),
+            dest_path: None,
+            quality: None,
+            episode_ids: Vec::new(),
+            file_size_bytes: None,
+            link_type: None,
+            error_message: None,
+            started_at: now,
+            completed_at: now,
+        };
+        Self {
+            status: ImportStatus::Skipped,
+            result_json: serde_json::to_string(&result).ok(),
+            files_imported_this_pass: 0,
+            completed: None,
+            title_id: payload.title_id.clone(),
+            expected_source_video_files: None,
+            prior_import_proven: true,
+        }
+    }
+}
+
+async fn execute_queued_manual_import_with_outcome(
     app: &AppUseCase,
     import_id: &str,
     payload: &ManualImportRequestPayload,
-) -> AppResult<(ImportStatus, Option<String>)> {
+) -> AppResult<QueuedManualImportOutcome> {
     let user_id = payload
         .requested_by_user_id
         .as_deref()
@@ -1614,73 +1827,62 @@ pub async fn execute_queued_manual_import(
         .await?;
 
     let Some(title_id) = payload.title_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else {
-        return Ok((
-            ImportStatus::Failed,
-            manual_import_source_failed_result_json(
-                import_id,
-                payload,
-                MANUAL_IMPORT_SOURCE_UNAVAILABLE.to_string(),
-            ),
-        ));
+        return Ok(QueuedManualImportOutcome::source_unavailable(import_id, payload));
     };
     let Some(client_id) = payload.client_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else {
-        return Ok((
-            ImportStatus::Failed,
-            manual_import_source_failed_result_json(
-                import_id,
-                payload,
-                MANUAL_IMPORT_SOURCE_UNAVAILABLE.to_string(),
-            ),
-        ));
+        return Ok(QueuedManualImportOutcome::source_unavailable(import_id, payload));
     };
-    let completed = match resolve_current_manual_import_source(
+    let client_type = payload.client_type.trim();
+    let download_client_item_id = payload.download_client_item_id.trim();
+    let authorized_source = match authorize_manual_import_source(
         app,
         &actor,
         client_id,
-        &payload.client_type,
-        &payload.download_client_item_id,
+        client_type,
+        download_client_item_id,
         title_id,
     )
     .await
     {
-        Ok(completed) => completed,
+        Ok(source) => source,
         Err(_) => {
-            return Ok((
-                ImportStatus::Failed,
-                manual_import_source_failed_result_json(
-                    import_id,
-                    payload,
-                    MANUAL_IMPORT_SOURCE_UNAVAILABLE.to_string(),
-                ),
-            ));
+            return Ok(QueuedManualImportOutcome::source_unavailable(import_id, payload));
         }
+    };
+    if manual_import_source_was_already_imported(app, &authorized_source, import_id).await? {
+        return Ok(QueuedManualImportOutcome::already_imported(import_id, payload));
+    }
+    let source_identity = authorized_source.identity;
+    let completed = match resolve_live_manual_import_source(
+        app,
+        client_id,
+        client_type,
+        download_client_item_id,
+    )
+    .await
+    {
+        Ok(completed) => completed,
+        Err(_) => return Ok(QueuedManualImportOutcome::source_unavailable(import_id, payload)),
     };
     let trusted_source_root = match std::fs::canonicalize(&completed.dest_dir) {
         Ok(root) => root,
         Err(_) => {
-            return Ok((
-                ImportStatus::Failed,
-                manual_import_source_failed_result_json(
-                    import_id,
-                    payload,
-                    MANUAL_IMPORT_SOURCE_UNAVAILABLE.to_string(),
-                ),
-            ));
+            return Ok(QueuedManualImportOutcome::source_unavailable(import_id, payload));
         }
     };
-    let source_identity = DownloadSourceIdentity::new(
-        Some(&completed.client_id),
-        &completed.client_type,
-        &completed.download_client_item_id,
-    );
+    let expected_source_video_files =
+        crate::import_workflow::find_video_files(&trusted_source_root, true)
+            .ok()
+            .map(|files| files.len());
 
     if payload.files.is_empty() {
         let result = app
-            .trigger_manual_import(&actor, &completed, Some(title_id))
+            .trigger_manual_import_with_permit(&actor, &completed, Some(title_id))
             .await?;
+        let imported = matches!(result.decision, ImportDecision::Imported);
 
         let (status, error_code, error_message) =
-            if matches!(result.decision, ImportDecision::Imported)
+            if imported
                 || matches!(result.skip_reason, Some(ImportSkipReason::AlreadyImported))
             {
                 (ImportStatus::Completed, None, None)
@@ -1693,14 +1895,6 @@ pub async fn execute_queued_manual_import(
                     result.error_message.clone(),
                 )
             };
-
-        maybe_remove_completed_manual_import_download(
-            app,
-            Some(&completed),
-            result.title_id.as_deref().or(Some(title_id)),
-            matches!(result.decision, ImportDecision::Imported),
-        )
-        .await;
 
         let result_json = if status == ImportStatus::Completed && error_code.is_none() {
             serde_json::to_string(&result).ok()
@@ -1715,7 +1909,15 @@ pub async fn execute_queued_manual_import(
             )
         };
 
-        return Ok((status, result_json));
+        return Ok(QueuedManualImportOutcome {
+            status,
+            result_json,
+            files_imported_this_pass: usize::from(imported),
+            completed: Some(completed),
+            title_id: result.title_id.or_else(|| Some(title_id.to_string())),
+            expected_source_video_files,
+            prior_import_proven: false,
+        });
     }
 
     let results = execute_manual_import(
@@ -1728,15 +1930,8 @@ pub async fn execute_queued_manual_import(
         Some(trusted_source_root),
     )
     .await?;
+    let files_imported_this_pass = results.iter().filter(|result| result.success).count();
     let (status, error_code, error_message) = manual_import_terminal_status_and_error(&results);
-
-    maybe_remove_completed_manual_import_download(
-        app,
-        Some(&completed),
-        Some(title_id),
-        status == ImportStatus::Completed,
-    )
-    .await;
 
     if status == ImportStatus::Completed
         && let Err(error) = app
@@ -1762,7 +1957,25 @@ pub async fn execute_queued_manual_import(
         results,
     );
 
-    Ok((status, result_json))
+    Ok(QueuedManualImportOutcome {
+        status,
+        result_json,
+        files_imported_this_pass,
+        completed: Some(completed),
+        title_id: Some(title_id.to_string()),
+        expected_source_video_files,
+        prior_import_proven: false,
+    })
+}
+
+pub async fn execute_queued_manual_import(
+    app: &AppUseCase,
+    import_id: &str,
+    payload: &ManualImportRequestPayload,
+) -> AppResult<(ImportStatus, Option<String>)> {
+    let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
+    let outcome = execute_queued_manual_import_with_outcome(app, import_id, payload).await?;
+    Ok((outcome.status, outcome.result_json))
 }
 
 #[cfg(all(test, unix))]

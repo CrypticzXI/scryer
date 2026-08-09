@@ -295,6 +295,27 @@ impl AppUseCase {
         completed: &CompletedDownload,
         override_title_id: Option<&str>,
     ) -> AppResult<scryer_domain::ImportResult> {
+        self.trigger_manual_import_inner(actor, completed, override_title_id, false)
+            .await
+    }
+
+    pub(crate) async fn trigger_manual_import_with_permit(
+        &self,
+        actor: &User,
+        completed: &CompletedDownload,
+        override_title_id: Option<&str>,
+    ) -> AppResult<scryer_domain::ImportResult> {
+        self.trigger_manual_import_inner(actor, completed, override_title_id, true)
+            .await
+    }
+
+    async fn trigger_manual_import_inner(
+        &self,
+        actor: &User,
+        completed: &CompletedDownload,
+        override_title_id: Option<&str>,
+        import_permit_held: bool,
+    ) -> AppResult<scryer_domain::ImportResult> {
         // If a title_id override is provided, inject it into the parameters
         let mut completed = completed.clone();
         if let Some(title_id) = override_title_id
@@ -314,7 +335,16 @@ impl AppUseCase {
         )
         .await?;
 
-        crate::import_workflow::import_completed_download_for_manual_review(self, actor, &completed)
+        if import_permit_held {
+            crate::import_workflow::import_completed_download_for_manual_review_with_permit(
+                self, actor, &completed,
+            )
             .await
+        } else {
+            crate::import_workflow::import_completed_download_for_manual_review(
+                self, actor, &completed,
+            )
+            .await
+        }
     }
 }
