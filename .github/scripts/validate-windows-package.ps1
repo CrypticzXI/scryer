@@ -402,9 +402,12 @@ ManifestVersion: 1.10.0
 
   Write-Log $wingetLog "Validating generated MSI winget manifest from $manifestRoot"
   & $winget validate --manifest $manifestRoot --disable-interactivity *>> $wingetLog
-  if ($LASTEXITCODE -ne 0) {
+  $manifestValidationExitCode = $LASTEXITCODE
+  if ($manifestValidationExitCode -eq -1978335192) {
+    Write-Log $wingetLog "WinGet manifest validation succeeded with warnings; schema headers were checked explicitly."
+  } elseif ($manifestValidationExitCode -ne 0) {
     Get-Content -LiteralPath $wingetLog -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
-    throw "winget manifest validation exited with code $LASTEXITCODE"
+    throw "winget manifest validation exited with code $manifestValidationExitCode"
   }
 }
 
