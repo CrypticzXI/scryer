@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/table";
 import type { Translate } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
+import { subscribableProviderNotificationEvents } from "@/lib/notification-capabilities";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { sectionLabelForFacet } from "@/lib/facets/helpers";
 import { viewFromFacet } from "@/lib/facets/helpers";
@@ -445,7 +446,7 @@ export function SettingsNotificationsSection({
   }, [providerByType, selectedSubscriptionTarget]);
   const supportedSubscriptionEventTypes = React.useMemo(() => {
     const supportedEvents = selectedSubscriptionProvider?.supportedEvents ?? [];
-    return supportedEvents.length > 0 ? supportedEvents : eventTypes;
+    return subscribableProviderNotificationEvents(eventTypes, supportedEvents);
   }, [eventTypes, selectedSubscriptionProvider]);
   const eventTypeOptions = React.useMemo(
     () =>
@@ -566,8 +567,11 @@ export function SettingsNotificationsSection({
                   target.targetKind === "plugin_channel"
                     ? channels.find((item) => item.id === target.id) ?? null
                     : null;
+                const provider = providerByType.get(
+                  target.providerType.trim().toLowerCase(),
+                );
                 const providerLabel =
-                  providerByType.get(target.providerType.trim().toLowerCase())?.name ??
+                  provider?.name ??
                   humanizeSnakeCase(target.providerType);
                 const targetLabel =
                   target.targetKind === "media_server_connection"
@@ -610,25 +614,27 @@ export function SettingsNotificationsSection({
                           label={t("settings.notificationSubscriptionCreate")}
                           tone="neutral"
                           onClick={() => startCreateSubscription(target)}
-                          disabled={!target.isEnabled}
+                          disabled={!target.isEnabled || !provider}
                         >
                           <Plus className="h-4 w-4" />
                         </NotificationActionButton>
                         {channel ? (
                           <>
-                            <NotificationActionButton
-                              id={selectorId("settings-notification-channel-test", channel.name)}
-                              label={t("settings.notificationTest")}
-                              tone="neutral"
-                              onClick={() => void testChannel(channel)}
-                              disabled={testingChannelId === channel.id}
-                            >
-                              {testingChannelId === channel.id ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <Send className="h-4 w-4" />
-                              )}
-                            </NotificationActionButton>
+                            {provider?.supportsTest ? (
+                              <NotificationActionButton
+                                id={selectorId("settings-notification-channel-test", channel.name)}
+                                label={t("settings.notificationTest")}
+                                tone="neutral"
+                                onClick={() => void testChannel(channel)}
+                                disabled={testingChannelId === channel.id}
+                              >
+                                {testingChannelId === channel.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <Send className="h-4 w-4" />
+                                )}
+                              </NotificationActionButton>
+                            ) : null}
                             <NotificationActionButton
                               id={selectorId("settings-notification-channel-toggle", channel.name)}
                               label={channel.isEnabled ? t("label.disable") : t("label.enable")}
