@@ -4396,7 +4396,7 @@ async fn try_import_completed_downloads_blocks_ambiguous_download_id_instead_of_
 }
 
 #[tokio::test]
-async fn try_import_completed_downloads_blocks_missing_download_id_submission() {
+async fn try_import_completed_downloads_defers_recent_then_blocks_stale_missing_download_id() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -4428,13 +4428,31 @@ async fn try_import_completed_downloads_blocks_missing_download_id_submission() 
         "*scryer_download_id".to_string(),
         "scryer-download:missing".to_string(),
     ));
+    completed.completed_at = Some(Utc::now() - chrono::Duration::seconds(1));
     *download_client.completed_downloads.lock().await = vec![completed];
 
+    let processed =
+        crate::import::import::try_import_completed_downloads(&app, &user, &[item.clone()]).await;
+
+    assert!(!processed.contains(item_id));
+    assert!(download_client.deleted_requests.lock().await.is_empty());
+    let recent_state = download_submissions
+        .get_identity_tracked_state(
+            &DownloadSubmissionIdentity {
+                download_id: Some("scryer-download:missing".to_string()),
+            },
+            None,
+        )
+        .await
+        .expect("identity state lookup");
+    assert_eq!(recent_state, None);
+
+    download_client.completed_downloads.lock().await[0].completed_at =
+        Some(Utc::now() - chrono::Duration::minutes(1));
     let processed =
         crate::import::import::try_import_completed_downloads(&app, &user, &[item]).await;
 
     assert!(!processed.contains(item_id));
-    assert!(download_client.deleted_requests.lock().await.is_empty());
     let state = download_submissions
         .get_identity_tracked_state(
             &DownloadSubmissionIdentity {

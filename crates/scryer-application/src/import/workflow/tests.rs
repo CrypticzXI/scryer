@@ -4,9 +4,10 @@ mod tests {
         COMPLETED_ORIGIN_SCOPE_CONFLICT, CompletedDownloadOriginResolution,
         CompletedDownloadSubmissionMatch, CompletedDownloadSubmissionResolution,
         IMPORT_TRANSFER_HEARTBEAT_INTERVAL, ManualImportCandidateMapping,
-        completed_import_status_for_result, resolve_completed_download_origin,
-        resolved_episode_ids_are_within_expected, sanitized_title_folder_component,
-        should_persist_import_transfer_heartbeat, skip_reason_for_import_check_code,
+        completed_import_status_for_result, download_submission_persistence_may_be_in_flight,
+        resolve_completed_download_origin, resolved_episode_ids_are_within_expected,
+        sanitized_title_folder_component, should_persist_import_transfer_heartbeat,
+        skip_reason_for_import_check_code,
         validate_manual_import_candidate_mapping_targets,
         validate_manual_import_source_under_trusted_root,
     };
@@ -67,6 +68,38 @@ mod tests {
                 .map(|(key, value)| (key.to_string(), value.to_string()))
                 .collect(),
         }
+    }
+
+    #[test]
+    fn recent_missing_download_submission_gets_bounded_visibility_grace() {
+        let now = Utc::now();
+        let resolution = CompletedDownloadSubmissionResolution::MissingDownloadId {
+            identity: crate::DownloadSubmissionIdentity {
+                download_id: Some("scryer-download:pending".to_string()),
+            },
+        };
+        let mut completed = completed_download_with_parameters(Vec::new());
+        completed.completed_at = Some(now - chrono::Duration::seconds(1));
+
+        assert!(download_submission_persistence_may_be_in_flight(
+            &completed,
+            &resolution,
+            now,
+        ));
+
+        completed.completed_at = Some(now - chrono::Duration::seconds(16));
+        assert!(!download_submission_persistence_may_be_in_flight(
+            &completed,
+            &resolution,
+            now,
+        ));
+
+        completed.completed_at = None;
+        assert!(!download_submission_persistence_may_be_in_flight(
+            &completed,
+            &resolution,
+            now,
+        ));
     }
 
     fn matched_submission(

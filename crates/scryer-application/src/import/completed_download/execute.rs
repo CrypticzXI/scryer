@@ -77,6 +77,29 @@ async fn import_inner(
         }
     };
 
+    match crate::import_workflow::recent_download_submission_persistence_is_pending(app, &completed)
+        .await
+    {
+        Ok(true) => {
+            tracing::info!(
+                id = %td.id,
+                item_id = %td.client_item.download_client_item_id,
+                download_id = ?td.client_item.download_id,
+                "import: waiting for recent download submission identity to become durable"
+            );
+            td.import_attempted = false;
+            td.state = TrackedDownloadState::ImportPending;
+            td.status = TrackedDownloadStatus::Warning;
+            td.status_messages = vec![
+                "Download submission identity is still being persisted; retrying automatically."
+                    .to_string(),
+            ];
+            return false;
+        }
+        Ok(false) => {}
+        Err(_) => {}
+    }
+
     tracing::info!(
         id = %td.id,
         dest_dir = %completed.dest_dir,
