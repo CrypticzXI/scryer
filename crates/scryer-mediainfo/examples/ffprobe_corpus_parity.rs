@@ -1080,7 +1080,7 @@ fn is_media_file(path: &Path) -> bool {
             .and_then(OsStr::to_str)
             .map(|ext| ext.to_ascii_lowercase())
             .as_deref(),
-        Some("mkv" | "mp4" | "m4v" | "mov" | "avi" | "ts" | "m2ts")
+        Some("mkv" | "mp4" | "m4v" | "mov" | "avi" | "ts" | "m2ts" | "wmv" | "ogv" | "flv")
     )
 }
 

@@ -18,10 +18,11 @@ use scryer_application::{
 use scryer_domain::{
     ConfigFieldDef, ConfigFieldRole, ConfigFieldType, ConfigFieldValueSource,
     IndexerCapsSearchNode as DomainCapsSearchNode, IndexerCapsSnapshot as DomainCapsSnapshot,
-    IndexerConfig, TaggedAlias,
+    IndexerConfig, TaggedAlias, managed_indexer_destination_cooldown_key,
 };
 use scryer_outbound_http::{
-    OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy, generic_reqwest_client,
+    DestinationKey, OutboundHttpClient, OutboundHttpError, RateLimitRegistry, RequestPolicy,
+    generic_reqwest_client,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -330,6 +331,7 @@ impl NativeProwlarrIndexerProvider {
 }
 
 pub struct ProwlarrManagementClient {
+    parent_config_id: String,
     config: Result<ProwlarrConfig, String>,
     outbound_http: OutboundHttpClient,
     api_state: Arc<RwLock<Option<ResolvedProwlarrApi>>>,
@@ -339,6 +341,7 @@ impl ProwlarrManagementClient {
     fn new(config: &IndexerConfig) -> Self {
         let http_client = generic_reqwest_client();
         Self {
+            parent_config_id: config.id.clone(),
             config: ProwlarrConfig::from_indexer_config(config),
             outbound_http: OutboundHttpClient::new(http_client, RateLimitRegistry::new()),
             api_state: Arc::new(RwLock::new(None)),
@@ -457,9 +460,10 @@ impl ProwlarrManagementClient {
             config.api_key
         );
         let request_path = format!("/{indexer_id}/api?t=caps");
+        let child_key = indexer_id.to_string();
         let response = self
             .outbound_http
-            .send(self.request_policy(&request_path), || {
+            .send(self.child_request_policy(&request_path, &child_key), || {
                 self.outbound_http
                     .client()
                     .get(&url)
@@ -581,6 +585,14 @@ impl ProwlarrManagementClient {
     }
 
     fn request_policy(&self, path: &str) -> RequestPolicy {
+        self.request_policy_for_child(path, None)
+    }
+
+    fn child_request_policy(&self, path: &str, child_key: &str) -> RequestPolicy {
+        self.request_policy_for_child(path, Some(child_key))
+    }
+
+    fn request_policy_for_child(&self, path: &str, child_key: Option<&str>) -> RequestPolicy {
         let base_url = self
             .config
             .as_ref()
@@ -592,16 +604,24 @@ impl ProwlarrManagementClient {
             .ok()
             .and_then(|guard| guard.as_ref().map(|api| api.bucket.request_namespace()))
             .unwrap_or(ProwlarrApiBucket::V2.request_namespace());
-        RequestPolicy::safe_read(
-            format!("prowlarr:{request_namespace}:{base_url}"),
-            format!("prowlarr:{request_namespace}:{path}"),
-        )
-        .with_max_retries(2)
-        .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
-        .with_host_rps_limit(
-            EXTERNAL_IMPORT_HOST_RPS_LANE,
-            EXTERNAL_IMPORT_HOST_RPS_PROFILE,
-        )
+        let scope = child_key.map_or_else(
+            || format!("prowlarr:{request_namespace}:{base_url}"),
+            |child_key| format!("prowlarr:{request_namespace}:{base_url}:child:{child_key}"),
+        );
+        let policy =
+            RequestPolicy::safe_read(scope, format!("prowlarr:{request_namespace}:{path}"))
+                .with_max_retries(2)
+                .with_backoff(Duration::from_secs(1), Duration::from_secs(15))
+                .with_host_rps_limit(
+                    EXTERNAL_IMPORT_HOST_RPS_LANE,
+                    EXTERNAL_IMPORT_HOST_RPS_PROFILE,
+                );
+        match child_key {
+            Some(child_key) => policy.with_destination_cooldown_key(DestinationKey::from(
+                managed_indexer_destination_cooldown_key(&self.parent_config_id, child_key),
+            )),
+            None => policy,
+        }
     }
 }
 
@@ -1345,6 +1365,17 @@ mod tests {
             EXTERNAL_IMPORT_HOST_RPS_LANE
         );
         assert_eq!(request_override.profile, EXTERNAL_IMPORT_HOST_RPS_PROFILE);
+
+        let child_policy = client.child_request_policy("/42/api?t=caps", "42");
+        assert!(child_policy.scope.to_string().ends_with(":child:42"));
+        assert_eq!(
+            child_policy
+                .destination_cooldown_override
+                .expect("child requests should override destination cooldown identity")
+                .as_str(),
+            "managed-indexer:cfg-1:42"
+        );
+        assert!(child_policy.host_rps_override.is_some());
     }
 
     fn test_indexer_config(base_url: &str) -> IndexerConfig {
@@ -1366,6 +1397,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: Some(
                 json!({

@@ -5538,7 +5538,7 @@ async fn bootstrap_rss_with_media_files_and_profiles(
     media_files: Arc<MockMediaFileRepo>,
     quality_profiles: Arc<StoredQualityProfileRepo>,
     indexer_client: Arc<dyn IndexerClient>,
-) -> (AppUseCase, User) {
+) -> (AppUseCase, User, Arc<StoredSettingsRepo>) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
@@ -5589,7 +5589,7 @@ async fn bootstrap_rss_with_media_files_and_profiles(
         download_client,
         download_client_configs,
         release_attempts,
-        settings,
+        settings.clone(),
         quality_profiles,
         String::new(),
     )
@@ -5627,7 +5627,7 @@ async fn bootstrap_rss_with_media_files_and_profiles(
             }))
             .with_acquisition_scope_states(acquisition_scope_states)
     });
-    (app, test_admin_user())
+    (app, test_admin_user(), settings)
 }
 
 /// A thinned acquisition-state row (post-RFC-119 shape) for seeding tests.
@@ -5770,6 +5770,74 @@ async fn rss_grabs_missing_movie_with_no_wanted_row_and_creates_state_row() {
                 && submission.scope == SubmissionScope::Title),
         "movie grab records a title-scope submission"
     );
+}
+
+#[tokio::test]
+async fn rss_library_quality_profile_overrides_global_profile() {
+    let release_2160p = "Profiled.Horizon.2024.2160p.WEB-DL-GRP";
+    let release_1080p = "Profiled.Horizon.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            crate::default_quality_profile_for_search(),
+            crate::default_quality_profile_1080p_for_search(),
+        ])
+        .await;
+    let indexer_client = Arc::new(MultiReleaseIndexerClient::new(vec![
+        release_2160p,
+        release_1080p,
+    ]));
+    let (app, user, settings) = bootstrap_rss_with_media_files_and_profiles(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        media_files,
+        quality_profiles,
+        indexer_client,
+    )
+    .await;
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Profiled Horizon".into(),
+                sort_title: Some("Profiled Horizon".into()),
+                slug: Some("profiled-horizon".into()),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                year: Some(2024),
+                content_status: Some("Released".into()),
+                min_availability: Some("announced".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Movie)
+        .await;
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            &title.library_id,
+            "\"1080p\"",
+        )
+        .await;
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(report.releases_grabbed, 1);
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(submissions[0].source_title.as_deref(), Some(release_1080p));
 }
 
 /// A paused scope is never grabbed even when it is a monitored, missing target
@@ -5941,7 +6009,7 @@ async fn rss_does_not_grab_cutoff_met_movie() {
     cutoff_profile.criteria.cutoff_tier = Some("1080P".to_string());
     quality_profiles.set_profiles(vec![cutoff_profile]).await;
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
-    let (app, user) = bootstrap_rss_with_media_files_and_profiles(
+    let (app, user, _) = bootstrap_rss_with_media_files_and_profiles(
         download_client,
         download_submissions.clone(),
         pending_releases,
@@ -6012,7 +6080,7 @@ async fn rss_upgrades_below_cutoff_movie_with_no_wanted_row() {
     profile.criteria.cutoff_tier = Some("2160P".to_string());
     quality_profiles.set_profiles(vec![profile]).await;
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
-    let (app, user) = bootstrap_rss_with_media_files_and_profiles(
+    let (app, user, _) = bootstrap_rss_with_media_files_and_profiles(
         download_client,
         download_submissions.clone(),
         pending_releases,

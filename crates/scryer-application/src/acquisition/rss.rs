@@ -713,6 +713,7 @@ impl AppUseCase {
             .score_rss_releases(
                 releases,
                 &title.id,
+                &title.library_id,
                 title.imdb_id.clone(),
                 tvdb_id.clone(),
                 Some(category.clone()),
@@ -891,6 +892,7 @@ impl AppUseCase {
                 .score_rss_releases(
                     &owned_releases,
                     &title.id,
+                    &title.library_id,
                     title.imdb_id.clone(),
                     tvdb_id.clone(),
                     Some(category.clone()),
@@ -1039,6 +1041,7 @@ impl AppUseCase {
             .score_rss_releases(
                 std::slice::from_ref(release),
                 &title.id,
+                &title.library_id,
                 title.imdb_id.clone(),
                 tvdb_id.map(str::to_string),
                 Some(category.to_string()),
@@ -1265,6 +1268,7 @@ impl AppUseCase {
         &self,
         releases: &[IndexerSearchResult],
         title_id: &str,
+        library_id: &str,
         imdb_id: Option<String>,
         tvdb_id: Option<String>,
         category: Option<String>,
@@ -1275,25 +1279,17 @@ impl AppUseCase {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
     ) -> AppResult<Vec<IndexerSearchResult>> {
-        let quality_profile = self
-            .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
-                title_tags,
-                library_id: None,
-                imdb_id: imdb_id.as_deref(),
-                tvdb_id: tvdb_id.as_deref(),
-                category_hint: category.as_deref(),
-            })
-            .await?;
-        let scope_id =
-            self.quality_profile_scope_id(crate::app_usecase_discovery::QualityProfileLookup {
-                title_tags,
-                library_id: None,
-                imdb_id: imdb_id.as_deref(),
-                tvdb_id: tvdb_id.as_deref(),
-                category_hint: category.as_deref(),
-            });
+        let quality_profile_lookup = crate::app_usecase_discovery::QualityProfileLookup {
+            title_tags,
+            library_id: Some(library_id),
+            imdb_id: imdb_id.as_deref(),
+            tvdb_id: tvdb_id.as_deref(),
+            category_hint: category.as_deref(),
+        };
+        let quality_profile = self.resolve_quality_profile(quality_profile_lookup).await?;
+        let scope_id = self.quality_profile_scope_id(quality_profile_lookup);
         let indexer_routing = self
-            .resolve_indexer_routing(None, scope_id.as_deref())
+            .resolve_indexer_routing(Some(library_id), scope_id.as_deref())
             .await;
 
         Ok(self
@@ -1301,7 +1297,7 @@ impl AppUseCase {
                 releases.to_vec(),
                 &quality_profile,
                 title_id,
-                None,
+                Some(library_id),
                 scope_id.as_deref(),
                 indexer_routing.as_ref(),
                 category.as_deref(),

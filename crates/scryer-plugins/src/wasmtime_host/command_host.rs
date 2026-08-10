@@ -76,7 +76,7 @@ impl CommandHost {
                 plugin_id,
                 config,
                 state: Mutex::new(CommandState::default()),
-                http: PluginHttpHost::new(allowed_hosts, None, max_http_response_bytes),
+                http: PluginHttpHost::new(allowed_hosts, None, None, max_http_response_bytes),
                 timeout,
             })),
         }

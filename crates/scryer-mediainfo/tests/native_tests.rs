@@ -3,6 +3,7 @@ use scryer_mediainfo::{
     is_valid_video,
 };
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 fn media(name: &str) -> PathBuf {
@@ -25,6 +26,7 @@ struct FixtureExpectation {
     video_codec: String,
     width: i32,
     height: i32,
+    fps: i32,
     audio_codecs: Vec<String>,
     audio_channels: Vec<i32>,
     audio_languages: Vec<String>,
@@ -58,9 +60,129 @@ fn fixture_matrix_has_expected_generated_size() {
         .count();
 
     assert_eq!(
-        generated, 209,
-        "fixture manifest should contain 200 matrix fixtures plus 9 dense SIMD fixtures"
+        generated, 244,
+        "fixture manifest should contain 235 matrix fixtures plus 9 dense SIMD fixtures"
     );
+}
+
+#[test]
+fn generated_container_corpus_covers_reproducible_codec_and_layout_branches() {
+    let manifest = fixture_manifest();
+    let fixtures_for = |extension: &str| {
+        manifest
+            .fixtures
+            .iter()
+            .filter(|fixture| fixture.name.ends_with(extension))
+            .collect::<Vec<_>>()
+    };
+    let wmv = fixtures_for(".wmv");
+    let ogv = fixtures_for(".ogv");
+    let flv = fixtures_for(".flv");
+
+    assert!(wmv.len() >= 13, "ASF/WMV corpus unexpectedly shrank");
+    assert!(ogv.len() >= 10, "Ogg/Theora corpus unexpectedly shrank");
+    assert!(flv.len() >= 12, "FLV corpus unexpectedly shrank");
+
+    let video_codecs = |fixtures: &[&FixtureExpectation]| {
+        fixtures
+            .iter()
+            .map(|fixture| fixture.video_codec.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    let audio_codecs = |fixtures: &[&FixtureExpectation]| {
+        fixtures
+            .iter()
+            .flat_map(|fixture| fixture.audio_codecs.iter().cloned())
+            .collect::<BTreeSet<_>>()
+    };
+    let codec_set = |codecs: &[&str]| {
+        codecs
+            .iter()
+            .map(|codec| (*codec).to_owned())
+            .collect::<BTreeSet<_>>()
+    };
+    let channels = |fixtures: &[&FixtureExpectation]| {
+        fixtures
+            .iter()
+            .flat_map(|fixture| fixture.audio_channels.iter().copied())
+            .collect::<BTreeSet<_>>()
+    };
+    let dimensions = |fixtures: &[&FixtureExpectation]| {
+        fixtures
+            .iter()
+            .map(|fixture| (fixture.width, fixture.height))
+            .collect::<BTreeSet<_>>()
+    };
+    let frame_rates = |fixtures: &[&FixtureExpectation]| {
+        fixtures
+            .iter()
+            .map(|fixture| fixture.fps)
+            .collect::<BTreeSet<_>>()
+    };
+    let languages = |fixtures: &[&FixtureExpectation]| {
+        fixtures
+            .iter()
+            .flat_map(|fixture| fixture.audio_languages.iter().cloned())
+            .collect::<BTreeSet<_>>()
+    };
+
+    // These are the codecs the fixture FFmpeg can encode into valid files. Header-only mappings
+    // without an FFmpeg encoder (WMV3/VC-1 and FLV VP6/MPEG-4) have focused parser unit tests.
+    assert_eq!(video_codecs(&wmv), codec_set(&["wmv1", "wmv2"]));
+    assert!(
+        audio_codecs(&wmv).is_superset(&codec_set(&[
+            "aac",
+            "ac3",
+            "mp3",
+            "pcm_f32le",
+            "pcm_s16le",
+            "pcm_s24le",
+            "pcm_s32le",
+            "pcm_u8",
+            "wmav1",
+            "wmav2",
+        ])),
+        "ASF/WMV corpus lost a WAVEFORMATEX or WAVEFORMATEXTENSIBLE branch"
+    );
+    assert!(channels(&wmv).is_superset(&BTreeSet::from([1, 2, 6])));
+    assert_eq!(languages(&wmv), codec_set(&["eng", "jpn", "spa"]));
+    assert!(wmv.iter().any(|fixture| fixture.audio_codecs.is_empty()));
+    assert!(wmv.iter().any(|fixture| fixture.audio_codecs.len() == 2));
+
+    assert_eq!(video_codecs(&ogv), codec_set(&["theora"]));
+    assert_eq!(audio_codecs(&ogv), codec_set(&["opus", "vorbis"]));
+    assert!(channels(&ogv).is_superset(&BTreeSet::from([1, 2, 6])));
+    assert_eq!(languages(&ogv), codec_set(&["eng", "jpn", "spa"]));
+    assert!(ogv.iter().any(|fixture| fixture.audio_codecs.is_empty()));
+    assert!(ogv.iter().any(|fixture| fixture.audio_codecs.len() == 2));
+
+    assert_eq!(video_codecs(&flv), codec_set(&["flv1", "h264"]));
+    assert!(
+        audio_codecs(&flv).is_superset(&codec_set(&[
+            "aac",
+            "adpcm_swf",
+            "mp3",
+            "nellymoser",
+            "pcm_alaw",
+            "pcm_mulaw",
+            "pcm_s16le",
+            "pcm_u8",
+            "speex",
+        ])),
+        "FLV corpus lost coverage for one of the demuxer audio tag IDs"
+    );
+    assert!(flv.iter().any(|fixture| fixture.audio_codecs.is_empty()));
+
+    for (format, fixtures) in [("WMV", &wmv), ("OGV", &ogv), ("FLV", &flv)] {
+        assert!(
+            dimensions(fixtures).len() >= 4,
+            "{format} corpus must retain four dimension pairs"
+        );
+        assert!(
+            frame_rates(fixtures).len() >= 5,
+            "{format} corpus must retain five frame rates"
+        );
+    }
 }
 
 #[test]
@@ -93,6 +215,18 @@ fn fixture_matrix_expected_metadata() {
             Some(fixture.height),
             "{} video height",
             fixture.name
+        );
+        let actual_fps = analysis
+            .video_frame_rate
+            .as_deref()
+            .and_then(|fps| fps.parse::<f64>().ok())
+            .unwrap_or_default();
+        assert!(
+            (actual_fps - f64::from(fixture.fps)).abs() < 0.001,
+            "{} frame rate {:?} should equal {}",
+            fixture.name,
+            analysis.video_frame_rate,
+            fixture.fps
         );
         assert!(
             analysis.duration_seconds.unwrap_or_default() >= fixture.min_duration_seconds,
@@ -287,6 +421,6 @@ fn mp4_hevc_hdr10plus_ffprobe_parity_profile() {
 
 #[test]
 fn unsupported_extension_returns_error() {
-    let err = analyze_file(&PathBuf::from("/tmp/fake.wmv")).unwrap_err();
+    let err = analyze_file(&PathBuf::from("/tmp/fake.unsupported")).unwrap_err();
     assert!(err.to_string().contains("unsupported format"));
 }

@@ -845,6 +845,7 @@ pub fn from_indexer_config_with_fields(
         enable_interactive_search: config.enable_interactive_search,
         enable_auto_search: config.enable_auto_search,
         last_health_status: config.last_health_status,
+        last_error_message: config.last_error_message,
         last_error_at: config.last_error_at,
         last_query_at: None,
         config: provider_config_values_from_json_with_fields(config_json.as_deref(), config_fields),

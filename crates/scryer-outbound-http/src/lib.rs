@@ -145,6 +145,7 @@ pub struct RequestPolicy {
     pub max_retry_after: Duration,
     pub redirect_mode: RedirectMode,
     pub host_rps_override: Option<HostRpsRequestOverride>,
+    pub destination_cooldown_override: Option<DestinationKey>,
 }
 
 impl RequestPolicy {
@@ -171,6 +172,7 @@ impl RequestPolicy {
                 max_hops: DEFAULT_TRUSTED_REDIRECT_HOPS,
             },
             host_rps_override: None,
+            destination_cooldown_override: None,
         }
     }
 
@@ -230,6 +232,11 @@ impl RequestPolicy {
             lane: lane.into(),
             profile,
         });
+        self
+    }
+
+    pub fn with_destination_cooldown_key(mut self, destination: DestinationKey) -> Self {
+        self.destination_cooldown_override = Some(destination);
         self
     }
 
@@ -1558,11 +1565,22 @@ pub fn send_blocking_reqwest_request_with_cooldown_budget(
     request: reqwest::blocking::RequestBuilder,
     max_cooldown_wait: Option<Duration>,
 ) -> Result<reqwest::blocking::Response, BlockingOutboundHttpError> {
+    send_blocking_reqwest_request_with_cooldown_policy(request, max_cooldown_wait, None)
+}
+
+pub fn send_blocking_reqwest_request_with_cooldown_policy(
+    request: reqwest::blocking::RequestBuilder,
+    max_cooldown_wait: Option<Duration>,
+    destination_cooldown_override: Option<DestinationKey>,
+) -> Result<reqwest::blocking::Response, BlockingOutboundHttpError> {
     let registry = RateLimitRegistry::new();
-    let destination = request
-        .try_clone()
-        .and_then(|clone| clone.build().ok())
-        .and_then(|request| destination_key_from_url(request.url()));
+    let has_destination_override = destination_cooldown_override.is_some();
+    let destination = destination_cooldown_override.or_else(|| {
+        request
+            .try_clone()
+            .and_then(|clone| clone.build().ok())
+            .and_then(|request| destination_key_from_url(request.url()))
+    });
     let host = request
         .try_clone()
         .and_then(|clone| clone.build().ok())
@@ -1587,8 +1605,13 @@ pub fn send_blocking_reqwest_request_with_cooldown_budget(
     }
 
     let response = request.send()?;
+    let response_destination = if has_destination_override {
+        destination
+    } else {
+        destination_key_from_url(response.url()).or(destination)
+    };
     if response.status() == StatusCode::TOO_MANY_REQUESTS
-        && let Some(destination) = destination_key_from_url(response.url()).or(destination)
+        && let Some(destination) = response_destination
     {
         let (delay, source) = retry_after_delay(response.headers(), Duration::from_secs(1));
         let _ = registry.record_destination_cooldown_blocking(&destination, delay, source);
@@ -1736,10 +1759,12 @@ impl OutboundHttpClient {
 
             attempt += 1;
             let builder = build_request().await.map_err(OutboundRequestError::Build)?;
-            let request_destination = builder
-                .try_clone()
-                .and_then(|clone| clone.build().ok())
-                .and_then(|request| destination_key_from_url(request.url()));
+            let request_destination = policy.destination_cooldown_override.clone().or_else(|| {
+                builder
+                    .try_clone()
+                    .and_then(|clone| clone.build().ok())
+                    .and_then(|request| destination_key_from_url(request.url()))
+            });
 
             if let Some(destination) = request_destination.as_ref()
                 && let Some(wait_duration) = self
@@ -1824,7 +1849,9 @@ impl OutboundHttpClient {
                         .record_cooldown(&policy.scope, candidate_delay, candidate_source)
                         .await;
                     let response_destination =
-                        destination_key_from_url(response.url()).or(request_destination);
+                        policy.destination_cooldown_override.clone().or_else(|| {
+                            destination_key_from_url(response.url()).or(request_destination)
+                        });
                     if let Some(destination) = response_destination.as_ref() {
                         let _ = self
                             .registry
@@ -2393,6 +2420,93 @@ mod tests {
 
         assert!(alpha_wait.is_some());
         assert_eq!(beta_wait, None);
+    }
+
+    #[tokio::test]
+    async fn destination_override_isolates_children_while_sharing_the_host_limiter() {
+        let (url, hits) = spawn_http_server(vec![
+            http_response(429, &[("Retry-After", "60")], "rate limited"),
+            http_response(200, &[], "ok"),
+        ])
+        .await;
+        let registry = RateLimitRegistry::isolated();
+        let client = OutboundHttpClient::new(generic_reqwest_client(), registry.clone());
+        let child_a: DestinationKey = "managed-indexer:parent:1".into();
+        let child_b: DestinationKey = "managed-indexer:parent:2".into();
+
+        let first = client
+            .send(
+                RequestPolicy::no_retry("child-a", "child-a")
+                    .with_host_rps_limit("prowlarr", HostRpsProfile::limited(1000.0, 20))
+                    .with_destination_cooldown_key(child_a.clone()),
+                || client.client().get(&url),
+            )
+            .await;
+        assert!(matches!(first, Err(OutboundHttpError::RateLimited(_))));
+
+        let second = client
+            .send(
+                RequestPolicy::no_retry("child-b", "child-b")
+                    .with_host_rps_limit("prowlarr", HostRpsProfile::limited(1000.0, 20))
+                    .with_destination_cooldown_key(child_b.clone()),
+                || client.client().get(&url),
+            )
+            .await
+            .expect("child B should not inherit child A's cooldown");
+
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(hits.load(Ordering::Relaxed), 2);
+        assert!(registry.active_destination_cooldown(&child_a).is_some());
+        assert!(registry.active_destination_cooldown(&child_b).is_none());
+        assert_eq!(registry.snapshot().host_rps.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn blocking_destination_override_keeps_sibling_child_dispatchable() {
+        let (url, hits) = spawn_http_server(vec![
+            http_response(429, &[("Retry-After", "60")], "rate limited"),
+            http_response(200, &[], "ok"),
+        ])
+        .await;
+
+        let (first_status, blocked_a, second_status) = tokio::task::spawn_blocking(move || {
+            let client = blocking_reqwest_client_builder().build().unwrap();
+            let child_a: DestinationKey = "managed-indexer:blocking-parent:1".into();
+            let child_b: DestinationKey = "managed-indexer:blocking-parent:2".into();
+
+            let first = send_blocking_reqwest_request_with_cooldown_policy(
+                client.get(&url),
+                None,
+                Some(child_a.clone()),
+            )
+            .unwrap();
+            let first_status = first.status();
+            drop(first);
+
+            let blocked_a = send_blocking_reqwest_request_with_cooldown_policy(
+                client.get(&url),
+                Some(Duration::from_millis(1)),
+                Some(child_a),
+            )
+            .unwrap_err();
+            let second = send_blocking_reqwest_request_with_cooldown_policy(
+                client.get(&url),
+                Some(Duration::from_millis(1)),
+                Some(child_b),
+            )
+            .unwrap();
+            (first_status, blocked_a, second.status())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(first_status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(matches!(
+            blocked_a,
+            BlockingOutboundHttpError::CooldownBudgetExceeded { .. }
+        ));
+        assert_eq!(second_status, StatusCode::OK);
+        assert_eq!(hits.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]

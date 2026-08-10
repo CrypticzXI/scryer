@@ -373,29 +373,31 @@ fn discover_by_type(
     root: &Path,
     per_type: usize,
 ) -> std::io::Result<BTreeMap<&'static str, Vec<PathBuf>>> {
-    let mut files = BTreeMap::from([
-        ("mkv", Vec::new()),
-        ("mp4", Vec::new()),
-        ("avi", Vec::new()),
-        ("ts", Vec::new()),
-    ]);
+    let mut files = empty_media_groups();
     collect_by_type(root, 0, per_type, &mut files)?;
     Ok(files)
 }
 
 fn group_explicit_files(paths: Vec<PathBuf>) -> BTreeMap<&'static str, Vec<PathBuf>> {
-    let mut files = BTreeMap::from([
-        ("mkv", Vec::new()),
-        ("mp4", Vec::new()),
-        ("avi", Vec::new()),
-        ("ts", Vec::new()),
-    ]);
+    let mut files = empty_media_groups();
     for path in paths {
         if let Some(kind) = media_type(&path) {
             files.get_mut(kind).expect("known media type").push(path);
         }
     }
     files
+}
+
+fn empty_media_groups() -> BTreeMap<&'static str, Vec<PathBuf>> {
+    BTreeMap::from([
+        ("mkv", Vec::new()),
+        ("mp4", Vec::new()),
+        ("avi", Vec::new()),
+        ("ts", Vec::new()),
+        ("wmv", Vec::new()),
+        ("ogv", Vec::new()),
+        ("flv", Vec::new()),
+    ])
 }
 
 fn collect_by_type(
@@ -464,7 +466,27 @@ fn media_type(path: &Path) -> Option<&'static str> {
         Some("mp4" | "m4v" | "mov") => Some("mp4"),
         Some("avi") => Some("avi"),
         Some("ts" | "m2ts") => Some("ts"),
+        Some("wmv") => Some("wmv"),
+        Some("ogv") => Some("ogv"),
+        Some("flv") => Some("flv"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn groups_every_supported_explicit_media_type() {
+        let paths = ["sample.wmv", "sample.ogv", "sample.flv"]
+            .map(PathBuf::from)
+            .to_vec();
+        let groups = group_explicit_files(paths);
+
+        for media_type in ["wmv", "ogv", "flv"] {
+            assert_eq!(groups[media_type].len(), 1, "{media_type} bucket");
+        }
     }
 }
 

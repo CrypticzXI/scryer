@@ -3184,6 +3184,7 @@ mod tests {
             managed_metadata_json: None,
             caps_snapshot_json: None,
             last_health_status: None,
+            last_error_message: None,
             last_error_at: None,
             config_json: None,
             created_at: now,

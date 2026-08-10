@@ -13,7 +13,9 @@ fn media_dir() -> PathBuf {
 fn is_media_fixture(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
-        Some("avi" | "mkv" | "webm" | "mp4" | "m4v" | "mov" | "ts" | "m2ts")
+        Some(
+            "avi" | "mkv" | "webm" | "mp4" | "m4v" | "mov" | "ts" | "m2ts" | "wmv" | "ogv" | "flv"
+        )
     )
 }
 

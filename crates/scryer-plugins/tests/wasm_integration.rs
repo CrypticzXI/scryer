@@ -47,6 +47,7 @@ fn test_config(provider_type: &str) -> IndexerConfig {
         managed_metadata_json: None,
         caps_snapshot_json: None,
         last_health_status: None,
+        last_error_message: None,
         last_error_at: None,
         config_json: None,
         created_at: Utc::now(),
@@ -334,6 +335,65 @@ async fn newznab_builtin_rss_search_uses_category_only_request() {
         !request.contains("&q=") && !request.contains("?q="),
         "RSS request should not include q=: {request}"
     );
+}
+
+#[tokio::test]
+async fn newznab_builtin_preserves_prowlarr_429_description_and_retry_after() {
+    let body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<error code="429" description="User configurable Indexer Query Limit of 100 in last 1 hour(s) reached." />"#;
+    let (base_url, request_rx) = spawn_newznab_raw_response_server(
+        "429 Too Many Requests",
+        &["Content-Type: application/rss+xml", "Retry-After: 321"],
+        body,
+    );
+    let provider = scryer_plugins::WasmIndexerPluginProvider::empty()
+        .with_builtin_asset(scryer_plugins::builtins::NEWZNAB);
+
+    let mut config = test_config("newznab");
+    config.managed_parent_config_id = Some("prowlarr-parent".to_string());
+    config.managed_child_key = Some("42".to_string());
+    config.config_json = Some(
+        serde_json::json!({
+            "base_url": base_url,
+            "api_key": "test-key",
+        })
+        .to_string(),
+    );
+
+    let client = provider.client_for_provider(&config).unwrap();
+    let error = client
+        .search(
+            "scryer connection test".to_string(),
+            std::collections::HashMap::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            scryer_application::SearchMode::Interactive,
+            None,
+            None,
+            None,
+            vec![],
+            None,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect_err("Prowlarr's 429 should remain a failed child search")
+        .to_string();
+
+    assert!(
+        error.contains("User configurable Indexer Query Limit of 100 in last 1 hour(s) reached."),
+        "error was {error}"
+    );
+    assert!(error.contains("retry after 321s"), "error was {error}");
+    assert!(
+        !error.contains("stopped after"),
+        "the host should preserve Prowlarr's real reason instead of the guest's generic error: {error}"
+    );
+    request_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("mock Prowlarr server should receive a Newznab request");
 }
 
 #[tokio::test]
@@ -694,6 +754,14 @@ fn spawn_newznab_response_server() -> (String, mpsc::Receiver<String>) {
 }
 
 fn spawn_newznab_response_server_with_body(body: &'static str) -> (String, mpsc::Receiver<String>) {
+    spawn_newznab_raw_response_server("200 OK", &["Content-Type: application/json"], body)
+}
+
+fn spawn_newznab_raw_response_server(
+    status: &'static str,
+    headers: &'static [&'static str],
+    body: &'static str,
+) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
@@ -713,10 +781,10 @@ fn spawn_newznab_response_server_with_body(body: &'static str) -> (String, mpsc:
                     let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
                     let _ = request_tx.send(request);
 
+                    let headers = headers.join("\r\n");
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
+                        "HTTP/1.1 {status}\r\n{headers}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
                     );
                     let _ = stream.write_all(response.as_bytes());
                     break;

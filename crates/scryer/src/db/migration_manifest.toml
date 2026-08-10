@@ -786,6 +786,23 @@ file = "postgres/migrations/0152_discovery_title_content_classification.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 153
+description = "indexer last error diagnostics"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0153_indexer_last_error_message.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0153_indexer_last_error_message.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

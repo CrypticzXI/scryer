@@ -65,8 +65,11 @@ if ($LASTEXITCODE -ne 0) {
   throw "Unable to enable local manifest files in winget (exit code $LASTEXITCODE)."
 }
 & $winget validate --manifest $manifestDirectory --disable-interactivity
-if ($LASTEXITCODE -ne 0) {
-  throw "Generated winget manifest validation failed with exit code $LASTEXITCODE."
+$manifestValidationExitCode = $LASTEXITCODE
+if ($manifestValidationExitCode -eq -1978335192) {
+  Write-Warning "Generated winget manifest validation succeeded with warnings. Continuing to the install smoke test."
+} elseif ($manifestValidationExitCode -ne 0) {
+  throw "Generated winget manifest validation failed with exit code $manifestValidationExitCode."
 }
 
 $desktopProfile = Join-Path $env:LOCALAPPDATA "ScryerMedia\Scryer"

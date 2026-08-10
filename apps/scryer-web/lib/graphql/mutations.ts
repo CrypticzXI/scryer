@@ -291,6 +291,7 @@ export const createIndexerMutation = `mutation CreateIndexer($input: CreateIndex
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
+    lastErrorMessage
     lastErrorAt
     config {${PROVIDER_CONFIG_VALUE_FIELDS}
     }
@@ -318,6 +319,7 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
     enableInteractiveSearch
     enableAutoSearch
     lastHealthStatus
+    lastErrorMessage
     lastErrorAt
     config {${PROVIDER_CONFIG_VALUE_FIELDS}
     }
