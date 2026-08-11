@@ -2349,6 +2349,18 @@ pub trait IndexerConfigRepository: Send + Sync {
         Ok(())
     }
     async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig>;
+    async fn set_download_client_mapping(
+        &self,
+        indexer_id: &str,
+        download_client_id: Option<String>,
+    ) -> AppResult<IndexerConfig> {
+        self.update(IndexerConfigUpdate {
+            id: indexer_id.to_string(),
+            download_client_id: Some(download_client_id),
+            ..IndexerConfigUpdate::default()
+        })
+        .await
+    }
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
 
@@ -2448,6 +2460,10 @@ pub trait DownloadClientConfigRepository: Send + Sync {
     async fn create(&self, config: DownloadClientConfig) -> AppResult<DownloadClientConfig>;
     async fn update(&self, update: DownloadClientConfigUpdate) -> AppResult<DownloadClientConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
+    async fn delete_with_cleared_indexer_mapping_count(&self, id: &str) -> AppResult<u64> {
+        self.delete(id).await?;
+        Ok(0)
+    }
     async fn reorder(&self, ordered_ids: Vec<String>) -> AppResult<()>;
 }
 

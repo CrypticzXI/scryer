@@ -815,6 +815,47 @@ impl SettingsQueries {
         Ok(payloads)
     }
 
+    async fn indexer_download_client_mapping_catalog(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<IndexerDownloadClientMappingCatalogPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let catalog = app
+            .get_indexer_download_client_mapping_catalog(&actor)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(IndexerDownloadClientMappingCatalogPayload {
+            clients: catalog
+                .clients
+                .into_iter()
+                .map(|client| IndexerDownloadClientMappingClientPayload {
+                    id: client.id.into(),
+                    name: client.name,
+                    client_type: client.client_type,
+                    is_enabled: client.is_enabled,
+                    health_status: client.health_status,
+                })
+                .collect(),
+            indexers: catalog
+                .indexers
+                .into_iter()
+                .map(|indexer| IndexerDownloadClientMappingIndexerPayload {
+                    id: indexer.id.into(),
+                    name: indexer.name,
+                    download_client_id: indexer.download_client_id.map(Into::into),
+                    protocol_families: indexer.protocol_families,
+                    supports_mapping: indexer.supports_mapping,
+                    compatible_client_ids: indexer
+                        .compatible_client_ids
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                })
+                .collect(),
+        })
+    }
+
     async fn indexer_proxy_configs(
         &self,
         ctx: &Context<'_>,

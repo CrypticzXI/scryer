@@ -437,6 +437,7 @@ export const testDownloadClientConnectionMutation = `mutation TestDownloadClient
 export const deleteDownloadClientMutation = `mutation DeleteDownloadClient($id: ID!) {
   deleteDownloadClientConfig(id: $id) {
     id
+    clearedIndexerMappingCount
   }
 }`;
 
@@ -2338,3 +2339,9 @@ export type SubtitleSearchResult = {
   downloadCount: number | null;
   hashMatched: boolean;
 };
+
+export const setIndexerDownloadClientMappingMutation = `mutation SetIndexerDownloadClientMapping($input: SetIndexerDownloadClientMappingInput!) {
+  setIndexerDownloadClientMapping(input: $input) {
+    downloadClientId
+  }
+}`;

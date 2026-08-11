@@ -23,7 +23,7 @@ use scryer_outbound_http::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::nzbget::NzbgetDownloadClient;
 use super::sabnzbd::SabnzbdDownloadClient;
@@ -597,7 +597,9 @@ enum DownloadClientRoutingScope {
 
 struct FacetClientSelection {
     clients: Vec<DownloadClientConfig>,
+    all_clients: Vec<DownloadClientConfig>,
     disabled_scope: Option<DownloadClientRoutingScope>,
+    routing: Option<ResolvedDownloadClientRouting>,
 }
 
 struct ResolvedDownloadClientRouting {
@@ -760,12 +762,11 @@ impl PrioritizedDownloadClientRouter {
     }
 
     async fn list_enabled_clients_by_priority(&self) -> AppResult<Vec<DownloadClientConfig>> {
-        let mut clients = self
-            .download_client_configs
-            .list(None)
-            .await?
-            .into_iter()
+        let all_clients = self.download_client_configs.list(None).await?;
+        let mut clients = all_clients
+            .iter()
             .filter(|config| config.is_enabled)
+            .cloned()
             .collect::<Vec<_>>();
         clients.sort_by_key(|config| config.client_priority);
         Ok(clients)
@@ -895,35 +896,74 @@ impl PrioritizedDownloadClientRouter {
         })
     }
 
+    async fn load_indexer_config_for_submission(
+        &self,
+        request: &DownloadClientAddRequest,
+    ) -> AppResult<Option<scryer_domain::IndexerConfig>> {
+        let Some(indexer_id) = request
+            .indexer_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        let Some(indexer_configs) = self.indexer_configs.as_ref() else {
+            return Err(AppError::download_submit_unavailable(format!(
+                "indexer {indexer_id} routing is unavailable: indexer configuration repository is not wired"
+            )));
+        };
+        let indexer = indexer_configs.get_by_id(indexer_id).await.map_err(|error| {
+            AppError::download_submit_unavailable(format!(
+                "indexer {indexer_id} routing is unavailable: failed to load indexer configuration: {error}"
+            ))
+        })?;
+        indexer
+            .ok_or_else(|| {
+                AppError::download_submit_unavailable(format!(
+                    "indexer {indexer_id} routing is unavailable: indexer configuration was not found"
+                ))
+            })
+            .map(Some)
+    }
+
     async fn prepare_proxied_download_request(
         &self,
         request: &DownloadClientAddRequest,
+        indexer: Option<&scryer_domain::IndexerConfig>,
     ) -> AppResult<DownloadClientAddRequest> {
-        let Some(indexer_id) = request.indexer_id.as_deref() else {
+        let Some(indexer) = indexer else {
             return Ok(request.clone());
         };
-        let (Some(indexer_configs), Some(indexer_proxy_configs)) =
-            (&self.indexer_configs, &self.indexer_proxy_configs)
-        else {
-            return Ok(request.clone());
-        };
-        let indexer = indexer_configs
-            .get_by_id(indexer_id)
-            .await?
-            .ok_or_else(|| AppError::Validation("Indexer configuration was not found.".into()))?;
         let Some(proxy_config_id) = indexer.indexer_proxy_config_id.as_deref() else {
             return Ok(request.clone());
         };
+        let Some(indexer_proxy_configs) = self.indexer_proxy_configs.as_ref() else {
+            return Err(AppError::download_submit_unavailable(format!(
+                "indexer {} routing is unavailable: indexer proxy repository is not wired",
+                indexer.id
+            )));
+        };
         let proxy_config = indexer_proxy_configs
             .get_by_id(proxy_config_id)
-            .await?
+            .await
+            .map_err(|error| {
+                AppError::download_submit_unavailable(format!(
+                    "indexer {} routing is unavailable: failed to load proxy configuration: {error}",
+                    indexer.id
+                ))
+            })?
             .ok_or_else(|| {
-                AppError::Validation("Indexer proxy configuration was not found.".into())
+                AppError::download_submit_unavailable(format!(
+                    "indexer {} routing is unavailable: proxy configuration {} was not found",
+                    indexer.id, proxy_config_id
+                ))
             })?;
         if !proxy_config.is_enabled {
-            return Err(AppError::Validation(
-                "Indexer proxy is disabled for this indexer.".into(),
-            ));
+            return Err(AppError::download_submit_unavailable(format!(
+                "indexer {} routing is unavailable: assigned proxy {} is disabled",
+                indexer.id, proxy_config_id
+            )));
         }
         let download_url = request
             .source_hint
@@ -943,7 +983,7 @@ impl PrioritizedDownloadClientRouter {
             prepared.source_hint = Some(uri);
             return Ok(prepared);
         }
-        if !Self::download_url_matches_indexer_origin(&indexer, download_url) {
+        if !Self::download_url_matches_indexer_origin(indexer, download_url) {
             return Err(AppError::Validation(
                 "Proxied download URL does not match the assigned indexer origin.".into(),
             ));
@@ -1602,17 +1642,16 @@ impl PrioritizedDownloadClientRouter {
     ) -> AppResult<FacetClientSelection> {
         let resolved_routing = self.resolve_routing_object_for_title(title).await?;
 
-        let mut clients = self
-            .download_client_configs
-            .list(None)
-            .await?
-            .into_iter()
+        let all_clients = self.download_client_configs.list(None).await?;
+        let mut clients = all_clients
+            .iter()
             .filter(|config| config.is_enabled)
+            .cloned()
             .collect::<Vec<_>>();
         let any_globally_enabled = !clients.is_empty();
         let mut disabled_scope = None;
 
-        match resolved_routing {
+        match resolved_routing.as_ref() {
             Some(resolved_routing) => {
                 let ordered_ids: Vec<String> =
                     resolved_routing.routing_object.keys().cloned().collect();
@@ -1649,7 +1688,9 @@ impl PrioritizedDownloadClientRouter {
 
         Ok(FacetClientSelection {
             clients,
+            all_clients,
             disabled_scope,
+            routing: resolved_routing,
         })
     }
 
@@ -1702,6 +1743,59 @@ impl PrioritizedDownloadClientRouter {
         });
 
         Ok(effective_request)
+    }
+
+    fn routing_scope_label(routing: Option<&ResolvedDownloadClientRouting>) -> &'static str {
+        match routing.map(|value| value.scope) {
+            Some(DownloadClientRoutingScope::Library) => "library",
+            Some(DownloadClientRoutingScope::Facet) => "facet",
+            None => "global",
+        }
+    }
+
+    fn mapped_routing_failure(
+        indexer: &scryer_domain::IndexerConfig,
+        client: Option<&DownloadClientConfig>,
+        client_id: &str,
+        scope: &str,
+        reason: impl Into<String>,
+    ) -> AppError {
+        let reason = reason.into();
+        let client_name = client
+            .map(|config| config.name.as_str())
+            .unwrap_or(client_id);
+        let client_type = client
+            .map(|config| config.client_type.as_str())
+            .unwrap_or("unavailable");
+        warn!(
+            routing_mode = "mapped",
+            indexer_id = indexer.id.as_str(),
+            indexer_name = indexer.name.as_str(),
+            client_id,
+            client_name,
+            client_type,
+            effective_scope = scope,
+            failure_reason = reason.as_str(),
+            "indexer download-client routing failed"
+        );
+        AppError::download_submit_unavailable(format!(
+            "indexer '{}' ({}) mapped to download client '{}' ({client_id}) is unavailable in {scope} routing: {reason}",
+            indexer.name, indexer.id, client_name
+        ))
+    }
+
+    async fn mapped_routing_failure_with_cleanup(
+        &self,
+        staged_nzb: Option<&StagedNzbRef>,
+        indexer: &scryer_domain::IndexerConfig,
+        client: Option<&DownloadClientConfig>,
+        client_id: &str,
+        scope: &str,
+        reason: impl Into<String>,
+    ) -> AppError {
+        self.delete_staged_nzb(staged_nzb, "mapped_routing_failure")
+            .await;
+        Self::mapped_routing_failure(indexer, client, client_id, scope, reason)
     }
 
     fn is_native_nzb_client_type(client_type: &str) -> bool {
@@ -1836,6 +1930,7 @@ impl PrioritizedDownloadClientRouter {
                 Ok(client) => clients.push((config, client)),
                 Err(error) => {
                     warn!(
+                        routing_mode = "automatic",
                         client_id = config.id.as_str(),
                         client_name = config.name.as_str(),
                         client_type = config.client_type.as_str(),
@@ -1865,6 +1960,7 @@ impl PrioritizedDownloadClientRouter {
                 }
                 Err(error) => {
                     warn!(
+                        routing_mode = "automatic",
                         client_id = config.id.as_str(),
                         client_name = config.name.as_str(),
                         client_type = config.client_type.as_str(),
@@ -1953,7 +2049,46 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         &self,
         request: &DownloadClientAddRequest,
     ) -> AppResult<DownloadGrabResult> {
-        let request = self.prepare_proxied_download_request(request).await?;
+        // Load indexer provenance once. The same live config drives proxy
+        // resolution and the current indexer -> download-client mapping.
+        let indexer_config = match self.load_indexer_config_for_submission(request).await {
+            Ok(indexer_config) => indexer_config,
+            Err(error) => {
+                self.delete_staged_nzb(request.staged_nzb.as_ref(), "indexer_lookup_failure")
+                    .await;
+                return Err(error.into_download_submit_unavailable());
+            }
+        };
+        let mapped_client_id = indexer_config
+            .as_ref()
+            .and_then(|config| config.download_client_id.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let request = match self
+            .prepare_proxied_download_request(request, indexer_config.as_ref())
+            .await
+        {
+            Ok(request) => request,
+            Err(error) => {
+                if let (Some(indexer), Some(mapped_client_id)) =
+                    (indexer_config.as_ref(), mapped_client_id)
+                {
+                    return Err(self
+                        .mapped_routing_failure_with_cleanup(
+                            request.staged_nzb.as_ref(),
+                            indexer,
+                            None,
+                            mapped_client_id,
+                            "proxy",
+                            format!("indexer proxy resolution failed: {error}"),
+                        )
+                        .await);
+                }
+                self.delete_staged_nzb(request.staged_nzb.as_ref(), "proxy_resolution_failure")
+                    .await;
+                return Err(error.into_download_submit_unavailable());
+            }
+        };
         let request = &request;
         // Pillar D1 for NZB bytes Scryer already holds (indexer-proxied
         // artifacts). URL-sourced NZBs are gated as they stream in, inside
@@ -1962,13 +2097,17 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             request.resolved_download_artifact.as_ref()
         {
             let head_len = bytes.len().min(scryer_application::NZB_HEAD_PROBE_BYTES);
-            scryer_application::enforce_nzb_category_gate(
+            if let Err(error) = scryer_application::enforce_nzb_category_gate(
                 &bytes[..head_len],
                 request
                     .search_facet
                     .as_ref()
                     .unwrap_or(&request.title.facet),
-            )?;
+            ) {
+                self.delete_staged_nzb(request.staged_nzb.as_ref(), "nzb_category_rejected")
+                    .await;
+                return Err(error);
+            }
         }
         let resolved_artifact_kind = Self::request_artifact_kind(request);
         let selection = match self.list_clients_for_title(&request.title).await {
@@ -1980,30 +2119,110 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     facet = ?request.title.facet,
                     "failed to load prioritized download clients"
                 );
+                if let Some(mapped_client_id) = mapped_client_id {
+                    let indexer = indexer_config
+                        .as_ref()
+                        .expect("mapped client requires indexer configuration");
+                    return Err(self
+                        .mapped_routing_failure_with_cleanup(
+                            request.staged_nzb.as_ref(),
+                            indexer,
+                            None,
+                            mapped_client_id,
+                            "unknown",
+                            format!("effective client policy could not be loaded: {error}"),
+                        )
+                        .await);
+                }
+                self.delete_staged_nzb(request.staged_nzb.as_ref(), "client_policy_failure")
+                    .await;
                 return Err(error.into_download_submit_unavailable());
             }
         };
 
-        if let Some(disabled_scope) = selection.disabled_scope {
-            let message = match disabled_scope {
-                DownloadClientRoutingScope::Library => format!(
-                    "no download client enabled for library {}",
-                    request.title.library_id
-                ),
-                DownloadClientRoutingScope::Facet => {
-                    "no download client enabled for this facet".to_string()
-                }
+        let mut clients = if let Some(mapped_client_id) = mapped_client_id {
+            let indexer = indexer_config
+                .as_ref()
+                .expect("mapped client requires indexer configuration");
+            let scope = Self::routing_scope_label(selection.routing.as_ref());
+            let Some(config) = selection
+                .all_clients
+                .iter()
+                .find(|config| config.id == mapped_client_id)
+            else {
+                return Err(self
+                    .mapped_routing_failure_with_cleanup(
+                        request.staged_nzb.as_ref(),
+                        indexer,
+                        None,
+                        mapped_client_id,
+                        scope,
+                        "mapped download client does not exist",
+                    )
+                    .await);
             };
-            return Err(AppError::Validation(message));
-        }
+            if !config.is_enabled {
+                return Err(self
+                    .mapped_routing_failure_with_cleanup(
+                        request.staged_nzb.as_ref(),
+                        indexer,
+                        Some(config),
+                        mapped_client_id,
+                        scope,
+                        "mapped download client is globally disabled",
+                    )
+                    .await);
+            }
+            let enabled_in_scope = selection
+                .routing
+                .as_ref()
+                .map(|routing| {
+                    routing
+                        .routing_object
+                        .get(mapped_client_id)
+                        .map(|entry| Self::read_bool(entry.get("enabled"), true))
+                        .unwrap_or(matches!(routing.scope, DownloadClientRoutingScope::Facet))
+                })
+                .unwrap_or(true);
+            if !enabled_in_scope {
+                return Err(self
+                    .mapped_routing_failure_with_cleanup(
+                        request.staged_nzb.as_ref(),
+                        indexer,
+                        Some(config),
+                        mapped_client_id,
+                        scope,
+                        "mapped download client is disabled in the effective scope",
+                    )
+                    .await);
+            }
+            vec![config.clone()]
+        } else {
+            if let Some(disabled_scope) = selection.disabled_scope {
+                let message = match disabled_scope {
+                    DownloadClientRoutingScope::Library => format!(
+                        "no download client enabled for library {}",
+                        request.title.library_id
+                    ),
+                    DownloadClientRoutingScope::Facet => {
+                        "no download client enabled for this facet".to_string()
+                    }
+                };
+                self.delete_staged_nzb(request.staged_nzb.as_ref(), "scope_routing_unavailable")
+                    .await;
+                return Err(AppError::download_submit_unavailable(message));
+            }
 
-        let mut clients = selection.clients;
-
-        if clients.is_empty() {
-            return Err(AppError::download_submit_unavailable(
-                "no enabled download clients configured",
-            ));
-        }
+            let clients = selection.clients;
+            if clients.is_empty() {
+                self.delete_staged_nzb(request.staged_nzb.as_ref(), "no_enabled_clients")
+                    .await;
+                return Err(AppError::download_submit_unavailable(
+                    "no enabled download clients configured",
+                ));
+            }
+            clients
+        };
 
         if let Some(artifact_kind) = resolved_artifact_kind {
             clients.retain(|config| {
@@ -2025,7 +2244,31 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             });
 
             if clients.is_empty() {
-                return Err(AppError::Validation(format!(
+                if let Some(mapped_client_id) = mapped_client_id {
+                    let indexer = indexer_config
+                        .as_ref()
+                        .expect("mapped client requires indexer configuration");
+                    let mapped_client = selection
+                        .all_clients
+                        .iter()
+                        .find(|config| config.id == mapped_client_id);
+                    return Err(self
+                        .mapped_routing_failure_with_cleanup(
+                            request.staged_nzb.as_ref(),
+                            indexer,
+                            mapped_client,
+                            mapped_client_id,
+                            Self::routing_scope_label(selection.routing.as_ref()),
+                            format!(
+                                "mapped download client cannot accept the resolved {}",
+                                Self::artifact_kind_label(artifact_kind)
+                            ),
+                        )
+                        .await);
+                }
+                self.delete_staged_nzb(request.staged_nzb.as_ref(), "artifact_incompatible")
+                    .await;
+                return Err(AppError::download_submit_unavailable(format!(
                     "no enabled download client can accept the resolved {}",
                     Self::artifact_kind_label(artifact_kind)
                 )));
@@ -2050,7 +2293,31 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             });
 
             if clients.is_empty() {
-                return Err(AppError::Validation(format!(
+                if let Some(mapped_client_id) = mapped_client_id {
+                    let indexer = indexer_config
+                        .as_ref()
+                        .expect("mapped client requires indexer configuration");
+                    let mapped_client = selection
+                        .all_clients
+                        .iter()
+                        .find(|config| config.id == mapped_client_id);
+                    return Err(self
+                        .mapped_routing_failure_with_cleanup(
+                            request.staged_nzb.as_ref(),
+                            indexer,
+                            mapped_client,
+                            mapped_client_id,
+                            Self::routing_scope_label(selection.routing.as_ref()),
+                            format!(
+                                "mapped download client cannot handle {} releases",
+                                Self::source_kind_label(source_kind)
+                            ),
+                        )
+                        .await);
+                }
+                self.delete_staged_nzb(request.staged_nzb.as_ref(), "source_kind_incompatible")
+                    .await;
+                return Err(AppError::download_submit_unavailable(format!(
                     "no enabled download client can handle {} releases",
                     Self::source_kind_label(source_kind)
                 )));
@@ -2059,8 +2326,28 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
 
         let mut last_error: Option<AppError> = None;
         let mut staged_nzb = if let Some(staged_nzb) = request.staged_nzb.clone() {
-            self.staged_nzb_store
-                .mark_artifact_active(&staged_nzb.compressed_path)?;
+            if let Err(error) = self
+                .staged_nzb_store
+                .mark_artifact_active(&staged_nzb.compressed_path)
+            {
+                if let (Some(indexer), Some(mapped_client_id)) =
+                    (indexer_config.as_ref(), mapped_client_id)
+                {
+                    return Err(self
+                        .mapped_routing_failure_with_cleanup(
+                            Some(&staged_nzb),
+                            indexer,
+                            clients.first(),
+                            mapped_client_id,
+                            Self::routing_scope_label(selection.routing.as_ref()),
+                            format!("staged NZB could not be activated: {error}"),
+                        )
+                        .await);
+                }
+                self.delete_staged_nzb(Some(&staged_nzb), "staged_nzb_activation_failure")
+                    .await;
+                return Err(error.into_download_submit_unavailable());
+            }
             Some(super::StagedNzbLease {
                 staged_nzb,
                 self_staged: false,
@@ -2071,6 +2358,26 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             None
         };
         for config in clients {
+            info!(
+                routing_mode = if mapped_client_id.is_some() {
+                    "mapped"
+                } else {
+                    "automatic"
+                },
+                indexer_id = indexer_config
+                    .as_ref()
+                    .map(|indexer| indexer.id.as_str())
+                    .unwrap_or(""),
+                indexer_name = indexer_config
+                    .as_ref()
+                    .map(|indexer| indexer.name.as_str())
+                    .unwrap_or(""),
+                client_id = config.id.as_str(),
+                client_name = config.name.as_str(),
+                client_type = config.client_type.as_str(),
+                effective_scope = Self::routing_scope_label(selection.routing.as_ref()),
+                "selected download client route"
+            );
             let client = match Self::client_from_config(
                 &config,
                 self.staged_nzb_store.clone(),
@@ -2087,6 +2394,23 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         error = %error,
                         "download client skipped due to invalid configuration"
                     );
+                    if let Some(mapped_client_id) = mapped_client_id {
+                        self.delete_staged_nzb(
+                            staged_nzb.as_ref().map(|lease| &lease.staged_nzb),
+                            "mapped_client_config_failure",
+                        )
+                        .await;
+                        let indexer = indexer_config
+                            .as_ref()
+                            .expect("mapped client requires indexer configuration");
+                        return Err(Self::mapped_routing_failure(
+                            indexer,
+                            Some(&config),
+                            mapped_client_id,
+                            Self::routing_scope_label(selection.routing.as_ref()),
+                            format!("download client configuration could not be built: {error}"),
+                        ));
+                    }
                     last_error = Some(error);
                     continue;
                 }
@@ -2109,32 +2433,108 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                                     .as_deref()
                                     .or(effective_request.source_title.as_deref())
                                     .unwrap_or("proxied-nzb");
-                                staged_nzb = Some(
-                                    stage_nzb_from_bytes(
-                                        &self.staged_nzb_store,
-                                        &self.staged_nzb_pipeline_limit,
-                                        source_label,
-                                        Some(&request.title.id),
-                                        bytes,
-                                    )
-                                    .await?,
-                                );
+                                let staged = stage_nzb_from_bytes(
+                                    &self.staged_nzb_store,
+                                    &self.staged_nzb_pipeline_limit,
+                                    source_label,
+                                    Some(&request.title.id),
+                                    bytes,
+                                )
+                                .await;
+                                staged_nzb = Some(match staged {
+                                    Ok(staged) => staged,
+                                    Err(error) => {
+                                        if matches!(
+                                            &error,
+                                            AppError::Validation(_)
+                                                | AppError::DownloadSubmitRejected(_)
+                                        ) {
+                                            return Err(error);
+                                        }
+                                        if let (Some(indexer), Some(mapped_client_id)) =
+                                            (indexer_config.as_ref(), mapped_client_id)
+                                        {
+                                            return Err(Self::mapped_routing_failure(
+                                                indexer,
+                                                Some(&config),
+                                                mapped_client_id,
+                                                Self::routing_scope_label(
+                                                    selection.routing.as_ref(),
+                                                ),
+                                                format!("NZB staging failed: {error}"),
+                                            ));
+                                        }
+                                        return Err(error.into_download_submit_unavailable());
+                                    }
+                                });
                             } else {
-                                let source_hint = request_source_hint_for_nzb(&effective_request)?;
-                                staged_nzb = Some(
-                                    stage_nzb_from_url(
-                                        &self.outbound_http,
-                                        &self.staged_nzb_store,
-                                        &self.staged_nzb_pipeline_limit,
-                                        &source_hint,
-                                        Some(&request.title.id),
-                                        request
-                                            .search_facet
-                                            .as_ref()
-                                            .unwrap_or(&request.title.facet),
-                                    )
-                                    .await?,
-                                );
+                                let source_hint =
+                                    match request_source_hint_for_nzb(&effective_request) {
+                                        Ok(source_hint) => source_hint,
+                                        Err(error) => {
+                                            if matches!(
+                                                &error,
+                                                AppError::Validation(_)
+                                                    | AppError::DownloadSubmitRejected(_)
+                                            ) {
+                                                return Err(error);
+                                            }
+                                            if let (Some(indexer), Some(mapped_client_id)) =
+                                                (indexer_config.as_ref(), mapped_client_id)
+                                            {
+                                                return Err(Self::mapped_routing_failure(
+                                                    indexer,
+                                                    Some(&config),
+                                                    mapped_client_id,
+                                                    Self::routing_scope_label(
+                                                        selection.routing.as_ref(),
+                                                    ),
+                                                    format!(
+                                                        "NZB source could not be resolved: {error}"
+                                                    ),
+                                                ));
+                                            }
+                                            return Err(error.into_download_submit_unavailable());
+                                        }
+                                    };
+                                let staged = stage_nzb_from_url(
+                                    &self.outbound_http,
+                                    &self.staged_nzb_store,
+                                    &self.staged_nzb_pipeline_limit,
+                                    &source_hint,
+                                    Some(&request.title.id),
+                                    request
+                                        .search_facet
+                                        .as_ref()
+                                        .unwrap_or(&request.title.facet),
+                                )
+                                .await;
+                                staged_nzb = Some(match staged {
+                                    Ok(staged) => staged,
+                                    Err(error) => {
+                                        if matches!(
+                                            &error,
+                                            AppError::Validation(_)
+                                                | AppError::DownloadSubmitRejected(_)
+                                        ) {
+                                            return Err(error);
+                                        }
+                                        if let (Some(indexer), Some(mapped_client_id)) =
+                                            (indexer_config.as_ref(), mapped_client_id)
+                                        {
+                                            return Err(Self::mapped_routing_failure(
+                                                indexer,
+                                                Some(&config),
+                                                mapped_client_id,
+                                                Self::routing_scope_label(
+                                                    selection.routing.as_ref(),
+                                                ),
+                                                format!("NZB download or staging failed: {error}"),
+                                            ));
+                                        }
+                                        return Err(error.into_download_submit_unavailable());
+                                    }
+                                });
                             }
                         }
                         effective_request.staged_nzb =
@@ -2150,6 +2550,23 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                         error = %error,
                         "download client skipped because routing configuration could not be resolved"
                     );
+                    if let Some(mapped_client_id) = mapped_client_id {
+                        self.delete_staged_nzb(
+                            staged_nzb.as_ref().map(|lease| &lease.staged_nzb),
+                            "mapped_routing_failure",
+                        )
+                        .await;
+                        let indexer = indexer_config
+                            .as_ref()
+                            .expect("mapped client requires indexer configuration");
+                        return Err(Self::mapped_routing_failure(
+                            indexer,
+                            Some(&config),
+                            mapped_client_id,
+                            Self::routing_scope_label(selection.routing.as_ref()),
+                            format!("effective routing settings could not be resolved: {error}"),
+                        ));
+                    }
                     last_error = Some(error);
                     continue;
                 }
@@ -2170,6 +2587,67 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                     });
                 }
                 Err(error) => {
+                    if let Some(mapped_client_id) = mapped_client_id {
+                        if error.is_download_submit_ambiguous() {
+                            warn!(
+                                routing_mode = "mapped",
+                                indexer_id = indexer_config
+                                    .as_ref()
+                                    .map(|indexer| indexer.id.as_str())
+                                    .unwrap_or("unknown"),
+                                indexer_name = indexer_config
+                                    .as_ref()
+                                    .map(|indexer| indexer.name.as_str())
+                                    .unwrap_or("unknown"),
+                                client_id = config.id.as_str(),
+                                client_name = config.name.as_str(),
+                                client_type = config.client_type.as_str(),
+                                effective_scope = Self::routing_scope_label(selection.routing.as_ref()),
+                                failure_reason = %error,
+                                failover = false,
+                                "mapped download client submit is ambiguous; preserving ambiguity without fallback"
+                            );
+                            self.delete_staged_nzb(
+                                staged_nzb.as_ref().map(|lease| &lease.staged_nzb),
+                                "mapped_ambiguous_submit",
+                            )
+                            .await;
+                            return Err(error);
+                        }
+                        warn!(
+                            routing_mode = "mapped",
+                            indexer_id = indexer_config
+                                .as_ref()
+                                .map(|indexer| indexer.id.as_str())
+                                .unwrap_or("unknown"),
+                            indexer_name = indexer_config
+                                .as_ref()
+                                .map(|indexer| indexer.name.as_str())
+                                .unwrap_or("unknown"),
+                            client_id = config.id.as_str(),
+                            client_name = config.name.as_str(),
+                            client_type = config.client_type.as_str(),
+                            effective_scope = Self::routing_scope_label(selection.routing.as_ref()),
+                            failure_reason = %error,
+                            failover = false,
+                            "mapped download client enqueue failed without fallback"
+                        );
+                        self.delete_staged_nzb(
+                            staged_nzb.as_ref().map(|lease| &lease.staged_nzb),
+                            "mapped_submit_failure",
+                        )
+                        .await;
+                        let indexer = indexer_config
+                            .as_ref()
+                            .expect("mapped client requires indexer configuration");
+                        return Err(Self::mapped_routing_failure(
+                            indexer,
+                            Some(&config),
+                            mapped_client_id,
+                            Self::routing_scope_label(selection.routing.as_ref()),
+                            format!("download submission failed: {error}"),
+                        ));
+                    }
                     let should_failover = matches!(
                         error,
                         AppError::Repository(_) | AppError::DownloadSubmitUnavailable(_)
@@ -3179,6 +3657,7 @@ mod tests {
             enable_interactive_search: true,
             enable_auto_search: true,
             indexer_proxy_config_id: None,
+            download_client_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -3731,6 +4210,93 @@ mod tests {
         }
     }
 
+    struct RoutingIndexerConfigRepository {
+        configs: Vec<scryer_domain::IndexerConfig>,
+    }
+
+    #[async_trait]
+    impl IndexerConfigRepository for RoutingIndexerConfigRepository {
+        async fn list(
+            &self,
+            _provider_type: Option<String>,
+        ) -> AppResult<Vec<scryer_domain::IndexerConfig>> {
+            Ok(self.configs.clone())
+        }
+
+        async fn get_by_id(&self, id: &str) -> AppResult<Option<scryer_domain::IndexerConfig>> {
+            Ok(self.configs.iter().find(|config| config.id == id).cloned())
+        }
+
+        async fn create(
+            &self,
+            config: scryer_domain::IndexerConfig,
+        ) -> AppResult<scryer_domain::IndexerConfig> {
+            Ok(config)
+        }
+
+        async fn touch_last_error(&self, _id: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn update(
+            &self,
+            _update: scryer_application::IndexerConfigUpdate,
+        ) -> AppResult<scryer_domain::IndexerConfig> {
+            Err(AppError::Validation("not implemented in test".into()))
+        }
+
+        async fn delete(&self, _id: &str) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    struct EmptyIndexerProxyConfigRepository;
+
+    #[async_trait]
+    impl IndexerProxyConfigRepository for EmptyIndexerProxyConfigRepository {
+        async fn list(
+            &self,
+            _provider_type: Option<scryer_domain::IndexerProxyProviderType>,
+        ) -> AppResult<Vec<scryer_domain::IndexerProxyConfig>> {
+            Ok(Vec::new())
+        }
+
+        async fn get_by_id(
+            &self,
+            _id: &str,
+        ) -> AppResult<Option<scryer_domain::IndexerProxyConfig>> {
+            Ok(None)
+        }
+
+        async fn create(
+            &self,
+            config: scryer_domain::IndexerProxyConfig,
+        ) -> AppResult<scryer_domain::IndexerProxyConfig> {
+            Ok(config)
+        }
+
+        async fn update(
+            &self,
+            config: scryer_domain::IndexerProxyConfig,
+        ) -> AppResult<scryer_domain::IndexerProxyConfig> {
+            Ok(config)
+        }
+
+        async fn delete(&self, _id: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn record_health(
+            &self,
+            _id: &str,
+            _status: scryer_domain::IndexerProxyHealthStatus,
+            _error_message: Option<String>,
+            _error_at: Option<chrono::DateTime<chrono::Utc>>,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
     #[derive(Default)]
     struct MockDownloadClient {
         submissions: Mutex<Vec<DownloadClientAddRequest>>,
@@ -4081,6 +4647,616 @@ mod tests {
             is_enabled: false,
             ..test_config(id, name, client_type, priority)
         }
+    }
+
+    #[derive(Default)]
+    struct RecordingStagedNzbStore {
+        deleted_ids: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl StagedNzbStore for RecordingStagedNzbStore {
+        async fn create_pending_staged_nzb(
+            &self,
+            _source_url: &str,
+            _title_id: Option<&str>,
+        ) -> AppResult<scryer_application::PendingStagedNzb> {
+            Err(AppError::Repository("not used in this test".into()))
+        }
+
+        async fn finalize_pending_staged_nzb(
+            &self,
+            _pending: scryer_application::PendingStagedNzb,
+            _raw_size_bytes: u64,
+        ) -> AppResult<StagedNzbRef> {
+            Err(AppError::Repository("not used in this test".into()))
+        }
+
+        async fn delete_staged_nzb(&self, staged_nzb: &StagedNzbRef) -> AppResult<bool> {
+            self.deleted_ids.lock().unwrap().push(staged_nzb.id.clone());
+            Ok(true)
+        }
+
+        async fn prune_staged_nzbs_older_than(
+            &self,
+            _older_than: chrono::DateTime<Utc>,
+        ) -> AppResult<u32> {
+            Ok(0)
+        }
+
+        fn mark_artifact_active(&self, _path: &Path) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn mark_artifact_inactive(&self, _path: &Path) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn mapped_indexer_selects_lower_priority_client_and_applies_scope_policy() {
+        let primary = Arc::new(MockDownloadClient::default());
+        let secondary = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![
+                    ("primary".to_string(), primary.clone()),
+                    ("secondary".to_string(), secondary.clone()),
+                ],
+            });
+        let mut indexer = test_indexer_config("https://indexer.example/api");
+        indexer.download_client_id = Some("secondary".to_string());
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("primary", "Primary", "qbittorrent", 0),
+                    test_config("secondary", "Secondary", "qbittorrent", 10),
+                ],
+            }),
+            Arc::new(MockSettingsRepository {
+                routing_by_scope: HashMap::from([(
+                    "movie".to_string(),
+                    r#"{
+                        "primary": { "enabled": true },
+                        "secondary": {
+                            "enabled": true,
+                            "category": "Movies",
+                            "recentQueuePriority": "high"
+                        }
+                    }"#
+                    .to_string(),
+                )]),
+            }),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        )
+        .with_indexer_config_repositories(
+            Arc::new(RoutingIndexerConfigRepository {
+                configs: vec![indexer],
+            }),
+            Arc::new(EmptyIndexerProxyConfigRepository),
+        );
+
+        let mut request = DownloadClientAddRequest::from_legacy(
+            &test_title(),
+            Some("https://indexer.example/release.nzb".to_string()),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Mapped Release".to_string()),
+            None,
+            None,
+        );
+        request.indexer_id = Some("indexer-1".to_string());
+        request.is_recent = Some(true);
+        router
+            .submit_download(&request)
+            .await
+            .expect("mapped client should accept compatible release");
+
+        assert!(primary.submissions.lock().unwrap().is_empty());
+        let submissions = secondary.submissions.lock().unwrap();
+        assert_eq!(submissions.len(), 1);
+        assert_eq!(submissions[0].category.as_deref(), Some("Movies"));
+        assert_eq!(submissions[0].queue_priority.as_deref(), Some("high"));
+    }
+
+    #[tokio::test]
+    async fn indexed_submission_without_mapping_preserves_automatic_failover() {
+        let primary = Arc::new(MockDownloadClient {
+            submit_error: Mutex::new(Some(MockSubmitError::Repository)),
+            ..Default::default()
+        });
+        let secondary = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![
+                    ("primary".to_string(), primary.clone()),
+                    ("secondary".to_string(), secondary.clone()),
+                ],
+            });
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("primary", "Primary", "qbittorrent", 0),
+                    test_config("secondary", "Secondary", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        )
+        .with_indexer_config_repositories(
+            Arc::new(RoutingIndexerConfigRepository {
+                configs: vec![test_indexer_config("https://indexer.example/api")],
+            }),
+            Arc::new(EmptyIndexerProxyConfigRepository),
+        );
+        let mut request = DownloadClientAddRequest::from_legacy(
+            &test_title(),
+            Some("https://indexer.example/release.nzb".to_string()),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Automatic Indexed Release".to_string()),
+            None,
+            None,
+        );
+        request.indexer_id = Some("indexer-1".to_string());
+
+        let result = router
+            .submit_download(&request)
+            .await
+            .expect("automatic route should fail over for an unmapped indexer");
+        assert_eq!(result.client_id.as_deref(), Some("secondary"));
+        assert_eq!(primary.submissions.lock().unwrap().len(), 1);
+        assert_eq!(secondary.submissions.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn indexed_submission_fails_closed_without_indexer_repository() {
+        let client = Arc::new(MockDownloadClient::default());
+        let router = nzb_bytes_router(client.clone());
+        let mut request = DownloadClientAddRequest::from_legacy(
+            &test_title(),
+            Some("https://indexer.example/release.nzb".to_string()),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Missing Wiring Release".to_string()),
+            None,
+            None,
+        );
+        request.indexer_id = Some("missing-indexer".to_string());
+
+        let error = router
+            .submit_download(&request)
+            .await
+            .expect_err("indexed submission must not fall back to automatic routing");
+        assert!(matches!(
+            error,
+            AppError::DownloadSubmitUnavailable(message)
+                if message.contains("missing-indexer") && message.contains("not wired")
+        ));
+        assert!(client.submissions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn indexed_submission_fails_closed_when_indexer_row_is_missing() {
+        let client = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![("primary".to_string(), client.clone())],
+            });
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("primary", "Primary", "qbittorrent", 0)],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        )
+        .with_indexer_config_repositories(
+            Arc::new(RoutingIndexerConfigRepository {
+                configs: Vec::new(),
+            }),
+            Arc::new(EmptyIndexerProxyConfigRepository),
+        );
+        let mut request = DownloadClientAddRequest::from_legacy(
+            &test_title(),
+            Some("https://indexer.example/release.nzb".to_string()),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Missing Row Release".to_string()),
+            None,
+            None,
+        );
+        request.indexer_id = Some("missing-row".to_string());
+
+        let error = router
+            .submit_download(&request)
+            .await
+            .expect_err("missing indexer rows must fail closed");
+        assert!(matches!(
+            error,
+            AppError::DownloadSubmitUnavailable(message)
+                if message.contains("missing-row") && message.contains("not found")
+        ));
+        assert!(client.submissions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn mapped_enqueue_failure_does_not_fallback_and_names_route() {
+        let mapped = Arc::new(MockDownloadClient {
+            submit_error: Mutex::new(Some(MockSubmitError::Repository)),
+            ..Default::default()
+        });
+        let fallback = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![
+                    ("mapped".to_string(), mapped.clone()),
+                    ("fallback".to_string(), fallback.clone()),
+                ],
+            });
+        let mut indexer = test_indexer_config("https://indexer.example/api");
+        indexer.download_client_id = Some("mapped".to_string());
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("mapped", "Mapped", "qbittorrent", 0),
+                    test_config("fallback", "Fallback", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        )
+        .with_indexer_config_repositories(
+            Arc::new(RoutingIndexerConfigRepository {
+                configs: vec![indexer],
+            }),
+            Arc::new(EmptyIndexerProxyConfigRepository),
+        );
+
+        let mut request = DownloadClientAddRequest::from_legacy(
+            &test_title(),
+            Some("https://indexer.example/release.nzb".to_string()),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Mapped Failure Release".to_string()),
+            None,
+            None,
+        );
+        request.indexer_id = Some("indexer-1".to_string());
+
+        let error = router
+            .submit_download(&request)
+            .await
+            .expect_err("mapped enqueue failures must not fall back");
+        assert!(matches!(
+            error,
+            AppError::DownloadSubmitUnavailable(message)
+                if message.contains("indexer-1")
+                    && message.contains("mapped")
+                    && message.contains("download submission failed")
+        ));
+        assert_eq!(mapped.submissions.lock().unwrap().len(), 1);
+        assert!(fallback.submissions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn mapped_ambiguous_submit_preserves_ambiguity_without_fallback() {
+        let mapped = Arc::new(MockDownloadClient {
+            submit_error: Mutex::new(Some(MockSubmitError::Ambiguous)),
+            ..Default::default()
+        });
+        let fallback = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![
+                    ("mapped".to_string(), mapped.clone()),
+                    ("fallback".to_string(), fallback.clone()),
+                ],
+            });
+        let mut indexer = test_indexer_config("https://indexer.example/api");
+        indexer.download_client_id = Some("mapped".to_string());
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("mapped", "Mapped", "qbittorrent", 0),
+                    test_config("fallback", "Fallback", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        )
+        .with_indexer_config_repositories(
+            Arc::new(RoutingIndexerConfigRepository {
+                configs: vec![indexer],
+            }),
+            Arc::new(EmptyIndexerProxyConfigRepository),
+        );
+        let mut request = DownloadClientAddRequest::from_legacy(
+            &test_title(),
+            Some("https://indexer.example/release.nzb".to_string()),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Ambiguous Mapped Release".to_string()),
+            None,
+            None,
+        );
+        request.indexer_id = Some("indexer-1".to_string());
+
+        assert!(matches!(
+            router.submit_download(&request).await,
+            Err(AppError::DownloadSubmitAmbiguous(_))
+        ));
+        assert_eq!(mapped.submissions.lock().unwrap().len(), 1);
+        assert!(fallback.submissions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn missing_mapped_client_cleans_staged_nzb_without_fallback() {
+        let fallback = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![("fallback".to_string(), fallback.clone())],
+            });
+        let mut indexer = test_indexer_config("https://indexer.example/api");
+        indexer.download_client_id = Some("deleted-client".to_string());
+        let staged_store = Arc::new(RecordingStagedNzbStore::default());
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("fallback", "Fallback", "qbittorrent", 0)],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            staged_store.clone(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        )
+        .with_indexer_config_repositories(
+            Arc::new(RoutingIndexerConfigRepository {
+                configs: vec![indexer],
+            }),
+            Arc::new(EmptyIndexerProxyConfigRepository),
+        );
+
+        let mut request = DownloadClientAddRequest::from_legacy(
+            &test_title(),
+            Some("https://indexer.example/release.nzb".to_string()),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Missing Mapped Client Release".to_string()),
+            None,
+            None,
+        );
+        request.indexer_id = Some("indexer-1".to_string());
+        request.staged_nzb = Some(StagedNzbRef {
+            id: "staged-missing-client".to_string(),
+            compressed_path: std::path::PathBuf::from("/tmp/staged-missing-client.nzb.zst"),
+            raw_size_bytes: 128,
+        });
+
+        let error = router
+            .submit_download(&request)
+            .await
+            .expect_err("missing mapped clients must fail closed");
+        assert!(matches!(
+            error,
+            AppError::DownloadSubmitUnavailable(message)
+                if message.contains("Indexer")
+                    && message.contains("deleted-client")
+                    && message.contains("does not exist")
+        ));
+        assert_eq!(
+            staged_store.deleted_ids.lock().unwrap().as_slice(),
+            &["staged-missing-client".to_string()]
+        );
+        assert!(fallback.submissions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn incompatible_mapped_client_cleans_staged_nzb_without_fallback() {
+        let mapped = Arc::new(MockDownloadClient::default());
+        let fallback = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["torrent_url".to_string()],
+                clients: vec![
+                    ("mapped".to_string(), mapped.clone()),
+                    ("fallback".to_string(), fallback.clone()),
+                ],
+            });
+        let mut indexer = test_indexer_config("https://indexer.example/api");
+        indexer.download_client_id = Some("mapped".to_string());
+        let staged_store = Arc::new(RecordingStagedNzbStore::default());
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    test_config("mapped", "Mapped", "qbittorrent", 0),
+                    test_config("fallback", "Fallback", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            staged_store.clone(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        )
+        .with_indexer_config_repositories(
+            Arc::new(RoutingIndexerConfigRepository {
+                configs: vec![indexer],
+            }),
+            Arc::new(EmptyIndexerProxyConfigRepository),
+        );
+
+        let mut request = DownloadClientAddRequest::from_legacy(
+            &test_title(),
+            Some("https://indexer.example/release.nzb".to_string()),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Incompatible Mapped Release".to_string()),
+            None,
+            None,
+        );
+        request.indexer_id = Some("indexer-1".to_string());
+        request.staged_nzb = Some(StagedNzbRef {
+            id: "staged-incompatible".to_string(),
+            compressed_path: std::path::PathBuf::from("/tmp/staged-incompatible.nzb.zst"),
+            raw_size_bytes: 128,
+        });
+
+        let error = router
+            .submit_download(&request)
+            .await
+            .expect_err("artifact-incompatible mapped clients must fail closed");
+        assert!(matches!(
+            error,
+            AppError::DownloadSubmitUnavailable(message)
+                if message.contains("Indexer")
+                    && message.contains("Mapped")
+                    && message.contains("cannot handle NZB URL releases")
+        ));
+        assert_eq!(
+            staged_store.deleted_ids.lock().unwrap().as_slice(),
+            &["staged-incompatible".to_string()]
+        );
+        assert!(mapped.submissions.lock().unwrap().is_empty());
+        assert!(fallback.submissions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn mapped_client_disabled_in_effective_scope_fails_closed() {
+        let mapped = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![("mapped".to_string(), mapped.clone())],
+            });
+        let mut indexer = test_indexer_config("https://indexer.example/api");
+        indexer.download_client_id = Some("mapped".to_string());
+        let staged_store = Arc::new(RecordingStagedNzbStore::default());
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("mapped", "Mapped", "qbittorrent", 0)],
+            }),
+            Arc::new(MockSettingsRepository {
+                routing_by_scope: HashMap::from([(
+                    "movie".to_string(),
+                    r#"{"mapped": {"enabled": false}}"#.to_string(),
+                )]),
+            }),
+            staged_store.clone(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        )
+        .with_indexer_config_repositories(
+            Arc::new(RoutingIndexerConfigRepository {
+                configs: vec![indexer],
+            }),
+            Arc::new(EmptyIndexerProxyConfigRepository),
+        );
+
+        let mut request = DownloadClientAddRequest::from_legacy(
+            &test_title(),
+            Some("https://indexer.example/release.nzb".to_string()),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Scoped Disabled Release".to_string()),
+            None,
+            None,
+        );
+        request.indexer_id = Some("indexer-1".to_string());
+        request.staged_nzb = Some(StagedNzbRef {
+            id: "staged-scope-disabled".to_string(),
+            compressed_path: std::path::PathBuf::from("/tmp/staged-scope-disabled.nzb.zst"),
+            raw_size_bytes: 128,
+        });
+
+        let error = router
+            .submit_download(&request)
+            .await
+            .expect_err("scope-disabled mapped clients must fail closed");
+        assert!(matches!(
+            error,
+            AppError::DownloadSubmitUnavailable(message)
+                if message.contains("indexer-1")
+                    && message.contains("mapped")
+                    && message.contains("disabled in the effective scope")
+        ));
+        assert_eq!(
+            staged_store.deleted_ids.lock().unwrap().as_slice(),
+            &["staged-scope-disabled".to_string()]
+        );
+        assert!(mapped.submissions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn globally_disabled_mapped_client_cleans_staged_nzb_without_fallback() {
+        let mapped = Arc::new(MockDownloadClient::default());
+        let fallback = Arc::new(MockDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![
+                    ("mapped".to_string(), mapped.clone()),
+                    ("fallback".to_string(), fallback.clone()),
+                ],
+            });
+        let mut indexer = test_indexer_config("https://indexer.example/api");
+        indexer.download_client_id = Some("mapped".to_string());
+        let staged_store = Arc::new(RecordingStagedNzbStore::default());
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![
+                    disabled_test_config("mapped", "Mapped", "qbittorrent", 0),
+                    test_config("fallback", "Fallback", "qbittorrent", 1),
+                ],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            staged_store.clone(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        )
+        .with_indexer_config_repositories(
+            Arc::new(RoutingIndexerConfigRepository {
+                configs: vec![indexer],
+            }),
+            Arc::new(EmptyIndexerProxyConfigRepository),
+        );
+
+        let mut request = DownloadClientAddRequest::from_legacy(
+            &test_title(),
+            Some("https://indexer.example/release.nzb".to_string()),
+            Some(DownloadSourceKind::NzbUrl),
+            Some("Disabled Mapped Release".to_string()),
+            None,
+            None,
+        );
+        request.indexer_id = Some("indexer-1".to_string());
+        request.staged_nzb = Some(StagedNzbRef {
+            id: "staged-1".to_string(),
+            compressed_path: std::path::PathBuf::from("/tmp/staged-1.nzb.zst"),
+            raw_size_bytes: 128,
+        });
+
+        let error = router
+            .submit_download(&request)
+            .await
+            .expect_err("globally disabled mapped clients must fail closed");
+        assert!(matches!(
+            error,
+            AppError::DownloadSubmitUnavailable(message)
+                if message.contains("Indexer")
+                    && message.contains("Mapped")
+                    && message.contains("globally disabled")
+        ));
+        assert_eq!(
+            staged_store.deleted_ids.lock().unwrap().as_slice(),
+            &["staged-1".to_string()]
+        );
+        assert!(mapped.submissions.lock().unwrap().is_empty());
+        assert!(fallback.submissions.lock().unwrap().is_empty());
     }
 
     fn test_queue_item(id: &str) -> DownloadQueueItem {
@@ -4599,10 +5775,10 @@ mod tests {
             .expect_err("magnet request should fail when only nzb clients are enabled");
 
         match error {
-            AppError::Validation(message) => {
+            AppError::DownloadSubmitUnavailable(message) => {
                 assert!(message.contains("magnet"));
             }
-            other => panic!("expected validation error, got {other:?}"),
+            other => panic!("expected unavailable error, got {other:?}"),
         }
     }
 
@@ -5011,10 +6187,10 @@ mod tests {
             .expect_err("facet-disabled clients should fail fast");
 
         match error {
-            AppError::Validation(message) => {
+            AppError::DownloadSubmitUnavailable(message) => {
                 assert!(message.contains("no download client enabled"));
             }
-            other => panic!("expected validation error, got {other:?}"),
+            other => panic!("expected unavailable error, got {other:?}"),
         }
 
         assert!(primary.submissions.lock().unwrap().is_empty());
@@ -5288,10 +6464,10 @@ mod tests {
             .expect_err("library override should fail fast when every client is disabled");
 
         match error {
-            AppError::Validation(message) => {
+            AppError::DownloadSubmitUnavailable(message) => {
                 assert!(message.contains("no download client enabled for library"));
             }
-            other => panic!("expected validation error, got {other:?}"),
+            other => panic!("expected unavailable error, got {other:?}"),
         }
         assert!(primary.submissions.lock().unwrap().is_empty());
     }

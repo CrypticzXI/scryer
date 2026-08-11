@@ -1449,7 +1449,7 @@ impl AppUseCase {
                 db_blocklist: &db_blocklist,
                 existing_files: &existing_files,
                 delay_profiles,
-                failed_source_kinds: None,
+                failed_routes: None,
             };
             let decision_code = evaluate_auto_candidate(candidate, &evaluation_context);
             let candidate_score = candidate
@@ -1513,6 +1513,7 @@ impl AppUseCase {
                     candidate_score,
                     serialize_decision_explanation(&decision_candidate),
                     Some(candidate.source.as_str()),
+                    candidate.indexer_id.as_deref(),
                     candidate.guid.as_deref(),
                     delay_minutes,
                     candidate.password_hint.as_deref(),

@@ -655,6 +655,20 @@ pub(super) fn bootstrap_with_search_settings_indexer_and_configs(
     indexer_client: Arc<dyn IndexerClient>,
     configs: Vec<IndexerConfig>,
 ) -> (AppUseCase, User) {
+    bootstrap_with_search_settings_indexer_configs_and_management(
+        settings,
+        indexer_client,
+        configs,
+        None,
+    )
+}
+
+pub(super) fn bootstrap_with_search_settings_indexer_configs_and_management(
+    settings: Arc<StoredSettingsRepo>,
+    indexer_client: Arc<dyn IndexerClient>,
+    configs: Vec<IndexerConfig>,
+    management_client: Option<Arc<dyn IndexerManagementClient>>,
+) -> (AppUseCase, User) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
@@ -666,6 +680,7 @@ pub(super) fn bootstrap_with_search_settings_indexer_and_configs(
     let download_client = Arc::new(StubDownloadClient::default());
     let plugin_provider = Arc::new(MockIndexerPluginProvider {
         client: Arc::clone(&indexer_client),
+        management_client,
     });
 
     let services = AppServices::builder(
@@ -735,6 +750,7 @@ pub(super) fn bootstrap_with_settings_repo_and_profiles_and_libraries(
     let download_client = Arc::new(StubDownloadClient::default());
     let plugin_provider = Arc::new(MockIndexerPluginProvider {
         client: Arc::clone(&indexer_client),
+        management_client: None,
     });
 
     let services = AppServices::builder(
@@ -790,6 +806,7 @@ pub(super) fn synthetic_direct_nab_indexer_config(id: &str, provider_type: &str)
         enable_interactive_search: true,
         enable_auto_search: true,
         indexer_proxy_config_id: None,
+        download_client_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
@@ -1845,6 +1862,7 @@ pub(super) fn pending_movie_release(
         release_score: 1000,
         scoring_log_json: None,
         indexer_source: Some("test-indexer".to_string()),
+        indexer_id: None,
         release_guid: Some(format!("{release_title}-guid")),
         added_at: (now - chrono::Duration::minutes(5)).to_rfc3339(),
         delay_until: (now - chrono::Duration::minutes(1)).to_rfc3339(),

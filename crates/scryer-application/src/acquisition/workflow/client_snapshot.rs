@@ -1230,7 +1230,7 @@ async fn persist_standby_candidates(
     results: &[IndexerSearchResult],
     start_index: usize,
     now: &DateTime<Utc>,
-    failed_source_kinds: &[DownloadSourceKind],
+    failed_routes: &[DownloadRouteKey],
     db_blocklist: &std::collections::HashSet<String>,
 ) {
     let _ = app
@@ -1241,14 +1241,15 @@ async fn persist_standby_candidates(
         .await;
 
     let mut persisted = 0usize;
-    let mut seen_source_hints = std::collections::HashSet::new();
+    let mut seen_source_hints = std::collections::HashSet::<String>::new();
 
     for candidate in results.iter().skip(start_index) {
         if persisted >= MAX_STANDBY_CANDIDATES_PER_WANTED_ITEM {
             break;
         }
 
-        let decision_code = effective_auto_decision_code(candidate, failed_source_kinds, db_blocklist);
+        let decision_code =
+            effective_auto_decision_code_for_route(candidate, failed_routes, db_blocklist);
         if !decision_code.is_eligible() {
             if matches!(
                 decision_code,
@@ -1302,6 +1303,7 @@ async fn persist_standby_candidates(
             release_score: candidate_score,
             scoring_log_json,
             indexer_source: Some(candidate.source.clone()),
+            indexer_id: candidate.indexer_id.clone(),
             release_guid: candidate.guid.clone(),
             added_at: now.to_rfc3339(),
             delay_until: now.to_rfc3339(),

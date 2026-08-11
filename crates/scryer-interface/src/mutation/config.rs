@@ -191,12 +191,35 @@ impl ConfigMutations {
                     enable_interactive_search: input.enable_interactive_search,
                     enable_auto_search: input.enable_auto_search,
                     indexer_proxy_config_id: optional_id_input(input.indexer_proxy_config_id),
+                    download_client_id: None,
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
                     caps_snapshot_json: None,
                     config_json,
                 },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        let config_fields = app
+            .indexer_config_fields_for_provider_type(&config.provider_type)
+            .unwrap_or_default();
+        Ok(from_indexer_config_with_fields(config, &config_fields))
+    }
+
+    async fn set_indexer_download_client_mapping(
+        &self,
+        ctx: &Context<'_>,
+        input: SetIndexerDownloadClientMappingInput,
+    ) -> GqlResult<IndexerConfigPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
+        let download_client_id = input.download_client_id.map(|id| id.to_string());
+        let config = app
+            .set_indexer_download_client_mapping(
+                &actor,
+                input.indexer_id.as_ref(),
+                download_client_id.as_deref(),
             )
             .await
             .map_err(to_gql_error)?;
@@ -441,10 +464,15 @@ impl ConfigMutations {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let id = id.to_string();
-        app.delete_download_client_config(&actor, &id)
+        let cleared_indexer_mapping_count = app
+            .delete_download_client_config(&actor, &id)
             .await
             .map_err(to_gql_error)?;
-        Ok(DeleteDownloadClientConfigPayload { id: ID::from(id) })
+        Ok(DeleteDownloadClientConfigPayload {
+            id: ID::from(id),
+            cleared_indexer_mapping_count: i32::try_from(cleared_indexer_mapping_count)
+                .unwrap_or(i32::MAX),
+        })
     }
 
     async fn reorder_download_client_configs(

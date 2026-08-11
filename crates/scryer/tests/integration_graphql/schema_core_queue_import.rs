@@ -398,6 +398,7 @@ async fn graphql_introspection_lists_title_fields() {
         ("title", "qualityProfileId"),
         ("titleMediaFile", "episodeId"),
         ("seriesMovieLink", "linkedEpisodeId"),
+        ("pendingRelease", "indexerId"),
     ] {
         assert_nullable_id_field(type_alias, name);
     }
@@ -1562,6 +1563,7 @@ async fn graphql_traverses_core_graph_relationships() {
         release_score: 135,
         scoring_log_json: None,
         indexer_source: Some("test-indexer".to_string()),
+        indexer_id: None,
         release_guid: Some("pending-guid".to_string()),
         added_at: "2026-03-20T00:06:00Z".to_string(),
         delay_until: "2026-03-20T01:06:00Z".to_string(),

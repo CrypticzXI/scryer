@@ -145,8 +145,7 @@ impl AppUseCase {
             return Ok(None);
         }
 
-        self
-            .services
+        self.services
             .integrations
             .download_client
             .get_completed_download_for_source(client_id, client_type, download_client_item_id)
@@ -279,6 +278,32 @@ impl AppUseCase {
             None => None,
         };
 
+        if let Some(client_type) = normalized_client_type.as_deref() {
+            let existing_client = self
+                .services
+                .integrations
+                .download_client_configs
+                .get_by_id(client_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("download client config '{client_id}' not found"))
+                })?;
+            let mut candidate_client = existing_client;
+            candidate_client.client_type = client_type.to_string();
+            let mapped_indexers = self
+                .services
+                .integrations
+                .indexer_configs
+                .list(None)
+                .await?;
+            for indexer in mapped_indexers
+                .iter()
+                .filter(|indexer| indexer.download_client_id.as_deref() == Some(client_id))
+            {
+                self.validate_indexer_download_client_mapping(indexer, &candidate_client)?;
+            }
+        }
+
         let updated = self
             .services
             .integrations
@@ -309,7 +334,7 @@ impl AppUseCase {
         &self,
         actor: &User,
         client_id: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<u64> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         let client_id = client_id.trim();
@@ -317,13 +342,34 @@ impl AppUseCase {
             return Err(AppError::Validation("client id is required".into()));
         }
 
-        self.services
+        let mapped_indexer_ids = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await?
+            .into_iter()
+            .filter(|config| config.download_client_id.as_deref() == Some(client_id))
+            .map(|config| config.id)
+            .collect::<Vec<_>>();
+
+        let cleared_count = self
+            .services
             .integrations
             .download_client_configs
-            .delete(client_id)
+            .delete_with_cleared_indexer_mapping_count(client_id)
             .await?;
         self.refresh_owned_download_client_categories_best_effort()
             .await;
+        for indexer_id in mapped_indexer_ids {
+            self.emit_configuration_changed_event(
+                actor,
+                "indexer",
+                Some(indexer_id),
+                scryer_domain::ConfigurationChangeAction::Updated,
+            )
+            .await;
+        }
         self.emit_configuration_changed_event(
             actor,
             "download_client",
@@ -332,7 +378,7 @@ impl AppUseCase {
         )
         .await;
 
-        Ok(())
+        Ok(cleared_count)
     }
 }
 impl AppUseCase {

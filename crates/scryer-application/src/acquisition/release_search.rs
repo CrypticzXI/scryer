@@ -217,7 +217,7 @@ pub(crate) struct AutoCandidateEvaluationContext<'a> {
     pub(crate) db_blocklist: &'a HashSet<String>,
     pub(crate) existing_files: &'a [TitleMediaFile],
     pub(crate) delay_profiles: &'a [DelayProfile],
-    pub(crate) failed_source_kinds: Option<&'a [DownloadSourceKind]>,
+    pub(crate) failed_routes: Option<&'a [crate::acquisition_workflow::DownloadRouteKey]>,
 }
 
 pub fn release_strategy_kind_for_label(label: &str, is_rss_request: bool) -> ReleaseStrategyKind {
@@ -1101,9 +1101,9 @@ pub(crate) fn evaluate_auto_candidate(
         return ReleaseAutoDecisionCode::AlreadyActive;
     }
 
-    if let Some(failed_source_kinds) = context.failed_source_kinds
-        && let Some(source_kind) = candidate.source_kind
-        && failed_source_kinds.contains(&source_kind)
+    if let Some(failed_routes) = context.failed_routes
+        && let Some(route) = crate::acquisition_workflow::DownloadRouteKey::for_candidate(candidate)
+        && failed_routes.contains(&route)
     {
         return ReleaseAutoDecisionCode::DownloadClientUnavailable;
     }
@@ -1325,7 +1325,7 @@ impl AppUseCase {
             db_blocklist: &db_blocklist,
             existing_files: &existing_files,
             delay_profiles: &delay_profiles,
-            failed_source_kinds: None,
+            failed_routes: None,
         };
 
         for candidate in &mut results {
@@ -2010,7 +2010,7 @@ mod tests {
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
-            failed_source_kinds: None,
+            failed_routes: None,
         };
 
         assert_eq!(
@@ -2079,7 +2079,7 @@ mod tests {
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
-            failed_source_kinds: None,
+            failed_routes: None,
         };
 
         assert_eq!(
@@ -2113,7 +2113,7 @@ mod tests {
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
-            failed_source_kinds: None,
+            failed_routes: None,
         };
 
         assert_eq!(
@@ -2150,7 +2150,7 @@ mod tests {
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
-            failed_source_kinds: None,
+            failed_routes: None,
         };
 
         assert_eq!(
@@ -2252,7 +2252,7 @@ mod tests {
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
-            failed_source_kinds: None,
+            failed_routes: None,
         };
         evaluate_auto_candidate(candidate, &context)
     }
@@ -2380,7 +2380,7 @@ mod tests {
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
-            failed_source_kinds: None,
+            failed_routes: None,
         };
         assert_eq!(
             evaluate_auto_candidate(&candidate, &context),
@@ -2709,7 +2709,7 @@ mod tests {
             db_blocklist: &db_blocklist,
             existing_files: &[],
             delay_profiles: &[],
-            failed_source_kinds: None,
+            failed_routes: None,
         };
 
         assert_eq!(

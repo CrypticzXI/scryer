@@ -1,5 +1,21 @@
 const MAX_STANDBY_CANDIDATES_PER_WANTED_ITEM: usize = 5;
 const STANDBY_RETENTION_HOURS: i64 = 24;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DownloadRouteKey {
+    pub source_kind: Option<DownloadSourceKind>,
+    pub indexer_id: Option<String>,
+}
+
+impl DownloadRouteKey {
+    pub(crate) fn for_candidate(candidate: &IndexerSearchResult) -> Option<Self> {
+        Some(Self {
+            source_kind: candidate.source_kind,
+            indexer_id: candidate.indexer_id.clone(),
+        })
+    }
+}
+
 fn annotated_auto_decision_code(candidate: &IndexerSearchResult) -> ReleaseAutoDecisionCode {
     candidate
         .auto_decision_code
@@ -13,17 +29,17 @@ fn annotated_auto_decision_code(candidate: &IndexerSearchResult) -> ReleaseAutoD
             ReleaseAutoDecisionCode::QualityBlocked
         })
 }
-fn effective_auto_decision_code(
+fn effective_auto_decision_code_for_route(
     candidate: &IndexerSearchResult,
-    failed_source_kinds: &[DownloadSourceKind],
+    failed_routes: &[DownloadRouteKey],
     db_blocklist: &std::collections::HashSet<String>,
 ) -> ReleaseAutoDecisionCode {
     if db_blocklist.contains(&candidate.title.to_ascii_lowercase()) {
         return ReleaseAutoDecisionCode::DbBlocklisted;
     }
 
-    if let Some(source_kind) = candidate.source_kind
-        && failed_source_kinds.contains(&source_kind)
+    if DownloadRouteKey::for_candidate(candidate)
+        .is_some_and(|route| failed_routes.contains(&route))
     {
         return ReleaseAutoDecisionCode::DownloadClientUnavailable;
     }

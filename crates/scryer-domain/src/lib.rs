@@ -938,6 +938,7 @@ pub struct IndexerConfig {
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
     pub indexer_proxy_config_id: Option<String>,
+    pub download_client_id: Option<String>,
     pub managed_parent_config_id: Option<String>,
     pub managed_child_key: Option<String>,
     pub managed_metadata_json: Option<String>,

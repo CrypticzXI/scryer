@@ -154,23 +154,27 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // warmup add two mutation roots: mutation 167->169.
     // The current selection and classification contract adds six payload
     // objects and one enum: OBJECT 276->282, ENUM 92->93, public types 533->540.
+    // Explicit indexer download-client mapping adds one query root, one mutation
+    // root, three payload objects, and one input object: query 118->119,
+    // mutation 169->170, OBJECT 282->285, INPUT_OBJECT 153->154, public types 540->544.
     assert_eq!(
-        query_field_count, 118,
+        query_field_count, 119,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 169,
+        mutation_field_count, 170,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 540);
-    assert_eq!(kind_count("OBJECT"), 282);
-    assert_eq!(kind_count("INPUT_OBJECT"), 153);
+    assert_eq!(public_types.len(), 544);
+    assert_eq!(kind_count("OBJECT"), 285);
+    assert_eq!(kind_count("INPUT_OBJECT"), 154);
     assert_eq!(kind_count("ENUM"), 93);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
     assert!(query_field_names.contains(&"indexerProxyConfigs"));
+    assert!(query_field_names.contains(&"indexerDownloadClientMappingCatalog"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraft"));
     assert!(query_field_names.contains(&"externalImportSetupSecretDraftStatus"));
     assert!(query_field_names.contains(&"episode"));
@@ -184,6 +188,8 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(query_field_names.contains(&"cutoffUnmetTitlesPage"));
     assert!(mutation_field_names.contains(&"clearExternalImportSetupSecretDraft"));
     assert!(mutation_field_names.contains(&"createIndexerProxyConfig"));
+    assert!(mutation_field_names.contains(&"setIndexerDownloadClientMapping"));
+    assert!(public_type_names.contains(&"IndexerDownloadClientMappingCatalogPayload"));
     assert!(mutation_field_names.contains(&"deleteIndexerProxyConfig"));
     assert!(mutation_field_names.contains(&"saveExternalImportSetupSecretDraft"));
     assert!(mutation_field_names.contains(&"beginManualImportSelection"));
@@ -2254,10 +2260,13 @@ async fn graphql_introspection_config_deletes_use_id_and_payload_results() {
         assert_eq!(id_arg(mutation)["type"]["ofType"]["name"], "ID");
     }
 
-    for payload in [
-        "deleteIndexerPayload",
-        "deleteDownloadClientPayload",
-        "deleteSubtitleProviderPayload",
+    for (payload, expected_fields) in [
+        ("deleteIndexerPayload", vec!["id"]),
+        (
+            "deleteDownloadClientPayload",
+            vec!["id", "clearedIndexerMappingCount"],
+        ),
+        ("deleteSubtitleProviderPayload", vec!["id"]),
     ] {
         let field_names: Vec<&str> = body["data"][payload]["fields"]
             .as_array()
@@ -2265,7 +2274,7 @@ async fn graphql_introspection_config_deletes_use_id_and_payload_results() {
             .iter()
             .filter_map(|field| field["name"].as_str())
             .collect();
-        assert_eq!(field_names, vec!["id"]);
+        assert_eq!(field_names, expected_fields);
     }
 }
 

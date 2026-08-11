@@ -68,6 +68,7 @@ impl IndexerClient for MockIndexerClient {
 
 pub(super) struct MockIndexerPluginProvider {
     pub(super) client: Arc<dyn IndexerClient>,
+    pub(super) management_client: Option<Arc<dyn IndexerManagementClient>>,
 }
 
 impl IndexerPluginProvider for MockIndexerPluginProvider {
@@ -75,8 +76,44 @@ impl IndexerPluginProvider for MockIndexerPluginProvider {
         Some(Arc::clone(&self.client))
     }
 
+    fn management_client_for_provider(
+        &self,
+        _config: &IndexerConfig,
+    ) -> Option<Arc<dyn IndexerManagementClient>> {
+        self.management_client.clone()
+    }
+
     fn available_provider_types(&self) -> Vec<String> {
-        vec!["nzbgeek".to_string(), "torrent_rss".to_string()]
+        vec![
+            "nzbgeek".to_string(),
+            "prowlarr".to_string(),
+            "torrent_rss".to_string(),
+        ]
+    }
+
+    fn management_capabilities_for_provider(
+        &self,
+        provider_type: &str,
+    ) -> scryer_domain::IndexerManagementCapabilities {
+        scryer_domain::IndexerManagementCapabilities {
+            supports_managed_children_sync: provider_type.eq_ignore_ascii_case("prowlarr"),
+            ..Default::default()
+        }
+    }
+
+    fn capabilities_for_provider(
+        &self,
+        provider_type: &str,
+    ) -> scryer_domain::IndexerProviderCapabilities {
+        let protocols = match provider_type {
+            "nzbgeek" => vec![scryer_domain::IndexerProtocolCapability::Usenet],
+            "torrent_rss" => vec![scryer_domain::IndexerProtocolCapability::Torrent],
+            _ => vec![scryer_domain::IndexerProtocolCapability::Unknown],
+        };
+        scryer_domain::IndexerProviderCapabilities {
+            protocols,
+            ..Default::default()
+        }
     }
 
     fn scoring_policies(&self) -> Vec<scryer_rules::UserPolicy> {

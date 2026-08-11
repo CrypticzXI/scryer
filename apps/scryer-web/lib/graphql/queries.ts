@@ -1922,6 +1922,7 @@ export const indexersQuery = `query Indexers($providerType: String) {
     providerType
     baseUrl
     indexerProxyConfigId
+    downloadClientId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -2083,6 +2084,7 @@ const indexerFieldSelection = `
     providerType
     baseUrl
     indexerProxyConfigId
+    downloadClientId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -3480,5 +3482,25 @@ export const myMediaRequestsQuery = `query MyMediaRequests($facet: MediaFacetVal
     createdByUserId
     createdAt
     updatedAt
+  }
+}`;
+
+export const indexerDownloadClientMappingCatalogQuery = `query IndexerDownloadClientMappingCatalog {
+  indexerDownloadClientMappingCatalog {
+    clients {
+      id
+      name
+      clientType
+      isEnabled
+      healthStatus
+    }
+    indexers {
+      id
+      name
+      downloadClientId
+      protocolFamilies
+      supportsMapping
+      compatibleClientIds
+    }
   }
 }`;

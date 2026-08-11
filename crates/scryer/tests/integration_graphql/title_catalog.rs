@@ -2936,6 +2936,7 @@ async fn graphql_delete_title_cleans_title_workflow_state() {
         release_score: 100,
         scoring_log_json: None,
         indexer_source: Some("test-indexer".to_string()),
+        indexer_id: None,
         release_guid: Some("guid-delete".to_string()),
         added_at: "2026-03-12T00:00:00Z".to_string(),
         delay_until: "2026-03-13T00:00:00Z".to_string(),

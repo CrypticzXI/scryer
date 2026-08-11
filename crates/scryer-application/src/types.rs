@@ -1146,6 +1146,8 @@ pub struct PendingRelease {
     pub release_score: i32,
     pub scoring_log_json: Option<String>,
     pub indexer_source: Option<String>,
+    /// Stable indexer provenance used to resolve the current download-client mapping at submission time.
+    pub indexer_id: Option<String>,
     pub release_guid: Option<String>,
     pub added_at: String,
     pub delay_until: String,

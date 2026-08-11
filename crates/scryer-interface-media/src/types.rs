@@ -508,6 +508,7 @@ pub struct PendingReleasePayload {
     pub release_score: i32,
     pub scoring_log_json: Option<Json<serde_json::Value>>,
     pub indexer_source: Option<String>,
+    pub indexer_id: Option<ID>,
     pub added_at: DateTime<Utc>,
     pub delay_until: DateTime<Utc>,
     pub status: PendingReleaseStatusValue,

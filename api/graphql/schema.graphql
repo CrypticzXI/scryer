@@ -670,6 +670,7 @@ type DeleteBackupPayload {
 
 type DeleteDownloadClientConfigPayload {
 	id: ID!
+	clearedIndexerMappingCount: Int!
 }
 
 input DeleteDownloadInput {
@@ -1885,6 +1886,7 @@ type IndexerConfigPayload {
 	providerType: String!
 	baseUrl: String!
 	indexerProxyConfigId: ID
+	downloadClientId: ID
 	hasApiKey: Boolean!
 	isManaged: Boolean!
 	managedParentConfigId: ID
@@ -1910,6 +1912,28 @@ type IndexerConfigSyncPayload {
 	createdIds: [ID!]!
 	updatedIds: [ID!]!
 	deletedIds: [ID!]!
+}
+
+type IndexerDownloadClientMappingCatalogPayload {
+	clients: [IndexerDownloadClientMappingClientPayload!]!
+	indexers: [IndexerDownloadClientMappingIndexerPayload!]!
+}
+
+type IndexerDownloadClientMappingClientPayload {
+	id: ID!
+	name: String!
+	clientType: String!
+	isEnabled: Boolean!
+	healthStatus: String!
+}
+
+type IndexerDownloadClientMappingIndexerPayload {
+	id: ID!
+	name: String!
+	downloadClientId: ID
+	protocolFamilies: [String!]!
+	supportsMapping: Boolean!
+	compatibleClientIds: [ID!]!
 }
 
 type IndexerProxyConfigPayload {
@@ -2781,6 +2805,7 @@ type MutationRoot {
 	triggerJob(jobKey: JobKeyValue!): JobRunPayload!
 	createIndexerConfig(input: CreateIndexerConfigInput!): IndexerConfigPayload!
 	updateIndexerConfig(input: UpdateIndexerConfigInput!): IndexerConfigPayload!
+	setIndexerDownloadClientMapping(input: SetIndexerDownloadClientMappingInput!): IndexerConfigPayload!
 	createIndexerProxyConfig(input: CreateIndexerProxyConfigInput!): IndexerProxyConfigPayload!
 	updateIndexerProxyConfig(input: UpdateIndexerProxyConfigInput!): IndexerProxyConfigPayload!
 	deleteIndexerProxyConfig(id: ID!): DeleteIndexerProxyConfigPayload!
@@ -3181,6 +3206,7 @@ type PendingReleasePayload {
 	releaseScore: Int!
 	scoringLogJson: JSON
 	indexerSource: String
+	indexerId: ID
 	addedAt: DateTime!
 	delayUntil: DateTime!
 	status: PendingReleaseStatusValue!
@@ -3586,6 +3612,7 @@ type QueryRoot {
 	downloadClientRouting(scope: ContentScopeValue!): [DownloadClientRoutingEntryPayload!]!
 	indexerRouting(scope: ContentScopeValue!): [IndexerRoutingEntryPayload!]!
 	indexers(providerType: String): [IndexerConfigPayload!]!
+	indexerDownloadClientMappingCatalog: IndexerDownloadClientMappingCatalogPayload!
 	indexerProxyConfigs: [IndexerProxyConfigPayload!]!
 	rootFolders(facet: MediaFacetValue!): [RootFolderPayload!]!
 	downloadClientConfigs: [DownloadClientConfigPayload!]!
@@ -4143,6 +4170,11 @@ type SetCollectionMonitoredPayload {
 input SetEpisodeMonitoredInput {
 	episodeId: ID!
 	monitored: Boolean!
+}
+
+input SetIndexerDownloadClientMappingInput {
+	indexerId: ID!
+	downloadClientId: ID
 }
 
 input SetMyUiSettingsInput {

@@ -16,6 +16,7 @@ import {
   downloadClientProviderTypesQuery,
   downloadClientsInitQuery,
   downloadClientsQuery,
+  indexerDownloadClientMappingCatalogQuery,
 } from "@/lib/graphql/queries";
 import { DEFAULT_DOWNLOAD_CLIENT_DRAFT } from "@/lib/constants/download-clients";
 import { useClient } from "urql";
@@ -142,6 +143,17 @@ export function SettingsDownloadClientsContainer({
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
     }
   }, [client, setGlobalStatus, t]);
+
+  const refreshIndexerDownloadClientMappingCatalog = useCallback(async () => {
+    const { error } = await client
+      .query(
+        indexerDownloadClientMappingCatalogQuery,
+        {},
+        { requestPolicy: "network-only" },
+      )
+      .toPromise();
+    if (error) throw error;
+  }, [client]);
 
   const refreshProviderTypes = useCallback(async () => {
     const { data, error } = await client
@@ -577,12 +589,22 @@ export function SettingsDownloadClientsContainer({
     const downloadClient = pendingDeleteDownloadClient;
     setMutatingDownloadClientId(downloadClient.id);
     try {
-      const { error } = await client.mutation(deleteDownloadClientMutation, {
+      const { data, error } = await client.mutation(deleteDownloadClientMutation, {
         id: downloadClient.id,
       }).toPromise();
       if (error) throw error;
-      setGlobalStatus(t("status.downloadClientDeleted", { name: downloadClient.name }));
-      await refreshDownloadClients();
+      const clearedIndexerMappingCount =
+        data?.deleteDownloadClientConfig?.clearedIndexerMappingCount ?? 0;
+      await Promise.all([
+        refreshDownloadClients(),
+        refreshIndexerDownloadClientMappingCatalog(),
+      ]);
+      setGlobalStatus(
+        t("status.downloadClientDeletedWithMappings", {
+          name: downloadClient.name,
+          count: clearedIndexerMappingCount,
+        }),
+      );
       if (editingDownloadClientId === downloadClient.id) {
         resetDownloadClientDraft();
         setIsEditorOpen(false);
@@ -595,7 +617,16 @@ export function SettingsDownloadClientsContainer({
       setMutatingDownloadClientId(null);
       setPendingDeleteDownloadClient(null);
     }
-  }, [editingDownloadClientId, pendingDeleteDownloadClient, refreshDownloadClients, resetDownloadClientDraft, client, setGlobalStatus, t]);
+  }, [
+    client,
+    editingDownloadClientId,
+    pendingDeleteDownloadClient,
+    refreshDownloadClients,
+    refreshIndexerDownloadClientMappingCatalog,
+    resetDownloadClientDraft,
+    setGlobalStatus,
+    t,
+  ]);
 
   return (
     <>
@@ -656,7 +687,9 @@ export function SettingsDownloadClientsContainer({
         title={t("label.delete")}
         description={
           pendingDeleteDownloadClient
-            ? t("status.deletingDownloadClient", { name: pendingDeleteDownloadClient.name })
+            ? t("settings.downloadClientDeleteConfirmDescription", {
+                name: pendingDeleteDownloadClient.name,
+              })
             : ""
         }
         confirmLabel={t("label.delete")}

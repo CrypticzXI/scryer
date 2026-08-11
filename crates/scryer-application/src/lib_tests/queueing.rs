@@ -1476,6 +1476,7 @@ async fn commit_successful_grab_marks_covered_wanted_set_and_supersedes_pending_
                 release_score: 100,
                 scoring_log_json: None,
                 indexer_source: Some("test-indexer".to_string()),
+                indexer_id: None,
                 release_guid: Some(format!("guid-{id}")),
                 added_at: now.clone(),
                 delay_until: now.clone(),

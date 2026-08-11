@@ -130,8 +130,12 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
     let indexer_hosts = app.indexer_scheduler_host_keys().await;
 
     // Track URLs already submitted this cycle to avoid sending the same NZB
-    // multiple times (e.g. a season pack matching several episode scopes).
+    // multiple times after a successful or ambiguous submission.
     let mut grabbed_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Failed attempts are deduplicated only within their source/indexer route.
+    let mut attempted_urls_by_route: Vec<(DownloadRouteKey, String)> = Vec::new();
+    // A transiently unavailable route is suppressed across every target in this cycle.
+    let mut failed_routes: Vec<DownloadRouteKey> = Vec::new();
     // Track (title_id, season_num) for which a season pack search was attempted this cycle.
     let mut season_pack_attempted: std::collections::HashSet<(String, u32)> =
         std::collections::HashSet::new();
@@ -175,6 +179,8 @@ pub(crate) async fn run_convergence_cycle_with_blocked_facets(
             &availability,
             &indexer_hosts,
             &mut grabbed_urls,
+            &mut attempted_urls_by_route,
+            &mut failed_routes,
             &mut season_pack_attempted,
             &mut season_pack_grabbed,
             &mut season_pack_viable,
@@ -231,6 +237,8 @@ async fn process_single_target(
     availability: &crate::acquisition::convergence::SchedulerAvailability,
     indexer_hosts: &std::collections::HashMap<String, String>,
     grabbed_urls: &mut std::collections::HashSet<String>,
+    attempted_urls_by_route: &mut Vec<(DownloadRouteKey, String)>,
+    failed_routes: &mut Vec<DownloadRouteKey>,
     season_pack_attempted: &mut std::collections::HashSet<(String, u32)>,
     season_pack_grabbed: &mut std::collections::HashSet<(String, u32)>,
     season_pack_viable: &mut std::collections::HashSet<(String, u32)>,
@@ -359,10 +367,7 @@ async fn process_single_target(
     // Convergence gate: a converged scope rides RSS; an
     // unconverged one is searched against exactly its uncovered indexer subset.
     // Resolved once here and reused for the restricted search below.
-    let Some(convergence) = app
-        .resolve_scope_convergence(&search_title, &subject)
-        .await
-    else {
+    let Some(convergence) = app.resolve_scope_convergence(&search_title, &subject).await else {
         debug!(
             title_id = title.id.as_str(),
             scope_key = target.scope_key.as_str(),
@@ -532,8 +537,7 @@ async fn process_single_target(
                             "background_acquisition_season_pack",
                             SearchMode::Auto,
                             tokio_util::sync::CancellationToken::new(),
-                            pack_uncovered
-                                .map(|uncovered| uncovered.into_iter().collect()),
+                            pack_uncovered.map(|uncovered| uncovered.into_iter().collect()),
                             // The pack shares the target's recency lane (§D3).
                             Some(if target.is_hot {
                                 BACKGROUND_HOT_TARGET_VALUE
@@ -571,10 +575,18 @@ async fn process_single_target(
                     }
                 }
 
-                if let Some(best_pack) = pack_results.iter().find(|candidate| {
-                    candidate_is_season_pack_for_season(candidate, season_num)
-                        && candidate.auto_eligible == Some(true)
-                }) {
+                'season_pack_candidates: for best_pack in
+                    pack_results.iter().filter(|candidate| {
+                        candidate_is_season_pack_for_season(candidate, season_num)
+                            && candidate.auto_eligible == Some(true)
+                    })
+                {
+                    let pack_route = DownloadRouteKey::for_candidate(best_pack).expect(
+                        "candidate route key always exists, including unknown source kind",
+                    );
+                    if failed_routes.contains(&pack_route) {
+                        continue;
+                    }
                     // ── Season pack upgrade guard ───────────────────────────────
                     // Check whether grabbing this pack benefits at least 1 episode.
                     // If every episode already has a file with an equal or better
@@ -634,7 +646,8 @@ async fn process_single_target(
                             release = best_pack.title.as_str(),
                             "season pack skipped: all episodes already have equal or better files"
                         );
-                        // Don't grab — fall through to individual episode search
+                        // Lower-ranked packs cannot improve on a dominated best pack.
+                        break 'season_pack_candidates;
                     } else {
                         // ── End season pack upgrade guard ────────────────────────────
 
@@ -643,8 +656,13 @@ async fn process_single_target(
                             .clone()
                             .or_else(|| best_pack.link.clone());
                         let url_str = pack_url.as_deref().unwrap_or("").to_string();
+                        let pack_attempt = (pack_route.clone(), url_str.clone());
 
-                        if !url_str.is_empty() && grabbed_urls.insert(url_str.clone()) {
+                        if !url_str.is_empty()
+                            && !grabbed_urls.contains(&url_str)
+                            && !attempted_urls_by_route.contains(&pack_attempt)
+                        {
+                            attempted_urls_by_route.push(pack_attempt);
                             let download_cat = app.derive_download_category(&title.facet).await;
                             let is_recent = app.is_recent_for_queue_priority(
                                 best_pack
@@ -726,6 +744,7 @@ async fn process_single_target(
                                                 accepted_info_hash: grab.info_hash.as_deref(),
                                             },
                                     );
+                                    grabbed_urls.insert(url_str.clone());
                                     season_pack_grabbed.insert(season_key.clone());
                                     season_pack_viable.insert(season_key.clone());
                                     let _ = app
@@ -785,7 +804,9 @@ async fn process_single_target(
                                                 download_client_item_id: grab.job_id.clone(),
                                                 source_hint: None,
                                                 source_provider_id: best_pack.indexer_id.clone(),
-                                                source_provider_name: Some(best_pack.source.clone()),
+                                                source_provider_name: Some(
+                                                    best_pack.source.clone(),
+                                                ),
                                                 source_kind: None,
                                                 source_title: Some(best_pack.title.clone()),
                                                 request_signature: request_signature.clone(),
@@ -841,20 +862,26 @@ async fn process_single_target(
                                         release = best_pack.title.as_str(),
                                         "season pack grabbed; skipping individual episode searches for this season"
                                     );
+                                    break 'season_pack_candidates;
                                 }
                                 Err(err) => {
                                     let submit_unavailable =
                                         is_download_submit_unavailable_error(&err);
-                                    if submit_unavailable {
+                                    let ambiguous = err.is_download_submit_ambiguous();
+                                    if submit_unavailable && !failed_routes.contains(&pack_route) {
+                                        failed_routes.push(pack_route.clone());
+                                    }
+                                    if ambiguous {
+                                        grabbed_urls.insert(url_str.clone());
                                         season_pack_viable.insert(season_key.clone());
-                                    } else {
+                                    } else if !submit_unavailable {
                                         season_pack_viable.remove(&season_key);
                                     }
                                     warn!(
                                         title = title.name.as_str(),
                                         season = season_num,
                                         error = %err,
-                                        fallback_to_episode_search = !submit_unavailable,
+                                        retry_alternate_route = submit_unavailable,
                                         "season pack grab failed"
                                     );
                                     let _ = app
@@ -874,6 +901,9 @@ async fn process_single_target(
                                             pack_password,
                                         )
                                         .await;
+                                    if !submit_unavailable {
+                                        break 'season_pack_candidates;
+                                    }
                                 }
                             }
                         }
@@ -1039,9 +1069,6 @@ async fn process_single_target(
     let mut had_quality_allowed_candidate = false;
     let mut skipped_for_failed = false;
     let mut skipped_for_title_mismatch = false;
-    // Track source kinds where ALL download clients failed.  Avoids hammering
-    // dead clients with more candidates of the same protocol.
-    let mut failed_source_kinds: Vec<DownloadSourceKind> = Vec::new();
     // Park the best ambiguous candidate before a higher-ranked eligible release
     // can return from the loop. Otherwise the pending-review side effect depends
     // on incidental candidate ordering.
@@ -1052,7 +1079,7 @@ async fn process_single_target(
             .as_ref()
             .is_some_and(|decision| decision.allowed)
             && matches!(
-                effective_auto_decision_code(candidate, &failed_source_kinds, &db_blocklist),
+                effective_auto_decision_code_for_route(candidate, failed_routes, &db_blocklist),
                 ReleaseAutoDecisionCode::AmbiguousIdentity
             )
     }) {
@@ -1080,7 +1107,7 @@ async fn process_single_target(
             .map(|d| d.allowed)
             .unwrap_or(false);
         let decision_code = if is_allowed {
-            effective_auto_decision_code(candidate, &failed_source_kinds, &db_blocklist)
+            effective_auto_decision_code_for_route(candidate, failed_routes, &db_blocklist)
         } else {
             ReleaseAutoDecisionCode::QualityBlocked
         };
@@ -1185,6 +1212,7 @@ async fn process_single_target(
                     candidate_score,
                     scoring_json,
                     Some(candidate.source.as_str()),
+                    candidate.indexer_id.as_deref(),
                     candidate.guid.as_deref(),
                     crate::delay_profile::resolve_delay_decision(
                         &delay_profiles,
@@ -1229,8 +1257,8 @@ async fn process_single_target(
             .clone()
             .or_else(|| candidate.link.clone());
 
-        // Deduplicate submit attempts without inventing grabbed state. Covered
-        // wanted items are marked grabbed only by commit_successful_grab.
+        // Successful or ambiguous submissions stay globally deduplicated, but
+        // a failed URL is suppressed only within its source/indexer route.
         if let Some(url) = source_hint.as_deref() {
             if grabbed_urls.contains(url) {
                 info!(
@@ -1240,7 +1268,20 @@ async fn process_single_target(
                 );
                 continue;
             }
-            grabbed_urls.insert(url.to_string());
+            let route = DownloadRouteKey::for_candidate(candidate)
+                .expect("candidate route key always exists, including unknown source kind");
+            let attempted = (route, url.to_string());
+            if attempted_urls_by_route.contains(&attempted) {
+                info!(
+                    title = title.name.as_str(),
+                    release = candidate.title.as_str(),
+                    indexer_id = ?candidate.indexer_id,
+                    source_kind = ?candidate.source_kind,
+                    "skipping duplicate release already attempted on this route"
+                );
+                continue;
+            }
+            attempted_urls_by_route.push(attempted);
         }
 
         let source_title = Some(candidate.title.clone());
@@ -1301,8 +1342,7 @@ async fn process_single_target(
             .download_client
             .submit_download(&DownloadClientAddRequest {
                 title: title.clone(),
-                search_facet: (target.media_type == "series_movie")
-                    .then_some(MediaFacet::Movie),
+                search_facet: (target.media_type == "series_movie").then_some(MediaFacet::Movie),
                 purpose: crate::DownloadSubmissionPurpose::Standard,
                 download_id: Some(download_id),
                 source_hint: source_hint.clone(),
@@ -1328,6 +1368,9 @@ async fn process_single_target(
         match grab_result {
             Ok(grab) => {
                 // ── Success ─────────────────────────────────────────────────
+                if let Some(url) = source_hint.as_deref() {
+                    grabbed_urls.insert(url.to_string());
+                }
                 {
                     let facet_label = serde_json::to_string(&title.facet)
                         .unwrap_or_else(|_| "\"other\"".to_string())
@@ -1448,7 +1491,7 @@ async fn process_single_target(
                     &results,
                     candidate_index + 1,
                     now,
-                    &failed_source_kinds,
+                    failed_routes,
                     &db_blocklist,
                 )
                 .await;
@@ -1471,6 +1514,9 @@ async fn process_single_target(
             }
             Err(err) => {
                 if matches!(err, AppError::DownloadSubmitAmbiguous(_)) {
+                    if let Some(url) = source_hint.as_deref() {
+                        grabbed_urls.insert(url.to_string());
+                    }
                     warn!(
                         title = title.name.as_str(),
                         release = candidate.title.as_str(),
@@ -1546,22 +1592,19 @@ async fn process_single_target(
                     .await;
                 }
 
-                // If download-client submit is unavailable for this source kind,
-                // skip remaining candidates with the same protocol this run.
-                if submit_unavailable && let Some(sk) = candidate.source_kind {
-                    if !failed_source_kinds.contains(&sk) {
-                        failed_source_kinds.push(sk);
+                // If download-client submit is unavailable, suppress only this
+                // source/indexer route for the remainder of this cycle.
+                if submit_unavailable
+                    && let Some(route) = DownloadRouteKey::for_candidate(candidate)
+                {
+                    if !failed_routes.contains(&route) {
+                        failed_routes.push(route.clone());
                     }
                     info!(
-                        source_kind = ?sk,
-                        "download client submit unavailable for source kind, skipping remaining candidates with same protocol"
+                        source_kind = ?route.source_kind,
+                        indexer_id = ?route.indexer_id,
+                        "download client submit unavailable for route, skipping remaining candidates on this route"
                     );
-                }
-
-                // Add URL to exclusion set so we don't re-select this exact
-                // release if the same URL appears from a different indexer.
-                if let Some(url) = source_hint.as_deref() {
-                    grabbed_urls.insert(url.to_string());
                 }
 
                 // CONTINUE — try the next candidate
@@ -2005,7 +2048,11 @@ mod task_runner_tests {
         );
     }
 
-    fn wanted_episode_item(title_id: &str, title_name: &str, episode_number: u32) -> AcquisitionScopeState {
+    fn wanted_episode_item(
+        title_id: &str,
+        title_name: &str,
+        episode_number: u32,
+    ) -> AcquisitionScopeState {
         AcquisitionScopeState {
             id: format!("{title_id}-e{episode_number}"),
             title_id: title_id.to_string(),
@@ -2119,5 +2166,4 @@ mod task_runner_tests {
             &snapshot,
         ));
     }
-
 }

@@ -134,6 +134,7 @@ async fn seed_pending_release(
         release_score: score,
         scoring_log_json: None,
         indexer_source: Some("nzbgeek".to_string()),
+        indexer_id: None,
         release_guid: Some(format!("guid-{}", scryer_domain::Id::new().0)),
         added_at: now.to_rfc3339(),
         delay_until: delay_until.to_rfc3339(),
@@ -286,6 +287,56 @@ async fn list_pending_releases_returns_only_waiting() {
     let pending = app.list_pending_releases(&actor).await.expect("list");
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].release_score, 500);
+}
+
+#[tokio::test]
+async fn pending_release_roundtrips_indexer_provenance() {
+    let ctx = TestContext::new().await;
+    seed_title(&ctx, "title-indexer").await;
+    let wanted = seed_wanted_item(
+        &ctx,
+        "title-indexer",
+        scryer_application::AcquisitionScopeStatus::Wanted,
+    )
+    .await;
+    let now = Utc::now();
+    let release = scryer_application::PendingRelease {
+        id: scryer_domain::Id::new().0,
+        wanted_item_id: wanted.id,
+        title_id: "title-indexer".to_string(),
+        release_title: "Indexed.Release.1080p.WEB-DL".to_string(),
+        release_url: Some("https://example.com/indexed.nzb".to_string()),
+        source_kind: Some(scryer_application::DownloadSourceKind::NzbUrl),
+        release_size_bytes: Some(1024),
+        release_score: 100,
+        scoring_log_json: None,
+        indexer_source: Some("Renamed Indexer".to_string()),
+        indexer_id: Some("stable-indexer-id".to_string()),
+        release_guid: Some("indexed-guid".to_string()),
+        added_at: now.to_rfc3339(),
+        delay_until: (now + Duration::minutes(5)).to_rfc3339(),
+        status: PendingReleaseStatus::Waiting,
+        grabbed_at: None,
+        source_password: None,
+        published_at: None,
+        info_hash: None,
+    };
+    scryer_infrastructure::PendingReleaseStore::new(
+        ctx.db.datastore(),
+        ctx.db.encryption_key_state(),
+    )
+    .insert_pending_release(&release)
+    .await
+    .expect("pending release should insert");
+
+    let loaded = ctx
+        .library_state
+        .get_pending_release(&release.id)
+        .await
+        .expect("pending release should load")
+        .expect("pending release should exist");
+    assert_eq!(loaded.indexer_id.as_deref(), Some("stable-indexer-id"));
+    assert_eq!(loaded.indexer_source.as_deref(), Some("Renamed Indexer"));
 }
 
 #[tokio::test]

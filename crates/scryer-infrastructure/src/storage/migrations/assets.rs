@@ -664,6 +664,39 @@ mod tests {
     }
 
     #[test]
+    fn migration_0154_declares_mapping_and_legacy_indexer_columns_for_both_engines() {
+        let db_root = source_db_root();
+        let manifest = fs::read_to_string(db_root.join("migration_manifest.toml"))
+            .expect("migration manifest should be readable");
+        assert!(manifest.contains("version = 154"));
+
+        for relative_path in [
+            "migrations/0154_indexer_download_client_mapping.sql",
+            "postgres/migrations/0154_indexer_download_client_mapping.sql",
+        ] {
+            let sql = fs::read_to_string(db_root.join(relative_path))
+                .expect("0154 migration should be readable");
+            assert!(sql.contains("download_client_id"));
+            assert!(sql.contains("idx_indexers_download_client_id"));
+            assert!(sql.contains("idx_pending_releases_indexer_id"));
+            assert!(sql.contains("ON DELETE SET NULL"));
+            assert!(sql.contains("pending_releases"));
+            assert!(sql.contains("indexer_id"));
+            assert!(sql.contains("indexer_source"));
+            assert!(sql.contains("COUNT(*)") && sql.contains("= 1"));
+        }
+
+        let sqlite_sql =
+            fs::read_to_string(db_root.join("migrations/0154_indexer_download_client_mapping.sql"))
+                .expect("SQLite 0154 migration should be readable");
+        let pending_release_sql = sqlite_sql
+            .split("ALTER TABLE pending_releases")
+            .nth(1)
+            .expect("pending release migration section");
+        assert!(!pending_release_sql.contains("REFERENCES download_clients"));
+    }
+
+    #[test]
     fn postgres_0140_baseline_keeps_title_aware_unmatched_items_schema() {
         let sql = source_postgres_0140_baseline_sql();
         assert!(

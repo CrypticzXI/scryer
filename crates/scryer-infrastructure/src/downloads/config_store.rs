@@ -166,6 +166,12 @@ impl DownloadClientConfigRepository for DownloadClientConfigStore {
     }
 
     async fn delete(&self, id: &str) -> AppResult<()> {
+        self.delete_with_cleared_indexer_mapping_count(id)
+            .await
+            .map(|_| ())
+    }
+
+    async fn delete_with_cleared_indexer_mapping_count(&self, id: &str) -> AppResult<u64> {
         let id = id.to_string();
         SqlRuntime::run_in_transaction(
             &self.datastore,
@@ -173,6 +179,15 @@ impl DownloadClientConfigRepository for DownloadClientConfigStore {
             move |tx| {
                 let id = id.clone();
                 Box::pin(async move {
+                    let cleared = SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "UPDATE indexers
+                            SET download_client_id = NULL,
+                                updated_at = {}
+                          WHERE download_client_id = {}",
+                        &[SqlArg::Timestamp(Utc::now()), SqlArg::Text(id.clone())],
+                    )
+                    .await?;
                     let rows = SqlRuntime::execute(
                         SqlExec::Tx(tx),
                         "DELETE FROM download_clients WHERE id = {}",
@@ -182,7 +197,7 @@ impl DownloadClientConfigRepository for DownloadClientConfigStore {
                     if rows == 0 {
                         return Err(AppError::NotFound(format!("download client config {id}")));
                     }
-                    Ok(())
+                    Ok(cleared)
                 })
             },
         )
@@ -285,4 +300,93 @@ fn row_to_download_client_config(
         created_at: row.timestamp("created_at")?,
         updated_at: row.timestamp("updated_at")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use scryer_application::DownloadClientConfigRepository;
+    use sqlx::Row;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn delete_atomically_clears_indexer_mappings_and_returns_count() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite should open");
+        sqlx::query("CREATE TABLE download_clients (id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .expect("download_clients table should be created");
+        sqlx::query(
+            "CREATE TABLE indexers (
+                id TEXT PRIMARY KEY,
+                download_client_id TEXT,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("indexers table should be created");
+        sqlx::query("INSERT INTO download_clients (id) VALUES ('client-1'), ('client-2')")
+            .execute(&pool)
+            .await
+            .expect("clients should insert");
+        sqlx::query(
+            "INSERT INTO indexers (id, download_client_id, updated_at) VALUES
+                ('idx-1', 'client-1', '2026-01-01T00:00:00Z'),
+                ('idx-2', 'client-1', '2026-01-01T00:00:00Z'),
+                ('idx-3', 'client-2', '2026-01-01T00:00:00Z'),
+                ('idx-missing', 'missing-client', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("indexers should insert");
+
+        let store = DownloadClientConfigStore::new(
+            StoreDatastore::Sqlite {
+                pool: pool.clone(),
+                writer_gate: Arc::new(tokio::sync::Mutex::new(())),
+            },
+            Arc::new(RwLock::new(None)),
+        );
+
+        let cleared = store
+            .delete_with_cleared_indexer_mapping_count("client-1")
+            .await
+            .expect("client deletion should succeed");
+        assert_eq!(cleared, 2);
+
+        let rows =
+            sqlx::query("SELECT id, download_client_id, updated_at FROM indexers ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .expect("indexers should load");
+        assert_eq!(rows[0].get::<Option<String>, _>("download_client_id"), None);
+        assert_ne!(
+            rows[0].get::<String, _>("updated_at"),
+            "2026-01-01T00:00:00Z"
+        );
+        assert_eq!(rows[1].get::<Option<String>, _>("download_client_id"), None);
+        assert_eq!(
+            rows[2]
+                .get::<Option<String>, _>("download_client_id")
+                .as_deref(),
+            Some("client-2")
+        );
+
+        store
+            .delete_with_cleared_indexer_mapping_count("missing-client")
+            .await
+            .expect_err("missing client deletion should roll back mapping cleanup");
+        let missing_mapping: Option<String> =
+            sqlx::query_scalar("SELECT download_client_id FROM indexers WHERE id = 'idx-missing'")
+                .fetch_one(&pool)
+                .await
+                .expect("rolled-back mapping should load");
+        assert_eq!(missing_mapping.as_deref(), Some("missing-client"));
+    }
 }

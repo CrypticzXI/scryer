@@ -4616,6 +4616,7 @@ mod tests {
             enable_interactive_search: true,
             enable_auto_search: true,
             indexer_proxy_config_id: None,
+            download_client_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,

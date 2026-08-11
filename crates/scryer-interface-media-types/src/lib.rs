@@ -2345,6 +2345,7 @@ pub struct IndexerConfigPayload {
     pub provider_type: String,
     pub base_url: String,
     pub indexer_proxy_config_id: Option<ID>,
+    pub download_client_id: Option<ID>,
     pub has_api_key: bool,
     pub is_managed: bool,
     pub managed_parent_config_id: Option<ID>,
@@ -2363,6 +2364,31 @@ pub struct IndexerConfigPayload {
     pub config: Vec<ProviderConfigValuePayload>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IndexerDownloadClientMappingCatalogPayload {
+    pub clients: Vec<IndexerDownloadClientMappingClientPayload>,
+    pub indexers: Vec<IndexerDownloadClientMappingIndexerPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IndexerDownloadClientMappingClientPayload {
+    pub id: ID,
+    pub name: String,
+    pub client_type: String,
+    pub is_enabled: bool,
+    pub health_status: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IndexerDownloadClientMappingIndexerPayload {
+    pub id: ID,
+    pub name: String,
+    pub download_client_id: Option<ID>,
+    pub protocol_families: Vec<String>,
+    pub supports_mapping: bool,
+    pub compatible_client_ids: Vec<ID>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3768,6 +3794,12 @@ pub struct UpdateIndexerConfigInput {
 }
 
 #[derive(InputObject)]
+pub struct SetIndexerDownloadClientMappingInput {
+    pub indexer_id: ID,
+    pub download_client_id: Option<ID>,
+}
+
+#[derive(InputObject)]
 pub struct CreateIndexerProxyConfigInput {
     pub name: String,
     pub provider_type: String,
@@ -3815,6 +3847,7 @@ pub struct UpdateDownloadClientConfigInput {
 #[derive(SimpleObject, Clone)]
 pub struct DeleteDownloadClientConfigPayload {
     pub id: async_graphql::ID,
+    pub cleared_indexer_mapping_count: i32,
 }
 
 #[derive(InputObject)]
