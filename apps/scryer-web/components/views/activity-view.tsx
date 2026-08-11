@@ -18,6 +18,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   type UIEvent,
   useCallback,
@@ -78,6 +79,8 @@ type ActivityViewState = {
   queueLoading: boolean;
   queueLoadingMore: boolean;
   queueError: string | null;
+  queueStale: boolean;
+  onVisibleQueueOffsetChange?: (offset: number) => void;
   requestManualImport: (item: DownloadQueueItem) => Promise<void>;
   requestAssignTitle: (item: DownloadQueueItem) => Promise<void>;
   requestIgnore: (item: DownloadQueueItem) => Promise<void>;
@@ -324,6 +327,8 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     queueLoading,
     queueLoadingMore,
     queueError,
+    queueStale,
+    onVisibleQueueOffsetChange,
     requestManualImport,
     requestAssignTitle,
     requestIgnore,
@@ -373,6 +378,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   const [selectedImportItemKeys, setSelectedImportItemKeys] = useState<Record<string, true>>({});
   const [filterPopoverOpen, setFilterPopoverOpen] = useState(false);
   const rowActionBusyRef = useRef<Record<string, true>>({});
+  const resultsScrollRef = useRef<HTMLDivElement>(null);
   const scrollHeightClass = isMobile ? "max-h-[70vh]" : "max-h-[1700px]";
 
   const setRowBusy = useCallback((rowId: string, busy: boolean) => {
@@ -479,16 +485,24 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
 
   const handleResultsScroll = useCallback(
     (event: UIEvent<HTMLDivElement>) => {
-      if (activeTab !== "import" || queueLoadingMore || !visibleHasMore || queueLoading) {
-        return;
-      }
-
       const element = event.currentTarget;
-      if (element.scrollHeight - element.scrollTop - element.clientHeight <= 160) {
+      if (
+        activeTab !== "history" &&
+        !queueLoadingMore &&
+        visibleHasMore &&
+        !queueLoading &&
+        element.scrollHeight - element.scrollTop - element.clientHeight <= 160
+      ) {
         void requestMoreItems();
       }
     },
-    [activeTab, queueLoading, queueLoadingMore, requestMoreItems, visibleHasMore],
+    [
+      activeTab,
+      queueLoading,
+      queueLoadingMore,
+      requestMoreItems,
+      visibleHasMore,
+    ],
   );
 
   const emptyStateLabel =
@@ -547,7 +561,7 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
   );
 
   const sortedQueueItems = useMemo(() => {
-    if (activeTab === "history") {
+    if (activeTab === "history" || activeTab === "activity") {
       return queueItems;
     }
 
@@ -610,6 +624,45 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
 
     return items;
   }, [activeSortConfig.direction, activeSortConfig.key, activeTab, queueItems, t]);
+
+  const queueVirtualizer = useVirtualizer({
+    count: activeTab === "activity" ? sortedQueueItems.length : 0,
+    getScrollElement: () => resultsScrollRef.current,
+    getItemKey: (index) =>
+      downloadQueueItemIdentityKey(sortedQueueItems[index] ?? queueItems[index]),
+    estimateSize: () => (isMobile ? 180 : 64),
+    measureElement: (element) => {
+      const baseHeight = element.getBoundingClientRect().height;
+      const index = (element as HTMLElement).dataset.index;
+      const detailRow = element.nextElementSibling as HTMLElement | null;
+      return detailRow && detailRow.dataset.virtualDetailIndex === index
+        ? baseHeight + detailRow.getBoundingClientRect().height
+        : baseHeight;
+    },
+    overscan: 8,
+  });
+  const virtualRows = activeTab === "activity" ? queueVirtualizer.getVirtualItems() : [];
+  const firstVisibleQueueIndex = virtualRows.find(
+    (virtualRow) => virtualRow.end > (queueVirtualizer.scrollOffset ?? 0),
+  )?.index;
+  useEffect(() => {
+    if (activeTab === "activity" && firstVisibleQueueIndex !== undefined) {
+      onVisibleQueueOffsetChange?.(firstVisibleQueueIndex);
+    }
+  }, [activeTab, firstVisibleQueueIndex, onVisibleQueueOffsetChange]);
+  const renderedQueueItems =
+    activeTab === "activity"
+      ? virtualRows
+          .map((virtualRow) => sortedQueueItems[virtualRow.index])
+          .filter((item): item is DownloadQueueItem => Boolean(item))
+      : sortedQueueItems;
+  const virtualPaddingTop = virtualRows[0]?.start ?? 0;
+  const virtualPaddingBottom = virtualRows.length
+    ? Math.max(
+        0,
+        queueVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end,
+      )
+    : 0;
 
   const visibleImportItems = useMemo(
     () => (activeTab === "import" ? sortedQueueItems : []),
@@ -933,14 +986,62 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
     </div>
   );
 
+  const renderVirtualMobileQueueCards = () => (
+    <div style={{ height: queueVirtualizer.getTotalSize(), position: "relative" }}>
+      {virtualRows.map((virtualRow) => {
+        const queueItem = sortedQueueItems[virtualRow.index];
+        if (!queueItem) {
+          return null;
+        }
+        const rowProps = buildQueueRowProps(queueItem);
+        return (
+          <div
+            key={rowProps.rowId}
+            ref={queueVirtualizer.measureElement}
+            data-index={virtualRow.index}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualRow.start}px)`,
+              paddingBottom: 12,
+            }}
+          >
+            <QueueRowItem {...rowProps} />
+          </div>
+        );
+      })}
+      {queueLoadingMore ? (
+        <div
+          className="absolute left-0 flex w-full items-center justify-center py-3 text-sm text-muted-foreground"
+          style={{ top: queueVirtualizer.getTotalSize() }}
+        >
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          {t("label.loading")}
+        </div>
+      ) : null}
+    </div>
+  );
+
   const renderDesktopQueueRows = (
     items: DownloadQueueItem[],
     showHistorySpinner = false,
   ) => (
     <>
-      {items.map((queueItem) => {
+      {items.map((queueItem, itemIndex) => {
         const rowProps = buildQueueRowProps(queueItem);
-        return <QueueTableRow key={rowProps.rowId} {...rowProps} />;
+        const virtualRow = activeTab === "activity" ? virtualRows[itemIndex] : undefined;
+        return (
+          <QueueTableRow
+            key={rowProps.rowId}
+            {...rowProps}
+            virtualIndex={virtualRow?.index}
+            measureElement={
+              virtualRow ? queueVirtualizer.measureElement : undefined
+            }
+          />
+        );
       })}
       {showHistorySpinner ? (
         <TableRow>
@@ -1026,6 +1127,11 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
               {queueError}
             </p>
           ) : null}
+          {queueStale ? (
+            <p className="rounded border border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] p-2 text-sm text-[var(--scry-warning-text)]">
+              {t("activity.queueStale")}
+            </p>
+          ) : null}
           <div
             className={cn(
               "flex flex-col gap-3 sm:flex-row sm:items-center",
@@ -1104,14 +1210,20 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
               </div>
             ) : (
                 <div
+                  ref={resultsScrollRef}
                   onScroll={handleResultsScroll}
                   className={`${scrollHeightClass} overflow-y-auto pr-1`}
                 >
-                  {renderMobileQueueCards(sortedQueueItems, queueLoadingMore)}
+                  {activeTab === "activity" ? (
+                    renderVirtualMobileQueueCards()
+                  ) : (
+                    renderMobileQueueCards(renderedQueueItems, queueLoadingMore)
+                  )}
                 </div>
               )
           ) : (
             <div
+              ref={resultsScrollRef}
               onScroll={handleResultsScroll}
               className={`${scrollHeightClass} overflow-y-auto rounded-xl border border-border/60`}
             >
@@ -1193,7 +1305,22 @@ export function ActivityView({ state }: { state: ActivityViewState }) {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    renderDesktopQueueRows(sortedQueueItems, queueLoadingMore)
+                    <>
+                      {activeTab === "activity" && virtualPaddingTop > 0 ? (
+                        <TableRow aria-hidden="true">
+                          <TableCell colSpan={6} style={{ height: virtualPaddingTop, padding: 0 }} />
+                        </TableRow>
+                      ) : null}
+                      {renderDesktopQueueRows(renderedQueueItems, queueLoadingMore)}
+                      {activeTab === "activity" && virtualPaddingBottom > 0 ? (
+                        <TableRow aria-hidden="true">
+                          <TableCell
+                            colSpan={6}
+                            style={{ height: virtualPaddingBottom, padding: 0 }}
+                          />
+                        </TableRow>
+                      ) : null}
+                    </>
                   )}
                 </TableBody>
               </Table>

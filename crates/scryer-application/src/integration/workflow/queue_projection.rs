@@ -1,5 +1,3 @@
-use crate::domain_events::DomainEventActor;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DownloadQueueBucket {
     Activity,
@@ -294,80 +292,4 @@ fn download_queue_projection_key(item: &DownloadQueueItem) -> String {
     }
 
     format!("{}::{}", item.client_id, item.download_client_item_id)
-}
-pub async fn publish_download_queue_snapshot_events(
-    app: &AppUseCase,
-    actor: impl Into<DomainEventActor>,
-    previous_items: &mut HashMap<String, DownloadQueueItem>,
-    items: &[DownloadQueueItem],
-) {
-    let actor = actor.into();
-    let mut next_items = HashMap::with_capacity(items.len());
-    let mut domain_events = Vec::new();
-
-    for item in items {
-        let key = download_queue_projection_key(item);
-        let changed = previous_items
-            .get(&key)
-            .is_none_or(|previous| previous != item);
-        if changed {
-            domain_events.push(new_download_queue_domain_event(
-                actor.clone(),
-                key.clone(),
-                DomainEventPayload::DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData {
-                    item: item.clone(),
-                }),
-            ));
-        }
-        next_items.insert(key, item.clone());
-    }
-
-    for (key, previous_item) in previous_items.iter() {
-        if !next_items.contains_key(key) {
-            domain_events.push(new_download_queue_domain_event(
-                actor.clone(),
-                key.clone(),
-                DomainEventPayload::DownloadQueueItemRemoved(DownloadQueueItemRemovedEventData {
-                    download_client_item_id: previous_item.download_client_item_id.clone(),
-                    client_id: Some(previous_item.client_id.clone())
-                        .filter(|value| !value.trim().is_empty()),
-                    client_type: Some(previous_item.client_type.clone()),
-                }),
-            ));
-        }
-    }
-
-    *previous_items = next_items;
-
-    if !domain_events.is_empty()
-        && let Err(error) = app.append_domain_events(domain_events).await
-    {
-        tracing::warn!(error = %error, "failed to append download queue domain events");
-    }
-}
-
-pub async fn publish_download_queue_upsert_events(
-    app: &AppUseCase,
-    actor: impl Into<DomainEventActor>,
-    items: &[DownloadQueueItem],
-) {
-    let actor = actor.into();
-    let domain_events = items
-        .iter()
-        .map(|item| {
-            new_download_queue_domain_event(
-                actor.clone(),
-                download_queue_projection_key(item),
-                DomainEventPayload::DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData {
-                    item: item.clone(),
-                }),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    if !domain_events.is_empty()
-        && let Err(error) = app.append_domain_events(domain_events).await
-    {
-        tracing::warn!(error = %error, "failed to append download queue upsert events");
-    }
 }

@@ -460,6 +460,16 @@ pub enum DownloadHistorySortKeyValue {
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum DownloadQueueSortKeyValue {
+    Title,
+    Client,
+    Status,
+    Progress,
+    Size,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum SortDirectionValue {
     Asc,
     Desc,

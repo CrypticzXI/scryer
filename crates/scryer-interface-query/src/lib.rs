@@ -296,6 +296,33 @@ fn from_download_history_page(
     }
 }
 
+fn from_download_queue_page(
+    page: scryer_application::DownloadQueuePage,
+) -> DownloadQueuePagePayload {
+    DownloadQueuePagePayload {
+        items: page
+            .items
+            .into_iter()
+            .map(from_download_queue_item)
+            .collect(),
+        has_more: page.has_more,
+        total_count: usize_to_i32_saturating(page.total_count),
+        available_clients: page
+            .available_clients
+            .into_iter()
+            .map(|client| DownloadClientFilterOptionPayload {
+                client_id: client.client_id.into(),
+                client_name: client.client_name,
+                client_type: client.client_type,
+            })
+            .collect(),
+        revision: Long::from_u64_saturating(page.revision),
+        updated_at: page.updated_at,
+        ready: page.ready,
+        stale: page.stale,
+    }
+}
+
 fn from_download_import_page(
     page: scryer_application::DownloadImportPage,
 ) -> DownloadImportPagePayload {
@@ -1655,6 +1682,46 @@ impl JobAndDownloadQueries {
         Ok(from_catalog_discovery(&app, result))
     }
 
+    async fn download_queue_page(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 50)] limit: i32,
+        #[graphql(default = 0)] offset: i32,
+        filters: Option<Vec<DownloadActivityFilterValue>>,
+        client_ids: Option<Vec<ID>>,
+        #[graphql(default = true)] scryer_submitted_only: bool,
+        title_id: Option<ID>,
+        #[graphql(default_with = "DownloadQueueSortKeyValue::Status")]
+        sort_key: DownloadQueueSortKeyValue,
+        #[graphql(default_with = "SortDirectionValue::Asc")] sort_direction: SortDirectionValue,
+    ) -> GqlResult<DownloadQueuePagePayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        let page = app
+            .list_download_queue_page(
+                &actor,
+                limit.clamp(1, 200) as usize,
+                offset.max(0) as usize,
+                filters.map(|filters| {
+                    filters
+                        .into_iter()
+                        .map(DownloadActivityFilterValue::into_application)
+                        .collect()
+                }),
+                client_ids.map(|ids| ids.into_iter().map(String::from).collect()),
+                scryer_submitted_only,
+                title_id.as_ref().map(|id| id.as_ref()),
+                scryer_application::DownloadHistorySort {
+                    key: sort_key.into_application(),
+                    direction: sort_direction.into_application(),
+                },
+            )
+            .await
+            .map_err(to_gql_error)?;
+        Ok(from_download_queue_page(page))
+    }
+
+    #[graphql(deprecation = "use downloadQueuePage")]
     async fn download_queue(
         &self,
         ctx: &Context<'_>,

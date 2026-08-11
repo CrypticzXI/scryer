@@ -56,7 +56,7 @@ function TableBody({ className, ...props }: React.HTMLAttributes<HTMLTableSectio
   return <tbody data-slot="table-body" className={cn("[&_tr:last-child]:border-0", className)} {...props} />;
 }
 
-function TableRow({ className, ...props }: React.HTMLAttributes<HTMLTableRowElement>) {
+function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
   return <tr data-slot="table-row" className={cn("border-b border-border transition-colors", className)} {...props} />;
 }
 

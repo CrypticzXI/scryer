@@ -339,6 +339,24 @@ pub struct DownloadHistoryPagePayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct DownloadQueuePagePayload {
+    pub items: Vec<DownloadQueueItemPayload>,
+    pub has_more: bool,
+    pub total_count: i32,
+    pub available_clients: Vec<DownloadClientFilterOptionPayload>,
+    pub revision: Long,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub ready: bool,
+    pub stale: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DownloadQueueSyncPayload {
+    pub revision: Long,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct DownloadImportPagePayload {
     pub items: Vec<DownloadQueueItemPayload>,
     pub has_more: bool,

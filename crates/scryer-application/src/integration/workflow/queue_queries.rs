@@ -104,13 +104,10 @@ fn compare_download_history_items(
 
     ordering
         .then_with(|| {
-            parse_sort_value(
-                right.last_updated_at.as_deref(),
-                left.last_updated_at.as_deref(),
+            compare_case_insensitive(
+                &download_queue_client_filter_key(left),
+                &download_queue_client_filter_key(right),
             )
-        })
-        .then_with(|| {
-            compare_case_insensitive(download_history_title(left), download_history_title(right))
         })
         .then_with(|| {
             compare_case_insensitive(
@@ -871,21 +868,6 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn collect_download_snapshot_items(
-        &self,
-        include_queue: bool,
-        include_recent_history: bool,
-        use_tracked_runtime_snapshot: bool,
-    ) -> AppResult<Vec<DownloadQueueItem>> {
-        self.collect_download_snapshot_items_excluding_client_types(
-            include_queue,
-            include_recent_history,
-            use_tracked_runtime_snapshot,
-            &[],
-        )
-        .await
-    }
-
     pub(crate) async fn collect_download_snapshot_items_excluding_client_types(
         &self,
         include_queue: bool,
@@ -933,140 +915,116 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn collect_download_snapshot_items_for_title(
+    async fn current_download_queue_read_model(
         &self,
-        title_id: &str,
-        include_queue: bool,
-        include_recent_history: bool,
-        use_tracked_runtime_snapshot: bool,
-    ) -> AppResult<Vec<DownloadQueueItem>> {
-        let enabled_clients = self.enabled_download_clients_by_priority().await?;
-        if enabled_clients.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let queue_items = if include_queue {
-            self.services
-                .integrations
-                .download_client
-                .list_queue_for_title(title_id)
-                .await?
-        } else {
-            Vec::new()
-        };
-        let history_items = if include_recent_history {
-            self.services
-                .integrations
-                .download_client
-                .list_recent_activity_for_title(title_id, DOWNLOAD_QUEUE_RECENT_ACTIVITY_LIMIT)
-                .await?
-        } else {
-            Vec::new()
-        };
-
-        let mut items: Vec<DownloadQueueItem> = queue_items;
-        items.extend(history_items);
-        let items = self
-            .enrich_download_queue_items(&enabled_clients, items, use_tracked_runtime_snapshot)
+    ) -> AppResult<(
+        crate::services::DownloadQueueSnapshot,
+        std::sync::Arc<crate::services::DownloadQueueReadModel>,
+    )> {
+        let cache = &self.runtime.acquisition.download_queue_read_model;
+        let mut snapshot = self
+            .runtime
+            .acquisition
+            .download_queue_snapshot
+            .snapshot()
             .await;
-        Ok(self
-            .filter_unmanaged_download_queue_items(items)
+        if let Some(model) = cache
+            .current
+            .read()
             .await
-            .into_iter()
-            .filter(|item| item.title_id.as_deref() == Some(title_id))
-            .collect())
-    }
-}
-impl AppUseCase {
-    async fn collect_download_queue_items(
-        &self,
-        include_all_activity: bool,
-        include_history_only: bool,
-        include_import_activity: bool,
-        activity_filter: DownloadActivityFilter,
-        use_tracked_runtime_snapshot: bool,
-    ) -> AppResult<Vec<DownloadQueueItem>> {
-        if include_history_only {
-            let mut items = self
-                .collect_download_snapshot_items(false, true, use_tracked_runtime_snapshot)
-                .await?
-                .into_iter()
-                .filter(|item| is_history_download_state(&item.state))
-                .collect::<Vec<_>>();
-            items.sort_by(|left, right| {
-                parse_sort_value(
-                    right.last_updated_at.as_deref(),
-                    left.last_updated_at.as_deref(),
-                )
-            });
-            items.truncate(50);
-            return Ok(items);
+            .as_ref()
+            .filter(|model| model.revision == snapshot.revision)
+            .cloned()
+        {
+            metrics::counter!("scryer_download_queue_read_model_total", "result" => "hit")
+                .increment(1);
+            return Ok((snapshot, model));
         }
 
-        let mut items = self
-            .collect_download_snapshot_items(true, false, use_tracked_runtime_snapshot)
-            .await?
-            .into_iter()
-            .filter(|item| include_all_activity || item.is_scryer_origin)
-            .filter(|item| {
-                matches_download_queue_filter(item, false, include_import_activity, activity_filter)
-            })
-            .collect::<Vec<_>>();
-        sort_download_queue_items(&mut items);
-        Ok(items)
-    }
-}
-impl AppUseCase {
-    async fn collect_download_queue_items_for_title(
-        &self,
-        title_id: &str,
-        include_all_activity: bool,
-        include_history_only: bool,
-        include_import_activity: bool,
-        activity_filter: DownloadActivityFilter,
-        use_tracked_runtime_snapshot: bool,
-    ) -> AppResult<Vec<DownloadQueueItem>> {
-        if include_history_only {
-            let mut items = self
-                .collect_download_snapshot_items_for_title(
-                    title_id,
-                    false,
-                    true,
-                    use_tracked_runtime_snapshot,
-                )
-                .await?
-                .into_iter()
-                .filter(|item| is_history_download_state(&item.state))
-                .collect::<Vec<_>>();
-            items.sort_by(|left, right| {
-                parse_sort_value(
-                    right.last_updated_at.as_deref(),
-                    left.last_updated_at.as_deref(),
-                )
-            });
-            items.truncate(50);
-            return Ok(items);
+        let _build_guard = cache.build_lock.lock().await;
+        snapshot = self
+            .runtime
+            .acquisition
+            .download_queue_snapshot
+            .snapshot()
+            .await;
+        if let Some(model) = cache
+            .current
+            .read()
+            .await
+            .as_ref()
+            .filter(|model| model.revision == snapshot.revision)
+            .cloned()
+        {
+            metrics::counter!("scryer_download_queue_read_model_total", "result" => "hit")
+                .increment(1);
+            return Ok((snapshot, model));
         }
 
-        let mut items = self
-            .collect_download_snapshot_items_for_title(
-                title_id,
-                true,
-                false,
-                use_tracked_runtime_snapshot,
-            )
+        metrics::counter!("scryer_download_queue_read_model_total", "result" => "miss")
+            .increment(1);
+        let title_ids = snapshot
+            .items
+            .iter()
+            .filter_map(|item| item.title_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let title_library_ids = self
+            .services
+            .catalog
+            .titles
+            .get_by_ids(&title_ids)
             .await?
             .into_iter()
-            .filter(|item| include_all_activity || item.is_scryer_origin)
-            .filter(|item| {
-                matches_download_queue_filter(item, false, include_import_activity, activity_filter)
-            })
-            .collect::<Vec<_>>();
-        sort_download_queue_items(&mut items);
-        Ok(items)
+            .map(|title| (title.id, title.library_id))
+            .collect::<HashMap<_, _>>();
+        let model = std::sync::Arc::new(crate::services::DownloadQueueReadModel::new(
+            snapshot.revision,
+            std::sync::Arc::clone(&snapshot.items),
+            title_library_ids,
+        ));
+        cache.current.write().await.replace(model.clone());
+        Ok((snapshot, model))
     }
-}
-impl AppUseCase {
+
+    async fn download_queue_ordering(
+        model: &std::sync::Arc<crate::services::DownloadQueueReadModel>,
+        sort: DownloadHistorySort,
+    ) -> std::sync::Arc<[usize]> {
+        if let Some(ordering) = model.orderings.read().await.get(&sort).cloned() {
+            return ordering;
+        }
+        let mut orderings = model.orderings.write().await;
+        if let Some(ordering) = orderings.get(&sort).cloned() {
+            return ordering;
+        }
+        let mut ordering = (0..model.items.len()).collect::<Vec<_>>();
+        ordering.sort_by(|left, right| {
+            compare_download_history_items(&model.items[*left], &model.items[*right], sort)
+        });
+        let ordering = std::sync::Arc::from(ordering);
+        orderings.insert(sort, std::sync::Arc::clone(&ordering));
+        ordering
+    }
+
+    async fn legacy_download_queue_ordering(
+        model: &std::sync::Arc<crate::services::DownloadQueueReadModel>,
+    ) -> std::sync::Arc<[usize]> {
+        std::sync::Arc::clone(
+            model
+                .legacy_ordering
+                .get_or_init(|| async {
+                    let mut ordering = (0..model.items.len()).collect::<Vec<_>>();
+                    ordering.sort_by(|left, right| {
+                        compare_download_queue_items(&model.items[*left], &model.items[*right])
+                    });
+                    std::sync::Arc::from(ordering)
+                })
+                .await,
+        )
+    }
+
     pub async fn list_download_queue(
         &self,
         actor: &User,
@@ -1077,21 +1035,170 @@ impl AppUseCase {
     ) -> AppResult<Vec<DownloadQueueItem>> {
         self.require_any_library_permission(actor, scryer_domain::LibraryPermission::View)
             .await?;
-        let items = self
-            .collect_download_queue_items(
-                include_all_activity,
-                include_history_only,
-                include_import_activity,
-                activity_filter,
-                true,
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let can_view_operational_history = self
+            .has_app_permission(
+                actor,
+                scryer_domain::AppPermission::ManageSystemSettings,
             )
             .await?;
-        self.filter_download_queue_items_for_permission(
-            actor,
-            items,
-            scryer_domain::LibraryPermission::View,
+        let (_, model) = self.current_download_queue_read_model().await?;
+        let ordering = Self::legacy_download_queue_ordering(&model).await;
+        Ok(ordering
+            .iter()
+            .map(|index| &model.items[*index])
+            .filter(|item| {
+                item.title_id.as_deref().map_or(
+                    can_view_operational_history,
+                    |title_id| {
+                        model.title_library_ids.get(title_id).map_or(
+                            can_view_operational_history,
+                            |library_id| allowed_library_ids.contains(library_id),
+                        )
+                    },
+                )
+            })
+            .filter(|item| include_all_activity || item.is_scryer_origin)
+            .filter(|item| {
+                matches_download_queue_filter(
+                    item,
+                    include_history_only,
+                    include_import_activity,
+                    activity_filter,
+                )
+            })
+            .take(if include_history_only { 50 } else { usize::MAX })
+            .cloned()
+            .collect())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "paged queue API keeps its filter and sort contract explicit"
+    )]
+    pub async fn list_download_queue_page(
+        &self,
+        actor: &User,
+        limit: usize,
+        offset: usize,
+        filters: Option<Vec<DownloadActivityFilter>>,
+        client_ids: Option<Vec<String>>,
+        scryer_submitted_only: bool,
+        title_id: Option<&str>,
+        sort: DownloadHistorySort,
+    ) -> AppResult<DownloadQueuePage> {
+        let started_at = Instant::now();
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if allowed_library_ids.is_empty() {
+            return Err(AppError::Unauthorized(
+                "You do not have access to this library".to_string(),
+            ));
+        }
+        let can_view_operational_history = self
+            .has_app_permission(
+                actor,
+                scryer_domain::AppPermission::ManageSystemSettings,
+            )
+            .await?;
+
+        let limit = limit.clamp(1, 200);
+        let (snapshot, model) = self.current_download_queue_read_model().await?;
+        let stale = snapshot.stale_at(Utc::now());
+        metrics::counter!(
+            "scryer_download_queue_cache_total",
+            "result" => if snapshot.ready { "hit" } else { "miss" }
         )
-        .await
+        .increment(1);
+        let normalized_client_ids = client_ids.map(|ids| {
+            ids.into_iter()
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty())
+                .collect::<HashSet<_>>()
+        });
+        let ordering = Self::download_queue_ordering(&model, sort).await;
+        let mut available_clients_by_id = HashMap::new();
+        let mut page_items = Vec::with_capacity(limit);
+        let mut total_count = 0usize;
+        for index in ordering.iter().copied() {
+            let item = &model.items[index];
+            let authorized = item.title_id.as_deref().map_or(
+                can_view_operational_history,
+                |title_id| {
+                    model.title_library_ids.get(title_id).map_or(
+                        can_view_operational_history,
+                        |library_id| allowed_library_ids.contains(library_id),
+                    )
+                },
+            );
+            if !authorized
+                || !matches_download_activity_filter(item, DownloadActivityFilter::All)
+                || title_id.is_some_and(|title_id| item.title_id.as_deref() != Some(title_id))
+                || (scryer_submitted_only && !item.is_scryer_origin)
+                || filters.as_ref().is_some_and(|filters| {
+                    !filters
+                        .iter()
+                        .any(|filter| matches_download_activity_filter(item, *filter))
+                })
+            {
+                continue;
+            }
+
+            let client_id = download_queue_client_filter_key(item);
+            available_clients_by_id
+                .entry(client_id.clone())
+                .or_insert_with(|| DownloadClientFilterOption {
+                    client_id,
+                    client_name: if item.client_name.trim().is_empty() {
+                        item.client_type.trim().to_string()
+                    } else {
+                        item.client_name.trim().to_string()
+                    },
+                    client_type: item.client_type.trim().to_string(),
+                });
+            if !matches_download_history_client_ids(item, normalized_client_ids.as_ref()) {
+                continue;
+            }
+            if total_count >= offset && page_items.len() < limit {
+                page_items.push(item.clone());
+            }
+            total_count = total_count.saturating_add(1);
+        }
+        let mut available_clients = available_clients_by_id.into_values().collect::<Vec<_>>();
+        available_clients.sort_by(|left, right| {
+            compare_case_insensitive(&left.client_name, &right.client_name)
+                .then_with(|| compare_case_insensitive(&left.client_type, &right.client_type))
+                .then_with(|| left.client_id.cmp(&right.client_id))
+        });
+        let has_more = offset.saturating_add(page_items.len()) < total_count;
+        metrics::histogram!("scryer_download_queue_page_duration_seconds")
+            .record(started_at.elapsed().as_secs_f64());
+        metrics::gauge!("scryer_download_queue_snapshot_age_seconds").set(
+            snapshot
+                .updated_at
+                .map(|updated_at| Utc::now().signed_duration_since(updated_at).num_milliseconds())
+                .unwrap_or_default()
+                .max(0) as f64
+                / 1_000.0,
+        );
+
+        Ok(DownloadQueuePage {
+            items: page_items,
+            has_more,
+            total_count,
+            available_clients,
+            revision: snapshot.revision,
+            updated_at: snapshot.updated_at,
+            ready: snapshot.ready,
+            stale,
+        })
     }
 }
 impl AppUseCase {
@@ -1116,10 +1223,13 @@ impl AppUseCase {
             .filter(|value| !value.is_empty())
             .map(str::to_string);
 
-        let items = self
-            .collect_download_snapshot_items(true, true, true)
-            .await?;
-        Ok(items.into_iter().find(|item| {
+        let snapshot = self
+            .runtime
+            .acquisition
+            .download_queue_snapshot
+            .snapshot()
+            .await;
+        Ok(snapshot.items.iter().find(|item| {
             item.download_client_item_id == target_download_client_item_id
                 && normalized_client_id
                     .as_ref()
@@ -1127,7 +1237,7 @@ impl AppUseCase {
                 && normalized_client_type
                     .as_ref()
                     .is_none_or(|client_type| item.client_type.eq_ignore_ascii_case(client_type))
-        }))
+        }).cloned())
     }
 }
 impl AppUseCase {
@@ -1146,15 +1256,24 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::View,
         )
         .await?;
-        self.collect_download_queue_items_for_title(
-            title_id,
-            include_all_activity,
-            include_history_only,
-            include_import_activity,
-            activity_filter,
-            true,
-        )
-        .await
+        let (_, model) = self.current_download_queue_read_model().await?;
+        let ordering = Self::legacy_download_queue_ordering(&model).await;
+        Ok(ordering
+            .iter()
+            .map(|index| &model.items[*index])
+            .filter(|item| item.title_id.as_deref() == Some(title_id))
+            .filter(|item| include_all_activity || item.is_scryer_origin)
+            .filter(|item| {
+                matches_download_queue_filter(
+                    item,
+                    include_history_only,
+                    include_import_activity,
+                    activity_filter,
+                )
+            })
+            .take(if include_history_only { 50 } else { usize::MAX })
+            .cloned()
+            .collect())
     }
 }
 impl AppUseCase {
@@ -1254,28 +1373,6 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn collect_download_history_items(
-        &self,
-        use_tracked_runtime_snapshot: bool,
-    ) -> AppResult<Vec<DownloadQueueItem>> {
-        let enabled_clients = self.enabled_download_clients_by_priority().await?;
-        if enabled_clients.is_empty() {
-            return Ok(Vec::new());
-        }
-        let items = self
-            .services
-            .integrations
-            .download_client
-            .list_history()
-            .await?;
-
-        let items = self
-            .enrich_download_queue_items(&enabled_clients, items, use_tracked_runtime_snapshot)
-            .await;
-        Ok(self.filter_unmanaged_download_queue_items(items).await)
-    }
-}
-impl AppUseCase {
     #[expect(
         clippy::too_many_arguments,
         reason = "download-history queries mirror the user-visible filter surface explicitly"
@@ -1351,13 +1448,40 @@ impl AppUseCase {
         &self,
         actor: &User,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        self.require_any_library_permission(actor, scryer_domain::LibraryPermission::View)
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, scryer_domain::LibraryPermission::View)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        if allowed_library_ids.is_empty() {
+            return Err(AppError::Unauthorized(
+                "You do not have access to this library".to_string(),
+            ));
+        }
+        let can_view_operational_history = self
+            .has_app_permission(
+                actor,
+                scryer_domain::AppPermission::ManageSystemSettings,
+            )
             .await?;
-        self.collect_download_snapshot_items_for_actor(
-            actor,
-            scryer_domain::LibraryPermission::View,
-        )
-        .await
+        let (_, model) = self.current_download_queue_read_model().await?;
+        let ordering = Self::legacy_download_queue_ordering(&model).await;
+        Ok(ordering
+            .iter()
+            .map(|index| &model.items[*index])
+            .filter(|item| {
+                item.title_id.as_deref().map_or(
+                    can_view_operational_history,
+                    |title_id| {
+                        model.title_library_ids.get(title_id).map_or(
+                            can_view_operational_history,
+                            |library_id| allowed_library_ids.contains(library_id),
+                        )
+                    },
+                )
+            })
+            .cloned()
+            .collect())
     }
 }
 impl AppUseCase {
@@ -1410,26 +1534,18 @@ impl AppUseCase {
         else {
             return Ok(());
         };
-        let Some(item) = self
-            .find_download_queue_item_raw(
+        self.runtime
+            .acquisition
+            .download_queue_snapshot
+            .stage_import_transfer_progress(
                 record.source_client_id.as_deref(),
-                Some(record.source_system.as_str()),
+                record.source_system.as_str(),
                 record.source_ref.as_str(),
+                phase,
+                bytes,
+                total_bytes,
             )
-            .await?
-        else {
-            return Ok(());
-        };
-
-        let key = download_queue_projection_key(&item);
-        let event = new_download_queue_domain_event(
-            None,
-            key,
-            DomainEventPayload::DownloadQueueItemUpserted(DownloadQueueItemUpsertedEventData {
-                item,
-            }),
-        );
-        let _ = self.append_domain_event(event).await;
+            .await;
         Ok(())
     }
 }

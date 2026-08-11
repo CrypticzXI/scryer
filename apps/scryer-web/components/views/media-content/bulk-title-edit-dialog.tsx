@@ -20,45 +20,35 @@ import type { TitleRecord } from "@/lib/types";
 import type { LibraryRootRecord } from "@/lib/types/titles";
 import type { ParsedQualityProfile } from "@/lib/types/quality-profiles";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
+import {
+  DISABLED_TITLE_EDIT_VALUE,
+  ENABLED_TITLE_EDIT_VALUE,
+  INHERIT_TITLE_EDIT_VALUE,
+  UNCHANGED_TITLE_EDIT_VALUE,
+  hasTitleEditChanges,
+  initialTitleEditDraft,
+  type TitleEditDraft,
+} from "@/lib/utils/title-edit-dialog";
 
-const UNCHANGED_VALUE = "__unchanged__";
-const INHERIT_VALUE = "__inherit__";
-const ENABLED_VALUE = "enabled";
-const DISABLED_VALUE = "disabled";
-
-type DraftState = {
-  qualityProfileId: string;
-  rootFolderId: string;
-  monitorType: string;
-  useSeasonFolders: string;
-  monitorSpecials: string;
-  interSeasonMovies: string;
-  fillerPolicy: string;
-  recapPolicy: string;
-};
+const UNCHANGED_VALUE = UNCHANGED_TITLE_EDIT_VALUE;
+const INHERIT_VALUE = INHERIT_TITLE_EDIT_VALUE;
+const ENABLED_VALUE = ENABLED_TITLE_EDIT_VALUE;
+const DISABLED_VALUE = DISABLED_TITLE_EDIT_VALUE;
 
 type BulkTitleEditDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   view: string;
   selectedTitles: TitleRecord[];
+  directTitle?: TitleRecord | null;
   qualityProfiles: ParsedQualityProfile[];
   rootFolders: LibraryRootRecord[];
   busy: boolean;
   onSubmit: (changes: TitleOptionUpdates) => Promise<void> | void;
 };
 
-function initialDraftState(): DraftState {
-  return {
-    qualityProfileId: UNCHANGED_VALUE,
-    rootFolderId: UNCHANGED_VALUE,
-    monitorType: UNCHANGED_VALUE,
-    useSeasonFolders: UNCHANGED_VALUE,
-    monitorSpecials: UNCHANGED_VALUE,
-    interSeasonMovies: UNCHANGED_VALUE,
-    fillerPolicy: UNCHANGED_VALUE,
-    recapPolicy: UNCHANGED_VALUE,
-  };
+function initialDraftState(directTitle: TitleRecord | null): TitleEditDraft {
+  return initialTitleEditDraft(directTitle);
 }
 
 export function BulkTitleEditDialog({
@@ -66,19 +56,22 @@ export function BulkTitleEditDialog({
   onOpenChange,
   view,
   selectedTitles,
+  directTitle = null,
   qualityProfiles,
   rootFolders,
   busy,
   onSubmit,
 }: BulkTitleEditDialogProps) {
   const t = useTranslate();
-  const [draft, setDraft] = React.useState<DraftState>(initialDraftState);
+  const initialDraft = React.useMemo(
+    () => initialDraftState(directTitle),
+    [directTitle],
+  );
+  const [draft, setDraft] = React.useState<TitleEditDraft>(initialDraft);
 
   const isMovieView = view === "movies";
   const isAnimeView = view === "anime";
-  const hasPendingChange = Object.values(draft).some(
-    (value) => value !== UNCHANGED_VALUE,
-  );
+  const hasPendingChange = hasTitleEditChanges(draft, initialDraft);
   const folderLabel = React.useCallback(
     (path: string) => path.split("/").filter(Boolean).pop() ?? path,
     [],
@@ -98,8 +91,8 @@ export function BulkTitleEditDialog({
     if (!open) {
       return;
     }
-    setDraft(initialDraftState());
-  }, [open]);
+    setDraft(initialDraft);
+  }, [initialDraft, open]);
 
   const monitorOptions = React.useMemo(
     () =>
@@ -137,35 +130,38 @@ export function BulkTitleEditDialog({
 
   const buildChanges = React.useCallback((): TitleOptionUpdates => {
     const changes: TitleOptionUpdates = {};
-    if (draft.qualityProfileId !== UNCHANGED_VALUE) {
+    const changed = (key: keyof TitleEditDraft) =>
+      draft[key] !== initialDraft[key] && draft[key] !== UNCHANGED_VALUE;
+
+    if (changed("qualityProfileId")) {
       changes.qualityProfileId =
         draft.qualityProfileId === INHERIT_VALUE ? "" : draft.qualityProfileId;
     }
-    if (draft.rootFolderId !== UNCHANGED_VALUE) {
+    if (changed("rootFolderId")) {
       changes.rootFolderId = draft.rootFolderId;
     }
-    if (draft.monitorType !== UNCHANGED_VALUE) {
+    if (changed("monitorType")) {
       changes.monitorType = draft.monitorType;
     }
-    if (draft.useSeasonFolders !== UNCHANGED_VALUE) {
+    if (changed("useSeasonFolders")) {
       changes.useSeasonFolders = draft.useSeasonFolders === ENABLED_VALUE;
     }
-    if (draft.monitorSpecials !== UNCHANGED_VALUE) {
+    if (changed("monitorSpecials")) {
       changes.monitorSpecials = draft.monitorSpecials === ENABLED_VALUE;
     }
-    if (draft.interSeasonMovies !== UNCHANGED_VALUE) {
+    if (changed("interSeasonMovies")) {
       changes.interSeasonMovies = draft.interSeasonMovies === ENABLED_VALUE;
     }
-    if (draft.fillerPolicy !== UNCHANGED_VALUE) {
+    if (changed("fillerPolicy")) {
       changes.fillerPolicy =
         draft.fillerPolicy === INHERIT_VALUE ? "" : draft.fillerPolicy;
     }
-    if (draft.recapPolicy !== UNCHANGED_VALUE) {
+    if (changed("recapPolicy")) {
       changes.recapPolicy =
         draft.recapPolicy === INHERIT_VALUE ? "" : draft.recapPolicy;
     }
     return changes;
-  }, [draft]);
+  }, [draft, initialDraft]);
 
   const handleSubmit = React.useCallback(() => {
     if (!hasPendingChange || busy) {

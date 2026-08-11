@@ -1393,6 +1393,7 @@ const en: LocaleDictionary = {
   "activity.importEmpty": "No import items.",
   "activity.activityEmpty": "No active downloads.",
   "activity.historyEmpty": "No history items.",
+  "activity.queueStale": "Queue data is stale; showing the last successful refresh.",
   "queue.title": "Title",
   "queue.client": "Client",
   "queue.status": "Status",

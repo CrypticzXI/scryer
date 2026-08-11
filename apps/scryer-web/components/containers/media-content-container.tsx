@@ -45,6 +45,7 @@ import {
   buildTitlesQuery,
 } from "@/lib/graphql/queries";
 import { selectedOverviewUsesMovieRecord } from "@/lib/utils/selected-overview-policy";
+import { editDialogTargets } from "@/lib/utils/title-edit-dialog";
 import {
   CATEGORY_SCOPE_MAP,
   QUALITY_PROFILE_INHERIT_VALUE,
@@ -1240,6 +1241,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
   const [bulkActionBusy, setBulkActionBusy] = React.useState(false);
   const [bulkEditDialogOpen, setBulkEditDialogOpen] = React.useState(false);
+  const [titleEditTarget, setTitleEditTarget] =
+    React.useState<TitleRecord | null>(null);
   const shouldLoadMediaSettings =
     shouldLoadMediaSettingsForSection || bulkEditDialogOpen;
   const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
@@ -1643,23 +1646,27 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
     [selectedTitleIds, visibleTitles],
   );
+  const editDialogTitles = React.useMemo(
+    () => editDialogTargets(titleEditTarget, selectedTitles),
+    [selectedTitles, titleEditTarget],
+  );
   const selectedTitleLibraryIds = React.useMemo(
     () => Array.from(new Set(selectedTitles.map((title) => title.libraryId))),
     [selectedTitles],
   );
-  const selectedTitleLibrary = React.useMemo(
-    () =>
-      selectedTitleLibraryIds.length === 1
-        ? (libraries.find(
-            (library) => library.id === selectedTitleLibraryIds[0],
-          ) ?? null)
-        : null,
-    [libraries, selectedTitleLibraryIds],
+  const editDialogTitleLibraryIds = React.useMemo(
+    () => Array.from(new Set(editDialogTitles.map((title) => title.libraryId))),
+    [editDialogTitles],
   );
-  const bulkRootFolders = React.useMemo(
-    () => selectedTitleLibrary?.roots ?? [],
-    [selectedTitleLibrary],
-  );
+  const editDialogRootFolders = React.useMemo(() => {
+    if (editDialogTitleLibraryIds.length !== 1) {
+      return [];
+    }
+    return (
+      libraries.find((library) => library.id === editDialogTitleLibraryIds[0])
+        ?.roots ?? []
+    );
+  }, [editDialogTitleLibraryIds, libraries]);
 
   useOverviewWindowScrollRestoration({
     enabled: shouldLoadCatalogTitles && effectiveViewMode === "poster",
@@ -2699,7 +2706,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   });
 
   React.useEffect(() => {
-    if (selectedTitles.length > 0) {
+    if (selectedTitles.length > 0 || titleEditTarget !== null) {
       return;
     }
     setBulkEditDialogOpen(false);
@@ -2711,6 +2718,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setBulkDeletePreviewsByTitleId({});
   }, [
     selectedTitles.length,
+    titleEditTarget,
     setBulkDeleteDialogOpen,
     setBulkDeleteFilesOnDisk,
     setBulkDeletePreviewError,
@@ -3969,7 +3977,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   const applyBulkTitleOptions = React.useCallback(
     async (changes: TitleOptionUpdates) => {
-      const targets = [...selectedTitles];
+      const targets = [...editDialogTitles];
       if (targets.length === 0 || bulkActionBusy) {
         return;
       }
@@ -4009,7 +4017,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             }
           });
         }
-        setSelectedTitleIds(new Set(failedIds));
+        if (titleEditTarget === null) {
+          setSelectedTitleIds(new Set(failedIds));
+        }
 
         const detail = batchFailureDetail(result.error);
         if (succeededIds.length === 0) {
@@ -4020,6 +4030,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         }
 
         setBulkEditDialogOpen(false);
+        setTitleEditTarget(null);
         if (failedIds.length > 0) {
           setGlobalStatus(
             withFailureDetail(
@@ -4047,7 +4058,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setBulkActionBusy(false);
       }
     },
-    [bulkActionBusy, client, reloadTitles, selectedTitles, setGlobalStatus, t],
+    [
+      bulkActionBusy,
+      client,
+      editDialogTitles,
+      reloadTitles,
+      setGlobalStatus,
+      t,
+      titleEditTarget,
+    ],
   );
 
   React.useEffect(() => {
@@ -4135,6 +4154,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setGlobalStatus("Bulk actions require titles from one library.");
       return;
     }
+    setTitleEditTarget(null);
     setBulkEditDialogOpen(true);
   }, [
     bulkActionBusy,
@@ -4142,6 +4162,17 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     selectedTitles.length,
     setGlobalStatus,
   ]);
+
+  const openTitleEdit = React.useCallback(
+    (title: TitleRecord) => {
+      if (bulkActionBusy) {
+        return;
+      }
+      setTitleEditTarget(title);
+      setBulkEditDialogOpen(true);
+    },
+    [bulkActionBusy],
+  );
 
   const requestDeleteTitle = React.useCallback(
     (title: TitleRecord) => {
@@ -5303,6 +5334,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           deleteLibrary,
           onOpenOverview,
           onCloseOverview: handleCloseOverview,
+          onEditTitle: openTitleEdit,
           selectedOverviewTitleId,
           selectedOverviewTitle: selectedOverviewTitleRecord,
           selectedOverviewDetailLoading,
@@ -5393,11 +5425,17 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ) : null}
       <BulkTitleEditDialog
         open={bulkEditDialogOpen}
-        onOpenChange={setBulkEditDialogOpen}
+        onOpenChange={(open) => {
+          setBulkEditDialogOpen(open);
+          if (!open) {
+            setTitleEditTarget(null);
+          }
+        }}
         view={view}
-        selectedTitles={selectedTitles}
+        selectedTitles={editDialogTitles}
+        directTitle={titleEditTarget}
         qualityProfiles={qualityProfiles}
-        rootFolders={bulkRootFolders}
+        rootFolders={editDialogRootFolders}
         busy={bulkActionBusy}
         onSubmit={applyBulkTitleOptions}
       />

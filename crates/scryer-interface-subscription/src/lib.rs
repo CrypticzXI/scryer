@@ -20,8 +20,8 @@ use scryer_interface_media::mappers::{
 use scryer_interface_media::types;
 use scryer_interface_media::types::{
     ActivityEventPayload, DomainEventEnvelopePayload, DownloadActivityFilterValue,
-    DownloadQueueItemPayload, ExternalImportMonitorWarmupProgressPayload, IntoApplication,
-    JobRunPayload, LibraryScanProgressPayload, Long, MediaRequestChangedPayload,
+    DownloadQueueItemPayload, DownloadQueueSyncPayload, ExternalImportMonitorWarmupProgressPayload,
+    IntoApplication, JobRunPayload, LibraryScanProgressPayload, Long, MediaRequestChangedPayload,
     PluginInstallProgressPayload, ProviderCatalogFamilyValue,
 };
 
@@ -192,6 +192,27 @@ fn download_queue_state_stream_from_snapshots(
     );
 
     Box::pin(stream)
+}
+
+fn download_queue_sync_stream(
+    receiver: tokio::sync::watch::Receiver<scryer_application::DownloadQueueSync>,
+) -> BoxStream<'static, DownloadQueueSyncPayload> {
+    Box::pin(unfold(
+        (receiver, true),
+        |(mut receiver, first)| async move {
+            if !first && receiver.changed().await.is_err() {
+                return None;
+            }
+            let sync = receiver.borrow_and_update().clone();
+            Some((
+                DownloadQueueSyncPayload {
+                    revision: Long::from_u64_saturating(sync.revision),
+                    updated_at: sync.updated_at,
+                },
+                (receiver, false),
+            ))
+        },
+    ))
 }
 
 #[Subscription]
@@ -394,6 +415,35 @@ impl SubscriptionRoot {
         guard_subscription_stream(ctx, Box::pin(stream))
     }
 
+    async fn download_queue_sync(
+        &self,
+        ctx: &Context<'_>,
+    ) -> BoxStream<'static, DownloadQueueSyncPayload> {
+        let app = match app_from_ctx(ctx) {
+            Ok(app) => app,
+            Err(error) => {
+                tracing::warn!("download_queue_sync sub: app_from_ctx failed: {error:?}");
+                return empty_box_stream();
+            }
+        };
+        let actor = match actor_from_ctx(ctx) {
+            Ok(actor) => actor,
+            Err(error) => {
+                tracing::warn!("download_queue_sync sub: actor_from_ctx failed: {error:?}");
+                return empty_box_stream();
+            }
+        };
+        let receiver = match app.subscribe_download_queue_sync(&actor) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                tracing::warn!("download_queue_sync sub: subscribe failed: {error}");
+                return empty_box_stream();
+            }
+        };
+        guard_subscription_stream(ctx, download_queue_sync_stream(receiver))
+    }
+
+    #[graphql(deprecation = "use downloadQueueSync")]
     async fn download_queue(
         &self,
         ctx: &Context<'_>,

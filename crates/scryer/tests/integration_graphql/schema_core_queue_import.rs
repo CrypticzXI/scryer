@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 #[tokio::test]
 async fn graphql_introspection_lists_title_fields() {
@@ -8,7 +9,7 @@ async fn graphql_introspection_lists_title_fields() {
         r#"
         {
 		          queryRoot: __type(name: "QueryRoot") {
-		            fields {
+		            fields(includeDeprecated: true) {
 		              name
 		              type {
 		                kind
@@ -36,7 +37,7 @@ async fn graphql_introspection_lists_title_fields() {
 	            }
 	          }
           subscriptionRoot: __type(name: "SubscriptionRoot") {
-            fields {
+            fields(includeDeprecated: true) {
               name
               args {
                 name
@@ -2339,6 +2340,22 @@ async fn graphql_delete_download_marks_history_item_completed_after_poller_runs(
     token.cancel();
     handle.await.expect("delete poller should stop cleanly");
 
+    let queue_token = tokio_util::sync::CancellationToken::new();
+    let (_command_tx, command_rx) = tokio::sync::mpsc::channel(1);
+    let (_snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(1);
+    let queue_handle = tokio::spawn(
+        scryer_application::start_download_queue_poller_with_options(
+            ctx.app.clone(),
+            queue_token.child_token(),
+            command_rx,
+            snapshot_rx,
+            scryer_application::DownloadQueuePollerOptions {
+                interval: std::time::Duration::from_millis(20),
+                ..Default::default()
+            },
+        ),
+    );
+
     let queue_body = gql(
         &ctx,
         r#"
@@ -2364,23 +2381,45 @@ async fn graphql_delete_download_marks_history_item_completed_after_poller_runs(
             .all(|item| item["downloadClientItemId"].as_str() != Some("123"))
     );
 
-    let history_body = gql(
-        &ctx,
-        r#"
-        {
-                    downloadHistory(limit: 100, offset: 0, filters: [ALL]) {
-            items {
-              downloadClientItemId
-              state
-              deleteStatus
-              deleteErrorMessage
+    let history_body = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let body = gql(
+                &ctx,
+                r#"
+                {
+                  downloadHistory(limit: 100, offset: 0, filters: [ALL]) {
+                    items {
+                      downloadClientItemId
+                      state
+                      deleteStatus
+                      deleteErrorMessage
+                    }
+                  }
+                }
+                "#,
+                json!({}),
+            )
+            .await;
+            assert_no_errors(&body);
+            if body["data"]["downloadHistory"]["items"]
+                .as_array()
+                .is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| item["downloadClientItemId"].as_str() == Some("123"))
+                })
+            {
+                break body;
             }
-          }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        "#,
-        json!({}),
-    )
-    .await;
+    })
+    .await
+    .expect("queue poller should publish client history to the runtime cache");
+    queue_token.cancel();
+    queue_handle
+        .await
+        .expect("download queue poller should stop cleanly");
     assert_no_errors(&history_body);
 
     let item = history_body["data"]["downloadHistory"]["items"]
@@ -2862,4 +2901,101 @@ async fn graphql_introspection_exposes_activity_enums() {
         .filter_map(|value| value["name"].as_str())
         .collect();
     assert_eq!(activity_channel_names, vec!["WEB_UI", "TOAST"]);
+}
+
+#[tokio::test]
+async fn graphql_introspection_exposes_paged_queue_sync_and_legacy_deprecations() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          queryRoot: __type(name: "QueryRoot") {
+            fields(includeDeprecated: true) {
+              name
+              isDeprecated
+              deprecationReason
+              args { name defaultValue }
+            }
+          }
+          subscriptionRoot: __type(name: "SubscriptionRoot") {
+            fields(includeDeprecated: true) {
+              name
+              isDeprecated
+              deprecationReason
+            }
+          }
+          page: __type(name: "DownloadQueuePagePayload") {
+            fields { name }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let query_fields = body["data"]["queryRoot"]["fields"]
+        .as_array()
+        .expect("QueryRoot fields");
+    let page = query_fields
+        .iter()
+        .find(|field| field["name"] == "downloadQueuePage")
+        .expect("downloadQueuePage");
+    let arg = |name: &str| {
+        page["args"]
+            .as_array()
+            .expect("downloadQueuePage args")
+            .iter()
+            .find(|arg| arg["name"] == name)
+            .expect("downloadQueuePage arg")
+    };
+    assert_eq!(arg("limit")["defaultValue"], "50");
+    assert_eq!(arg("offset")["defaultValue"], "0");
+    assert_eq!(arg("scryerSubmittedOnly")["defaultValue"], "true");
+    assert_eq!(arg("sortKey")["defaultValue"], "STATUS");
+
+    let legacy_query = query_fields
+        .iter()
+        .find(|field| field["name"] == "downloadQueue")
+        .expect("legacy downloadQueue query");
+    assert_eq!(legacy_query["isDeprecated"], true);
+    assert_eq!(legacy_query["deprecationReason"], "use downloadQueuePage");
+
+    let subscription_fields = body["data"]["subscriptionRoot"]["fields"]
+        .as_array()
+        .expect("SubscriptionRoot fields");
+    assert!(
+        subscription_fields
+            .iter()
+            .any(|field| field["name"] == "downloadQueueSync")
+    );
+    let legacy_subscription = subscription_fields
+        .iter()
+        .find(|field| field["name"] == "downloadQueue")
+        .expect("legacy downloadQueue subscription");
+    assert_eq!(legacy_subscription["isDeprecated"], true);
+    assert_eq!(
+        legacy_subscription["deprecationReason"],
+        "use downloadQueueSync"
+    );
+
+    let page_fields = body["data"]["page"]["fields"]
+        .as_array()
+        .expect("DownloadQueuePagePayload fields")
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect::<HashSet<_>>();
+    for name in [
+        "items",
+        "hasMore",
+        "totalCount",
+        "availableClients",
+        "revision",
+        "updatedAt",
+        "ready",
+        "stale",
+    ] {
+        assert!(page_fields.contains(name), "missing {name}");
+    }
 }

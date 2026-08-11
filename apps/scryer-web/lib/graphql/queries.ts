@@ -560,6 +560,8 @@ const SERIES_SIDE_PANEL_TITLE_FIELDS = `
     seriesMovieLinks {${SERIES_SIDE_PANEL_MOVIE_LINK_FIELDS}
     }
     ratings {${TITLE_RATING_SUMMARY_FIELDS}
+    }
+    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }`;
 
 export const TITLE_MUTATION_RESULT_FIELDS = `
@@ -2030,6 +2032,24 @@ export const downloadQueueQuery = `query DownloadQueue($includeAllActivity: Bool
   }
 }`;
 
+export const downloadQueuePageQuery = `query DownloadQueuePage($limit: Int = 50, $offset: Int = 0, $filters: [DownloadActivityFilterValue!], $clientIds: [ID!], $scryerSubmittedOnly: Boolean = true, $titleId: ID, $sortKey: DownloadQueueSortKeyValue = STATUS, $sortDirection: SortDirectionValue = ASC) {
+  downloadQueuePage(limit: $limit, offset: $offset, filters: $filters, clientIds: $clientIds, scryerSubmittedOnly: $scryerSubmittedOnly, titleId: $titleId, sortKey: $sortKey, sortDirection: $sortDirection) {
+    items {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+    }
+    hasMore
+    totalCount
+    availableClients {
+      clientId
+      clientName
+      clientType
+    }
+    revision
+    updatedAt
+    ready
+    stale
+  }
+}`;
+
 export const downloadImportQuery = `query DownloadImport($limit: Int, $offset: Int, $filter: DownloadImportFilterValue) {
   downloadImport(limit: $limit, offset: $offset, filter: $filter) {
     items {${DOWNLOAD_QUEUE_ITEM_FIELDS}
@@ -2055,6 +2075,13 @@ export const downloadHistoryQuery = `query DownloadHistory($limit: Int, $offset:
 
 export const downloadQueueSubscription = `subscription DownloadQueueStream($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $includeImportActivity: Boolean, $titleId: ID, $activityFilter: DownloadActivityFilterValue) {
   downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, includeImportActivity: $includeImportActivity, titleId: $titleId, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+  }
+}`;
+
+export const downloadQueueSyncSubscription = `subscription DownloadQueueSync {
+  downloadQueueSync {
+    revision
+    updatedAt
   }
 }`;
 

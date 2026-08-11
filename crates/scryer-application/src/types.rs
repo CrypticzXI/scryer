@@ -676,6 +676,18 @@ pub struct DownloadHistoryPage {
 }
 
 #[derive(Clone, Debug)]
+pub struct DownloadQueuePage {
+    pub items: Vec<scryer_domain::DownloadQueueItem>,
+    pub has_more: bool,
+    pub total_count: usize,
+    pub available_clients: Vec<DownloadClientFilterOption>,
+    pub revision: u64,
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub ready: bool,
+    pub stale: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct DownloadImportPage {
     pub items: Vec<scryer_domain::DownloadQueueItem>,
     pub has_more: bool,
@@ -731,7 +743,7 @@ pub enum DownloadHistoryFilter {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DownloadHistorySortKey {
     Title,
     Client,
@@ -740,7 +752,7 @@ pub enum DownloadHistorySortKey {
     Size,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SortDirection {
     Asc,
     Desc,
@@ -848,7 +860,7 @@ pub struct TitleCatalogFilterCounts {
     pub ended: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DownloadHistorySort {
     pub key: DownloadHistorySortKey,
     pub direction: SortDirection,

@@ -128,7 +128,8 @@ impl TrackedDownloadWorkDrain {
 
 struct TrackedDownloadRuntimeState {
     tracker: crate::tracked_downloads::TrackedDownloadService,
-    previous_items_by_projection: HashMap<String, HashMap<String, DownloadQueueItem>>,
+    previous_items_by_projection:
+        HashMap<DownloadQueueProjectionSource, HashMap<String, DownloadQueueItem>>,
     tracked_work_in_flight: HashSet<String>,
     tracked_work_drain: TrackedDownloadWorkDrain,
 }
@@ -150,14 +151,20 @@ enum TrackedDownloadSnapshotPrune {
     None,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum DownloadQueueProjectionSource {
+    Poller,
+    AuthoritativeBridge {
+        client_type: String,
+        client_id: Option<String>,
+    },
+}
+
 enum TrackedDownloadSnapshotProjection {
     Publish {
-        key: String,
-        actor_id: Option<String>,
+        source: DownloadQueueProjectionSource,
     },
-    UpsertOnly {
-        actor_id: Option<String>,
-    },
+    UpsertOnly,
 }
 
 enum TrackedDownloadSnapshotDispatch {
@@ -166,6 +173,64 @@ enum TrackedDownloadSnapshotDispatch {
         completed_lookup: crate::completed_download_handler::CompletedDownloadLookup,
     },
     None,
+}
+
+async fn publish_download_queue_source_projection(
+    app: &AppUseCase,
+    runtime: &mut TrackedDownloadRuntimeState,
+    source: DownloadQueueProjectionSource,
+    items: &[DownloadQueueItem],
+) {
+    let authoritative_refresh = matches!(&source, DownloadQueueProjectionSource::Poller);
+    let next_items = items
+        .iter()
+        .cloned()
+        .map(|item| (download_queue_projection_key(&item), item))
+        .collect::<HashMap<_, _>>();
+    runtime
+        .previous_items_by_projection
+        .insert(source, next_items);
+    let reconciled = dedupe_download_queue_items(
+        runtime
+            .previous_items_by_projection
+            .values()
+            .flat_map(|projection| projection.values().cloned())
+            .collect(),
+    );
+    if authoritative_refresh {
+        app.runtime
+            .acquisition
+            .download_queue_snapshot
+            .stage_success(reconciled)
+            .await;
+    } else {
+        app.runtime
+            .acquisition
+            .download_queue_snapshot
+            .stage_partial_success(reconciled)
+            .await;
+    }
+}
+
+fn remove_ended_bridge_projections(
+    runtime: &mut TrackedDownloadRuntimeState,
+    active_bridged_client_types: &[String],
+    static_excluded_client_types: &[String],
+) {
+    let active = active_bridged_client_types
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let permanently_external = static_excluded_client_types
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    runtime.previous_items_by_projection.retain(|source, _| {
+        let DownloadQueueProjectionSource::AuthoritativeBridge { client_type, .. } = source else {
+            return true;
+        };
+        active.contains(client_type) || permanently_external.contains(client_type)
+    });
 }
 
 fn apply_tracked_download_queue_metadata(
@@ -546,6 +611,10 @@ async fn process_tracked_download_snapshot(
 
     enrich_download_queue_items_from_submissions(app, &mut items).await;
 
+    if let TrackedDownloadSnapshotProjection::Publish { source } = &projection {
+        publish_download_queue_source_projection(app, runtime, source.clone(), &items).await;
+    }
+
     let mut seen_ids = HashSet::new();
     let mut seen_order = Vec::new();
 
@@ -744,18 +813,14 @@ async fn process_tracked_download_snapshot(
         }
     }
 
-    match projection {
-        TrackedDownloadSnapshotProjection::Publish { key, actor_id } => {
-            let previous_items = runtime
-                .previous_items_by_projection
-                .entry(key)
-                .or_default();
-            publish_download_queue_snapshot_events(app, actor_id, previous_items, &items).await;
-        }
-        TrackedDownloadSnapshotProjection::UpsertOnly { actor_id } => {
-            publish_download_queue_upsert_events(app, actor_id, &items).await;
-        }
-    }
+    app.runtime
+        .acquisition
+        .download_queue_snapshot
+        .stage_upserts(items.clone())
+        .await;
+
+    metrics::histogram!("scryer_download_queue_refresh_duration_seconds")
+        .record(cycle_started_at.elapsed().as_secs_f64());
 
     tracing::debug!(
         elapsed_ms = cycle_started_at.elapsed().as_millis() as u64,
@@ -769,20 +834,19 @@ async fn process_tracked_download_snapshot(
 
 fn tracked_download_snapshot_projection_key(
     scope: &crate::tracked_downloads::TrackedDownloadSnapshotScope,
-) -> Option<String> {
+) -> Option<DownloadQueueProjectionSource> {
     match scope {
         crate::tracked_downloads::TrackedDownloadSnapshotScope::AuthoritativeForClient {
             client_id,
             client_type,
-        } => Some(format!(
-            "client:{}:{}",
-            client_type.trim().to_ascii_lowercase(),
-            client_id
+        } => Some(DownloadQueueProjectionSource::AuthoritativeBridge {
+            client_type: client_type.trim().to_ascii_lowercase(),
+            client_id: client_id
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .unwrap_or("")
-        )),
+                .map(ToOwned::to_owned),
+        }),
         crate::tracked_downloads::TrackedDownloadSnapshotScope::Delta => None,
     }
 }
@@ -799,7 +863,7 @@ async fn process_external_tracked_download_snapshot_update(
         scope,
         items,
         completed_downloads,
-        actor_id,
+        actor_id: _,
     } = update;
     let has_completed_downloads = !completed_downloads.is_empty();
     let completed_lookup =
@@ -816,8 +880,8 @@ async fn process_external_tracked_download_snapshot_update(
         }
     };
     let projection = match projection_key {
-        Some(key) => TrackedDownloadSnapshotProjection::Publish { key, actor_id },
-        None => TrackedDownloadSnapshotProjection::UpsertOnly { actor_id },
+        Some(source) => TrackedDownloadSnapshotProjection::Publish { source },
+        None => TrackedDownloadSnapshotProjection::UpsertOnly,
     };
     let emit_metrics = matches!(
         &projection,
@@ -968,6 +1032,12 @@ pub async fn start_download_queue_poller_with_options(
                 }
             }
             _ = interval.tick() => {
+                let active_bridged_client_types = bridged_client_types.snapshot();
+                remove_ended_bridge_projections(
+                    &mut runtime,
+                    &active_bridged_client_types,
+                    &static_excluded_client_types,
+                );
                 let effective_excluded = effective_excluded_client_types(
                     &static_excluded_client_types,
                     &bridged_client_types,
@@ -989,6 +1059,7 @@ pub async fn start_download_queue_poller_with_options(
                 // Reading both together on one cadence is what Sonarr does,
                 // and it makes the tick self-sufficient rather than a
                 // best-effort sighting that history occasionally repairs.
+                let client_refresh_started_at = Instant::now();
                 match app
                     .collect_download_snapshot_items_excluding_client_types(
                         true,
@@ -1016,8 +1087,7 @@ pub async fn start_download_queue_poller_with_options(
                             completed_download_lookup,
                             TrackedDownloadSnapshotPrune::GlobalExcludingClientTypes,
                             TrackedDownloadSnapshotProjection::Publish {
-                                key: "poller".to_string(),
-                                actor_id: None,
+                                source: DownloadQueueProjectionSource::Poller,
                             },
                             TrackedDownloadSnapshotDispatch::AllTrackable,
                             true,
@@ -1027,8 +1097,15 @@ pub async fn start_download_queue_poller_with_options(
                     }
                     Err(error) => {
                         tracing::warn!(error = %error, "download queue poll failed");
+                        app.runtime
+                            .acquisition
+                            .download_queue_snapshot
+                            .mark_refresh_failed(error.to_string())
+                            .await;
                     }
                 }
+                metrics::histogram!("scryer_download_client_refresh_duration_seconds")
+                    .record(client_refresh_started_at.elapsed().as_secs_f64());
                 reconcile_excluded_client_recent_history(
                     &app,
                     &actor,
@@ -1707,7 +1784,7 @@ async fn reconcile_excluded_client_recent_history(
         candidates,
         Some(completed_lookup.clone()),
         TrackedDownloadSnapshotPrune::None,
-        TrackedDownloadSnapshotProjection::UpsertOnly { actor_id: None },
+        TrackedDownloadSnapshotProjection::UpsertOnly,
         TrackedDownloadSnapshotDispatch::Seen { completed_lookup },
         false,
         excluded_client_type_refs,
@@ -2176,7 +2253,10 @@ fn apply_reconciled_terminal_state(tracked: &mut TrackedDownload, state: Tracked
 
 #[cfg(test)]
 mod bridged_exclusion_tests {
-    use super::effective_excluded_client_types;
+    use super::{
+        DownloadQueueProjectionSource, TrackedDownloadRuntimeState,
+        effective_excluded_client_types, remove_ended_bridge_projections,
+    };
     use crate::tracked_downloads::BridgedClientTypesHandle;
 
     #[test]
@@ -2234,6 +2314,42 @@ mod bridged_exclusion_tests {
         let reader = writer.clone();
         writer.set(vec!["weaver".to_string()]);
         assert_eq!(reader.snapshot(), vec!["weaver".to_string()]);
+    }
+
+    #[test]
+    fn ended_bridge_projection_is_removed_before_fallback_poll_reconciliation() {
+        let mut runtime = TrackedDownloadRuntimeState::new();
+        runtime.previous_items_by_projection.insert(
+            DownloadQueueProjectionSource::AuthoritativeBridge {
+                client_type: "weaver".to_string(),
+                client_id: Some("bridge-1".to_string()),
+            },
+            Default::default(),
+        );
+        runtime.previous_items_by_projection.insert(
+            DownloadQueueProjectionSource::AuthoritativeBridge {
+                client_type: "sabnzbd".to_string(),
+                client_id: Some("external-1".to_string()),
+            },
+            Default::default(),
+        );
+
+        remove_ended_bridge_projections(&mut runtime, &[], &["sabnzbd".to_string()]);
+
+        assert!(!runtime.previous_items_by_projection.keys().any(|source| {
+            matches!(
+                source,
+                DownloadQueueProjectionSource::AuthoritativeBridge { client_type, .. }
+                    if client_type == "weaver"
+            )
+        }));
+        assert!(runtime.previous_items_by_projection.keys().any(|source| {
+            matches!(
+                source,
+                DownloadQueueProjectionSource::AuthoritativeBridge { client_type, .. }
+                    if client_type == "sabnzbd"
+            )
+        }));
     }
 }
 

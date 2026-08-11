@@ -162,8 +162,9 @@ pub use plugins::plugins::decode_persisted_plugin_wasm_payload;
 pub use plugins::plugins::load_runtime_plugin_from_persisted_installation_payload;
 pub use quality::release_dedup;
 pub use services::{
-    PluginInstallInProgressError, PluginInstallOperationKind, PluginInstallProgressSnapshot,
-    PluginInstallState, RuntimeFeature, RuntimePerformanceClass, RuntimePerformanceSnapshot,
+    DownloadQueueSync, PluginInstallInProgressError, PluginInstallOperationKind,
+    PluginInstallProgressSnapshot, PluginInstallState, RuntimeFeature, RuntimePerformanceClass,
+    RuntimePerformanceSnapshot,
 };
 pub use upstream_scheduler::{
     AccountQuotaKey, AdmissionReason, DeferralReason, EstimatedCost, ExpectedValueHint,
@@ -353,7 +354,6 @@ pub(crate) const LIBRARY_SCAN_MOVIE_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 
 pub(crate) const LIBRARY_SCAN_EPISODIC_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 6;
 pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 24;
 pub use acquisition::release_search::release_strategy_kind_for_label;
-pub use app_usecase_integration::publish_download_queue_snapshot_events;
 #[cfg(unix)]
 pub(crate) use helpers::statvfs_path;
 pub(crate) use helpers::{
@@ -531,15 +531,15 @@ pub use types::{
     CutoffUnmetPage, CutoffUnmetQualitySummary, DecisionCodeCount, DiskSpaceInfo,
     DownloadActivityFilter, DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter,
     DownloadHistoryPage, DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter,
-    DownloadImportPage, DownloadQueueCommandRecord, DownloadSourceKind, EpisodeScopedMediaFile,
-    FixTitleMatchResult, HealthCheckResult, HealthCheckStatus, HousekeepingReport,
-    IgnorePendingImportResult, IndexerQueryStats, JwtAuthConfig, JwtSessionScope, LibraryRootDraft,
-    LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt, LoginFailureTimingClass,
-    ManualImportSelection, ManualImportSelectionCandidate, MediaRequestCounts,
-    MissingEpisodeCandidate, MissingScopeCandidates, MissingSeriesMovieLinkCandidate,
-    MissingTitleCandidate, OAuthAuthorizationCodeRecord, OAuthAuthorizationSource,
-    OAuthConnectedAppRecord, OAuthRefreshGrantRecord, OAuthRefreshRotation,
-    OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, PasskeySummary,
+    DownloadImportPage, DownloadQueueCommandRecord, DownloadQueuePage, DownloadSourceKind,
+    EpisodeScopedMediaFile, FixTitleMatchResult, HealthCheckResult, HealthCheckStatus,
+    HousekeepingReport, IgnorePendingImportResult, IndexerQueryStats, JwtAuthConfig,
+    JwtSessionScope, LibraryRootDraft, LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt,
+    LoginFailureTimingClass, ManualImportSelection, ManualImportSelectionCandidate,
+    MediaRequestCounts, MissingEpisodeCandidate, MissingScopeCandidates,
+    MissingSeriesMovieLinkCandidate, MissingTitleCandidate, OAuthAuthorizationCodeRecord,
+    OAuthAuthorizationSource, OAuthConnectedAppRecord, OAuthRefreshGrantRecord,
+    OAuthRefreshRotation, OAuthRefreshRotationOutcome, OAuthRefreshTokenRecord, PasskeySummary,
     PendingImportBindingFilePreview, PendingImportBindingPreview, PendingImportConnection,
     PendingImportCounts, PendingImportItem, PendingImportSearchAttempt, PendingImportStatus,
     PendingRelease, PendingReleaseStatus, PendingReleaseStatusCount, PendingTitleHydration,

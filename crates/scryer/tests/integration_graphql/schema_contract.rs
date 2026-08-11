@@ -154,9 +154,13 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // warmup add two mutation roots: mutation 167->169.
     // The current selection and classification contract adds six payload
     // objects and one enum: OBJECT 276->282, ENUM 92->93, public types 533->540.
+    // Cached queue paging and revision sync add two payload objects and one
+    // sort enum: OBJECT 282->284, ENUM 93->94, public types 540->543. The new
+    // roots replace deprecated fields in default introspection, so root field
+    // counts remain unchanged.
     // Explicit indexer download-client mapping adds one query root, one mutation
-    // root, three payload objects, and one input object: query 118->119,
-    // mutation 169->170, OBJECT 282->285, INPUT_OBJECT 153->154, public types 540->544.
+    // root, and three payload objects: query 118->119, mutation 169->170,
+    // OBJECT 284->287, INPUT_OBJECT 153->154, public types 543->547.
     assert_eq!(
         query_field_count, 119,
         "query fields: {query_field_names:?}"
@@ -166,10 +170,10 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 544);
-    assert_eq!(kind_count("OBJECT"), 285);
+    assert_eq!(public_types.len(), 547);
+    assert_eq!(kind_count("OBJECT"), 287);
     assert_eq!(kind_count("INPUT_OBJECT"), 154);
-    assert_eq!(kind_count("ENUM"), 93);
+    assert_eq!(kind_count("ENUM"), 94);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
