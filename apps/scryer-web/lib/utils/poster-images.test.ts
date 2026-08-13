@@ -17,6 +17,16 @@ test("rewriting an opaque media-image route preserves its token and base path", 
   );
 });
 
+test("episode stills select the optimized w300 media variant", () => {
+  assert.equal(
+    selectMediaImageVariantUrl(
+      "/images/media/episode-token/original",
+      "w300",
+    ),
+    "/images/media/episode-token/w300",
+  );
+});
+
 test("rewriting an absolute opaque media-image route preserves its origin", () => {
   assert.equal(
     selectPosterVariantUrl(

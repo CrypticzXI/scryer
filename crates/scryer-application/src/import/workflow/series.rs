@@ -71,7 +71,7 @@ async fn import_series_download(
     } = resolve_import_paths(app, title).await?;
     let full_folder_path = effective_title_folder_path(&media_root, title, &folder_template, None);
 
-    let quality_profile = resolve_import_quality_profile(app, title).await;
+    let quality_profile = resolve_import_quality_profile(app, title).await?;
 
     let nfo_enabled = app
         .resolve_nfo_write_on_import(Some(&title.library_id), &title.facet)
@@ -865,15 +865,6 @@ async fn import_single_episode_file(
                 .await;
             }
 
-            let artifact_result = if matches!(
-                rejection.skip_reason.as_ref(),
-                Some(ImportSkipReason::AlreadyImported | ImportSkipReason::DuplicateFile)
-            ) {
-                "already_present"
-            } else {
-                "rejected"
-            };
-
             persist_file_import_artifact(
                 app,
                 import_id,
@@ -881,7 +872,7 @@ async fn import_single_episode_file(
                 title.id.as_str(),
                 source_video,
                 "episode",
-                artifact_result,
+                "rejected",
                 reason_code
                     .as_deref()
                     .or_else(|| rejection.skip_reason.as_ref().map(ImportSkipReason::as_str)),

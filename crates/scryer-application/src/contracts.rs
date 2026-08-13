@@ -303,6 +303,7 @@ pub struct IndexerConfigUpdate {
     pub enable_interactive_search: Option<bool>,
     pub enable_auto_search: Option<bool>,
     pub indexer_proxy_config_id: Option<Option<String>>,
+    pub download_client_id: Option<Option<String>>,
     pub managed_parent_config_id: Option<Option<String>>,
     pub managed_child_key: Option<Option<String>>,
     pub managed_metadata_json: Option<Option<String>>,
@@ -356,6 +357,7 @@ impl IndexerConfigUpdate {
             || self.enable_interactive_search.is_some()
             || self.enable_auto_search.is_some()
             || self.indexer_proxy_config_id.is_some()
+            || self.download_client_id.is_some()
             || self.managed_parent_config_id.is_some()
             || self.managed_child_key.is_some()
             || self.managed_metadata_json.is_some()
@@ -915,4 +917,29 @@ pub struct DownloadClientMarkImportedRequest {
     pub category: Option<String>,
     pub imported_path: Option<String>,
     pub download_path: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerDownloadClientMappingCatalog {
+    pub clients: Vec<IndexerDownloadClientMappingClient>,
+    pub indexers: Vec<IndexerDownloadClientMappingIndexer>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerDownloadClientMappingClient {
+    pub id: String,
+    pub name: String,
+    pub client_type: String,
+    pub is_enabled: bool,
+    pub health_status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerDownloadClientMappingIndexer {
+    pub id: String,
+    pub name: String,
+    pub download_client_id: Option<String>,
+    pub protocol_families: Vec<String>,
+    pub supports_mapping: bool,
+    pub compatible_client_ids: Vec<String>,
 }

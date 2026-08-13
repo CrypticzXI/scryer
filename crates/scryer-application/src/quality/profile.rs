@@ -207,7 +207,20 @@ pub fn parse_profile_catalog_from_json(
     profiles.into_iter().map(quality_profile_from_raw).collect()
 }
 
-pub fn default_quality_profile_for_search() -> QualityProfile {
+/// Identifier of the built-in profile Scryer uses whenever a default quality
+/// profile is needed and no explicit configuration supplies one. This constant
+/// and [`builtin_default_quality_profile`] are the single owner of that
+/// policy: the settings-definition seed mirrors this value into the database,
+/// and every other fallback site must consume one of these two symbols rather
+/// than naming a profile id directly.
+pub const BUILTIN_DEFAULT_QUALITY_PROFILE_ID: &str = "1080p";
+
+/// The built-in profile behind [`BUILTIN_DEFAULT_QUALITY_PROFILE_ID`].
+pub fn builtin_default_quality_profile() -> QualityProfile {
+    builtin_1080p_profile()
+}
+
+pub fn builtin_4k_profile() -> QualityProfile {
     QualityProfile {
         id: "4k".to_string(),
         name: "4K".to_string(),
@@ -238,7 +251,7 @@ pub fn default_quality_profile_for_search() -> QualityProfile {
     }
 }
 
-pub fn default_quality_profile_8k_for_search() -> QualityProfile {
+pub fn builtin_8k_profile() -> QualityProfile {
     QualityProfile {
         id: "8k".to_string(),
         name: "8K".to_string(),
@@ -274,7 +287,7 @@ pub fn default_quality_profile_8k_for_search() -> QualityProfile {
     }
 }
 
-pub fn default_quality_profile_1080p_for_search() -> QualityProfile {
+pub fn builtin_1080p_profile() -> QualityProfile {
     QualityProfile {
         id: "1080p".to_string(),
         name: "1080P".to_string(),
@@ -362,6 +375,9 @@ fn quality_profile_from_raw(raw: RawQualityProfile) -> Result<QualityProfile, se
     })
 }
 
+/// Test scaffolding only: this is the 4k-shaped profile, NOT the canonical
+/// default. Production fallbacks must use [`builtin_default_quality_profile`]
+/// — never `QualityProfile::default()`.
 impl Default for QualityProfile {
     fn default() -> Self {
         Self {
@@ -1672,7 +1688,7 @@ mod tests {
 
     #[test]
     fn size_scoring_heavily_prefers_larger_release_for_same_metadata() {
-        let profile = default_quality_profile_for_search();
+        let profile = builtin_4k_profile();
         let w = balanced_weights();
         let release = parse_release_metadata("Movie.2021.2160p.BluRay.Remux.H.265.DTSHD.Atmos");
 
@@ -1702,7 +1718,7 @@ mod tests {
 
     #[test]
     fn tiny_uhd_can_rank_below_high_quality_1080() {
-        let profile = default_quality_profile_for_search();
+        let profile = builtin_4k_profile();
         let w = balanced_weights();
 
         let tiny_uhd = parse_release_metadata("Movie.2021.2160p.BluRay.Remux.H.265.DTSHD.Atmos");
@@ -1732,7 +1748,7 @@ mod tests {
 
     #[test]
     fn plausible_uhd_still_outscores_1080_due_to_tier_priority() {
-        let profile = default_quality_profile_for_search();
+        let profile = builtin_4k_profile();
         let w = balanced_weights();
 
         let plausible_uhd = parse_release_metadata("Movie.2021.2160p.BluRay.Remux.H.265.DTSHD");

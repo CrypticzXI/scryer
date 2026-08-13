@@ -67,7 +67,7 @@ pub mod persisted_records;
 mod plugins;
 mod polling_worker;
 mod ports;
-pub use ports::{CatalogOwnedExternalIdRecord, CatalogOwnedTitleRecord};
+pub use ports::{CatalogOwnedExternalIdRecord, CatalogOwnedTitleRecord, TitleOptionsPatch};
 mod quality;
 mod rate_limit_signal;
 mod rules;
@@ -132,7 +132,8 @@ pub use ports::{
     DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord, DiscoveryRepository,
     DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySectionResult,
     DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
-    DiscoverySyncStateRecord, DiscoverySyncStatus, EpisodeImageUrlUpdate, MediaRequestResolution,
+    DiscoverySyncStateRecord, DiscoverySyncStatus, EpisodeImageUrlUpdate,
+    MediaRequestQualityProfileReferenceCounts, MediaRequestResolution,
     MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
     SeriesMovieExternalIdLookupMatch, SubtitleSyncClient, SubtitleSyncJob, TitleArtworkUrlUpdate,
     TitleDeletePreviewInfo, TitleExternalIdLookup, TitleExternalIdLookupMatch,
@@ -162,8 +163,9 @@ pub use plugins::plugins::decode_persisted_plugin_wasm_payload;
 pub use plugins::plugins::load_runtime_plugin_from_persisted_installation_payload;
 pub use quality::release_dedup;
 pub use services::{
-    PluginInstallInProgressError, PluginInstallOperationKind, PluginInstallProgressSnapshot,
-    PluginInstallState, RuntimeFeature, RuntimePerformanceClass, RuntimePerformanceSnapshot,
+    DownloadQueueSync, PluginInstallInProgressError, PluginInstallOperationKind,
+    PluginInstallProgressSnapshot, PluginInstallState, RuntimeFeature, RuntimePerformanceClass,
+    RuntimePerformanceSnapshot,
 };
 pub use upstream_scheduler::{
     AccountQuotaKey, AdmissionReason, DeferralReason, EstimatedCost, ExpectedValueHint,
@@ -248,10 +250,12 @@ pub use contracts::{
     DownloadClientStatus, DownloadSourceIdentity, DownloadSubmission,
     DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, DownloadSubmissionPurpose,
     EpisodeUpdate, ImportArtifact, IndexerConfigSyncResult, IndexerConfigUpdate,
-    IndexerProxyConfigUpdate, IndexerProxyTestResult, IndexerRoutingEntry, IndexerRoutingPlan,
-    IndexerSyncPlan, IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
-    ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole,
-    NewBlocklistEntry, NewIndexerProxyConfig, NotificationScopeIdUpdate, PendingReleasePageSort,
+    IndexerDownloadClientMappingCatalog, IndexerDownloadClientMappingClient,
+    IndexerDownloadClientMappingIndexer, IndexerProxyConfigUpdate, IndexerProxyTestResult,
+    IndexerRoutingEntry, IndexerRoutingPlan, IndexerSyncPlan, IndexerValidationResult,
+    InsertMediaFileInput, ManagedIndexerChildPlan, ManagedIndexerRoutingScope,
+    MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole, NewBlocklistEntry,
+    NewIndexerProxyConfig, NotificationScopeIdUpdate, PendingReleasePageSort,
     PendingReleasesPageQuery, PendingStagedNzb, QueueDownloadOutcome, QueuedDownloadResult,
     QueuedReleaseSelection, ReleaseDecisionsQuery, ResolvedDownloadArtifact, SearchMode,
     StagedNzbRef, SubmissionConflictPolicy, SubmissionScope, SubmissionScopeConflict,
@@ -351,7 +355,6 @@ pub(crate) const LIBRARY_SCAN_MOVIE_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 
 pub(crate) const LIBRARY_SCAN_EPISODIC_FILE_ANALYSIS_CONCURRENCY_PER_WALK: usize = 6;
 pub(crate) const GLOBAL_LIBRARY_SCAN_ANALYSIS_CONCURRENCY: usize = 24;
 pub use acquisition::release_search::release_strategy_kind_for_label;
-pub use app_usecase_integration::publish_download_queue_snapshot_events;
 #[cfg(unix)]
 pub(crate) use helpers::statvfs_path;
 pub(crate) use helpers::{
@@ -461,11 +464,11 @@ pub use quality::scoring_weights::{
     ScoringOverrides, ScoringPersona, ScoringWeights, build_weights, build_weights_for_category,
 };
 pub use quality_profile::{
-    BLOCK_SCORE, QUALITY_PROFILE_CATALOG_KEY, QUALITY_PROFILE_ID_KEY,
-    QUALITY_PROFILE_INHERIT_VALUE, QualityProfile, QualityProfileCriteria, QualityProfileDecision,
-    REQUEST_QUALITY_PROFILE_IDS_KEY, ScoringConfig, ScoringEntry, ScoringSource, apply_age_scoring,
-    apply_size_scoring_for_category, default_quality_profile_8k_for_search,
-    default_quality_profile_1080p_for_search, default_quality_profile_for_search,
+    BLOCK_SCORE, BUILTIN_DEFAULT_QUALITY_PROFILE_ID, QUALITY_PROFILE_CATALOG_KEY,
+    QUALITY_PROFILE_ID_KEY, QUALITY_PROFILE_INHERIT_VALUE, QualityProfile, QualityProfileCriteria,
+    QualityProfileDecision, REQUEST_QUALITY_PROFILE_IDS_KEY, ScoringConfig, ScoringEntry,
+    ScoringSource, apply_age_scoring, apply_size_scoring_for_category, builtin_4k_profile,
+    builtin_8k_profile, builtin_1080p_profile, builtin_default_quality_profile,
     evaluate_against_profile, parse_profile_catalog_from_json,
 };
 pub use rate_limit_signal::{RateLimitSignal, RateLimitSignalSource};
@@ -529,7 +532,8 @@ pub use types::{
     CutoffUnmetPage, CutoffUnmetQualitySummary, DecisionCodeCount, DiskSpaceInfo,
     DownloadActivityFilter, DownloadDisplayState, DownloadGrabResult, DownloadHistoryFilter,
     DownloadHistoryPage, DownloadHistorySort, DownloadHistorySortKey, DownloadImportFilter,
-    DownloadImportPage, DownloadQueueCommandRecord, DownloadSourceKind, EpisodeScopedMediaFile,
+    DownloadImportPage, DownloadQueueCommandRecord, DownloadQueuePage, DownloadSourceKind,
+    EpisodeMediaAvailability, EpisodeMediaAvailabilityState, EpisodeScopedMediaFile,
     FixTitleMatchResult, HealthCheckResult, HealthCheckStatus, HousekeepingReport,
     IgnorePendingImportResult, IndexerQueryStats, JwtAuthConfig, JwtSessionScope, LibraryRootDraft,
     LibraryScanUnmatchedItem, LibraryScanUnmatchedSearchAttempt, LoginFailureTimingClass,
@@ -565,7 +569,7 @@ pub use types::{
     ExternalImportMonitorMovieEntry, ExternalImportMonitorSeasonEntry,
     ExternalImportMonitorSeriesEntry, ExternalImportMonitorSnapshotChunk,
     ExternalImportMonitorSnapshotEntryKind, LibraryScanHint, LibraryScanHintFacet,
-    LibraryScanHintSet, LibraryScanHintSource,
+    LibraryScanHintSet, LibraryScanHintSource, derive_primary_quality_label,
     external_import_monitor_apply_session_id_for_library,
     is_external_import_monitor_apply_session_id, library_scan_file_full_path_key,
     library_scan_file_leaf_key, library_scan_folder_full_path_key, library_scan_folder_leaf_key,

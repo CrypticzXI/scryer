@@ -51,10 +51,11 @@ use scryer_application::{
 use scryer_infrastructure::{
     BuiltinDownloadClientConnectionTester, DatastoreAssembly, DatastoreConfig,
     DatastoreCustomizationStore, DatastoreEngine, FileSystemLibraryRenamer,
-    FileSystemLibraryScanner, FileSystemStagedNzbStore, ImageProxyRuntime, MetadataGatewayClient,
-    MigrationMode, MultiIndexerSearchClient, PrioritizedDownloadClientRouter, SettingsStore,
-    SmgEnrollmentConfig, resolve_datastore_config_from_env,
-    restore_backup_bundle_to_datastore_path, start_weaver_bridge_supervisor, validate_datastore,
+    FileSystemLibraryScanner, FileSystemStagedNzbStore, ImageProxyBlob, ImageProxyRuntime,
+    MetadataGatewayClient, MigrationMode, MultiIndexerSearchClient,
+    PrioritizedDownloadClientRouter, SettingsStore, SmgEnrollmentConfig,
+    resolve_datastore_config_from_env, restore_backup_bundle_to_datastore_path,
+    start_weaver_bridge_supervisor, validate_datastore,
 };
 use scryer_interface::context::{
     AuthRuntimeStateHandle, AuthRuntimeStateSnapshot, RestoreContext, RestoreDatastoreConfig,
@@ -1311,6 +1312,11 @@ async fn bootstrap_application(
         VERSION,
     )
     .await;
+    startup_migrations::_0006_quality_profile_default_1080p::clear_system_written_legacy_default_global_profile(
+        bootstrap_settings_store.clone(),
+        bootstrap_quality_profile_store.clone(),
+    )
+    .await;
     spawn_post_upgrade_auto_backup_if_pending(
         app_use_case.clone(),
         bootstrap_settings_store.clone(),
@@ -1696,13 +1702,20 @@ async fn image_proxy_handler(
     headers: HeaderMap,
     AxumPath((token, variant)): AxumPath<(String, String)>,
 ) -> Response {
-    let blob = runtime.resolve(&token, &variant).await;
-    let bare_etag = blob.etag.trim_matches('"');
-    let cache_control = if blob.fallback {
-        HeaderValue::from_static("public, max-age=60")
-    } else {
-        HeaderValue::from_static("public, max-age=86400, must-revalidate")
+    image_proxy_response(&headers, runtime.resolve(&token, &variant).await)
+}
+
+fn image_proxy_response(headers: &HeaderMap, blob: Option<ImageProxyBlob>) -> Response {
+    let Some(blob) = blob else {
+        let mut response = StatusCode::NOT_FOUND.into_response();
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=60"),
+        );
+        return response;
     };
+    let bare_etag = blob.etag.trim_matches('"');
+    let cache_control = HeaderValue::from_static("public, max-age=86400, must-revalidate");
     if headers
         .get(header::IF_NONE_MATCH)
         .and_then(|value| value.to_str().ok())
@@ -2916,13 +2929,14 @@ async fn seed_builtin_plugin_installations(
 #[cfg(test)]
 mod tests {
     use super::{
-        ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV, AuthModeConfig, RECOVERY_ADMIN_PASSWORD_ENV,
-        ResolvedLogFileConfig, SelfRestartController, UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV,
-        bootstrap_plugin_installations, collect_runtime_plugin_load_candidates,
-        comma_separated_env_has_entries, extract_data_dir, extract_log_file,
-        flush_upstream_scheduler_after_shutdown, load_runtime_plugin_state, resolve_auth_mode,
-        resolve_log_file_config, resolve_wasmtime_cache_dir, restart_spec_from_parts,
-        title_image_handler, validate_unauthenticated_public_access_allowlist_config,
+        ALLOW_UNAUTHENTICATED_PUBLIC_ACCESS_ENV, AuthModeConfig, ImageProxyBlob,
+        RECOVERY_ADMIN_PASSWORD_ENV, ResolvedLogFileConfig, SelfRestartController,
+        UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV, bootstrap_plugin_installations,
+        collect_runtime_plugin_load_candidates, comma_separated_env_has_entries, extract_data_dir,
+        extract_log_file, flush_upstream_scheduler_after_shutdown, image_proxy_response,
+        load_runtime_plugin_state, resolve_auth_mode, resolve_log_file_config,
+        resolve_wasmtime_cache_dir, restart_spec_from_parts, title_image_handler,
+        validate_unauthenticated_public_access_allowlist_config,
     };
     use chrono::Utc;
     use std::ffi::OsString;
@@ -2936,8 +2950,8 @@ mod tests {
 
     use crate::base_path::{BasePath, mount_router};
     use axum::Router;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode, header};
+    use axum::body::{Body, to_bytes};
+    use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
     use axum::routing::get;
     use scryer_application::{
         AppResult, PluginInstallationRepository, TitleImageBlob, TitleImageKind,
@@ -3744,6 +3758,61 @@ mod tests {
     fn comma_separated_env_entries_ignore_empty_items() {
         assert!(!comma_separated_env_has_entries(" ,, "));
         assert!(comma_separated_env_has_entries(",,home.example.test,"));
+    }
+
+    #[tokio::test]
+    async fn media_image_missing_returns_empty_short_cached_not_found() {
+        let response = image_proxy_response(&HeaderMap::new(), None);
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=60"
+        );
+        assert!(response.headers().get(header::CONTENT_TYPE).is_none());
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read missing image response");
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn media_image_real_bytes_preserve_headers_and_conditional_requests() {
+        let blob = ImageProxyBlob {
+            content_type: "image/jpeg".to_string(),
+            etag: "\"blake3:image\"".to_string(),
+            bytes: vec![1, 2, 3],
+        };
+        let response = image_proxy_response(&HeaderMap::new(), Some(blob.clone()));
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/jpeg"
+        );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=86400, must-revalidate"
+        );
+        assert_eq!(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read media image response")
+                .as_ref(),
+            &[1, 2, 3]
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_static("\"blake3:image\""),
+        );
+        let response = image_proxy_response(&headers, Some(blob));
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            response.headers().get(header::ETAG).unwrap(),
+            "\"blake3:image\""
+        );
     }
 
     #[tokio::test]

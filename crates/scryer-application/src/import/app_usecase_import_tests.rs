@@ -1242,7 +1242,7 @@ fn build_episode_upgrade_plan_rejects_when_existing_episode_file_scores_higher()
 }
 
 #[test]
-fn build_episode_upgrade_plan_force_replace_allows_lower_score() {
+fn manual_replacement_bypasses_equal_or_lower_score_comparison() {
     let incumbents = vec![scoped_media_file(
         "file-1",
         "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 1080p.mkv",
@@ -1252,9 +1252,15 @@ fn build_episode_upgrade_plan_force_replace_allows_lower_score() {
 
     // Without force, a lower-scored release is rejected as a non-upgrade.
     assert!(build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 600, false).is_err());
+    assert!(build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 820, false).is_err());
 
-    // A manual replacement (force) lands even at a lower score: it replaces the
-    // higher-scored incumbent rather than rejecting.
+    // A manual replacement (force) lands at an equal score, matching an
+    // operator-selected release whose extra audio track is score-neutral.
+    let equal_plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 820, true)
+        .expect("manual replacement should replace an equally scored incumbent");
+    assert_eq!(equal_plan.primary_incumbent.media_file.id, "file-1");
+
+    // It also lands at a lower score.
     let plan = build_episode_upgrade_plan(&incumbents, &["ep-1".to_string()], 600, true)
         .expect("manual replacement should replace a higher-scored incumbent");
     assert_eq!(plan.primary_incumbent.media_file.id, "file-1");

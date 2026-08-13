@@ -976,12 +976,11 @@ function TitleContextPanel({
   onAdvancedFiltersChange,
   onClearAdvancedFilters,
   view,
-  overviewTargetView,
   blocklistEntries,
   externalSubtitles,
   isTogglingMonitored,
   isDeleting,
-  onOpenOverview,
+  onEditTitle,
   onToggleMonitored,
   onAutoQueue,
   onRefreshTitles,
@@ -1032,15 +1031,11 @@ function TitleContextPanel({
   ) => void;
   onClearAdvancedFilters: () => void;
   view: ViewId;
-  overviewTargetView: ViewId;
   blocklistEntries: TitleReleaseBlocklistEntry[];
   externalSubtitles: ExternalSubtitleRecord[];
   isTogglingMonitored: boolean;
   isDeleting: boolean;
-  onOpenOverview: (
-    targetView: ViewId,
-    overviewTarget: OverviewTitleTarget,
-  ) => void;
+  onEditTitle: (title: TitleRecord) => void;
   onToggleMonitored?: (
     title: TitleRecord,
     monitored: boolean,
@@ -1497,7 +1492,7 @@ function TitleContextPanel({
             icon={Edit}
             label={t("label.edit")}
             disabled={bulkActionBusy}
-            onClick={() => onOpenOverview(overviewTargetView, title)}
+            onClick={() => onEditTitle(title)}
           />
           <TitleWorkspaceActionButton
             icon={Trash2}
@@ -2041,6 +2036,7 @@ export function MediaContentView({
     setSelectedOverviewTitleId: (titleId: string | null) => void;
     clearSelectedOverviewTitle: () => void;
     onCloseOverview: () => void;
+    onEditTitle: (title: TitleRecord) => void;
     deleteCatalogTitle: (title: TitleRecord) => void;
     isDeletingCatalogTitleById: Record<string, boolean>;
     isMobile: boolean;
@@ -2239,6 +2235,7 @@ export function MediaContentView({
     applyTitleRename,
     setSelectedOverviewTitleId,
     onCloseOverview,
+    onEditTitle,
     deleteCatalogTitle,
     isDeletingCatalogTitleById,
     viewMode,
@@ -3942,7 +3939,6 @@ export function MediaContentView({
                       onAdvancedFiltersChange={updateAdvancedTitleFilters}
                       onClearAdvancedFilters={clearAdvancedTitleFilters}
                       view={view}
-                      overviewTargetView={overviewTargetView}
                       blocklistEntries={selectedOverviewBlocklistEntries}
                       externalSubtitles={selectedOverviewExternalSubtitles}
                       isTogglingMonitored={
@@ -3959,7 +3955,7 @@ export function MediaContentView({
                             ] === true
                           : false
                       }
-                      onOpenOverview={handleOpenOverviewFromContext}
+                      onEditTitle={onEditTitle}
                       onToggleMonitored={toggleTitleMonitored}
                       onAutoQueue={queueExisting}
                       onRefreshTitles={handleRefreshTitles}

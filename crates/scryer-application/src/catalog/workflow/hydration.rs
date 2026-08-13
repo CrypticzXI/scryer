@@ -287,16 +287,37 @@ impl AppUseCase {
         request: NewTitle,
     ) -> AppResult<CreateTitleOutcome> {
         let library_id = scryer_domain::default_library_id_for_facet(&request.facet);
-        self.create_title_without_hydration_in_library(actor, request, library_id)
-            .await
+        self.create_title_without_hydration_with_options_patch_in_library(
+            actor,
+            request,
+            library_id,
+            TitleOptionsPatch::default(),
+        )
+        .await
     }
-}
-impl AppUseCase {
+
+    #[cfg(test)]
     pub(crate) async fn create_title_without_hydration_in_library(
         &self,
         actor: &User,
         request: NewTitle,
         library_id: String,
+    ) -> AppResult<CreateTitleOutcome> {
+        self.create_title_without_hydration_with_options_patch_in_library(
+            actor,
+            request,
+            library_id,
+            TitleOptionsPatch::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn create_title_without_hydration_with_options_patch_in_library(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+        options_patch: TitleOptionsPatch,
     ) -> AppResult<CreateTitleOutcome> {
         self.require_library_permission(
             actor,
@@ -304,7 +325,12 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
-        self.create_title_without_hydration_after_library_authorization(actor, request, library_id)
+        self.create_title_without_hydration_with_options_patch_after_library_authorization(
+            actor,
+            request,
+            library_id,
+            options_patch,
+        )
             .await
     }
 }
@@ -323,13 +349,15 @@ impl AppUseCase {
             .await?;
 
         let name = request.name.trim().to_string();
+        let mut tags = normalize_tags(&request.tags);
+        self.canonicalize_title_quality_profile_tags(&mut tags).await?;
         Ok(Title {
             id: Id::new().0,
             library_id: library_id.clone(),
             name,
             facet: request.facet,
             monitored: request.monitored,
-            tags: normalize_tags(&request.tags),
+            tags,
             canonical_tags: vec![],
             external_ids: sanitize_ids(request.external_ids),
             root_folder_id,
@@ -372,13 +400,51 @@ impl AppUseCase {
         request: NewTitle,
         library_id: String,
     ) -> AppResult<CreateTitleOutcome> {
+        self.create_title_without_hydration_with_options_patch_after_library_authorization(
+            actor,
+            request,
+            library_id,
+            TitleOptionsPatch::default(),
+        )
+        .await
+    }
+
+    async fn create_title_without_hydration_with_options_patch_after_library_authorization(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+        options_patch: TitleOptionsPatch,
+    ) -> AppResult<CreateTitleOutcome> {
+        let _profile_reference_guard = self
+            .runtime
+            .catalog
+            .quality_profile_reference_lock
+            .lock()
+            .await;
+        self.create_title_without_hydration_with_options_patch_after_library_authorization_lock_held(
+            actor,
+            request,
+            library_id,
+            options_patch,
+        )
+        .await
+    }
+
+    pub(crate) async fn create_title_without_hydration_with_options_patch_after_library_authorization_lock_held(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+        options_patch: TitleOptionsPatch,
+    ) -> AppResult<CreateTitleOutcome> {
         let title = self.new_title_for_library(actor, request, library_id).await?;
 
         let created = self
             .services
             .catalog
             .titles
-            .create_or_get_existing(title)
+            .create_or_get_existing_with_options_patch(title, options_patch)
             .await?;
         if !created.reused_existing {
             self.append_domain_event(new_title_domain_event(
@@ -407,6 +473,12 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
+        let _profile_reference_guard = self
+            .runtime
+            .catalog
+            .quality_profile_reference_lock
+            .lock()
+            .await;
         let title = self.new_title_for_library(actor, request, library_id).await?;
         let created = self
             .services

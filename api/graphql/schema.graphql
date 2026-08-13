@@ -670,6 +670,7 @@ type DeleteBackupPayload {
 
 type DeleteDownloadClientConfigPayload {
 	id: ID!
+	clearedIndexerMappingCount: Int!
 }
 
 input DeleteDownloadInput {
@@ -1312,6 +1313,25 @@ type DownloadQueueItemPayload {
 	title: TitlePayload
 }
 
+type DownloadQueuePagePayload {
+	items: [DownloadQueueItemPayload!]!
+	hasMore: Boolean!
+	totalCount: Int!
+	availableClients: [DownloadClientFilterOptionPayload!]!
+	revision: Long!
+	updatedAt: DateTime
+	ready: Boolean!
+	stale: Boolean!
+}
+
+enum DownloadQueueSortKeyValue {
+	TITLE
+	CLIENT
+	STATUS
+	PROGRESS
+	SIZE
+}
+
 enum DownloadQueueStateValue {
 	QUEUED
 	DOWNLOADING
@@ -1322,6 +1342,11 @@ enum DownloadQueueStateValue {
 	COMPLETED
 	IMPORT_PENDING
 	FAILED
+}
+
+type DownloadQueueSyncPayload {
+	revision: Long!
+	updatedAt: DateTime
 }
 
 enum DownloadSourceKindValue {
@@ -1355,6 +1380,19 @@ type EmptyRecycleBinPayload {
 	purgedCount: Int!
 }
 
+type EpisodeMediaAvailabilityPayload {
+	state: EpisodeMediaAvailabilityStateValue!
+	primaryQualityLabel: String
+}
+
+enum EpisodeMediaAvailabilityStateValue {
+	AVAILABLE
+	PENDING_SCAN
+	SCAN_FAILED
+	MISSING
+	UNMONITORED
+}
+
 type EpisodePayload {
 	id: ID!
 	titleId: ID!
@@ -1378,6 +1416,7 @@ type EpisodePayload {
 	parentTitle: TitlePayload
 	collection: CollectionPayload
 	wantedItem: WantedItemPayload
+	mediaAvailability: EpisodeMediaAvailabilityPayload!
 	mediaFiles: [TitleMediaFilePayload!]!
 }
 
@@ -1885,6 +1924,7 @@ type IndexerConfigPayload {
 	providerType: String!
 	baseUrl: String!
 	indexerProxyConfigId: ID
+	downloadClientId: ID
 	hasApiKey: Boolean!
 	isManaged: Boolean!
 	managedParentConfigId: ID
@@ -1910,6 +1950,28 @@ type IndexerConfigSyncPayload {
 	createdIds: [ID!]!
 	updatedIds: [ID!]!
 	deletedIds: [ID!]!
+}
+
+type IndexerDownloadClientMappingCatalogPayload {
+	clients: [IndexerDownloadClientMappingClientPayload!]!
+	indexers: [IndexerDownloadClientMappingIndexerPayload!]!
+}
+
+type IndexerDownloadClientMappingClientPayload {
+	id: ID!
+	name: String!
+	clientType: String!
+	isEnabled: Boolean!
+	healthStatus: String!
+}
+
+type IndexerDownloadClientMappingIndexerPayload {
+	id: ID!
+	name: String!
+	downloadClientId: ID
+	protocolFamilies: [String!]!
+	supportsMapping: Boolean!
+	compatibleClientIds: [ID!]!
 }
 
 type IndexerProxyConfigPayload {
@@ -2765,6 +2827,12 @@ type MutationRoot {
 	setEpisodeMonitored(input: SetEpisodeMonitoredInput!): EpisodePayload!
 	setSeriesMovieMonitored(input: SetSeriesMovieMonitoredInput!): SeriesMovieLinkPayload!
 	queueExistingTitleDownload(input: QueueDownloadInput!): QueueDownloadPayload!
+	"""
+	Queue an operator-chosen release to replace the existing primary file.
+	Scope comes from the signed candidate token and purpose is always the
+	server-owned manual-replacement purpose.
+	"""
+	queueReplacementRelease(input: QueueDownloadInput!): QueueDownloadPayload!
 	queueBestRelease(input: QueueBestReleaseInput!): QueueDownloadPayload!
 	queueManualImport(input: QueueManualImportInput!): DownloadQueueActionPayload!
 	beginManualImportSelection(input: BeginManualImportSelectionInput!): ManualImportSelectionPayload!
@@ -2781,6 +2849,7 @@ type MutationRoot {
 	triggerJob(jobKey: JobKeyValue!): JobRunPayload!
 	createIndexerConfig(input: CreateIndexerConfigInput!): IndexerConfigPayload!
 	updateIndexerConfig(input: UpdateIndexerConfigInput!): IndexerConfigPayload!
+	setIndexerDownloadClientMapping(input: SetIndexerDownloadClientMappingInput!): IndexerConfigPayload!
 	createIndexerProxyConfig(input: CreateIndexerProxyConfigInput!): IndexerProxyConfigPayload!
 	updateIndexerProxyConfig(input: UpdateIndexerProxyConfigInput!): IndexerProxyConfigPayload!
 	deleteIndexerProxyConfig(id: ID!): DeleteIndexerProxyConfigPayload!
@@ -3181,6 +3250,7 @@ type PendingReleasePayload {
 	releaseScore: Int!
 	scoringLogJson: JSON
 	indexerSource: String
+	indexerId: ID
 	addedAt: DateTime!
 	delayUntil: DateTime!
 	status: PendingReleaseStatusValue!
@@ -3559,7 +3629,8 @@ type QueryRoot {
 	discoveryItems(input: DiscoveryItemsInput): DiscoveryItemsPayload!
 	discoveryItemDetail(input: DiscoveryItemDetailInput!): DiscoveryItemPayload
 	catalogDiscovery(input: CatalogDiscoveryInput!): CatalogDiscoveryPayload!
-	downloadQueue(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, titleId: ID, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]!
+	downloadQueuePage(limit: Int! = 50, offset: Int! = 0, filters: [DownloadActivityFilterValue!], clientIds: [ID!], scryerSubmittedOnly: Boolean! = true, titleId: ID, sortKey: DownloadQueueSortKeyValue! = STATUS, sortDirection: SortDirectionValue! = ASC): DownloadQueuePagePayload!
+	downloadQueue(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, titleId: ID, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]! @deprecated(reason: "use downloadQueuePage")
 	downloadImport(limit: Int, offset: Int, filter: DownloadImportFilterValue): DownloadImportPagePayload!
 	downloadHistory(limit: Int, offset: Int, filters: [DownloadHistoryFilterValue!], clientIds: [ID!], scryerSubmittedOnly: Boolean, sortKey: DownloadHistorySortKeyValue, sortDirection: SortDirectionValue): DownloadHistoryPagePayload!
 	subtitleSettings: SubtitleSettingsPayload!
@@ -3586,6 +3657,7 @@ type QueryRoot {
 	downloadClientRouting(scope: ContentScopeValue!): [DownloadClientRoutingEntryPayload!]!
 	indexerRouting(scope: ContentScopeValue!): [IndexerRoutingEntryPayload!]!
 	indexers(providerType: String): [IndexerConfigPayload!]!
+	indexerDownloadClientMappingCatalog: IndexerDownloadClientMappingCatalogPayload!
 	indexerProxyConfigs: [IndexerProxyConfigPayload!]!
 	rootFolders(facet: MediaFacetValue!): [RootFolderPayload!]!
 	downloadClientConfigs: [DownloadClientConfigPayload!]!
@@ -4145,6 +4217,11 @@ input SetEpisodeMonitoredInput {
 	monitored: Boolean!
 }
 
+input SetIndexerDownloadClientMappingInput {
+	indexerId: ID!
+	downloadClientId: ID
+}
+
 input SetMyUiSettingsInput {
 	theme: UiThemeValue!
 	dateTimeFormat: UiDateTimeFormatValue
@@ -4291,7 +4368,8 @@ type SubmitMediaRequestPayload {
 type SubscriptionRoot {
 	activityEvents: ActivityEventPayload!
 	domainEventFeed(afterSequence: Long): DomainEventEnvelopePayload!
-	downloadQueue(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, titleId: ID, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]!
+	downloadQueueSync: DownloadQueueSyncPayload!
+	downloadQueue(includeAllActivity: Boolean, includeHistoryOnly: Boolean, includeImportActivity: Boolean, titleId: ID, activityFilter: DownloadActivityFilterValue): [DownloadQueueItemPayload!]! @deprecated(reason: "use downloadQueueSync")
 	libraryScanState: LibraryScanProgressPayload!
 	jobRunEvents: JobRunPayload!
 	serviceLogLines: String!

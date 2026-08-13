@@ -12,8 +12,8 @@ use scryer_application::testing::AppUseCaseTestExt;
 use scryer_application::{
     AcquisitionScopeStateRepository, BlocklistRepository, DownloadClientConfigRepository,
     DownloadSourceIdentity, ImportRepository, LibraryRepository, LibraryRootDraft,
-    MediaFileRepository, ReleaseAttemptRepository, ShowRepository, TitleRepository,
-    import_completed_download,
+    MediaFileRepository, ReleaseAttemptRepository, SaveQualityProfileSettings, ShowRepository,
+    TitleRepository, import_completed_download,
 };
 use scryer_domain::{
     Collection, CompletedDownload, DownloadClientConfig, DownloadClientStatus, Episode, Id,
@@ -28,8 +28,57 @@ use scryer_infrastructure::{
 // ---------------------------------------------------------------------------
 
 /// Build an AppUseCase with a real SQLite import repository and filesystem
-/// file importer so that tests can exercise the full import pipeline.
-fn app_with_real_imports(ctx: &TestContext) -> scryer_application::AppUseCase {
+/// file importer and production-equivalent quality-profile configuration so
+/// that tests can exercise the full import pipeline.
+async fn app_with_real_imports(ctx: &TestContext) -> scryer_application::AppUseCase {
+    ctx.settings_store
+        .batch_ensure_setting_definitions(vec![
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
+                key_name: "quality.profiles".into(),
+                data_type: "json".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: "system".into(),
+                key_name: "quality.profile_id".into(),
+                data_type: "string".into(),
+                default_value_json: "\"1080p\"".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+        ])
+        .await
+        .expect("seed import quality-profile setting definitions");
+    let user = ctx
+        .app
+        .find_or_create_default_user()
+        .await
+        .expect("create import test user");
+    ctx.app
+        .save_quality_profile_settings(
+            &user,
+            SaveQualityProfileSettings {
+                profiles: vec![
+                    scryer_application::builtin_default_quality_profile(),
+                    scryer_application::builtin_4k_profile(),
+                ],
+                replace_existing: true,
+                global_profile_id: Some(
+                    scryer_application::BUILTIN_DEFAULT_QUALITY_PROFILE_ID.to_string(),
+                ),
+                category_selections: Vec::new(),
+                global_scoring_persona: None,
+                category_persona_selections: Vec::new(),
+            },
+        )
+        .await
+        .expect("seed import quality-profile configuration");
+
     let workflow_store = Arc::new(ImportStore::new(ctx.db.datastore()));
     ctx.app.with_test_overrides(|builder| {
         builder
@@ -559,7 +608,7 @@ fn completed_download_series_import_stack_subprocess_probe_child() {
 
 async fn run_completed_download_series_import_stack_probe() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let source_dir = tempfile::tempdir().expect("source tempdir");
@@ -618,7 +667,7 @@ async fn run_completed_download_series_import_stack_probe() {
 #[tokio::test]
 async fn import_deduplicates_completed_imports() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
     let workflow_store = ImportStore::new(ctx.db.datastore());
 
@@ -665,7 +714,7 @@ async fn import_deduplicates_completed_imports() {
 #[tokio::test]
 async fn import_returns_unmatched_when_title_not_found() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let source_dir = tempfile::tempdir().expect("tempdir");
@@ -706,7 +755,7 @@ async fn import_returns_unmatched_when_title_not_found() {
 #[tokio::test]
 async fn import_fails_when_no_video_files_in_dest_dir() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     // Source dir exists but contains only a text file — no video files.
@@ -740,7 +789,7 @@ async fn import_fails_when_no_video_files_in_dest_dir() {
 #[tokio::test]
 async fn import_movie_strm_file_is_treated_as_video_artifact() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let source_dir = tempfile::tempdir().expect("source tempdir");
@@ -798,7 +847,7 @@ async fn import_movie_strm_file_is_treated_as_video_artifact() {
 #[tokio::test]
 async fn import_movie_rejection_does_not_persist_title_folder_path() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let source_dir = tempfile::tempdir().expect("source tempdir");
@@ -842,7 +891,7 @@ async fn import_movie_rejection_does_not_persist_title_folder_path() {
 #[tokio::test]
 async fn import_movie_symlink_file_preserves_symlink_and_media_analysis() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let backing_dir = tempfile::tempdir().expect("backing tempdir");
@@ -911,7 +960,7 @@ async fn import_movie_symlink_file_preserves_symlink_and_media_analysis() {
 #[tokio::test]
 async fn import_movie_decypharr_symlink_release_folder_succeeds() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let release_name =
@@ -974,7 +1023,7 @@ async fn import_movie_decypharr_symlink_release_folder_succeeds() {
 #[tokio::test]
 async fn import_movie_decypharr_symlink_release_folder_uses_remote_path_mapping() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let release_name =
@@ -1065,7 +1114,7 @@ async fn import_movie_decypharr_symlink_release_folder_uses_remote_path_mapping(
 #[tokio::test]
 async fn import_movie_succeeds_and_copies_file() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     // Source: a temp dir containing a plausible movie .mkv file.
@@ -1125,7 +1174,7 @@ async fn import_movie_succeeds_and_copies_file() {
 #[tokio::test]
 async fn import_movie_second_attempt_is_deduped() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let source_dir = tempfile::tempdir().expect("source tempdir");
@@ -1165,7 +1214,7 @@ async fn import_movie_second_attempt_is_deduped() {
 async fn import_movie_rejected_by_post_download_rule_leaves_no_library_file_and_blocklists_release()
 {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
     let source_dir = tempfile::tempdir().expect("source tempdir");
     copy_fixture(
@@ -1282,7 +1331,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
 #[tokio::test]
 async fn import_series_rejected_by_post_download_rule_resets_episode_wanted_item() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
     let source_dir = tempfile::tempdir().expect("source tempdir");
     let source_file = copy_fixture(
@@ -1364,7 +1413,7 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
 #[tokio::test]
 async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
     let source_dir = tempfile::tempdir().expect("source tempdir");
     let source_file = copy_fixture(
@@ -1430,7 +1479,7 @@ async fn manual_import_series_persists_media_analysis_and_acquisition_score() {
 #[tokio::test]
 async fn manual_import_series_reuses_existing_title_folder_path_even_when_template_changes() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
     let source_dir = tempfile::tempdir().expect("source tempdir");
     let source_file = copy_fixture(
@@ -1493,7 +1542,7 @@ async fn manual_import_series_reuses_existing_title_folder_path_even_when_templa
 #[tokio::test]
 async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
     let source_dir = tempfile::tempdir().expect("source tempdir");
     let source_file = copy_fixture(
@@ -1600,7 +1649,7 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
 #[tokio::test]
 async fn import_movie_rule_eval_error_fails_open() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
     let source_dir = tempfile::tempdir().expect("source tempdir");
     copy_fixture(
@@ -1655,7 +1704,7 @@ score_entry["bad_runtime"] := count(input.file.video_width) if {
 #[tokio::test]
 async fn import_upgrade_rejected_by_post_download_rule_restores_prior_file() {
     let ctx = TestContext::new().await;
-    let app = app_with_real_imports(&ctx);
+    let app = app_with_real_imports(&ctx).await;
     let user = ctx.app.find_or_create_default_user().await.unwrap();
     let dest_root = tempfile::tempdir().expect("dest tempdir");
     let title = add_movie_title(

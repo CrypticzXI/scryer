@@ -540,6 +540,11 @@ function DiscoveryHero({
     (detail): detail is string => Boolean(detail),
   );
   const backdropUrl = heroBackdropUrl(item);
+  const [failedBackdropUrl, setFailedBackdropUrl] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    setFailedBackdropUrl(null);
+  }, [backdropUrl]);
+  const displayedBackdropUrl = failedBackdropUrl === backdropUrl ? null : backdropUrl;
   const heroActionAvailable =
     !item.ownedInInput && (canManageTitle || canRequestMedia);
   const HeroActionIcon = canManageTitle ? Plus : Send;
@@ -548,13 +553,14 @@ function DiscoveryHero({
     : t("discovery.request");
   return (
     <section className="group relative min-h-[340px] overflow-hidden rounded-[18px] border border-[var(--scry-border2)] bg-slate-950 lg:h-full">
-      {backdropUrl ? (
+      {displayedBackdropUrl ? (
         <img
-          src={backdropUrl}
+          src={displayedBackdropUrl}
           alt=""
           aria-hidden="true"
           data-discovery-hero-backdrop="true"
           className="absolute inset-0 h-full w-full object-cover transition-transform duration-200 group-hover:scale-105 group-hover:blur-md group-hover:brightness-[0.6] group-focus-within:scale-105 group-focus-within:blur-md group-focus-within:brightness-[0.6]"
+          onError={() => setFailedBackdropUrl(displayedBackdropUrl)}
         />
       ) : (
         <div

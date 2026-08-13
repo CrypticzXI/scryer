@@ -176,6 +176,18 @@ impl IntoApplication<AppDownloadHistorySortKey> for DownloadHistorySortKeyValue 
     }
 }
 
+impl IntoApplication<AppDownloadHistorySortKey> for DownloadQueueSortKeyValue {
+    fn into_application(self) -> AppDownloadHistorySortKey {
+        match self {
+            Self::Title => AppDownloadHistorySortKey::Title,
+            Self::Client => AppDownloadHistorySortKey::Client,
+            Self::Status => AppDownloadHistorySortKey::Status,
+            Self::Progress => AppDownloadHistorySortKey::Progress,
+            Self::Size => AppDownloadHistorySortKey::Size,
+        }
+    }
+}
+
 impl IntoApplication<AppSortDirection> for SortDirectionValue {
     fn into_application(self) -> AppSortDirection {
         match self {

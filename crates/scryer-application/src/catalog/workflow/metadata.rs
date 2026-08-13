@@ -204,6 +204,12 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
+        let _profile_reference_guard = self
+            .runtime
+            .catalog
+            .quality_profile_reference_lock
+            .lock()
+            .await;
         if let Some(facet) = facet.as_ref()
             && facet != &title.facet
         {
@@ -226,6 +232,10 @@ impl AppUseCase {
             ),
             None => None,
         };
+        let mut tags = tags.map(|tags| crate::helpers::normalize_tags(&tags));
+        if let Some(tags) = tags.as_mut() {
+            self.canonicalize_title_quality_profile_tags(tags).await?;
+        }
 
         let title = self
             .services

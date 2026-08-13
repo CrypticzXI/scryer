@@ -460,6 +460,16 @@ pub enum DownloadHistorySortKeyValue {
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 #[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum DownloadQueueSortKeyValue {
+    Title,
+    Client,
+    Status,
+    Progress,
+    Size,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
 pub enum SortDirectionValue {
     Asc,
     Desc,
@@ -2345,6 +2355,7 @@ pub struct IndexerConfigPayload {
     pub provider_type: String,
     pub base_url: String,
     pub indexer_proxy_config_id: Option<ID>,
+    pub download_client_id: Option<ID>,
     pub has_api_key: bool,
     pub is_managed: bool,
     pub managed_parent_config_id: Option<ID>,
@@ -2363,6 +2374,31 @@ pub struct IndexerConfigPayload {
     pub config: Vec<ProviderConfigValuePayload>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IndexerDownloadClientMappingCatalogPayload {
+    pub clients: Vec<IndexerDownloadClientMappingClientPayload>,
+    pub indexers: Vec<IndexerDownloadClientMappingIndexerPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IndexerDownloadClientMappingClientPayload {
+    pub id: ID,
+    pub name: String,
+    pub client_type: String,
+    pub is_enabled: bool,
+    pub health_status: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IndexerDownloadClientMappingIndexerPayload {
+    pub id: ID,
+    pub name: String,
+    pub download_client_id: Option<ID>,
+    pub protocol_families: Vec<String>,
+    pub supports_mapping: bool,
+    pub compatible_client_ids: Vec<ID>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3125,14 +3161,14 @@ pub struct ExternalIdInput {
 
 #[derive(InputObject, Clone)]
 pub struct TitleOptionsInput {
-    pub quality_profile_id: Option<ID>,
+    pub quality_profile_id: MaybeUndefined<ID>,
     pub root_folder_id: MaybeUndefined<ID>,
-    pub monitor_type: Option<MonitorTypeValue>,
-    pub use_season_folders: Option<bool>,
-    pub monitor_specials: Option<bool>,
-    pub inter_season_movies: Option<bool>,
-    pub filler_policy: Option<FillerPolicyValue>,
-    pub recap_policy: Option<RecapPolicyValue>,
+    pub monitor_type: MaybeUndefined<MonitorTypeValue>,
+    pub use_season_folders: MaybeUndefined<bool>,
+    pub monitor_specials: MaybeUndefined<bool>,
+    pub inter_season_movies: MaybeUndefined<bool>,
+    pub filler_policy: MaybeUndefined<FillerPolicyValue>,
+    pub recap_policy: MaybeUndefined<RecapPolicyValue>,
 }
 
 #[derive(InputObject, Clone)]
@@ -3768,6 +3804,12 @@ pub struct UpdateIndexerConfigInput {
 }
 
 #[derive(InputObject)]
+pub struct SetIndexerDownloadClientMappingInput {
+    pub indexer_id: ID,
+    pub download_client_id: Option<ID>,
+}
+
+#[derive(InputObject)]
 pub struct CreateIndexerProxyConfigInput {
     pub name: String,
     pub provider_type: String,
@@ -3815,6 +3857,7 @@ pub struct UpdateDownloadClientConfigInput {
 #[derive(SimpleObject, Clone)]
 pub struct DeleteDownloadClientConfigPayload {
     pub id: async_graphql::ID,
+    pub cleared_indexer_mapping_count: i32,
 }
 
 #[derive(InputObject)]

@@ -830,6 +830,78 @@ async fn migration_0147_retires_w500_variants_and_0148_adds_extensible_proxy_tab
 }
 
 #[tokio::test]
+async fn migration_0154_backfills_only_unique_indexer_names_and_enforces_delete_safety_net() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("migration test database should open");
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .expect("foreign keys should enable");
+    sqlx::raw_sql(
+        "CREATE TABLE download_clients (id TEXT PRIMARY KEY);
+         CREATE TABLE indexers (id TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at TEXT NOT NULL);
+         CREATE TABLE pending_releases (id TEXT PRIMARY KEY, indexer_source TEXT);
+         INSERT INTO download_clients (id) VALUES ('client-1');
+         INSERT INTO indexers (id, name, updated_at) VALUES
+             ('unique-id', 'Unique', '2026-01-01T00:00:00Z'),
+             ('dup-a', 'Duplicate', '2026-01-01T00:00:00Z'),
+             ('dup-b', 'Duplicate', '2026-01-01T00:00:00Z');
+         INSERT INTO pending_releases (id, indexer_source) VALUES
+             ('pending-unique', 'Unique'),
+             ('pending-duplicate', 'Duplicate'),
+             ('pending-missing', 'Missing');",
+    )
+    .execute(&pool)
+    .await
+    .expect("legacy fixture should initialize");
+
+    sqlx::raw_sql(include_str!(
+        "../../../scryer/src/db/migrations/0154_indexer_download_client_mapping.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("migration 0154 should apply");
+
+    let backfilled: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT id, indexer_id FROM pending_releases ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("pending provenance should load");
+    assert_eq!(
+        backfilled,
+        vec![
+            ("pending-duplicate".to_string(), None),
+            ("pending-missing".to_string(), None),
+            ("pending-unique".to_string(), Some("unique-id".to_string())),
+        ]
+    );
+
+    let default_mapping: Option<String> =
+        sqlx::query_scalar("SELECT download_client_id FROM indexers WHERE id = 'unique-id'")
+            .fetch_one(&pool)
+            .await
+            .expect("new mapping column should load");
+    assert_eq!(default_mapping, None);
+    sqlx::query("UPDATE indexers SET download_client_id = 'client-1' WHERE id = 'unique-id'")
+        .execute(&pool)
+        .await
+        .expect("mapping should set");
+    sqlx::query("DELETE FROM download_clients WHERE id = 'client-1'")
+        .execute(&pool)
+        .await
+        .expect("client deletion should use database safety net");
+    let cleared_mapping: Option<String> =
+        sqlx::query_scalar("SELECT download_client_id FROM indexers WHERE id = 'unique-id'")
+            .fetch_one(&pool)
+            .await
+            .expect("cleared mapping should load");
+    assert_eq!(cleared_mapping, None);
+}
+
+#[tokio::test]
 async fn migration_0147_postgres_retires_w500_and_adds_proxy_tables_from_env() -> AppResult<()> {
     let Some(raw_url) = std::env::var("SCRYER_TEST_POSTGRES_URL")
         .ok()

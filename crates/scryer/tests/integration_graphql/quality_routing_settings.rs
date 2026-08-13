@@ -163,6 +163,132 @@ async fn graphql_quality_profile_settings_round_trip() {
 }
 
 #[tokio::test]
+async fn graphql_global_quality_profile_preserves_null_and_omitted_patch_semantics() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let mutation = r#"
+        mutation SaveQualityProfileSettings($input: SaveQualityProfileSettingsInput!) {
+          saveQualityProfileSettings(input: $input) {
+            globalProfileId
+            profiles { id }
+          }
+        }
+    "#;
+    let profile = |id: &str, name: &str, tier: &str| {
+        json!({
+          "id": id,
+          "name": name,
+          "criteria": {
+            "qualityTiers": [tier],
+            "archivalQuality": tier,
+            "allowUnknownQuality": false,
+            "sourceAllowlist": [],
+            "sourceBlocklist": [],
+            "videoCodecAllowlist": [],
+            "videoCodecBlocklist": [],
+            "audioCodecAllowlist": [],
+            "audioCodecBlocklist": [],
+            "dolbyVisionAllowed": true,
+            "detectedHdrAllowed": true,
+            "preferRemux": false,
+            "allowBdDisk": true,
+            "allowUpgrades": true,
+            "scoringOverrides": {},
+            "cutoffTier": null,
+            "minScoreToGrab": null
+          }
+        })
+    };
+
+    let set = gql(
+        &ctx,
+        mutation,
+        json!({
+          "input": {
+            "profiles": [
+              profile("4k", "4K", "2160P"),
+              profile("1080p", "1080P", "1080P")
+            ],
+            "globalProfileId": "4k",
+            "categorySelections": [],
+            "categoryPersonaSelections": [],
+            "replaceExisting": true
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&set);
+    assert_eq!(
+        set["data"]["saveQualityProfileSettings"]["globalProfileId"],
+        "4k"
+    );
+
+    let preserve_omitted = gql(
+        &ctx,
+        mutation,
+        json!({
+          "input": {
+            "profiles": [],
+            "categorySelections": [],
+            "categoryPersonaSelections": [],
+            "replaceExisting": false
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&preserve_omitted);
+    assert_eq!(
+        preserve_omitted["data"]["saveQualityProfileSettings"]["globalProfileId"], "4k",
+        "omitting the field must preserve the stored global profile"
+    );
+
+    let preserve_null = gql(
+        &ctx,
+        mutation,
+        json!({
+          "input": {
+            "profiles": [],
+            "globalProfileId": null,
+            "globalScoringPersona": "EFFICIENT",
+            "categorySelections": [],
+            "categoryPersonaSelections": [],
+            "replaceExisting": false
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&preserve_null);
+    assert_eq!(
+        preserve_null["data"]["saveQualityProfileSettings"]["globalProfileId"], "4k",
+        "an explicit null in a partial save must preserve the stored global profile"
+    );
+
+    let reconcile = gql(
+        &ctx,
+        mutation,
+        json!({
+          "input": {
+            "profiles": [profile("1080p", "1080P", "1080P")],
+            "globalProfileId": null,
+            "categorySelections": [],
+            "categoryPersonaSelections": [],
+            "replaceExisting": true
+          }
+        }),
+    )
+    .await;
+    assert_no_errors(&reconcile);
+    assert_eq!(
+        reconcile["data"]["saveQualityProfileSettings"]["globalProfileId"], "1080p",
+        "catalog replacement must reconcile a global profile removed by the replacement"
+    );
+    assert_eq!(
+        reconcile["data"]["saveQualityProfileSettings"]["profiles"],
+        json!([{ "id": "1080p" }])
+    );
+}
+
+#[tokio::test]
 async fn graphql_quality_profile_settings_updates_category_persona_selection_round_trip() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;

@@ -10,11 +10,10 @@ import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
 import { runConnectionFeedback } from "@/lib/utils/connection-feedback";
 import {
-  providerConfigRecordToValues,
+  providerConfigRecordToValuesWithDefaults,
   providerConfigValuesToRecord,
 } from "@/lib/utils/provider-config";
 import type {
-  ConfigFieldDef,
   NotificationChannel,
   NotificationChannelDraft,
   NotificationProviderType,
@@ -186,19 +185,6 @@ function buildNotificationSubscriptionSpecs(
     scopeId: scopeSpec.scopeId,
     isEnabled: draft.isEnabled,
   }));
-}
-
-function serializeConfigValues(
-  configValues: Record<string, string>,
-  fields: ConfigFieldDef[],
-) {
-  const nonEmpty = Object.fromEntries(
-    Object.entries(configValues).filter(([, v]) => v !== ""),
-  );
-  const secretInputKeys = fields
-    .filter((field) => field.fieldType === "PASSWORD")
-    .map((field) => field.key);
-  return providerConfigRecordToValues(nonEmpty, secretInputKeys);
 }
 
 type SettingsNotificationsContainerProps = {
@@ -473,7 +459,7 @@ export function SettingsNotificationsContainer({
       name: channelDraft.name.trim(),
       channelType: channelDraft.channelType.trim(),
       mediaServerConnectionId: undefined,
-      config: serializeConfigValues(
+      config: providerConfigRecordToValuesWithDefaults(
         channelDraft.configValues,
         selectedProvider?.configFields ?? [],
       ),

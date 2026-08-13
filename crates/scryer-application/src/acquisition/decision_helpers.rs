@@ -1,7 +1,7 @@
 use crate::acquisition_search_queries::tvdb_id_from_external_ids;
 use crate::{
-    AcquisitionThresholds, AppError, AppUseCase, QualityProfile, TitleMediaFile,
-    app_usecase_discovery::QualityProfileLookup, default_quality_profile_for_search,
+    AcquisitionThresholds, AppError, AppResult, AppUseCase, QualityProfile, TitleMediaFile,
+    app_usecase_discovery::QualityProfileLookup,
 };
 use scryer_domain::Title;
 
@@ -95,7 +95,7 @@ impl AppUseCase {
         grabbed_release: Option<&str>,
         category_hint: Option<&str>,
         analyzed_quality: Option<&str>,
-    ) -> ResolvedUpgradeContext {
+    ) -> AppResult<ResolvedUpgradeContext> {
         let category = upgrade_context_category(title, category_hint);
         let grabbed_release = if grabbed_release
             .map(str::trim)
@@ -105,6 +105,9 @@ impl AppUseCase {
         } else {
             grabbed_release
         };
+        // Resolution failures propagate: scoring against a substitute profile
+        // silently makes the wrong upgrade decision, which is exactly the
+        // failure mode the strict resolver exists to prevent.
         let profile = self
             .resolve_quality_profile(QualityProfileLookup {
                 title_tags: &title.tags,
@@ -113,8 +116,7 @@ impl AppUseCase {
                 tvdb_id: tvdb_id_from_external_ids(&title.external_ids).as_deref(),
                 category_hint: Some(category),
             })
-            .await
-            .unwrap_or_else(|_| default_quality_profile_for_search());
+            .await?;
 
         let cutoff_reached = crate::quality_profile::has_reached_cutoff_from_quality_or_release(
             analyzed_quality,
@@ -129,11 +131,11 @@ impl AppUseCase {
             .unwrap_or_default();
         let thresholds = self.acquisition_thresholds(&persona).await;
 
-        ResolvedUpgradeContext {
+        Ok(ResolvedUpgradeContext {
             profile,
             thresholds,
             cutoff_reached,
-        }
+        })
     }
 }
 

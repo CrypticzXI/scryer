@@ -44,6 +44,7 @@ impl AppUseCase {
         release_score: i32,
         scoring_log_json: Option<String>,
         indexer_source: Option<&str>,
+        indexer_id: Option<&str>,
         release_guid: Option<&str>,
         delay_minutes: i64,
         source_password: Option<&str>,
@@ -64,6 +65,7 @@ impl AppUseCase {
             release_score,
             scoring_log_json,
             indexer_source: indexer_source.map(str::to_string),
+            indexer_id: indexer_id.map(str::to_string),
             release_guid: release_guid.map(str::to_string),
             added_at: now.to_rfc3339(),
             delay_until: delay_until.to_rfc3339(),
@@ -178,6 +180,7 @@ impl AppUseCase {
             release_score,
             scoring_log_json,
             indexer_source: Some(candidate.source.clone()),
+            indexer_id: candidate.indexer_id.clone(),
             release_guid: candidate.guid.clone(),
             added_at: now.to_rfc3339(),
             // No timer applies; the column is NOT NULL, so the parked row simply
@@ -698,14 +701,28 @@ impl AppUseCase {
                 wanted.episode_id.as_deref(),
                 wanted.series_movie_link_id.as_deref(),
             );
-        let upgrade_context = self
+        // A resolution failure defers rather than errors: the callers expire
+        // parked releases on Err, and a possibly transient settings problem
+        // must not permanently burn delayed or standby candidates.
+        let upgrade_context = match self
             .resolve_upgrade_context_for_title_with_category_and_quality(
                 &title,
                 wanted.grabbed_release.as_deref(),
                 None,
                 analyzed_cutoff_quality,
             )
-            .await;
+            .await
+        {
+            Ok(context) => context,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    title_id = title.id.as_str(),
+                    "pending release: failed to resolve quality profile; keeping release pending"
+                );
+                return Ok(PendingGrabOutcome::Deferred);
+            }
+        };
 
         if upgrade_context.cutoff_reached {
             return Ok(PendingGrabOutcome::Rejected);
@@ -793,7 +810,7 @@ impl AppUseCase {
                 download_directory: None,
                 release_title: Some(pr.release_title.clone()),
                 indexer_name: pr.indexer_source.clone(),
-                indexer_id: None,
+                indexer_id: pr.indexer_id.clone(),
                 info_hash_hint: pr.info_hash.clone(),
                 seed_goal_ratio: None,
                 seed_goal_seconds: None,
@@ -928,7 +945,7 @@ impl AppUseCase {
                             download_client_type: grab.client_type.clone(),
                             download_client_item_id: grab.job_id.clone(),
                             source_hint: None,
-                            source_provider_id: None,
+                            source_provider_id: pr.indexer_id.clone(),
                             source_provider_name: pr.indexer_source.clone(),
                             source_kind: None,
                             source_title: source_title.clone(),
@@ -949,6 +966,7 @@ impl AppUseCase {
                             title: title_context_snapshot(&title),
                             source_title: Some(pr.release_title.clone()),
                             source_hint: None,
+                            source_provider: None,
                             download_id: Some(download_job_id),
                             episode_ids: wanted.episode_id.iter().cloned().collect(),
                         }),

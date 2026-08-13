@@ -519,14 +519,25 @@ impl AppUseCase {
         let scope_key = convergence_scope_key(&subject.submission_scope, &subject.title_id)?;
         let facet = subject.owner_facet.as_str().to_string();
 
-        let context = self
+        let context = match self
             .resolve_upgrade_context_for_title_with_category_and_quality(
                 title,
                 subject.grabbed_release.as_deref(),
                 Some(subject.category.as_str()),
                 None,
             )
-            .await;
+            .await
+        {
+            Ok(context) => context,
+            Err(error) => {
+                tracing::warn!(
+                    title_id = subject.title_id.as_str(),
+                    error = %error,
+                    "convergence: failed to resolve quality profile; leaving scope unresolved"
+                );
+                return None;
+            }
+        };
         let fingerprint = compute_search_fingerprint(
             &context.profile.id,
             &profile_criteria_version(&context.profile.criteria),
@@ -714,7 +725,7 @@ mod tests {
     }
 
     fn test_criteria() -> QualityProfileCriteria {
-        crate::quality_profile::default_quality_profile_for_search().criteria
+        crate::quality_profile::builtin_4k_profile().criteria
     }
 
     #[test]

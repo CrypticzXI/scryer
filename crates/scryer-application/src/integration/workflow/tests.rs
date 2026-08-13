@@ -8,8 +8,8 @@ mod tests {
         derive_download_queue_display_state, download_queue_client_filter_key,
         prepare_next_tracked_download_background_work_dispatch,
         prepare_tracked_download_background_work_dispatch,
-        reconcile_duplicate_terminal_source_states, synthetic_tracked_snapshot_queue_item,
-        source_provider_label, tracked_download_queue_snapshot,
+        reconcile_duplicate_terminal_source_states, source_provider_label,
+        synthetic_tracked_snapshot_queue_item, tracked_download_queue_snapshot,
     };
     use crate::DownloadDisplayState;
     use chrono::{Duration, Utc};
@@ -67,6 +67,7 @@ mod tests {
             client_id: client_item.client_id.clone(),
             client_type: client_item.client_type.clone(),
             client_item,
+            completed_source: None,
             state: TrackedDownloadState::ImportPending,
             status: TrackedDownloadStatus::Warning,
             status_messages: vec!["retry later".to_string()],
@@ -467,6 +468,7 @@ mod tests {
             client_id: "Weaver".to_string(),
             client_type: "weaver".to_string(),
             client_item,
+            completed_source: None,
             state: TrackedDownloadState::Imported,
             status: TrackedDownloadStatus::Ok,
             status_messages: Vec::new(),
@@ -508,6 +510,7 @@ mod tests {
             client_id: "client-1".to_string(),
             client_type: "nzbget".to_string(),
             client_item: queue_item.clone(),
+            completed_source: None,
             state: TrackedDownloadState::ImportBlocked,
             status: TrackedDownloadStatus::Warning,
             status_messages: vec!["needs manual import".to_string()],
@@ -611,6 +614,7 @@ mod tests {
             client_id: "client-1".to_string(),
             client_type: "nzbget".to_string(),
             client_item: queue_item.clone(),
+            completed_source: None,
             state: TrackedDownloadState::Downloading,
             status: TrackedDownloadStatus::Ok,
             status_messages: Vec::new(),

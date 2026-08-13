@@ -18,7 +18,8 @@ use scryer_application::{
     AppServices, AppUseCase, FacetRegistry, INDEXER_ROUTING_SETTINGS_KEY, IndexerPluginProvider,
     InteractiveReleaseSearchIndexerStatus, InteractiveReleaseSearchRequest,
     InteractiveReleaseSearchSnapshot, InteractiveReleaseSearchState, JwtAuthConfig,
-    LibraryRootDraft, MovieFacetHandler, SETTINGS_SCOPE_SYSTEM, SeriesFacetHandler,
+    LibraryRootDraft, MovieFacetHandler, QUALITY_PROFILE_CATALOG_KEY, QUALITY_PROFILE_ID_KEY,
+    SETTINGS_SCOPE_SYSTEM, SaveQualityProfileSettings, SeriesFacetHandler,
 };
 use scryer_domain::{ExternalId, IndexerConfig, MediaFacet, NewTitle, User};
 use scryer_infrastructure::SettingDefinitionSeed;
@@ -80,6 +81,7 @@ fn indexer_config(
         enable_interactive_search: true,
         enable_auto_search: true,
         indexer_proxy_config_id: None,
+        download_client_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
@@ -128,15 +130,35 @@ async fn setup_app(configs: Vec<IndexerConfig>) -> (AppUseCase, User) {
         encryption_key_state.clone(),
     ));
     settings_store
-        .batch_ensure_setting_definitions(vec![SettingDefinitionSeed {
-            category: "media".into(),
-            scope: SETTINGS_SCOPE_SYSTEM.into(),
-            key_name: INDEXER_ROUTING_SETTINGS_KEY.into(),
-            data_type: "string".into(),
-            default_value_json: "{}".into(),
-            is_sensitive: false,
-            validation_json: None,
-        }])
+        .batch_ensure_setting_definitions(vec![
+            SettingDefinitionSeed {
+                category: "media".into(),
+                scope: SETTINGS_SCOPE_SYSTEM.into(),
+                key_name: INDEXER_ROUTING_SETTINGS_KEY.into(),
+                data_type: "string".into(),
+                default_value_json: "{}".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "quality".into(),
+                scope: SETTINGS_SCOPE_SYSTEM.into(),
+                key_name: QUALITY_PROFILE_CATALOG_KEY.into(),
+                data_type: "string".into(),
+                default_value_json: "[]".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "quality".into(),
+                scope: SETTINGS_SCOPE_SYSTEM.into(),
+                key_name: QUALITY_PROFILE_ID_KEY.into(),
+                data_type: "string".into(),
+                default_value_json: "\"\"".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+        ])
         .await
         .expect("seed indexer routing setting definition");
     let quality_profile_store = Arc::new(QualityProfileStore::new(datastore.clone()));
@@ -363,6 +385,21 @@ async fn setup_app(configs: Vec<IndexerConfig>) -> (AppUseCase, User) {
         loaded: true,
         ..Default::default()
     };
+
+    let profile = scryer_application::builtin_default_quality_profile();
+    app.save_quality_profile_settings(
+        &user,
+        SaveQualityProfileSettings {
+            global_profile_id: Some(profile.id.clone()),
+            profiles: vec![profile],
+            replace_existing: true,
+            category_selections: Vec::new(),
+            global_scoring_persona: None,
+            category_persona_selections: Vec::new(),
+        },
+    )
+    .await
+    .expect("seed configured default quality profile");
 
     (app, user)
 }

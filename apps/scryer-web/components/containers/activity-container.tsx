@@ -22,7 +22,7 @@ import {
 import { downloadClientsQuery } from "@/lib/graphql/queries";
 import { useDownloadHistory } from "@/lib/hooks/use-download-history";
 import { useDownloadImport } from "@/lib/hooks/use-download-import";
-import { useDownloadQueue } from "@/lib/hooks/use-download-queue";
+import { useDownloadQueuePage } from "@/lib/hooks/use-download-queue-page";
 import { useImportHistorySubscription } from "@/lib/hooks/use-import-history-subscription";
 import { dispatchNavigationBadgesRefresh } from "@/lib/events/navigation-badges";
 import type { ActivitySection } from "@/components/root/types";
@@ -36,10 +36,7 @@ import type {
   SortConfig,
 } from "@/lib/types";
 import {
-  collectDownloadClientFilterOptions,
-  downloadQueueClientFilterKey,
   downloadQueueItemIdentityKey,
-  matchesActivityStatuses,
   matchesImportStatuses,
 } from "@/lib/utils/download-queue";
 
@@ -168,18 +165,28 @@ export const ActivityContainer = memo(function ActivityContainer({
   const [optimisticallyRemovedKeys, setOptimisticallyRemovedKeys] = useState<
     Record<string, true>
   >({});
+  const [optimisticQueueStates, setOptimisticQueueStates] = useState<
+    Record<string, Pick<DownloadQueueItem, "state" | "displayState">>
+  >({});
 
   const {
     queueItems: activityQueueItems,
     queueLoading,
+    queueLoadingMore,
     queueError,
+    queueHasMore,
+    queueAvailableClients,
+    queueStale,
     lastRefreshedAt: queueLastRefreshedAt,
     refreshQueue,
-  } = useDownloadQueue({
+    loadMoreQueue,
+    setVisibleQueueOffset,
+  } = useDownloadQueuePage({
     enabled: activityTabActive,
-    includeAllActivity: !activityScryerSubmittedOnly,
-    includeHistoryOnly: false,
-    activityFilter: "ALL",
+    filters: selectedActivityStatuses,
+    clientIds: selectedActivityClientIds,
+    scryerSubmittedOnly: activityScryerSubmittedOnly,
+    sort: sortConfigByTab.activity,
   });
   const {
     importItems,
@@ -214,45 +221,34 @@ export const ActivityContainer = memo(function ActivityContainer({
   const filteredImportItems = useMemo(() => {
     return importItems.filter((item) => matchesImportStatuses(item, selectedImportStatuses));
   }, [importItems, selectedImportStatuses]);
-  const statusFilteredActivityItems = useMemo(() => {
-    return activityQueueItems.filter((item) => matchesActivityStatuses(item, selectedActivityStatuses));
-  }, [activityQueueItems, selectedActivityStatuses]);
   const activityAvailableClients = useMemo<DownloadClientFilterOption[]>(() => {
     return mergeDownloadClientFilterOptions(
       configuredClientOptions,
-      collectDownloadClientFilterOptions(statusFilteredActivityItems),
+      queueAvailableClients,
     );
-  }, [configuredClientOptions, statusFilteredActivityItems]);
+  }, [configuredClientOptions, queueAvailableClients]);
   const mergedHistoryAvailableClients = useMemo<DownloadClientFilterOption[]>(() => {
     return mergeDownloadClientFilterOptions(configuredClientOptions, historyAvailableClients);
   }, [configuredClientOptions, historyAvailableClients]);
-  const filteredActivityItems = useMemo(() => {
-    if (selectedActivityClientIds === null) {
-      return statusFilteredActivityItems;
-    }
-    if (selectedActivityClientIds.length === 0) {
-      return [];
-    }
-    const selectedClientIds = new Set(selectedActivityClientIds);
-    return statusFilteredActivityItems.filter((item) =>
-      selectedClientIds.has(downloadQueueClientFilterKey(item)),
-    );
-  }, [selectedActivityClientIds, statusFilteredActivityItems]);
   const visibleItems = useMemo(() => {
     const sourceItems =
       activeTab === "import"
         ? filteredImportItems
         : activeTab === "history"
           ? historyItems
-          : filteredActivityItems;
-    return sourceItems.filter(
-      (item) => !optimisticallyRemovedKeys[downloadQueueItemIdentityKey(item)],
-    );
+          : activityQueueItems;
+    return sourceItems
+      .filter((item) => !optimisticallyRemovedKeys[downloadQueueItemIdentityKey(item)])
+      .map((item) => {
+        const optimistic = optimisticQueueStates[downloadQueueItemIdentityKey(item)];
+        return optimistic ? { ...item, ...optimistic } : item;
+      });
   }, [
     activeTab,
-    filteredActivityItems,
+    activityQueueItems,
     filteredImportItems,
     historyItems,
+    optimisticQueueStates,
     optimisticallyRemovedKeys,
   ]);
   const initialImportLoading =
@@ -260,15 +256,17 @@ export const ActivityContainer = memo(function ActivityContainer({
   const initialHistoryLoading =
     historyLoading && historyItems.length === 0 && historyLastRefreshedAt === null;
   const initialActivityLoading =
-    queueLoading && filteredActivityItems.length === 0 && queueLastRefreshedAt === null;
+    queueLoading && activityQueueItems.length === 0 && queueLastRefreshedAt === null;
   const visibleLoading =
     activeTab === "import"
       ? initialImportLoading
       : activeTab === "history"
         ? initialHistoryLoading
         : initialActivityLoading;
-  const visibleLoadingMore = activeTab === "import" ? importLoadingMore : false;
-  const visibleHasMore = activeTab === "import" ? importHasMore : false;
+  const visibleLoadingMore =
+    activeTab === "import" ? importLoadingMore : activeTab === "activity" ? queueLoadingMore : false;
+  const visibleHasMore =
+    activeTab === "import" ? importHasMore : activeTab === "activity" ? queueHasMore : false;
   const visibleError =
     activeTab === "import"
       ? importError
@@ -417,6 +415,30 @@ export const ActivityContainer = memo(function ActivityContainer({
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
   }, [activityQueueItems, historyItems, importItems, optimisticallyRemovedKeys]);
+
+  useEffect(() => {
+    if (Object.keys(optimisticQueueStates).length === 0) {
+      return;
+    }
+    const authoritativeByKey = new Map(
+      activityQueueItems.map((item) => [downloadQueueItemIdentityKey(item), item]),
+    );
+    setOptimisticQueueStates((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([key, optimistic]) => {
+          const authoritative = authoritativeByKey.get(key);
+          if (!authoritative) {
+            return false;
+          }
+          return (
+            (authoritative.state !== optimistic.state ||
+              authoritative.displayState !== optimistic.displayState)
+          );
+        }),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [activityQueueItems, optimisticQueueStates]);
 
   const decrementImportBadges = useCallback((count = 1) => {
     dispatchNavigationBadgesRefresh({ delta: -Math.max(1, count) });
@@ -594,6 +616,11 @@ export const ActivityContainer = memo(function ActivityContainer({
 
   const requestPause = useCallback(
     async (item: DownloadQueueItem) => {
+      const itemKey = downloadQueueItemIdentityKey(item);
+      setOptimisticQueueStates((current) => ({
+        ...current,
+        [itemKey]: { state: "PAUSED", displayState: "PAUSED" },
+      }));
       const result = await executePauseDownload({
         input: {
           clientId: item.clientId,
@@ -601,6 +628,10 @@ export const ActivityContainer = memo(function ActivityContainer({
         },
       });
       if (result.error) {
+        setOptimisticQueueStates((current) => {
+          const { [itemKey]: _removed, ...next } = current;
+          return next;
+        });
         const message = result.error.message ?? t("queue.pauseFailed");
         setGlobalStatus(message);
         throw result.error;
@@ -613,6 +644,11 @@ export const ActivityContainer = memo(function ActivityContainer({
 
   const requestResume = useCallback(
     async (item: DownloadQueueItem) => {
+      const itemKey = downloadQueueItemIdentityKey(item);
+      setOptimisticQueueStates((current) => ({
+        ...current,
+        [itemKey]: { state: "DOWNLOADING", displayState: "DOWNLOADING" },
+      }));
       const result = await executeResumeDownload({
         input: {
           clientId: item.clientId,
@@ -620,6 +656,10 @@ export const ActivityContainer = memo(function ActivityContainer({
         },
       });
       if (result.error) {
+        setOptimisticQueueStates((current) => {
+          const { [itemKey]: _removed, ...next } = current;
+          return next;
+        });
         const message = result.error.message ?? t("queue.resumeFailed");
         setGlobalStatus(message);
         throw result.error;
@@ -745,6 +785,9 @@ export const ActivityContainer = memo(function ActivityContainer({
           queueLoading: visibleLoading,
           queueLoadingMore: visibleLoadingMore,
           queueError: visibleError,
+          queueStale: activeTab === "activity" && queueStale,
+          onVisibleQueueOffsetChange:
+            activeTab === "activity" ? setVisibleQueueOffset : undefined,
           requestManualImport,
           requestAssignTitle: async (item) => {
             setAssignTitleItem(item);
@@ -767,11 +810,11 @@ export const ActivityContainer = memo(function ActivityContainer({
                   currentConfig.key === nextKey
                     ? {
                         key: nextKey,
-                        direction: currentConfig.direction === "ASC" ? "desc" : "asc",
+                        direction: currentConfig.direction === "ASC" ? "DESC" : "ASC",
                       }
                     : DEFAULT_SORT_CONFIG_BY_TAB[tab].key === nextKey
                       ? DEFAULT_SORT_CONFIG_BY_TAB[tab]
-                      : { key: nextKey, direction: "asc" },
+                      : { key: nextKey, direction: "ASC" },
               };
             });
           },
@@ -827,7 +870,11 @@ export const ActivityContainer = memo(function ActivityContainer({
           historyHasNextPage,
           visibleHasMore,
           requestMoreItems:
-            activeTab === "import" ? loadMoreImport : async () => {},
+            activeTab === "import"
+              ? loadMoreImport
+              : activeTab === "activity"
+                ? loadMoreQueue
+                : async () => {},
         }}
       />
       {manualImportItem?.titleId ? (

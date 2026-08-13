@@ -108,7 +108,7 @@ fn build_title_context_bank(titles: &[Title]) -> TitleContextBank {
 
     if !shared_stripped_keys.is_empty() {
         for candidate in &mut candidates {
-            candidate.evidence.ambiguity =
+            candidate.evidence = candidate.evidence.clone().with_ambiguity(
                 crate::acquisition_release_search::TitleIdentityAmbiguity::from_shared_keys(
                     candidate
                         .evidence
@@ -121,7 +121,8 @@ fn build_title_context_bank(titles: &[Title]) -> TitleContextBank {
                         })
                         .cloned()
                         .collect(),
-                );
+                ),
+            );
         }
     }
 
@@ -1384,14 +1385,25 @@ impl AppUseCase {
                 subject.submission_scope.episode_id(),
                 subject.submission_scope.series_movie_link_id(),
             );
-        let upgrade_context = self
+        let upgrade_context = match self
             .resolve_upgrade_context_for_title_with_category_and_quality(
                 title,
                 wanted.grabbed_release.as_deref(),
                 Some(subject.owner_facet.as_str()),
                 analyzed_cutoff_quality,
             )
-            .await;
+            .await
+        {
+            Ok(context) => context,
+            Err(error) => {
+                warn!(
+                    title_id = title.id.as_str(),
+                    error = %error,
+                    "RSS grab: failed to resolve quality profile; skipping scope"
+                );
+                return;
+            }
+        };
         if upgrade_context.cutoff_reached {
             return;
         }
@@ -1449,7 +1461,7 @@ impl AppUseCase {
                 db_blocklist: &db_blocklist,
                 existing_files: &existing_files,
                 delay_profiles,
-                failed_source_kinds: None,
+                failed_routes: None,
             };
             let decision_code = evaluate_auto_candidate(candidate, &evaluation_context);
             let candidate_score = candidate
@@ -1513,6 +1525,7 @@ impl AppUseCase {
                     candidate_score,
                     serialize_decision_explanation(&decision_candidate),
                     Some(candidate.source.as_str()),
+                    candidate.indexer_id.as_deref(),
                     candidate.guid.as_deref(),
                     delay_minutes,
                     candidate.password_hint.as_deref(),
@@ -1777,6 +1790,7 @@ impl AppUseCase {
                             title: title_context_snapshot(title),
                             source_title: Some(best.title.clone()),
                             source_hint: Some(best.source.clone()),
+                            source_provider: Some(best.source.clone()),
                             download_id: None,
                             episode_ids: Vec::new(),
                         }),

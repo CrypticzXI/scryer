@@ -6,6 +6,7 @@ use std::path::Path;
 
 const AVI_IDX1_READ_BATCH_BYTES: usize = 64 * 1024;
 const AVI_MP3_FALLBACK_SCAN_BYTES: usize = 1024 * 1024;
+const AVI_HEADER_CHUNK_MAX_BYTES: u32 = 64 * 1024;
 
 #[derive(Debug, Clone)]
 struct AviTrack {
@@ -38,6 +39,10 @@ pub(crate) fn parse_avi(
     profile: AnalysisProfile,
 ) -> Result<RawContainer, MediaInfoError> {
     let mut file = std::fs::File::open(path).map_err(|e| MediaInfoError::Io(e.to_string()))?;
+    let file_len = file
+        .metadata()
+        .map_err(|e| MediaInfoError::Io(e.to_string()))?
+        .len();
 
     let riff_chunk = riff::Chunk::read(&mut file, 0)
         .map_err(|e| MediaInfoError::Parse(format!("failed to read RIFF header: {e}")))?;
@@ -75,7 +80,13 @@ pub(crate) fn parse_avi(
                 .map_err(|e| MediaInfoError::Parse(format!("error reading LIST type: {e}")))?;
 
             if chunk_id_matches(list_type, b"hdrl") {
-                parse_hdrl(&child, &mut file, &mut duration_seconds, &mut tracks)?;
+                parse_hdrl(
+                    &child,
+                    &mut file,
+                    file_len,
+                    &mut duration_seconds,
+                    &mut tracks,
+                )?;
             } else if chunk_id_matches(list_type, b"movi") {
                 movi_payload_offset = Some(child.offset() + 12);
             }
@@ -115,10 +126,60 @@ fn collect_child_offsets<T: Read + Seek>(
     Ok(offsets)
 }
 
+/// Read a metadata chunk only after proving its declared content lies inside
+/// both its parent LIST and the physical input, with a bounded allocation.
+fn read_header_chunk_contents<T: Read + Seek>(
+    parent: &riff::Chunk,
+    child: &riff::Chunk,
+    stream: &mut T,
+    file_len: u64,
+) -> Result<Vec<u8>, MediaInfoError> {
+    let parent_contents_start = parent
+        .offset()
+        .checked_add(12)
+        .ok_or_else(|| MediaInfoError::Parse("AVI parent chunk offset overflow".into()))?;
+    let parent_contents_end = parent
+        .offset()
+        .checked_add(8)
+        .and_then(|offset| offset.checked_add(u64::from(parent.len())))
+        .ok_or_else(|| MediaInfoError::Parse("AVI parent chunk size overflow".into()))?;
+    let contents_start = child
+        .offset()
+        .checked_add(8)
+        .ok_or_else(|| MediaInfoError::Parse("AVI chunk offset overflow".into()))?;
+    let contents_end = contents_start
+        .checked_add(u64::from(child.len()))
+        .ok_or_else(|| MediaInfoError::Parse("AVI chunk size overflow".into()))?;
+
+    if child.offset() < parent_contents_start
+        || contents_end > parent_contents_end
+        || contents_end > file_len
+    {
+        return Err(MediaInfoError::Parse(format!(
+            "AVI chunk {} exceeds enclosing or file bounds",
+            format_chunk_id(child.id())
+        )));
+    }
+    if child.len() > AVI_HEADER_CHUNK_MAX_BYTES {
+        return Err(MediaInfoError::Parse(format!(
+            "AVI chunk {} exceeds parser budget",
+            format_chunk_id(child.id())
+        )));
+    }
+
+    let mut data = vec![0; child.len() as usize];
+    stream
+        .seek(SeekFrom::Start(contents_start))
+        .and_then(|_| stream.read_exact(&mut data))
+        .map_err(|e| MediaInfoError::Parse(format!("error reading AVI header chunk: {e}")))?;
+    Ok(data)
+}
+
 /// Parse the 'hdrl' LIST: extract the main AVI header and per-stream headers.
 fn parse_hdrl<T: Read + Seek>(
     hdrl: &riff::Chunk,
     stream: &mut T,
+    file_len: u64,
     duration_seconds: &mut Option<f64>,
     tracks: &mut Vec<AviTrack>,
 ) -> Result<(), MediaInfoError> {
@@ -132,9 +193,7 @@ fn parse_hdrl<T: Read + Seek>(
         let child = riff::Chunk::read(stream, offset)
             .map_err(|e| MediaInfoError::Parse(format!("error in hdrl: {e}")))?;
         if chunk_id_matches(child.id(), b"avih") {
-            let data = child
-                .read_contents(stream)
-                .map_err(|e| MediaInfoError::Parse(format!("error reading avih: {e}")))?;
+            let data = read_header_chunk_contents(hdrl, &child, stream, file_len)?;
             if data.len() >= 48 {
                 micro_sec_per_frame = Some(read_u32_le(&data, 0));
                 total_frames = Some(read_u32_le(&data, 16));
@@ -144,7 +203,7 @@ fn parse_hdrl<T: Read + Seek>(
                 MediaInfoError::Parse(format!("error reading LIST type in hdrl: {e}"))
             })?;
             if chunk_id_matches(list_type, b"strl") {
-                if let Some(parsed) = parse_strl(&child, stream)? {
+                if let Some(parsed) = parse_strl(&child, stream, file_len)? {
                     tracks.push(AviTrack {
                         raw: parsed.raw,
                         stream_number: stream_number as usize,
@@ -174,6 +233,7 @@ fn parse_hdrl<T: Read + Seek>(
 fn parse_strl<T: Read + Seek>(
     strl: &riff::Chunk,
     stream: &mut T,
+    file_len: u64,
 ) -> Result<Option<ParsedAviStream>, MediaInfoError> {
     let child_offsets = collect_child_offsets(strl, stream)?;
 
@@ -184,17 +244,9 @@ fn parse_strl<T: Read + Seek>(
         let child = riff::Chunk::read(stream, offset)
             .map_err(|e| MediaInfoError::Parse(format!("error in strl: {e}")))?;
         if chunk_id_matches(child.id(), b"strh") {
-            strh_data = Some(
-                child
-                    .read_contents(stream)
-                    .map_err(|e| MediaInfoError::Parse(format!("error reading strh: {e}")))?,
-            );
+            strh_data = Some(read_header_chunk_contents(strl, &child, stream, file_len)?);
         } else if chunk_id_matches(child.id(), b"strf") {
-            strf_data = Some(
-                child
-                    .read_contents(stream)
-                    .map_err(|e| MediaInfoError::Parse(format!("error reading strf: {e}")))?,
-            );
+            strf_data = Some(read_header_chunk_contents(strl, &child, stream, file_len)?);
         }
     }
 
@@ -707,6 +759,31 @@ mod tests {
         assert_eq!(container.format_name, "avi");
         assert_eq!(container.duration_seconds, None);
         assert!(container.tracks.is_empty());
+    }
+
+    #[test]
+    fn parse_avi_rejects_truncated_oversized_avih_without_allocating() {
+        let fixture = TempAviFile::new(
+            "truncated-oversized-avih",
+            &[
+                b"RIFF".as_slice(),
+                &24_u32.to_le_bytes(),
+                b"AVI ".as_slice(),
+                b"LIST".as_slice(),
+                &12_u32.to_le_bytes(),
+                b"hdrl".as_slice(),
+                b"avih".as_slice(),
+                &u32::MAX.to_le_bytes(),
+            ]
+            .concat(),
+        );
+
+        let error = parse_avi(fixture.path(), AnalysisProfile::DefaultRich)
+            .expect_err("truncated avih must be rejected before allocation");
+        let MediaInfoError::Parse(message) = error else {
+            panic!("expected parse error for oversized avih");
+        };
+        assert!(message.contains("exceeds enclosing or file bounds"));
     }
 
     #[test]

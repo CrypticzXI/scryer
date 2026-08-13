@@ -23,8 +23,8 @@ use scryer_application::{
     SEASON_FOLDER_TEMPLATE_KEY, SERIES_ROOT_FOLDERS_KEY, SET_PERMISSIONS_LINUX_KEY,
     SETUP_COMPLETE_KEY, SKIP_LOGIN_FOR_LOCAL_IPS_KEY, SPECIALS_FOLDER_TEMPLATE_KEY,
     TITLE_REQUIRED_AUDIO_OVERRIDE_KEY, TLS_CERT_PATH_KEY as TLS_CERT_KEY,
-    TLS_KEY_PATH_KEY as TLS_KEY_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
-    default_quality_profile_1080p_for_search, default_quality_profile_for_search,
+    TLS_KEY_PATH_KEY as TLS_KEY_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY, builtin_4k_profile,
+    builtin_1080p_profile, builtin_default_quality_profile,
 };
 pub(crate) use scryer_application::{
     MOVIES_PATH_KEY, SERIES_PATH_KEY, SETTINGS_SCOPE_MEDIA, SETTINGS_SCOPE_SYSTEM,
@@ -447,7 +447,17 @@ pub(crate) fn service_setting_seeds() -> &'static [ServiceSettingSeed] {
             scope: SETTINGS_SCOPE_SYSTEM,
             key_name: QUALITY_PROFILE_ID_KEY,
             data_type: "string",
-            default_value_json: "\"4k\"",
+            // Must stay in lockstep with BUILTIN_DEFAULT_QUALITY_PROFILE_ID;
+            // a guardrail test asserts the two agree.
+            default_value_json: "\"1080p\"",
+            is_sensitive: false,
+        },
+        ServiceSettingSeed {
+            category: SETTINGS_CATEGORY_MEDIA,
+            scope: SETTINGS_SCOPE_SYSTEM,
+            key_name: crate::startup_migrations::_0006_quality_profile_default_1080p::QUALITY_PROFILE_DEFAULT_1080P_MIGRATION_STATE_KEY,
+            data_type: "string",
+            default_value_json: "\"none\"",
             is_sensitive: false,
         },
         ServiceSettingSeed {
@@ -1326,10 +1336,9 @@ pub(crate) async fn normalize_quality_profile_settings(
         .await
         .map_err(|error| format!("failed to list system quality profiles: {error}"))?;
 
-    let default_profiles = vec![
-        default_quality_profile_for_search(),
-        default_quality_profile_1080p_for_search(),
-    ];
+    // The built-in default leads so first-profile ordering agrees with the
+    // canonical default on fresh installs.
+    let default_profiles = vec![builtin_default_quality_profile(), builtin_4k_profile()];
 
     let (final_profiles, changed) =
         merge_default_quality_profiles(std::mem::take(&mut profiles), default_profiles);
@@ -1446,7 +1455,7 @@ pub(crate) fn merge_default_quality_profiles(
     profiles.sort_by(|a, b| a.id.cmp(&b.id));
 
     if profiles.is_empty() {
-        profiles.push(default_quality_profile_for_search());
+        profiles.push(builtin_default_quality_profile());
         changed = true;
     }
 
@@ -1468,8 +1477,8 @@ fn normalize_legacy_seeded_default_quality_profiles(
         };
 
         let legacy_profile = match profile.id.as_str() {
-            "4k" => legacy_seeded_default_quality_profile_for_search(),
-            "1080p" => legacy_seeded_default_quality_profile_1080p_for_search(),
+            "4k" => legacy_seeded_builtin_4k_profile(),
+            "1080p" => legacy_seeded_builtin_1080p_profile(),
             _ => continue,
         };
 
@@ -1484,15 +1493,15 @@ fn normalize_legacy_seeded_default_quality_profiles(
     changed
 }
 
-fn legacy_seeded_default_quality_profile_for_search() -> QualityProfile {
-    let mut profile = default_quality_profile_for_search();
+fn legacy_seeded_builtin_4k_profile() -> QualityProfile {
+    let mut profile = builtin_4k_profile();
     profile.criteria.atmos_preferred = true;
     profile.criteria.prefer_remux = true;
     profile
 }
 
-fn legacy_seeded_default_quality_profile_1080p_for_search() -> QualityProfile {
-    let mut profile = default_quality_profile_1080p_for_search();
+fn legacy_seeded_builtin_1080p_profile() -> QualityProfile {
+    let mut profile = builtin_1080p_profile();
     profile.criteria.atmos_preferred = true;
     profile.criteria.prefer_remux = true;
     profile
@@ -1532,15 +1541,42 @@ pub(crate) async fn normalize_quality_profile_id_setting(
             .unwrap_or(record.effective_value_json.as_str()),
     );
 
-    let next_profile = if scope_id.is_none() {
-        match current_profile.as_deref() {
-            Some(value) if valid_profile_ids.iter().any(|id| id == value) => value.to_string(),
-            _ => valid_profile_ids
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "4k".to_string()),
+    if scope_id.is_none() {
+        // Global scope. A valid effective choice (explicit or the definition
+        // default) is left alone. An unresolvable one is repaired: when the
+        // canonical built-in default exists in the catalog, deleting any
+        // explicit row lets reads fall back to it; when the catalog replaced
+        // the built-ins (the setup wizard does), an explicit valid profile is
+        // materialized instead so the effective global always names a real
+        // profile.
+        let resolves = current_profile
+            .as_deref()
+            .is_some_and(|value| valid_profile_ids.iter().any(|id| id == value));
+        if resolves {
+            return Ok(());
         }
-    } else if matches!(current_profile.as_deref(), Some(value) if value == QUALITY_PROFILE_INHERIT_VALUE)
+        let builtin_default_available = valid_profile_ids
+            .iter()
+            .any(|id| id == scryer_application::BUILTIN_DEFAULT_QUALITY_PROFILE_ID);
+        if record.value_json.is_some() && builtin_default_available {
+            return database
+                .delete_setting_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, None)
+                .await
+                .map_err(|error| {
+                    format!("failed to clear invalid global {QUALITY_PROFILE_ID_KEY}: {error}")
+                });
+        }
+        let repaired = if builtin_default_available {
+            scryer_application::BUILTIN_DEFAULT_QUALITY_PROFILE_ID.to_string()
+        } else {
+            valid_profile_ids.first().cloned().unwrap_or_else(|| {
+                scryer_application::BUILTIN_DEFAULT_QUALITY_PROFILE_ID.to_string()
+            })
+        };
+        return upsert_quality_profile_setting(database, None, &repaired).await;
+    }
+
+    let next_profile = if matches!(current_profile.as_deref(), Some(value) if value == QUALITY_PROFILE_INHERIT_VALUE)
     {
         QUALITY_PROFILE_INHERIT_VALUE.to_string()
     } else if current_profile
@@ -1552,16 +1588,8 @@ pub(crate) async fn normalize_quality_profile_id_setting(
         QUALITY_PROFILE_INHERIT_VALUE.to_string()
     };
 
-    let current_for_compare = current_profile.unwrap_or_else(|| {
-        if scope_id.is_none() {
-            valid_profile_ids
-                .first()
-                .cloned()
-                .unwrap_or_else(|| QUALITY_PROFILE_INHERIT_VALUE.to_string())
-        } else {
-            QUALITY_PROFILE_INHERIT_VALUE.to_string()
-        }
-    });
+    let current_for_compare =
+        current_profile.unwrap_or_else(|| QUALITY_PROFILE_INHERIT_VALUE.to_string());
 
     if current_for_compare == next_profile {
         return Ok(());
@@ -1633,7 +1661,7 @@ pub(crate) fn collect_profile_ids(profiles: &[QualityProfile]) -> Vec<String> {
     }
 
     if ids.is_empty() {
-        ids.push("4k".to_string());
+        ids.push(scryer_application::BUILTIN_DEFAULT_QUALITY_PROFILE_ID.to_string());
     }
 
     ids
@@ -1758,6 +1786,148 @@ mod tests {
             assert_eq!(seed.default_value_json, "null");
             assert!(!seed.is_sensitive);
         }
+    }
+
+    #[test]
+    fn quality_profile_default_seed_matches_the_builtin_default() {
+        let seed = service_setting_seeds()
+            .iter()
+            .find(|seed| {
+                seed.scope == SETTINGS_SCOPE_SYSTEM && seed.key_name == QUALITY_PROFILE_ID_KEY
+            })
+            .expect("global quality profile definition should exist");
+        assert_eq!(
+            seed.default_value_json,
+            format!(
+                "\"{}\"",
+                scryer_application::BUILTIN_DEFAULT_QUALITY_PROFILE_ID
+            ),
+            "the seeded default must stay in lockstep with the canonical built-in default"
+        );
+        assert_eq!(
+            builtin_default_quality_profile().id,
+            scryer_application::BUILTIN_DEFAULT_QUALITY_PROFILE_ID
+        );
+    }
+
+    #[tokio::test]
+    async fn normalize_deletes_a_dangling_explicit_global_profile() {
+        let (_temp, store) = bootstrap_settings_store().await;
+        upsert_quality_profile_setting(store.as_ref(), None, "missing-profile")
+            .await
+            .expect("seed dangling global profile");
+
+        normalize_quality_profile_id_setting(
+            store.as_ref(),
+            None,
+            &["1080p".to_string(), "4k".to_string()],
+        )
+        .await
+        .expect("normalize global profile");
+
+        let record = store
+            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, None)
+            .await
+            .expect("read global profile")
+            .expect("definition exists");
+        assert!(
+            record.value_json.is_none(),
+            "a dangling explicit global must be deleted, not rewritten"
+        );
+        assert_eq!(
+            parse_quality_profile_id(&record.effective_value_json).as_deref(),
+            Some(scryer_application::BUILTIN_DEFAULT_QUALITY_PROFILE_ID),
+            "resolution falls back to the built-in default after the repair"
+        );
+    }
+
+    #[tokio::test]
+    async fn normalize_materializes_a_global_when_the_builtin_default_is_absent() {
+        let (_temp, store) = bootstrap_settings_store().await;
+        // No explicit global; the definition default (1080p) is missing from
+        // this wizard-style catalog, so a valid explicit global must be
+        // materialized to keep resolution working.
+        normalize_quality_profile_id_setting(
+            store.as_ref(),
+            None,
+            &["wizard-ANIME".to_string(), "wizard-MOVIE".to_string()],
+        )
+        .await
+        .expect("normalize global profile");
+
+        let record = store
+            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, None)
+            .await
+            .expect("read global profile")
+            .expect("definition exists");
+        assert_eq!(
+            record
+                .value_json
+                .as_deref()
+                .and_then(parse_quality_profile_id),
+            Some("wizard-ANIME".to_string()),
+            "an unresolvable definition default is repaired to the first catalog profile"
+        );
+    }
+
+    #[tokio::test]
+    async fn normalize_repairs_a_dangling_global_when_the_builtin_default_is_absent() {
+        let (_temp, store) = bootstrap_settings_store().await;
+        upsert_quality_profile_setting(store.as_ref(), None, "missing-profile")
+            .await
+            .expect("seed dangling global profile");
+
+        normalize_quality_profile_id_setting(
+            store.as_ref(),
+            None,
+            &["wizard-ANIME".to_string(), "wizard-MOVIE".to_string()],
+        )
+        .await
+        .expect("normalize global profile");
+
+        let record = store
+            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, None)
+            .await
+            .expect("read global profile")
+            .expect("definition exists");
+        assert_eq!(
+            record
+                .value_json
+                .as_deref()
+                .and_then(parse_quality_profile_id),
+            Some("wizard-ANIME".to_string()),
+            "deleting the row would leave the dangling definition default in charge"
+        );
+    }
+
+    #[tokio::test]
+    async fn normalize_preserves_a_valid_explicit_global_profile() {
+        let (_temp, store) = bootstrap_settings_store().await;
+        upsert_quality_profile_setting(store.as_ref(), None, "4k")
+            .await
+            .expect("seed explicit global profile");
+
+        normalize_quality_profile_id_setting(
+            store.as_ref(),
+            None,
+            &["1080p".to_string(), "4k".to_string()],
+        )
+        .await
+        .expect("normalize global profile");
+
+        let record = store
+            .get_setting_with_defaults(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, None)
+            .await
+            .expect("read global profile")
+            .expect("definition exists");
+        assert_eq!(
+            record
+                .value_json
+                .as_deref()
+                .and_then(parse_quality_profile_id),
+            Some("4k".to_string()),
+            "a valid explicit global choice is preserved"
+        );
     }
 
     #[tokio::test]
@@ -1918,21 +2088,15 @@ mod tests {
     #[test]
     fn merge_default_quality_profiles_normalizes_exact_legacy_seeded_defaults() {
         let existing_profiles = vec![
-            legacy_seeded_default_quality_profile_for_search(),
-            legacy_seeded_default_quality_profile_1080p_for_search(),
+            legacy_seeded_builtin_4k_profile(),
+            legacy_seeded_builtin_1080p_profile(),
         ];
-        let mut expected_profiles = vec![
-            default_quality_profile_for_search(),
-            default_quality_profile_1080p_for_search(),
-        ];
+        let mut expected_profiles = vec![builtin_4k_profile(), builtin_1080p_profile()];
         expected_profiles.sort_by(|a, b| a.id.cmp(&b.id));
 
         let (profiles, changed) = merge_default_quality_profiles(
             existing_profiles,
-            vec![
-                default_quality_profile_for_search(),
-                default_quality_profile_1080p_for_search(),
-            ],
+            vec![builtin_4k_profile(), builtin_1080p_profile()],
         );
 
         assert!(changed);
@@ -1941,17 +2105,14 @@ mod tests {
 
     #[test]
     fn merge_default_quality_profiles_preserves_nonseeded_existing_profiles() {
-        let mut customized_profile = default_quality_profile_for_search();
+        let mut customized_profile = builtin_4k_profile();
         customized_profile.criteria.atmos_preferred = true;
         customized_profile.criteria.prefer_remux = true;
         customized_profile.criteria.allow_unknown_quality = true;
 
         let (profiles, changed) = merge_default_quality_profiles(
             vec![customized_profile.clone()],
-            vec![
-                default_quality_profile_for_search(),
-                default_quality_profile_1080p_for_search(),
-            ],
+            vec![builtin_4k_profile(), builtin_1080p_profile()],
         );
 
         assert!(!changed);
@@ -1962,10 +2123,7 @@ mod tests {
     fn merge_default_quality_profiles_seeds_standard_defaults_when_empty() {
         let (profiles, changed) = merge_default_quality_profiles(
             Vec::new(),
-            vec![
-                default_quality_profile_for_search(),
-                default_quality_profile_1080p_for_search(),
-            ],
+            vec![builtin_4k_profile(), builtin_1080p_profile()],
         );
 
         assert!(changed);

@@ -7,6 +7,7 @@ export type IndexerRecord = {
   providerType: string;
   baseUrl: string;
   indexerProxyConfigId: string | null;
+  downloadClientId: string | null;
   hasApiKey: boolean;
   storedSecretKeys: string[];
   rateLimitSeconds: number | null;

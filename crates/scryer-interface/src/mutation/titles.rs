@@ -78,14 +78,42 @@ fn resolved_title_options(
     } = options;
 
     ResolvedTitleOptionsInput {
-        quality_profile_id,
+        quality_profile_id: match quality_profile_id {
+            MaybeUndefined::Undefined => None,
+            MaybeUndefined::Null => Some(None),
+            MaybeUndefined::Value(value) => Some(Some(value.to_string())),
+        },
         root_folder_id,
-        monitor_type,
-        use_season_folders,
-        monitor_specials,
-        inter_season_movies,
-        filler_policy,
-        recap_policy,
+        monitor_type: match monitor_type {
+            MaybeUndefined::Undefined => None,
+            MaybeUndefined::Null => Some(None),
+            MaybeUndefined::Value(value) => Some(Some(value.as_tag_value().to_string())),
+        },
+        use_season_folders: match use_season_folders {
+            MaybeUndefined::Undefined => None,
+            MaybeUndefined::Null => Some(None),
+            MaybeUndefined::Value(value) => Some(Some(value)),
+        },
+        monitor_specials: match monitor_specials {
+            MaybeUndefined::Undefined => None,
+            MaybeUndefined::Null => Some(None),
+            MaybeUndefined::Value(value) => Some(Some(value)),
+        },
+        inter_season_movies: match inter_season_movies {
+            MaybeUndefined::Undefined => None,
+            MaybeUndefined::Null => Some(None),
+            MaybeUndefined::Value(value) => Some(Some(value)),
+        },
+        filler_policy: match filler_policy {
+            MaybeUndefined::Undefined => None,
+            MaybeUndefined::Null => Some(None),
+            MaybeUndefined::Value(value) => Some(Some(value.as_app_str().to_string())),
+        },
+        recap_policy: match recap_policy {
+            MaybeUndefined::Undefined => None,
+            MaybeUndefined::Null => Some(None),
+            MaybeUndefined::Value(value) => Some(Some(value.as_app_str().to_string())),
+        },
     }
 }
 
@@ -187,12 +215,28 @@ impl TitleMutations {
         let options = input.options.clone();
         let (library_id, resolved_options) =
             resolve_add_title_options(&app, &actor, facet, library_id, options).await?;
+        let options_patch = resolved_options
+            .as_ref()
+            .map(ResolvedTitleOptionsInput::to_application_patch)
+            .unwrap_or_default();
         let request = map_add_input(input, resolved_options)?;
         let result = if let Some(library_id) = library_id {
-            app.add_title_with_outcome_in_library(&actor, request, library_id)
-                .await
+            app.add_title_with_options_patch_outcome_in_library(
+                &actor,
+                request,
+                library_id,
+                options_patch,
+            )
+            .await
         } else {
-            app.add_title_with_outcome(&actor, request).await
+            let library_id = scryer_domain::default_library_id_for_facet(&request.facet);
+            app.add_title_with_options_patch_outcome_in_library(
+                &actor,
+                request,
+                library_id,
+                options_patch,
+            )
+            .await
         }
         .map_err(to_gql_error)?;
 
@@ -223,6 +267,10 @@ impl TitleMutations {
         let options = input.options.clone();
         let (library_id, resolved_options) =
             resolve_add_title_options(&app, &actor, facet, library_id, options).await?;
+        let options_patch = resolved_options
+            .as_ref()
+            .map(ResolvedTitleOptionsInput::to_application_patch)
+            .unwrap_or_default();
         let request = map_add_input(input, resolved_options)?;
         let queued_release = QueuedReleaseSelection {
             indexer_id: None,
@@ -232,16 +280,24 @@ impl TitleMutations {
             source_password: None,
         };
         let result = if let Some(library_id) = library_id {
-            app.add_title_and_queue_download_with_outcome_in_library(
+            app.add_title_and_queue_download_with_options_patch_outcome_in_library(
                 &actor,
                 request,
                 library_id,
+                options_patch,
                 queued_release,
             )
             .await
         } else {
-            app.add_title_and_queue_download_with_outcome(&actor, request, queued_release)
-                .await
+            let library_id = scryer_domain::default_library_id_for_facet(&request.facet);
+            app.add_title_and_queue_download_with_options_patch_outcome_in_library(
+                &actor,
+                request,
+                library_id,
+                options_patch,
+                queued_release,
+            )
+            .await
         }
         .map_err(to_gql_error)?;
         let queued_download = queued_download_payload(

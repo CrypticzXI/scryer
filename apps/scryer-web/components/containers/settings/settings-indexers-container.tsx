@@ -15,12 +15,14 @@ import { SETTINGS_REFERENCE_SLOT_ID } from "@/components/containers/settings/set
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
+import { useIndexersSubscription } from "@/lib/hooks/use-indexers-subscription";
 import type {
   ConfigFieldDef,
   IndexerProxyDraft,
   IndexerProxyRecord,
   IndexerRecord,
   ProviderTypeInfo,
+  IndexerDownloadClientMappingCatalog,
 } from "@/lib/types";
 import { runConnectionFeedback } from "@/lib/utils/connection-feedback";
 import {
@@ -28,7 +30,13 @@ import {
   buildUpdateIndexerProxyInput,
 } from "@/lib/utils/settings-mutation-inputs";
 import {
+  normalizeIndexerDownloadClientMappingCatalog,
+  updateIndexerDownloadClientMapping,
+  updatePendingIndexerMappingIds,
+} from "@/lib/utils/indexer-download-client-mapping";
+import {
   indexerProviderTypesQuery,
+  indexerDownloadClientMappingCatalogQuery,
   indexerProxyConfigsQuery,
   indexersInitQuery,
   indexersQuery,
@@ -39,6 +47,7 @@ import {
   deleteIndexerMutation,
   deleteIndexerProxyConfigMutation,
   syncIndexerConfigMutation,
+  setIndexerDownloadClientMappingMutation,
   testIndexerConnectionMutation,
   testIndexerProxyConfigMutation,
   updateIndexerMutation,
@@ -225,6 +234,14 @@ export function SettingsIndexersContainer({
   const t = useTranslate();
   const client = useClient();
   const [settingsIndexers, setSettingsIndexers] = useState<IndexerRecord[]>([]);
+  const [indexerDownloadClientMappingCatalog, setIndexerDownloadClientMappingCatalog] =
+    useState<IndexerDownloadClientMappingCatalog>(() => ({
+      clients: [],
+      indexers: [],
+    }));
+  const [mutatingIndexerMappingIds, setMutatingIndexerMappingIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [indexerProxyConfigs, setIndexerProxyConfigs] = useState<
     IndexerProxyRecord[]
   >([]);
@@ -307,6 +324,28 @@ export function SettingsIndexersContainer({
     }
   }, [client, settingsIndexerFilter, setGlobalStatus, t]);
 
+  const refreshIndexerDownloadClientMappingCatalog = useCallback(async () => {
+    try {
+      const { data, error } = await client
+        .query(
+          indexerDownloadClientMappingCatalogQuery,
+          {},
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) throw error;
+      setIndexerDownloadClientMappingCatalog(
+        normalizeIndexerDownloadClientMappingCatalog(
+          data?.indexerDownloadClientMappingCatalog,
+        ),
+      );
+    } catch (error) {
+      setGlobalStatus(
+        error instanceof Error ? error.message : t("status.failedToLoad"),
+      );
+    }
+  }, [client, setGlobalStatus, t]);
+
   const refreshIndexerProxyConfigs = useCallback(async () => {
     try {
       const { data, error } = await client
@@ -354,6 +393,15 @@ export function SettingsIndexersContainer({
   }, [client, setGlobalStatus, t]);
 
   useEffect(() => {
+    void refreshIndexerDownloadClientMappingCatalog();
+  }, [refreshIndexerDownloadClientMappingCatalog]);
+
+  useIndexersSubscription(() => {
+    void refreshIndexers();
+    void refreshIndexerDownloadClientMappingCatalog();
+  });
+
+  useEffect(() => {
     if (providerCatalogVersion === providerCatalogVersionRef.current) {
       return;
     }
@@ -362,6 +410,7 @@ export function SettingsIndexersContainer({
     void Promise.all([
       refreshProviderTypes(),
       refreshIndexers(),
+      refreshIndexerDownloadClientMappingCatalog(),
       refreshIndexerProxyConfigs(),
     ]).catch((error: unknown) => {
       setGlobalStatus(
@@ -370,6 +419,7 @@ export function SettingsIndexersContainer({
     });
   }, [
     providerCatalogVersion,
+    refreshIndexerDownloadClientMappingCatalog,
     refreshIndexerProxyConfigs,
     refreshIndexers,
     refreshProviderTypes,
@@ -611,6 +661,95 @@ export function SettingsIndexersContainer({
     }
     setPendingDeleteIndexer(indexer);
   };
+
+  const setIndexerDownloadClientMapping = useCallback(
+    async (indexerId: string, downloadClientId: string | null) => {
+      const indexerName =
+        settingsIndexers.find((indexer) => indexer.id === indexerId)?.name ??
+        indexerId;
+      const previousMapping = indexerDownloadClientMappingCatalog.indexers.find(
+        (entry) => entry.id === indexerId,
+      );
+      const previousDownloadClientId = previousMapping?.downloadClientId ?? null;
+      const selectedClient = downloadClientId
+        ? indexerDownloadClientMappingCatalog.clients.find(
+            (clientRecord) => clientRecord.id === downloadClientId,
+          )
+        : null;
+
+      setMutatingIndexerMappingIds((previous) =>
+        updatePendingIndexerMappingIds(previous, indexerId, true),
+      );
+      setIndexerDownloadClientMappingCatalog((previous) =>
+        updateIndexerDownloadClientMapping(previous, indexerId, downloadClientId),
+      );
+      if (selectedClient?.isEnabled === false) {
+        setGlobalStatus(
+          t("settings.indexerDownloadClientDisabledWarning", {
+            name: selectedClient.name,
+          }),
+        );
+      }
+      setGlobalStatus(t("status.indexerDownloadClientMappingSaving"));
+
+      try {
+        const { data, error } = await client
+          .mutation(setIndexerDownloadClientMappingMutation, {
+            input: {
+              indexerId,
+              downloadClientId,
+            },
+          })
+          .toPromise();
+        if (error) throw error;
+
+        const response = data?.setIndexerDownloadClientMapping;
+        const resolvedDownloadClientId = response
+          ? response.downloadClientId ?? null
+          : downloadClientId;
+        setIndexerDownloadClientMappingCatalog((previous) =>
+          updateIndexerDownloadClientMapping(
+            previous,
+            indexerId,
+            resolvedDownloadClientId,
+          ),
+        );
+        setGlobalStatus(
+          t("status.indexerDownloadClientMappingSaved", {
+            name: indexerName,
+          }),
+        );
+        await Promise.all([
+          refreshIndexers(),
+          refreshIndexerDownloadClientMappingCatalog(),
+        ]);
+      } catch (error) {
+        setIndexerDownloadClientMappingCatalog((previous) =>
+          updateIndexerDownloadClientMapping(
+            previous,
+            indexerId,
+            previousMapping ? previousDownloadClientId : null,
+          ),
+        );
+        setGlobalStatus(
+          error instanceof Error ? error.message : t("status.failedToUpdate"),
+        );
+      } finally {
+        setMutatingIndexerMappingIds((previous) =>
+          updatePendingIndexerMappingIds(previous, indexerId, false),
+        );
+      }
+    },
+    [
+      client,
+      indexerDownloadClientMappingCatalog,
+      refreshIndexerDownloadClientMappingCatalog,
+      refreshIndexers,
+      setGlobalStatus,
+      settingsIndexers,
+      t,
+    ],
+  );
 
   const toggleIndexerEnabled = useCallback(
     async (indexer: IndexerRecord) => {
@@ -911,6 +1050,9 @@ export function SettingsIndexersContainer({
         settingsIndexerFilter={settingsIndexerFilter}
         setSettingsIndexerFilter={setSettingsIndexerFilter}
         settingsIndexers={settingsIndexers}
+        indexerDownloadClientMappingCatalog={indexerDownloadClientMappingCatalog}
+        mutatingIndexerMappingIds={mutatingIndexerMappingIds}
+        setIndexerDownloadClientMapping={setIndexerDownloadClientMapping}
         indexerProxyConfigs={indexerProxyConfigs}
         indexerProxyDraft={indexerProxyDraft}
         setIndexerProxyDraft={setIndexerProxyDraft}

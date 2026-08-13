@@ -156,7 +156,7 @@ async fn list_cutoff_unmet_titles_returns_episode_scoped_rows_for_series() {
 }
 
 #[tokio::test]
-async fn list_cutoff_unmet_titles_falls_back_to_default_when_title_profile_tag_is_stale() {
+async fn list_cutoff_unmet_titles_skips_legacy_titles_with_stale_profile_tags() {
     let settings = Arc::new(StoredSettingsRepo::default());
     settings
         .set_value(
@@ -173,7 +173,7 @@ async fn list_cutoff_unmet_titles_falls_back_to_default_when_title_profile_tag_i
         )])
         .await;
     let media_files = Arc::new(MockMediaFileRepo::default());
-    let (app, user, _) =
+    let (app, user, titles) =
         bootstrap_with_cutoff_projection_state(settings, quality_profiles, media_files.clone());
 
     let title = app
@@ -183,7 +183,7 @@ async fn list_cutoff_unmet_titles_falls_back_to_default_when_title_profile_tag_i
                 name: "Stale Tag".into(),
                 facet: MediaFacet::Movie,
                 monitored: true,
-                tags: vec!["scryer:quality-profile:missing-profile".to_string()],
+                tags: vec![],
                 external_ids: vec![],
                 min_availability: None,
                 ..Default::default()
@@ -191,6 +191,15 @@ async fn list_cutoff_unmet_titles_falls_back_to_default_when_title_profile_tag_i
         )
         .await
         .expect("create title");
+    titles
+        .store
+        .lock()
+        .await
+        .iter_mut()
+        .find(|stored| stored.id == title.id)
+        .expect("stored title")
+        .tags
+        .push("scryer:quality-profile:missing-profile".to_string());
 
     media_files
         .insert_media_file(&InsertMediaFileInput {

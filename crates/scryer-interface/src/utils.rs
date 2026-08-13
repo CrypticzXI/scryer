@@ -1,19 +1,33 @@
 use async_graphql::Result as GqlResult;
 use scryer_domain::{ExternalId, NewTitle};
 
-use crate::types::{
-    AddTitleInput, DownloadSourceKindValue, FillerPolicyValue, IntoApplication, RecapPolicyValue,
-};
+use crate::types::{AddTitleInput, DownloadSourceKindValue, IntoApplication};
 
 pub(crate) struct ResolvedTitleOptionsInput {
-    pub quality_profile_id: Option<async_graphql::ID>,
+    /// `None` preserves the stored value; `Some(None)` clears it; `Some(Some(_))` sets it.
+    pub quality_profile_id: Option<Option<String>>,
     pub root_folder_id: Option<Option<String>>,
-    pub monitor_type: Option<crate::types::MonitorTypeValue>,
-    pub use_season_folders: Option<bool>,
-    pub monitor_specials: Option<bool>,
-    pub inter_season_movies: Option<bool>,
-    pub filler_policy: Option<FillerPolicyValue>,
-    pub recap_policy: Option<RecapPolicyValue>,
+    pub monitor_type: Option<Option<String>>,
+    pub use_season_folders: Option<Option<bool>>,
+    pub monitor_specials: Option<Option<bool>>,
+    pub inter_season_movies: Option<Option<bool>>,
+    pub filler_policy: Option<Option<String>>,
+    pub recap_policy: Option<Option<String>>,
+}
+
+impl ResolvedTitleOptionsInput {
+    pub(crate) fn to_application_patch(&self) -> scryer_application::TitleOptionsPatch {
+        scryer_application::TitleOptionsPatch {
+            quality_profile_id: self.quality_profile_id.clone(),
+            root_folder_id: self.root_folder_id.clone(),
+            monitor_type: self.monitor_type.clone(),
+            use_season_folders: self.use_season_folders,
+            monitor_specials: self.monitor_specials,
+            inter_season_movies: self.inter_season_movies,
+            filler_policy: self.filler_policy.clone(),
+            recap_policy: self.recap_policy.clone(),
+        }
+    }
 }
 
 fn push_structured_tag(tags: &mut Vec<String>, prefix: &str, value: Option<String>) {
@@ -50,47 +64,31 @@ pub(crate) fn normalize_title_tags(tags: Vec<String>) -> Vec<String> {
 }
 
 pub(crate) fn apply_title_options(tags: &mut Vec<String>, options: ResolvedTitleOptionsInput) {
-    set_structured_tag(
-        tags,
-        "scryer:quality-profile:",
-        options
-            .quality_profile_id
-            .map(|value| value.as_ref().trim().to_string()),
-    );
-    set_structured_tag(
-        tags,
-        "scryer:monitor-type:",
-        options
-            .monitor_type
-            .map(|value| value.as_tag_value().to_string()),
-    );
-    set_structured_tag(
-        tags,
-        "scryer:filler-policy:",
-        options
-            .filler_policy
-            .map(|value| value.as_app_str().to_string()),
-    );
-    set_structured_tag(
-        tags,
-        "scryer:recap-policy:",
-        options
-            .recap_policy
-            .map(|value| value.as_app_str().to_string()),
-    );
+    if let Some(value) = options.quality_profile_id {
+        set_structured_tag(tags, "scryer:quality-profile:", value);
+    }
+    if let Some(value) = options.monitor_type {
+        set_structured_tag(tags, "scryer:monitor-type:", value);
+    }
+    if let Some(value) = options.filler_policy {
+        set_structured_tag(tags, "scryer:filler-policy:", value);
+    }
+    if let Some(value) = options.recap_policy {
+        set_structured_tag(tags, "scryer:recap-policy:", value);
+    }
 
     if let Some(use_season_folders) = options.use_season_folders {
         set_structured_tag(
             tags,
             "scryer:season-folder:",
-            Some(
+            use_season_folders.map(|use_season_folders| {
                 if use_season_folders {
                     "enabled"
                 } else {
                     "disabled"
                 }
-                .to_string(),
-            ),
+                .to_string()
+            }),
         );
     }
 
@@ -98,7 +96,9 @@ pub(crate) fn apply_title_options(tags: &mut Vec<String>, options: ResolvedTitle
         set_structured_tag(
             tags,
             "scryer:monitor-specials:",
-            Some(if monitor_specials { "true" } else { "false" }.to_string()),
+            monitor_specials.map(|monitor_specials| {
+                if monitor_specials { "true" } else { "false" }.to_string()
+            }),
         );
     }
 
@@ -106,7 +106,9 @@ pub(crate) fn apply_title_options(tags: &mut Vec<String>, options: ResolvedTitle
         set_structured_tag(
             tags,
             "scryer:inter-season-movies:",
-            Some(if inter_season_movies { "true" } else { "false" }.to_string()),
+            inter_season_movies.map(|inter_season_movies| {
+                if inter_season_movies { "true" } else { "false" }.to_string()
+            }),
         );
     }
 }

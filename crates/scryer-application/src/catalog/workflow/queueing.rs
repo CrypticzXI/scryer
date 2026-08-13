@@ -707,6 +707,7 @@ impl AppUseCase {
                 title: title_context_snapshot(title),
                 source_title: source_title_for_attempt.clone(),
                 source_hint: source_hint_for_attempt.clone(),
+                source_provider: source_provider_name.clone(),
                 download_id: Some(grab.job_id.clone()),
                 episode_ids: grabbed_episode_ids,
             }),
@@ -751,8 +752,31 @@ impl AppUseCase {
         library_id: String,
         queued_release: QueuedReleaseSelection,
     ) -> AppResult<AddTitleAndQueueDownloadOutcome> {
+        self.add_title_and_queue_download_with_options_patch_outcome_in_library(
+            actor,
+            request,
+            library_id,
+            TitleOptionsPatch::default(),
+            queued_release,
+        )
+        .await
+    }
+
+    pub async fn add_title_and_queue_download_with_options_patch_outcome_in_library(
+        &self,
+        actor: &User,
+        request: NewTitle,
+        library_id: String,
+        options_patch: TitleOptionsPatch,
+        queued_release: QueuedReleaseSelection,
+    ) -> AppResult<AddTitleAndQueueDownloadOutcome> {
         let add_outcome = self
-            .add_title_with_outcome_in_library(actor, request, library_id)
+            .add_title_with_options_patch_outcome_in_library(
+                actor,
+                request,
+                library_id,
+                options_patch,
+            )
             .await?;
         let title = add_outcome.title.clone();
         let queued = self

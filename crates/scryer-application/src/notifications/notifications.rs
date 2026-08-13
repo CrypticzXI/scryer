@@ -244,6 +244,11 @@ impl AppUseCase {
             updated_at: now,
         };
 
+        self.validate_notification_provider_required_config(
+            config.channel_type.as_str(),
+            &config.config_json,
+        )?;
+
         let repo = self.notification_channels()?;
         repo.create_channel(config).await
     }
@@ -317,6 +322,11 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("notification channel {id}")))?;
 
         if let Some(n) = name {
+            if n.trim().is_empty() {
+                return Err(AppError::Validation(
+                    "channel name must not be empty".into(),
+                ));
+            }
             channel.name = n;
         }
         if let Some(c) = config_json {
@@ -342,6 +352,10 @@ impl AppUseCase {
         if let Some(e) = is_enabled {
             channel.is_enabled = e;
         }
+        self.validate_notification_provider_required_config(
+            channel.channel_type.as_str(),
+            &channel.config_json,
+        )?;
         channel.updated_at = Utc::now();
 
         repo.update_channel(channel).await
@@ -379,6 +393,13 @@ impl AppUseCase {
             .ok_or_else(|| {
                 AppError::Repository("notification plugin provider is not configured".into())
             })?;
+
+        if !provider.supports_test_for_provider(channel.channel_type.as_str()) {
+            return Err(AppError::Validation(format!(
+                "notification provider '{}' does not support test notifications",
+                channel.channel_type.as_str()
+            )));
+        }
 
         let channel = self
             .notification_channel_with_resolved_media_server_config(channel)
@@ -663,6 +684,10 @@ impl AppUseCase {
                         "media server notification providers must be targeted through media server connections".into(),
                     ));
                 }
+                self.validate_notification_provider_required_config(
+                    channel.channel_type.as_str(),
+                    &channel.config_json,
+                )?;
                 channel.channel_type.as_str().to_string()
             }
             NotificationTargetKind::MediaServerConnection => {
@@ -694,10 +719,11 @@ impl AppUseCase {
             .ok_or_else(|| {
                 AppError::Repository("notification plugin provider is not configured".into())
             })?;
-        if !provider
-            .available_provider_types()
-            .iter()
-            .any(|candidate| candidate.eq_ignore_ascii_case(&provider_type))
+        if provider.plugin_name_for_provider(&provider_type).is_none()
+            && !provider
+                .available_provider_types()
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(&provider_type))
         {
             return Err(AppError::Validation(format!(
                 "notification provider '{provider_type}' is not available"
@@ -768,6 +794,10 @@ impl AppUseCase {
         mut channel: NotificationChannelConfig,
     ) -> AppResult<NotificationChannelConfig> {
         let Some(connection_id) = channel.media_server_connection_id.clone() else {
+            self.validate_notification_provider_required_config(
+                channel.channel_type.as_str(),
+                &channel.config_json,
+            )?;
             return Ok(channel);
         };
         let connection = self
@@ -885,10 +915,14 @@ impl AppUseCase {
         provider_type: &str,
         config_json: &str,
     ) -> AppResult<()> {
-        let config = serde_json::from_str::<serde_json::Value>(config_json)
-            .ok()
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default();
+        let config = serde_json::from_str::<serde_json::Value>(config_json).map_err(|error| {
+            AppError::Validation(format!(
+                "notification configuration is not valid JSON: {error}"
+            ))
+        })?;
+        let config = config.as_object().ok_or_else(|| {
+            AppError::Validation("notification configuration must be a JSON object".into())
+        })?;
         for field in self.notification_provider_config_fields(provider_type) {
             if !field.required {
                 continue;

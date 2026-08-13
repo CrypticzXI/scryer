@@ -437,6 +437,7 @@ export const testDownloadClientConnectionMutation = `mutation TestDownloadClient
 export const deleteDownloadClientMutation = `mutation DeleteDownloadClient($id: ID!) {
   deleteDownloadClientConfig(id: $id) {
     id
+    clearedIndexerMappingCount
   }
 }`;
 
@@ -1078,6 +1079,49 @@ export const updateServiceSettingsMutation = `mutation UpdateServiceSettings($in
 
 export const queueExistingMutation = `mutation QueueExisting($input: QueueDownloadInput!) {
   queueExistingTitleDownload(input: $input) {
+    status
+    jobId
+    titleId
+    titleName
+    sourceTitle
+    sourceKind
+    conflict {
+      titleId
+      titleName
+      downloadClientId
+      downloadClientType
+      downloadClientItemId
+      sourceTitle
+      sourceKind
+      state
+      replaceable
+      scope {
+        __typename
+        ... on EpisodeScopePayload {
+          episodeId
+        }
+        ... on EpisodeSetScopePayload {
+          episodeIds
+        }
+        ... on SeriesMovieScopePayload {
+          seriesMovieLinkId
+        }
+        ... on CollectionScopePayload {
+          collectionId
+        }
+        ... on TitleScopePayload {
+          wholeTitle
+        }
+        ... on OrphanScopePayload {
+          orphaned
+        }
+      }
+    }
+  }
+}`;
+
+export const queueReplacementMutation = `mutation QueueReplacement($input: QueueDownloadInput!) {
+  queueReplacementRelease(input: $input) {
     status
     jobId
     titleId
@@ -2338,3 +2382,9 @@ export type SubtitleSearchResult = {
   downloadCount: number | null;
   hashMatched: boolean;
 };
+
+export const setIndexerDownloadClientMappingMutation = `mutation SetIndexerDownloadClientMapping($input: SetIndexerDownloadClientMappingInput!) {
+  setIndexerDownloadClientMapping(input: $input) {
+    downloadClientId
+  }
+}`;

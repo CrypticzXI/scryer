@@ -54,6 +54,28 @@ enum CompletedDownloadSubmissionResolution {
     },
 }
 
+const DOWNLOAD_SUBMISSION_VISIBILITY_GRACE_SECONDS: i64 = 15;
+
+fn download_submission_persistence_may_be_in_flight(
+    completed: &CompletedDownload,
+    resolution: &CompletedDownloadSubmissionResolution,
+    now: DateTime<Utc>,
+) -> bool {
+    if !matches!(
+        resolution,
+        CompletedDownloadSubmissionResolution::MissingDownloadId { .. }
+    ) {
+        return false;
+    }
+
+    let Some(completed_at) = completed.completed_at else {
+        return false;
+    };
+    let age = now.signed_duration_since(completed_at);
+    age >= chrono::Duration::zero()
+        && age < chrono::Duration::seconds(DOWNLOAD_SUBMISSION_VISIBILITY_GRACE_SECONDS)
+}
+
 fn completed_download_observed_identity(
     completed: &CompletedDownload,
 ) -> DownloadSubmissionIdentity {
@@ -215,6 +237,18 @@ async fn resolve_completed_download_submission(
     }
 
     Ok(CompletedDownloadSubmissionResolution::Foreign)
+}
+
+pub(crate) async fn recent_download_submission_persistence_is_pending(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+) -> AppResult<bool> {
+    let resolution = resolve_completed_download_submission(app, completed, None).await?;
+    Ok(download_submission_persistence_may_be_in_flight(
+        completed,
+        &resolution,
+        Utc::now(),
+    ))
 }
 
 async fn submission_identity_for_submission(
@@ -750,6 +784,19 @@ async fn try_import_completed_downloads_with_policy(
         if let CompletedDownloadSubmissionResolution::MissingDownloadId { identity } =
             &submission_resolution
         {
+            if download_submission_persistence_may_be_in_flight(
+                &completed,
+                &submission_resolution,
+                Utc::now(),
+            ) {
+                tracing::info!(
+                    source_ref = %source_ref,
+                    title = %item.title_name,
+                    download_id = ?identity.download_id,
+                    "import: waiting for recent download submission identity to become durable"
+                );
+                continue;
+            }
             block_completed_download_identity_for_manual_review(
                 app,
                 &completed,

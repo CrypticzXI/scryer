@@ -8,7 +8,11 @@
 //! page's scope keys together, then compute covered/routed counts in memory and
 //! fold in the scheduler availability snapshot for the `Deferred` state.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Instant,
+};
 
 use chrono::Utc;
 use scryer_domain::{
@@ -80,6 +84,37 @@ struct TitleConvergenceContext {
     routed_indexer_ids: Vec<String>,
 }
 
+fn wanted_projection_time_bucket(kind: WantedKind, now: chrono::DateTime<Utc>) -> Option<i64> {
+    match kind {
+        WantedKind::Missing => Some(now.timestamp().div_euclid(60)),
+        WantedKind::CutoffUpgrade => None,
+    }
+}
+
+#[cfg(test)]
+mod wanted_projection_time_bucket_tests {
+    use super::{Utc, WantedKind, wanted_projection_time_bucket};
+    use chrono::TimeZone;
+
+    #[test]
+    fn missing_rolls_at_the_next_utc_minute_while_cutoff_does_not() {
+        let before = Utc.timestamp_opt(119, 999_999_999).single().unwrap();
+        let after = Utc.timestamp_opt(120, 0).single().unwrap();
+        assert_eq!(
+            wanted_projection_time_bucket(WantedKind::Missing, before),
+            Some(1)
+        );
+        assert_eq!(
+            wanted_projection_time_bucket(WantedKind::Missing, after),
+            Some(2)
+        );
+        assert_eq!(
+            wanted_projection_time_bucket(WantedKind::CutoffUpgrade, after),
+            None
+        );
+    }
+}
+
 impl AppUseCase {
     /// One page of the derived Missing/Upgrades view. Mirrors the
     /// cutoff-unmet authorization: results are limited to the actor's authorized
@@ -125,78 +160,41 @@ impl AppUseCase {
         if authorized_ids.is_empty() {
             return Ok((Vec::new(), 0));
         }
-        let library_name_by_id: HashMap<String, String> = authorized
-            .iter()
-            .map(|library| (library.id.clone(), library.name.clone()))
-            .collect();
-        let library_slug_by_id: HashMap<String, String> = authorized
-            .iter()
-            .map(|library| (library.id.clone(), library.slug.clone()))
-            .collect();
-
-        // Every non-`wanted` state row (paused or an in-flight grab) whose scope is
-        // still derivable — excluded from the active view (§D-B: the view lists
-        // actionable targets, not scopes already paused or grabbed).
-        let excluded_scope_keys = self.non_wanted_state_scope_keys().await?;
-
         let facet_str = facet.as_ref().map(|facet| facet.as_str().to_string());
         let title_needle = title_search
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_ascii_lowercase);
-
-        // Raw target coordinates for the requested kind, already availability-gated.
-        let mut rows: Vec<WantedScopeView> = match kind {
-            WantedKind::Missing => {
-                let now = Utc::now();
-                self.derive_missing_targets(&now)
-                    .await?
-                    .into_iter()
-                    .filter(|target| authorized_ids.contains(&target.library_id))
-                    .filter(|target| {
-                        facet_str
-                            .as_deref()
-                            .is_none_or(|facet| target.facet.as_str() == facet)
-                    })
-                    .filter(|target| !excluded_scope_keys.contains(&target.scope_key))
-                    .map(missing_target_to_view)
-                    .collect()
-            }
-            WantedKind::CutoffUpgrade => {
-                let library_filter = authorized_ids.iter().cloned().collect::<Vec<_>>();
-                self.compute_cutoff_unmet_items(facet.clone(), Some(library_filter))
-                    .await?
-                    .into_iter()
-                    .filter_map(cutoff_item_to_view)
-                    .filter(|view| !excluded_scope_keys.contains(&view.scope_key))
-                    .collect()
-            }
-        };
-
-        // Enrich title name/slug (page-independent identity is needed for the title
-        // search filter and the deterministic sort, so it is loaded before slicing;
-        // one lookup per unique title).
-        self.enrich_view_titles(&mut rows).await;
-        for view in &mut rows {
-            view.library_name = library_name_by_id.get(&view.library_id).cloned();
-            view.library_slug = library_slug_by_id.get(&view.library_id).cloned();
-        }
-
-        if let Some(needle) = title_needle.as_deref() {
-            rows.retain(|view| {
-                view.title_name
+        let cached = self.current_wanted_projection(kind).await?;
+        let excluded_scope_keys = self.non_wanted_state_scope_keys().await?;
+        let filtered = cached
+            .iter()
+            .filter(|view| !excluded_scope_keys.contains(&view.scope_key))
+            .filter(|view| authorized_ids.contains(&view.library_id))
+            .filter(|view| {
+                facet_str
                     .as_deref()
-                    .is_some_and(|name| name.to_ascii_lowercase().contains(needle))
-            });
-        }
+                    .is_none_or(|facet| view.facet.as_str() == facet)
+            })
+            .filter(|view| {
+                title_needle.as_deref().is_none_or(|needle| {
+                    view.title_name
+                        .as_deref()
+                        .is_some_and(|name| name.to_ascii_lowercase().contains(needle))
+                })
+            })
+            .collect::<Vec<_>>();
 
-        sort_wanted_views(&mut rows);
-
-        let total = rows.len() as i64;
+        let total = filtered.len() as i64;
         let offset = offset.max(0) as usize;
         let limit = limit.max(0) as usize;
-        let mut page: Vec<WantedScopeView> = rows.into_iter().skip(offset).take(limit).collect();
+        let mut page: Vec<WantedScopeView> = filtered
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect();
 
         // Join the state row + derive convergence for the sliced page only.
         self.attach_state_rows(&mut page).await?;
@@ -205,52 +203,186 @@ impl AppUseCase {
         Ok((page, total))
     }
 
+    async fn current_wanted_projection(
+        &self,
+        kind: WantedKind,
+    ) -> AppResult<Arc<[WantedScopeView]>> {
+        use std::sync::atomic::Ordering;
+
+        let generation = self
+            .runtime
+            .acquisition
+            .wanted_projection_generation
+            .load(Ordering::Acquire);
+        let time_bucket = wanted_projection_time_bucket(kind, Utc::now());
+        if let Some(cached) = self
+            .runtime
+            .acquisition
+            .wanted_projection_cache
+            .read()
+            .await
+            .get(&kind)
+            .filter(|cached| cached.generation == generation && cached.time_bucket == time_bucket)
+        {
+            metrics::counter!("scryer_wanted_projection_cache_total", "result" => "hit")
+                .increment(1);
+            return Ok(cached.rows.clone());
+        }
+
+        metrics::counter!("scryer_wanted_projection_cache_total", "result" => "miss").increment(1);
+        let _build_guard = self
+            .runtime
+            .acquisition
+            .wanted_projection_build_lock
+            .lock()
+            .await;
+        for attempt in 0..2 {
+            let generation = self
+                .runtime
+                .acquisition
+                .wanted_projection_generation
+                .load(Ordering::Acquire);
+            let now = Utc::now();
+            let time_bucket = wanted_projection_time_bucket(kind, now);
+            if let Some(cached) = self
+                .runtime
+                .acquisition
+                .wanted_projection_cache
+                .read()
+                .await
+                .get(&kind)
+                .filter(|cached| {
+                    cached.generation == generation && cached.time_bucket == time_bucket
+                })
+            {
+                return Ok(cached.rows.clone());
+            }
+
+            let started_at = Instant::now();
+            let mut rows = match kind {
+                WantedKind::Missing => self
+                    .derive_missing_targets(&now)
+                    .await?
+                    .into_iter()
+                    .map(missing_target_to_view)
+                    .collect::<Vec<_>>(),
+                WantedKind::CutoffUpgrade => self
+                    .compute_cutoff_unmet_items(None, None)
+                    .await?
+                    .into_iter()
+                    .filter_map(cutoff_item_to_view)
+                    .collect::<Vec<_>>(),
+            };
+            self.enrich_view_titles(&mut rows).await;
+            let libraries = self.services.catalog.libraries.list(None).await?;
+            let library_presentation = libraries
+                .into_iter()
+                .map(|library| (library.id, (library.name, library.slug)))
+                .collect::<HashMap<_, _>>();
+            for view in &mut rows {
+                if let Some((name, slug)) = library_presentation.get(&view.library_id) {
+                    view.library_name = Some(name.clone());
+                    view.library_slug = Some(slug.clone());
+                }
+            }
+            sort_wanted_views(&mut rows);
+
+            let generation_changed = self
+                .runtime
+                .acquisition
+                .wanted_projection_generation
+                .load(Ordering::Acquire)
+                != generation;
+            let time_bucket_changed =
+                wanted_projection_time_bucket(kind, Utc::now()) != time_bucket;
+            if generation_changed || time_bucket_changed {
+                if attempt == 0 {
+                    continue;
+                }
+                return Err(AppError::Repository(
+                    "wanted projection changed while it was being rebuilt; retry the request"
+                        .to_string(),
+                ));
+            }
+            let rows: Arc<[WantedScopeView]> = Arc::from(rows);
+            self.runtime
+                .acquisition
+                .wanted_projection_cache
+                .write()
+                .await
+                .insert(
+                    kind,
+                    crate::services::CachedWantedProjection {
+                        generation,
+                        time_bucket,
+                        rows: rows.clone(),
+                    },
+                );
+            metrics::histogram!("scryer_wanted_projection_rebuild_duration_seconds", "kind" => kind.as_str())
+                .record(started_at.elapsed().as_secs_f64());
+            metrics::gauge!("scryer_wanted_projection_items", "kind" => kind.as_str())
+                .set(rows.len() as f64);
+            return Ok(rows);
+        }
+        unreachable!("wanted projection rebuild attempts are bounded")
+    }
+
     /// Scope keys whose state row is paused or grabbed — excluded from the active
     /// derived view. One list query, keyed by the same scope identity the cursor
     /// uses.
     async fn non_wanted_state_scope_keys(&self) -> AppResult<HashSet<String>> {
         let mut excluded = HashSet::new();
-        for status in [
-            AcquisitionScopeStatus::Paused,
-            AcquisitionScopeStatus::Grabbed,
-        ] {
-            let items = self
-                .services
-                .workflow
-                .acquisition_scope_states
-                .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
-                    statuses: vec![status.as_str().to_string()],
-                    limit: i64::MAX,
-                    ..AcquisitionScopeStatesQuery::default()
-                })
-                .await?;
-            for item in items {
-                let scope = SubmissionScope::from_persisted(
-                    &item.title_id,
-                    item.episode_id.clone(),
-                    item.collection_id.clone(),
-                    item.series_movie_link_id.clone(),
-                    None,
-                );
-                if let Some(scope_key) = convergence_scope_key(&scope, &item.title_id) {
-                    excluded.insert(scope_key);
-                }
+        let items = self
+            .services
+            .workflow
+            .acquisition_scope_states
+            .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
+                statuses: vec![
+                    AcquisitionScopeStatus::Paused.as_str().to_string(),
+                    AcquisitionScopeStatus::Grabbed.as_str().to_string(),
+                ],
+                limit: i64::MAX,
+                ..AcquisitionScopeStatesQuery::default()
+            })
+            .await?;
+        for item in items.into_iter().filter(|item| {
+            matches!(
+                item.status,
+                AcquisitionScopeStatus::Paused | AcquisitionScopeStatus::Grabbed
+            )
+        }) {
+            let scope = SubmissionScope::from_persisted(
+                &item.title_id,
+                item.episode_id.clone(),
+                item.collection_id.clone(),
+                item.series_movie_link_id.clone(),
+                None,
+            );
+            if let Some(scope_key) = convergence_scope_key(&scope, &item.title_id) {
+                excluded.insert(scope_key);
             }
         }
         Ok(excluded)
     }
 
-    /// Fill in `title_name`/`title_slug` for the derived rows — one `get_by_id` per
-    /// unique title, cached across the row's scopes.
+    /// Fill in `title_name`/`title_slug` for the derived rows with one batch read.
     async fn enrich_view_titles(&self, rows: &mut [WantedScopeView]) {
-        let unique_title_ids: HashSet<String> =
-            rows.iter().map(|view| view.title_id.clone()).collect();
-        let mut names: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
-        for title_id in unique_title_ids {
-            if let Ok(Some(title)) = self.services.catalog.titles.get_by_id(&title_id).await {
-                names.insert(title_id, (Some(title.name), title.slug));
-            }
-        }
+        let unique_title_ids = rows
+            .iter()
+            .map(|view| view.title_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let names = self
+            .services
+            .catalog
+            .titles
+            .get_by_ids(&unique_title_ids)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|title| (title.id, (Some(title.name), title.slug)))
+            .collect::<HashMap<_, _>>();
         for view in rows.iter_mut() {
             if view.title_name.is_some() {
                 continue;
@@ -262,18 +394,45 @@ impl AppUseCase {
         }
     }
 
-    /// Attach the activity-driven state row for each page scope (page-sized, so a
-    /// per-scope lookup is bounded).
+    /// Attach the activity-driven state rows with one repository read for the page.
     async fn attach_state_rows(&self, page: &mut [WantedScopeView]) -> AppResult<()> {
+        if page.is_empty() {
+            return Ok(());
+        }
+        let wanted_scope_keys = page
+            .iter()
+            .map(|view| view.scope_key.clone())
+            .collect::<HashSet<_>>();
+        let title_ids = page
+            .iter()
+            .map(|view| view.title_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let states = self
+            .services
+            .workflow
+            .acquisition_scope_states
+            .list_acquisition_scope_states_for_title_ids(&title_ids)
+            .await?;
+        let mut states_by_scope = HashMap::new();
+        for state in states {
+            let scope = SubmissionScope::from_persisted(
+                &state.title_id,
+                state.episode_id.clone(),
+                state.collection_id.clone(),
+                state.series_movie_link_id.clone(),
+                None,
+            );
+            let Some(scope_key) = convergence_scope_key(&scope, &state.title_id) else {
+                continue;
+            };
+            if wanted_scope_keys.contains(scope_key.as_str()) {
+                states_by_scope.insert(scope_key, state);
+            }
+        }
         for view in page.iter_mut() {
-            view.state = self
-                .find_wanted_state_for_scope(
-                    &view.title_id,
-                    view.episode_id.as_deref(),
-                    view.collection_id.as_deref(),
-                    view.series_movie_link_id.as_deref(),
-                )
-                .await?;
+            view.state = states_by_scope.get(&view.scope_key).cloned();
         }
         Ok(())
     }
@@ -314,13 +473,25 @@ impl AppUseCase {
 
         // One (fingerprint, routed) resolution per unique title — identical across a
         // title's scopes.
+        let title_ids = scopes
+            .iter()
+            .map(|(title_id, _)| title_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let titles = self
+            .services
+            .catalog
+            .titles
+            .get_by_ids(&title_ids)
+            .await
+            .unwrap_or_default();
         let mut title_context: HashMap<String, Option<TitleConvergenceContext>> = HashMap::new();
-        for (title_id, _) in scopes {
-            if title_context.contains_key(title_id) {
-                continue;
-            }
-            let context = self.resolve_title_convergence_context(title_id).await;
-            title_context.insert(title_id.clone(), context);
+        for title in titles {
+            let context = self
+                .resolve_title_convergence_context_for_title(&title)
+                .await;
+            title_context.insert(title.id.clone(), context);
         }
 
         // One coverage fetch for the whole page.
@@ -405,22 +576,15 @@ impl AppUseCase {
     /// Resolve `(fingerprint, routed indexers)` for a title via its title-level
     /// search subject — the values every scope of the title shares. `None` when the
     /// title is gone or nothing is routed.
-    async fn resolve_title_convergence_context(
+    async fn resolve_title_convergence_context_for_title(
         &self,
-        title_id: &str,
+        title: &scryer_domain::Title,
     ) -> Option<TitleConvergenceContext> {
-        let title = self
-            .services
-            .catalog
-            .titles
-            .get_by_id(title_id)
-            .await
-            .ok()??;
         let subject = self
-            .resolve_release_search_subject_for_title(&title)
+            .resolve_release_search_subject_for_title(title)
             .await
             .ok()?;
-        let convergence = self.resolve_scope_convergence(&title, &subject).await?;
+        let convergence = self.resolve_scope_convergence(title, &subject).await?;
         Some(TitleConvergenceContext {
             fingerprint: convergence.fingerprint,
             routed_indexer_ids: convergence.routed_indexer_ids,
@@ -572,8 +736,8 @@ pub struct AcquisitionSearchJobView {
 }
 
 /// Map a terminal/running job-run status onto the acquisition-search job state
-/// vocabulary: a cancellation lands as `Warning`, which the UI
-/// shows as `Cancelled`.
+/// vocabulary. Partial failures use `Warning` internally but are still a
+/// completed search; only the explicit cancellation signal is cancelled.
 fn acquisition_search_state_for_status(status: JobRunStatus, cancelled: bool) -> &'static str {
     if cancelled {
         return "cancelled";
@@ -581,8 +745,29 @@ fn acquisition_search_state_for_status(status: JobRunStatus, cancelled: bool) ->
     match status {
         JobRunStatus::Completed => "completed",
         JobRunStatus::Failed => "failed",
-        JobRunStatus::Warning => "cancelled",
+        JobRunStatus::Warning => "completed",
         _ => "running",
+    }
+}
+
+#[cfg(test)]
+mod acquisition_search_state_tests {
+    use super::*;
+
+    #[test]
+    fn warning_is_completed_unless_the_search_was_cancelled() {
+        assert_eq!(
+            acquisition_search_state_for_status(JobRunStatus::Warning, false),
+            "completed"
+        );
+        assert_eq!(
+            acquisition_search_state_for_status(JobRunStatus::Warning, true),
+            "cancelled"
+        );
+        assert_eq!(
+            acquisition_search_state_for_status(JobRunStatus::Completed, true),
+            "cancelled"
+        );
     }
 }
 
@@ -786,22 +971,47 @@ impl AppUseCase {
             }]);
         }
 
-        // Derive the full target set (unpaged) via the same view derivation, then
-        // map each row to a searchable scope.
-        let (views, _total) = self
-            .list_wanted_scope_views(
+        let authorized = self
+            .list_libraries_for_permission(
                 actor,
-                request.wanted_kind,
                 request.facet.clone(),
-                request.library_ids.clone(),
-                None,
-                i64::MAX,
-                0,
+                scryer_domain::LibraryPermission::View,
             )
             .await?;
-        let season_filter = request.season_number.map(|value| value.to_string());
-        let scopes = views
+        let mut authorized_ids = authorized
             .into_iter()
+            .map(|library| library.id)
+            .collect::<HashSet<_>>();
+        let requested_ids = request
+            .library_ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        if !requested_ids.is_empty() {
+            authorized_ids.retain(|id| requested_ids.contains(id));
+        }
+        if authorized_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let facet_filter = request
+            .facet
+            .as_ref()
+            .map(|facet| facet.as_str().to_string());
+        let season_filter = request.season_number.map(|value| value.to_string());
+        let current = self.current_wanted_projection(request.wanted_kind).await?;
+        let excluded_scope_keys = self.non_wanted_state_scope_keys().await?;
+        let scopes = current
+            .iter()
+            .filter(|view| !excluded_scope_keys.contains(&view.scope_key))
+            .filter(|view| authorized_ids.contains(&view.library_id))
+            .filter(|view| {
+                facet_filter
+                    .as_deref()
+                    .is_none_or(|facet| view.facet.as_str() == facet)
+            })
             .filter(|view| {
                 request
                     .title_id
@@ -814,13 +1024,13 @@ impl AppUseCase {
                     .is_none_or(|season| view.season_number.as_deref() == Some(season))
             })
             .filter_map(|view| {
-                let scope = submission_scope_for_view(&view)?;
+                let scope = submission_scope_for_view(view)?;
                 Some(AcquisitionSearchScope {
                     label: view
                         .title_name
                         .clone()
                         .unwrap_or_else(|| view.title_id.clone()),
-                    title_id: view.title_id,
+                    title_id: view.title_id.clone(),
                     scope,
                 })
             })

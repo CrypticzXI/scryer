@@ -6,6 +6,7 @@ export * from "./download-queue";
 export * from "./discovery";
 export * from "./import-history";
 export * from "./indexers";
+export * from "./indexer-download-client-mappings";
 export * from "./delay-profiles";
 export * from "./quality-profiles";
 export * from "./releases";

@@ -115,7 +115,7 @@ mod tests {
         MediaFileRepository, PendingImportStatus, QualityProfileRepository, SettingsRepository,
         ShowRepository, SystemInfoProvider, TitleImageKind, TitleImageRepository,
         TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository,
-        UserRepository, default_quality_profile_for_search,
+        UserRepository, builtin_4k_profile,
     };
     use scryer_domain::{
         Collection, CollectionType, Id, Library, LibraryGrant, LibraryPermission,
@@ -705,7 +705,7 @@ mod tests {
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
             let quality_profiles = crate::QualityProfileStore::new(services.datastore());
-            let profiles = vec![default_quality_profile_for_search()];
+            let profiles = vec![builtin_4k_profile()];
 
             quality_profiles
                 .replace_quality_profiles("system", None, profiles.clone())
@@ -1240,6 +1240,40 @@ mod tests {
             .entry("titles".to_string())
             .or_default()
             .insert("catalog_sort_key".to_string());
+        columns.entry("indexers".to_string()).or_default().extend([
+            "indexer_proxy_config_id".to_string(),
+            "last_error_message".to_string(),
+            "download_client_id".to_string(),
+        ]);
+        columns
+            .entry("pending_releases".to_string())
+            .or_default()
+            .insert("indexer_id".to_string());
+        columns
+            .entry("rule_sets".to_string())
+            .or_default()
+            .insert("managed_tag_filter".to_string());
+        columns
+            .entry("download_submissions".to_string())
+            .or_default()
+            .extend([
+                "source_provider_id".to_string(),
+                "source_provider_name".to_string(),
+            ]);
+        columns
+            .entry("discovery_titles".to_string())
+            .or_default()
+            .extend(["is_adult".to_string(), "content_ratings_json".to_string()]);
+        if let Some(wanted_items) = columns.get_mut("wanted_items") {
+            for column in [
+                "search_phase",
+                "next_search_at",
+                "search_count",
+                "baseline_date",
+            ] {
+                wanted_items.remove(column);
+            }
+        }
         columns
     }
 

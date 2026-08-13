@@ -1492,7 +1492,7 @@ impl HousekeepingRepository for HousekeepingStore {
 
 const PENDING_RELEASE_COLUMNS: &str =
     "id, wanted_item_id, title_id, release_title, release_url, release_size_bytes,
-    source_kind, release_score, scoring_log_json, indexer_source, release_guid,
+    source_kind, release_score, scoring_log_json, indexer_source, indexer_id, release_guid,
     added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash";
 
 /// Same columns as [`PENDING_RELEASE_COLUMNS`] but qualified with the `pr` alias
@@ -1500,7 +1500,7 @@ const PENDING_RELEASE_COLUMNS: &str =
 /// column names. The output column names are unchanged.
 const PENDING_RELEASE_COLUMNS_PR: &str =
     "pr.id, pr.wanted_item_id, pr.title_id, pr.release_title, pr.release_url, pr.release_size_bytes,
-    pr.source_kind, pr.release_score, pr.scoring_log_json, pr.indexer_source, pr.release_guid,
+    pr.source_kind, pr.release_score, pr.scoring_log_json, pr.indexer_source, pr.indexer_id, pr.release_guid,
     pr.added_at, pr.delay_until, pr.status, pr.grabbed_at, pr.source_password, pr.published_at, pr.info_hash";
 
 fn pending_release_row_to_item(
@@ -1521,6 +1521,7 @@ fn pending_release_row_to_item(
         release_score: row.i32("release_score")?,
         scoring_log_json: json_text_from_row(row, "scoring_log_json")?,
         indexer_source: row.opt_text("indexer_source")?,
+        indexer_id: row.opt_text("indexer_id")?,
         release_guid: row.opt_text("release_guid")?,
         added_at: required_timestamp_text(row, "added_at")?,
         delay_until: required_timestamp_text(row, "delay_until")?,
@@ -1566,6 +1567,7 @@ fn pending_release_insert_args(
         SqlArg::I32(release.release_score),
         opt_json_arg_for_datastore(datastore, release.scoring_log_json.as_deref())?,
         SqlArg::OptText(release.indexer_source.clone()),
+        SqlArg::OptText(release.indexer_id.clone()),
         SqlArg::OptText(release.release_guid.clone()),
         timestamp_arg_for_datastore(datastore, &release.added_at)?,
         timestamp_arg_for_datastore(datastore, &release.delay_until)?,
@@ -1603,9 +1605,9 @@ impl PendingReleaseRepository for PendingReleaseStore {
             "insert_pending_release",
             "INSERT INTO pending_releases
              (id, wanted_item_id, title_id, release_title, release_url, release_size_bytes,
-              source_kind, release_score, scoring_log_json, indexer_source, release_guid,
+              source_kind, release_score, scoring_log_json, indexer_source, indexer_id, release_guid,
               added_at, delay_until, status, grabbed_at, source_password, published_at, info_hash)
-             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
             pending_release_insert_args(&self.datastore, release, encryption_key.as_ref())?,
         )
         .await?;

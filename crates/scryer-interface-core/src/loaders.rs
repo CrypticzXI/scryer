@@ -22,9 +22,9 @@ use std::time::Duration;
 
 use async_graphql::dataloader::{DataLoader, Loader};
 use scryer_application::{
-    AcquisitionScopeState, AppUseCase, CollectionEpisodeProgressSummary, PrimaryCollectionSummary,
-    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
-    TitleQualitySummary, TitleRatingSummary,
+    AcquisitionScopeState, AppUseCase, CollectionEpisodeProgressSummary, EpisodeMediaAvailability,
+    PrimaryCollectionSummary, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
+    TitleMovieMediaSummary, TitleQualitySummary, TitleRatingSummary,
 };
 use scryer_domain::{Collection, Episode, Library, SeriesMovieLink, Title, User};
 
@@ -341,6 +341,31 @@ loader!(
     }
 );
 
+// Keyed (title_id, episode_id): compact primary-file availability for collapsed
+// episode rows. This deliberately does not hydrate TitleMediaFile values.
+loader!(
+    EpisodeMediaAvailabilityLoader,
+    (String, String),
+    EpisodeMediaAvailability,
+    |ctx, keys| {
+        let title_ids = dedup_first(keys);
+        let availability = ctx
+            .app
+            .list_episode_media_availability(&ctx.actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?;
+        Ok(availability
+            .into_iter()
+            .map(|summary| {
+                (
+                    (summary.title_id.clone(), summary.episode_id.clone()),
+                    summary,
+                )
+            })
+            .collect())
+    }
+);
+
 // Keyed (title_id, episode_id): one scoped-files fetch per distinct title.
 loader!(
     EpisodeMediaFilesLoader,
@@ -417,6 +442,7 @@ pub struct RequestLoaders {
     pub wanted_item: DataLoader<WantedItemLoader>,
     pub wanted_item_for_management: DataLoader<WantedItemForManagementLoader>,
     pub title_wanted_item: DataLoader<TitleWantedItemLoader>,
+    pub episode_media_availability: DataLoader<EpisodeMediaAvailabilityLoader>,
     pub episode_media_files: DataLoader<EpisodeMediaFilesLoader>,
 }
 
@@ -450,6 +476,7 @@ impl RequestLoaders {
             wanted_item: dl!(WantedItemLoader),
             wanted_item_for_management: dl!(WantedItemForManagementLoader),
             title_wanted_item: dl!(TitleWantedItemLoader),
+            episode_media_availability: dl!(EpisodeMediaAvailabilityLoader),
             episode_media_files: dl!(EpisodeMediaFilesLoader),
         })
     }

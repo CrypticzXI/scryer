@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::TitleCatalogFilterCounts;
+use crate::types::{EpisodeMediaAvailability, TitleCatalogFilterCounts};
 use async_trait::async_trait;
 use scryer_domain::{
     CanonicalMediaTag, ImportTransferPhase, ImportType, IndexerCapsSnapshot,
@@ -16,6 +16,20 @@ use std::path::PathBuf;
 
 pub const NOTIFICATION_REQUEST_SCHEMA_VERSION: u32 = 1;
 const TITLE_QUALITY_PROFILE_TAG_PREFIX: &str = "scryer:quality-profile:";
+
+/// A field-level title option patch. `None` preserves stored state, `Some(None)`
+/// clears an override, and `Some(Some(_))` applies an explicit override.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TitleOptionsPatch {
+    pub quality_profile_id: Option<Option<String>>,
+    pub root_folder_id: Option<Option<String>>,
+    pub monitor_type: Option<Option<String>>,
+    pub use_season_folders: Option<Option<bool>>,
+    pub monitor_specials: Option<Option<bool>>,
+    pub inter_season_movies: Option<Option<bool>>,
+    pub filler_policy: Option<Option<String>>,
+    pub recap_policy: Option<Option<String>>,
+}
 
 #[derive(Clone, Debug)]
 pub struct TitleArtworkUrlUpdate {
@@ -786,6 +800,26 @@ pub trait DiscoveryRepository: Send + Sync {
 pub trait TitleRepository: Send + Sync {
     async fn list(&self, facet: Option<MediaFacet>, query: Option<String>)
     -> AppResult<Vec<Title>>;
+    /// Counts titles whose quality-profile structured tag resolves to the
+    /// supplied profile ID. The profile portion follows resolver semantics:
+    /// it is trimmed after the structured prefix is removed.
+    async fn count_by_quality_profile_id(&self, profile_id: &str) -> AppResult<u64> {
+        let profile_id = profile_id.trim();
+        if profile_id.is_empty() {
+            return Ok(0);
+        }
+        Ok(self
+            .list(None, None)
+            .await?
+            .into_iter()
+            .filter(|title| {
+                title.tags.iter().any(|tag| {
+                    tag.strip_prefix("scryer:quality-profile:")
+                        .is_some_and(|value| value.trim().eq_ignore_ascii_case(profile_id))
+                })
+            })
+            .count() as u64)
+    }
     async fn list_without_external_ids(
         &self,
         facet: Option<MediaFacet>,
@@ -1149,6 +1183,13 @@ pub trait TitleRepository: Send + Sync {
             }))
     }
     async fn create_or_get_existing(&self, title: Title) -> AppResult<CreateTitleOutcome>;
+    async fn create_or_get_existing_with_options_patch(
+        &self,
+        title: Title,
+        _options_patch: TitleOptionsPatch,
+    ) -> AppResult<CreateTitleOutcome> {
+        self.create_or_get_existing(title).await
+    }
     async fn create_or_get_existing_and_bind_pending_import(
         &self,
         title: Title,
@@ -1592,6 +1633,14 @@ pub struct MediaRequestQuery {
     pub requester_user_id: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MediaRequestQualityProfileReferenceCounts {
+    /// Only pending requests can still consume a requested profile. Approval
+    /// creates the title before writing the terminal status, so approved IDs
+    /// are protected by the title reference instead of request history.
+    pub pending_requested: u64,
+}
+
 #[async_trait]
 pub trait MediaRequestRepository: Send + Sync {
     async fn submit(
@@ -1626,6 +1675,29 @@ pub trait MediaRequestRepository: Send + Sync {
 
     async fn count_pending_by_facet(&self, library_ids: &[String])
     -> AppResult<MediaRequestCounts>;
+
+    async fn count_quality_profile_references(
+        &self,
+        profile_id: &str,
+    ) -> AppResult<MediaRequestQualityProfileReferenceCounts> {
+        let profile_id = profile_id.trim();
+        if profile_id.is_empty() {
+            return Ok(MediaRequestQualityProfileReferenceCounts::default());
+        }
+        let requests = self.list(MediaRequestQuery::default()).await?;
+        Ok(MediaRequestQualityProfileReferenceCounts {
+            pending_requested: requests
+                .iter()
+                .filter(|request| {
+                    request.status == scryer_domain::MediaRequestStatus::Pending
+                        && request
+                            .requested_quality_profile_id
+                            .as_deref()
+                            .is_some_and(|value| value.eq_ignore_ascii_case(profile_id))
+                })
+                .count() as u64,
+        })
+    }
 
     async fn list(&self, query: MediaRequestQuery) -> AppResult<Vec<MediaRequest>>;
 }
@@ -2349,6 +2421,18 @@ pub trait IndexerConfigRepository: Send + Sync {
         Ok(())
     }
     async fn update(&self, update: IndexerConfigUpdate) -> AppResult<IndexerConfig>;
+    async fn set_download_client_mapping(
+        &self,
+        indexer_id: &str,
+        download_client_id: Option<String>,
+    ) -> AppResult<IndexerConfig> {
+        self.update(IndexerConfigUpdate {
+            id: indexer_id.to_string(),
+            download_client_id: Some(download_client_id),
+            ..IndexerConfigUpdate::default()
+        })
+        .await
+    }
     async fn delete(&self, id: &str) -> AppResult<()>;
 }
 
@@ -2448,6 +2532,10 @@ pub trait DownloadClientConfigRepository: Send + Sync {
     async fn create(&self, config: DownloadClientConfig) -> AppResult<DownloadClientConfig>;
     async fn update(&self, update: DownloadClientConfigUpdate) -> AppResult<DownloadClientConfig>;
     async fn delete(&self, id: &str) -> AppResult<()>;
+    async fn delete_with_cleared_indexer_mapping_count(&self, id: &str) -> AppResult<u64> {
+        self.delete(id).await?;
+        Ok(0)
+    }
     async fn reorder(&self, ordered_ids: Vec<String>) -> AppResult<()>;
 }
 
@@ -3448,6 +3536,15 @@ pub trait MediaFileRepository: Send + Sync {
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>>;
+
+    /// Compact row data for episode availability. Implementations must not
+    /// hydrate full media-file records for this projection.
+    async fn list_episode_media_availability(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<EpisodeMediaAvailability>> {
+        Ok(Vec::new())
+    }
 
     async fn list_collection_episode_progress_summaries(
         &self,

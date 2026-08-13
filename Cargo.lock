@@ -798,9 +798,9 @@ dependencies = [
 
 [[package]]
 name = "bstr"
-version = "1.13.0"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f7dc094d718f2e1c1559ad110e27eeaae14a5465d3d56dd6dbd793079fbd530"
+checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
 dependencies = [
  "memchr",
  "serde_core",
@@ -863,10 +863,28 @@ version = "4.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d78e5a3368ae89b7cb68186411452b4b9fac8b41be9c19bf3f47c2d2c8e36e6b"
 dependencies = [
- "cap-primitives",
- "cap-std",
+ "cap-primitives 4.0.2",
+ "cap-std 4.0.2",
  "io-lifetimes 3.0.1",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "cap-primitives"
+version = "3.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6cf3aea8a5081171859ef57bc1606b1df6999df4f1110f8eef68b30098d1d3a"
+dependencies = [
+ "ambient-authority",
+ "fs-set-times",
+ "io-extras 0.18.4",
+ "io-lifetimes 2.0.4",
+ "ipnet",
+ "maybe-owned",
+ "rustix",
+ "rustix-linux-procfs",
+ "windows-sys 0.59.0",
+ "winx",
 ]
 
 [[package]]
@@ -877,7 +895,7 @@ checksum = "cdadbd7c002d3a484b35243669abdae85a0ebaded5a61117169dc3400f9a7ff0"
 dependencies = [
  "ambient-authority",
  "fs-set-times",
- "io-extras",
+ "io-extras 0.19.0",
  "io-lifetimes 3.0.1",
  "ipnet",
  "maybe-owned",
@@ -889,12 +907,24 @@ dependencies = [
 
 [[package]]
 name = "cap-std"
+version = "3.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6dc3090992a735d23219de5c204927163d922f42f575a0189b005c62d37549a"
+dependencies = [
+ "cap-primitives 3.4.5",
+ "io-extras 0.18.4",
+ "io-lifetimes 2.0.4",
+ "rustix",
+]
+
+[[package]]
+name = "cap-std"
 version = "4.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7281235d6e96d3544ca18bba9049be92f4190f8d923e3caef1b5f66cfa752608"
 dependencies = [
- "cap-primitives",
- "io-extras",
+ "cap-primitives 4.0.2",
+ "io-extras 0.19.0",
  "io-lifetimes 3.0.1",
  "rustix",
 ]
@@ -2304,9 +2334,9 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "futures"
-version = "0.3.33"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a88cf1f829d945f548cf8fec32c61b1f202b6d93b45848602fc02af4b12ad218"
+checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -2319,9 +2349,9 @@ dependencies = [
 
 [[package]]
 name = "futures-channel"
-version = "0.3.33"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "262590f4fe6afeb0bc83be1daa64e52657fe185690a958af7f3ad0e92085c5ae"
+checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -2329,15 +2359,15 @@ dependencies = [
 
 [[package]]
 name = "futures-core"
-version = "0.3.33"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cd50c473c80f6d7c3670a752354b8e569b1a7cbfdc0419ec88e5edad85e0dc7"
+checksum = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e"
 
 [[package]]
 name = "futures-executor"
-version = "0.3.33"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6754879cc9f2c66f88c6e5c35344bb0bdb0708b0352b1201815667c7eabc7458"
+checksum = "031b47cf1a3c6cc8bc2fc76cd437f521619387907d469316e7c0bc278f1f5432"
 dependencies = [
  "futures-core",
  "futures-task",
@@ -2357,9 +2387,9 @@ dependencies = [
 
 [[package]]
 name = "futures-io"
-version = "0.3.33"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4577ecaa3c4f96589d473f679a71b596316f6641bc350038b962a5daf0085d7a"
+checksum = "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed"
 
 [[package]]
 name = "futures-lite"
@@ -2373,26 +2403,26 @@ dependencies = [
 
 [[package]]
 name = "futures-macro"
-version = "0.3.33"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d6d3cde68c518367be28956066ddfef33813991b77a55005a69dae04bf3b10b"
+checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
 name = "futures-sink"
-version = "0.3.33"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e34418ac499d6305c2fb5ad0ed2f6ac998c5f8ca209b4510f7f94242c647e307"
+checksum = "1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d"
 
 [[package]]
 name = "futures-task"
-version = "0.3.33"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b231ed28831efb4a61a08580c4bc233ec56bc009f4cd8f52da2c3cb97df0c109"
+checksum = "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd"
 
 [[package]]
 name = "futures-timer"
@@ -2402,9 +2432,9 @@ checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
 
 [[package]]
 name = "futures-util"
-version = "0.3.33"
+version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a77a90a256fce34da66415271e30f94ee91c57b04b8a2c042d9cf3220179deaa"
+checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
  "futures-channel",
  "futures-core",
@@ -2766,9 +2796,9 @@ dependencies = [
 
 [[package]]
 name = "http-body-util"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9f41fd6a08e4d4ec69df65976da761afd5ad5e58a9d4acb46bd1c953a9e3ff2"
+checksum = "23169fe34a5fbcdd3f3862e78fb9b6fccd5f02a6dc6f732547005d45631ce71c"
 dependencies = [
  "bytes",
  "futures-core",
@@ -3135,6 +3165,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "io-extras"
+version = "0.18.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2285ddfe3054097ef4b2fe909ef8c3bcd1ea52a8f0d274416caebeef39f04a65"
+dependencies = [
+ "io-lifetimes 2.0.4",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3994,9 +4034,9 @@ dependencies = [
 
 [[package]]
 name = "num-integer"
-version = "0.1.46"
+version = "0.1.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f"
+checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
 dependencies = [
  "num-traits",
 ]
@@ -4315,6 +4355,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "par2-rs"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99c0fb5e97be19bcf1543bb8b8c5200daf137809b4361882f4193e7d316e6871"
+dependencies = [
+ "aws-lc-sys 0.42.0",
+ "bytes",
+ "cap-std 3.4.5",
+ "crc-fast",
+ "libc",
+ "md-5",
+ "memmap2",
+ "rayon",
+ "reedsolomon-rs",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4453,9 +4512,9 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pest"
-version = "2.8.8"
+version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7df728be843c7070fab6ab7c328c4e9e9d78e23bf749c0669c86ee7ebfa050a2"
+checksum = "5a07a60cc7a4d00c91f95c685609d1d2f79050e6804b70ebedd7650f0b839bcf"
 dependencies = [
  "memchr",
  "ucd-trie",
@@ -5206,6 +5265,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "reedsolomon-rs"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad36d1fa45c0656c585ff61ec80d7be28af449a3f3d0149f740789c1e788cd2c"
+dependencies = [
+ "memmap2",
+ "rayon",
+]
+
+[[package]]
 name = "ref-cast"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5519,9 +5588,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "0527518605e68109d875e248ea259b6758801cf165e4b2c2733ae3b51f12535a"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -5635,7 +5704,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scryer"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "async-graphql-axum",
@@ -5684,7 +5753,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-application"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "argon2",
  "async-trait",
@@ -5702,6 +5771,7 @@ dependencies = [
  "libc",
  "lzma-rs",
  "metrics",
+ "par2-rs",
  "quick-xml",
  "rand_core 0.10.1",
  "regex",
@@ -5730,7 +5800,6 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
- "weaver-par2",
  "whatlang",
  "windows-sys 0.61.2",
  "wiremock",
@@ -5740,7 +5809,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-domain"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "blake3",
  "chrono",
@@ -5755,7 +5824,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-infrastructure"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-compression",
  "async-trait",
@@ -5808,7 +5877,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5833,7 +5902,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-acquisition"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5845,7 +5914,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-core"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "scryer-application",
@@ -5856,7 +5925,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-import"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5874,7 +5943,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-media"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5890,7 +5959,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-media-types"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5900,7 +5969,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-metadata"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "scryer-application",
@@ -5910,7 +5979,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-query"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5926,7 +5995,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-security"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5938,7 +6007,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-settings"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5951,7 +6020,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-subscription"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5965,7 +6034,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-interface-system"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-graphql",
  "chrono",
@@ -5978,14 +6047,14 @@ dependencies = [
 
 [[package]]
 name = "scryer-launcher"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "scryer-mediainfo"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "bytes",
  "criterion",
@@ -6004,7 +6073,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-mock-apis"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "axum",
  "serde",
@@ -6016,7 +6085,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-outbound-http"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "chrono",
  "governor",
@@ -6042,7 +6111,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-plugins"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "async-trait",
  "aws-lc-sys 0.43.0",
@@ -6079,7 +6148,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-release-parser"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "aho-corasick",
  "chrono",
@@ -6094,7 +6163,7 @@ dependencies = [
 
 [[package]]
 name = "scryer-rules"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "regorus",
  "serde",
@@ -6105,11 +6174,11 @@ dependencies = [
 
 [[package]]
 name = "scryer-runtime-info"
-version = "0.18.9"
+version = "0.18.10"
 
 [[package]]
 name = "scryer-webauthn"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -7880,12 +7949,12 @@ dependencies = [
 
 [[package]]
 name = "wasm-encoder"
-version = "0.255.0"
+version = "0.256.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b524283fb5df62eec102ed0574838961bdd7ba5ac9c50d38e2756c51c971a42"
+checksum = "ec1492381bfd5ea51c2a99a919b676662559925cb8d7490547ec2e14c1ad3eb1"
 dependencies = [
  "leb128fmt",
- "wasmparser 0.255.0",
+ "wasmparser 0.256.0",
 ]
 
 [[package]]
@@ -7925,6 +7994,17 @@ dependencies = [
  "indexmap 2.14.0",
  "semver",
  "serde",
+]
+
+[[package]]
+name = "wasmparser"
+version = "0.256.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60bd825ffedc6cba8a642924ba7ae424afbc47811cffbcb7b92031ec24e59b4c"
+dependencies = [
+ "bitflags 2.13.1",
+ "indexmap 2.14.0",
+ "semver",
 ]
 
 [[package]]
@@ -8175,7 +8255,7 @@ dependencies = [
  "bitflags 2.13.1",
  "bytes",
  "cap-fs-ext",
- "cap-std",
+ "cap-std 4.0.2",
  "cfg-if",
  "futures",
  "io-lifetimes 3.0.1",
@@ -8215,52 +8295,24 @@ dependencies = [
 
 [[package]]
 name = "wast"
-version = "255.0.0"
+version = "256.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55ffec530f199bd3d553ac442c13dd108353cad533cad8514bc41e1f1f0fe686"
+checksum = "a3ad42723fc9222da007f05812a3249c9a4ee7af79d497fc2a2079579ad7efe6"
 dependencies = [
  "bumpalo",
  "leb128fmt",
  "memchr",
  "unicode-width",
- "wasm-encoder 0.255.0",
+ "wasm-encoder 0.256.0",
 ]
 
 [[package]]
 name = "wat"
-version = "1.255.0"
+version = "1.256.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dda82c82e1486c7eed42a0465e544d80fff37abc3b39482e0d34dbaabe2fe5b1"
+checksum = "37cc86c54d8011b3202e265bfebada440733ea3a788ffaf46d395f7d2fdeacfb"
 dependencies = [
- "wast 255.0.0",
-]
-
-[[package]]
-name = "weaver-par2"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b74ee837445f35b25156657c52f8f5574bd5a98b2c87f6b87db2194737211288"
-dependencies = [
- "aws-lc-sys 0.42.0",
- "bytes",
- "crc32fast",
- "libc",
- "md-5",
- "memmap2",
- "rayon",
- "thiserror 2.0.20",
- "tracing",
- "weaver-reed-solomon",
-]
-
-[[package]]
-name = "weaver-reed-solomon"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1db5753b42d209581b0fe20177827469bce33a883914a93dffb00a302769d5e9"
-dependencies = [
- "memmap2",
- "rayon",
+ "wast 256.0.0",
 ]
 
 [[package]]
@@ -8346,9 +8398,9 @@ dependencies = [
 
 [[package]]
 name = "whoami"
-version = "2.1.2"
+version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "998767ef88740d1f5b0682a9c53c24431453923962269c2db68ee43788c5a40d"
+checksum = "626c4bac6755d76ffc12cb01b2eac751db1996b9e0041de9aa02c8c211ddc82c"
 
 [[package]]
 name = "wiggle"
@@ -8876,7 +8928,7 @@ dependencies = [
 
 [[package]]
 name = "xtask-trash-guides"
-version = "0.18.9"
+version = "0.18.10"
 dependencies = [
  "anyhow",
  "chrono",

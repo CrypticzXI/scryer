@@ -962,7 +962,7 @@ async fn import_movie_download(
         .into_iter()
         .filter(|file| file.role.is_primary())
         .collect::<Vec<_>>();
-    let quality_profile = resolve_import_quality_profile(app, title).await;
+    let quality_profile = resolve_import_quality_profile(app, title).await?;
     let existing_score = existing_files
         .iter()
         .max_by_key(|file| file.acquisition_score.unwrap_or(0))
@@ -1266,7 +1266,7 @@ async fn import_movie_download(
                         title.id.as_str(),
                         &source_video,
                         "movie",
-                        "already_present",
+                        "rejected",
                         rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
                         None,
                         &[],
@@ -1704,7 +1704,7 @@ async fn import_series_movie_download(
         .await;
     }
     let manual_replacement = import_purpose.is_manual_replacement();
-    let quality_profile = resolve_import_quality_profile(app, title).await;
+    let quality_profile = resolve_import_quality_profile(app, title).await?;
     let existing_score = series_movie_files
         .iter()
         .max_by_key(|file| file.acquisition_score.unwrap_or(0))
@@ -1980,7 +1980,7 @@ async fn import_series_movie_download(
                         title.id.as_str(),
                         &source_video,
                         "movie",
-                        "already_present",
+                        "rejected",
                         rejection.skip_reason.as_ref().map(ImportSkipReason::as_str),
                         None,
                         &[],

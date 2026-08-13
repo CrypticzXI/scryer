@@ -1,7 +1,49 @@
 use super::*;
 
 #[tokio::test]
-async fn apply_result_marks_already_present_rejection_imported_when_expected_units_are_covered() {
+async fn apply_result_marks_verified_already_present_skip_imported() {
+    let title = build_title("title-1", "Show", MediaFacet::Series);
+    let collection = build_collection("season-1", "title-1", "1");
+    let episode = build_episode("ep-1", "title-1", "season-1", "1", "1", None);
+    let app = build_app(
+        vec![title],
+        vec![collection],
+        vec![episode],
+        vec![build_artifact_with_result(
+            "dl-1",
+            Some("ep-1"),
+            "Show.S01E01.mkv",
+            "already_present",
+        )],
+    );
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let result = ImportResult {
+        import_id: "import-1".to_string(),
+        decision: ImportDecision::Skipped,
+        skip_reason: Some(ImportSkipReason::AlreadyImported),
+        title_id: Some("title-1".to_string()),
+        source_system: Some("nzbget".to_string()),
+        source_ref: Some("dl-1".to_string()),
+        source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+        source_path: "/downloads/Show.S01E01.1080p.WEB-DL".to_string(),
+        dest_path: None,
+        quality: None,
+        episode_ids: vec![],
+        file_size_bytes: None,
+        link_type: None,
+        error_message: Some("episode already imported".to_string()),
+        started_at: Utc::now(),
+        completed_at: Utc::now(),
+    };
+
+    assert!(apply_import_result(&app, &mut td, result, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::Imported);
+    assert_eq!(td.status, TrackedDownloadStatus::Ok);
+    assert!(td.status_messages.is_empty());
+}
+
+#[tokio::test]
+async fn apply_result_keeps_rejected_already_imported_result_blocked() {
     let title = build_title("title-1", "Show", MediaFacet::Series);
     let collection = build_collection("season-1", "title-1", "1");
     let episode = build_episode("ep-1", "title-1", "season-1", "1", "1", None);
@@ -31,15 +73,18 @@ async fn apply_result_marks_already_present_rejection_imported_when_expected_uni
         episode_ids: vec![],
         file_size_bytes: None,
         link_type: None,
-        error_message: Some("episode already imported".to_string()),
+        error_message: Some("existing episode file is equal or better".to_string()),
         started_at: Utc::now(),
         completed_at: Utc::now(),
     };
 
-    assert!(apply_import_result(&app, &mut td, result, 0).await);
-    assert_eq!(td.state, TrackedDownloadState::Imported);
-    assert_eq!(td.status, TrackedDownloadStatus::Ok);
-    assert!(td.status_messages.is_empty());
+    assert!(!apply_import_result(&app, &mut td, result, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+    assert_eq!(td.status, TrackedDownloadStatus::Warning);
+    assert_eq!(
+        td.status_messages,
+        vec!["existing episode file is equal or better".to_string()]
+    );
 }
 
 #[tokio::test]

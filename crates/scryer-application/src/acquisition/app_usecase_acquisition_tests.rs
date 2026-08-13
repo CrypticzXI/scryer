@@ -444,7 +444,7 @@ fn episode_set_submission_blocks_each_covered_episode() {
 }
 
 #[test]
-fn effective_auto_decision_code_marks_failed_source_kind_unavailable() {
+fn effective_auto_decision_code_marks_failed_route_unavailable() {
     let candidate = test_search_result_with_decision(
         "Failed.Source.Kind",
         Some(DownloadSourceKind::NzbUrl),
@@ -452,10 +452,45 @@ fn effective_auto_decision_code_marks_failed_source_kind_unavailable() {
     );
 
     let empty_db_blocklist = std::collections::HashSet::new();
+    let failed_routes = vec![DownloadRouteKey::for_candidate(&candidate).unwrap()];
     let decision =
-        effective_auto_decision_code(&candidate, &[DownloadSourceKind::NzbUrl], &empty_db_blocklist);
+        effective_auto_decision_code_for_route(&candidate, &failed_routes, &empty_db_blocklist);
 
     assert_eq!(decision, ReleaseAutoDecisionCode::DownloadClientUnavailable);
+}
+
+#[test]
+fn effective_auto_decision_code_suppresses_only_failed_indexer_route() {
+    let mut failed_indexer = test_search_result_with_decision(
+        "Failed.Private.Torrent",
+        Some(DownloadSourceKind::TorrentFile),
+        "eligible",
+    );
+    failed_indexer.indexer_id = Some("private-a".to_string());
+    let mut other_indexer = failed_indexer.clone();
+    other_indexer.indexer_id = Some("private-b".to_string());
+    let mut other_source = failed_indexer.clone();
+    other_source.source_kind = Some(DownloadSourceKind::MagnetUri);
+
+    let failed_routes = vec![DownloadRouteKey::for_candidate(&failed_indexer).unwrap()];
+    let empty_db_blocklist = std::collections::HashSet::new();
+
+    assert_eq!(
+        effective_auto_decision_code_for_route(
+            &failed_indexer,
+            &failed_routes,
+            &empty_db_blocklist,
+        ),
+        ReleaseAutoDecisionCode::DownloadClientUnavailable
+    );
+    assert_eq!(
+        effective_auto_decision_code_for_route(&other_indexer, &failed_routes, &empty_db_blocklist,),
+        ReleaseAutoDecisionCode::Eligible
+    );
+    assert_eq!(
+        effective_auto_decision_code_for_route(&other_source, &failed_routes, &empty_db_blocklist,),
+        ReleaseAutoDecisionCode::Eligible
+    );
 }
 
 #[test]
@@ -463,7 +498,7 @@ fn effective_auto_decision_code_marks_db_blocklisted_release() {
     let candidate = test_search_result_with_decision("Blocked.Release", None, "eligible");
     let db_blocklist = std::collections::HashSet::from(["blocked.release".to_string()]);
 
-    let decision = effective_auto_decision_code(&candidate, &[], &db_blocklist);
+    let decision = effective_auto_decision_code_for_route(&candidate, &[], &db_blocklist);
 
     assert_eq!(decision, ReleaseAutoDecisionCode::DbBlocklisted);
 }

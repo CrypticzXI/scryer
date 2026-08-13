@@ -426,12 +426,15 @@ async fn normalize_movie_file_roles_after_scan(
         let profile = match app.resolve_quality_profile(profile_lookup).await {
             Ok(profile) => profile,
             Err(error) => {
+                // Scan is a bulk pass: one title's dangling profile must not
+                // leave its files unscanned, so role selection degrades to the
+                // canonical built-in default instead of failing the title.
                 warn!(
                     error = %error,
                     title_id = %title.id,
-                    "failed to resolve quality profile for movie scan role selection"
+                    "failed to resolve quality profile for movie scan role selection; using the built-in default"
                 );
-                crate::QualityProfile::default()
+                crate::builtin_default_quality_profile()
             }
         };
         let required_audio_languages = app

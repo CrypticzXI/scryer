@@ -9,7 +9,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { Fragment, memo, type ReactNode } from "react";
+import { Fragment, memo, type ReactNode, useLayoutEffect, useRef } from "react";
 
 import { ActivityProgressBar } from "@/components/views/activity-progress-bar";
 import {
@@ -50,6 +50,8 @@ export type QueueTableRowProps = {
   isExpanded: boolean;
   isImportSelected: boolean;
   rowActionVisualClass: string;
+  virtualIndex?: number;
+  measureElement?: (element: HTMLTableRowElement | null) => void;
   t: TranslateFn;
   onToggleImportSelected: () => void;
   onToggleExpanded: () => void;
@@ -114,6 +116,8 @@ export const QueueTableRow = memo(function QueueTableRow({
   isExpanded,
   isImportSelected,
   rowActionVisualClass,
+  virtualIndex,
+  measureElement,
   t,
   onToggleImportSelected,
   onToggleExpanded,
@@ -126,9 +130,21 @@ export const QueueTableRow = memo(function QueueTableRow({
   onMarkFailedOnly,
   onRequestDelete,
 }: QueueTableRowProps) {
+  const rowElementRef = useRef<HTMLTableRowElement | null>(null);
+  useLayoutEffect(() => {
+    if (rowElementRef.current) {
+      measureElement?.(rowElementRef.current);
+    }
+  }, [isExpanded, measureElement]);
+
   return (
     <Fragment>
       <TableRow
+        ref={(element: HTMLTableRowElement | null) => {
+          rowElementRef.current = element;
+          measureElement?.(element);
+        }}
+        data-index={virtualIndex}
         id={selectorId("activity", activeTab, "row", rowSelectorKey)}
         data-ui="activity-row"
         data-activity-tab={activeTab}
@@ -347,7 +363,7 @@ export const QueueTableRow = memo(function QueueTableRow({
         </TableCell>
       </TableRow>
       {row.hasExpandableDetails && isExpanded ? (
-        <TableRow>
+        <TableRow data-virtual-detail-index={virtualIndex}>
           <TableCell
             colSpan={activeTab === "activity" ? 6 : activeTab === "import" ? 7 : 5}
             className="bg-muted/10 p-3"

@@ -5,6 +5,7 @@ import {
   buildQueueStatusDetail,
   normalizeQueueState,
 } from "@/lib/utils/download-queue";
+import { manualImportActions } from "@/lib/utils/manual-import-actions";
 
 export type TranslateFn = ReturnType<typeof useTranslate>;
 
@@ -175,9 +176,11 @@ export function deriveQueueRowPresentation(
       displayStateKey === "IMPORT_BLOCKED" ||
       displayStateKey === "IMPORT_FAILED") &&
     failureReason.length > 0;
-  const isCompleted = stateKey === "completed" || stateKey === "import_pending";
-  const canRetryManualImport =
-    displayStateKey === "IMPORT_BLOCKED" || displayStateKey === "IMPORT_FAILED";
+  const manualActions = manualImportActions({
+    displayState: displayStateKey,
+    facet: queueItem.facet,
+    hasTitle: Boolean(queueItem.titleId),
+  });
   const canAssignTitle =
     trackedStateKey === "import_blocked" &&
     displayStateKey !== "IMPORTING" &&
@@ -192,16 +195,6 @@ export function deriveQueueRowPresentation(
       trackedStateKey === "failed_pending") &&
     displayStateKey !== "IMPORTING" &&
     displayStateKey !== "REMOVING";
-  const canInteractiveManualImport =
-    Boolean(queueItem.titleId) &&
-    (queueItem.facet === "series" || queueItem.facet === "anime") &&
-    canRetryManualImport;
-  const canDirectManualImport =
-    Boolean(queueItem.titleId) &&
-    displayStateKey !== "IMPORTING" &&
-    displayStateKey !== "REMOVING" &&
-    ((isCompleted && needsManualImport) ||
-      (canRetryManualImport && queueItem.facet === "movie"));
   const releaseTitle =
     queueItem.titleName.trim() || queueItem.downloadClientItemId.trim() || "—";
   const displayTitle = releaseTitle;
@@ -231,8 +224,8 @@ export function deriveQueueRowPresentation(
     canAssignTitle,
     canIgnore,
     canMarkFailed,
-    canInteractiveManualImport,
-    canDirectManualImport,
+    canInteractiveManualImport: manualActions.interactive,
+    canDirectManualImport: manualActions.direct,
   };
 }
 

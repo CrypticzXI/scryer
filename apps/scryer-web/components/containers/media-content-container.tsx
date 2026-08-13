@@ -16,6 +16,7 @@ import {
   deleteLibraryMutation,
   queueBestReleaseMutation,
   queueExistingMutation,
+  queueReplacementMutation,
   scanLibraryMutation,
   deleteTitlesMutation,
   setPrimaryMovieFileMutation,
@@ -45,6 +46,7 @@ import {
   buildTitlesQuery,
 } from "@/lib/graphql/queries";
 import { selectedOverviewUsesMovieRecord } from "@/lib/utils/selected-overview-policy";
+import { editDialogTargets } from "@/lib/utils/title-edit-dialog";
 import {
   CATEGORY_SCOPE_MAP,
   QUALITY_PROFILE_INHERIT_VALUE,
@@ -83,7 +85,10 @@ import {
   titleCatalogQueryKey,
   type TitleCatalogAdvancedFilters,
 } from "@/lib/utils/title-catalog-query";
-import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
+import {
+  hasPrimaryMediaFile,
+  releaseQueueScopeInput,
+} from "@/lib/utils/release-queue-scope";
 import { validateLibraryRootPaths } from "@/lib/utils/library-root-validation";
 import {
   catalogRootValidationState,
@@ -142,6 +147,7 @@ import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscript
 import { useOverviewWindowScrollRestoration } from "@/lib/hooks/use-overview-window-scroll-restoration";
 import { useJobRunToasts } from "@/components/root/job-run-provider";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
+import { titleMatchesOptionUpdates } from "@/lib/utils/title-edit-dialog";
 import { isTerminalJobRunStatus, normalizeJobRun } from "@/lib/utils/job-runs";
 import { toast } from "sonner";
 import { BulkTitleEditDialog } from "@/components/views/media-content/bulk-title-edit-dialog";
@@ -664,60 +670,7 @@ function inferTitleUpdateBatchOutcome(
   );
   return splitSucceededTitleIds(targets, (title) => {
     const refreshed = refreshedById.get(title.id);
-    if (!refreshed) {
-      return false;
-    }
-
-    if (
-      changes.qualityProfileId !== undefined &&
-      (refreshed.qualityProfileId ?? "") !== changes.qualityProfileId
-    ) {
-      return false;
-    }
-    if (
-      changes.rootFolderId !== undefined &&
-      (refreshed.rootFolderId ?? null) !== changes.rootFolderId
-    ) {
-      return false;
-    }
-    if (
-      changes.monitorType !== undefined &&
-      (refreshed.monitorType ?? "") !== changes.monitorType
-    ) {
-      return false;
-    }
-    if (
-      changes.useSeasonFolders !== undefined &&
-      refreshed.useSeasonFolders !== changes.useSeasonFolders
-    ) {
-      return false;
-    }
-    if (
-      changes.monitorSpecials !== undefined &&
-      refreshed.monitorSpecials !== changes.monitorSpecials
-    ) {
-      return false;
-    }
-    if (
-      changes.interSeasonMovies !== undefined &&
-      refreshed.interSeasonMovies !== changes.interSeasonMovies
-    ) {
-      return false;
-    }
-    if (
-      changes.fillerPolicy !== undefined &&
-      (refreshed.fillerPolicy ?? "") !== changes.fillerPolicy
-    ) {
-      return false;
-    }
-    if (
-      changes.recapPolicy !== undefined &&
-      (refreshed.recapPolicy ?? "") !== changes.recapPolicy
-    ) {
-      return false;
-    }
-
-    return true;
+    return refreshed !== undefined && titleMatchesOptionUpdates(refreshed, changes);
   });
 }
 
@@ -1240,6 +1193,8 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   );
   const [bulkActionBusy, setBulkActionBusy] = React.useState(false);
   const [bulkEditDialogOpen, setBulkEditDialogOpen] = React.useState(false);
+  const [titleEditTarget, setTitleEditTarget] =
+    React.useState<TitleRecord | null>(null);
   const shouldLoadMediaSettings =
     shouldLoadMediaSettingsForSection || bulkEditDialogOpen;
   const [debouncedTitleFilter, setDebouncedTitleFilter] = React.useState("");
@@ -1643,23 +1598,27 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     () => visibleTitles.filter((title) => selectedTitleIds.has(title.id)),
     [selectedTitleIds, visibleTitles],
   );
+  const editDialogTitles = React.useMemo(
+    () => editDialogTargets(titleEditTarget, selectedTitles),
+    [selectedTitles, titleEditTarget],
+  );
   const selectedTitleLibraryIds = React.useMemo(
     () => Array.from(new Set(selectedTitles.map((title) => title.libraryId))),
     [selectedTitles],
   );
-  const selectedTitleLibrary = React.useMemo(
-    () =>
-      selectedTitleLibraryIds.length === 1
-        ? (libraries.find(
-            (library) => library.id === selectedTitleLibraryIds[0],
-          ) ?? null)
-        : null,
-    [libraries, selectedTitleLibraryIds],
+  const editDialogTitleLibraryIds = React.useMemo(
+    () => Array.from(new Set(editDialogTitles.map((title) => title.libraryId))),
+    [editDialogTitles],
   );
-  const bulkRootFolders = React.useMemo(
-    () => selectedTitleLibrary?.roots ?? [],
-    [selectedTitleLibrary],
-  );
+  const editDialogRootFolders = React.useMemo(() => {
+    if (editDialogTitleLibraryIds.length !== 1) {
+      return [];
+    }
+    return (
+      libraries.find((library) => library.id === editDialogTitleLibraryIds[0])
+        ?.roots ?? []
+    );
+  }, [editDialogTitleLibraryIds, libraries]);
 
   useOverviewWindowScrollRestoration({
     enabled: shouldLoadCatalogTitles && effectiveViewMode === "poster",
@@ -2699,7 +2658,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
   });
 
   React.useEffect(() => {
-    if (selectedTitles.length > 0) {
+    if (selectedTitles.length > 0 || titleEditTarget !== null) {
       return;
     }
     setBulkEditDialogOpen(false);
@@ -2711,6 +2670,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     setBulkDeletePreviewsByTitleId({});
   }, [
     selectedTitles.length,
+    titleEditTarget,
     setBulkDeleteDialogOpen,
     setBulkDeleteFilesOnDisk,
     setBulkDeletePreviewError,
@@ -3660,14 +3620,20 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           scope: releaseQueueScopeInput(release, { title: true }),
           candidateToken: release.candidateToken,
         };
+        const replacesPrimary = hasPrimaryMediaFile(title.mediaFiles);
+        const mutation = replacesPrimary
+          ? queueReplacementMutation
+          : queueExistingMutation;
         const payload = await retryWithReplaceOnConflict(
           input,
           async (nextInput) => {
             const { data, error } = await client
-              .mutation(queueExistingMutation, { input: nextInput })
+              .mutation(mutation, { input: nextInput })
               .toPromise();
             if (error) throw error;
-            return data?.queueExistingTitleDownload;
+            return replacesPrimary
+              ? data?.queueReplacementRelease
+              : data?.queueExistingTitleDownload;
           },
           "A download is already in progress for this title.",
           confirmReplaceConflict,
@@ -3969,7 +3935,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
 
   const applyBulkTitleOptions = React.useCallback(
     async (changes: TitleOptionUpdates) => {
-      const targets = [...selectedTitles];
+      const targets = [...editDialogTitles];
       if (targets.length === 0 || bulkActionBusy) {
         return;
       }
@@ -4009,7 +3975,9 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
             }
           });
         }
-        setSelectedTitleIds(new Set(failedIds));
+        if (titleEditTarget === null) {
+          setSelectedTitleIds(new Set(failedIds));
+        }
 
         const detail = batchFailureDetail(result.error);
         if (succeededIds.length === 0) {
@@ -4020,6 +3988,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         }
 
         setBulkEditDialogOpen(false);
+        setTitleEditTarget(null);
         if (failedIds.length > 0) {
           setGlobalStatus(
             withFailureDetail(
@@ -4047,7 +4016,15 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
         setBulkActionBusy(false);
       }
     },
-    [bulkActionBusy, client, reloadTitles, selectedTitles, setGlobalStatus, t],
+    [
+      bulkActionBusy,
+      client,
+      editDialogTitles,
+      reloadTitles,
+      setGlobalStatus,
+      t,
+      titleEditTarget,
+    ],
   );
 
   React.useEffect(() => {
@@ -4135,6 +4112,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       setGlobalStatus("Bulk actions require titles from one library.");
       return;
     }
+    setTitleEditTarget(null);
     setBulkEditDialogOpen(true);
   }, [
     bulkActionBusy,
@@ -4142,6 +4120,17 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
     selectedTitles.length,
     setGlobalStatus,
   ]);
+
+  const openTitleEdit = React.useCallback(
+    (title: TitleRecord) => {
+      if (bulkActionBusy) {
+        return;
+      }
+      setTitleEditTarget(title);
+      setBulkEditDialogOpen(true);
+    },
+    [bulkActionBusy],
+  );
 
   const requestDeleteTitle = React.useCallback(
     (title: TitleRecord) => {
@@ -5303,6 +5292,7 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           deleteLibrary,
           onOpenOverview,
           onCloseOverview: handleCloseOverview,
+          onEditTitle: openTitleEdit,
           selectedOverviewTitleId,
           selectedOverviewTitle: selectedOverviewTitleRecord,
           selectedOverviewDetailLoading,
@@ -5393,11 +5383,17 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
       ) : null}
       <BulkTitleEditDialog
         open={bulkEditDialogOpen}
-        onOpenChange={setBulkEditDialogOpen}
+        onOpenChange={(open) => {
+          setBulkEditDialogOpen(open);
+          if (!open) {
+            setTitleEditTarget(null);
+          }
+        }}
         view={view}
-        selectedTitles={selectedTitles}
+        selectedTitles={editDialogTitles}
+        directTitle={titleEditTarget}
         qualityProfiles={qualityProfiles}
-        rootFolders={bulkRootFolders}
+        rootFolders={editDialogRootFolders}
         busy={bulkActionBusy}
         onSubmit={applyBulkTitleOptions}
       />

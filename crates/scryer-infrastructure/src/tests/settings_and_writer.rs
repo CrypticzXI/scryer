@@ -585,6 +585,7 @@ async fn source_password_writes_are_encrypted_at_rest_sqlite() {
         release_score: 100,
         scoring_log_json: None,
         indexer_source: Some("weaver".to_string()),
+        indexer_id: None,
         release_guid: Some("guid-encrypted".to_string()),
         added_at: now.clone(),
         delay_until: now,

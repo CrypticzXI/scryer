@@ -585,25 +585,27 @@ fn normalize_request_quality_profile_ids(profile_ids: Vec<String>) -> Vec<String
 
 fn configured_request_quality_profile_ids(
     raw_profile_ids: Vec<String>,
-    catalog_profile_ids: &HashSet<String>,
-) -> Option<Vec<String>> {
+    profiles: &[crate::QualityProfile],
+) -> AppResult<Option<Vec<String>>> {
     let profile_ids = normalize_request_quality_profile_ids(raw_profile_ids)
         .into_iter()
-        .filter(|profile_id| catalog_profile_ids.contains(profile_id))
-        .collect::<Vec<_>>();
-    (!profile_ids.is_empty()).then_some(profile_ids)
+        .filter_map(|profile_id| {
+            quality_profile_by_id(profiles, &profile_id)
+                .transpose()
+                .map(|result| result.map(|profile| profile.id.clone()))
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok((!profile_ids.is_empty()).then_some(profile_ids))
 }
 
 fn fallback_request_quality_profile_id(
     profile_settings: &QualityProfileSettings,
     library_quality_profile_id: &str,
 ) -> String {
-    if profile_settings
-        .profiles
-        .iter()
-        .any(|profile| profile.id == library_quality_profile_id)
+    if let Ok(Some(profile)) =
+        quality_profile_by_id(&profile_settings.profiles, library_quality_profile_id)
     {
-        return library_quality_profile_id.to_string();
+        return profile.id.clone();
     }
 
     profile_settings.global_profile_id.clone()
@@ -613,17 +615,17 @@ impl AppUseCase {
     async fn load_library_request_quality_profile_ids_override(
         &self,
         library_id: &str,
-        catalog_profile_ids: &HashSet<String>,
+        profiles: &[crate::QualityProfile],
     ) -> AppResult<Option<Vec<String>>> {
-        Ok(self
+        self
             .read_setting_json_value::<Vec<String>>(
                 REQUEST_QUALITY_PROFILE_IDS_KEY,
                 Some(library_id),
             )
             .await?
-            .and_then(|profile_ids| {
-                configured_request_quality_profile_ids(profile_ids, catalog_profile_ids)
-            }))
+            .map(|profile_ids| configured_request_quality_profile_ids(profile_ids, profiles))
+            .transpose()
+            .map(Option::flatten)
     }
 
     pub(crate) async fn effective_request_quality_profile_settings_for_library(
@@ -635,15 +637,13 @@ impl AppUseCase {
             .resolve_quality_profile_id(Some(&library.id), Some(scope_id))
             .await?;
         let profile_settings = self.load_quality_profile_settings().await?;
-        let catalog_profile_ids = profile_settings
-            .profiles
-            .iter()
-            .map(|profile| profile.id.clone())
-            .collect::<HashSet<_>>();
         let fallback_id =
             fallback_request_quality_profile_id(&profile_settings, &quality_profile_id);
         let profile_ids = self
-            .load_library_request_quality_profile_ids_override(&library.id, &catalog_profile_ids)
+            .load_library_request_quality_profile_ids_override(
+                &library.id,
+                &profile_settings.profiles,
+            )
             .await?
             .unwrap_or_else(|| vec![fallback_id.clone()]);
         let default_profile_id = profile_ids
@@ -764,13 +764,11 @@ impl AppUseCase {
             .resolve_quality_profile_id(Some(&library.id), Some(scope_id))
             .await?;
         let profile_settings = self.load_quality_profile_settings().await?;
-        let catalog_profile_ids = profile_settings
-            .profiles
-            .iter()
-            .map(|profile| profile.id.clone())
-            .collect::<HashSet<_>>();
         let request_quality_profile_ids_override = self
-            .load_library_request_quality_profile_ids_override(&library.id, &catalog_profile_ids)
+            .load_library_request_quality_profile_ids_override(
+                &library.id,
+                &profile_settings.profiles,
+            )
             .await?;
         let request_quality_profile_fallback_id =
             fallback_request_quality_profile_id(&profile_settings, &quality_profile_id);
@@ -1032,6 +1030,12 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
+        let _profile_reference_guard = self
+            .runtime
+            .catalog
+            .quality_profile_reference_lock
+            .lock()
+            .await;
 
         let is_anime_library = library.facet == MediaFacet::Anime;
         if !is_anime_library && settings.monitor_specials.is_some() {
@@ -1383,6 +1387,12 @@ impl AppUseCase {
             .ok_or_else(|| AppError::NotFound(format!("library {library_id}")))?;
         self.require_library_management_permission(actor, &library.id)
             .await?;
+        let _profile_reference_guard = self
+            .runtime
+            .catalog
+            .quality_profile_reference_lock
+            .lock()
+            .await;
         let is_anime_library = library.facet == MediaFacet::Anime;
         if !is_anime_library
             && (settings.filler_policy.is_some()
@@ -1400,6 +1410,14 @@ impl AppUseCase {
                 "plexmatch_write_on_import is only valid for series and anime libraries"
                     .to_string(),
             ));
+        }
+
+        if let Some(profile_id) = settings
+            .quality_profile_id
+            .clone()
+            .and_then(|profile_id| normalize_optional_string(Some(profile_id)))
+        {
+            self.validate_quality_profile_id(&profile_id).await?;
         }
 
         if let Some(languages) = settings.required_audio_languages {

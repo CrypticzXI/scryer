@@ -520,33 +520,33 @@ fn completed_import_error_message_is_retryable(message: &str) -> bool {
 async fn resolve_import_quality_profile(
     app: &AppUseCase,
     title: &scryer_domain::Title,
-) -> crate::QualityProfile {
+) -> crate::AppResult<crate::QualityProfile> {
     let tvdb_id = title
         .external_ids
         .iter()
         .find(|external_id| external_id.source == "tvdb")
         .map(|external_id| external_id.value.as_str());
     let category_hint = crate::post_download_gate::facet_to_category_hint(&title.facet);
-    match app
-        .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
-            title_tags: &title.tags,
-            library_id: Some(title.library_id.as_str()),
-            imdb_id: title.imdb_id.as_deref(),
-            tvdb_id,
-            category_hint: Some(category_hint),
-        })
-        .await
-    {
-        Ok(profile) => profile,
-        Err(err) => {
-            tracing::warn!(
-                error = %err,
-                title_id = %title.id,
-                "failed to resolve quality profile, using default"
-            );
-            crate::default_quality_profile_for_search()
-        }
-    }
+    // Resolution failures propagate: gating an import against a substitute
+    // profile silently applies the wrong quality rules, which is the failure
+    // mode the strict resolver exists to prevent. A validation failure (e.g. a
+    // dangling profile reference) needs operator action and surfaces as a
+    // blocked import; any other failure is treated as transient and worded so
+    // `completed_import_error_message_is_retryable` re-attempts it.
+    app.resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
+        title_tags: &title.tags,
+        library_id: Some(title.library_id.as_str()),
+        imdb_id: title.imdb_id.as_deref(),
+        tvdb_id,
+        category_hint: Some(category_hint),
+    })
+    .await
+    .map_err(|error| match error {
+        crate::AppError::Validation(_) => error,
+        other => crate::AppError::Repository(format!(
+            "quality profile resolution temporarily unavailable: {other}"
+        )),
+    })
 }
 const SAMPLE_SIZE_THRESHOLD: u64 = 50 * 1024 * 1024;
 fn non_empty_string(value: Option<String>) -> Option<String> {

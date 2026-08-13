@@ -203,6 +203,22 @@ pub struct SeriesMovieLinkPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct EpisodeMediaAvailabilityPayload {
+    pub state: EpisodeMediaAvailabilityStateValue,
+    pub primary_quality_label: Option<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum EpisodeMediaAvailabilityStateValue {
+    Available,
+    PendingScan,
+    ScanFailed,
+    Missing,
+    Unmonitored,
+}
+
+#[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct EpisodePayload {
     pub id: ID,
@@ -336,6 +352,24 @@ pub struct DownloadHistoryPagePayload {
     pub has_more: bool,
     pub total_count: i32,
     pub available_clients: Vec<DownloadClientFilterOptionPayload>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DownloadQueuePagePayload {
+    pub items: Vec<DownloadQueueItemPayload>,
+    pub has_more: bool,
+    pub total_count: i32,
+    pub available_clients: Vec<DownloadClientFilterOptionPayload>,
+    pub revision: Long,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub ready: bool,
+    pub stale: bool,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct DownloadQueueSyncPayload {
+    pub revision: Long,
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -508,6 +542,7 @@ pub struct PendingReleasePayload {
     pub release_score: i32,
     pub scoring_log_json: Option<Json<serde_json::Value>>,
     pub indexer_source: Option<String>,
+    pub indexer_id: Option<ID>,
     pub added_at: DateTime<Utc>,
     pub delay_until: DateTime<Utc>,
     pub status: PendingReleaseStatusValue,

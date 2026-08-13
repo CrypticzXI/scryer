@@ -1014,6 +1014,7 @@ const en: LocaleDictionary = {
   "search.configureAdd": "Configure add options",
   "search.addConfigLibrary": "Library",
   "search.addConfigQualityProfile": "Quality profile",
+  "search.addConfigInheritLibrary": "Inherit library",
   "search.addConfigRootFolder": "Root folder",
   "search.addConfigSeasonFolder": "Season folder",
   "search.addConfigMonitorType": "Monitor type",
@@ -1181,6 +1182,8 @@ const en: LocaleDictionary = {
     "Choose an action for the selected titles, or clear the selection.",
   "title.bulkEditTitle": "Edit Selected Titles",
   "title.bulkEditDescription": "Apply changes to {{count}} selected titles.",
+  "title.editOptionsTitle": "Edit Title Options",
+  "title.editOptionsDescription": "Change options for {{name}}.",
   "title.bulkDeleteTitle": "Delete Selected Titles",
   "title.bulkDeleteDescription":
     "Remove {{count}} selected titles from the catalog.",
@@ -1393,6 +1396,7 @@ const en: LocaleDictionary = {
   "activity.importEmpty": "No import items.",
   "activity.activityEmpty": "No active downloads.",
   "activity.historyEmpty": "No history items.",
+  "activity.queueStale": "Queue data is stale; showing the last successful refresh.",
   "queue.title": "Title",
   "queue.client": "Client",
   "queue.status": "Status",
@@ -1588,7 +1592,24 @@ const en: LocaleDictionary = {
   "settings.managedIndexerReadOnly":
     "Managed indexers are controlled by their parent sync and cannot be edited directly.",
   "settings.managedIndexerReadOnlyShort": "Read-only",
+  "settings.indexerDownloadClient": "Download client",
+  "settings.indexerDownloadClientLabel": "Download client for {{name}}",
+  "settings.indexerDownloadClientAutomatic": "Automatic",
+  "settings.indexerDownloadClientNotApplicable": "Not applicable",
+  "settings.indexerDownloadClientDisabled": "Disabled",
+  "settings.indexerDownloadClientDisabledWarning":
+    "{{name}} is disabled. Grabs will fail until it is enabled.",
+  "settings.indexerDownloadClientChooseAutomatic": "Choose Automatic",
+  "settings.indexerDownloadClientInvalidOption": "Invalid: {{name}}",
+  "settings.indexerDownloadClientInvalidMissing":
+    "The mapped download client is missing. Choose a valid client or Automatic.",
+  "settings.indexerDownloadClientInvalidIncompatible":
+    "The mapped download client is incompatible with this indexer.",
+  "settings.indexerDownloadClientInvalidUnavailable":
+    "The mapped download client is unavailable. Choose a valid client or Automatic.",
   "settings.downloadClientsSection": "Download clients",
+  "settings.downloadClientDeleteConfirmDescription":
+    "Delete {{name}}? Any indexers mapped to it will revert to Automatic.",
   "settings.downloadClientFilterPlaceholder": "Filter by client name or type",
   "settings.newPassword": "New Password",
   "settings.passwordManagedExternally": "Managed externally",
@@ -2550,6 +2571,12 @@ const en: LocaleDictionary = {
   "status.downloadClientCreated": "Download client saved.",
   "status.downloadClientUpdated": "Download client updated.",
   "status.downloadClientDeleted": "Deleted download client {{name}}.",
+  "status.downloadClientDeletedWithMappings":
+    "Deleted download client {{name}}. {{count}} indexer(s) reverted to Automatic.",
+  "status.indexerDownloadClientMappingSaving":
+    "Saving download client routing…",
+  "status.indexerDownloadClientMappingSaved":
+    "Download client routing saved for {{name}}.",
   "status.downloadClientOrderSaved": "Download client priority order saved.",
   "status.testingDownloadClient": "Testing {{client}} connection…",
   "status.downloadClientConnectionTestPassed":

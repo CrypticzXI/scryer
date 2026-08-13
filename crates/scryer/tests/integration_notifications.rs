@@ -20,9 +20,10 @@ use scryer_domain::{
     DomainEventActorKind, DomainEventPayload, DomainEventStream, DomainEventType,
     DomainExternalIds, ExternalId, ImportCompletedEventData, LibraryScanProgressedEventData,
     MediaFacet, MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileRenamedEventData,
-    MediaFileUpgradedEventData, MediaPathUpdate, MediaServerConnection, MediaServerPathMapping,
-    MediaServerProvider, MediaUpdateType, NewDomainEvent, NewTitle, NotificationChannelConfig,
-    NotificationEventType, TitleContextSnapshot,
+    MediaFileUpgradedEventData, MediaPathUpdate, MediaRequestSubmittedEventData,
+    MediaServerConnection, MediaServerPathMapping, MediaServerProvider, MediaUpdateType,
+    NewDomainEvent, NewTitle, NotificationChannelConfig, NotificationEventType,
+    TitleContextSnapshot,
 };
 use scryer_infrastructure::{MediaServerConnectionStore, NotificationStore};
 use scryer_interface::build_schema;
@@ -187,6 +188,7 @@ struct FakeNotificationProvider {
     provider_type: String,
     provider_name: String,
     config_fields: Vec<ConfigFieldDef>,
+    supports_test: bool,
     captured: Arc<Mutex<Vec<CapturedNotification>>>,
 }
 
@@ -196,7 +198,15 @@ impl FakeNotificationProvider {
             provider_type: "webhook".to_string(),
             provider_name: "Webhook".to_string(),
             config_fields: Vec::new(),
+            supports_test: true,
             captured: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn webhook_without_test() -> Self {
+        Self {
+            supports_test: false,
+            ..Self::webhook()
         }
     }
 
@@ -245,6 +255,7 @@ impl FakeNotificationProvider {
                     help_text: Some("One mapping per line.".to_string()),
                 },
             ],
+            supports_test: true,
             captured: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -303,7 +314,7 @@ impl NotificationPluginProvider for FakeNotificationProvider {
     }
 
     fn supports_test_for_provider(&self, provider_type: &str) -> bool {
-        provider_type == self.provider_type
+        provider_type == self.provider_type && self.supports_test
     }
 }
 
@@ -826,6 +837,39 @@ async fn create_channel_rejects_empty_type() {
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::Validation(_)));
+}
+
+#[tokio::test]
+async fn create_channel_rejects_non_object_config_json() {
+    let ctx = TestContext::new().await;
+    let app = app_with_notifications(&ctx);
+    let user = default_user(&app).await;
+
+    let err = app
+        .create_notification_channel(&user, "Webhook".into(), "webhook".into(), "[]".into(), true)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AppError::Validation(_)));
+}
+
+#[tokio::test]
+async fn test_channel_rejects_provider_without_test_capability() {
+    let ctx = TestContext::new().await;
+    let provider = Arc::new(FakeNotificationProvider::webhook_without_test());
+    let app = app_with_notification_provider(&ctx, provider.clone());
+    let user = default_user(&app).await;
+    let channel = app
+        .create_notification_channel(&user, "Webhook".into(), "webhook".into(), "{}".into(), true)
+        .await
+        .expect("channel should be created");
+
+    let err = app
+        .test_notification_channel(&user, &channel.id)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, AppError::Validation(_)));
+    assert!(provider.captured().is_empty());
 }
 
 #[tokio::test]
@@ -1756,6 +1800,121 @@ async fn jellyfin_dist_plugin_requires_media_updates_for_non_test_events() {
         requests.is_empty(),
         "invalid Jellyfin notification should not make HTTP requests"
     );
+}
+
+#[tokio::test]
+async fn notification_dispatcher_delivers_global_media_request_to_facet_scope() {
+    let ctx = TestContext::new().await;
+    let provider = Arc::new(FakeNotificationProvider::webhook());
+    let app = app_with_notification_provider(&ctx, provider.clone());
+    let user = default_user(&app).await;
+    let channel = app
+        .create_notification_channel(&user, "Webhook".into(), "webhook".into(), "{}".into(), true)
+        .await
+        .expect("channel should be created");
+    app.create_notification_subscription(
+        &user,
+        channel.id,
+        NotificationEventType::MediaRequestSubmitted
+            .as_str()
+            .to_string(),
+        "facet".into(),
+        Some("series".into()),
+        true,
+    )
+    .await
+    .expect("subscription should be created");
+
+    let cancel = CancellationToken::new();
+    let dispatcher = tokio::spawn(start_notification_dispatcher(app.clone(), cancel.clone()));
+    app.append_domain_event(NewDomainEvent {
+        event_id: "evt-media-request-facet-scope".to_string(),
+        occurred_at: Utc::now(),
+        actor_kind: DomainEventActorKind::User,
+        actor_user_id: Some("requester-1".to_string()),
+        actor_display_name: "requester-1".to_string(),
+        title_id: None,
+        facet: None,
+        correlation_id: None,
+        causation_id: None,
+        schema_version: 1,
+        stream: DomainEventStream::Global,
+        payload: DomainEventPayload::MediaRequestSubmitted(MediaRequestSubmittedEventData {
+            request_id: "request-1".to_string(),
+            library_id: "library-series".to_string(),
+            facet: MediaFacet::Series,
+            title_name: "Requested Show".to_string(),
+            external_ids: Vec::new(),
+            poster_url: None,
+            year: None,
+            requested_quality_profile_id: None,
+            requested_quality_profile_name: None,
+            requested_monitor_type: None,
+        }),
+    })
+    .await
+    .expect("media request event should append");
+
+    let captured = wait_for_captured(&provider, 1).await;
+    assert_eq!(
+        captured[0].event_type,
+        NotificationEventType::MediaRequestSubmitted.as_str()
+    );
+    cancel.cancel();
+    dispatcher.await.expect("dispatcher should stop");
+}
+
+#[tokio::test]
+async fn notification_dispatcher_deduplicates_overlapping_file_delete_subscriptions() {
+    let ctx = TestContext::new().await;
+    let provider = Arc::new(FakeNotificationProvider::webhook());
+    let app = app_with_notification_provider(&ctx, provider.clone());
+    let user = default_user(&app).await;
+    let channel = app
+        .create_notification_channel(&user, "Webhook".into(), "webhook".into(), "{}".into(), true)
+        .await
+        .expect("channel should be created");
+    for event_type in [
+        NotificationEventType::FileDeleted,
+        NotificationEventType::FileDeletedForUpgrade,
+    ] {
+        app.create_notification_subscription(
+            &user,
+            channel.id.clone(),
+            event_type.as_str().to_string(),
+            "global".into(),
+            None,
+            true,
+        )
+        .await
+        .expect("subscription should be created");
+    }
+
+    let cancel = CancellationToken::new();
+    let dispatcher = tokio::spawn(start_notification_dispatcher(app.clone(), cancel.clone()));
+    app.append_domain_event(new_event(
+        "evt-file-delete-deduplicated",
+        "title-1",
+        "movie",
+        DomainEventPayload::MediaFileDeleted(MediaFileDeletedEventData {
+            title: title_context("Upgrade Movie", "movie", DomainExternalIds::default()),
+            media_updates: vec![MediaPathUpdate {
+                path: "/library/Upgrade Movie.old.mkv".to_string(),
+                update_type: MediaUpdateType::Deleted,
+            }],
+            file_id: Some("file-old".to_string()),
+            reason: MediaFileDeletedReason::UpgradeCleanup,
+            episode_ids: Vec::new(),
+        }),
+    ))
+    .await
+    .expect("file deletion event should append");
+
+    wait_for_captured(&provider, 1).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(provider.captured().len(), 1);
+    cancel.cancel();
+    dispatcher.await.expect("dispatcher should stop");
 }
 
 #[tokio::test]

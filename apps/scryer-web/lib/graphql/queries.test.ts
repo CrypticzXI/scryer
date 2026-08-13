@@ -4,12 +4,24 @@ import test from "node:test";
 import {
   buildTitlesQuery,
   buildReactiveRefreshQuery,
+  downloadQueuePageQuery,
+  downloadQueueSyncSubscription,
   episodeSidePanelDetailQuery,
+  globalSearchInitQuery,
   movieSidePanelTitleQuery,
   movieSidePanelOverviewQuery,
   seriesSidePanelOverviewQuery,
   titleMoreLikeThisQuery,
 } from "./queries.ts";
+
+test("activity queue uses paged cache reads and revision-only sync", () => {
+  assert.equal(downloadQueuePageQuery.includes("downloadQueuePage("), true);
+  assert.equal(downloadQueuePageQuery.includes("$limit: Int = 50"), true);
+  assert.equal(downloadQueuePageQuery.includes("revision"), true);
+  assert.equal(downloadQueuePageQuery.includes("stale"), true);
+  assert.equal(downloadQueueSyncSubscription.includes("downloadQueueSync"), true);
+  assert.equal(downloadQueueSyncSubscription.includes("items"), false);
+});
 
 test("reactive catalog title refresh uses catalog list projection", () => {
   const result = buildReactiveRefreshQuery([
@@ -36,7 +48,33 @@ test("reactive catalog title refresh uses catalog list projection", () => {
   assert.equal(result.query.includes("overview"), false);
   assert.equal(result.query.includes("canonicalTags"), false);
   assert.equal(result.query.includes("externalIds"), false);
-  assert.equal(result.query.includes("monitorType"), false);
+  // Edit prefill and post-mutation verification consume option fields from
+  // the same catalog-row projection, including reactive row refreshes.
+  assert.equal(result.query.includes("qualityProfileId"), true);
+  assert.equal(result.query.includes("monitorType"), true);
+  assert.equal(result.query.includes("fillerPolicy"), true);
+});
+
+test("title catalog rows include option fields used by edit and mutation verification", () => {
+  const query = buildTitlesQuery();
+
+  assert.equal(query.includes("qualityProfileId"), true);
+  assert.equal(query.includes("rootFolderId"), true);
+  assert.equal(query.includes("monitorType"), true);
+  assert.equal(query.includes("useSeasonFolders"), true);
+  assert.equal(query.includes("monitorSpecials"), true);
+  assert.equal(query.includes("interSeasonMovies"), true);
+  assert.equal(query.includes("fillerPolicy"), true);
+  assert.equal(query.includes("recapPolicy"), true);
+});
+
+test("global search loads the manageable library quality-profile override", () => {
+  const manageableLibrariesSelection = globalSearchInitQuery.slice(
+    globalSearchInitQuery.indexOf("manageableLibraries:"),
+    globalSearchInitQuery.indexOf("requestableLibraries:"),
+  );
+
+  assert.equal(manageableLibrariesSelection.includes("qualityProfileId"), true);
 });
 
 test("reactive catalog title refresh omits episodic fields by default", () => {
@@ -141,8 +179,10 @@ test("reactive side panel refresh omits recommendations", () => {
   assert.equal(result.query.includes("moreLikeThis("), false);
 });
 
-test("series side panel overview is a lean collapsed-row query", () => {
+test("series side panel overview uses compact media availability for collapsed rows", () => {
   assert.equal(seriesSidePanelOverviewQuery.includes("aliases"), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("mediaAvailability {"), true);
+  assert.equal(seriesSidePanelOverviewQuery.includes("primaryQualityLabel"), true);
   assert.equal(seriesSidePanelOverviewQuery.includes("mediaFiles {"), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("wantedItems"), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("titleHistory("), false);
@@ -150,11 +190,11 @@ test("series side panel overview is a lean collapsed-row query", () => {
   assert.equal(seriesSidePanelOverviewQuery.includes("overview"), true);
   assert.equal(/episodes\s*\{[^}]*\boverview\b/s.test(seriesSidePanelOverviewQuery), false);
   assert.equal(/episodes\s*\{[^}]*\bimageUrl\b/s.test(seriesSidePanelOverviewQuery), false);
-  assert.equal(seriesSidePanelOverviewQuery.includes("hasMultiAudio"), false);
-  assert.equal(seriesSidePanelOverviewQuery.includes("hasSubtitle"), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("sizeBytes"), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("qualityLabel"), false);
 });
 
-test("series reactive side panel refresh stays lean", () => {
+test("series reactive side panel refresh uses compact media availability", () => {
   const result = buildReactiveRefreshQuery([
     {
       key: "titleSidePanelOverview:title-1:300:series",
@@ -165,6 +205,7 @@ test("series reactive side panel refresh stays lean", () => {
     },
   ]);
 
+  assert.equal(result.query.includes("mediaAvailability {"), true);
   assert.equal(result.query.includes("mediaFiles {"), false);
   assert.equal(result.query.includes("episodeMediaFiles("), false);
   assert.equal(result.query.includes("titleHistory("), false);
@@ -180,6 +221,8 @@ test("episode side panel detail query loads nested media files", () => {
   assert.equal(episodeSidePanelDetailQuery.includes("episodeMediaFiles("), false);
   assert.equal(episodeSidePanelDetailQuery.includes("overview"), true);
   assert.equal(episodeSidePanelDetailQuery.includes("imageUrl"), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("mediaAvailability {"), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("primaryQualityLabel"), true);
   assert.equal(episodeSidePanelDetailQuery.includes("mediaFiles {"), true);
   assert.equal(episodeSidePanelDetailQuery.includes("filePath"), true);
 });

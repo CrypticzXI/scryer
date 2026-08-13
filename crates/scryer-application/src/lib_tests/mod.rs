@@ -16,6 +16,7 @@ use tokio::time::{Duration, Instant, sleep, timeout};
 mod acquisition_recovery;
 mod discovery_sync;
 mod downloads;
+mod indexer_download_client_mappings;
 mod libraries;
 mod library_scan;
 mod media_requests;

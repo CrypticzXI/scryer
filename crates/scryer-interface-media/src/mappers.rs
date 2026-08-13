@@ -833,6 +833,7 @@ pub fn from_indexer_config_with_fields(
         provider_type: config.provider_type,
         base_url: config.base_url,
         indexer_proxy_config_id: config.indexer_proxy_config_id.map(Into::into),
+        download_client_id: config.download_client_id.map(Into::into),
         has_api_key,
         is_managed,
         managed_parent_config_id: managed_parent_config_id.map(Into::into),
@@ -2367,7 +2368,7 @@ pub fn from_episode(app: &AppUseCase, episode: Episode) -> EpisodePayload {
         Some("episode"),
         Some(&episode.id),
         ImageProxyKind::EpisodeStill,
-        "original",
+        "w300",
     );
     EpisodePayload {
         id: episode.id.into(),
@@ -3392,6 +3393,7 @@ pub fn from_pending_release(pr: PendingRelease) -> PendingReleasePayload {
         release_score: pr.release_score,
         scoring_log_json: pr.scoring_log_json.map(json_string_to_value),
         indexer_source: pr.indexer_source,
+        indexer_id: pr.indexer_id.map(ID),
         added_at: parse_required_datetime(&pr.added_at, "pending release added_at"),
         delay_until: parse_required_datetime(&pr.delay_until, "pending release delay_until"),
         status: PendingReleaseStatusValue::from_application(pr.status),

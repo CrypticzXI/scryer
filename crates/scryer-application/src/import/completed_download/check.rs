@@ -95,6 +95,7 @@ pub(crate) async fn check_with_lookup(
         return;
     };
     td.waiting_for_completed_history = false;
+    td.completed_source = Some(completed.clone());
 
     let completed_identity = observed_completed_download_identity(&completed);
     let completed_source_identity = completed_download_source_identity(&completed);

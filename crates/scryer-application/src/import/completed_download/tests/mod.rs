@@ -1572,6 +1572,7 @@ fn build_tracked_download(title_id: &str, facet: &str, release_title: &str) -> T
             tracked_status_messages: vec![],
             tracked_match_type: None,
         },
+        completed_source: None,
         state: TrackedDownloadState::Downloading,
         status: TrackedDownloadStatus::Ok,
         status_messages: vec![],

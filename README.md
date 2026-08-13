@@ -51,30 +51,7 @@ Scryer ships as a single Rust binary with:
 
 ## Architecture
 
-```text
-┌─────────────────────────────────────────┐
-│  scryer binary                          │
-│  ┌───────────┐  ┌────────────────────┐  │
-│  │ Web UI    │  │ GraphQL API        │  │
-│  └───────────┘  └────────────────────┘  │
-│  ┌───────────────────────────────────┐  │
-│  │ Application layer                 │  │
-│  │ acquisition · import · subtitles  │  │
-│  │ rename · post-processing · rules  │  │
-│  └───────────────────────────────────┘  │
-│  ┌───────────────────────────────────┐  │
-│  │ Plugin System (WASM)              │  │
-│  └───────────────────────────────────┘  │
-│  ┌───────────────────────────────────┐  │
-│  │ Storage (SQLite)                  │  │
-│  └───────────────────────────────────┘  │
-└─────────────────────────────────────────┘
-         │                     │
-    ┌────┴─────┐         ┌─────┴──────┐
-    │ Metadata │         │ Indexers & │
-    │  API     │         │ Clients    │
-    └──────────┘         └────────────┘
-```
+![How Scryer fits into your media system](docs/img/scryer-architecture.webp)
 
 ## Windows desktop
 

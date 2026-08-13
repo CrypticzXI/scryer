@@ -74,6 +74,7 @@ async fn check_emits_manual_interaction_notification_once() {
             tracked_status_messages: vec![],
             tracked_match_type: None,
         },
+        completed_source: None,
         state: TrackedDownloadState::Downloading,
         status: TrackedDownloadStatus::Ok,
         status_messages: vec![],

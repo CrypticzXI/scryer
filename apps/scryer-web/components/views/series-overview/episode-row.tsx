@@ -27,6 +27,7 @@ import {
   seriesOverviewEpisodeInteractiveSearchId,
   seriesOverviewEpisodeRowId,
 } from "@/lib/utils/dom-ids";
+import { episodeAvailabilityPill } from "@/lib/utils/episode-media-availability";
 import type {
   CollectionEpisode,
   EpisodeMediaFile,
@@ -37,7 +38,6 @@ import type { EpisodePanelTab } from "./episode-panel-reducer";
 import type { ExternalSubtitleRecord } from "@/lib/types/subtitles";
 import type { DownloadQueueItem } from "@/lib/types/download-queue";
 import {
-  deriveMediaFileQualityLabel,
   formatDate,
   formatRuntimeFromSeconds,
 } from "./helpers";
@@ -81,64 +81,25 @@ function renderEpisodeTypeBadges(episode: CollectionEpisode, t: TranslateFn) {
   );
 }
 
-function renderEpisodeQualityBadge(
-  episode: CollectionEpisode,
-  episodeFiles: EpisodeMediaFile[],
-  t: TranslateFn,
-) {
-  const primaryFile = episodeFiles[0];
-
-  if (primaryFile) {
-    const qualityLabel = deriveMediaFileQualityLabel(primaryFile);
-    if (qualityLabel) {
-      return (
-        <Badge tone="positive" className="px-1.5 text-[10px]">
-          {qualityLabel}
-        </Badge>
-      );
-    }
-
-    if (primaryFile.scanStatus === "imported") {
-      return (
-        <Badge tone="warning" className="px-1.5 text-[10px]">
-          {t("mediaFile.pendingScan")}
-        </Badge>
-      );
-    }
-
-    if (primaryFile.scanStatus === "scan_failed") {
-      return (
-        <Badge tone="negative" className="px-1.5 text-[10px]">
-          {t("mediaFile.scanFailed")}
-        </Badge>
-      );
-    }
-
-    return (
-      <Badge tone="positive" className="px-1.5 text-[10px]">
-        {t("episode.fileOnDisk")}
-      </Badge>
-    );
-  }
-
-  if (episode.monitored) {
-    return (
-      <Badge tone="warning" className="px-1.5 text-[10px]">
-        {t("episode.missing")}
-      </Badge>
-    );
-  }
-
-  return null;
+function renderEpisodeQualityBadge(episode: CollectionEpisode, t: TranslateFn) {
+  const pill = episodeAvailabilityPill(episode.mediaAvailability, t);
+  return pill ? (
+    <Badge
+      id={selectorId("series-overview-episode-availability", episode.id)}
+      tone={pill.tone}
+      className="px-1.5 text-[10px]"
+    >
+      {pill.label}
+    </Badge>
+  ) : null;
 }
 
 function renderEpisodeQualityCell(
   episode: CollectionEpisode,
-  episodeFiles: EpisodeMediaFile[],
   queueItem: DownloadQueueItem | undefined,
   t: TranslateFn,
 ) {
-  const qualityBadge = renderEpisodeQualityBadge(episode, episodeFiles, t);
+  const qualityBadge = renderEpisodeQualityBadge(episode, t);
 
   if (!qualityBadge && !queueItem) {
     return null;
@@ -326,7 +287,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
   ) : null;
 
   const episodeTypeBadges = renderEpisodeTypeBadges(episode, t);
-  const qualityCell = renderEpisodeQualityCell(episode, episodeFiles, queueItem, t);
+  const qualityCell = renderEpisodeQualityCell(episode, queueItem, t);
 
   if (isMobile) {
     return (

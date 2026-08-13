@@ -105,6 +105,12 @@ impl AppUseCase {
             &external_ids,
         )
         .await?;
+        let profile_reference_guard = self
+            .runtime
+            .catalog
+            .quality_profile_reference_lock
+            .lock()
+            .await;
         let (requested_quality_profile_id, requested_quality_profile_name) = self
             .request_quality_profile_snapshot_for_submission(
                 &library,
@@ -157,6 +163,7 @@ impl AppUseCase {
             .media_requests
             .submit(request, actor, submitted_event)
             .await?;
+        drop(profile_reference_guard);
         self.publish_stored_domain_event(&submission.event).await;
         let submitted_request = submission.request;
         let request_id = submitted_request.id.clone();
@@ -262,6 +269,18 @@ impl AppUseCase {
         let request = self
             .load_manageable_pending_media_request(actor, request_id)
             .await?;
+        let profile_reference_guard = self
+            .runtime
+            .catalog
+            .quality_profile_reference_lock
+            .lock()
+            .await;
+        self.require_library_permission(
+            actor,
+            &request.library_id,
+            LibraryPermission::ManageTitles,
+        )
+        .await?;
         let (approved_quality_profile_id, approved_quality_profile_name) =
             self.quality_profile_snapshot(quality_profile_id).await?;
         let approved_monitor_type = match monitor_type {
@@ -272,7 +291,7 @@ impl AppUseCase {
             )?,
         };
         let outcome = self
-            .add_title_with_outcome_in_library(
+            .add_title_with_outcome_after_library_authorization_profile_lock_held(
                 actor,
                 media_request_to_new_title(
                     &request,
@@ -308,6 +327,7 @@ impl AppUseCase {
                 },
             )
             .await?;
+        drop(profile_reference_guard);
         if let Some(event) = &resolution.event {
             self.publish_stored_domain_event(event).await;
         }
@@ -385,6 +405,12 @@ impl AppUseCase {
             .get_by_id(&request.library_id)
             .await?
             .ok_or_else(|| AppError::NotFound("library not found".into()))?;
+        let profile_reference_guard = self
+            .runtime
+            .catalog
+            .quality_profile_reference_lock
+            .lock()
+            .await;
         let (requested_quality_profile_id, requested_quality_profile_name) = self
             .request_quality_profile_snapshot_for_submission(
                 &library,
@@ -415,6 +441,7 @@ impl AppUseCase {
                 updated_event,
             )
             .await?;
+        drop(profile_reference_guard);
         self.publish_stored_domain_event(&update.event).await;
         Ok(update.request)
     }
@@ -849,13 +876,13 @@ impl AppUseCase {
             normalized_optional_string(Some(quality_profile_id.to_string()))
                 .ok_or_else(|| AppError::Validation("quality profile id is required".into()))?;
         let profile_settings = self.load_quality_profile_settings().await?;
-        let profile = profile_settings
-            .profiles
-            .iter()
-            .find(|profile| profile.id == quality_profile_id)
-            .ok_or_else(|| {
-                AppError::Validation(format!("unknown quality profile {quality_profile_id}"))
-            })?;
+        let profile = crate::settings::runtime::quality_profile_by_id(
+            &profile_settings.profiles,
+            &quality_profile_id,
+        )?
+        .ok_or_else(|| {
+            AppError::Validation(format!("unknown quality profile {quality_profile_id}"))
+        })?;
         Ok((profile.id.clone(), profile.name.clone()))
     }
 }

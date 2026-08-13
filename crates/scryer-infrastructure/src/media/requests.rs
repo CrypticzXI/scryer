@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
-    AppError, AppResult, MediaRequestCounts, MediaRequestQuery, MediaRequestRepository,
-    MediaRequestResolution, MediaRequestResolutionResult, MediaRequestSubmissionResult,
-    MediaRequestUpdateResult, NewMediaRequest,
+    AppError, AppResult, MediaRequestCounts, MediaRequestQualityProfileReferenceCounts,
+    MediaRequestQuery, MediaRequestRepository, MediaRequestResolution,
+    MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
+    NewMediaRequest,
 };
 use scryer_domain::{
     ExternalId, MediaFacet, MediaRequest, MediaRequestRequester, MediaRequestStatus,
@@ -26,6 +27,31 @@ impl MediaRequestStore {
 
 #[async_trait]
 impl MediaRequestRepository for MediaRequestStore {
+    async fn count_quality_profile_references(
+        &self,
+        profile_id: &str,
+    ) -> AppResult<MediaRequestQualityProfileReferenceCounts> {
+        let profile_id = profile_id.trim();
+        if profile_id.is_empty() {
+            return Ok(MediaRequestQualityProfileReferenceCounts::default());
+        }
+        let row = SqlRuntime::fetch_optional(
+            self.datastore.read_exec(),
+            "SELECT COUNT(*) AS pending_requested_count
+               FROM media_requests
+              WHERE status = 'pending'
+                AND LOWER(requested_quality_profile_id) = LOWER({})",
+            &[SqlArg::Text(profile_id.to_string())],
+        )
+        .await?;
+        let Some(row) = row else {
+            return Ok(MediaRequestQualityProfileReferenceCounts::default());
+        };
+        Ok(MediaRequestQualityProfileReferenceCounts {
+            pending_requested: row.i64("pending_requested_count")?.max(0) as u64,
+        })
+    }
+
     async fn submit(
         &self,
         request: NewMediaRequest,

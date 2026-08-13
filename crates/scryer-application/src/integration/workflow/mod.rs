@@ -1,17 +1,14 @@
 use super::*;
-use crate::domain_events::new_download_queue_domain_event;
-use crate::event_views::{
-    apply_download_queue_projection_event, sort_download_queue_items, sorted_download_queue_items,
-};
+use crate::event_views::compare_download_queue_items;
+use crate::services::DownloadQueueSync;
 use crate::tracked_downloads::{
     TrackedDownload, TrackedDownloadQueueMetadata, publish_runtime_tracked_download_snapshot_cache,
     tracked_download_id_for_item,
 };
-use crate::types::DownloadClientFilterOption;
+use crate::types::{DownloadClientFilterOption, DownloadQueuePage};
 use scryer_domain::{
-    CompletedDownload, DomainEventFilter, DomainEventPayload, DomainEventType,
-    DownloadQueueDeleteStatus, DownloadQueueItemRemovedEventData,
-    DownloadQueueItemUpsertedEventData, ImportType, TrackedDownloadState, TrackedDownloadStatus,
+    CompletedDownload, DownloadQueueDeleteStatus, ImportType, TrackedDownloadState,
+    TrackedDownloadStatus,
 };
 use std::{
     collections::{HashMap, HashSet},

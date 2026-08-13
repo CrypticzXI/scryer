@@ -967,6 +967,11 @@ pub struct AppRuntimeEventState {
 
 #[derive(Clone)]
 pub struct AppRuntimeCatalogState {
+    /// Serializes profile validation/reference writes with catalog removal for
+    /// all `AppUseCase` clones sharing this runtime. This does not coordinate
+    /// separate processes or replicas; multi-process profile mutations require
+    /// a shared database advisory/transaction lock before they are supported.
+    pub quality_profile_reference_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) monitored_title_matcher:
         Arc<RwLock<crate::import_title_resolution::MonitoredTitleMatcherCache>>,
     pub poster_wake: Arc<tokio::sync::Notify>,
@@ -980,6 +985,468 @@ pub struct AppRuntimeCatalogState {
     pub title_image_cache_clear_scheduled: Arc<std::sync::atomic::AtomicBool>,
 }
 
+pub const DOWNLOAD_QUEUE_SNAPSHOT_STALE_AFTER: chrono::Duration = chrono::Duration::seconds(30);
+pub const DOWNLOAD_QUEUE_SNAPSHOT_COALESCE_WINDOW: std::time::Duration =
+    std::time::Duration::from_millis(300);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadQueueSync {
+    pub revision: u64,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DownloadQueueSnapshot {
+    pub items: Arc<[DownloadQueueItem]>,
+    pub revision: u64,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub ready: bool,
+    pub refresh_error: Option<Arc<str>>,
+}
+
+impl DownloadQueueSnapshot {
+    pub fn stale_at(&self, now: DateTime<Utc>) -> bool {
+        !self.ready
+            || self.refresh_error.is_some()
+            || self.updated_at.is_none_or(|updated_at| {
+                now.signed_duration_since(updated_at) > DOWNLOAD_QUEUE_SNAPSHOT_STALE_AFTER
+            })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct DownloadQueueReadModel {
+    pub(crate) revision: u64,
+    pub(crate) items: Arc<[DownloadQueueItem]>,
+    pub(crate) title_library_ids: Arc<HashMap<String, String>>,
+    pub(crate) orderings:
+        tokio::sync::RwLock<HashMap<crate::types::DownloadHistorySort, Arc<[usize]>>>,
+    pub(crate) legacy_ordering: tokio::sync::OnceCell<Arc<[usize]>>,
+}
+
+impl DownloadQueueReadModel {
+    pub(crate) fn new(
+        revision: u64,
+        items: Arc<[DownloadQueueItem]>,
+        title_library_ids: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            revision,
+            items,
+            title_library_ids: Arc::new(title_library_ids),
+            orderings: tokio::sync::RwLock::new(HashMap::new()),
+            legacy_ordering: tokio::sync::OnceCell::new(),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct DownloadQueueReadModelCache {
+    pub(crate) current: Arc<tokio::sync::RwLock<Option<Arc<DownloadQueueReadModel>>>>,
+    pub(crate) build_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+struct PendingDownloadQueueSnapshot {
+    items: Vec<DownloadQueueItem>,
+    positions: HashMap<(String, String), usize>,
+    updated_at: DateTime<Utc>,
+    clear_refresh_error: bool,
+}
+
+#[derive(Clone)]
+pub struct DownloadQueueSnapshotCache {
+    state: Arc<tokio::sync::RwLock<DownloadQueueSnapshot>>,
+    pending: Arc<tokio::sync::Mutex<Option<PendingDownloadQueueSnapshot>>>,
+    commit_scheduled: Arc<std::sync::atomic::AtomicBool>,
+    sync_tx: tokio::sync::watch::Sender<DownloadQueueSync>,
+}
+
+impl Default for DownloadQueueSnapshotCache {
+    fn default() -> Self {
+        let sync = DownloadQueueSync {
+            revision: 0,
+            updated_at: None,
+        };
+        let (sync_tx, _) = tokio::sync::watch::channel(sync);
+        Self {
+            state: Arc::new(tokio::sync::RwLock::new(DownloadQueueSnapshot {
+                items: Arc::from(Vec::<DownloadQueueItem>::new()),
+                revision: 0,
+                updated_at: None,
+                ready: false,
+                refresh_error: None,
+            })),
+            pending: Arc::new(tokio::sync::Mutex::new(None)),
+            commit_scheduled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            sync_tx,
+        }
+    }
+}
+
+impl DownloadQueueSnapshotCache {
+    pub async fn snapshot(&self) -> DownloadQueueSnapshot {
+        self.state.read().await.clone()
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<DownloadQueueSync> {
+        self.sync_tx.subscribe()
+    }
+
+    pub async fn stage_success(&self, items: Vec<DownloadQueueItem>) {
+        self.stage_snapshot(items, true).await;
+    }
+
+    pub async fn stage_partial_success(&self, items: Vec<DownloadQueueItem>) {
+        self.stage_snapshot(items, false).await;
+    }
+
+    async fn stage_snapshot(&self, items: Vec<DownloadQueueItem>, clear_refresh_error: bool) {
+        let (items, positions) = index_download_queue_items(items);
+        let item_count = items.len();
+        *self.pending.lock().await = Some(PendingDownloadQueueSnapshot {
+            items,
+            positions,
+            updated_at: Utc::now(),
+            clear_refresh_error,
+        });
+        metrics::gauge!("scryer_download_queue_snapshot_items").set(item_count as f64);
+        metrics::counter!("scryer_download_queue_snapshot_refresh_total", "result" => "success")
+            .increment(1);
+        self.schedule_commit();
+    }
+
+    pub async fn stage_upserts(&self, items: Vec<DownloadQueueItem>) {
+        if items.is_empty() {
+            return;
+        }
+        let mut pending = self.pending.lock().await;
+        if pending.is_none() {
+            let (items, positions) =
+                index_download_queue_items(self.state.read().await.items.to_vec());
+            *pending = Some(PendingDownloadQueueSnapshot {
+                items,
+                positions,
+                updated_at: Utc::now(),
+                clear_refresh_error: false,
+            });
+        }
+        let snapshot = pending.as_mut().expect("pending snapshot initialized");
+        for item in items {
+            let key = download_queue_cache_identity(&item);
+            if let Some(index) = snapshot.positions.get(&key).copied() {
+                snapshot.items[index] = item;
+            } else {
+                snapshot.positions.insert(key, snapshot.items.len());
+                snapshot.items.push(item);
+            }
+        }
+        snapshot.updated_at = Utc::now();
+        drop(pending);
+        self.schedule_commit();
+    }
+
+    pub async fn stage_import_transfer_progress(
+        &self,
+        client_id: Option<&str>,
+        client_type: &str,
+        download_client_item_id: &str,
+        phase: scryer_domain::ImportTransferPhase,
+        bytes: i64,
+        total_bytes: i64,
+    ) {
+        let mut pending = self.pending.lock().await;
+        if pending.is_none() {
+            let (items, positions) =
+                index_download_queue_items(self.state.read().await.items.to_vec());
+            *pending = Some(PendingDownloadQueueSnapshot {
+                items,
+                positions,
+                updated_at: Utc::now(),
+                clear_refresh_error: false,
+            });
+        }
+        let snapshot = pending.as_mut().expect("pending snapshot initialized");
+        let Some(item) = snapshot.items.iter_mut().find(|item| {
+            item.download_client_item_id == download_client_item_id
+                && client_id.map_or_else(
+                    || item.client_type.eq_ignore_ascii_case(client_type),
+                    |client_id| item.client_id.eq_ignore_ascii_case(client_id),
+                )
+        }) else {
+            return;
+        };
+        if item.import_transfer_phase == Some(phase)
+            && item.import_transfer_bytes == Some(bytes)
+            && item.import_transfer_total_bytes == Some(total_bytes)
+        {
+            return;
+        }
+        let updated_at = Utc::now().to_rfc3339();
+        item.import_transfer_phase = Some(phase);
+        item.import_transfer_bytes = Some(bytes);
+        item.import_transfer_total_bytes = Some(total_bytes);
+        item.import_transfer_started_at
+            .get_or_insert_with(|| updated_at.clone());
+        item.import_transfer_updated_at = Some(updated_at);
+        snapshot.updated_at = Utc::now();
+        drop(pending);
+        self.schedule_commit();
+    }
+
+    pub async fn mark_refresh_failed(&self, error: impl Into<String>) {
+        let error = error.into();
+        let mut state = self.state.write().await;
+        let changed = state.refresh_error.as_deref() != Some(error.as_str());
+        if !changed {
+            drop(state);
+            metrics::counter!("scryer_download_queue_snapshot_refresh_total", "result" => "error")
+                .increment(1);
+            return;
+        }
+        state.revision = state.revision.saturating_add(1);
+        state.refresh_error = Some(Arc::from(error));
+        let sync = DownloadQueueSync {
+            revision: state.revision,
+            updated_at: state.updated_at,
+        };
+        drop(state);
+        self.sync_tx.send_replace(sync);
+        metrics::counter!("scryer_download_queue_snapshot_refresh_total", "result" => "error")
+            .increment(1);
+    }
+
+    fn schedule_commit(&self) {
+        use std::sync::atomic::Ordering;
+
+        if self
+            .commit_scheduled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let cache = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(DOWNLOAD_QUEUE_SNAPSHOT_COALESCE_WINDOW).await;
+                cache.commit_pending().await;
+                cache.commit_scheduled.store(false, Ordering::Release);
+
+                if cache.pending.lock().await.is_none()
+                    || cache
+                        .commit_scheduled
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    }
+
+    async fn commit_pending(&self) {
+        let Some(pending) = self.pending.lock().await.take() else {
+            return;
+        };
+        let mut state = self.state.write().await;
+        let items_changed = state.items.as_ref() != pending.items.as_slice();
+        let readiness_changed = !state.ready;
+        let error_changed = pending.clear_refresh_error && state.refresh_error.is_some();
+        let changed = items_changed || readiness_changed || error_changed;
+        if items_changed {
+            state.items = Arc::from(pending.items);
+        }
+        state.updated_at = Some(pending.updated_at);
+        state.ready = true;
+        if pending.clear_refresh_error {
+            state.refresh_error = None;
+        }
+        if !changed {
+            return;
+        }
+        state.revision = state.revision.saturating_add(1);
+        let sync = DownloadQueueSync {
+            revision: state.revision,
+            updated_at: state.updated_at,
+        };
+        drop(state);
+        self.sync_tx.send_replace(sync);
+        metrics::counter!("scryer_download_queue_revision_notifications_total").increment(1);
+    }
+}
+
+fn download_queue_cache_identity(item: &DownloadQueueItem) -> (String, String) {
+    let client = if item.client_id.trim().is_empty() {
+        item.client_type.trim()
+    } else {
+        item.client_id.trim()
+    };
+    (
+        client.to_ascii_lowercase(),
+        item.download_client_item_id.clone(),
+    )
+}
+
+fn index_download_queue_items(
+    items: Vec<DownloadQueueItem>,
+) -> (Vec<DownloadQueueItem>, HashMap<(String, String), usize>) {
+    let mut deduped = Vec::with_capacity(items.len());
+    let mut positions = HashMap::with_capacity(items.len());
+    for item in items {
+        let key = download_queue_cache_identity(&item);
+        if let Some(index) = positions.get(&key).copied() {
+            deduped[index] = item;
+        } else {
+            positions.insert(key, deduped.len());
+            deduped.push(item);
+        }
+    }
+    (deduped, positions)
+}
+
+#[cfg(test)]
+mod download_queue_snapshot_cache_tests {
+    use super::*;
+
+    fn item(index: usize) -> DownloadQueueItem {
+        let id = format!("item-{index}");
+        DownloadQueueItem {
+            id: id.clone(),
+            title_id: None,
+            episode_id: None,
+            title_name: format!("Episode {index}"),
+            facet: None,
+            category: None,
+            client_id: "client-1".to_string(),
+            client_name: "qBittorrent".to_string(),
+            client_type: "qbittorrent".to_string(),
+            state: DownloadQueueState::Downloading,
+            progress_percent: (index % 100) as u8,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
+            size_bytes: Some(index as i64),
+            remaining_seconds: None,
+            queued_at: None,
+            last_updated_at: None,
+            attention_required: false,
+            attention_reason: None,
+            download_client_item_id: id,
+            download_id: None,
+            import_status: None,
+            import_error_code: None,
+            import_error_message: None,
+            imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
+            is_scryer_origin: true,
+            source_provider: None,
+            tracked_state: None,
+            tracked_status: None,
+            tracked_status_messages: Vec::new(),
+            tracked_match_type: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_cache_is_not_ready_and_is_stale() {
+        let snapshot = DownloadQueueSnapshotCache::default().snapshot().await;
+        assert!(!snapshot.ready);
+        assert!(snapshot.stale_at(Utc::now()));
+        assert_eq!(snapshot.revision, 0);
+        assert!(snapshot.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cache_handles_zero_to_three_thousand_items() {
+        for count in [0, 100, 1_000, 3_000] {
+            let cache = DownloadQueueSnapshotCache::default();
+            cache
+                .stage_success((0..count).map(item).collect::<Vec<_>>())
+                .await;
+            cache.commit_pending().await;
+            let snapshot = cache.snapshot().await;
+            assert_eq!(snapshot.items.len(), count);
+            assert_eq!(snapshot.revision, 1);
+            assert!(snapshot.ready);
+            assert!(!snapshot.stale_at(Utc::now()));
+        }
+    }
+
+    #[tokio::test]
+    async fn one_thousand_item_burst_commits_one_revision_and_deduplicates() {
+        let cache = DownloadQueueSnapshotCache::default();
+        for index in 0..1_000 {
+            cache.stage_upserts(vec![item(index)]).await;
+        }
+        cache.stage_upserts(vec![item(999)]).await;
+        tokio::time::sleep(
+            DOWNLOAD_QUEUE_SNAPSHOT_COALESCE_WINDOW + std::time::Duration::from_millis(50),
+        )
+        .await;
+
+        let snapshot = cache.snapshot().await;
+        assert_eq!(snapshot.revision, 1);
+        assert_eq!(snapshot.items.len(), 1_000);
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_retains_last_successful_snapshot_and_marks_it_stale() {
+        let cache = DownloadQueueSnapshotCache::default();
+        cache.stage_success((0..100).map(item).collect()).await;
+        cache.commit_pending().await;
+        cache.mark_refresh_failed("client unavailable").await;
+        cache
+            .stage_partial_success((0..50).map(item).collect())
+            .await;
+        cache.commit_pending().await;
+
+        let snapshot = cache.snapshot().await;
+        assert_eq!(snapshot.items.len(), 50);
+        assert_eq!(snapshot.revision, 3);
+        assert!(snapshot.ready);
+        assert!(snapshot.stale_at(Utc::now()));
+        assert_eq!(
+            snapshot.refresh_error.as_deref(),
+            Some("client unavailable")
+        );
+    }
+
+    #[tokio::test]
+    async fn identical_polls_and_failures_do_not_advance_revision_but_recovery_does() {
+        let cache = DownloadQueueSnapshotCache::default();
+        let items = (0..100).map(item).collect::<Vec<_>>();
+        cache.stage_success(items.clone()).await;
+        cache.commit_pending().await;
+        assert_eq!(cache.snapshot().await.revision, 1);
+
+        cache.stage_success(items.clone()).await;
+        cache.commit_pending().await;
+        assert_eq!(cache.snapshot().await.revision, 1);
+
+        cache.mark_refresh_failed("client unavailable").await;
+        assert_eq!(cache.snapshot().await.revision, 2);
+        cache.mark_refresh_failed("client unavailable").await;
+        assert_eq!(cache.snapshot().await.revision, 2);
+
+        cache.stage_success(items).await;
+        cache.commit_pending().await;
+        let recovered = cache.snapshot().await;
+        assert_eq!(recovered.revision, 3);
+        assert!(recovered.refresh_error.is_none());
+        assert!(!recovered.stale_at(Utc::now()));
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CachedWantedProjection {
+    pub generation: u64,
+    pub time_bucket: Option<i64>,
+    pub rows: Arc<[crate::acquisition::wanted_views::WantedScopeView]>,
+}
+
 #[derive(Clone)]
 pub struct AppRuntimeAcquisitionState {
     pub acquisition_wake: Arc<tokio::sync::Notify>,
@@ -991,6 +1458,12 @@ pub struct AppRuntimeAcquisitionState {
     pub tracked_download_handle: Option<tracked_downloads::TrackedDownloadHandle>,
     pub tracked_download_snapshot:
         Arc<tokio::sync::RwLock<HashMap<String, tracked_downloads::TrackedDownloadQueueMetadata>>>,
+    pub download_queue_snapshot: DownloadQueueSnapshotCache,
+    pub(crate) download_queue_read_model: DownloadQueueReadModelCache,
+    pub(crate) wanted_projection_generation: Arc<std::sync::atomic::AtomicU64>,
+    pub(crate) wanted_projection_cache:
+        Arc<tokio::sync::RwLock<HashMap<crate::types::WantedKind, CachedWantedProjection>>>,
+    pub(crate) wanted_projection_build_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) download_client_category_ownership:
         Arc<tokio::sync::RwLock<DownloadClientCategoryOwnershipCache>>,
     /// Cancellation tokens for in-flight interactive acquisition-search jobs
@@ -1008,6 +1481,13 @@ pub struct AppRuntimeAcquisitionState {
             >,
         >,
     >,
+}
+
+impl AppRuntimeAcquisitionState {
+    pub(crate) fn invalidate_wanted_projection_cache(&self) {
+        self.wanted_projection_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 #[derive(Clone, Default)]
@@ -1314,6 +1794,7 @@ impl AppRuntimeState {
                 settings_changed_broadcast: settings_changed_tx,
             },
             catalog: AppRuntimeCatalogState {
+                quality_profile_reference_lock: Arc::new(tokio::sync::Mutex::new(())),
                 monitored_title_matcher: Arc::new(RwLock::new(
                     crate::import_title_resolution::MonitoredTitleMatcherCache::default(),
                 )),
@@ -1338,6 +1819,11 @@ impl AppRuntimeState {
                 rss_seen_guids: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
                 tracked_download_handle: None,
                 tracked_download_snapshot: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+                download_queue_snapshot: DownloadQueueSnapshotCache::default(),
+                download_queue_read_model: DownloadQueueReadModelCache::default(),
+                wanted_projection_generation: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+                wanted_projection_cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+                wanted_projection_build_lock: Arc::new(tokio::sync::Mutex::new(())),
                 download_client_category_ownership: Arc::new(tokio::sync::RwLock::new(
                     DownloadClientCategoryOwnershipCache::default(),
                 )),
@@ -2535,6 +3021,11 @@ impl AppUseCase {
     }
 
     pub async fn publish_stored_domain_event(&self, stored: &DomainEvent) {
+        if should_invalidate_wanted_projection(&stored.payload) {
+            self.runtime
+                .acquisition
+                .invalidate_wanted_projection_cache();
+        }
         if should_invalidate_monitored_title_matcher(&stored.payload) {
             self.invalidate_monitored_title_matcher().await;
         }
@@ -2569,6 +3060,14 @@ impl AppUseCase {
             .domain_events
             .append_many(events)
             .await?;
+        if stored
+            .iter()
+            .any(|event| should_invalidate_wanted_projection(&event.payload))
+        {
+            self.runtime
+                .acquisition
+                .invalidate_wanted_projection_cache();
+        }
         if stored
             .iter()
             .any(|event| should_invalidate_monitored_title_matcher(&event.payload))
@@ -3399,6 +3898,31 @@ impl AppUseCase {
     }
 }
 
+fn should_invalidate_wanted_projection(payload: &scryer_domain::DomainEventPayload) -> bool {
+    use scryer_domain::DomainEventPayload;
+
+    match payload {
+        DomainEventPayload::TitleAdded(_)
+        | DomainEventPayload::TitleUpdated(_)
+        | DomainEventPayload::TitleRematched(_)
+        | DomainEventPayload::TitleDeleted(_)
+        | DomainEventPayload::MetadataHydrationUpdated(_)
+        | DomainEventPayload::MediaFileImported(_)
+        | DomainEventPayload::MediaFileAnalyzed(_)
+        | DomainEventPayload::MediaFileRenamed(_)
+        | DomainEventPayload::MediaFileDeleted(_)
+        | DomainEventPayload::MediaFileUpgraded(_)
+        | DomainEventPayload::LibraryScanTitleDiscovered(_)
+        | DomainEventPayload::LibraryScanDeltaRecorded(_)
+        | DomainEventPayload::LibraryScanCompleted(_) => true,
+        DomainEventPayload::ConfigurationChanged(data) => matches!(
+            data.resource_type.trim().to_ascii_lowercase().as_str(),
+            "quality_profile" | "quality_profiles" | "quality_definition" | "quality_definitions"
+        ),
+        _ => false,
+    }
+}
+
 fn should_invalidate_monitored_title_matcher(payload: &scryer_domain::DomainEventPayload) -> bool {
     matches!(
         payload,
@@ -3406,6 +3930,39 @@ fn should_invalidate_monitored_title_matcher(payload: &scryer_domain::DomainEven
             | scryer_domain::DomainEventPayload::TitleUpdated(_)
             | scryer_domain::DomainEventPayload::TitleDeleted(_)
     )
+}
+
+#[cfg(test)]
+mod wanted_projection_invalidation_classifier_tests {
+    use super::should_invalidate_wanted_projection;
+    use scryer_domain::{
+        ConfigurationChangeAction, ConfigurationChangedEventData, DomainEventPayload,
+    };
+
+    fn configuration(resource_type: &str) -> DomainEventPayload {
+        DomainEventPayload::ConfigurationChanged(ConfigurationChangedEventData {
+            resource_type: resource_type.to_string(),
+            resource_id: None,
+            action: ConfigurationChangeAction::Updated,
+        })
+    }
+
+    #[test]
+    fn quality_profile_configuration_changes_invalidate_wanted_projection() {
+        assert!(should_invalidate_wanted_projection(&configuration(
+            "quality_profiles"
+        )));
+        assert!(should_invalidate_wanted_projection(&configuration(
+            "quality_profile"
+        )));
+    }
+
+    #[test]
+    fn unrelated_configuration_changes_do_not_invalidate_wanted_projection() {
+        assert!(!should_invalidate_wanted_projection(&configuration(
+            "download_client"
+        )));
+    }
 }
 
 type RuntimePerformanceProbe =

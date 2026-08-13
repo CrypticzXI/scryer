@@ -283,6 +283,7 @@ async fn probe_solver_health(config: &scryer_domain::IndexerProxyConfig) -> AppR
     let provider_name = crate::challenge_solver::solver_provider_name(config.provider_type);
     let base_url = config.base_url.trim_end_matches('/');
     let health_url = format!("{base_url}/health");
+    scryer_outbound_http::install_default_rustls_provider();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(u64::from(
             config.request_timeout_seconds.saturating_add(5),

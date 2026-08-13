@@ -803,6 +803,23 @@ file = "postgres/migrations/0153_indexer_last_error_message.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 154
+description = "indexer download-client mappings and pending release indexer references"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0154_indexer_download_client_mapping.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0154_indexer_download_client_mapping.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

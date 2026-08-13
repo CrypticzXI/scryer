@@ -55,25 +55,26 @@ impl AppUseCase {
         let can_view_operational_history = self
             .has_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
-        let mut title_library_cache = HashMap::<String, Option<String>>::new();
+        let title_ids = items
+            .iter()
+            .filter_map(|item| item.title_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let title_library_cache = self
+            .services
+            .catalog
+            .titles
+            .get_by_ids(&title_ids)
+            .await?
+            .into_iter()
+            .map(|title| (title.id, title.library_id))
+            .collect::<HashMap<_, _>>();
         let mut visible = Vec::new();
         for item in items {
             let allowed = if let Some(title_id) = item.title_id.as_deref() {
-                let library_id = if let Some(cached) = title_library_cache.get(title_id) {
-                    cached.clone()
-                } else {
-                    let library_id = self
-                        .services
-                        .catalog
-                        .titles
-                        .get_by_id(title_id)
-                        .await?
-                        .map(|title| title.library_id);
-                    title_library_cache.insert(title_id.to_string(), library_id.clone());
-                    library_id
-                };
-                library_id
-                    .as_ref()
+                title_library_cache
+                    .get(title_id)
                     .map(|library_id| allowed_library_ids.contains(library_id))
                     .unwrap_or(can_view_operational_history)
             } else {
@@ -134,21 +135,32 @@ impl AppUseCase {
         actor: &User,
         permission: scryer_domain::LibraryPermission,
     ) -> AppResult<Vec<DownloadQueueItem>> {
-        let items = self.collect_download_history_items(true).await?;
-        self.filter_download_queue_items_for_permission(actor, items, permission)
-            .await
-    }
-}
-impl AppUseCase {
-    async fn collect_download_snapshot_items_for_actor(
-        &self,
-        actor: &User,
-        permission: scryer_domain::LibraryPermission,
-    ) -> AppResult<Vec<DownloadQueueItem>> {
-        let items = self
-            .collect_download_snapshot_items(true, true, true)
+        let allowed_library_ids = self
+            .authorized_library_ids(actor, None, permission)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let can_view_operational_history = self
+            .has_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
-        self.filter_download_queue_items_for_permission(actor, items, permission)
-            .await
+        let (_, model) = self.current_download_queue_read_model().await?;
+        let ordering = Self::legacy_download_queue_ordering(&model).await;
+        Ok(ordering
+            .iter()
+            .map(|index| &model.items[*index])
+            .filter(|item| is_history_download_state(&item.state))
+            .filter(|item| {
+                item.title_id.as_deref().map_or(
+                    can_view_operational_history,
+                    |title_id| {
+                        model.title_library_ids.get(title_id).map_or(
+                            can_view_operational_history,
+                            |library_id| allowed_library_ids.contains(library_id),
+                        )
+                    },
+                )
+            })
+            .cloned()
+            .collect())
     }
 }

@@ -13,9 +13,9 @@ use std::ops::Range;
 
 use wasmtime::{Caller, Extern, Linker};
 
-/// Import module string both functions live under. The weaver-unrar guest's
+/// Import module string both functions live under. The unrar-rs guest's
 /// default namespace is the embedder-neutral `host`; Scryer's plugin artifacts
-/// opt into `extism:host/user` via weaver-unrar's `host-abi-extism` feature, so
+/// opt into `extism:host/user` via unrar-rs's `host-abi-extism` feature, so
 /// the host serves that namespace and both sides agree. No extism
 /// dependency is involved — the string is just the agreed module name.
 const CRYPTO_HOST_NAMESPACE: &str = "extism:host/user";
@@ -33,8 +33,8 @@ const CRC_STATUS_OUT_OF_BOUNDS: i64 = -1;
 /// Register both §5 host functions under `extism:host/user` on `linker`.
 ///
 /// The canonical import names are `host_aes_cbc_decrypt` / `host_crc32` (the
-/// embedder-neutral weaver-unrar ABI). The pre-rename `scryer_*` names are also
-/// registered as transitional aliases so artifacts built against weaver-unrar
+/// embedder-neutral unrar-rs ABI). The pre-rename `scryer_*` names are also
+/// registered as transitional aliases so artifacts built against unrar-rs
 /// ≤0.2.0 (the checked-in `fixtures/archive-extraction` blob) still instantiate
 /// against this strict linker; drop them once every artifact imports `host_*`.
 ///
@@ -48,7 +48,7 @@ pub(crate) fn add_to_linker<T: 'static>(linker: &mut Linker<T>) -> wasmtime::Res
         host_aes_cbc_decrypt::<T>,
     )?;
     linker.func_wrap(CRYPTO_HOST_NAMESPACE, "host_crc32", host_crc32::<T>)?;
-    // Installed artifacts built against weaver-unrar <=0.2.x still import the
+    // Installed artifacts built against the legacy crate <=0.2.x still import the
     // pre-rename `scryer_*` names. Keep these aliases through the plugin upgrade
     // compatibility window even though current artifacts use `host_*`.
     linker.func_wrap(

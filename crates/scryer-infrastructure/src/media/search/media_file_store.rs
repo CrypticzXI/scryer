@@ -2,10 +2,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 use scryer_application::{
     AppError, AppResult, CollectionEpisodeProgressSummary, CutoffUnmetQualitySummary,
-    EpisodeScopedMediaFile, InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository,
-    MissingEpisodeCandidate, MissingScopeCandidates, MissingSeriesMovieLinkCandidate,
-    MissingTitleCandidate, TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary,
-    TitleMovieMediaSummary, TitleQualitySummary,
+    EpisodeMediaAvailability, EpisodeMediaAvailabilityState, EpisodeScopedMediaFile,
+    InsertMediaFileInput, MediaFileAnalysis, MediaFileRepository, MissingEpisodeCandidate,
+    MissingScopeCandidates, MissingSeriesMovieLinkCandidate, MissingTitleCandidate,
+    TitleEpisodeProgressSummary, TitleMediaFile, TitleMediaSizeSummary, TitleMovieMediaSummary,
+    TitleQualitySummary, derive_primary_quality_label,
 };
 use scryer_domain::Id;
 use serde::de::DeserializeOwned;
@@ -679,6 +680,92 @@ impl MediaFileRepository for MediaFileStore {
                     owned_episodes: row.i64("owned_episodes")?,
                     monitored_episodes: row.i64("monitored_episodes")?,
                     total_episodes: row.i64("total_episodes")?,
+                })
+            })
+            .collect()
+    }
+
+    async fn list_episode_media_availability(
+        &self,
+        title_ids: &[String],
+    ) -> AppResult<Vec<EpisodeMediaAvailability>> {
+        if title_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let dialect = dialect_for_datastore(&self.datastore);
+        let placeholders = placeholders(title_ids.len());
+        let sql = format!(
+            "WITH requested_episodes AS (
+                SELECT id, title_id, monitored
+                FROM episodes
+                WHERE title_id IN ({placeholders})
+             ), ranked_availability_files AS (
+                SELECT fem.episode_id,
+                       mf.scan_status,
+                       mf.video_width,
+                       mf.video_height,
+                       mf.quality_id,
+                       mf.resolution,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY fem.episode_id
+                           ORDER BY CASE WHEN mf.role = 'primary' THEN 0 ELSE 1 END,
+                                    CASE WHEN mf.role = 'primary' THEN 0 ELSE mf.size_bytes END DESC,
+                                    mf.created_at DESC,
+                                    mf.id DESC
+                       ) AS row_number
+                FROM file_episode_map fem
+                INNER JOIN requested_episodes e ON e.id = fem.episode_id
+                INNER JOIN media_files mf ON mf.id = fem.file_id
+                WHERE {} AND mf.role IN ('primary', 'additional')
+             )
+             SELECT e.title_id,
+                    e.id AS episode_id,
+                    e.monitored,
+                    availability_file.scan_status,
+                    availability_file.video_width,
+                    availability_file.video_height,
+                    availability_file.quality_id,
+                    availability_file.resolution
+             FROM requested_episodes e
+             LEFT JOIN ranked_availability_files availability_file
+               ON availability_file.episode_id = e.id AND availability_file.row_number = 1",
+            live_media_file_predicate(dialect, "mf"),
+        );
+        let args = title_ids
+            .iter()
+            .cloned()
+            .map(SqlArg::Text)
+            .collect::<Vec<_>>();
+        SqlRuntime::fetch_all(self.datastore.read_exec(), &sql, &args)
+            .await?
+            .iter()
+            .map(|row| {
+                let scan_status = row.opt_text("scan_status")?;
+                let state = match scan_status.as_deref() {
+                    Some("imported") => EpisodeMediaAvailabilityState::PendingScan,
+                    Some("scan_failed") => EpisodeMediaAvailabilityState::ScanFailed,
+                    Some(_) => EpisodeMediaAvailabilityState::Available,
+                    None if row.bool("monitored")? => EpisodeMediaAvailabilityState::Missing,
+                    None => EpisodeMediaAvailabilityState::Unmonitored,
+                };
+                let primary_quality_label = if state == EpisodeMediaAvailabilityState::Available {
+                    let quality_label = row.opt_text("quality_id")?;
+                    let resolution = row.opt_text("resolution")?;
+                    derive_primary_quality_label(
+                        row.opt_i32("video_width")?,
+                        row.opt_i32("video_height")?,
+                        quality_label.as_deref(),
+                        resolution.as_deref(),
+                    )
+                } else {
+                    None
+                };
+                Ok(EpisodeMediaAvailability {
+                    title_id: row.text("title_id")?,
+                    episode_id: row.text("episode_id")?,
+                    state,
+                    primary_quality_label,
                 })
             })
             .collect()
@@ -1377,7 +1464,8 @@ mod tests {
     use crate::{MediaFileStore, ShowStore, SqliteServices, TitleStore};
     use chrono::Utc;
     use scryer_application::{
-        AudioStreamDetail, MediaFileAnalysis, MediaFileRepository, ShowRepository, TitleRepository,
+        AudioStreamDetail, MediaFileAnalysis, MediaFileRepository, MediaFileRole, ShowRepository,
+        TitleRepository,
     };
     use scryer_domain::{
         Collection, CollectionType, Episode, MediaFacet, MovieEntity, SeriesMovieLink, Title,
@@ -2001,6 +2089,305 @@ mod tests {
         assert_eq!(summaries[1].quality_tier, "1080P");
         assert_eq!(summaries[1].season_number.as_deref(), Some("1"));
         assert_eq!(summaries[1].episode_number.as_deref(), Some("2"));
+
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[tokio::test]
+    async fn episode_media_availability_prefers_primary_then_largest_additional_file() {
+        let db = std::env::temp_dir().join(format!(
+            "scryer_episode_media_availability_{}.db",
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let services = SqliteServices::new(db.to_string_lossy())
+            .await
+            .expect("db should initialize");
+        let titles = title_store(&services);
+        let shows = show_store(&services);
+        let media_files = media_file_store(&services);
+
+        let title = make_test_series_title("title-episode-media-availability");
+        titles
+            .create(title.clone())
+            .await
+            .expect("title should insert");
+        let collection = Collection {
+            id: "collection-episode-media-availability".to_string(),
+            title_id: title.id.clone(),
+            collection_type: CollectionType::Season,
+            collection_index: "1".to_string(),
+            label: Some("Season 1".to_string()),
+            ordered_path: None,
+            narrative_order: None,
+            first_episode_number: Some("1".to_string()),
+            last_episode_number: Some("7".to_string()),
+            monitored: true,
+            created_at: Utc::now(),
+        };
+        ShowRepository::create_collection(&shows, collection.clone())
+            .await
+            .expect("collection should insert");
+        let episode = |id: &str, number: &str, monitored: bool| Episode {
+            id: id.to_string(),
+            title_id: title.id.clone(),
+            collection_id: Some(collection.id.clone()),
+            episode_type: scryer_domain::EpisodeType::Standard,
+            episode_number: Some(number.to_string()),
+            season_number: Some("1".to_string()),
+            episode_label: Some(format!("S01E{number}")),
+            title: Some(format!("Episode {number}")),
+            air_date: None,
+            duration_seconds: None,
+            has_multi_audio: false,
+            has_subtitle: false,
+            is_filler: false,
+            is_recap: false,
+            absolute_number: None,
+            overview: None,
+            tvdb_id: None,
+            image_url: None,
+            monitored,
+            created_at: Utc::now(),
+        };
+        let available = episode("episode-availability-available", "01", true);
+        let missing = episode("episode-availability-missing", "02", true);
+        let unmonitored = episode("episode-availability-unmonitored", "03", false);
+        let pending = episode("episode-availability-pending", "04", true);
+        let failed = episode("episode-availability-failed", "05", true);
+        let unmonitored_owned = episode("episode-availability-unmonitored-owned", "06", false);
+        let additional_only = episode("episode-availability-additional-only", "07", true);
+        let legacy_multiple_primary =
+            episode("episode-availability-legacy-multiple-primary", "08", true);
+        for episode in [
+            &available,
+            &missing,
+            &unmonitored,
+            &pending,
+            &failed,
+            &unmonitored_owned,
+            &additional_only,
+            &legacy_multiple_primary,
+        ] {
+            ShowRepository::create_episode(&shows, episode.clone())
+                .await
+                .expect("episode should insert");
+        }
+
+        let analysis = |width| MediaFileAnalysis {
+            video_codec: None,
+            video_width: Some(width),
+            video_height: None,
+            video_bitrate_kbps: None,
+            video_bit_depth: None,
+            video_hdr_format: None,
+            video_frame_rate: None,
+            video_profile: None,
+            audio_codec: None,
+            audio_profile: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            audio_languages: vec![],
+            audio_streams: vec![],
+            subtitle_languages: vec![],
+            subtitle_codecs: vec![],
+            subtitle_streams: vec![],
+            has_multiaudio: false,
+            duration_seconds: None,
+            num_chapters: None,
+            container_format: None,
+        };
+        let insert_file = |path: &str, role| InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: format!("/library/Show/{path}.mkv"),
+            size_bytes: 1_000,
+            role,
+            ..Default::default()
+        };
+
+        let available_file = media_files
+            .insert_media_file(&insert_file("S01E01", MediaFileRole::Primary))
+            .await
+            .expect("available primary should insert");
+        media_files
+            .link_file_to_episode(&available_file, &available.id)
+            .await
+            .expect("available primary should link");
+        media_files
+            .update_media_file_analysis(&available_file, analysis(1920))
+            .await
+            .expect("available primary should scan");
+
+        let mut larger_additional_for_primary_input =
+            insert_file("S01E01-extra", MediaFileRole::Additional);
+        larger_additional_for_primary_input.size_bytes = 2_000;
+        let larger_additional_for_primary = media_files
+            .insert_media_file(&larger_additional_for_primary_input)
+            .await
+            .expect("larger additional file should insert");
+        media_files
+            .link_file_to_episode(&larger_additional_for_primary, &available.id)
+            .await
+            .expect("larger additional file should link");
+        media_files
+            .update_media_file_analysis(&larger_additional_for_primary, analysis(3840))
+            .await
+            .expect("larger additional file should scan");
+
+        let pending_file = media_files
+            .insert_media_file(&insert_file("S01E04", MediaFileRole::Primary))
+            .await
+            .expect("pending primary should insert");
+        media_files
+            .link_file_to_episode(&pending_file, &pending.id)
+            .await
+            .expect("pending primary should link");
+
+        let failed_file = media_files
+            .insert_media_file(&insert_file("S01E05", MediaFileRole::Primary))
+            .await
+            .expect("failed primary should insert");
+        media_files
+            .link_file_to_episode(&failed_file, &failed.id)
+            .await
+            .expect("failed primary should link");
+        media_files
+            .mark_scan_failed(&failed_file, "test failure")
+            .await
+            .expect("failed primary should be marked");
+
+        let unmonitored_owned_file = media_files
+            .insert_media_file(&insert_file("S01E06", MediaFileRole::Primary))
+            .await
+            .expect("unmonitored primary should insert");
+        media_files
+            .link_file_to_episode(&unmonitored_owned_file, &unmonitored_owned.id)
+            .await
+            .expect("unmonitored primary should link");
+        media_files
+            .update_media_file_analysis(&unmonitored_owned_file, analysis(1280))
+            .await
+            .expect("unmonitored primary should scan");
+
+        let additional_file = media_files
+            .insert_media_file(&insert_file("S01E07-extra", MediaFileRole::Additional))
+            .await
+            .expect("additional file should insert");
+        media_files
+            .link_file_to_episode(&additional_file, &additional_only.id)
+            .await
+            .expect("additional file should link");
+        media_files
+            .update_media_file_analysis(&additional_file, analysis(3840))
+            .await
+            .expect("additional file should scan");
+
+        let mut smaller_additional_input =
+            insert_file("S01E07-extra-small", MediaFileRole::Additional);
+        smaller_additional_input.size_bytes = 500;
+        let smaller_additional_file = media_files
+            .insert_media_file(&smaller_additional_input)
+            .await
+            .expect("smaller additional file should insert");
+        media_files
+            .link_file_to_episode(&smaller_additional_file, &additional_only.id)
+            .await
+            .expect("smaller additional file should link");
+        media_files
+            .update_media_file_analysis(&smaller_additional_file, analysis(1280))
+            .await
+            .expect("smaller additional file should scan");
+
+        let older_legacy_primary = media_files
+            .insert_media_file(&insert_file("S01E08-legacy-old", MediaFileRole::Primary))
+            .await
+            .expect("older legacy primary should insert");
+        media_files
+            .link_file_to_episode(&older_legacy_primary, &legacy_multiple_primary.id)
+            .await
+            .expect("older legacy primary should link");
+        media_files
+            .update_media_file_analysis(&older_legacy_primary, analysis(1280))
+            .await
+            .expect("older legacy primary should scan");
+
+        let newer_legacy_primary = media_files
+            .insert_media_file(&insert_file("S01E08-legacy-new", MediaFileRole::Primary))
+            .await
+            .expect("newer legacy primary should insert");
+        media_files
+            .link_file_to_episode(&newer_legacy_primary, &legacy_multiple_primary.id)
+            .await
+            .expect("newer legacy primary should link");
+        media_files
+            .update_media_file_analysis(&newer_legacy_primary, analysis(1920))
+            .await
+            .expect("newer legacy primary should scan");
+
+        let summaries = media_files
+            .list_episode_media_availability(std::slice::from_ref(&title.id))
+            .await
+            .expect("availability summaries should load");
+        let summary = |episode_id: &str| {
+            summaries
+                .iter()
+                .find(|summary| summary.episode_id == episode_id)
+                .expect("episode availability summary")
+        };
+
+        assert_eq!(
+            summary(&available.id).state,
+            EpisodeMediaAvailabilityState::Available
+        );
+        assert_eq!(
+            summary(&available.id).primary_quality_label.as_deref(),
+            Some("1080p")
+        );
+        assert_eq!(
+            summary(&missing.id).state,
+            EpisodeMediaAvailabilityState::Missing
+        );
+        assert_eq!(
+            summary(&unmonitored.id).state,
+            EpisodeMediaAvailabilityState::Unmonitored
+        );
+        assert_eq!(
+            summary(&pending.id).state,
+            EpisodeMediaAvailabilityState::PendingScan
+        );
+        assert_eq!(
+            summary(&failed.id).state,
+            EpisodeMediaAvailabilityState::ScanFailed
+        );
+        assert_eq!(
+            summary(&unmonitored_owned.id).state,
+            EpisodeMediaAvailabilityState::Available,
+            "an unmonitored episode with a primary file remains available"
+        );
+        assert_eq!(
+            summary(&unmonitored_owned.id)
+                .primary_quality_label
+                .as_deref(),
+            Some("720p")
+        );
+        assert_eq!(
+            summary(&additional_only.id).state,
+            EpisodeMediaAvailabilityState::Available,
+            "the largest additional file supplies availability when primary is absent"
+        );
+        assert_eq!(
+            summary(&additional_only.id)
+                .primary_quality_label
+                .as_deref(),
+            Some("4K"),
+            "the largest additional file supplies the collapsed-row quality"
+        );
+        assert_eq!(
+            summary(&legacy_multiple_primary.id)
+                .primary_quality_label
+                .as_deref(),
+            Some("1080p"),
+            "the newest primary wins for legacy duplicate associations"
+        );
 
         let _ = std::fs::remove_file(db);
     }

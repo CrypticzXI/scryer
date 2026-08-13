@@ -77,6 +77,29 @@ async fn import_inner(
         }
     };
 
+    match crate::import_workflow::recent_download_submission_persistence_is_pending(app, &completed)
+        .await
+    {
+        Ok(true) => {
+            tracing::info!(
+                id = %td.id,
+                item_id = %td.client_item.download_client_item_id,
+                download_id = ?td.client_item.download_id,
+                "import: waiting for recent download submission identity to become durable"
+            );
+            td.import_attempted = false;
+            td.state = TrackedDownloadState::ImportPending;
+            td.status = TrackedDownloadStatus::Warning;
+            td.status_messages = vec![
+                "Download submission identity is still being persisted; retrying automatically."
+                    .to_string(),
+            ];
+            return false;
+        }
+        Ok(false) => {}
+        Err(_) => {}
+    }
+
     tracing::info!(
         id = %td.id,
         dest_dir = %completed.dest_dir,
@@ -183,6 +206,9 @@ pub(super) async fn resolve_completed_download_for_import(
 ) -> Option<CompletedDownload> {
     if let Some(lookup) = completed_lookup {
         let completed = find_completed_download(app, td, Some(lookup)).await;
+        if let Some(completed) = completed.as_ref() {
+            td.completed_source = Some(completed.clone());
+        }
         if completed.is_none() {
             tracing::debug!(
                 id = %td.id,
@@ -228,10 +254,15 @@ pub(super) async fn resolve_completed_download_for_import(
     };
 
     if let Some(completed) = manual_completed {
-        return Some(prepare_completed_download_for_tracked_import(app, td, completed).await);
+        let completed = prepare_completed_download_for_tracked_import(app, td, completed).await;
+        td.completed_source = Some(completed.clone());
+        return Some(completed);
     }
 
     let completed = find_completed_download(app, td, None).await;
+    if let Some(completed) = completed.as_ref() {
+        td.completed_source = Some(completed.clone());
+    }
     if completed.is_none() {
         tracing::debug!(
             id = %td.id,

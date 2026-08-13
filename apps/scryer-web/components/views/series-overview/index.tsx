@@ -13,9 +13,15 @@ import { useDownloadConflictConfirmation } from "@/components/common/download-co
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { isAbortError } from "@/lib/graphql/urql-client";
 import { runIterativeReleaseSearch } from "@/lib/graphql/release-search";
-import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
+import {
+  hasPrimaryMediaFile,
+  releaseQueueScopeInput,
+} from "@/lib/utils/release-queue-scope";
 import { TitlePosterSlot } from "@/components/title-poster-slot";
-import { queueExistingMutation } from "@/lib/graphql/mutations";
+import {
+  queueExistingMutation,
+  queueReplacementMutation,
+} from "@/lib/graphql/mutations";
 import {
   assertNoReplaceConflict,
   retryWithReplaceOnConflict,
@@ -513,14 +519,20 @@ export function SeriesOverviewView({
         scope: { episode: episode.id },
         candidateToken: release.candidateToken,
       };
+      const replacesPrimary = hasPrimaryMediaFile(mediaFilesByEpisode[episode.id]);
+      const mutation = replacesPrimary
+        ? queueReplacementMutation
+        : queueExistingMutation;
       return retryWithReplaceOnConflict(
         input,
         async (nextInput) => {
-          const { data, error: mutationError } = await client.mutation(queueExistingMutation, {
-            input: nextInput,
-          }).toPromise();
+          const { data, error: mutationError } = await client
+            .mutation(mutation, { input: nextInput })
+            .toPromise();
           if (mutationError) throw mutationError;
-          return data?.queueExistingTitleDownload;
+          return replacesPrimary
+            ? data?.queueReplacementRelease
+            : data?.queueExistingTitleDownload;
         },
         "A download is already in progress for this episode.",
         confirmReplaceConflict,
@@ -535,7 +547,15 @@ export function SeriesOverviewView({
           setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
         });
     },
-    [onTitleChanged, client, confirmReplaceConflict, setGlobalStatus, t, title],
+    [
+      onTitleChanged,
+      client,
+      confirmReplaceConflict,
+      mediaFilesByEpisode,
+      setGlobalStatus,
+      t,
+      title,
+    ],
   );
 
   const handleQueueAdditionalFromEpisodeSearch = React.useCallback(
@@ -683,16 +703,22 @@ export function SeriesOverviewView({
         scope: releaseQueueScopeInput(release, { seriesMovie: link.id }),
         candidateToken: release.candidateToken,
       };
+      const replacesPrimary = hasPrimaryMediaFile(
+        mediaFilesBySeriesMovieLink[link.id],
+      );
+      const mutation = replacesPrimary
+        ? queueReplacementMutation
+        : queueExistingMutation;
       return retryWithReplaceOnConflict(
         input,
         async (nextInput) => {
           const { data, error: mutationError } = await client
-            .mutation(queueExistingMutation, {
-              input: nextInput,
-            })
+            .mutation(mutation, { input: nextInput })
             .toPromise();
           if (mutationError) throw mutationError;
-          return data?.queueExistingTitleDownload;
+          return replacesPrimary
+            ? data?.queueReplacementRelease
+            : data?.queueExistingTitleDownload;
         },
         "A download is already in progress for this series movie.",
         confirmReplaceConflict,
@@ -711,7 +737,15 @@ export function SeriesOverviewView({
           setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
         });
     },
-    [client, confirmReplaceConflict, onTitleChanged, setGlobalStatus, t, title],
+    [
+      client,
+      confirmReplaceConflict,
+      mediaFilesBySeriesMovieLink,
+      onTitleChanged,
+      setGlobalStatus,
+      t,
+      title,
+    ],
   );
 
   const handleQueueAdditionalFromSeriesMovieSearch = React.useCallback(

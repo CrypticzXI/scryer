@@ -202,6 +202,9 @@ async fn dispatch_event(app: &AppUseCase, event: &DomainEvent) {
         "dispatching domain-event-backed notification"
     );
 
+    let scope_title_id = notification_scope_title_id(event);
+    let scope_facet = notification_scope_facet(event);
+
     let mut subscriptions = Vec::new();
     for subscription_event_type in subscription_event_types(notification.payload.event_type) {
         match sub_repo
@@ -221,6 +224,7 @@ async fn dispatch_event(app: &AppUseCase, event: &DomainEvent) {
     }
     subscriptions.sort_by(|left, right| left.id.cmp(&right.id));
     subscriptions.dedup_by(|left, right| left.id == right.id);
+    let mut dispatched_targets = BTreeSet::new();
 
     for subscription in subscriptions {
         if !subscription.is_enabled {
@@ -230,9 +234,16 @@ async fn dispatch_event(app: &AppUseCase, event: &DomainEvent) {
         if !matches_scope(
             &subscription.scope,
             subscription.scope_id.as_deref(),
-            event.title_id.as_deref(),
-            event.facet.as_ref().map(|facet| facet.as_str()),
+            scope_title_id,
+            scope_facet,
         ) {
+            continue;
+        }
+
+        if !dispatched_targets.insert((
+            subscription.target_kind.as_str(),
+            subscription.target_id.clone(),
+        )) {
             continue;
         }
 
@@ -292,6 +303,20 @@ async fn dispatch_event(app: &AppUseCase, event: &DomainEvent) {
                 continue;
             }
         };
+
+        let supported_events =
+            provider.supported_events_for_provider(channel.channel_type.as_str());
+        if !supported_events.is_empty()
+            && !supported_events.contains(&notification.payload.event_type)
+        {
+            warn!(
+                channel_type = channel.channel_type.as_str(),
+                channel_name = channel.name.as_str(),
+                event_type = notification.payload.event_type.as_str(),
+                "notification plugin no longer supports subscribed event"
+            );
+            continue;
+        }
 
         let client = match provider.client_for_channel(&channel) {
             Some(client) => client,
@@ -905,11 +930,17 @@ fn notification_severity(event_type: NotificationEventType) -> NotificationSever
 async fn resolve_notification_title(
     app: &AppUseCase,
     event: &DomainEvent,
-    fallback: Option<NotificationTitlePayload>,
+    mut fallback: Option<NotificationTitlePayload>,
 ) -> Option<NotificationTitlePayload> {
-    let Some(title_id) = event.title_id.as_deref() else {
+    let Some(title_id) = notification_scope_title_id(event) else {
         return fallback;
     };
+
+    if let Some(fallback) = fallback.as_mut()
+        && fallback.id.is_none()
+    {
+        fallback.id = Some(title_id.to_string());
+    }
 
     match app.services.catalog.titles.get_by_id(title_id).await {
         Ok(Some(title)) => Some(title_payload_from_title(&title)),
@@ -1449,6 +1480,27 @@ fn subscription_event_types(event_type: NotificationEventType) -> Vec<Notificati
     }
 }
 
+fn notification_scope_title_id(event: &DomainEvent) -> Option<&str> {
+    event.title_id.as_deref().or(match &event.payload {
+        DomainEventPayload::MediaRequestApproved(data) => data.created_title_id.as_deref(),
+        _ => None,
+    })
+}
+
+fn notification_scope_facet(event: &DomainEvent) -> Option<&str> {
+    event
+        .facet
+        .as_ref()
+        .map(|facet| facet.as_str())
+        .or_else(|| match &event.payload {
+            DomainEventPayload::MediaRequestSubmitted(data) => Some(data.facet.as_str()),
+            DomainEventPayload::MediaRequestApproved(data)
+            | DomainEventPayload::MediaRequestRejected(data)
+            | DomainEventPayload::MediaRequestCanceled(data) => Some(data.facet.as_str()),
+            _ => None,
+        })
+}
+
 fn matches_scope(
     scope: &str,
     scope_id: Option<&str>,
@@ -1600,6 +1652,7 @@ mod tests {
                     title: title_context("Example Show", MediaFacet::Series),
                     source_title: Some("Example.Show.S01E01.1080p".to_string()),
                     source_hint: Some("rss".to_string()),
+                    source_provider: Some("rss".to_string()),
                     download_id: Some("grab-1".to_string()),
                     episode_ids: vec!["episode-1".to_string()],
                 }),
@@ -1836,7 +1889,7 @@ mod tests {
                 actor_user_id: Some("requester-1".to_string()),
                 actor_display_name: "requester-1".to_string(),
                 title_id: None,
-                facet: Some(MediaFacet::Series),
+                facet: None,
                 correlation_id: None,
                 causation_id: None,
                 schema_version: 1,
@@ -1864,7 +1917,7 @@ mod tests {
                 actor_user_id: Some("admin-1".to_string()),
                 actor_display_name: "admin-1".to_string(),
                 title_id: None,
-                facet: Some(MediaFacet::Series),
+                facet: None,
                 correlation_id: None,
                 causation_id: None,
                 schema_version: 1,
@@ -1891,7 +1944,7 @@ mod tests {
                 actor_user_id: Some("admin-1".to_string()),
                 actor_display_name: "admin-1".to_string(),
                 title_id: None,
-                facet: Some(MediaFacet::Movie),
+                facet: None,
                 correlation_id: None,
                 causation_id: None,
                 schema_version: 1,
@@ -1918,7 +1971,7 @@ mod tests {
                 actor_user_id: Some("requester-1".to_string()),
                 actor_display_name: "requester-1".to_string(),
                 title_id: None,
-                facet: Some(MediaFacet::Anime),
+                facet: None,
                 correlation_id: None,
                 causation_id: None,
                 schema_version: 1,
@@ -1938,6 +1991,33 @@ mod tests {
                 }),
             },
         ]
+    }
+
+    #[test]
+    fn media_request_scope_context_uses_payload_when_event_envelope_is_global() {
+        let events = notification_sample_events();
+        let media_request_events = &events[12..16];
+
+        assert_eq!(
+            notification_scope_facet(&media_request_events[0]),
+            Some("series")
+        );
+        assert_eq!(
+            notification_scope_facet(&media_request_events[1]),
+            Some("series")
+        );
+        assert_eq!(
+            notification_scope_facet(&media_request_events[2]),
+            Some("movie")
+        );
+        assert_eq!(
+            notification_scope_facet(&media_request_events[3]),
+            Some("anime")
+        );
+        assert_eq!(
+            notification_scope_title_id(&media_request_events[1]),
+            Some("title-requested-show")
+        );
     }
 
     #[tokio::test]

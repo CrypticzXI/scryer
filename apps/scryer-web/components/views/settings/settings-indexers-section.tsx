@@ -43,10 +43,15 @@ import type {
   IndexerProxyRecord,
   ProviderTypeInfo,
   ConfigFieldDef,
+  IndexerDownloadClientMappingCatalog,
 } from "@/lib/types";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
+import {
+  AUTOMATIC_DOWNLOAD_CLIENT_ID,
+  getIndexerDownloadClientMappingViewModel,
+} from "@/lib/utils/indexer-download-client-mapping";
 
 type SettingsIndexersSectionProps = {
   editingIndexerId: string | null;
@@ -60,6 +65,12 @@ type SettingsIndexersSectionProps = {
   settingsIndexerFilter: string;
   setSettingsIndexerFilter: (value: string) => void;
   settingsIndexers: IndexerRecord[];
+  indexerDownloadClientMappingCatalog: IndexerDownloadClientMappingCatalog;
+  mutatingIndexerMappingIds: ReadonlySet<string>;
+  setIndexerDownloadClientMapping: (
+    indexerId: string,
+    downloadClientId: string | null,
+  ) => Promise<void> | void;
   indexerProxyConfigs: IndexerProxyRecord[];
   indexerProxyDraft: IndexerProxyDraft;
   setIndexerProxyDraft: React.Dispatch<React.SetStateAction<IndexerProxyDraft>>;
@@ -347,6 +358,124 @@ function DynamicConfigField({
   );
 }
 
+function IndexerDownloadClientCell({
+  indexer,
+  catalog,
+  isPending,
+  onChange,
+}: {
+  indexer: IndexerRecord;
+  catalog: IndexerDownloadClientMappingCatalog;
+  isPending: boolean;
+  onChange: (downloadClientId: string | null) => Promise<void> | void;
+}) {
+  const t = useTranslate();
+  const model = getIndexerDownloadClientMappingViewModel(indexer, catalog);
+  const selectId = selectorId("settings-indexer-download-client", indexer.id);
+  const statusId = `${selectId}-status`;
+  const selectedOption = model.options.find(
+    (option) => option.id === model.selectedId,
+  );
+  const selectedLabel = model.isInvalid
+    ? t("settings.indexerDownloadClientInvalidOption", {
+        name: selectedOption?.name ?? model.selectedId,
+      })
+    : selectedOption?.name ?? t("settings.indexerDownloadClientAutomatic");
+
+  if (model.isNotApplicable) {
+    return (
+      <span className="text-muted-foreground" data-testid={`${selectId}-not-applicable`}>
+        {t("settings.indexerDownloadClientNotApplicable")}
+      </span>
+    );
+  }
+
+  const invalidMessage = model.invalidReason
+    ? t(`settings.indexerDownloadClientInvalid${
+        model.invalidReason.charAt(0).toUpperCase() + model.invalidReason.slice(1)
+      }`)
+    : null;
+
+  return (
+    <div className="min-w-[210px] space-y-1.5">
+      <Label className="sr-only" htmlFor={selectId}>
+        {t("settings.indexerDownloadClientLabel", { name: indexer.name })}
+      </Label>
+      <Select
+        value={model.selectedId}
+        onValueChange={(value) =>
+          void onChange(value === AUTOMATIC_DOWNLOAD_CLIENT_ID ? null : value)
+        }
+      >
+        <SelectTrigger
+          id={selectId}
+          data-testid={selectId}
+          className="w-full"
+          disabled={isPending}
+          aria-describedby={model.isInvalid || model.isDisabled ? statusId : undefined}
+          aria-busy={isPending}
+        >
+          <SelectValue>{selectedLabel}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={AUTOMATIC_DOWNLOAD_CLIENT_ID}>
+            {t("settings.indexerDownloadClientAutomatic")}
+          </SelectItem>
+          {model.options.map((option) => (
+            <SelectItem key={option.id} value={option.id}>
+              <span className={cn(option.isCurrent && model.isInvalid && "text-[var(--scry-danger-text-soft)]")}>
+                {option.isCurrent && model.isInvalid
+                  ? t("settings.indexerDownloadClientInvalidOption", {
+                      name: option.name,
+                    })
+                  : option.name}
+              </span>
+              {!option.enabled ? (
+                <span className="ml-1 text-xs text-[var(--scry-warning-text)]">
+                  ({t("settings.indexerDownloadClientDisabled")})
+                </span>
+              ) : null}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {model.isInvalid ? (
+        <div
+          id={statusId}
+          role="alert"
+          className="flex flex-wrap items-center gap-1 text-xs text-[var(--scry-danger-text-soft)]"
+        >
+          <span>{invalidMessage}</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-auto px-1 py-0 text-xs"
+            onClick={() => void onChange(null)}
+            disabled={isPending}
+          >
+            {t("settings.indexerDownloadClientChooseAutomatic")}
+          </Button>
+        </div>
+      ) : model.isDisabled ? (
+        <p
+          id={statusId}
+          role="status"
+          className="text-xs text-[var(--scry-warning-text)]"
+        >
+          {t("settings.indexerDownloadClientDisabledWarning", {
+            name: model.currentClient?.name ?? selectedLabel,
+          })}
+        </p>
+      ) : isPending ? (
+        <p id={statusId} role="status" className="text-xs text-muted-foreground">
+          {t("status.indexerDownloadClientMappingSaving")}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function SettingsIndexersSection({
   editingIndexerId,
   indexerDraft,
@@ -357,6 +486,9 @@ export function SettingsIndexersSection({
   settingsIndexerFilter,
   setSettingsIndexerFilter,
   settingsIndexers,
+  indexerDownloadClientMappingCatalog,
+  mutatingIndexerMappingIds,
+  setIndexerDownloadClientMapping,
   indexerProxyConfigs,
   indexerProxyDraft,
   setIndexerProxyDraft,
@@ -758,13 +890,16 @@ export function SettingsIndexersSection({
           />
         </div>
         <div className="overflow-x-auto">
-          <Table id="settings-indexers-table">
+          <Table id="settings-indexers-table" className="min-w-[1160px]">
             <TableHeader>
               <TableRow>
                 <TableHead>{t("label.name")}</TableHead>
                 <TableHead>{t("settings.indexerProvider")}</TableHead>
                 <TableHead>{t("settings.baseUrl")}</TableHead>
                 <TableHead>Proxy</TableHead>
+                <TableHead className="min-w-[220px]">
+                  {t("settings.indexerDownloadClient")}
+                </TableHead>
                 <TableHead className="text-center">
                   {t("label.enabled")}
                 </TableHead>
@@ -845,6 +980,16 @@ export function SettingsIndexersSection({
                     ) : (
                       <span className="text-muted-foreground">Direct</span>
                     )}
+                  </TableCell>
+                  <TableCell>
+                    <IndexerDownloadClientCell
+                      indexer={indexer}
+                      catalog={indexerDownloadClientMappingCatalog}
+                      isPending={mutatingIndexerMappingIds.has(indexer.id)}
+                      onChange={(downloadClientId) =>
+                        setIndexerDownloadClientMapping(indexer.id, downloadClientId)
+                      }
+                    />
                   </TableCell>
                   <TableCell className="text-center">
                     <RenderBooleanIcon
@@ -961,7 +1106,7 @@ export function SettingsIndexersSection({
               })}
               {settingsIndexers.length === 0 ? (
                 <TableRow id="settings-indexers-empty-row">
-                  <TableCell colSpan={9} className="text-muted-foreground">
+                  <TableCell colSpan={10} className="text-muted-foreground">
                     {t("settings.noIndexersFound")}
                   </TableCell>
                 </TableRow>

@@ -797,7 +797,7 @@ fn resolve_profile_id_none_fallback() {
 
 #[test]
 fn default_4k_profile_has_three_tiers() {
-    let profile = default_quality_profile_for_search();
+    let profile = builtin_4k_profile();
     assert_eq!(profile.criteria.quality_tiers.len(), 3);
     assert_eq!(profile.criteria.quality_tiers[0], "2160P");
     assert!(!profile.criteria.prefer_remux);
@@ -805,7 +805,7 @@ fn default_4k_profile_has_three_tiers() {
 
 #[test]
 fn default_8k_profile_has_4320p_archival_tier() {
-    let profile = default_quality_profile_8k_for_search();
+    let profile = builtin_8k_profile();
     assert_eq!(profile.id, "8k");
     assert_eq!(profile.criteria.archival_quality.as_deref(), Some("4320P"));
     assert_eq!(profile.criteria.quality_tiers[0], "4320P");
@@ -814,7 +814,7 @@ fn default_8k_profile_has_4320p_archival_tier() {
 
 #[test]
 fn default_1080p_profile_has_two_tiers() {
-    let profile = default_quality_profile_1080p_for_search();
+    let profile = builtin_1080p_profile();
     assert_eq!(profile.criteria.quality_tiers.len(), 2);
     assert_eq!(profile.criteria.quality_tiers[0], "1080P");
     assert!(!profile.criteria.prefer_remux);

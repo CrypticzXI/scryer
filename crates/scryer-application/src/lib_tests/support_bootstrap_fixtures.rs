@@ -75,7 +75,11 @@ pub(super) fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase,
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let settings = Arc::new(StoredSettingsRepo::default());
-    let quality_profiles = Arc::new(MockQualityProfileRepo);
+    let mut profile_1080p = test_quality_profile("1080p");
+    profile_1080p.name = "1080P".to_string();
+    let quality_profiles = Arc::new(StoredQualityProfileRepo {
+        profiles: Arc::new(Mutex::new(vec![test_quality_profile("4k"), profile_1080p])),
+    });
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
 
@@ -122,6 +126,7 @@ pub(super) struct MediaRequestTestHarness {
     pub(super) manager: User,
     pub(super) titles: Arc<MockTitleRepo>,
     pub(super) libraries: Arc<MockLibraryRepo>,
+    pub(super) quality_profiles: Arc<StoredQualityProfileRepo>,
     pub(super) media_requests: Arc<MockMediaRequestRepo>,
     pub(super) domain_events: Arc<MockDomainEventRepo>,
 }
@@ -134,7 +139,12 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let settings = Arc::new(StoredSettingsRepo::default());
-    let quality_profiles = Arc::new(MockQualityProfileRepo);
+    let quality_profiles = Arc::new(StoredQualityProfileRepo {
+        profiles: Arc::new(Mutex::new(vec![
+            crate::builtin_4k_profile(),
+            crate::builtin_1080p_profile(),
+        ])),
+    });
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
     let libraries = Arc::new(MockLibraryRepo::default());
@@ -161,7 +171,7 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
         download_client_configs,
         release_attempts.clone(),
         settings,
-        quality_profiles,
+        quality_profiles.clone(),
         String::new(),
     )
     .with_domain_events(domain_events.clone())
@@ -212,6 +222,7 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
         manager: test_admin_user(),
         titles,
         libraries,
+        quality_profiles,
         media_requests,
         domain_events,
     }
@@ -655,6 +666,20 @@ pub(super) fn bootstrap_with_search_settings_indexer_and_configs(
     indexer_client: Arc<dyn IndexerClient>,
     configs: Vec<IndexerConfig>,
 ) -> (AppUseCase, User) {
+    bootstrap_with_search_settings_indexer_configs_and_management(
+        settings,
+        indexer_client,
+        configs,
+        None,
+    )
+}
+
+pub(super) fn bootstrap_with_search_settings_indexer_configs_and_management(
+    settings: Arc<StoredSettingsRepo>,
+    indexer_client: Arc<dyn IndexerClient>,
+    configs: Vec<IndexerConfig>,
+    management_client: Option<Arc<dyn IndexerManagementClient>>,
+) -> (AppUseCase, User) {
     let titles = Arc::new(MockTitleRepo::default());
     let shows = Arc::new(MockShowRepo::default());
     let users = Arc::new(MockUserRepo::default());
@@ -666,6 +691,7 @@ pub(super) fn bootstrap_with_search_settings_indexer_and_configs(
     let download_client = Arc::new(StubDownloadClient::default());
     let plugin_provider = Arc::new(MockIndexerPluginProvider {
         client: Arc::clone(&indexer_client),
+        management_client,
     });
 
     let services = AppServices::builder(
@@ -735,6 +761,7 @@ pub(super) fn bootstrap_with_settings_repo_and_profiles_and_libraries(
     let download_client = Arc::new(StubDownloadClient::default());
     let plugin_provider = Arc::new(MockIndexerPluginProvider {
         client: Arc::clone(&indexer_client),
+        management_client: None,
     });
 
     let services = AppServices::builder(
@@ -790,6 +817,7 @@ pub(super) fn synthetic_direct_nab_indexer_config(id: &str, provider_type: &str)
         enable_interactive_search: true,
         enable_auto_search: true,
         indexer_proxy_config_id: None,
+        download_client_id: None,
         managed_parent_config_id: None,
         managed_child_key: None,
         managed_metadata_json: None,
@@ -1845,6 +1873,7 @@ pub(super) fn pending_movie_release(
         release_score: 1000,
         scoring_log_json: None,
         indexer_source: Some("test-indexer".to_string()),
+        indexer_id: None,
         release_guid: Some(format!("{release_title}-guid")),
         added_at: (now - chrono::Duration::minutes(5)).to_rfc3339(),
         delay_until: (now - chrono::Duration::minutes(1)).to_rfc3339(),

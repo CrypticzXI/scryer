@@ -447,7 +447,9 @@ pub(crate) fn title_history_record_from_domain_event(
                 .or_else(|| data.source_hint.clone()),
             None,
             None,
-            data.source_hint.clone(),
+            data.source_provider
+                .clone()
+                .or_else(|| data.source_hint.clone()),
             None,
             data.download_id.clone(),
             None,
@@ -1231,7 +1233,7 @@ mod tests {
         ImportCompletedEventData, JobRunStartedEventData, LibraryScanCompletedEventData,
         LibraryScanProgressedEventData, MediaFacet, MediaFileAnalyzedEventData,
         MediaFileDeletedEventData, MediaFileDeletedReason, MediaFileUpgradedEventData,
-        MediaPathUpdate, MediaUpdateType, TitleContextSnapshot,
+        MediaPathUpdate, MediaUpdateType, ReleaseGrabbedEventData, TitleContextSnapshot,
     };
 
     fn title_snapshot(name: &str, facet: MediaFacet) -> TitleContextSnapshot {
@@ -1282,6 +1284,28 @@ mod tests {
             REDACTED_HISTORY_SECRET
         );
         assert_eq!(sanitized["nested"]["source_hint"], "api.nzbgeek.info");
+    }
+
+    #[test]
+    fn grabbed_history_prefers_configured_provider_without_discarding_source_url() {
+        let source_url = "https://indexer.example/api?t=get&id=release-1";
+        let event = event(
+            1,
+            Utc::now(),
+            DomainEventPayload::ReleaseGrabbed(ReleaseGrabbedEventData {
+                title: title_snapshot("Example", MediaFacet::Movie),
+                source_title: Some("Example.2026.1080p.WEB-DL".to_string()),
+                source_hint: Some(source_url.to_string()),
+                source_provider: Some("Configured Indexer".to_string()),
+                download_id: Some("download-1".to_string()),
+                episode_ids: Vec::new(),
+            }),
+        );
+
+        let history = title_history_record_from_domain_event(&event).expect("history record");
+        assert_eq!(history.source_hint.as_deref(), Some("Configured Indexer"));
+        let data_json = history.data_json.expect("history event data");
+        assert!(data_json.contains("indexer.example"));
     }
 
     #[test]

@@ -2,7 +2,7 @@ import * as React from "react";
 import { Loader2, Search, X } from "lucide-react";
 import { useClient } from "urql";
 
-import { TitlePoster } from "@/components/title-poster";
+import { TitlePosterSlot } from "@/components/title-poster-slot";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { ActionTooltip } from "@/components/ui/tooltip";
@@ -33,14 +33,6 @@ function formatTitleSecondaryLine(title: TitleRecord, facetLabel: string): strin
 
 function formatSelectedTitleLabel(title: TitleRecord): string {
   return title.year ? `${title.name} (${title.year})` : title.name;
-}
-
-function PosterFallback({ title }: { title: TitleRecord }) {
-  return (
-    <div className="flex h-12 w-8 shrink-0 items-center justify-center rounded-sm bg-muted text-[10px] font-semibold uppercase text-muted-foreground">
-      {title.name.trim().charAt(0) || "?"}
-    </div>
-  );
 }
 
 export function TitleAutocompletePicker({
@@ -311,15 +303,18 @@ export function TitleAutocompletePicker({
                         onClick={() => handleSelect(title)}
                         className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent"
                       >
-                        {posterUrl ? (
-                          <TitlePoster
-                            src={posterUrl}
-                            alt={title.name}
-                            className="h-12 w-8 shrink-0 rounded-sm object-cover"
-                          />
-                        ) : (
-                          <PosterFallback title={title} />
-                        )}
+                        <TitlePosterSlot
+                          src={posterUrl}
+                          metadataFetchedAt={title.metadataFetchedAt}
+                          createdAt={title.createdAt}
+                          alt={title.name}
+                          className="h-12 w-8 shrink-0 rounded-sm object-cover"
+                          placeholderClassName="h-12 w-8 shrink-0 rounded-sm"
+                          emptyLabel={title.name}
+                          fallbackTitle={title.name}
+                          fallbackTone={title.facet}
+                          fallbackShowText={false}
+                        />
                         <div className="min-w-0 flex-1">
                           <div className="truncate font-medium text-foreground">{title.name}</div>
                           <div className="truncate text-xs text-muted-foreground">

@@ -298,6 +298,10 @@ const SERIES_SIDE_PANEL_EPISODE_ROW_FIELDS = `
       isRecap
       absoluteNumber
       monitored
+      mediaAvailability {
+        state
+        primaryQualityLabel
+      }
       createdAt`;
 
 const MOVIE_SIDE_PANEL_COLLECTION_FIELDS = `
@@ -938,6 +942,10 @@ export const episodeSidePanelDetailQuery = `query EpisodeSidePanelDetail($titleI
     id
     overview
     imageUrl
+    mediaAvailability {
+      state
+      primaryQualityLabel
+    }
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }
   }
@@ -1164,6 +1172,14 @@ const TITLE_CATALOG_BASE_FIELDS = `
     backgroundSourceUrl
     contentStatus
     metadataFetchedAt
+    qualityProfileId
+    rootFolderId
+    monitorType
+    useSeasonFolders
+    monitorSpecials
+    interSeasonMovies
+    fillerPolicy
+    recapPolicy
     createdAt`;
 
 function titleCatalogListFields(
@@ -1196,7 +1212,6 @@ function titleCatalogListFields(
   }
   if (projection.root) {
     fields.push(`
-    rootFolderId
     rootFolderPath`);
   }
   if (projection.popularity) {
@@ -1922,6 +1937,7 @@ export const indexersQuery = `query Indexers($providerType: String) {
     providerType
     baseUrl
     indexerProxyConfigId
+    downloadClientId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -2029,6 +2045,24 @@ export const downloadQueueQuery = `query DownloadQueue($includeAllActivity: Bool
   }
 }`;
 
+export const downloadQueuePageQuery = `query DownloadQueuePage($limit: Int = 50, $offset: Int = 0, $filters: [DownloadActivityFilterValue!], $clientIds: [ID!], $scryerSubmittedOnly: Boolean = true, $titleId: ID, $sortKey: DownloadQueueSortKeyValue = STATUS, $sortDirection: SortDirectionValue = ASC) {
+  downloadQueuePage(limit: $limit, offset: $offset, filters: $filters, clientIds: $clientIds, scryerSubmittedOnly: $scryerSubmittedOnly, titleId: $titleId, sortKey: $sortKey, sortDirection: $sortDirection) {
+    items {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+    }
+    hasMore
+    totalCount
+    availableClients {
+      clientId
+      clientName
+      clientType
+    }
+    revision
+    updatedAt
+    ready
+    stale
+  }
+}`;
+
 export const downloadImportQuery = `query DownloadImport($limit: Int, $offset: Int, $filter: DownloadImportFilterValue) {
   downloadImport(limit: $limit, offset: $offset, filter: $filter) {
     items {${DOWNLOAD_QUEUE_ITEM_FIELDS}
@@ -2054,6 +2088,13 @@ export const downloadHistoryQuery = `query DownloadHistory($limit: Int, $offset:
 
 export const downloadQueueSubscription = `subscription DownloadQueueStream($includeAllActivity: Boolean, $includeHistoryOnly: Boolean, $includeImportActivity: Boolean, $titleId: ID, $activityFilter: DownloadActivityFilterValue) {
   downloadQueue(includeAllActivity: $includeAllActivity, includeHistoryOnly: $includeHistoryOnly, includeImportActivity: $includeImportActivity, titleId: $titleId, activityFilter: $activityFilter) {${DOWNLOAD_QUEUE_ITEM_FIELDS}
+  }
+}`;
+
+export const downloadQueueSyncSubscription = `subscription DownloadQueueSync {
+  downloadQueueSync {
+    revision
+    updatedAt
   }
 }`;
 
@@ -2083,6 +2124,7 @@ const indexerFieldSelection = `
     providerType
     baseUrl
     indexerProxyConfigId
+    downloadClientId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -2312,6 +2354,7 @@ export const globalSearchInitQuery = `query GlobalSearchInit {
     name
     slug
     isDefault
+    qualityProfileId
     roots {
       id
       path
@@ -3480,5 +3523,25 @@ export const myMediaRequestsQuery = `query MyMediaRequests($facet: MediaFacetVal
     createdByUserId
     createdAt
     updatedAt
+  }
+}`;
+
+export const indexerDownloadClientMappingCatalogQuery = `query IndexerDownloadClientMappingCatalog {
+  indexerDownloadClientMappingCatalog {
+    clients {
+      id
+      name
+      clientType
+      isEnabled
+      healthStatus
+    }
+    indexers {
+      id
+      name
+      downloadClientId
+      protocolFamilies
+      supportsMapping
+      compatibleClientIds
+    }
   }
 }`;

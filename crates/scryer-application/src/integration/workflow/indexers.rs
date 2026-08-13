@@ -393,7 +393,9 @@ impl AppUseCase {
             .indexer_proxy_configs
             .get_by_id(id)
             .await?
-            .ok_or_else(|| AppError::Validation("Indexer proxy configuration was not found.".into()))?;
+            .ok_or_else(|| {
+                AppError::Validation("Indexer proxy configuration was not found.".into())
+            })?;
         if !config.is_enabled {
             return Err(AppError::Validation(
                 "Indexer proxy is disabled for this indexer.".into(),
@@ -477,6 +479,7 @@ impl AppUseCase {
                 input.enable_auto_search
             },
             indexer_proxy_config_id,
+            download_client_id: None,
             managed_parent_config_id: None,
             managed_child_key: None,
             managed_metadata_json: None,
@@ -544,6 +547,12 @@ impl AppUseCase {
             .get_by_id(config_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("indexer config '{config_id}' not found")))?;
+        if update.download_client_id.is_some() {
+            return Err(AppError::Validation(
+                "indexer download-client mappings must be changed through the dedicated mapping operation"
+                    .into(),
+            ));
+        }
         if existing.managed_parent_config_id.is_some() {
             return Err(AppError::Validation(
                 "managed child indexers are controlled by their parent sync and cannot be edited directly"
@@ -653,6 +662,7 @@ impl AppUseCase {
             indexer_proxy_config_id: normalized_indexer_proxy_config_id
                 .clone()
                 .unwrap_or_else(|| existing.indexer_proxy_config_id.clone()),
+            download_client_id: existing.download_client_id.clone(),
             managed_parent_config_id: update
                 .managed_parent_config_id
                 .clone()
@@ -675,6 +685,22 @@ impl AppUseCase {
             created_at: existing.created_at,
             updated_at: existing.updated_at,
         };
+        if normalized_provider.is_some()
+            && let Some(client_id) = preview_config.download_client_id.as_deref()
+        {
+            let client = self
+                .services
+                .integrations
+                .download_client_configs
+                .get_by_id(client_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "mapped download client '{client_id}' no longer exists"
+                    ))
+                })?;
+            self.validate_indexer_download_client_mapping(&preview_config, &client)?;
+        }
         let refreshed_caps_snapshot_json = self
             .refresh_caps_snapshot_json_best_effort(
                 &preview_config,
@@ -706,6 +732,7 @@ impl AppUseCase {
                     update.enable_auto_search
                 },
                 indexer_proxy_config_id: normalized_indexer_proxy_config_id,
+                download_client_id: None,
                 managed_parent_config_id: update.managed_parent_config_id,
                 managed_child_key: update.managed_child_key,
                 managed_metadata_json: update.managed_metadata_json,
@@ -1022,6 +1049,7 @@ impl AppUseCase {
                             enable_interactive_search: Some(desired.enable_interactive_search),
                             enable_auto_search: Some(desired.enable_auto_search),
                             indexer_proxy_config_id: Some(parent.indexer_proxy_config_id.clone()),
+                            download_client_id: None,
                             managed_parent_config_id: Some(Some(parent.id.clone())),
                             managed_child_key: Some(Some(desired.child_key.clone())),
                             managed_metadata_json: Some(managed_metadata_json),
@@ -1058,6 +1086,7 @@ impl AppUseCase {
                             enable_interactive_search: desired.enable_interactive_search,
                             enable_auto_search: desired.enable_auto_search,
                             indexer_proxy_config_id: parent.indexer_proxy_config_id.clone(),
+                            download_client_id: None,
                             managed_parent_config_id: Some(parent.id.clone()),
                             managed_child_key: Some(desired.child_key.clone()),
                             managed_metadata_json: desired.managed_metadata_json.clone(),
@@ -1190,4 +1219,246 @@ fn merge_tracked_download_background_work_state(
     finished: crate::tracked_downloads::TrackedDownload,
 ) {
     tracked.merge_background_work_state_from(finished);
+}
+
+fn protocol_families_from_capabilities(
+    capabilities: &scryer_domain::IndexerProviderCapabilities,
+) -> Option<Vec<&'static str>> {
+    let mut families = Vec::new();
+    for protocol in &capabilities.protocols {
+        match protocol {
+            scryer_domain::IndexerProtocolCapability::Usenet => families.push("usenet"),
+            scryer_domain::IndexerProtocolCapability::Torrent => families.push("torrent"),
+            scryer_domain::IndexerProtocolCapability::Mixed => {
+                families.push("usenet");
+                families.push("torrent");
+            }
+            scryer_domain::IndexerProtocolCapability::Unknown => return None,
+        }
+    }
+    families.sort_unstable();
+    families.dedup();
+    (!families.is_empty()).then_some(families)
+}
+
+impl AppUseCase {
+    fn indexer_download_mapping_families(&self, provider_type: &str) -> Option<Vec<&'static str>> {
+        let capabilities = self
+            .services
+            .integrations
+            .plugin_provider
+            .available()?
+            .capabilities_for_provider(provider_type);
+        protocol_families_from_capabilities(&capabilities)
+    }
+
+    pub(crate) fn validate_indexer_download_client_mapping(
+        &self,
+        indexer: &IndexerConfig,
+        client: &scryer_domain::DownloadClientConfig,
+    ) -> AppResult<()> {
+        if indexer.provider_type.eq_ignore_ascii_case("prowlarr")
+            && indexer.managed_parent_config_id.is_none()
+        {
+            return Err(AppError::Validation(
+                "Prowlarr management parents cannot be mapped to a download client".into(),
+            ));
+        }
+
+        let required_families = self
+            .indexer_download_mapping_families(&indexer.provider_type)
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "indexer provider '{}' does not declare a supported protocol family",
+                    indexer.provider_type
+                ))
+            })?;
+        let plugin_provider = self
+            .services
+            .integrations
+            .download_client_plugin_provider
+            .available();
+        let accepted_inputs =
+            crate::accepted_inputs_for_client(&client.client_type, plugin_provider);
+        let supports_usenet = accepted_inputs.iter().any(|input| {
+            matches!(
+                input,
+                DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl
+            )
+        });
+        let supports_torrent = accepted_inputs.iter().any(|input| {
+            matches!(
+                input,
+                DownloadSourceKind::TorrentFile | DownloadSourceKind::MagnetUri
+            )
+        });
+        let compatible = required_families.iter().all(|family| match *family {
+            "usenet" => supports_usenet,
+            "torrent" => supports_torrent,
+            _ => false,
+        });
+        if !compatible {
+            return Err(AppError::Validation(format!(
+                "download client '{}' does not support all protocol families required by indexer '{}'",
+                client.name, indexer.name
+            )));
+        }
+        Ok(())
+    }
+
+    pub async fn set_indexer_download_client_mapping(
+        &self,
+        actor: &User,
+        indexer_id: &str,
+        download_client_id: Option<&str>,
+    ) -> AppResult<IndexerConfig> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        let indexer_id = indexer_id.trim();
+        if indexer_id.is_empty() {
+            return Err(AppError::Validation("indexer id is required".into()));
+        }
+        let normalized_client_id = download_client_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let existing = self
+            .services
+            .integrations
+            .indexer_configs
+            .get_by_id(indexer_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("indexer config '{indexer_id}' not found"))
+            })?;
+        if let Some(client_id) = normalized_client_id.as_deref() {
+            let client = self
+                .services
+                .integrations
+                .download_client_configs
+                .get_by_id(client_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("download client config '{client_id}' not found"))
+                })?;
+            self.validate_indexer_download_client_mapping(&existing, &client)?;
+        }
+        if existing.download_client_id == normalized_client_id {
+            return Ok(existing);
+        }
+
+        let updated = self
+            .services
+            .integrations
+            .indexer_configs
+            .set_download_client_mapping(indexer_id, normalized_client_id)
+            .await?;
+        self.publish_indexers_changed();
+        self.emit_configuration_changed_event(
+            actor,
+            "indexer",
+            Some(updated.id.clone()),
+            scryer_domain::ConfigurationChangeAction::Updated,
+        )
+        .await;
+        Ok(updated)
+    }
+
+    pub async fn get_indexer_download_client_mapping_catalog(
+        &self,
+        actor: &User,
+    ) -> AppResult<IndexerDownloadClientMappingCatalog> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        let indexers = self
+            .services
+            .integrations
+            .indexer_configs
+            .list(None)
+            .await?;
+        let clients = self
+            .services
+            .integrations
+            .download_client_configs
+            .list(None)
+            .await?;
+        let plugin_provider = self
+            .services
+            .integrations
+            .download_client_plugin_provider
+            .available();
+        let client_payloads = clients
+            .iter()
+            .map(|client| IndexerDownloadClientMappingClient {
+                id: client.id.clone(),
+                name: client.name.clone(),
+                client_type: client.client_type.clone(),
+                is_enabled: client.is_enabled,
+                health_status: client.status.as_str().to_string(),
+            })
+            .collect();
+        let indexer_payloads = indexers
+            .iter()
+            .map(|indexer| {
+                let families = if indexer.provider_type.eq_ignore_ascii_case("prowlarr")
+                    && indexer.managed_parent_config_id.is_none()
+                {
+                    None
+                } else {
+                    self.indexer_download_mapping_families(&indexer.provider_type)
+                };
+                let protocol_families = families
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>();
+                let compatible_client_ids = families
+                    .as_ref()
+                    .map(|required_families| {
+                        clients
+                            .iter()
+                            .filter(|client| {
+                                let accepted_inputs = crate::accepted_inputs_for_client(
+                                    &client.client_type,
+                                    plugin_provider,
+                                );
+                                let supports_usenet = accepted_inputs.iter().any(|input| {
+                                    matches!(
+                                        input,
+                                        DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl
+                                    )
+                                });
+                                let supports_torrent = accepted_inputs.iter().any(|input| {
+                                    matches!(
+                                        input,
+                                        DownloadSourceKind::TorrentFile
+                                            | DownloadSourceKind::MagnetUri
+                                    )
+                                });
+                                required_families.iter().all(|family| match *family {
+                                    "usenet" => supports_usenet,
+                                    "torrent" => supports_torrent,
+                                    _ => false,
+                                })
+                            })
+                            .map(|client| client.id.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                IndexerDownloadClientMappingIndexer {
+                    id: indexer.id.clone(),
+                    name: indexer.name.clone(),
+                    download_client_id: indexer.download_client_id.clone(),
+                    supports_mapping: families.is_some(),
+                    protocol_families,
+                    compatible_client_ids,
+                }
+            })
+            .collect();
+        Ok(IndexerDownloadClientMappingCatalog {
+            clients: client_payloads,
+            indexers: indexer_payloads,
+        })
+    }
 }
