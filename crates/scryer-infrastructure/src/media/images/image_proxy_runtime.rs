@@ -31,15 +31,11 @@ const IMAGE_PROXY_HOST_RPS_BURST: u32 = 100;
 const IMAGE_PROXY_HOST_RPS_LANE: &str = "image_proxy";
 const IMAGE_PROXY_ACCEPT: &str = "image/webp,image/jpeg;q=0.9,image/png;q=0.8";
 
-const PORTRAIT_FALLBACK: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 3"><rect width="2" height="3" fill="#20242b"/><circle cx="1" cy="1" r=".42" fill="#667080"/><path d="M.3 2.7c.08-.72.33-1.08.7-1.08s.62.36.7 1.08" fill="#667080"/></svg>"##;
-const LANDSCAPE_FALLBACK: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 9"><rect width="16" height="9" fill="#20242b"/><path d="m1 8 4-4 3 3 2-2 5 3" fill="#667080"/><circle cx="12" cy="2.5" r="1" fill="#667080"/></svg>"##;
-
 #[derive(Clone, Debug)]
 pub struct ImageProxyBlob {
     pub content_type: String,
     pub etag: String,
     pub bytes: Vec<u8>,
-    pub fallback: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,31 +92,31 @@ impl ImageProxyRuntime {
             .unwrap_or_else(|| self.configured_max_bytes())
     }
 
-    pub async fn resolve(self: &Arc<Self>, token: &str, variant: &str) -> ImageProxyBlob {
+    pub async fn resolve(self: &Arc<Self>, token: &str, variant: &str) -> Option<ImageProxyBlob> {
         if !valid_token(token) {
-            return fallback_blob("landscape");
+            return None;
         }
         let source = match self.repository.get_image_proxy_source(token).await {
             Ok(Some(source)) => source,
-            Ok(None) => return fallback_blob("landscape"),
+            Ok(None) => return None,
             Err(error) => {
                 tracing::warn!(error = %error, token, "failed to load image proxy source");
-                return fallback_blob("landscape");
+                return None;
             }
         };
         self.flush_source_touches_in_background(token.to_string());
 
         if !variant_allowed(&source.image_kind, variant) {
-            return fallback_blob(&source.fallback_class);
+            return None;
         }
 
         if let Some(blob) = self.local_blob(&source, variant).await {
-            return blob;
+            return Some(blob);
         }
 
         if let Some((entry, bytes, freshness)) = self.read_cached(token, variant).await {
             if freshness == CacheFreshness::Fresh {
-                return cached_blob(&entry, bytes);
+                return Some(cached_blob(&entry, bytes));
             }
             if freshness == CacheFreshness::Stale {
                 let runtime = Arc::clone(self);
@@ -138,22 +134,21 @@ impl ImageProxyRuntime {
                         )
                         .await;
                 });
-                return cached_blob(&entry, bytes);
+                return Some(cached_blob(&entry, bytes));
             }
         }
 
         match self.fetch_singleflight(&source, token, variant).await {
-            Ok(Some(blob)) => blob,
-            Ok(None) => fallback_blob(&source.fallback_class),
+            Ok(blob) => blob,
             Err(error) => {
                 tracing::debug!(
                     error = %error,
                     token,
                     kind = %source.image_kind,
                     variant,
-                    "image proxy fetch failed; serving fallback"
+                    "image proxy fetch failed; image unavailable"
                 );
-                fallback_blob(&source.fallback_class)
+                None
             }
         }
     }
@@ -216,7 +211,6 @@ impl ImageProxyRuntime {
                 content_type: blob.content_type,
                 etag: blob.etag,
                 bytes: blob.bytes,
-                fallback: false,
             })
     }
 
@@ -466,7 +460,6 @@ impl ImageProxyRuntime {
             content_type,
             etag: content_etag(&bytes),
             bytes,
-            fallback: false,
         }))
     }
 
@@ -705,7 +698,7 @@ fn variant_allowed(kind: &str, variant: &str) -> bool {
     match kind {
         "poster" => matches!(variant, "original" | "w250" | "w70"),
         "fanart" => matches!(variant, "original" | "w1280"),
-        "episode_still" => variant == "original",
+        "episode_still" => matches!(variant, "original" | "w300"),
         // Reserved now so a future cast mapper can reuse this route and storage schema.
         "person" => matches!(variant, "original" | "w185"),
         _ => false,
@@ -726,7 +719,8 @@ fn upstream_variant_url(source_url: &str, kind: &str, variant: &str) -> Option<S
             ("fanart", "w1280") => "w1280",
             ("person", "w185") => "w185",
             ("person", "original") => "original",
-            ("episode_still", "original") => return Some(parsed.to_string()),
+            ("episode_still", "w300") => "w300",
+            ("episode_still", "original") => "original",
             _ => return None,
         };
         let path = parsed.path();
@@ -802,21 +796,6 @@ fn cached_blob(entry: &ImageProxyCacheEntryRecord, bytes: Vec<u8>) -> ImageProxy
         content_type: entry.content_type.clone(),
         etag: content_etag(&bytes),
         bytes,
-        fallback: false,
-    }
-}
-
-fn fallback_blob(class: &str) -> ImageProxyBlob {
-    let bytes = if class == "portrait" {
-        PORTRAIT_FALLBACK.to_vec()
-    } else {
-        LANDSCAPE_FALLBACK.to_vec()
-    };
-    ImageProxyBlob {
-        content_type: "image/svg+xml".to_string(),
-        etag: content_etag(&bytes),
-        bytes,
-        fallback: true,
     }
 }
 
@@ -1171,6 +1150,8 @@ mod tests {
         assert!(variant_allowed("poster", "w250"));
         assert!(!variant_allowed("poster", "w1280"));
         assert!(variant_allowed("episode_still", "original"));
+        assert!(variant_allowed("episode_still", "w300"));
+        assert!(!variant_allowed("episode_still", "w1280"));
         assert!(variant_allowed("person", "w185"));
     }
 
@@ -1202,6 +1183,15 @@ mod tests {
             )
             .as_deref(),
             Some("https://image.tmdb.org/t/p/w1280/background.jpg")
+        );
+        assert_eq!(
+            upstream_variant_url(
+                "https://image.tmdb.org/t/p/original/episode.jpg",
+                "episode_still",
+                "w300"
+            )
+            .as_deref(),
+            Some("https://image.tmdb.org/t/p/w300/episode.jpg")
         );
         assert_eq!(
             upstream_variant_url(
@@ -1258,7 +1248,10 @@ mod tests {
             temp.path(),
         ));
 
-        let blob = runtime.resolve(&token, "w250").await;
+        let blob = runtime
+            .resolve(&token, "w250")
+            .await
+            .expect("local image should resolve");
 
         assert_eq!(blob.content_type, "image/avif");
         assert_eq!(blob.bytes, vec![1, 2, 3]);
@@ -1266,7 +1259,7 @@ mod tests {
         assert_eq!(image_repository.cache_reads.load(Ordering::Relaxed), 0);
 
         let unknown = runtime.resolve(&"b".repeat(64), "original").await;
-        assert!(unknown.fallback);
+        assert!(unknown.is_none());
         assert_eq!(title_images.reads.load(Ordering::Relaxed), 1);
         assert_eq!(image_repository.cache_reads.load(Ordering::Relaxed), 0);
 
@@ -1344,18 +1337,22 @@ mod tests {
             .await
             .expect("write cached image");
 
-        let fresh = runtime.resolve(&token, "original").await;
+        let fresh = runtime
+            .resolve(&token, "original")
+            .await
+            .expect("fresh cached image should resolve");
         assert_eq!(fresh.bytes, bytes);
-        assert!(!fresh.fallback);
 
         image_repository
             .cache_entries
             .lock()
             .expect("cache entries lock")[0]
             .fetched_at = now - chrono::Duration::days(8);
-        let stale = runtime.resolve(&token, "original").await;
+        let stale = runtime
+            .resolve(&token, "original")
+            .await
+            .expect("stale cached image should remain usable");
         assert_eq!(stale.bytes, bytes);
-        assert!(!stale.fallback);
 
         image_repository
             .cache_entries
@@ -1363,7 +1360,7 @@ mod tests {
             .expect("cache entries lock")[0]
             .fetched_at = now - chrono::Duration::days(31);
         let expired = runtime.resolve(&token, "original").await;
-        assert!(expired.fallback);
+        assert!(expired.is_none());
 
         image_repository
             .cache_entries
@@ -1561,7 +1558,7 @@ mod tests {
             }));
         }
         for task in tasks {
-            assert!(task.await.expect("concurrent image resolve").fallback);
+            assert!(task.await.expect("concurrent image resolve").is_none());
         }
 
         assert_eq!(

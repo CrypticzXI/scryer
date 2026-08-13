@@ -1,3 +1,6 @@
+import * as React from "react";
+
+import { ArtworkFallback } from "@/components/artwork-fallback";
 import { useTranslate } from "@/lib/context/translate-context";
 import type {
   CollectionEpisode,
@@ -10,6 +13,7 @@ import { selectMediaImageVariantUrl } from "@/lib/utils/poster-images";
 
 export function EpisodeDetailsPanel({
   episode,
+  facet,
   mediaFiles,
   subtitleDownloads = [],
   onRefreshSubtitles,
@@ -18,6 +22,7 @@ export function EpisodeDetailsPanel({
   primaryMovieFileUpdatingId = null,
 }: {
   episode: CollectionEpisode;
+  facet: string;
   mediaFiles: EpisodeMediaFile[];
   subtitleDownloads?: ExternalSubtitleRecord[];
   onRefreshSubtitles?: () => Promise<void> | void;
@@ -28,22 +33,36 @@ export function EpisodeDetailsPanel({
   const t = useTranslate();
   const episodeImageUrl = selectMediaImageVariantUrl(
     episode.imageUrl,
-    "original",
+    "w300",
   );
   const episodeImageAlt = episode.title ?? episode.episodeLabel ?? "";
+  const [imageFailed, setImageFailed] = React.useState(false);
+  React.useEffect(() => {
+    setImageFailed(false);
+  }, [episodeImageUrl]);
+  const fallbackTone = facet.trim().toUpperCase() === "ANIME" ? "ANIME" : "SERIES";
   return (
     <div id={selectorId("series-overview-episode-details", episode.id)} className="space-y-3">
-      {episodeImageUrl || episode.overview ? (
-        <div className="flex items-start gap-4">
-          {episodeImageUrl ? (
+      <div className="flex items-start gap-4">
+          {episodeImageUrl && !imageFailed ? (
             <img
               src={episodeImageUrl}
               alt={episodeImageAlt}
               loading="lazy"
               decoding="async"
               className="w-40 shrink-0 rounded border border-border/70 bg-muted [image-rendering:smooth] sm:w-48"
+              onError={() => setImageFailed(true)}
             />
-          ) : null}
+          ) : (
+            <ArtworkFallback
+              className="aspect-video w-40 shrink-0 rounded border border-border/70 sm:w-48"
+              ariaLabel={episodeImageAlt}
+              emptyLabel={t("label.noArt")}
+              title={episode.title ?? episode.episodeLabel ?? episode.id}
+              tone={fallbackTone}
+              showText={false}
+            />
+          )}
           {episode.overview ? (
             <div className="min-w-0 flex-1">
               <p className="mb-1 text-xs font-medium text-muted-foreground">{t("episode.overview")}</p>
@@ -51,7 +70,6 @@ export function EpisodeDetailsPanel({
             </div>
           ) : null}
         </div>
-      ) : null}
       <MediaFilesOnDiskPanel<EpisodeMediaFile>
         emptyMessage={t("title.noFilesTracked")}
         emptyHint={t("title.noFilesTrackedHint")}

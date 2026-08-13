@@ -101,7 +101,7 @@ async fn graphql_metadata_series() {
         .expect("metadata episode image URL should be a string");
     let token = image_url
         .strip_prefix("/images/media/")
-        .and_then(|value| value.strip_suffix("/original"))
+        .and_then(|value| value.strip_suffix("/w300"))
         .expect("metadata episode image URL should use Scryer's media route");
     assert_eq!(token.len(), 64);
     assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));

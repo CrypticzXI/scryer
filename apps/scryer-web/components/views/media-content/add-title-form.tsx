@@ -10,7 +10,7 @@ import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import type { MetadataTvdbSearchItem } from "@/lib/graphql/smg-queries";
 import type { TitleRecord } from "@/lib/types";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
-import { TitlePoster } from "@/components/title-poster";
+import { TitlePosterSlot } from "@/components/title-poster-slot";
 import {
   Table,
   TableBody,
@@ -181,18 +181,17 @@ export function AddTitleForm({
                   <div className="mb-2 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex min-h-20 gap-3">
                       <div className="h-20 w-14 flex-none overflow-hidden rounded-md border border-border bg-muted">
-                        {result.posterUrl ? (
-                          <TitlePoster
-                            src={result.posterUrl}
-                            alt={t("media.posterAlt", { name: result.name })}
-                            className="h-full w-full object-cover"
-                            loading="lazy"
-                          />
-                        ) : (
-                          <div className="flex h-full w-full items-center justify-center text-xs text-muted-foreground">
-                            {t("label.noArt")}
-                          </div>
-                        )}
+                        <TitlePosterSlot
+                          src={result.posterUrl}
+                          alt={t("media.posterAlt", { name: result.name })}
+                          className="h-full w-full object-cover"
+                          placeholderClassName="h-full w-full"
+                          emptyLabel={t("label.noArt")}
+                          fallbackTitle={result.name}
+                          fallbackTone={queueFacet}
+                          fallbackShowText={false}
+                          loading="lazy"
+                        />
                       </div>
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-foreground">{result.name}</p>

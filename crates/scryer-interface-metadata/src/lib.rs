@@ -187,7 +187,7 @@ impl MetadataQueries {
                         Some("metadata_episode"),
                         Some(&owner_id),
                         ImageProxyKind::EpisodeStill,
-                        "original",
+                        "w300",
                     )
                     .expect("metadata episode image registration with an owner always returns a URL");
                     Ok(MetadataEpisodePayload {

@@ -2368,7 +2368,7 @@ pub fn from_episode(app: &AppUseCase, episode: Episode) -> EpisodePayload {
         Some("episode"),
         Some(&episode.id),
         ImageProxyKind::EpisodeStill,
-        "original",
+        "w300",
     );
     EpisodePayload {
         id: episode.id.into(),

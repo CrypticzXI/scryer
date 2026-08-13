@@ -17,16 +17,23 @@ export function TitleWorkspaceHero({
   onClose: () => void;
   children: React.ReactNode;
 }) {
+  const [failedBackgroundUrl, setFailedBackgroundUrl] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    setFailedBackgroundUrl(null);
+  }, [backgroundUrl]);
+  const displayedBackgroundUrl =
+    failedBackgroundUrl === backgroundUrl ? null : backgroundUrl;
   return (
     <section className="relative mb-3 overflow-hidden bg-[var(--scry-bg)]">
-      {backgroundUrl ? (
+      {displayedBackgroundUrl ? (
         <img
-          src={backgroundUrl}
+          src={displayedBackgroundUrl}
           alt=""
           aria-hidden="true"
           className="absolute inset-0 h-full w-full object-cover opacity-45 saturate-90"
           loading="lazy"
           decoding="async"
+          onError={() => setFailedBackgroundUrl(displayedBackgroundUrl)}
         />
       ) : null}
       <div className="absolute inset-0 bg-[linear-gradient(105deg,rgba(8,12,22,0.96)_30%,rgba(8,12,22,0.55)_70%,rgba(8,12,22,0.2))]" />

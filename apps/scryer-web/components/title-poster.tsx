@@ -1,7 +1,7 @@
 import type { ComponentProps } from "react";
 
 type TitlePosterProps = Omit<ComponentProps<"img">, "src"> & {
-  /** Scryer-owned image URL. The server resolves local, cached, or fallback bytes. */
+  /** Scryer-owned image URL. Missing artwork triggers the caller's error fallback. */
   src?: string | null;
 };
 

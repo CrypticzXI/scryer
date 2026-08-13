@@ -117,6 +117,7 @@ export const EpisodePanelContent = React.memo(function EpisodePanelContent({
       <TabsContent value="details">
         <EpisodeDetailsPanel
           episode={episode}
+          facet={facet}
           mediaFiles={episodeFiles}
           subtitleDownloads={subtitleDownloads}
           onRefreshSubtitles={onRefreshSubtitles}
