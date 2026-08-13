@@ -1179,6 +1179,7 @@ async fn recover_from_standby_candidates(
                                 title: title_context_snapshot(&title),
                                 source_title: Some(standby.release_title.clone()),
                                 source_hint: None,
+                                source_provider: None,
                                 download_id: None,
                                 episode_ids: item.episode_id.iter().cloned().collect(),
                             }),

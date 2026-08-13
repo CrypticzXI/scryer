@@ -707,6 +707,7 @@ impl AppUseCase {
                 title: title_context_snapshot(title),
                 source_title: source_title_for_attempt.clone(),
                 source_hint: source_hint_for_attempt.clone(),
+                source_provider: source_provider_name.clone(),
                 download_id: Some(grab.job_id.clone()),
                 episode_ids: grabbed_episode_ids,
             }),

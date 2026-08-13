@@ -500,6 +500,92 @@ async fn queue_existing_title_download_episode_scope_records_grabbed_history_con
 }
 
 #[tokio::test]
+async fn queue_existing_title_download_records_configured_provider_in_grabbed_history() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let acquisition_scope_states = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        acquisition_scope_states,
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Provider History Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: false,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let source_hint = "https://example.invalid/releases/provider-history.nzb";
+
+    app.queue_existing_title_download(
+        &user,
+        &title.id,
+        QueuedReleaseSelection {
+            indexer_id: Some("acquisition-indexer".to_string()),
+            source_hint: Some(source_hint.to_string()),
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            source_title: Some("Provider.History.2026.1080p.WEB-DL".to_string()),
+            source_password: None,
+        },
+        SubmissionScope::Title,
+        SubmissionConflictPolicy::Abort,
+    )
+    .await
+    .expect("queue release");
+
+    let events = app
+        .services
+        .events
+        .domain_events
+        .list(&DomainEventFilter {
+            event_types: Some(vec![DomainEventType::ReleaseGrabbed]),
+            title_id: Some(title.id.clone()),
+            facet: None,
+            after_sequence: Some(0),
+            before_sequence: None,
+            limit: 10,
+        })
+        .await
+        .expect("release grabbed events should load");
+    let grabbed = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            DomainEventPayload::ReleaseGrabbed(data) => Some(data),
+            _ => None,
+        })
+        .expect("release grabbed event");
+    assert_eq!(grabbed.source_hint.as_deref(), Some(source_hint));
+    assert_eq!(
+        grabbed.source_provider.as_deref(),
+        Some("Synthetic newznab")
+    );
+
+    let submissions = download_submissions.store.lock().await;
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(submissions[0].source_hint.as_deref(), Some(source_hint));
+    assert_eq!(
+        submissions[0].source_provider_id.as_deref(),
+        Some("acquisition-indexer")
+    );
+    assert_eq!(
+        submissions[0].source_provider_name.as_deref(),
+        Some("Synthetic newznab")
+    );
+}
+
+#[tokio::test]
 async fn queue_existing_title_download_submit_unavailable_records_pending_without_blocklist() {
     let download_client = Arc::new(StubDownloadClient::default());
     download_client

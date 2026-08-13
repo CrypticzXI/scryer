@@ -899,6 +899,7 @@ async fn process_single_target(
                                                     title: title_context_snapshot(&title),
                                                     source_title: Some(best_pack.title.clone()),
                                                     source_hint: Some(best_pack.source.clone()),
+                                                    source_provider: Some(best_pack.source.clone()),
                                                     download_id: Some(download_job_id),
                                                     episode_ids: item
                                                         .episode_id
@@ -1557,6 +1558,7 @@ async fn process_single_target(
                             title: title_context_snapshot(&title),
                             source_title: Some(candidate.title.clone()),
                             source_hint: Some(candidate.source.clone()),
+                            source_provider: Some(candidate.source.clone()),
                             download_id: Some(download_job_id),
                             episode_ids: item.episode_id.iter().cloned().collect(),
                         }),

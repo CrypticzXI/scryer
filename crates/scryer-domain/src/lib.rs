@@ -2419,6 +2419,8 @@ pub struct ReleaseGrabbedEventData {
     pub title: TitleContextSnapshot,
     pub source_title: Option<String>,
     pub source_hint: Option<String>,
+    #[serde(default)]
+    pub source_provider: Option<String>,
     pub download_id: Option<String>,
     #[serde(default)]
     pub episode_ids: Vec<String>,

@@ -1779,6 +1779,7 @@ impl AppUseCase {
                             title: title_context_snapshot(title),
                             source_title: Some(best.title.clone()),
                             source_hint: Some(best.source.clone()),
+                            source_provider: Some(best.source.clone()),
                             download_id: None,
                             episode_ids: Vec::new(),
                         }),

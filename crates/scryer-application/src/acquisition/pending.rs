@@ -952,6 +952,7 @@ impl AppUseCase {
                             title: title_context_snapshot(&title),
                             source_title: Some(pr.release_title.clone()),
                             source_hint: None,
+                            source_provider: None,
                             download_id: Some(download_job_id),
                             episode_ids: wanted.episode_id.iter().cloned().collect(),
                         }),

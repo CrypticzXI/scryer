@@ -1652,6 +1652,7 @@ mod tests {
                     title: title_context("Example Show", MediaFacet::Series),
                     source_title: Some("Example.Show.S01E01.1080p".to_string()),
                     source_hint: Some("rss".to_string()),
+                    source_provider: Some("rss".to_string()),
                     download_id: Some("grab-1".to_string()),
                     episode_ids: vec!["episode-1".to_string()],
                 }),

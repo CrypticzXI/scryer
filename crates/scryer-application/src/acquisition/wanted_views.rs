@@ -736,8 +736,8 @@ pub struct AcquisitionSearchJobView {
 }
 
 /// Map a terminal/running job-run status onto the acquisition-search job state
-/// vocabulary: a cancellation lands as `Warning`, which the UI
-/// shows as `Cancelled`.
+/// vocabulary. Partial failures use `Warning` internally but are still a
+/// completed search; only the explicit cancellation signal is cancelled.
 fn acquisition_search_state_for_status(status: JobRunStatus, cancelled: bool) -> &'static str {
     if cancelled {
         return "cancelled";
@@ -745,8 +745,29 @@ fn acquisition_search_state_for_status(status: JobRunStatus, cancelled: bool) ->
     match status {
         JobRunStatus::Completed => "completed",
         JobRunStatus::Failed => "failed",
-        JobRunStatus::Warning => "cancelled",
+        JobRunStatus::Warning => "completed",
         _ => "running",
+    }
+}
+
+#[cfg(test)]
+mod acquisition_search_state_tests {
+    use super::*;
+
+    #[test]
+    fn warning_is_completed_unless_the_search_was_cancelled() {
+        assert_eq!(
+            acquisition_search_state_for_status(JobRunStatus::Warning, false),
+            "completed"
+        );
+        assert_eq!(
+            acquisition_search_state_for_status(JobRunStatus::Warning, true),
+            "cancelled"
+        );
+        assert_eq!(
+            acquisition_search_state_for_status(JobRunStatus::Completed, true),
+            "cancelled"
+        );
     }
 }
 
