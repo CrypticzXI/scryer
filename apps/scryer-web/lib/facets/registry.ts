@@ -114,3 +114,7 @@ export function facetById(id: string): FacetDefinition | undefined {
 export function facetByScope(scopeId: string): FacetDefinition | undefined {
   return FACETS_BY_SCOPE.get(scopeId as ViewCategoryId);
 }
+
+export function facetByMetadataKey(metadataKey: string): FacetDefinition | undefined {
+  return FACETS_BY_METADATA_KEY.get(metadataKey);
+}

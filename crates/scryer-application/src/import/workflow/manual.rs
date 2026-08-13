@@ -87,24 +87,24 @@ pub async fn start_background_manual_import_poller(
             let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
             let outcome =
                 match execute_queued_manual_import_with_outcome(&app, &record.id, &payload).await {
-                Ok(result) => result,
-                Err(error) => QueuedManualImportOutcome {
-                    status: ImportStatus::Failed,
-                    result_json: manual_import_result_json(
-                        &record.id,
-                        &payload,
-                        ImportStatus::Failed,
-                        Some(classify_manual_import_error_message(&error.to_string())),
-                        Some(error.to_string()),
-                        Vec::new(),
-                    ),
-                    files_imported_this_pass: 0,
-                    completed: None,
-                    title_id: payload.title_id.clone(),
-                    expected_source_video_files: None,
-                    prior_import_proven: false,
-                },
-            };
+                    Ok(result) => result,
+                    Err(error) => QueuedManualImportOutcome {
+                        status: ImportStatus::Failed,
+                        result_json: manual_import_result_json(
+                            &record.id,
+                            &payload,
+                            ImportStatus::Failed,
+                            Some(classify_manual_import_error_message(&error.to_string())),
+                            Some(error.to_string()),
+                            Vec::new(),
+                        ),
+                        files_imported_this_pass: 0,
+                        completed: None,
+                        title_id: payload.title_id.clone(),
+                        expected_source_video_files: None,
+                        prior_import_proven: false,
+                    },
+                };
 
             if let Err(error) = app
                 .update_import_status_and_notify(
@@ -340,7 +340,7 @@ pub(crate) async fn resolve_current_manual_import_source(
     let client_id = client_id.trim();
     let client_type = client_type.trim();
     let download_client_item_id = download_client_item_id.trim();
-    authorize_manual_import_source(
+    let authorized = authorize_manual_import_source(
         app,
         actor,
         client_id,
@@ -349,13 +349,7 @@ pub(crate) async fn resolve_current_manual_import_source(
         title_id,
     )
     .await?;
-    resolve_live_manual_import_source(
-        app,
-        client_id,
-        client_type,
-        download_client_item_id,
-    )
-    .await
+    resolve_authorized_manual_import_source(app, &authorized.identity).await
 }
 
 struct AuthorizedManualImportSource {
@@ -375,11 +369,8 @@ async fn authorize_manual_import_source(
         return Err(manual_import_source_unavailable());
     }
 
-    let source_identity = DownloadSourceIdentity::new(
-        Some(client_id),
-        client_type,
-        download_client_item_id,
-    );
+    let source_identity =
+        DownloadSourceIdentity::new(Some(client_id), client_type, download_client_item_id);
     let title = app
         .services
         .catalog
@@ -413,20 +404,42 @@ async fn authorize_manual_import_source(
     })
 }
 
+async fn resolve_authorized_manual_import_source(
+    app: &AppUseCase,
+    identity: &DownloadSourceIdentity,
+) -> AppResult<CompletedDownload> {
+    if let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref() {
+        match handle.completed_source(identity.clone()).await {
+            Ok(Some(completed)) if completed_download_matches_source(&completed, identity) => {
+                return Ok(completed);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    client_id = ?identity.client_id,
+                    client_type = %identity.client_type,
+                    download_client_item_id = %identity.item_id,
+                    "retained manual-import source lookup failed; falling back to live lookup"
+                );
+            }
+        }
+    }
+
+    resolve_live_manual_import_source(app, identity).await
+}
+
 async fn resolve_live_manual_import_source(
     app: &AppUseCase,
-    client_id: &str,
-    client_type: &str,
-    download_client_item_id: &str,
+    identity: &DownloadSourceIdentity,
 ) -> AppResult<CompletedDownload> {
     let completed = match app
         .resolve_manual_import_source(
-            Some(client_id),
-            Some(client_type),
-            download_client_item_id,
+            identity.client_id.as_deref(),
+            Some(identity.client_type.as_str()),
+            identity.item_id.as_str(),
         )
-        .await
-        .map_err(|_| manual_import_source_unavailable())?
+        .await?
     {
         crate::ManualImportSourceResolution::Eligible {
             completed: Some(completed),
@@ -434,14 +447,22 @@ async fn resolve_live_manual_import_source(
         _ => return Err(manual_import_source_unavailable()),
     };
 
-    if completed.client_id != client_id
-        || !completed.client_type.eq_ignore_ascii_case(client_type)
-        || completed.download_client_item_id != download_client_item_id
-    {
+    if !completed_download_matches_source(&completed, identity) {
         return Err(manual_import_source_unavailable());
     }
 
     Ok(completed)
+}
+
+fn completed_download_matches_source(
+    completed: &CompletedDownload,
+    identity: &DownloadSourceIdentity,
+) -> bool {
+    completed.client_id == identity.client_id.as_deref().unwrap_or_default()
+        && completed
+            .client_type
+            .eq_ignore_ascii_case(identity.client_type.as_str())
+        && completed.download_client_item_id == identity.item_id
 }
 
 fn import_record_proves_prior_import(record: &ImportRecord, current_import_id: &str) -> bool {
@@ -459,9 +480,8 @@ fn import_record_proves_prior_import(record: &ImportRecord, current_import_id: &
             result.decision == ImportDecision::Imported
                 || result.skip_reason == Some(ImportSkipReason::AlreadyImported)
         }),
-        ImportStatus::Skipped => canonical_result.is_some_and(|result| {
-            result.skip_reason == Some(ImportSkipReason::AlreadyImported)
-        }),
+        ImportStatus::Skipped => canonical_result
+            .is_some_and(|result| result.skip_reason == Some(ImportSkipReason::AlreadyImported)),
         _ => false,
     }
 }
@@ -675,7 +695,12 @@ pub async fn begin_manual_import_selection(
     let client_type = client_type.trim().to_ascii_lowercase();
     let source_ref = download_client_item_id.trim();
     let completed = resolve_current_manual_import_source(
-        app, actor, client_id, &client_type, source_ref, title_id,
+        app,
+        actor,
+        client_id,
+        &client_type,
+        source_ref,
+        title_id,
     )
     .await?;
     let trusted_root = std::fs::canonicalize(&completed.dest_dir)
@@ -700,7 +725,8 @@ pub async fn begin_manual_import_selection(
                 .collect::<std::collections::HashMap<_, _>>()
         })
         .unwrap_or_default();
-    let (all_episodes, available_series_movies) = manual_import_preview_targets(app, title_id).await?;
+    let (all_episodes, available_series_movies) =
+        manual_import_preview_targets(app, title_id).await?;
 
     let mut candidates = Vec::new();
     let mut files = Vec::new();
@@ -708,14 +734,13 @@ pub async fn begin_manual_import_selection(
     for file in preview.files {
         let source_path = stored_path_to_path_buf(&file.file_path);
         validate_manual_import_source_under_trusted_root(&source_path, &trusted_root)?;
-        let canonical_path = path_to_stored_string(
-            &std::fs::canonicalize(&source_path).map_err(|error| {
+        let canonical_path =
+            path_to_stored_string(&std::fs::canonicalize(&source_path).map_err(|error| {
                 AppError::Validation(format!(
                     "manual import file is no longer accessible: {} ({error})",
                     source_path.display()
                 ))
-            })?,
-        );
+            })?);
         let candidate_id = prior_candidate_ids
             .get(&canonical_path)
             .cloned()
@@ -1155,7 +1180,9 @@ async fn execute_manual_series_movie_import(
                 false,
                 None,
                 Some(ImportErrorCode::Unknown),
-                Some(format!("series movie link {series_movie_link_id} not found")),
+                Some(format!(
+                    "series movie link {series_movie_link_id} not found"
+                )),
             ));
         }
     };
@@ -1229,18 +1256,18 @@ async fn execute_manual_series_movie_import(
     )
     .await
     {
-            Ok(file_result) => file_result,
-            Err(error) => {
-                let message = error.to_string();
-                return Ok(manual_import_file_result(
-                    mapping,
-                    false,
-                    None,
-                    Some(classify_manual_import_error_message(&message)),
-                    Some(message),
-                ));
-            }
-        };
+        Ok(file_result) => file_result,
+        Err(error) => {
+            let message = error.to_string();
+            return Ok(manual_import_file_result(
+                mapping,
+                false,
+                None,
+                Some(classify_manual_import_error_message(&message)),
+                Some(message),
+            ));
+        }
+    };
     persist_title_folder_path_if_missing(app, title, full_folder_path).await;
 
     let quality_label = mapping.quality.clone().or_else(|| parsed.quality.clone());
@@ -1316,8 +1343,8 @@ async fn execute_manual_series_movie_import(
         );
     }
     maybe_trigger_subtitle_search(app, &title.id, &imported_media_file_id);
-    if let Err(error) = finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path)
-        .await
+    if let Err(error) =
+        finalize_import_source_cleanup(app, import_mode, &file_result, &dest_path).await
     {
         let message = error.to_string();
         return Ok(manual_import_file_result(
@@ -1351,8 +1378,11 @@ async fn execute_manual_series_movie_import(
         .await?;
     if nfo_enabled {
         let nfo_path = dest_path.with_extension("nfo");
-        let nfo_content =
-            crate::nfo::render_series_movie_episode_nfo(&link.movie, &season_episode, link.after_season);
+        let nfo_content = crate::nfo::render_series_movie_episode_nfo(
+            &link.movie,
+            &season_episode,
+            link.after_season,
+        );
         if let Err(error) = tokio::fs::write(&nfo_path, nfo_content.as_bytes()).await {
             tracing::warn!(
                 error = %error,
@@ -1418,9 +1448,9 @@ pub async fn execute_manual_import(
         scryer_domain::LibraryPermission::ResolveImports,
     )
     .await?;
-    let trusted_source_root = trusted_source_root.as_deref().ok_or_else(|| {
-        AppError::Validation("manual import source root is required".to_string())
-    })?;
+    let trusted_source_root = trusted_source_root
+        .as_deref()
+        .ok_or_else(|| AppError::Validation("manual import source root is required".to_string()))?;
     let trusted_source_root = std::fs::canonicalize(trusted_source_root).map_err(|error| {
         AppError::Validation(format!(
             "manual import source root is not accessible: {} ({error})",
@@ -1444,7 +1474,8 @@ pub async fn execute_manual_import(
 
     for mapping in &files {
         let source = stored_path_to_path_buf(&mapping.file_path);
-        if let Err(err) = validate_manual_import_source_under_trusted_root(&source, &trusted_source_root)
+        if let Err(err) =
+            validate_manual_import_source_under_trusted_root(&source, &trusted_source_root)
         {
             results.push(manual_import_file_result(
                 mapping,
@@ -1826,11 +1857,25 @@ async fn execute_queued_manual_import_with_outcome(
     app.update_import_status_and_notify(import_id, ImportStatus::Processing, None)
         .await?;
 
-    let Some(title_id) = payload.title_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else {
-        return Ok(QueuedManualImportOutcome::source_unavailable(import_id, payload));
+    let Some(title_id) = payload
+        .title_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(QueuedManualImportOutcome::source_unavailable(
+            import_id, payload,
+        ));
     };
-    let Some(client_id) = payload.client_id.as_deref().map(str::trim).filter(|id| !id.is_empty()) else {
-        return Ok(QueuedManualImportOutcome::source_unavailable(import_id, payload));
+    let Some(client_id) = payload
+        .client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(QueuedManualImportOutcome::source_unavailable(
+            import_id, payload,
+        ));
     };
     let client_type = payload.client_type.trim();
     let download_client_item_id = payload.download_client_item_id.trim();
@@ -1846,28 +1891,31 @@ async fn execute_queued_manual_import_with_outcome(
     {
         Ok(source) => source,
         Err(_) => {
-            return Ok(QueuedManualImportOutcome::source_unavailable(import_id, payload));
+            return Ok(QueuedManualImportOutcome::source_unavailable(
+                import_id, payload,
+            ));
         }
     };
     if manual_import_source_was_already_imported(app, &authorized_source, import_id).await? {
-        return Ok(QueuedManualImportOutcome::already_imported(import_id, payload));
+        return Ok(QueuedManualImportOutcome::already_imported(
+            import_id, payload,
+        ));
     }
     let source_identity = authorized_source.identity;
-    let completed = match resolve_live_manual_import_source(
-        app,
-        client_id,
-        client_type,
-        download_client_item_id,
-    )
-    .await
-    {
+    let completed = match resolve_authorized_manual_import_source(app, &source_identity).await {
         Ok(completed) => completed,
-        Err(_) => return Ok(QueuedManualImportOutcome::source_unavailable(import_id, payload)),
+        Err(_) => {
+            return Ok(QueuedManualImportOutcome::source_unavailable(
+                import_id, payload,
+            ));
+        }
     };
     let trusted_source_root = match std::fs::canonicalize(&completed.dest_dir) {
         Ok(root) => root,
         Err(_) => {
-            return Ok(QueuedManualImportOutcome::source_unavailable(import_id, payload));
+            return Ok(QueuedManualImportOutcome::source_unavailable(
+                import_id, payload,
+            ));
         }
     };
     let expected_source_video_files =
@@ -1882,9 +1930,7 @@ async fn execute_queued_manual_import_with_outcome(
         let imported = matches!(result.decision, ImportDecision::Imported);
 
         let (status, error_code, error_message) =
-            if imported
-                || matches!(result.skip_reason, Some(ImportSkipReason::AlreadyImported))
-            {
+            if imported || matches!(result.skip_reason, Some(ImportSkipReason::AlreadyImported)) {
                 (ImportStatus::Completed, None, None)
             } else {
                 (
@@ -2010,9 +2056,8 @@ mod manual_source_validation_tests {
         std::os::unix::fs::symlink(&target, &link).expect("create symlink");
         let trusted_root = std::fs::canonicalize(&root).expect("canonical root");
 
-        let error =
-            validate_manual_import_source_under_trusted_root(&link, &trusted_root)
-                .expect_err("symlink path outside root should be rejected");
+        let error = validate_manual_import_source_under_trusted_root(&link, &trusted_root)
+            .expect_err("symlink path outside root should be rejected");
 
         assert!(
             error
@@ -2034,9 +2079,8 @@ mod manual_source_validation_tests {
         std::os::unix::fs::symlink(&target, &link).expect("create symlink");
         let trusted_root = std::fs::canonicalize(&root).expect("canonical root");
 
-        let error =
-            validate_manual_import_source_under_trusted_root(&link, &trusted_root)
-                .expect_err("symlink target outside root should be rejected");
+        let error = validate_manual_import_source_under_trusted_root(&link, &trusted_root)
+            .expect_err("symlink target outside root should be rejected");
 
         assert!(
             error

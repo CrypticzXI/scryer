@@ -3423,19 +3423,6 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             return Ok(None);
         };
 
-        if let Some(remaining) = self.feedback_backoff_remaining(
-            &config.id,
-            DownloadFeedbackReadKind::RecentCompletedDownloads,
-        ) {
-            debug!(
-                client_id = %config.id,
-                client = %config.name,
-                remaining_ms = remaining.as_millis(),
-                "skipping targeted completed download lookup during backoff"
-            );
-            return Ok(None);
-        }
-
         let client = Self::client_from_config(
             config,
             self.staged_nzb_store.clone(),
@@ -4394,11 +4381,16 @@ mod tests {
     #[derive(Default)]
     struct FailingCompletedDownloadClient {
         recent_completed_calls: AtomicUsize,
+        targeted_completed_calls: AtomicUsize,
     }
 
     impl FailingCompletedDownloadClient {
         fn recent_completed_call_count(&self) -> usize {
             self.recent_completed_calls.load(Ordering::SeqCst)
+        }
+
+        fn targeted_completed_call_count(&self) -> usize {
+            self.targeted_completed_calls.load(Ordering::SeqCst)
         }
     }
 
@@ -4418,6 +4410,18 @@ mod tests {
             self.recent_completed_calls.fetch_add(1, Ordering::SeqCst);
             Err(AppError::Repository(
                 "completed history unavailable".to_string(),
+            ))
+        }
+
+        async fn get_completed_download_for_source(
+            &self,
+            _client_id: &str,
+            _client_type: &str,
+            _download_client_item_id: &str,
+        ) -> AppResult<Option<scryer_domain::CompletedDownload>> {
+            self.targeted_completed_calls.fetch_add(1, Ordering::SeqCst);
+            Err(AppError::Repository(
+                "targeted completed lookup unavailable".to_string(),
             ))
         }
     }
@@ -7380,5 +7384,42 @@ mod tests {
 
         assert_eq!(failing_client.list_queue_call_count(), 1);
         assert_eq!(failing_client.list_queue_for_title_call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn targeted_completed_lookup_bypasses_feedback_backoff_and_preserves_errors() {
+        let failing_client = Arc::new(FailingCompletedDownloadClient::default());
+        let plugin_provider: Arc<dyn DownloadClientPluginProvider> =
+            Arc::new(MockDownloadClientPluginProvider {
+                accepted_inputs: vec!["nzb_url".to_string()],
+                clients: vec![("failing".to_string(), failing_client.clone())],
+            });
+        let router = PrioritizedDownloadClientRouter::new(
+            Arc::new(MockDownloadClientConfigRepository {
+                configs: vec![test_config("failing", "Failing", "qbittorrent", 0)],
+            }),
+            Arc::new(MockSettingsRepository::default()),
+            null_staged_nzb_store(),
+            test_pipeline_limit(),
+            Some(plugin_provider),
+        );
+
+        let completed = router
+            .list_recent_completed_downloads(50)
+            .await
+            .expect("background completed read should degrade to empty");
+        assert!(completed.is_empty());
+        let error = router
+            .get_completed_download_for_source("failing", "qbittorrent", "item-1")
+            .await
+            .expect_err("targeted lookup must preserve the provider error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("targeted completed lookup unavailable")
+        );
+        assert_eq!(failing_client.recent_completed_call_count(), 1);
+        assert_eq!(failing_client.targeted_completed_call_count(), 1);
     }
 }

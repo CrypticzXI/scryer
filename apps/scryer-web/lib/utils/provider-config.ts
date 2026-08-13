@@ -69,3 +69,28 @@ export function providerConfigRecordToValues(
         : { key, stringValue: value },
     );
 }
+
+/**
+ * Materialize descriptor defaults that the form displays without placing in
+ * draft state. Explicit blank values remain blank so validation can report a
+ * deliberately cleared required field.
+ */
+export function providerConfigRecordToValuesWithDefaults(
+  record: Record<string, string> | undefined,
+  fields: ProviderConfigValue[] | null | undefined,
+): ProviderConfigValueInput[] {
+  const materialized = { ...(record ?? {}) };
+  for (const field of fields ?? []) {
+    if (
+      !(field.key in materialized) &&
+      field.defaultValue !== null &&
+      field.defaultValue !== undefined
+    ) {
+      materialized[field.key] = field.defaultValue;
+    }
+  }
+  const secretKeys = (fields ?? [])
+    .filter((field) => field.fieldType === "PASSWORD")
+    .map((field) => field.key);
+  return providerConfigRecordToValues(materialized, secretKeys);
+}

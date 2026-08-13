@@ -143,6 +143,7 @@ import { useDeferredWsSubscription } from "@/lib/hooks/use-deferred-ws-subscript
 import { useOverviewWindowScrollRestoration } from "@/lib/hooks/use-overview-window-scroll-restoration";
 import { useJobRunToasts } from "@/components/root/job-run-provider";
 import type { TitleOptionUpdates } from "@/lib/types/title-options";
+import { titleMatchesOptionUpdates } from "@/lib/utils/title-edit-dialog";
 import { isTerminalJobRunStatus, normalizeJobRun } from "@/lib/utils/job-runs";
 import { toast } from "sonner";
 import { BulkTitleEditDialog } from "@/components/views/media-content/bulk-title-edit-dialog";
@@ -665,60 +666,7 @@ function inferTitleUpdateBatchOutcome(
   );
   return splitSucceededTitleIds(targets, (title) => {
     const refreshed = refreshedById.get(title.id);
-    if (!refreshed) {
-      return false;
-    }
-
-    if (
-      changes.qualityProfileId !== undefined &&
-      (refreshed.qualityProfileId ?? "") !== changes.qualityProfileId
-    ) {
-      return false;
-    }
-    if (
-      changes.rootFolderId !== undefined &&
-      (refreshed.rootFolderId ?? null) !== changes.rootFolderId
-    ) {
-      return false;
-    }
-    if (
-      changes.monitorType !== undefined &&
-      (refreshed.monitorType ?? "") !== changes.monitorType
-    ) {
-      return false;
-    }
-    if (
-      changes.useSeasonFolders !== undefined &&
-      refreshed.useSeasonFolders !== changes.useSeasonFolders
-    ) {
-      return false;
-    }
-    if (
-      changes.monitorSpecials !== undefined &&
-      refreshed.monitorSpecials !== changes.monitorSpecials
-    ) {
-      return false;
-    }
-    if (
-      changes.interSeasonMovies !== undefined &&
-      refreshed.interSeasonMovies !== changes.interSeasonMovies
-    ) {
-      return false;
-    }
-    if (
-      changes.fillerPolicy !== undefined &&
-      (refreshed.fillerPolicy ?? "") !== changes.fillerPolicy
-    ) {
-      return false;
-    }
-    if (
-      changes.recapPolicy !== undefined &&
-      (refreshed.recapPolicy ?? "") !== changes.recapPolicy
-    ) {
-      return false;
-    }
-
-    return true;
+    return refreshed !== undefined && titleMatchesOptionUpdates(refreshed, changes);
   });
 }
 

@@ -14,11 +14,10 @@ use crate::quality::release_parser::ParseDisposition;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 
-/// Library-local identity ambiguity for a canonical title (Pillar A tier 0):
-/// the subject's canonical lookup keys that at least one *other* library title
-/// also claims. Empty means the title is unambiguous and a bare release name
-/// stays sufficient evidence. Derived from Scryer's own catalog only — no
-/// catalog/SMG knowledge is involved.
+/// Identity ambiguity for a canonical title (Pillar A tier 0): lookup keys that
+/// cannot identify this title on their own. This includes keys shared with
+/// another library title and the bare form of an explicitly year-qualified
+/// canonical title such as `One Piece (2023)`.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TitleIdentityAmbiguity {
     pub(crate) shared_lookup_keys: Vec<String>,
@@ -27,6 +26,28 @@ pub(crate) struct TitleIdentityAmbiguity {
 impl TitleIdentityAmbiguity {
     pub(crate) fn from_shared_keys(shared_lookup_keys: Vec<String>) -> Self {
         Self { shared_lookup_keys }
+    }
+
+    fn from_year_qualified_canonical_key(canonical_key: &str, title_year: Option<i32>) -> Self {
+        let Some(title_year) = title_year else {
+            return Self::default();
+        };
+        let stripped = crate::import_title_resolution::strip_trailing_year_key(canonical_key);
+        let suffix_matches_title_year = canonical_key
+            .rsplit_once(' ')
+            .is_some_and(|(_, suffix)| suffix == title_year.to_string());
+        if suffix_matches_title_year && stripped != canonical_key && !stripped.is_empty() {
+            return Self::from_shared_keys(vec![canonical_key.to_string()]);
+        }
+        Self::default()
+    }
+
+    fn merge(&mut self, other: Self) {
+        for key in other.shared_lookup_keys {
+            if !self.shared_lookup_keys.contains(&key) {
+                self.shared_lookup_keys.push(key);
+            }
+        }
     }
 
     /// True when an auto candidate must present a positive disambiguator (A2).
@@ -58,7 +79,7 @@ pub(crate) struct CanonicalTitleEvidence {
 
 impl CanonicalTitleEvidence {
     pub(crate) fn with_ambiguity(mut self, ambiguity: TitleIdentityAmbiguity) -> Self {
-        self.ambiguity = ambiguity;
+        self.ambiguity.merge(ambiguity);
         self
     }
 }
@@ -280,12 +301,14 @@ fn canonical_title_evidence_for_episode(
         }
     }
 
+    let ambiguity =
+        TitleIdentityAmbiguity::from_year_qualified_canonical_key(&canonical_key, title.year);
     CanonicalTitleEvidence {
         lookup_keys,
         canonical_key,
         year: title.year,
         parse_context,
-        ambiguity: TitleIdentityAmbiguity::default(),
+        ambiguity,
     }
 }
 
@@ -762,10 +785,9 @@ pub(crate) fn candidate_presents_identity_disambiguator(
 
 /// A2(2): compare the indexer's response ids against ids Scryer already holds.
 ///
-/// `Some(true)` as soon as one id kind both sides carry agrees, `Some(false)`
-/// when at least one kind was comparable and none agreed, and `None` when there
-/// was nothing to compare — the indexer asserted no ids, or asserted only kinds
-/// this subject has no value for.
+/// `Some(false)` when any comparable id kind disagrees, `Some(true)` when all
+/// comparable kinds agree, and `None` when there was nothing to compare. An
+/// explicit contradiction is stronger evidence than a second id's agreement.
 pub(crate) fn external_id_agreement(
     response: &IndexerResponseAttributes,
     tvdb_id: Option<&str>,
@@ -778,13 +800,13 @@ pub(crate) fn external_id_agreement(
         imdb_external_id_agreement(response.imdb_id.as_deref(), imdb_id),
     ];
 
-    if agreements.contains(&Some(true)) {
-        return Some(true);
+    if agreements.contains(&Some(false)) {
+        return Some(false);
     }
     agreements
         .iter()
-        .any(|agreement| agreement.is_some())
-        .then_some(false)
+        .any(|agreement| *agreement == Some(true))
+        .then_some(true)
 }
 
 fn numeric_external_id_agreement(response: Option<&str>, subject: Option<&str>) -> Option<bool> {
@@ -1040,6 +1062,9 @@ pub(crate) fn evaluate_auto_candidate(
     }
 
     let external_id_agreement = candidate_external_id_agreement(candidate, context.subject);
+    if external_id_agreement == Some(false) {
+        return ReleaseAutoDecisionCode::TitleMismatch;
+    }
     if title_match
         .evidence_match
         .as_ref()
@@ -2325,6 +2350,95 @@ mod tests {
         assert_eq!(
             decision_for(&live_action, &subject, &candidate),
             ReleaseAutoDecisionCode::AmbiguousIdentity
+        );
+    }
+
+    fn year_qualified_one_piece() -> Title {
+        let mut title = make_title();
+        title.id = "title-one-piece-live".to_string();
+        title.name = "One Piece (2023)".to_string();
+        title.facet = MediaFacet::Series;
+        title.year = Some(2023);
+        title.external_ids = vec![
+            ExternalId {
+                source: "tvdb".to_string(),
+                value: "392276".to_string(),
+            },
+            ExternalId {
+                source: "tmdb".to_string(),
+                value: "111110".to_string(),
+            },
+        ];
+        title
+    }
+
+    #[test]
+    fn year_qualified_title_is_ambiguous_without_a_local_collider() {
+        let live_action = year_qualified_one_piece();
+        let subject = numbering_scoped_subject(&live_action, Some(2), Some(7));
+        let candidate = make_candidate("One.Piece.S02E07.1080p.WEB-DL.x264-GRP", None);
+
+        assert!(subject.title_evidence.ambiguity.requires_disambiguator());
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::AmbiguousIdentity
+        );
+    }
+
+    #[test]
+    fn year_qualified_title_accepts_positive_identity_evidence() {
+        let mut live_action = year_qualified_one_piece();
+        live_action.aliases = vec!["One Piece Live Action".to_string()];
+        let mut subject = numbering_scoped_subject(&live_action, Some(2), Some(7));
+        subject.tvdb_id = Some("392276".to_string());
+        subject.tmdb_id = Some("111110".to_string());
+
+        let by_year = make_candidate("One.Piece.2023.S02E07.1080p.WEB-DL.x264-GRP", None);
+        assert_eq!(
+            decision_for(&live_action, &subject, &by_year),
+            ReleaseAutoDecisionCode::QualityBlocked
+        );
+
+        let by_alias = make_candidate("One.Piece.Live.Action.S02E07.1080p.WEB-DL.x264-GRP", None);
+        assert_eq!(
+            decision_for(&live_action, &subject, &by_alias),
+            ReleaseAutoDecisionCode::QualityBlocked
+        );
+
+        let mut by_id = make_candidate("One.Piece.S02E07.1080p.WEB-DL.x264-GRP", None);
+        by_id.response_attributes.tvdb_id = Some("392276".to_string());
+        assert_eq!(
+            decision_for(&live_action, &subject, &by_id),
+            ReleaseAutoDecisionCode::QualityBlocked
+        );
+    }
+
+    #[test]
+    fn ordinary_title_year_metadata_does_not_require_release_year() {
+        let mut friends = make_title();
+        friends.name = "Friends".to_string();
+        friends.year = Some(1994);
+
+        assert!(
+            !canonical_title_evidence(&friends)
+                .ambiguity
+                .requires_disambiguator()
+        );
+    }
+
+    #[test]
+    fn conflicting_response_id_is_a_title_mismatch_even_when_another_id_agrees() {
+        let live_action = year_qualified_one_piece();
+        let mut subject = numbering_scoped_subject(&live_action, Some(2), Some(7));
+        subject.tvdb_id = Some("392276".to_string());
+        subject.tmdb_id = Some("111110".to_string());
+        let mut candidate = make_candidate("One.Piece.S02E07.1080p.WEB-DL.x264-GRP", None);
+        candidate.response_attributes.tvdb_id = Some("392276".to_string());
+        candidate.response_attributes.tmdb_id = Some("999999".to_string());
+
+        assert_eq!(
+            decision_for(&live_action, &subject, &candidate),
+            ReleaseAutoDecisionCode::TitleMismatch
         );
     }
 

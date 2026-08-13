@@ -1108,18 +1108,699 @@ async fn resolve_quality_profile_uses_facet_settings_when_library_scope_only_coa
     ] {
         let library_id = scryer_domain::default_library_id_for_facet(&facet);
         let resolved = app
-            .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
-                title_tags: &[],
-                library_id: Some(library_id.as_str()),
-                imdb_id: None,
-                tvdb_id: None,
-                category_hint: Some(category_hint),
-            })
+            .resolve_quality_profile_resolution(
+                crate::app_usecase_discovery::QualityProfileLookup {
+                    title_tags: &[],
+                    library_id: Some(library_id.as_str()),
+                    imdb_id: None,
+                    tvdb_id: None,
+                    category_hint: Some(category_hint),
+                },
+            )
             .await
             .expect("quality profile should resolve");
 
-        assert_eq!(resolved.id, expected_profile_id);
+        assert_eq!(resolved.profile.id, expected_profile_id);
+        assert_eq!(
+            resolved.source,
+            crate::app_usecase_discovery::QualityProfileResolutionSource::Category
+        );
     }
+}
+
+#[tokio::test]
+async fn resolve_quality_profile_rejects_a_missing_configured_reference() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            "\"missing-profile\"",
+        )
+        .await;
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![test_quality_profile("4k")])
+        .await;
+    let (app, _) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+
+    let error = app
+        .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
+            title_tags: &[],
+            library_id: None,
+            imdb_id: None,
+            tvdb_id: None,
+            category_hint: Some("movie"),
+        })
+        .await
+        .expect_err("configured missing profile must fail closed");
+
+    assert!(matches!(error, AppError::Validation(message) if message.contains("missing-profile")));
+}
+
+#[tokio::test]
+async fn title_add_and_update_reject_unknown_quality_profile_tags() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![test_quality_profile("4k")])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+
+    let add_error = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Invalid Profile Add".to_string(),
+                facet: MediaFacet::Movie,
+                tags: vec!["scryer:quality-profile:missing-profile".to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("add must reject an unknown quality profile");
+    assert!(
+        matches!(add_error, AppError::Validation(message) if message.contains("missing-profile"))
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Valid Profile Update".to_string(),
+                facet: MediaFacet::Movie,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create untagged title");
+    let update_error = app
+        .update_title_metadata(
+            &user,
+            &title.id,
+            None,
+            None,
+            Some(vec!["scryer:quality-profile:missing-profile".to_string()]),
+        )
+        .await
+        .expect_err("update must reject an unknown quality profile");
+    assert!(
+        matches!(update_error, AppError::Validation(message) if message.contains("missing-profile"))
+    );
+}
+
+#[tokio::test]
+async fn title_add_and_update_canonicalize_legacy_case_quality_profile_tags() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![test_quality_profile("wizard-SERIES")])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Legacy Profile Case".to_string(),
+                facet: MediaFacet::Series,
+                tags: vec!["scryer:quality-profile:wizard-series".to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("legacy profile case should resolve");
+    assert!(
+        title
+            .tags
+            .iter()
+            .any(|tag| tag == "scryer:quality-profile:wizard-SERIES")
+    );
+    let legacy_resolution = app
+        .resolve_quality_profile_resolution(crate::app_usecase_discovery::QualityProfileLookup {
+            title_tags: &["scryer:quality-profile:wizard-series".to_string()],
+            library_id: Some(&title.library_id),
+            imdb_id: None,
+            tvdb_id: None,
+            category_hint: Some("series"),
+        })
+        .await
+        .expect("an existing lowercase tag should resolve");
+    assert_eq!(legacy_resolution.profile_id, "wizard-SERIES");
+    assert_eq!(
+        app.canonical_quality_profile_id("WIZARD-series")
+            .await
+            .expect("profile identity should resolve"),
+        "wizard-SERIES"
+    );
+
+    let updated = app
+        .update_title_metadata(
+            &user,
+            &title.id,
+            None,
+            None,
+            Some(vec!["scryer:quality-profile:WIZARD-series".to_string()]),
+        )
+        .await
+        .expect("metadata update should canonicalize profile case");
+    assert_eq!(
+        updated.tags,
+        vec!["scryer:quality-profile:wizard-SERIES".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn update_library_settings_rejects_an_unknown_quality_profile_before_writing() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![test_quality_profile("4k")])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        Arc::clone(&settings) as Arc<dyn SettingsRepository>,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+
+    let error = app
+        .update_library_settings(
+            &user,
+            &library_id,
+            LibrarySettingsOverrideDraft {
+                quality_profile_id: Some("missing-profile".to_string()),
+                ..empty_library_settings_override()
+            },
+        )
+        .await
+        .expect_err("unknown profile must be rejected");
+
+    assert!(matches!(error, AppError::Validation(message) if message.contains("missing-profile")));
+    assert!(
+        settings
+            .get_scoped_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, &library_id)
+            .await
+            .is_none(),
+        "the invalid update must not persist a library override"
+    );
+}
+
+#[tokio::test]
+async fn saving_quality_profiles_rejects_ids_that_differ_only_by_ascii_case() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![test_quality_profile("4k")])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+
+    let error = app
+        .save_quality_profile_settings(
+            &user,
+            SaveQualityProfileSettings {
+                profiles: vec![
+                    test_quality_profile("wizard-SERIES"),
+                    test_quality_profile("wizard-series"),
+                ],
+                replace_existing: true,
+                global_profile_id: None,
+                category_selections: Vec::new(),
+                global_scoring_persona: None,
+                category_persona_selections: Vec::new(),
+            },
+        )
+        .await
+        .expect_err("case-colliding profile ids must be rejected");
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("differ only by ASCII case"))
+    );
+}
+
+#[tokio::test]
+async fn replacing_profiles_allows_a_simultaneous_global_reference_update() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, "\"4k\"")
+        .await;
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            test_quality_profile("4k"),
+            test_quality_profile("1080p"),
+        ])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        Arc::clone(&quality_profiles) as Arc<dyn QualityProfileRepository>,
+        Arc::new(MockIndexerClient),
+    );
+
+    let saved = app
+        .save_quality_profile_settings(
+            &user,
+            SaveQualityProfileSettings {
+                profiles: vec![test_quality_profile("1080p")],
+                replace_existing: true,
+                global_profile_id: Some("1080p".to_string()),
+                category_selections: Vec::new(),
+                global_scoring_persona: None,
+                category_persona_selections: Vec::new(),
+            },
+        )
+        .await
+        .expect("the final global setting no longer references the removed profile");
+
+    assert_eq!(saved.global_profile_id, "1080p");
+    assert_eq!(saved.profiles.len(), 1);
+    assert_eq!(saved.profiles[0].id, "1080p");
+}
+
+#[tokio::test]
+async fn replacing_profiles_reconciles_a_removed_global_reference() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, "\"4k\"")
+        .await;
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            test_quality_profile("4k"),
+            test_quality_profile("1080p"),
+        ])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        Arc::clone(&settings) as Arc<dyn SettingsRepository>,
+        Arc::clone(&quality_profiles) as Arc<dyn QualityProfileRepository>,
+        Arc::new(MockIndexerClient),
+    );
+
+    let saved = app
+        .save_quality_profile_settings(
+            &user,
+            SaveQualityProfileSettings {
+                profiles: vec![test_quality_profile("1080p")],
+                replace_existing: true,
+                global_profile_id: None,
+                category_selections: Vec::new(),
+                global_scoring_persona: None,
+                category_persona_selections: Vec::new(),
+            },
+        )
+        .await
+        .expect("catalog replacement should reconcile the removed global profile");
+
+    assert_eq!(saved.global_profile_id, "1080p");
+    assert_eq!(saved.profiles.len(), 1);
+    assert_eq!(saved.profiles[0].id, "1080p");
+    assert_eq!(
+        settings
+            .get_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY)
+            .await,
+        None,
+        "catalog replacement must delete the stale stored global override"
+    );
+    assert_eq!(
+        quality_profiles
+            .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
+            .await
+            .expect("persisted profiles"),
+        vec![test_quality_profile("1080p")]
+    );
+}
+
+#[tokio::test]
+async fn a_partial_quality_profile_save_preserves_the_global_reference() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, "\"4k\"")
+        .await;
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    let original_profiles = vec![test_quality_profile("4k"), test_quality_profile("1080p")];
+    quality_profiles
+        .set_profiles(original_profiles.clone())
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        Arc::clone(&settings) as Arc<dyn SettingsRepository>,
+        Arc::clone(&quality_profiles) as Arc<dyn QualityProfileRepository>,
+        Arc::new(MockIndexerClient),
+    );
+
+    let saved = app
+        .save_quality_profile_settings(
+            &user,
+            SaveQualityProfileSettings {
+                profiles: Vec::new(),
+                replace_existing: false,
+                global_profile_id: None,
+                category_selections: Vec::new(),
+                global_scoring_persona: None,
+                category_persona_selections: Vec::new(),
+            },
+        )
+        .await
+        .expect("a partial save must preserve the global profile");
+
+    assert_eq!(saved.global_profile_id, "4k");
+    assert_eq!(
+        settings
+            .get_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY)
+            .await,
+        Some("\"4k\"".to_string())
+    );
+    assert_eq!(
+        quality_profiles
+            .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
+            .await
+            .expect("persisted profiles"),
+        original_profiles
+    );
+}
+
+#[tokio::test]
+async fn a_blank_global_profile_id_preserves_the_global_reference() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, "\"4k\"")
+        .await;
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![test_quality_profile("4k")])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        Arc::clone(&settings) as Arc<dyn SettingsRepository>,
+        Arc::clone(&quality_profiles) as Arc<dyn QualityProfileRepository>,
+        Arc::new(MockIndexerClient),
+    );
+
+    let saved = app
+        .save_quality_profile_settings(
+            &user,
+            SaveQualityProfileSettings {
+                profiles: Vec::new(),
+                replace_existing: false,
+                global_profile_id: Some(" \t ".to_string()),
+                category_selections: Vec::new(),
+                global_scoring_persona: None,
+                category_persona_selections: Vec::new(),
+            },
+        )
+        .await
+        .expect("a blank legacy value must remain a partial-update no-op");
+
+    assert_eq!(saved.global_profile_id, "4k");
+    assert_eq!(
+        settings
+            .get_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY)
+            .await,
+        Some("\"4k\"".to_string())
+    );
+}
+
+#[tokio::test]
+async fn deleting_profile_rejects_a_title_reference() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, "\"1080p\"")
+        .await;
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            test_quality_profile("4k"),
+            test_quality_profile("1080p"),
+        ])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+    app.add_title(
+        &user,
+        NewTitle {
+            name: "Profile Reference".to_string(),
+            facet: MediaFacet::Movie,
+            tags: vec!["scryer:quality-profile: 4k  ".to_string()],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create title with valid explicit profile");
+
+    let error = app
+        .delete_quality_profile(&user, "4k")
+        .await
+        .expect_err("referenced profile must not be deleted");
+
+    assert!(matches!(error, AppError::Validation(message) if message.contains("1 title")));
+}
+
+#[tokio::test]
+async fn profile_deletion_waits_for_the_shared_reference_write_lock() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            test_quality_profile("4k"),
+            test_quality_profile("1080p"),
+        ])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+    let guard = app
+        .runtime
+        .catalog
+        .quality_profile_reference_lock
+        .lock()
+        .await;
+    let mut deletion = Box::pin(app.delete_quality_profile(&user, "1080p"));
+    let waited = std::future::poll_fn(|context| match deletion.as_mut().poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(true),
+        std::task::Poll::Ready(_) => std::task::Poll::Ready(false),
+    })
+    .await;
+    assert!(
+        waited,
+        "profile deletion must wait behind reference writers"
+    );
+    drop(guard);
+    deletion
+        .await
+        .expect("unreferenced profile deletes after the lock is released");
+}
+
+#[tokio::test]
+async fn title_add_winning_the_profile_lock_prevents_profile_deletion() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            test_quality_profile("4k"),
+            test_quality_profile("1080p"),
+        ])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+    let guard = app
+        .runtime
+        .catalog
+        .quality_profile_reference_lock
+        .lock()
+        .await;
+    let mut writer = Box::pin(app.add_title(
+        &user,
+        NewTitle {
+            name: "Locked Writer Wins".to_string(),
+            facet: MediaFacet::Movie,
+            tags: vec!["scryer:quality-profile:1080p".to_string()],
+            ..Default::default()
+        },
+    ));
+    let writer_waiting = std::future::poll_fn(|context| match writer.as_mut().poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(true),
+        std::task::Poll::Ready(_) => std::task::Poll::Ready(false),
+    })
+    .await;
+    assert!(
+        writer_waiting,
+        "title writer must queue behind the held lock"
+    );
+    let mut deletion = Box::pin(app.delete_quality_profile(&user, "1080p"));
+    let deletion_waiting = std::future::poll_fn(|context| match deletion.as_mut().poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(true),
+        std::task::Poll::Ready(_) => std::task::Poll::Ready(false),
+    })
+    .await;
+    assert!(
+        deletion_waiting,
+        "deletion must queue after the title writer"
+    );
+    drop(guard);
+
+    let title = writer
+        .await
+        .expect("writer wins and persists its profile reference");
+    let error = deletion
+        .await
+        .expect_err("deletion observes the newly persisted title reference");
+    assert!(matches!(error, AppError::Validation(message) if message.contains("title")));
+    assert!(
+        title
+            .tags
+            .iter()
+            .any(|tag| tag == "scryer:quality-profile:1080p")
+    );
+}
+
+#[tokio::test]
+async fn profile_deletion_winning_the_lock_rejects_the_later_title_writer() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            test_quality_profile("4k"),
+            test_quality_profile("1080p"),
+        ])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    );
+    let guard = app
+        .runtime
+        .catalog
+        .quality_profile_reference_lock
+        .lock()
+        .await;
+    let mut deletion = Box::pin(app.delete_quality_profile(&user, "1080p"));
+    let deletion_waiting = std::future::poll_fn(|context| match deletion.as_mut().poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(true),
+        std::task::Poll::Ready(_) => std::task::Poll::Ready(false),
+    })
+    .await;
+    assert!(deletion_waiting, "deletion must queue behind the held lock");
+    let mut writer = Box::pin(app.add_title(
+        &user,
+        NewTitle {
+            name: "Locked Delete Wins".to_string(),
+            facet: MediaFacet::Movie,
+            tags: vec!["scryer:quality-profile:1080p".to_string()],
+            ..Default::default()
+        },
+    ));
+    let writer_waiting = std::future::poll_fn(|context| match writer.as_mut().poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(true),
+        std::task::Poll::Ready(_) => std::task::Poll::Ready(false),
+    })
+    .await;
+    assert!(writer_waiting, "title writer must queue after deletion");
+    drop(guard);
+
+    deletion
+        .await
+        .expect("unreferenced profile deletion wins the lock");
+    let error = writer
+        .await
+        .expect_err("later writer validates against the removed profile catalog");
+    assert!(matches!(error, AppError::Validation(message) if message.contains("1080p")));
+}
+
+#[tokio::test]
+async fn resolve_quality_profile_uses_builtin_only_for_an_empty_unconfigured_catalog() {
+    let (app, _) = bootstrap_with_settings_repo_and_profiles(
+        Arc::new(MockSettingsRepo),
+        Arc::new(StoredQualityProfileRepo::default()),
+        Arc::new(MockIndexerClient),
+    );
+
+    let resolved = app
+        .resolve_quality_profile_resolution(crate::app_usecase_discovery::QualityProfileLookup {
+            title_tags: &[],
+            library_id: None,
+            imdb_id: None,
+            tvdb_id: None,
+            category_hint: Some("movie"),
+        })
+        .await
+        .expect("empty, unconfigured bootstrap should retain its builtin profile");
+
+    assert_eq!(resolved.profile_id, "4k");
+    assert_eq!(
+        resolved.source,
+        crate::app_usecase_discovery::QualityProfileResolutionSource::Builtin
+    );
+}
+
+struct FailingQualityProfileRepository;
+
+#[async_trait]
+impl QualityProfileRepository for FailingQualityProfileRepository {
+    async fn list_quality_profiles(
+        &self,
+        _scope: &str,
+        _scope_id: Option<String>,
+    ) -> AppResult<Vec<QualityProfile>> {
+        Err(AppError::Repository(
+            "quality profile storage unavailable".to_string(),
+        ))
+    }
+
+    async fn replace_quality_profiles(
+        &self,
+        _scope: &str,
+        _scope_id: Option<String>,
+        _profiles: Vec<QualityProfile>,
+    ) -> AppResult<()> {
+        Err(AppError::Repository(
+            "quality profile storage unavailable".to_string(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn resolve_quality_profile_propagates_catalog_repository_failures() {
+    let (app, _) = bootstrap_with_settings_repo_and_profiles(
+        Arc::new(MockSettingsRepo),
+        Arc::new(FailingQualityProfileRepository),
+        Arc::new(MockIndexerClient),
+    );
+
+    let error = app
+        .resolve_quality_profile(crate::app_usecase_discovery::QualityProfileLookup {
+            title_tags: &[],
+            library_id: None,
+            imdb_id: None,
+            tvdb_id: None,
+            category_hint: Some("movie"),
+        })
+        .await
+        .expect_err("catalog repository failures must not fall back to 4k");
+
+    assert!(matches!(error, AppError::Repository(message) if message.contains("unavailable")));
 }
 
 #[tokio::test]

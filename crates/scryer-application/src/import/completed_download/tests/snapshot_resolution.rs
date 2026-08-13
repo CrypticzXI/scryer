@@ -78,6 +78,12 @@ async fn check_with_lookup_uses_snapshot_without_fetching_client_history() {
     check_with_lookup(&app, &mut td, Some(&lookup)).await;
 
     assert_eq!(
+        td.completed_source
+            .as_ref()
+            .map(|source| source.name.as_str()),
+        Some("Paper.Lantern.2012.1080p")
+    );
+    assert_eq!(
         download_client
             .completed_download_calls
             .load(Ordering::SeqCst),

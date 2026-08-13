@@ -1,4 +1,6 @@
 use super::*;
+use scryer_application::{DownloadQueuePollerOptions, start_download_queue_poller_with_options};
+use scryer_domain::{CompletedDownload, DownloadQueueItem, DownloadQueueState};
 use std::collections::HashSet;
 
 #[tokio::test]
@@ -2121,6 +2123,169 @@ async fn graphql_manual_import_rejects_the_removed_path_contract() {
 }
 
 #[tokio::test]
+async fn graphql_download_import_exposes_background_import_blocked_state_from_cache() {
+    let ctx = TestContext::new().await;
+    let (_command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(8);
+    let ingest = scryer_application::tracked_downloads::TrackedDownloadSnapshotIngestHandle::new(
+        snapshot_tx,
+    );
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(start_download_queue_poller_with_options(
+        ctx.app.clone(),
+        token.child_token(),
+        tracked_download_rx,
+        snapshot_rx,
+        DownloadQueuePollerOptions {
+            interval: std::time::Duration::from_secs(60),
+            excluded_client_types: vec!["weaver".to_string()],
+            ..Default::default()
+        },
+    ));
+
+    let item_id = "graphql-weaver-import-blocked-1";
+    let download_id = "graphql-download-import-blocked-1";
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    std::fs::write(source_dir.path().join("fixture.mkv"), b"video").expect("write fixture video");
+    let item = DownloadQueueItem {
+        id: item_id.to_string(),
+        title_id: None,
+        episode_id: None,
+        title_name: "Unknown GraphQL Import S01E01".to_string(),
+        facet: None,
+        category: None,
+        client_id: "graphql-weaver-client".to_string(),
+        client_name: "GraphQL Weaver".to_string(),
+        client_type: "weaver".to_string(),
+        state: DownloadQueueState::Completed,
+        progress_percent: 100,
+        import_transfer_phase: None,
+        import_transfer_bytes: None,
+        import_transfer_total_bytes: None,
+        import_transfer_started_at: None,
+        import_transfer_updated_at: None,
+        size_bytes: Some(5),
+        remaining_seconds: Some(0),
+        queued_at: Some(Utc::now().to_rfc3339()),
+        last_updated_at: Some(Utc::now().to_rfc3339()),
+        attention_required: false,
+        attention_reason: None,
+        download_client_item_id: item_id.to_string(),
+        download_id: Some(download_id.to_string()),
+        import_status: None,
+        import_error_code: None,
+        import_error_message: None,
+        imported_at: None,
+        delete_status: None,
+        delete_error_message: None,
+        is_scryer_origin: false,
+        source_provider: None,
+        tracked_state: None,
+        tracked_status: None,
+        tracked_status_messages: Vec::new(),
+        tracked_match_type: None,
+    };
+    let completed = CompletedDownload {
+        client_type: "weaver".to_string(),
+        client_id: "graphql-weaver-client".to_string(),
+        download_client_item_id: item_id.to_string(),
+        download_id: Some(download_id.to_string()),
+        name: item.title_name.clone(),
+        dest_dir: source_dir.path().to_string_lossy().into_owned(),
+        category: None,
+        size_bytes: item.size_bytes,
+        completed_at: Some(Utc::now()),
+        parameters: Vec::new(),
+    };
+
+    ingest
+        .publish(
+            scryer_application::tracked_downloads::TrackedDownloadSnapshotUpdate {
+                scope: scryer_application::tracked_downloads::TrackedDownloadSnapshotScope::Delta,
+                items: vec![item],
+                completed_downloads: vec![completed],
+                actor_id: None,
+            },
+        )
+        .await
+        .expect("publish completed Weaver delta");
+
+    let blocked = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let body = gql(
+                &ctx,
+                r#"
+                query {
+                  downloadImport(limit: 100, offset: 0, filter: BLOCKED) {
+                    totalCount
+                    items {
+                      downloadClientItemId
+                      clientId
+                      clientName
+                      clientType
+                      displayState
+                      trackedState
+                      trackedStatus
+                      trackedStatusMessages
+                      attentionRequired
+                    }
+                  }
+                }
+                "#,
+                json!({}),
+            )
+            .await;
+            assert_no_errors(&body);
+            if body["data"]["downloadImport"]["totalCount"] == json!(1) {
+                break body;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    token.cancel();
+    poller
+        .await
+        .expect("download queue poller should stop cleanly");
+    let blocked = blocked.expect("GraphQL blocked import row should become visible");
+    let row = &blocked["data"]["downloadImport"]["items"][0];
+    assert_eq!(row["downloadClientItemId"], json!(item_id));
+    assert_eq!(row["clientId"], json!("graphql-weaver-client"));
+    assert_eq!(row["clientName"], json!("GraphQL Weaver"));
+    assert_eq!(row["clientType"], json!("weaver"));
+    assert_eq!(row["displayState"], json!("IMPORT_BLOCKED"));
+    assert_eq!(row["trackedState"], json!("IMPORT_BLOCKED"));
+    assert_eq!(row["trackedStatus"], json!("WARNING"));
+    assert_eq!(row["attentionRequired"], json!(true));
+    assert!(
+        row["trackedStatusMessages"]
+            .as_array()
+            .is_some_and(|messages| !messages.is_empty())
+    );
+
+    let all = gql(
+        &ctx,
+        r#"
+        query {
+          downloadImport(limit: 100, offset: 0, filter: ALL) {
+            totalCount
+            items { downloadClientItemId trackedState }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&all);
+    assert_eq!(all["data"]["downloadImport"]["totalCount"], json!(1));
+    assert_eq!(
+        all["data"]["downloadImport"]["items"][0]["downloadClientItemId"],
+        json!(item_id)
+    );
+}
+
+#[tokio::test]
 async fn graphql_delete_download_returns_ok_and_persists_queued_delete_command() {
     let ctx = TestContext::new().await;
     let client = ctx.http_client();
@@ -2209,7 +2374,7 @@ async fn graphql_delete_download_returns_ok_and_persists_queued_delete_command()
 }
 
 #[tokio::test]
-async fn graphql_delete_download_marks_history_item_completed_after_poller_runs() {
+async fn graphql_delete_download_marks_import_item_delete_completed_after_poller_runs() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let create_config_body = gql(
@@ -2381,13 +2546,13 @@ async fn graphql_delete_download_marks_history_item_completed_after_poller_runs(
             .all(|item| item["downloadClientItemId"].as_str() != Some("123"))
     );
 
-    let history_body = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let import_body = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let body = gql(
                 &ctx,
                 r#"
                 {
-                  downloadHistory(limit: 100, offset: 0, filters: [ALL]) {
+                  downloadImport(limit: 100, offset: 0, filter: ALL) {
                     items {
                       downloadClientItemId
                       state
@@ -2401,7 +2566,7 @@ async fn graphql_delete_download_marks_history_item_completed_after_poller_runs(
             )
             .await;
             assert_no_errors(&body);
-            if body["data"]["downloadHistory"]["items"]
+            if body["data"]["downloadImport"]["items"]
                 .as_array()
                 .is_some_and(|items| {
                     items
@@ -2415,21 +2580,21 @@ async fn graphql_delete_download_marks_history_item_completed_after_poller_runs(
         }
     })
     .await
-    .expect("queue poller should publish client history to the runtime cache");
+    .expect("queue poller should publish tracked import activity to the runtime cache");
     queue_token.cancel();
     queue_handle
         .await
         .expect("download queue poller should stop cleanly");
-    assert_no_errors(&history_body);
+    assert_no_errors(&import_body);
 
-    let item = history_body["data"]["downloadHistory"]["items"]
+    let item = import_body["data"]["downloadImport"]["items"]
         .as_array()
-        .expect("download history should be an array")
+        .expect("download import activity should be an array")
         .iter()
         .find(|item| item["downloadClientItemId"].as_str() == Some("123"))
-        .expect("history item should remain visible in history");
+        .expect("tracked import item should remain visible in import activity");
 
-    assert_eq!(item["state"], json!("COMPLETED"));
+    assert_eq!(item["state"], json!("IMPORT_PENDING"));
     assert_eq!(item["deleteStatus"], json!("COMPLETED"));
     assert!(item["deleteErrorMessage"].is_null());
 }

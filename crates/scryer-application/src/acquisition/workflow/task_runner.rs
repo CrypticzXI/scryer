@@ -208,9 +208,23 @@ fn submission_blocks_search_for_wanted_item(
     item: &AcquisitionScopeState,
     episode_collection_id: Option<&str>,
     dl_snapshot: &DownloadClientSnapshot,
+    tracked_state: Option<scryer_domain::TrackedDownloadState>,
 ) -> bool {
     if !submission_blocks_wanted_item(submission, item, episode_collection_id) {
         return false;
+    }
+
+    if tracked_state.is_some_and(|state| {
+        matches!(
+            state,
+            scryer_domain::TrackedDownloadState::Downloading
+                | scryer_domain::TrackedDownloadState::ImportPending
+                | scryer_domain::TrackedDownloadState::Importing
+                | scryer_domain::TrackedDownloadState::ImportBlocked
+                | scryer_domain::TrackedDownloadState::FailedPending
+        )
+    }) {
+        return true;
     }
 
     if submission_is_active(submission, dl_snapshot) {
@@ -319,21 +333,60 @@ async fn process_single_target(
 
     // Item-aware gate: skip only when an active/recent submission blocks this
     // wanted item, not every sibling episode on the same title.
-    let submissions = app
+    let submissions = match app
         .services
         .workflow
         .download_submissions
         .list_for_title(&item.title_id)
         .await
-        .unwrap_or_default();
+    {
+        Ok(submissions) => submissions,
+        Err(error) => {
+            warn!(
+                title_id = item.title_id.as_str(),
+                error = %error,
+                "background acquisition: submission lookup failed; skipping target"
+            );
+            return Ok(());
+        }
+    };
+    let submission_identities = submissions
+        .iter()
+        .map(crate::contracts::DownloadSourceIdentity::from_submission)
+        .collect::<Vec<_>>();
+    let tracked_states = match app
+        .services
+        .workflow
+        .download_submissions
+        .list_identity_tracked_states_for_client_items(&submission_identities)
+        .await
+    {
+        Ok(states) => states
+            .into_iter()
+            .filter_map(|(identity, state)| {
+                scryer_domain::TrackedDownloadState::from_str_opt(&state)
+                    .map(|state| (identity, state))
+            })
+            .collect::<HashMap<_, _>>(),
+        Err(error) => {
+            warn!(
+                title_id = item.title_id.as_str(),
+                error = %error,
+                "background acquisition: tracked-state lookup failed; skipping target"
+            );
+            return Ok(());
+        }
+    };
     let episode_collection_id = episode_collection_id_for_wanted_item(item, episode.as_ref());
 
     let has_blocking_download_submission = submissions.iter().any(|submission| {
+        let identity = crate::contracts::DownloadSourceIdentity::from_submission(submission);
         submission_blocks_search_for_wanted_item(
             submission,
             item,
             episode_collection_id.as_deref(),
             dl_snapshot,
+            tracked_states.get(&identity).copied(),
         )
     });
 
@@ -2131,6 +2184,7 @@ mod task_runner_tests {
             &item,
             None,
             &snapshot,
+            None,
         ));
     }
 
@@ -2148,6 +2202,7 @@ mod task_runner_tests {
             &item,
             None,
             &snapshot,
+            None,
         ));
     }
 
@@ -2164,6 +2219,41 @@ mod task_runner_tests {
             &item,
             None,
             &snapshot,
+            None,
+        ));
+    }
+
+    #[test]
+    fn import_blocked_submission_blocks_upgrade_search_until_operator_action() {
+        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
+        item.current_score = Some(2_950);
+        let episode_id = item.episode_id.as_deref().expect("episode id");
+        let submission = episode_submission(&item.title_id, episode_id, "job-blocked");
+        let snapshot = snapshot_with_job("job-blocked", true);
+
+        assert!(submission_blocks_search_for_wanted_item(
+            &submission,
+            &item,
+            None,
+            &snapshot,
+            Some(scryer_domain::TrackedDownloadState::ImportBlocked),
+        ));
+    }
+
+    #[test]
+    fn terminal_imported_state_preserves_normal_upgrade_search() {
+        let mut item = wanted_episode_item("title-bluey", "Bluey", 1);
+        item.current_score = Some(2_950);
+        let episode_id = item.episode_id.as_deref().expect("episode id");
+        let submission = episode_submission(&item.title_id, episode_id, "job-imported");
+        let snapshot = snapshot_with_job("job-imported", true);
+
+        assert!(!submission_blocks_search_for_wanted_item(
+            &submission,
+            &item,
+            None,
+            &snapshot,
+            Some(scryer_domain::TrackedDownloadState::Imported),
         ));
     }
 }

@@ -37,6 +37,38 @@ fn library_id(library: &Value) -> String {
     library["id"].as_str().expect("library id").to_string()
 }
 
+async fn seed_title_quality_profiles(ctx: &TestContext, ids: &[&str]) {
+    seed_typed_settings_definitions(ctx).await;
+    let actor = ctx
+        .app
+        .find_or_create_default_user()
+        .await
+        .expect("default settings actor");
+    let profiles = ids
+        .iter()
+        .map(|id| {
+            let mut profile = scryer_application::default_quality_profile_1080p_for_search();
+            profile.id = (*id).to_string();
+            profile.name = format!("Fixture {id}");
+            profile
+        })
+        .collect();
+    ctx.app
+        .save_quality_profile_settings(
+            &actor,
+            scryer_application::SaveQualityProfileSettings {
+                profiles,
+                replace_existing: false,
+                global_profile_id: None,
+                category_selections: vec![],
+                global_scoring_persona: None,
+                category_persona_selections: vec![],
+            },
+        )
+        .await
+        .expect("seed title quality profiles through settings store");
+}
+
 fn library_root_id(library: &Value, path: &str) -> String {
     library["roots"]
         .as_array()
@@ -851,6 +883,7 @@ async fn graphql_title_options_input_uses_root_folder_id() {
 #[tokio::test]
 async fn graphql_add_title_with_structured_options() {
     let ctx = TestContext::new().await;
+    seed_title_quality_profiles(&ctx, &["anime-hd"]).await;
     let library = create_title_catalog_library(
         &ctx,
         "ANIME",
@@ -1057,6 +1090,124 @@ async fn graphql_add_title_returns_async_hydration_payload_fields() {
     assert_eq!(
         second["data"]["addTitle"]["title"]["id"],
         first["data"]["addTitle"]["title"]["id"]
+    );
+}
+
+#[tokio::test]
+async fn graphql_reused_add_applies_explicit_options_and_preserves_omitted_ones() {
+    let ctx = TestContext::new().await;
+    let query = r#"mutation($input: AddTitleInput!) {
+        addTitle(input: $input) {
+            reusedExistingTitle
+            title { id tags qualityProfileId monitorType }
+        }
+    }"#;
+    let first = gql(
+        &ctx,
+        query,
+        json!({
+            "input": {
+                "name": "Reusable options movie",
+                "facet": "MOVIE",
+                "monitored": true,
+                "tags": ["keep-me"],
+                "externalIds": [{ "source": "tvdb", "value": "130001" }],
+                "options": {
+                    "qualityProfileId": "4k",
+                    "monitorType": "ALL_EPISODES"
+                }
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&first);
+    assert_eq!(first["data"]["addTitle"]["reusedExistingTitle"], false);
+
+    let second = gql(
+        &ctx,
+        query,
+        json!({
+            "input": {
+                "name": "Reusable options movie",
+                "facet": "MOVIE",
+                "monitored": true,
+                "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": "130001" }],
+                "options": { "qualityProfileId": "1080p" }
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&second);
+    assert_eq!(second["data"]["addTitle"]["reusedExistingTitle"], true);
+    assert_eq!(
+        second["data"]["addTitle"]["title"]["id"],
+        first["data"]["addTitle"]["title"]["id"]
+    );
+    let second_title = &second["data"]["addTitle"]["title"];
+    assert_eq!(second_title["qualityProfileId"], "1080p");
+    assert_eq!(second_title["monitorType"], "ALL_EPISODES");
+    let tags = second_title["tags"].as_array().expect("tags array");
+    assert!(tags.iter().any(|tag| tag == "keep-me"));
+    assert!(tags.iter().any(|tag| tag == "scryer:quality-profile:1080p"));
+    assert!(!tags.iter().any(|tag| tag == "scryer:quality-profile:4k"));
+
+    let third = gql(
+        &ctx,
+        query,
+        json!({
+            "input": {
+                "name": "Reusable options movie",
+                "facet": "MOVIE",
+                "monitored": true,
+                "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": "130001" }]
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&third);
+    let third_title = &third["data"]["addTitle"]["title"];
+    assert_eq!(third_title["qualityProfileId"], "1080p");
+    assert_eq!(third_title["monitorType"], "ALL_EPISODES");
+
+    let updated = gql(
+        &ctx,
+        r#"mutation($input: UpdateTitleInput!) {
+            updateTitle(input: $input) { qualityProfileId monitorSpecials }
+        }"#,
+        json!({
+            "input": {
+                "titleId": third_title["id"],
+                "options": { "monitorSpecials": true }
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&updated);
+    assert_eq!(updated["data"]["updateTitle"]["qualityProfileId"], "1080p");
+    assert_eq!(updated["data"]["updateTitle"]["monitorSpecials"], true);
+
+    let cleared = gql(
+        &ctx,
+        query,
+        json!({
+            "input": {
+                "name": "Reusable options movie",
+                "facet": "MOVIE",
+                "monitored": true,
+                "tags": [],
+                "externalIds": [{ "source": "tvdb", "value": "130001" }],
+                "options": { "qualityProfileId": null }
+            }
+        }),
+    )
+    .await;
+    assert_no_errors(&cleared);
+    assert!(cleared["data"]["addTitle"]["title"]["qualityProfileId"].is_null());
+    assert_eq!(
+        cleared["data"]["addTitle"]["title"]["monitorType"],
+        "ALL_EPISODES"
     );
 }
 
@@ -1978,6 +2129,7 @@ async fn graphql_set_title_monitored() {
 #[tokio::test]
 async fn graphql_update_title_structured_options_merge_with_existing_tags() {
     let ctx = TestContext::new().await;
+    seed_title_quality_profiles(&ctx, &["anime-4k"]).await;
     let library = create_title_catalog_library(
         &ctx,
         "ANIME",
@@ -2271,6 +2423,7 @@ async fn graphql_update_title_root_folder_id_validates_and_defaults() {
 #[tokio::test]
 async fn graphql_update_title_root_folder_id_omitted_preserves_override() {
     let ctx = TestContext::new().await;
+    seed_title_quality_profiles(&ctx, &["anime-preserve-hd"]).await;
     let library = create_title_catalog_library(
         &ctx,
         "ANIME",

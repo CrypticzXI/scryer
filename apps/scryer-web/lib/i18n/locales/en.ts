@@ -1014,6 +1014,7 @@ const en: LocaleDictionary = {
   "search.configureAdd": "Configure add options",
   "search.addConfigLibrary": "Library",
   "search.addConfigQualityProfile": "Quality profile",
+  "search.addConfigInheritLibrary": "Inherit library",
   "search.addConfigRootFolder": "Root folder",
   "search.addConfigSeasonFolder": "Season folder",
   "search.addConfigMonitorType": "Monitor type",
@@ -1181,6 +1182,8 @@ const en: LocaleDictionary = {
     "Choose an action for the selected titles, or clear the selection.",
   "title.bulkEditTitle": "Edit Selected Titles",
   "title.bulkEditDescription": "Apply changes to {{count}} selected titles.",
+  "title.editOptionsTitle": "Edit Title Options",
+  "title.editOptionsDescription": "Change options for {{name}}.",
   "title.bulkDeleteTitle": "Delete Selected Titles",
   "title.bulkDeleteDescription":
     "Remove {{count}} selected titles from the catalog.",

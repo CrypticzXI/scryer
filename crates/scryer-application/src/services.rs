@@ -967,6 +967,11 @@ pub struct AppRuntimeEventState {
 
 #[derive(Clone)]
 pub struct AppRuntimeCatalogState {
+    /// Serializes profile validation/reference writes with catalog removal for
+    /// all `AppUseCase` clones sharing this runtime. This does not coordinate
+    /// separate processes or replicas; multi-process profile mutations require
+    /// a shared database advisory/transaction lock before they are supported.
+    pub quality_profile_reference_lock: Arc<tokio::sync::Mutex<()>>,
     pub(crate) monitored_title_matcher:
         Arc<RwLock<crate::import_title_resolution::MonitoredTitleMatcherCache>>,
     pub poster_wake: Arc<tokio::sync::Notify>,
@@ -1789,6 +1794,7 @@ impl AppRuntimeState {
                 settings_changed_broadcast: settings_changed_tx,
             },
             catalog: AppRuntimeCatalogState {
+                quality_profile_reference_lock: Arc::new(tokio::sync::Mutex::new(())),
                 monitored_title_matcher: Arc::new(RwLock::new(
                     crate::import_title_resolution::MonitoredTitleMatcherCache::default(),
                 )),

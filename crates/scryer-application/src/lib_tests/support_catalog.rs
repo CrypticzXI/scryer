@@ -396,6 +396,39 @@ impl TitleRepository for MockTitleRepo {
         })
     }
 
+    async fn create_or_get_existing_with_options_patch(
+        &self,
+        title: Title,
+        options_patch: TitleOptionsPatch,
+    ) -> AppResult<CreateTitleOutcome> {
+        let outcome = self.create_or_get_existing(title).await?;
+        if !outcome.reused_existing {
+            return Ok(outcome);
+        }
+
+        let mut list = self.store.lock().await;
+        let existing = list
+            .iter_mut()
+            .find(|existing| existing.id == outcome.title.id)
+            .expect("reused title should remain stored");
+        if let Some(profile_id) = options_patch.quality_profile_id {
+            existing
+                .tags
+                .retain(|tag| !tag.starts_with("scryer:quality-profile:"));
+            if let Some(profile_id) = profile_id.filter(|profile_id| !profile_id.trim().is_empty())
+            {
+                existing
+                    .tags
+                    .push(format!("scryer:quality-profile:{}", profile_id.trim()));
+            }
+        }
+
+        Ok(CreateTitleOutcome {
+            title: existing.clone(),
+            reused_existing: true,
+        })
+    }
+
     async fn create_or_get_existing_and_bind_pending_import(
         &self,
         title: Title,
@@ -556,7 +589,7 @@ impl TitleRepository for MockTitleRepo {
         }
 
         if let Some(tags) = tags {
-            title.tags = normalize_tags(&tags);
+            title.tags = tags;
         }
 
         if let Some(root_folder_id) = root_folder_id {

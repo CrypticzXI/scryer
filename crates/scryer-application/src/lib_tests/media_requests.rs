@@ -278,6 +278,54 @@ async fn submit_media_request_creates_request_requester_and_domain_event() {
 }
 
 #[tokio::test]
+async fn pending_media_request_blocks_profile_removal_after_library_allowlist_changes() {
+    let harness = bootstrap_media_request_app();
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    harness
+        .app
+        .update_library_settings(
+            &harness.manager,
+            &library_id,
+            LibrarySettingsOverrideDraft {
+                request_quality_profile_ids: Some(vec!["1080p".to_string()]),
+                ..empty_library_settings_override()
+            },
+        )
+        .await
+        .expect("allow 1080p before request submission");
+    let mut input = media_request_input(library_id.clone(), 9088);
+    input.requested_quality_profile_id = Some("1080p".to_string());
+    harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("submit pending request with explicit profile");
+
+    harness
+        .app
+        .update_library_settings(
+            &harness.manager,
+            &library_id,
+            LibrarySettingsOverrideDraft {
+                request_quality_profile_ids: Some(vec!["4k".to_string()]),
+                ..empty_library_settings_override()
+            },
+        )
+        .await
+        .expect("library allowlist can subsequently remove the request profile");
+
+    let error = harness
+        .app
+        .delete_quality_profile(&harness.manager, "1080p")
+        .await
+        .expect_err("persisted pending request must remain a deletion reference");
+
+    assert!(
+        matches!(error, AppError::Validation(message) if message.contains("pending media request"))
+    );
+}
+
+#[tokio::test]
 async fn submit_media_request_auto_approves_for_requester_with_auto_approve_permission() {
     let harness = bootstrap_media_request_app();
     let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
@@ -1312,6 +1360,43 @@ async fn approve_media_request_creates_title_and_resolves_overlapping_pending_re
             && request.resolved_by_user_id.as_deref() == Some(harness.manager.id.as_str())
             && request.resolved_at.is_some()
     }));
+}
+
+#[tokio::test]
+async fn approve_media_request_accepts_legacy_case_profile_id_and_persists_canonical_tag() {
+    let harness = bootstrap_media_request_app();
+    harness
+        .quality_profiles
+        .set_profiles(vec![test_quality_profile("wizard-SERIES")])
+        .await;
+    let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    let mut input = media_request_input(library_id, 9024);
+    input.facet = MediaFacet::Series;
+    input.requested_quality_profile_id = Some("wizard-SERIES".to_string());
+
+    harness
+        .app
+        .submit_media_request(&harness.user, input)
+        .await
+        .expect("request should accept the configured profile");
+    let request_id = harness.media_requests.requests.lock().await[0].id.clone();
+    let outcome = harness
+        .app
+        .approve_media_request(&harness.manager, &request_id, "wizard-series", None)
+        .await
+        .expect("approval should resolve profile ids case-insensitively");
+
+    let titles = harness.titles.store.lock().await;
+    let title = titles
+        .iter()
+        .find(|title| title.id == outcome.title_id)
+        .expect("approved title should exist");
+    assert!(
+        title
+            .tags
+            .iter()
+            .any(|tag| tag == "scryer:quality-profile:wizard-SERIES")
+    );
 }
 
 #[tokio::test]

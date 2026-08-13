@@ -67,7 +67,7 @@ pub mod persisted_records;
 mod plugins;
 mod polling_worker;
 mod ports;
-pub use ports::{CatalogOwnedExternalIdRecord, CatalogOwnedTitleRecord};
+pub use ports::{CatalogOwnedExternalIdRecord, CatalogOwnedTitleRecord, TitleOptionsPatch};
 mod quality;
 mod rate_limit_signal;
 mod rules;
@@ -132,7 +132,8 @@ pub use ports::{
     DiscoveryPublicFeedCommit, DiscoveryRankComponentRecord, DiscoveryRepository,
     DiscoverySectionItemsRecord, DiscoverySectionRecord, DiscoverySectionResult,
     DiscoverySourceTagRecord, DiscoverySubmittedSubjectRecord, DiscoverySyncRunRecord,
-    DiscoverySyncStateRecord, DiscoverySyncStatus, EpisodeImageUrlUpdate, MediaRequestResolution,
+    DiscoverySyncStateRecord, DiscoverySyncStatus, EpisodeImageUrlUpdate,
+    MediaRequestQualityProfileReferenceCounts, MediaRequestResolution,
     MediaRequestResolutionResult, MediaRequestSubmissionResult, MediaRequestUpdateResult,
     SeriesMovieExternalIdLookupMatch, SubtitleSyncClient, SubtitleSyncJob, TitleArtworkUrlUpdate,
     TitleDeletePreviewInfo, TitleExternalIdLookup, TitleExternalIdLookupMatch,

@@ -206,6 +206,9 @@ pub(super) async fn resolve_completed_download_for_import(
 ) -> Option<CompletedDownload> {
     if let Some(lookup) = completed_lookup {
         let completed = find_completed_download(app, td, Some(lookup)).await;
+        if let Some(completed) = completed.as_ref() {
+            td.completed_source = Some(completed.clone());
+        }
         if completed.is_none() {
             tracing::debug!(
                 id = %td.id,
@@ -251,10 +254,15 @@ pub(super) async fn resolve_completed_download_for_import(
     };
 
     if let Some(completed) = manual_completed {
-        return Some(prepare_completed_download_for_tracked_import(app, td, completed).await);
+        let completed = prepare_completed_download_for_tracked_import(app, td, completed).await;
+        td.completed_source = Some(completed.clone());
+        return Some(completed);
     }
 
     let completed = find_completed_download(app, td, None).await;
+    if let Some(completed) = completed.as_ref() {
+        td.completed_source = Some(completed.clone());
+    }
     if completed.is_none() {
         tracing::debug!(
             id = %td.id,

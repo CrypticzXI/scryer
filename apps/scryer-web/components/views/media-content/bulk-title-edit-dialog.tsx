@@ -25,6 +25,7 @@ import {
   ENABLED_TITLE_EDIT_VALUE,
   INHERIT_TITLE_EDIT_VALUE,
   UNCHANGED_TITLE_EDIT_VALUE,
+  buildTitleEditChanges,
   hasTitleEditChanges,
   initialTitleEditDraft,
   type TitleEditDraft,
@@ -128,40 +129,10 @@ export function BulkTitleEditDialog({
     [isMovieView, t],
   );
 
-  const buildChanges = React.useCallback((): TitleOptionUpdates => {
-    const changes: TitleOptionUpdates = {};
-    const changed = (key: keyof TitleEditDraft) =>
-      draft[key] !== initialDraft[key] && draft[key] !== UNCHANGED_VALUE;
-
-    if (changed("qualityProfileId")) {
-      changes.qualityProfileId =
-        draft.qualityProfileId === INHERIT_VALUE ? "" : draft.qualityProfileId;
-    }
-    if (changed("rootFolderId")) {
-      changes.rootFolderId = draft.rootFolderId;
-    }
-    if (changed("monitorType")) {
-      changes.monitorType = draft.monitorType;
-    }
-    if (changed("useSeasonFolders")) {
-      changes.useSeasonFolders = draft.useSeasonFolders === ENABLED_VALUE;
-    }
-    if (changed("monitorSpecials")) {
-      changes.monitorSpecials = draft.monitorSpecials === ENABLED_VALUE;
-    }
-    if (changed("interSeasonMovies")) {
-      changes.interSeasonMovies = draft.interSeasonMovies === ENABLED_VALUE;
-    }
-    if (changed("fillerPolicy")) {
-      changes.fillerPolicy =
-        draft.fillerPolicy === INHERIT_VALUE ? "" : draft.fillerPolicy;
-    }
-    if (changed("recapPolicy")) {
-      changes.recapPolicy =
-        draft.recapPolicy === INHERIT_VALUE ? "" : draft.recapPolicy;
-    }
-    return changes;
-  }, [draft, initialDraft]);
+  const buildChanges = React.useCallback(
+    () => buildTitleEditChanges(draft, initialDraft),
+    [draft, initialDraft],
+  );
 
   const handleSubmit = React.useCallback(() => {
     if (!hasPendingChange || busy) {
@@ -174,9 +145,13 @@ export function BulkTitleEditDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>{t("title.bulkEditTitle")}</DialogTitle>
+          <DialogTitle>
+            {directTitle ? t("title.editOptionsTitle") : t("title.bulkEditTitle")}
+          </DialogTitle>
           <DialogDescription>
-            {t("title.bulkEditDescription", { count: selectedTitles.length })}
+            {directTitle
+              ? t("title.editOptionsDescription", { name: directTitle.name })
+              : t("title.bulkEditDescription", { count: selectedTitles.length })}
           </DialogDescription>
         </DialogHeader>
 

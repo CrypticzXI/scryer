@@ -431,6 +431,7 @@ async fn tracked_download_failure_reuses_standby_recovery_policy() {
         client_id: "primary".to_string(),
         client_type: "nzbget".to_string(),
         client_item: failed_history_item("failed-job", "Failed.Release.1080p.WEB-DL"),
+        completed_source: None,
         state: scryer_domain::TrackedDownloadState::FailedPending,
         status: scryer_domain::TrackedDownloadStatus::Error,
         status_messages: Vec::new(),
@@ -1157,6 +1158,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
         client_id: "primary".to_string(),
         client_type: "weaver".to_string(),
         client_item: failed_history_item("job-1", "Friends"),
+        completed_source: None,
         state: scryer_domain::TrackedDownloadState::FailedPending,
         status: scryer_domain::TrackedDownloadStatus::Error,
         status_messages: Vec::new(),
@@ -1286,6 +1288,7 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
         client_id: "primary".to_string(),
         client_type: "nzbget".to_string(),
         client_item,
+        completed_source: None,
         state: scryer_domain::TrackedDownloadState::FailedPending,
         status: scryer_domain::TrackedDownloadStatus::Error,
         status_messages: Vec::new(),
@@ -1521,6 +1524,7 @@ async fn season_pack_failure_processed_twice_only_requeues_once_and_blocklists_o
             "failed-season-pack",
             "Season.Pack.Failure.Recovery.S07.1080p.WEB-DL",
         ),
+        completed_source: None,
         state: scryer_domain::TrackedDownloadState::FailedPending,
         status: scryer_domain::TrackedDownloadStatus::Error,
         status_messages: Vec::new(),
@@ -5837,6 +5841,190 @@ async fn rss_library_quality_profile_overrides_global_profile() {
             &title.library_id,
             "\"1080p\"",
         )
+        .await;
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(report.releases_grabbed, 1);
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(submissions[0].source_title.as_deref(), Some(release_1080p));
+}
+
+#[tokio::test]
+async fn add_and_queue_reuse_reconciles_quality_profile_before_submission() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            crate::default_quality_profile_for_search(),
+            crate::default_quality_profile_1080p_for_search(),
+        ])
+        .await;
+    let (app, user, _) = bootstrap_rss_with_media_files_and_profiles(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items,
+        Arc::new(MockMediaFileRepo::default()),
+        quality_profiles,
+        Arc::new(MockIndexerClient),
+    )
+    .await;
+    let request = NewTitle {
+        name: "Reconciled Queued Movie".into(),
+        facet: MediaFacet::Movie,
+        monitored: true,
+        tags: vec!["scryer:quality-profile:4k".to_string()],
+        external_ids: vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "765432".to_string(),
+        }],
+        ..Default::default()
+    };
+    let existing = app
+        .add_title_with_outcome(&user, request.clone())
+        .await
+        .expect("seed 4k title");
+
+    let outcome = app
+        .add_title_and_queue_download_with_options_patch_outcome_in_library(
+            &user,
+            NewTitle {
+                tags: vec![],
+                ..request
+            },
+            existing.title.library_id.clone(),
+            TitleOptionsPatch {
+                quality_profile_id: Some(Some("1080p".to_string())),
+                ..Default::default()
+            },
+            QueuedReleaseSelection {
+                indexer_id: None,
+                source_hint: Some("https://example.invalid/releases/reconciled.nzb".to_string()),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Reconciled.Queued.Movie.2026.1080p.WEB-DL".to_string()),
+                source_password: None,
+            },
+        )
+        .await
+        .expect("reused add and queue should succeed");
+
+    assert!(outcome.reused_existing_title);
+    assert_eq!(outcome.title.id, existing.title.id);
+    assert!(
+        outcome
+            .title
+            .tags
+            .iter()
+            .any(|tag| tag == "scryer:quality-profile:1080p")
+    );
+    assert!(
+        !outcome
+            .title
+            .tags
+            .iter()
+            .any(|tag| tag == "scryer:quality-profile:4k")
+    );
+    assert_eq!(download_submissions.store.lock().await.len(), 1);
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &["Reconciled Queued Movie".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn rss_reused_add_clears_4k_override_and_blocks_2160p_via_library_1080p() {
+    let release_2160p = "Reused.Profiled.Horizon.2024.2160p.WEB-DL-GRP";
+    let release_1080p = "Reused.Profiled.Horizon.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            crate::default_quality_profile_for_search(),
+            crate::default_quality_profile_1080p_for_search(),
+        ])
+        .await;
+    let indexer_client = Arc::new(MultiReleaseIndexerClient::new(vec![
+        release_2160p,
+        release_1080p,
+    ]));
+    let (app, user, settings) = bootstrap_rss_with_media_files_and_profiles(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+        media_files,
+        quality_profiles,
+        indexer_client,
+    )
+    .await;
+    let request = NewTitle {
+        name: "Reused Profiled Horizon".into(),
+        sort_title: Some("Reused Profiled Horizon".into()),
+        slug: Some("reused-profiled-horizon".into()),
+        facet: MediaFacet::Movie,
+        monitored: true,
+        tags: vec!["scryer:quality-profile:4k".to_string()],
+        external_ids: vec![ExternalId {
+            source: "tvdb".to_string(),
+            value: "975310".to_string(),
+        }],
+        year: Some(2024),
+        content_status: Some("Released".into()),
+        min_availability: Some("announced".into()),
+        ..Default::default()
+    };
+    let existing = app
+        .add_title_with_outcome(&user, request.clone())
+        .await
+        .expect("seed 4k override");
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            QUALITY_PROFILE_ID_KEY,
+            &existing.title.library_id,
+            "\"1080p\"",
+        )
+        .await;
+
+    let reused = app
+        .add_title_with_options_patch_outcome_in_library(
+            &user,
+            NewTitle {
+                tags: vec![],
+                ..request
+            },
+            existing.title.library_id.clone(),
+            TitleOptionsPatch {
+                quality_profile_id: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("reuse should clear the explicit profile override");
+    assert!(reused.reused_existing_title);
+    assert_eq!(reused.title.id, existing.title.id);
+    assert!(
+        !reused
+            .title
+            .tags
+            .iter()
+            .any(|tag| tag.starts_with("scryer:quality-profile:"))
+    );
+    wanted_items
+        .remember_title_facet(&reused.title.id, MediaFacet::Movie)
         .await;
 
     let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");

@@ -6,7 +6,8 @@ use scryer_application::{
     TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogFilterCounts,
     TitleCatalogFilterOptions, TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey,
     TitleCatalogTagFilterOption, TitleDeletePreviewInfo, TitleExternalIdLookup,
-    TitleExternalIdLookupMatch, TitleMetadataUpdate, TitleRatingSummary, TitleRepository,
+    TitleExternalIdLookupMatch, TitleMetadataUpdate, TitleOptionsPatch, TitleRatingSummary,
+    TitleRepository,
     persisted_records::{
         PersistedTitleDecodeOptions, PersistedTitleReadMode, finalize_persisted_title,
     },
@@ -165,6 +166,40 @@ impl TitleStore {
         .await
     }
 
+    async fn reconcile_existing_title_options_after_unique_conflict(
+        &self,
+        existing: Title,
+        options_patch: TitleOptionsPatch,
+        requested_root_folder_id: String,
+    ) -> AppResult<CreateTitleOutcome> {
+        let existing_id = existing.id;
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "reconcile_reused_title_options_after_unique_conflict",
+            move |tx| {
+                let existing_id = existing_id.clone();
+                let options_patch = options_patch.clone();
+                let requested_root_folder_id = requested_root_folder_id.clone();
+                Box::pin(async move {
+                    let mut title =
+                        load_title_canonical_tx_or_not_found(tx, &existing_id, true).await?;
+                    apply_reused_title_options_patch(
+                        &mut title,
+                        &options_patch,
+                        &requested_root_folder_id,
+                    );
+                    persist_title_tx(tx, &title, HydrationStateWrite::Preserve).await?;
+                    let title = load_title_tx_or_not_found(tx, &title.id, true).await?;
+                    Ok(CreateTitleOutcome {
+                        title,
+                        reused_existing: true,
+                    })
+                })
+            },
+        )
+        .await
+    }
+
     async fn list_internal(
         &self,
         facet: Option<MediaFacet>,
@@ -260,6 +295,48 @@ impl TitleRepository for TitleStore {
             true,
         )
         .await
+    }
+
+    async fn count_by_quality_profile_id(&self, profile_id: &str) -> AppResult<u64> {
+        let profile_id = profile_id.trim();
+        if profile_id.is_empty() {
+            return Ok(0);
+        }
+        let sql = match &self.datastore {
+            StoreDatastore::Sqlite { .. } => {
+                "SELECT tags
+                   FROM titles
+                  WHERE EXISTS (
+                      SELECT 1
+                        FROM json_each(titles.tags) AS title_tag
+                       WHERE SUBSTR(title_tag.value, 1, LENGTH('scryer:quality-profile:')) = 'scryer:quality-profile:'
+                  )"
+            }
+            StoreDatastore::Postgres { .. } => {
+                "SELECT tags
+                   FROM titles
+                  WHERE EXISTS (
+                      SELECT 1
+                        FROM jsonb_array_elements_text(titles.tags) AS title_tag(value)
+                       WHERE SUBSTRING(title_tag.value FROM 1 FOR LENGTH('scryer:quality-profile:')) = 'scryer:quality-profile:'
+                  )"
+            }
+        };
+        let rows = SqlRuntime::fetch_all(self.datastore.read_exec(), sql, &[]).await?;
+        let mut count = 0_u64;
+        for row in rows {
+            let tags = row.opt_json("tags")?.unwrap_or_default();
+            if tags.as_array().is_some_and(|tags| {
+                tags.iter().any(|tag| {
+                    tag.as_str()
+                        .and_then(|tag| tag.strip_prefix("scryer:quality-profile:"))
+                        .is_some_and(|value| value.trim().eq_ignore_ascii_case(profile_id))
+                })
+            }) {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     async fn list_without_external_ids(
@@ -958,17 +1035,38 @@ impl TitleRepository for TitleStore {
     }
 
     async fn create_or_get_existing(&self, title: Title) -> AppResult<CreateTitleOutcome> {
+        self.create_or_get_existing_with_options_patch(title, TitleOptionsPatch::default())
+            .await
+    }
+
+    async fn create_or_get_existing_with_options_patch(
+        &self,
+        title: Title,
+        options_patch: TitleOptionsPatch,
+    ) -> AppResult<CreateTitleOutcome> {
         let external_ids = normalized_external_ids(&title.external_ids);
         let library_id = title.library_id.clone();
+        let fallback_options_patch = options_patch.clone();
+        let fallback_root_folder_id = title.root_folder_id.clone();
         let result = SqlRuntime::run_in_transaction(
             &self.datastore,
             "create_or_get_existing_title",
             move |tx| {
                 let title = title.clone();
+                let options_patch = options_patch.clone();
                 Box::pin(async move {
-                    if let Some(existing) = find_existing_title_for_create_tx(tx, &title).await? {
+                    if let Some(mut existing) =
+                        find_existing_title_for_create_tx(tx, &title).await?
+                    {
+                        apply_reused_title_options_patch(
+                            &mut existing,
+                            &options_patch,
+                            &title.root_folder_id,
+                        );
+                        persist_title_tx(tx, &existing, HydrationStateWrite::Preserve).await?;
+                        let title = load_title_tx_or_not_found(tx, &existing.id, true).await?;
                         return Ok(CreateTitleOutcome {
-                            title: existing,
+                            title,
                             reused_existing: true,
                         });
                     }
@@ -991,10 +1089,14 @@ impl TitleRepository for TitleStore {
                     .find_existing_title_after_unique_conflict(&library_id, external_ids.as_slice())
                     .await?
                 {
-                    Some(existing) => Ok(CreateTitleOutcome {
-                        title: existing,
-                        reused_existing: true,
-                    }),
+                    Some(existing) => {
+                        self.reconcile_existing_title_options_after_unique_conflict(
+                            existing,
+                            fallback_options_patch,
+                            fallback_root_folder_id,
+                        )
+                        .await
+                    }
                     None => Err(error),
                 }
             }
@@ -3090,6 +3192,56 @@ enum HydrationStateWrite {
     Preserve,
     Reschedule,
     Clear,
+}
+
+fn set_reused_title_option_tag(tags: &mut Vec<String>, prefix: &str, value: Option<String>) {
+    tags.retain(|tag| !tag.starts_with(prefix));
+    if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+        tags.push(format!("{prefix}{}", value.trim()));
+    }
+}
+
+fn apply_reused_title_options_patch(
+    title: &mut Title,
+    patch: &TitleOptionsPatch,
+    requested_root_folder_id: &str,
+) {
+    if let Some(value) = &patch.quality_profile_id {
+        set_reused_title_option_tag(&mut title.tags, "scryer:quality-profile:", value.clone());
+    }
+    if let Some(value) = &patch.monitor_type {
+        set_reused_title_option_tag(&mut title.tags, "scryer:monitor-type:", value.clone());
+    }
+    if let Some(value) = &patch.filler_policy {
+        set_reused_title_option_tag(&mut title.tags, "scryer:filler-policy:", value.clone());
+    }
+    if let Some(value) = &patch.recap_policy {
+        set_reused_title_option_tag(&mut title.tags, "scryer:recap-policy:", value.clone());
+    }
+    if let Some(value) = patch.use_season_folders {
+        set_reused_title_option_tag(
+            &mut title.tags,
+            "scryer:season-folder:",
+            value.map(|enabled| if enabled { "enabled" } else { "disabled" }.to_string()),
+        );
+    }
+    if let Some(value) = patch.monitor_specials {
+        set_reused_title_option_tag(
+            &mut title.tags,
+            "scryer:monitor-specials:",
+            value.map(|enabled| if enabled { "true" } else { "false" }.to_string()),
+        );
+    }
+    if let Some(value) = patch.inter_season_movies {
+        set_reused_title_option_tag(
+            &mut title.tags,
+            "scryer:inter-season-movies:",
+            value.map(|enabled| if enabled { "true" } else { "false" }.to_string()),
+        );
+    }
+    if patch.root_folder_id.is_some() {
+        title.root_folder_id = requested_root_folder_id.to_string();
+    }
 }
 
 async fn persist_title_tx(

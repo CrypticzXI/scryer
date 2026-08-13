@@ -1105,6 +1105,97 @@ async fn manual_import_source_allows_orphan_submission_but_rejects_managed_reass
 }
 
 #[tokio::test]
+async fn manual_import_source_uses_retained_tracked_source_when_live_history_is_empty() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(1);
+    let tracked_handle = crate::tracked_downloads::TrackedDownloadHandle::new(command_tx);
+    let (app, user) = bootstrap_with_cleanup_tracking_and_tracked_handle(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        tracked_handle,
+    );
+    let selected_title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Retained Manual Import Target".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create selected title");
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: String::new(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some("qbittorrent-primary".to_string()),
+            download_client_type: "qbittorrent".to_string(),
+            download_client_item_id: "retained-manual-import".to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some("Retained.Manual.Import.2026.1080p.WEB-DL".to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Orphan,
+        })
+        .await
+        .expect("record orphan submission");
+
+    let source_dir = tempfile::tempdir().expect("create source directory");
+    let mut retained = completed_download_fixture_item(
+        "retained-manual-import",
+        &selected_title.id,
+        "Retained.Manual.Import.2026.1080p.WEB-DL",
+        source_dir.path().to_string_lossy().as_ref(),
+    );
+    retained.client_id = "qbittorrent-primary".to_string();
+    retained.client_type = "qbittorrent".to_string();
+    let responder = tokio::spawn(async move {
+        match command_rx.recv().await.expect("completed-source command") {
+            crate::tracked_downloads::TrackedDownloadCommand::CompletedSource {
+                identity,
+                reply,
+            } => {
+                assert_eq!(identity.client_id.as_deref(), Some("qbittorrent-primary"));
+                assert_eq!(identity.client_type, "qbittorrent");
+                assert_eq!(identity.item_id, "retained-manual-import");
+                let _ = reply.send(Some(retained));
+            }
+            _ => panic!("unexpected tracked-download command"),
+        }
+    });
+
+    let resolved = crate::import::workflow::resolve_current_manual_import_source(
+        &app,
+        &user,
+        "qbittorrent-primary",
+        "qbittorrent",
+        "retained-manual-import",
+        &selected_title.id,
+    )
+    .await
+    .expect("retained tracked source should resolve");
+    responder.await.expect("completed-source responder");
+
+    assert_eq!(resolved.download_client_item_id, "retained-manual-import");
+    assert!(
+        download_client
+            .targeted_completed_download_calls
+            .lock()
+            .await
+            .is_empty(),
+        "retained resolution must not re-query live completed history"
+    );
+}
+
+#[tokio::test]
 async fn queued_manual_import_reports_prior_automatic_import_after_source_cleanup() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -1283,6 +1374,7 @@ async fn tracked_title_assignment_fixture() -> TrackedTitleAssignmentFixture {
         client_id: client_id.to_string(),
         client_type: "weaver".to_string(),
         client_item: queue_item,
+        completed_source: None,
         state: TrackedDownloadState::ImportBlocked,
         status: scryer_domain::TrackedDownloadStatus::Warning,
         status_messages: vec!["title required".to_string()],
@@ -2763,7 +2855,8 @@ async fn blocked_import_outcome_is_persisted_durably() {
     let config =
         create_enabled_download_client_config(&app, &user, "Primary Weaver", "weaver").await;
 
-    let (_command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let tracked_handle = crate::tracked_downloads::TrackedDownloadHandle::new(command_tx);
     let (snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(8);
     let ingest = crate::tracked_downloads::TrackedDownloadSnapshotIngestHandle::new(snapshot_tx);
     let token = tokio_util::sync::CancellationToken::new();
@@ -2809,6 +2902,14 @@ async fn blocked_import_outcome_is_persisted_durably() {
     completed.client_type = "weaver".to_string();
     completed.download_id = Some(download_id.to_string());
     completed.parameters.clear();
+    let initial_revision = app
+        .runtime
+        .acquisition
+        .download_queue_snapshot
+        .snapshot()
+        .await
+        .revision;
+    let sync_rx = app.runtime.acquisition.download_queue_snapshot.subscribe();
 
     ingest
         .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
@@ -2861,6 +2962,149 @@ async fn blocked_import_outcome_is_persisted_durably() {
     })
     .await
     .expect("blocked outcome should be persisted to submissions and identity states");
+
+    let reads_before_visibility = (
+        *download_client.queue_calls.lock().await,
+        *download_client.history_calls.lock().await,
+        download_client.recent_activity_calls.lock().await.len(),
+    );
+    let page = timeout(Duration::from_secs(5), async {
+        loop {
+            let page = app
+                .list_download_import_page(&user, 50, 0, DownloadImportFilter::Blocked)
+                .await
+                .expect("blocked import page should remain readable");
+            if page.items.iter().any(|item| {
+                item.download_client_item_id == item_id
+                    && item.tracked_state == Some(TrackedDownloadState::ImportBlocked)
+            }) {
+                break page;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("blocked import should become visible from the queue cache");
+
+    assert_eq!(page.total_count, 1);
+    let blocked = page
+        .items
+        .iter()
+        .find(|item| item.download_client_item_id == item_id)
+        .expect("blocked Weaver row should be returned");
+    assert_eq!(blocked.client_id, config.id.as_str());
+    assert_eq!(blocked.client_type, "weaver");
+    assert_eq!(
+        blocked.tracked_state,
+        Some(TrackedDownloadState::ImportBlocked)
+    );
+    assert_eq!(
+        blocked.tracked_status,
+        Some(scryer_domain::TrackedDownloadStatus::Warning)
+    );
+    assert!(!blocked.tracked_status_messages.is_empty());
+    assert!(blocked.attention_required);
+    assert_eq!(
+        crate::integration::derive_download_queue_display_state(blocked),
+        DownloadDisplayState::ImportBlocked
+    );
+    assert_eq!(
+        app.count_download_import_items(&user, DownloadImportFilter::All)
+            .await
+            .expect("all import count"),
+        1
+    );
+    assert_eq!(
+        app.count_download_import_items(&user, DownloadImportFilter::Blocked)
+            .await
+            .expect("blocked import count"),
+        1
+    );
+    assert_eq!(
+        reads_before_visibility,
+        (
+            *download_client.queue_calls.lock().await,
+            *download_client.history_calls.lock().await,
+            download_client.recent_activity_calls.lock().await.len(),
+        ),
+        "cache-backed import reads must not call the download client"
+    );
+    let snapshot = app
+        .runtime
+        .acquisition
+        .download_queue_snapshot
+        .snapshot()
+        .await;
+    assert!(snapshot.revision > initial_revision);
+    assert_eq!(sync_rx.borrow().revision, snapshot.revision);
+
+    let revision_before_source_omission = snapshot.revision;
+    let mut unrelated_source_item =
+        queue_history_fixture_item("weaver-other-active-1", DownloadQueueState::Downloading, 1);
+    unrelated_source_item.client_id = config.id.clone();
+    unrelated_source_item.client_name = config.name.clone();
+    unrelated_source_item.client_type = "weaver".to_string();
+    ingest
+        .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+            scope: crate::tracked_downloads::TrackedDownloadSnapshotScope::AuthoritativeForClient {
+                client_id: Some(config.id.clone()),
+                client_type: "weaver".to_string(),
+            },
+            items: vec![unrelated_source_item],
+            completed_downloads: Vec::new(),
+            actor_id: None,
+        })
+        .await
+        .expect("publish source snapshot without the blocked row");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let page = app
+                .list_download_import_page(&user, 50, 0, DownloadImportFilter::Blocked)
+                .await
+                .expect("blocked import page after source omission");
+            let revision = app
+                .runtime
+                .acquisition
+                .download_queue_snapshot
+                .snapshot()
+                .await
+                .revision;
+            if revision > revision_before_source_omission
+                && page
+                    .items
+                    .iter()
+                    .any(|item| item.download_client_item_id == item_id)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("authoritative source omission must retain unresolved blocked rows");
+
+    tracked_handle
+        .ignore(tracked_id.clone())
+        .await
+        .expect("ignore blocked tracked download");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let page = app
+                .list_download_import_page(&user, 50, 0, DownloadImportFilter::Blocked)
+                .await
+                .expect("blocked import page after resolution");
+            if page
+                .items
+                .iter()
+                .all(|item| item.download_client_item_id != item_id)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("resolved tracked download should leave the blocked filter");
 
     token.cancel();
     poller
@@ -3340,6 +3584,7 @@ async fn failed_tracked_cleanup_uses_facet_routing_and_exact_client_id() {
         client_id: config.id.clone(),
         client_type: "nzbget".to_string(),
         client_item: history_item,
+        completed_source: None,
         state: TrackedDownloadState::Failed,
         status: scryer_domain::TrackedDownloadStatus::Ok,
         status_messages: Vec::new(),

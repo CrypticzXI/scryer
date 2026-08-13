@@ -7,6 +7,7 @@ import {
   downloadQueuePageQuery,
   downloadQueueSyncSubscription,
   episodeSidePanelDetailQuery,
+  globalSearchInitQuery,
   movieSidePanelTitleQuery,
   movieSidePanelOverviewQuery,
   seriesSidePanelOverviewQuery,
@@ -47,7 +48,33 @@ test("reactive catalog title refresh uses catalog list projection", () => {
   assert.equal(result.query.includes("overview"), false);
   assert.equal(result.query.includes("canonicalTags"), false);
   assert.equal(result.query.includes("externalIds"), false);
-  assert.equal(result.query.includes("monitorType"), false);
+  // Edit prefill and post-mutation verification consume option fields from
+  // the same catalog-row projection, including reactive row refreshes.
+  assert.equal(result.query.includes("qualityProfileId"), true);
+  assert.equal(result.query.includes("monitorType"), true);
+  assert.equal(result.query.includes("fillerPolicy"), true);
+});
+
+test("title catalog rows include option fields used by edit and mutation verification", () => {
+  const query = buildTitlesQuery();
+
+  assert.equal(query.includes("qualityProfileId"), true);
+  assert.equal(query.includes("rootFolderId"), true);
+  assert.equal(query.includes("monitorType"), true);
+  assert.equal(query.includes("useSeasonFolders"), true);
+  assert.equal(query.includes("monitorSpecials"), true);
+  assert.equal(query.includes("interSeasonMovies"), true);
+  assert.equal(query.includes("fillerPolicy"), true);
+  assert.equal(query.includes("recapPolicy"), true);
+});
+
+test("global search loads the manageable library quality-profile override", () => {
+  const manageableLibrariesSelection = globalSearchInitQuery.slice(
+    globalSearchInitQuery.indexOf("manageableLibraries:"),
+    globalSearchInitQuery.indexOf("requestableLibraries:"),
+  );
+
+  assert.equal(manageableLibrariesSelection.includes("qualityProfileId"), true);
 });
 
 test("reactive catalog title refresh omits episodic fields by default", () => {

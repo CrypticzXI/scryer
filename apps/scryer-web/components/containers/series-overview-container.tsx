@@ -1,5 +1,6 @@
 
 import * as React from "react";
+import { facetByMetadataKey } from "@/lib/facets/registry";
 import {
   deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
@@ -965,7 +966,11 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         setRootFolders([]);
         return;
       }
-      const facet = title?.facet === "anime" ? "anime" : "series";
+      const facet = facetByMetadataKey(title?.facet ?? "")?.id;
+      if (!facet) {
+        setRootFolders([]);
+        return;
+      }
       try {
         const { data, error } = await client
           .query(

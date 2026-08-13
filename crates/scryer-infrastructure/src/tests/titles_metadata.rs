@@ -28,6 +28,42 @@ async fn insert_test_library(services: &SqliteServices, id: &str, facet: MediaFa
 }
 
 #[tokio::test]
+async fn title_quality_profile_reference_count_matches_resolver_normalization() {
+    let (services, db) = temp_services("scryer_title_quality_profile_references").await;
+    let catalog = title_store(&services);
+
+    for (id, tag) in [
+        ("title-profile-exact", "scryer:quality-profile:1080p"),
+        ("title-profile-whitespace", "scryer:quality-profile: 1080p "),
+        (
+            "title-profile-control-whitespace",
+            "scryer:quality-profile:\t1080p\n",
+        ),
+        (
+            "title-profile-unicode-whitespace",
+            "scryer:quality-profile:\u{2003}1080p\u{2003}",
+        ),
+        ("title-profile-value-case", "scryer:quality-profile:1080P"),
+        ("title-profile-wrong-case", "SCRYER:quality-profile:1080p"),
+    ] {
+        let mut title = make_test_title(id, None);
+        title.tags = vec![tag.to_string()];
+        TitleRepository::create(&catalog, title)
+            .await
+            .expect("title should insert");
+    }
+
+    assert_eq!(
+        TitleRepository::count_by_quality_profile_id(&catalog, "1080p")
+            .await
+            .expect("profile references should count"),
+        5,
+    );
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_create_requires_an_existing_library_for_the_title_facet() {
     let (services, db) = temp_services("scryer_title_library_ownership_validation").await;
     let catalog = title_store(&services);

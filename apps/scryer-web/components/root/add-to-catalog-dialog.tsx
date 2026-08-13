@@ -21,6 +21,16 @@ import type {
   MetadataCatalogMonitorType,
 } from "@/lib/hooks/use-global-search";
 import type { LibraryRecord, RootFolderOption } from "@/lib/types/titles";
+import {
+  canSubmitCatalogAdd,
+  catalogAddDraftResetKey,
+  catalogAddOptionsForSubmit,
+  catalogQualityProfileSelectValue,
+  defaultCatalogRootFolderId,
+  draftForCatalogLibrary,
+  inheritedCatalogQualityProfileLabel,
+  INHERIT_CATALOG_QUALITY_PROFILE_VALUE,
+} from "@/lib/utils/catalog-add-quality-profile";
 
 type AddToCatalogDialogProps = {
   open: boolean;
@@ -58,13 +68,11 @@ export const EMPTY_SEARCH_RESULT: MetadataTvdbSearchItem = {
 
 function buildDefaultDraft(
   facet: Facet,
-  defaultQualityProfileId: string,
   defaultLibraryId?: string,
   defaultRootFolderId?: string,
 ): MetadataCatalogAddOptions {
   return {
     libraryId: defaultLibraryId,
-    qualityProfileId: defaultQualityProfileId,
     rootFolderId: defaultRootFolderId,
     seasonFolder: facet !== "MOVIE",
     monitorType: defaultMonitorTypeForFacet(facet),
@@ -85,10 +93,7 @@ function defaultLibrary(libraries: LibraryRecord[]): LibraryRecord | null {
 function defaultRootFolderId(
   rootFolders: Array<{ id?: string; isDefault: boolean }>,
 ): string | undefined {
-  return (
-    rootFolders.find((rootFolder) => rootFolder.isDefault && rootFolder.id)?.id ||
-    rootFolders.find((rootFolder) => rootFolder.id)?.id
-  );
+  return defaultCatalogRootFolderId(rootFolders);
 }
 
 export function AddToCatalogDialog({
@@ -109,34 +114,61 @@ export function AddToCatalogDialog({
   const [draft, setDraft] = React.useState<MetadataCatalogAddOptions>(() =>
     buildDefaultDraft(
       facet,
-      defaultQualityProfileId,
       defaultLibrary(libraries)?.id,
       defaultRootFolderId(defaultLibrary(libraries)?.roots ?? fallbackRootFolders),
     ),
   );
   const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const draftResetKeyRef = React.useRef<string | null>(null);
+  const nextDefaultLibrary = defaultLibrary(libraries);
+  const nextDefaultLibraryId = nextDefaultLibrary?.id;
+  const nextDefaultRootFolderId = defaultRootFolderId(
+    nextDefaultLibrary?.roots ?? fallbackRootFolders,
+  );
+  const draftResetKey = catalogAddDraftResetKey(
+    facet,
+    String(result.tvdbId),
+    nextDefaultLibraryId,
+    nextDefaultRootFolderId,
+  );
 
   // Reset draft when dialog opens
   React.useEffect(() => {
-    if (!open) return;
-    const nextDefaultLibrary = defaultLibrary(libraries);
+    if (!open) {
+      draftResetKeyRef.current = null;
+      return;
+    }
+    if (draftResetKeyRef.current === draftResetKey) {
+      return;
+    }
+    draftResetKeyRef.current = draftResetKey;
     setDraft(
       buildDefaultDraft(
         facet,
-        defaultQualityProfileId,
-        nextDefaultLibrary?.id,
-        defaultRootFolderId(nextDefaultLibrary?.roots ?? fallbackRootFolders),
+        nextDefaultLibraryId,
+        nextDefaultRootFolderId,
       ),
     );
     setIsSubmitting(false);
-  }, [open, facet, defaultQualityProfileId, libraries, fallbackRootFolders]);
+  }, [
+    draftResetKey,
+    facet,
+    nextDefaultLibraryId,
+    nextDefaultRootFolderId,
+    open,
+  ]);
 
-  const qualityProfileValue =
-    draft.qualityProfileId || defaultQualityProfileId;
   const selectedLibrary =
     libraries.find((library) => library.id === draft.libraryId) ||
     defaultLibrary(libraries) ||
     null;
+  const qualityProfileValue = catalogQualityProfileSelectValue(draft.qualityProfileId);
+  const inheritedQualityProfileLabel = inheritedCatalogQualityProfileLabel(
+    selectedLibrary,
+    defaultQualityProfileId,
+    catalogQualityProfileOptions,
+    t("search.addConfigInheritLibrary"),
+  );
   const selectedRootFolders = selectedLibrary?.roots ?? fallbackRootFolders;
   const selectableRootFolders = selectedRootFolders.flatMap((rootFolder) => {
     const id = rootFolder.id?.trim();
@@ -153,21 +185,25 @@ export function AddToCatalogDialog({
     libraries.length > 0 || selectableRootFolders.length > 0;
   const qualityProfileSelectionDisabled =
     isSubmitting || catalogConfigLoading || catalogQualityProfileOptions.length === 0;
+  const submitAllowed = canSubmitCatalogAdd({
+    catalogConfigLoading,
+    qualityProfileCount: catalogQualityProfileOptions.length,
+    hasCatalogDestination,
+    libraryRequired,
+    hasSelectedLibrary: selectedLibrary !== null,
+  });
 
   const handleSubmit = React.useCallback(async () => {
     const libraryId = selectedLibrary?.id?.trim();
-    if (!hasCatalogDestination || (libraryRequired && !libraryId)) return;
+    if (!submitAllowed || (libraryRequired && !libraryId)) return;
 
     setIsSubmitting(true);
     try {
-      const qpId = (draft.qualityProfileId || defaultQualityProfileId).trim();
-      if (!qpId) return;
-      const titleId = await onAdd(result, facet, {
+      const titleId = await onAdd(result, facet, catalogAddOptionsForSubmit({
         ...draft,
         libraryId,
-        qualityProfileId: qpId,
         rootFolderId: effectiveRootFolderId || undefined,
-      });
+      }));
       if (titleId) {
         onOpenChange(false);
       }
@@ -176,15 +212,14 @@ export function AddToCatalogDialog({
     }
   }, [
     draft,
-    defaultQualityProfileId,
     facet,
-    hasCatalogDestination,
     libraryRequired,
     onAdd,
     onOpenChange,
     result,
     effectiveRootFolderId,
     selectedLibrary,
+    submitAllowed,
   ]);
 
   const update = React.useCallback(
@@ -227,7 +262,16 @@ export function AddToCatalogDialog({
               </span>
               <Select
                 value={selectedLibrary?.id || ""}
-                onValueChange={(v) => update({ libraryId: v, rootFolderId: undefined })}
+                onValueChange={(v) => {
+                  const library = libraries.find((candidate) => candidate.id === v);
+                  setDraft((previous) =>
+                    draftForCatalogLibrary(
+                      previous,
+                      v,
+                      library?.roots ?? fallbackRootFolders,
+                    ),
+                  );
+                }}
                 disabled={isSubmitting || libraries.length === 1}
               >
                 <SelectTrigger id="add-to-catalog-library" className="h-12 w-full">
@@ -251,7 +295,12 @@ export function AddToCatalogDialog({
               </span>
               <Select
                 value={catalogQualityProfileOptions.length > 0 ? qualityProfileValue : ""}
-                onValueChange={(v) => update({ qualityProfileId: v })}
+                onValueChange={(v) =>
+                  update({
+                    qualityProfileId:
+                      v === INHERIT_CATALOG_QUALITY_PROFILE_VALUE ? undefined : v,
+                  })
+                }
                 disabled={qualityProfileSelectionDisabled}
               >
                 <SelectTrigger
@@ -267,11 +316,16 @@ export function AddToCatalogDialog({
                       {t("search.addConfigNoQualityProfiles")}
                     </SelectItem>
                   ) : (
-                    catalogQualityProfileOptions.map((profile) => (
-                      <SelectItem key={profile.id} value={profile.id}>
-                        {profile.name}
+                    <>
+                      <SelectItem value={INHERIT_CATALOG_QUALITY_PROFILE_VALUE}>
+                        {inheritedQualityProfileLabel}
                       </SelectItem>
-                    ))
+                      {catalogQualityProfileOptions.map((profile) => (
+                        <SelectItem key={profile.id} value={profile.id}>
+                          {profile.name}
+                        </SelectItem>
+                      ))}
+                    </>
                   )}
                 </SelectContent>
               </Select>
@@ -410,10 +464,8 @@ export function AddToCatalogDialog({
             onClick={() => void handleSubmit()}
             disabled={
               isSubmitting ||
-              catalogConfigLoading ||
               !qualityProfileValue ||
-              !hasCatalogDestination ||
-              (libraryRequired && !selectedLibrary)
+              !submitAllowed
             }
             className="h-12 gap-2 bg-primary px-8 text-primary-foreground hover:bg-primary/90"
           >

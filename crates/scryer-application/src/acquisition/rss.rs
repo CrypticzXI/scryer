@@ -108,7 +108,7 @@ fn build_title_context_bank(titles: &[Title]) -> TitleContextBank {
 
     if !shared_stripped_keys.is_empty() {
         for candidate in &mut candidates {
-            candidate.evidence.ambiguity =
+            candidate.evidence = candidate.evidence.clone().with_ambiguity(
                 crate::acquisition_release_search::TitleIdentityAmbiguity::from_shared_keys(
                     candidate
                         .evidence
@@ -121,7 +121,8 @@ fn build_title_context_bank(titles: &[Title]) -> TitleContextBank {
                         })
                         .cloned()
                         .collect(),
-                );
+                ),
+            );
         }
     }
 

@@ -1642,11 +1642,58 @@ pub(crate) struct ReleaseSearchRequest<'a> {
     pub(crate) background_value: Option<f64>,
 }
 
+/// The configured scope that supplied an effective quality profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum QualityProfileResolutionSource {
+    Title,
+    Library,
+    Category,
+    Global,
+    Builtin,
+}
+
+impl QualityProfileResolutionSource {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Library => "library",
+            Self::Category => "category",
+            Self::Global => "global",
+            Self::Builtin => "builtin",
+        }
+    }
+}
+
+/// Effective profile data and the precedence scope that selected it.
+#[derive(Clone, Debug)]
+pub(crate) struct QualityProfileResolution {
+    pub(crate) profile: QualityProfile,
+    pub(crate) profile_id: String,
+    pub(crate) source: QualityProfileResolutionSource,
+}
+
 impl AppUseCase {
     pub(crate) async fn resolve_quality_profile(
         &self,
         lookup: QualityProfileLookup<'_>,
     ) -> AppResult<QualityProfile> {
+        let resolution = self.resolve_quality_profile_resolution(lookup).await?;
+        debug!(
+            quality_profile_id = resolution.profile_id,
+            quality_profile_source = resolution.source.as_str(),
+            "resolved quality profile"
+        );
+        Ok(resolution.profile)
+    }
+
+    /// Resolves the effective profile together with the precedence scope that
+    /// supplied it. Callers that only need scoring can use
+    /// [`Self::resolve_quality_profile`]; diagnostics should retain this
+    /// provenance instead of attempting to recompute it later.
+    pub(crate) async fn resolve_quality_profile_resolution(
+        &self,
+        lookup: QualityProfileLookup<'_>,
+    ) -> AppResult<QualityProfileResolution> {
         let catalog = self.load_quality_profiles().await?;
         let category_scope_id = self.quality_profile_scope_id(lookup);
 
@@ -1654,7 +1701,12 @@ impl AppUseCase {
             .title_tags
             .iter()
             .find(|t| t.starts_with("scryer:quality-profile:"))
-            .map(|t| t.trim_start_matches("scryer:quality-profile:").to_string());
+            .map(|t| {
+                t.trim_start_matches("scryer:quality-profile:")
+                    .trim()
+                    .to_string()
+            })
+            .filter(|value| !value.is_empty() && value != QUALITY_PROFILE_INHERIT_VALUE);
 
         let category_profile_id = self
             .read_setting_string_value_explicit(
@@ -1673,42 +1725,55 @@ impl AppUseCase {
             .read_setting_string_value(QUALITY_PROFILE_ID_KEY, None)
             .await?;
 
-        let active_profile_id = resolve_profile_id_for_title(
-            title_profile_id.as_deref(),
-            library_profile_id.as_deref(),
-            category_profile_id.as_deref(),
-            global_profile_id.as_deref(),
-        );
-        if let Some(profile_id) = active_profile_id.as_deref()
-            && let Some(profile) = catalog.iter().find(|profile| profile.id == profile_id)
-        {
-            return Ok(profile.clone());
+        let (active_profile_id, source) = if let Some(profile_id) = title_profile_id {
+            (Some(profile_id), QualityProfileResolutionSource::Title)
+        } else if let Some(profile_id) = library_profile_id {
+            (Some(profile_id), QualityProfileResolutionSource::Library)
+        } else if let Some(profile_id) = category_profile_id {
+            (Some(profile_id), QualityProfileResolutionSource::Category)
+        } else if let Some(profile_id) = global_profile_id {
+            (Some(profile_id), QualityProfileResolutionSource::Global)
+        } else {
+            (None, QualityProfileResolutionSource::Builtin)
+        };
+
+        if let Some(profile_id) = active_profile_id {
+            let profile = crate::settings::runtime::quality_profile_by_id(&catalog, &profile_id)?
+                .cloned()
+                .ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "configured quality profile '{profile_id}' from {} is missing from the catalog",
+                        source.as_str()
+                    ))
+                })?;
+            return Ok(QualityProfileResolution {
+                profile_id: profile.id.clone(),
+                profile,
+                source,
+            });
         }
 
-        warn!(
-            active_profile_id = active_profile_id.as_deref().unwrap_or("none"),
-            "quality profile id not found in catalog, using default"
-        );
+        if !catalog.is_empty() {
+            return Err(AppError::Validation(
+                "no quality profile is configured; choose a global, category, library, or title profile"
+                    .to_string(),
+            ));
+        }
 
-        Ok(default_quality_profile_for_search())
+        let profile = default_quality_profile_for_search();
+        Ok(QualityProfileResolution {
+            profile_id: profile.id.clone(),
+            profile,
+            source: QualityProfileResolutionSource::Builtin,
+        })
     }
 
     async fn load_quality_profiles(&self) -> AppResult<Vec<QualityProfile>> {
-        match self
-            .services
+        self.services
             .config
             .quality_profiles
             .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
             .await
-        {
-            Ok(catalog) if !catalog.is_empty() => return Ok(catalog),
-            Ok(_) => warn!("quality profile DB catalog is empty; using default"),
-            Err(err) => {
-                warn!(error = %err, "failed to load quality profiles from DB; using default")
-            }
-        }
-
-        Ok(vec![default_quality_profile_for_search()])
     }
 
     pub(crate) async fn read_setting_string_value(

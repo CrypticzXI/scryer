@@ -31,6 +31,9 @@ pub struct TrackedDownload {
     pub client_type: String,
     /// Latest snapshot from the download client.
     pub client_item: DownloadQueueItem,
+    /// Exact completed-download source retained for manual import after the
+    /// client stops exposing the item in a live history snapshot.
+    pub completed_source: Option<CompletedDownload>,
     /// Scryer's workflow state (independent of client status).
     pub state: TrackedDownloadState,
     /// Health/warning overlay.
@@ -209,6 +212,7 @@ impl TrackedDownload {
         self.path_missing_since = finished.path_missing_since;
         self.no_video_import_retry = finished.no_video_import_retry;
         self.import_hold = finished.import_hold;
+        self.completed_source = finished.completed_source;
     }
 
     pub(crate) fn reset_for_import_retry(&mut self) {
@@ -327,6 +331,7 @@ impl TrackedDownloadService {
             status: TrackedDownloadStatus::Ok,
             status_messages: Vec::new(),
             client_item,
+            completed_source: None,
             import_attempted: false,
             waiting_for_completed_history: false,
             path_missing_since: None,
@@ -368,6 +373,22 @@ impl TrackedDownloadService {
 
     pub fn get_all(&self) -> Vec<&TrackedDownload> {
         self.cache.values().collect()
+    }
+
+    pub fn completed_source_for_identity(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> Option<CompletedDownload> {
+        self.cache
+            .values()
+            .find(|tracked| {
+                DownloadSourceIdentity::new(
+                    Some(tracked.client_id.as_str()),
+                    tracked.client_type.as_str(),
+                    tracked.client_item.download_client_item_id.as_str(),
+                ) == *identity
+            })
+            .and_then(|tracked| tracked.completed_source.clone())
     }
 
     pub fn get_trackable(&self) -> Vec<&TrackedDownload> {
@@ -989,6 +1010,10 @@ pub enum TrackedDownloadCommand {
         actor_snapshot: DownloadSubmissionActorSnapshot,
         reply: oneshot::Sender<AppResult<()>>,
     },
+    CompletedSource {
+        identity: DownloadSourceIdentity,
+        reply: oneshot::Sender<Option<CompletedDownload>>,
+    },
     Snapshot {
         ids: Vec<String>,
         reply: oneshot::Sender<HashMap<String, TrackedDownloadQueueMetadata>>,
@@ -1083,6 +1108,25 @@ pub struct TrackedDownloadHandle {
 impl TrackedDownloadHandle {
     pub fn new(tx: mpsc::Sender<TrackedDownloadCommand>) -> Self {
         Self { tx }
+    }
+
+    pub async fn completed_source(
+        &self,
+        identity: DownloadSourceIdentity,
+    ) -> AppResult<Option<CompletedDownload>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(TrackedDownloadCommand::CompletedSource {
+                identity,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| {
+                crate::AppError::Repository("tracked download service unavailable".into())
+            })?;
+        reply_rx.await.map_err(|_| {
+            crate::AppError::Repository("tracked download service dropped reply".into())
+        })
     }
 
     pub async fn ignore(&self, id: String) -> AppResult<()> {
@@ -2499,6 +2543,7 @@ mod tests {
             client_id: client_item.client_id.clone(),
             client_type: client_item.client_type.clone(),
             client_item,
+            completed_source: None,
             state: TrackedDownloadState::Downloading,
             status: TrackedDownloadStatus::Ok,
             status_messages: Vec::new(),
@@ -3569,7 +3614,11 @@ mod tests {
                     id: format!("client-1:{suffix}"),
                     client_id: "client-1".to_string(),
                     client_type: "nzbget".to_string(),
-                    client_item: build_client_item(),
+                    client_item: DownloadQueueItem {
+                        download_client_item_id: suffix.to_string(),
+                        ..build_client_item()
+                    },
+                    completed_source: None,
                     state,
                     status: TrackedDownloadStatus::Ok,
                     status_messages: Vec::new(),
@@ -3592,6 +3641,16 @@ mod tests {
             );
         }
 
+        tracker
+            .find_mut("client-1:blocked")
+            .expect("blocked tracked download")
+            .completed_source = Some(build_completed_download(
+            "nzbget",
+            "blocked",
+            "Blocked.Release",
+            "/downloads/blocked",
+            Some("series"),
+        ));
         let unavailable_sources = tracker.update_trackable(&HashSet::new());
 
         assert!(
@@ -3615,6 +3674,21 @@ mod tests {
                 .is_some_and(|td| td.is_trackable)
         );
         assert!(unavailable_sources.is_empty());
+        let blocked_identity = DownloadSourceIdentity::new(Some("client-1"), "nzbget", "blocked");
+        assert_eq!(
+            tracker
+                .completed_source_for_identity(&blocked_identity)
+                .as_ref()
+                .map(|completed| completed.dest_dir.as_str()),
+            Some("/downloads/blocked")
+        );
+        tracker.stop_tracking("client-1:blocked");
+        assert!(
+            tracker
+                .completed_source_for_identity(&blocked_identity)
+                .is_none(),
+            "terminal cleanup must dispose of the retained source"
+        );
     }
 
     #[test]
@@ -3845,6 +3919,7 @@ mod tests {
             client_id: "client-1".to_string(),
             client_type: "nzbget".to_string(),
             client_item,
+            completed_source: None,
             state: TrackedDownloadState::ImportPending,
             status: TrackedDownloadStatus::Ok,
             status_messages: Vec::new(),
@@ -3882,6 +3957,7 @@ mod tests {
             client_id: "client-1".to_string(),
             client_type: "nzbget".to_string(),
             client_item,
+            completed_source: None,
             state: TrackedDownloadState::Downloading,
             status: TrackedDownloadStatus::Ok,
             status_messages: Vec::new(),
@@ -3961,6 +4037,7 @@ mod tests {
             client_id: "client-1".to_string(),
             client_type: "weaver".to_string(),
             client_item,
+            completed_source: None,
             state: TrackedDownloadState::FailedPending,
             status: TrackedDownloadStatus::Error,
             status_messages: Vec::new(),
@@ -4167,6 +4244,7 @@ mod tests {
                 download_client_item_id: "job-shared".to_string(),
                 ..build_client_item()
             },
+            completed_source: None,
             state: TrackedDownloadState::FailedPending,
             status: TrackedDownloadStatus::Error,
             status_messages: Vec::new(),

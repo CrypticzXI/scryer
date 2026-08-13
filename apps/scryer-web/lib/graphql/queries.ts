@@ -1166,6 +1166,14 @@ const TITLE_CATALOG_BASE_FIELDS = `
     backgroundSourceUrl
     contentStatus
     metadataFetchedAt
+    qualityProfileId
+    rootFolderId
+    monitorType
+    useSeasonFolders
+    monitorSpecials
+    interSeasonMovies
+    fillerPolicy
+    recapPolicy
     createdAt`;
 
 function titleCatalogListFields(
@@ -1198,7 +1206,6 @@ function titleCatalogListFields(
   }
   if (projection.root) {
     fields.push(`
-    rootFolderId
     rootFolderPath`);
   }
   if (projection.popularity) {
@@ -2341,6 +2348,7 @@ export const globalSearchInitQuery = `query GlobalSearchInit {
     name
     slug
     isDefault
+    qualityProfileId
     roots {
       id
       path

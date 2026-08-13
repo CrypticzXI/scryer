@@ -3161,14 +3161,14 @@ pub struct ExternalIdInput {
 
 #[derive(InputObject, Clone)]
 pub struct TitleOptionsInput {
-    pub quality_profile_id: Option<ID>,
+    pub quality_profile_id: MaybeUndefined<ID>,
     pub root_folder_id: MaybeUndefined<ID>,
-    pub monitor_type: Option<MonitorTypeValue>,
-    pub use_season_folders: Option<bool>,
-    pub monitor_specials: Option<bool>,
-    pub inter_season_movies: Option<bool>,
-    pub filler_policy: Option<FillerPolicyValue>,
-    pub recap_policy: Option<RecapPolicyValue>,
+    pub monitor_type: MaybeUndefined<MonitorTypeValue>,
+    pub use_season_folders: MaybeUndefined<bool>,
+    pub monitor_specials: MaybeUndefined<bool>,
+    pub inter_season_movies: MaybeUndefined<bool>,
+    pub filler_policy: MaybeUndefined<FillerPolicyValue>,
+    pub recap_policy: MaybeUndefined<RecapPolicyValue>,
 }
 
 #[derive(InputObject, Clone)]

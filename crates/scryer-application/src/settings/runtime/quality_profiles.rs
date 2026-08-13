@@ -51,27 +51,97 @@ fn ensure_quality_profiles_exist(
 
     profiles
 }
+
+pub(crate) fn quality_profile_ids_equal(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
+}
+
+pub(crate) fn quality_profile_by_id<'a>(
+    profiles: &'a [crate::QualityProfile],
+    profile_id: &str,
+) -> AppResult<Option<&'a crate::QualityProfile>> {
+    let profile_id = profile_id.trim();
+    if profile_id.is_empty() {
+        return Ok(None);
+    }
+    if let Some(profile) = profiles.iter().find(|profile| profile.id == profile_id) {
+        return Ok(Some(profile));
+    }
+
+    let mut matches = profiles
+        .iter()
+        .filter(|profile| quality_profile_ids_equal(&profile.id, profile_id));
+    let Some(profile) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Err(AppError::Validation(format!(
+            "quality profile id '{profile_id}' is ambiguous because profile ids differ only by ASCII case"
+        )));
+    }
+    Ok(Some(profile))
+}
+
+fn ensure_unique_quality_profile_ids(profiles: &[crate::QualityProfile]) -> AppResult<()> {
+    let mut seen = HashMap::<String, String>::new();
+    for profile in profiles {
+        let profile_id = profile.id.trim();
+        if profile_id.is_empty() {
+            return Err(AppError::Validation(
+                "quality profile id is required".to_string(),
+            ));
+        }
+        let identity = profile_id.to_ascii_lowercase();
+        if let Some(existing) = seen.insert(identity, profile_id.to_string()) {
+            return Err(AppError::Validation(format!(
+                "quality profile ids '{existing}' and '{profile_id}' differ only by ASCII case"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn profile_id_from_setting_json(raw: &str) -> Option<String> {
+    let value = serde_json::from_str::<String>(raw)
+        .unwrap_or_else(|_| raw.trim().to_string());
+    normalize_optional_string(Some(value))
+        .filter(|profile_id| profile_id != QUALITY_PROFILE_INHERIT_VALUE)
+}
+
+fn request_profile_ids_from_setting_json(raw: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(raw)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|profile_id| normalize_optional_string(Some(profile_id)))
+        .filter(|profile_id| profile_id != QUALITY_PROFILE_INHERIT_VALUE)
+        .collect()
+}
+
 fn resolve_global_profile_id(
     profiles: &[crate::QualityProfile],
     candidate: Option<String>,
-) -> String {
+) -> AppResult<String> {
     let trimmed = candidate.unwrap_or_default();
-    if profiles.iter().any(|profile| profile.id == trimmed) {
-        return trimmed;
+    if let Some(profile) = quality_profile_by_id(profiles, &trimmed)? {
+        return Ok(profile.id.clone());
     }
 
-    profiles
+    Ok(profiles
         .first()
         .map(|profile| profile.id.clone())
-        .unwrap_or_else(|| "default".to_string())
+        .unwrap_or_else(|| "default".to_string()))
 }
 fn merge_quality_profiles(
     existing: Vec<crate::QualityProfile>,
     updates: Vec<crate::QualityProfile>,
 ) -> Vec<crate::QualityProfile> {
     let mut merged = existing;
-    for update in updates {
-        if let Some(index) = merged.iter().position(|profile| profile.id == update.id) {
+    for mut update in updates {
+        if let Some(index) = merged
+            .iter()
+            .position(|profile| quality_profile_ids_equal(&profile.id, &update.id))
+        {
+            update.id = merged[index].id.clone();
             merged[index] = update;
         } else {
             merged.push(update);
@@ -131,7 +201,7 @@ impl AppUseCase {
                 .await?
                 .and_then(|value| normalize_optional_string(Some(value)))
         {
-            return Ok(profile_id);
+            return self.canonical_quality_profile_id(&profile_id).await;
         }
         if let Some(scope_id) = scope_id
             && let Some(profile_id) = self
@@ -139,14 +209,14 @@ impl AppUseCase {
                 .await?
                 .and_then(|value| normalize_optional_string(Some(value)))
         {
-            return Ok(profile_id);
+            return self.canonical_quality_profile_id(&profile_id).await;
         }
         if let Some(profile_id) = self
             .read_setting_string_value(QUALITY_PROFILE_ID_KEY, None)
             .await?
             .and_then(|value| normalize_optional_string(Some(value)))
         {
-            return Ok(profile_id);
+            return self.canonical_quality_profile_id(&profile_id).await;
         }
         Ok(crate::default_quality_profile_for_search().id)
     }
@@ -168,7 +238,7 @@ impl AppUseCase {
         let profile_names = settings
             .profiles
             .iter()
-            .map(|profile| (profile.id.clone(), profile.name.clone()))
+            .map(|profile| (profile.id.to_ascii_lowercase(), profile.name.clone()))
             .collect::<HashMap<_, _>>();
         let facet_profile_ids = settings
             .category_selections
@@ -196,8 +266,8 @@ impl AppUseCase {
                 serde_json::from_str::<String>(&raw_value)
                     .ok()
                     .and_then(|profile_id| normalize_optional_string(Some(profile_id)))
-                    .filter(|profile_id| profile_names.contains_key(profile_id))
-                    .map(|profile_id| (library_id, profile_id))
+                    .filter(|profile_id| profile_names.contains_key(&profile_id.to_ascii_lowercase()))
+                    .map(|profile_id| (library_id, profile_id.to_ascii_lowercase()))
             })
             .collect::<HashMap<_, _>>();
 
@@ -210,16 +280,17 @@ impl AppUseCase {
                     .find_map(|tag| tag.strip_prefix("scryer:quality-profile:"))
                     .map(str::trim)
                     .filter(|profile_id| !profile_id.is_empty())
-                    .filter(|profile_id| profile_names.contains_key(*profile_id));
+                    .map(str::to_ascii_lowercase)
+                    .filter(|profile_id| profile_names.contains_key(profile_id));
                 let profile_id = title_profile_id
+                    .or_else(|| library_profile_ids.get(&title.library_id).cloned())
                     .or_else(|| {
-                        library_profile_ids
-                            .get(&title.library_id)
-                            .map(String::as_str)
+                        facet_profile_ids
+                            .get(&title.facet)
+                            .map(|profile_id| profile_id.to_ascii_lowercase())
                     })
-                    .or_else(|| facet_profile_ids.get(&title.facet).map(String::as_str))
-                    .unwrap_or(settings.global_profile_id.as_str());
-                profile_names.get(profile_id).cloned().map(|quality_tier| {
+                    .unwrap_or_else(|| settings.global_profile_id.to_ascii_lowercase());
+                profile_names.get(&profile_id).cloned().map(|quality_tier| {
                     crate::TitleQualitySummary {
                         title_id: title.id,
                         quality_tier,
@@ -267,7 +338,7 @@ impl AppUseCase {
             &profiles,
             self.read_setting_string_value(QUALITY_PROFILE_ID_KEY, None)
                 .await?,
-        );
+        )?;
         let global_scoring_persona = parse_scoring_persona_setting(
             self.read_setting_string_value(SCORING_PERSONA_KEY, None)
                 .await?,
@@ -280,7 +351,12 @@ impl AppUseCase {
             let override_profile_id = self
                 .read_setting_string_value_explicit(QUALITY_PROFILE_ID_KEY, Some(facet.as_str()))
                 .await?
-                .filter(|value| profiles.iter().any(|profile| profile.id == *value));
+                .map(|value| {
+                    quality_profile_by_id(&profiles, &value)
+                        .map(|profile| profile.map(|profile| profile.id.clone()))
+                })
+                .transpose()?
+                .flatten();
             let effective_profile_id = override_profile_id
                 .clone()
                 .unwrap_or_else(|| global_profile_id.clone());
@@ -344,6 +420,161 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
+    pub async fn canonical_quality_profile_id(&self, profile_id: &str) -> AppResult<String> {
+        let profile_id = profile_id.trim();
+        if profile_id.is_empty() {
+            return Err(AppError::Validation("quality profile id is required".to_string()));
+        }
+        let profiles = self
+            .services
+            .config
+            .quality_profiles
+            .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
+            .await?;
+        quality_profile_by_id(&profiles, profile_id)?
+            .map(|profile| profile.id.clone())
+            .ok_or_else(|| AppError::Validation(format!(
+                "unknown quality profile '{profile_id}'"
+            )))
+    }
+
+    pub async fn validate_quality_profile_id(&self, profile_id: &str) -> AppResult<()> {
+        self.canonical_quality_profile_id(profile_id).await.map(|_| ())
+    }
+
+    pub(crate) async fn canonicalize_title_quality_profile_tags(
+        &self,
+        tags: &mut [String],
+    ) -> AppResult<()> {
+        for tag in tags {
+            let Some(profile_id) = tag
+                .strip_prefix("scryer:quality-profile:")
+                .map(str::trim)
+                .filter(|profile_id| {
+                    !profile_id.is_empty() && *profile_id != QUALITY_PROFILE_INHERIT_VALUE
+                })
+            else {
+                continue;
+            };
+            let canonical_id = self.canonical_quality_profile_id(profile_id).await?;
+            *tag = format!("scryer:quality-profile:{canonical_id}");
+        }
+        Ok(())
+    }
+
+    async fn ensure_quality_profiles_are_unreferenced(
+        &self,
+        removed_profile_ids: &HashSet<String>,
+        current: &QualityProfileSettings,
+    ) -> AppResult<()> {
+        if removed_profile_ids.is_empty() {
+            return Ok(());
+        }
+
+        let referenced = |profile_id: &str| {
+            removed_profile_ids
+                .iter()
+                .any(|removed| quality_profile_ids_equal(removed, profile_id))
+        };
+        if referenced(&current.global_profile_id) {
+            return Err(AppError::Validation(format!(
+                "cannot remove quality profile '{}' because it is the global default",
+                current.global_profile_id
+            )));
+        }
+        if let Some(selection) = current.category_selections.iter().find(|selection| {
+            selection
+                .override_profile_id
+                .as_deref()
+                .is_some_and(referenced)
+        }) {
+            return Err(AppError::Validation(format!(
+                "cannot remove quality profile '{}' because it is configured for {}",
+                selection.override_profile_id.as_deref().unwrap_or_default(),
+                selection.facet.as_str()
+            )));
+        }
+
+        let libraries = self.services.catalog.libraries.list(None).await?;
+        let library_ids = libraries
+            .iter()
+            .map(|library| library.id.clone())
+            .collect::<Vec<_>>();
+        let quality_overrides = self
+            .services
+            .config
+            .settings
+            .list_setting_json_explicit_for_scope_ids(
+                SETTINGS_SCOPE_SYSTEM,
+                QUALITY_PROFILE_ID_KEY,
+                &library_ids,
+            )
+            .await?;
+        if let Some((library_id, profile_id)) = quality_overrides
+            .into_iter()
+            .filter_map(|(library_id, raw)| {
+                profile_id_from_setting_json(&raw).map(|profile_id| (library_id, profile_id))
+            })
+            .find(|(_, profile_id)| referenced(profile_id))
+        {
+            return Err(AppError::Validation(format!(
+                "cannot remove quality profile '{profile_id}' because library '{library_id}' references it"
+            )));
+        }
+
+        let request_overrides = self
+            .services
+            .config
+            .settings
+            .list_setting_json_explicit_for_scope_ids(
+                SETTINGS_SCOPE_SYSTEM,
+                REQUEST_QUALITY_PROFILE_IDS_KEY,
+                &library_ids,
+            )
+            .await?;
+        if let Some((library_id, profile_id)) = request_overrides
+            .into_iter()
+            .find_map(|(library_id, raw)| {
+                request_profile_ids_from_setting_json(&raw)
+                    .into_iter()
+                    .find(|profile_id| referenced(profile_id))
+                    .map(|profile_id| (library_id, profile_id))
+            })
+        {
+            return Err(AppError::Validation(format!(
+                "cannot remove quality profile '{profile_id}' because library '{library_id}' allows it for requests"
+            )));
+        }
+
+        for profile_id in removed_profile_ids {
+            let title_count = self
+                .services
+                .catalog
+                .titles
+                .count_by_quality_profile_id(profile_id)
+                .await?;
+            if title_count > 0 {
+                return Err(AppError::Validation(format!(
+                    "cannot remove quality profile '{profile_id}' because {title_count} title(s) reference it"
+                )));
+            }
+            let request_references = self
+                .services
+                .catalog
+                .media_requests
+                .count_quality_profile_references(profile_id)
+                .await?;
+            if request_references.pending_requested > 0 {
+                return Err(AppError::Validation(format!(
+                    "cannot remove quality profile '{profile_id}' because {} pending media request(s) reference it",
+                    request_references.pending_requested
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn save_quality_profile_settings(
         &self,
         actor: &User,
@@ -351,19 +582,107 @@ impl AppUseCase {
     ) -> AppResult<QualityProfileSettings> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
+        let _profile_reference_guard = self
+            .runtime
+            .catalog
+            .quality_profile_reference_lock
+            .lock()
+            .await;
 
+        // GraphQL has historically treated both an omitted globalProfileId and
+        // an explicit null as a partial-update no-op. Preserve that patch
+        // contract; an empty string is likewise ignored for compatibility.
+        let global_profile_id = input
+            .global_profile_id
+            .map(|profile_id| profile_id.trim().to_string())
+            .filter(|profile_id| !profile_id.is_empty());
+
+        let existing_profiles = self
+            .services
+            .config
+            .quality_profiles
+            .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
+            .await?;
         let profiles = if input.replace_existing {
             input.profiles
         } else {
-            merge_quality_profiles(
-                self.services
-                    .config
-                    .quality_profiles
-                    .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
-                    .await?,
-                input.profiles,
-            )
+            merge_quality_profiles(existing_profiles.clone(), input.profiles)
         };
+        ensure_unique_quality_profile_ids(&profiles)?;
+
+        let current_profiles = ensure_quality_profiles_exist(if profiles.is_empty() {
+            existing_profiles.clone()
+        } else {
+            profiles.clone()
+        });
+        let global_profile_id = global_profile_id
+            .map(|profile_id| {
+                quality_profile_by_id(&current_profiles, &profile_id)?.map_or_else(
+                    || Err(AppError::Validation(format!("unknown quality profile '{profile_id}'"))),
+                    |profile| Ok(profile.id.clone()),
+                )
+            })
+            .transpose()?;
+        for selection in &input.category_selections {
+            if !selection.inherit_global {
+                let profile_id = selection
+                    .profile_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "profile_id is required when inherit_global is false".to_string(),
+                        )
+                    })?;
+                quality_profile_by_id(&current_profiles, profile_id)?.ok_or_else(|| {
+                    AppError::Validation(format!("unknown quality profile '{profile_id}'"))
+                })?;
+            }
+        }
+
+        let removed_profile_ids = existing_profiles
+            .iter()
+            .map(|profile| profile.id.clone())
+            .filter(|profile_id| {
+                !profiles
+                    .iter()
+                    .any(|profile| quality_profile_ids_equal(&profile.id, profile_id))
+            })
+            .collect::<HashSet<_>>();
+        let mut prospective = self.load_quality_profile_settings().await?;
+        let global_profile_needs_reconciliation = !current_profiles
+            .iter()
+            .any(|profile| quality_profile_ids_equal(&profile.id, &prospective.global_profile_id));
+        if let Some(global_profile_id) = &global_profile_id {
+            prospective.global_profile_id = global_profile_id.clone();
+        } else if global_profile_needs_reconciliation {
+            // Atomic catalog replacement may remove the previously effective
+            // global profile. Reconcile that stale reference to the normal
+            // fallback without assigning a destructive meaning to GraphQL null.
+            prospective.global_profile_id = resolve_global_profile_id(&current_profiles, None)?;
+        }
+        for update in &input.category_selections {
+            if let Some(selection) = prospective
+                .category_selections
+                .iter_mut()
+                .find(|selection| selection.facet == update.facet)
+            {
+                selection.override_profile_id = if update.inherit_global {
+                    None
+                } else {
+                    update.profile_id.as_deref().map(str::trim).map(|profile_id| {
+                        quality_profile_by_id(&current_profiles, profile_id)
+                            .expect("profile id was validated")
+                            .expect("profile id exists")
+                            .id
+                            .clone()
+                    })
+                };
+            }
+        }
+        self.ensure_quality_profiles_are_unreferenced(&removed_profile_ids, &prospective)
+            .await?;
 
         let mut changed_keys = Vec::new();
         if !profiles.is_empty() {
@@ -381,36 +700,17 @@ impl AppUseCase {
             changed_keys.push(QUALITY_PROFILE_CATALOG_KEY.to_string());
         }
 
-        let current_profiles = ensure_quality_profiles_exist(
-            self.services
-                .config
-                .quality_profiles
-                .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
-                .await?,
-        );
-        let valid_profile_ids = current_profiles
-            .iter()
-            .map(|profile| profile.id.as_str())
-            .collect::<HashSet<_>>();
-
-        if let Some(global_profile_id) = input.global_profile_id {
-            let global_profile_id = global_profile_id.trim();
-            if !global_profile_id.is_empty() {
-                if !valid_profile_ids.contains(global_profile_id) {
-                    return Err(AppError::Validation(format!(
-                        "unknown quality profile '{global_profile_id}'"
-                    )));
-                }
-                self.upsert_system_setting_json(
-                    QUALITY_PROFILE_ID_KEY,
-                    &global_profile_id,
-                    Some(actor.id.clone()),
-                )
-                .await?;
-                if !changed_keys.iter().any(|key| key == QUALITY_PROFILE_ID_KEY) {
-                    changed_keys.push(QUALITY_PROFILE_ID_KEY.to_string());
-                }
-            }
+        if let Some(global_profile_id) = global_profile_id {
+            self.upsert_system_setting_json(
+                QUALITY_PROFILE_ID_KEY,
+                &global_profile_id,
+                Some(actor.id.clone()),
+            )
+            .await?;
+            changed_keys.push(QUALITY_PROFILE_ID_KEY.to_string());
+        } else if global_profile_needs_reconciliation {
+            self.delete_system_setting(QUALITY_PROFILE_ID_KEY).await?;
+            changed_keys.push(QUALITY_PROFILE_ID_KEY.to_string());
         }
 
         for selection in input.category_selections {
@@ -427,12 +727,12 @@ impl AppUseCase {
                             "profile_id is required when inherit_global is false".to_string(),
                         )
                     })?;
-                if !valid_profile_ids.contains(profile_id) {
-                    return Err(AppError::Validation(format!(
-                        "unknown quality profile '{profile_id}'"
-                    )));
-                }
-                profile_id.to_string()
+                quality_profile_by_id(&current_profiles, profile_id)?
+                    .ok_or_else(|| {
+                        AppError::Validation(format!("unknown quality profile '{profile_id}'"))
+                    })?
+                    .id
+                    .clone()
             };
 
             self.services
@@ -515,28 +815,27 @@ impl AppUseCase {
     ) -> AppResult<QualityProfileSettings> {
         self.require_app_permission(actor, scryer_domain::AppPermission::ManageCatalogSettings)
             .await?;
+        let _profile_reference_guard = self
+            .runtime
+            .catalog
+            .quality_profile_reference_lock
+            .lock()
+            .await;
 
-        let profile_id = profile_id.trim();
-        if profile_id.is_empty() {
+        let requested_profile_id = profile_id.trim();
+        if requested_profile_id.is_empty() {
             return Err(AppError::Validation("profile_id is required".to_string()));
         }
 
         let current = self.load_quality_profile_settings().await?;
-        if current.global_profile_id == profile_id {
-            return Err(AppError::Validation(
-                "cannot delete this profile because it is set as the global default quality profile"
-                    .to_string(),
-            ));
-        }
-
-        for selection in &current.category_selections {
-            if selection.override_profile_id.as_deref() == Some(profile_id) {
-                return Err(AppError::Validation(format!(
-                    "cannot delete this profile because it is set as the quality profile override for {}",
-                    selection.facet.as_str(),
-                )));
-            }
-        }
+        let profile_id = quality_profile_by_id(&current.profiles, requested_profile_id)?
+            .map(|profile| profile.id.clone())
+            .ok_or_else(|| AppError::NotFound(format!("quality profile {requested_profile_id}")))?;
+        self.ensure_quality_profiles_are_unreferenced(
+            &HashSet::from([profile_id.clone()]),
+            &current,
+        )
+        .await?;
 
         let remaining_profiles = current
             .profiles
@@ -558,7 +857,7 @@ impl AppUseCase {
         self.emit_configuration_changed_event(
             actor,
             "quality_profile".to_string(),
-            Some(profile_id.to_string()),
+            Some(profile_id),
             scryer_domain::ConfigurationChangeAction::Deleted,
         )
         .await;

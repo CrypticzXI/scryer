@@ -64,7 +64,7 @@ import type { LibraryRecord, RootFolderOption } from "@/lib/types/titles";
 
 export type MetadataCatalogAddOptions = {
   libraryId?: string;
-  qualityProfileId: string;
+  qualityProfileId?: string;
   seasonFolder: boolean;
   monitorType: MetadataCatalogMonitorType;
   minAvailability?: string;
@@ -405,6 +405,8 @@ function sameLibrariesByFacet(
           entry.name === candidate.name &&
           entry.slug === candidate.slug &&
           entry.isDefault === candidate.isDefault &&
+          (entry.qualityProfileId ?? null) ===
+            (candidate.qualityProfileId ?? null) &&
           (entry.requestQualityProfileDefaultId ?? null) ===
             (candidate.requestQualityProfileDefaultId ?? null) &&
           (entry.requestQualityProfileIds ?? []).join("|") ===
@@ -1378,14 +1380,6 @@ export function useGlobalSearch({
         return null;
       }
 
-      const qualityProfileId = (
-        options.qualityProfileId || resolveDefaultQualityProfileIdForFacet(facet)
-      ).trim();
-      if (!qualityProfileId) {
-        setGlobalStatus(t("search.addConfigNoQualityProfiles"));
-        return null;
-      }
-
       const monitored = monitorTypeToMonitored(options.monitorType);
 
       const externalIds = metadataResultExternalIds(result);
@@ -1403,7 +1397,7 @@ export function useGlobalSearch({
             monitored,
             tags: [],
             options: {
-              qualityProfileId: qualityProfileId || undefined,
+              qualityProfileId: options.qualityProfileId?.trim() || undefined,
               rootFolderId: options.rootFolderId || undefined,
               monitorType: options.monitorType,
               ...(facet === "MOVIE"
@@ -1448,7 +1442,6 @@ export function useGlobalSearch({
     },
     [
       globalSearch,
-      resolveDefaultQualityProfileIdForFacet,
       runMetadataAutocomplete,
       client,
       setGlobalStatus,

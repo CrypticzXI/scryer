@@ -75,7 +75,11 @@ pub(super) fn bootstrap_with_user_repo(users: Arc<MockUserRepo>) -> (AppUseCase,
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let settings = Arc::new(StoredSettingsRepo::default());
-    let quality_profiles = Arc::new(MockQualityProfileRepo);
+    let mut profile_1080p = test_quality_profile("1080p");
+    profile_1080p.name = "1080P".to_string();
+    let quality_profiles = Arc::new(StoredQualityProfileRepo {
+        profiles: Arc::new(Mutex::new(vec![test_quality_profile("4k"), profile_1080p])),
+    });
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
 
@@ -122,6 +126,7 @@ pub(super) struct MediaRequestTestHarness {
     pub(super) manager: User,
     pub(super) titles: Arc<MockTitleRepo>,
     pub(super) libraries: Arc<MockLibraryRepo>,
+    pub(super) quality_profiles: Arc<StoredQualityProfileRepo>,
     pub(super) media_requests: Arc<MockMediaRequestRepo>,
     pub(super) domain_events: Arc<MockDomainEventRepo>,
 }
@@ -134,7 +139,12 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     let download_client_configs = Arc::new(MockDownloadClientConfigRepo::default());
     let release_attempts = Arc::new(MockReleaseAttemptRepo::default());
     let settings = Arc::new(StoredSettingsRepo::default());
-    let quality_profiles = Arc::new(MockQualityProfileRepo);
+    let quality_profiles = Arc::new(StoredQualityProfileRepo {
+        profiles: Arc::new(Mutex::new(vec![
+            crate::default_quality_profile_for_search(),
+            crate::default_quality_profile_1080p_for_search(),
+        ])),
+    });
     let download_client = Arc::new(StubDownloadClient::default());
     let indexer_client = Arc::new(MockIndexerClient);
     let libraries = Arc::new(MockLibraryRepo::default());
@@ -161,7 +171,7 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
         download_client_configs,
         release_attempts.clone(),
         settings,
-        quality_profiles,
+        quality_profiles.clone(),
         String::new(),
     )
     .with_domain_events(domain_events.clone())
@@ -212,6 +222,7 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
         manager: test_admin_user(),
         titles,
         libraries,
+        quality_profiles,
         media_requests,
         domain_events,
     }

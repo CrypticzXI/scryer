@@ -646,47 +646,17 @@ fn synthetic_tracked_snapshot_queue_item(
     tracked: &TrackedDownloadQueueMetadata,
     primary_client: Option<&DownloadClientConfig>,
 ) -> Option<DownloadQueueItem> {
-    let state = match tracked.state {
-        TrackedDownloadState::Imported => DownloadQueueState::Completed,
-        TrackedDownloadState::Failed => DownloadQueueState::Failed,
-        TrackedDownloadState::ImportPending => DownloadQueueState::ImportPending,
-        TrackedDownloadState::Importing | TrackedDownloadState::ImportBlocked => {
-            DownloadQueueState::Completed
-        }
+    match tracked.state {
+        TrackedDownloadState::Imported
+        | TrackedDownloadState::Failed
+        | TrackedDownloadState::ImportPending
+        | TrackedDownloadState::Importing
+        | TrackedDownloadState::ImportBlocked => {}
         _ => return None,
-    };
+    }
 
     let mut item = tracked.client_item.clone();
-    item.state = state;
-    item.progress_percent = 100;
-    item.remaining_seconds = Some(0);
-    item.attention_required = matches!(
-        tracked.state,
-        TrackedDownloadState::Failed | TrackedDownloadState::ImportBlocked
-    );
-
-    match tracked.state {
-        TrackedDownloadState::Imported => {
-            item.import_status = Some(ImportStatus::Completed);
-            if item.imported_at.is_none() {
-                item.imported_at = item.last_updated_at.clone();
-            }
-        }
-        TrackedDownloadState::Failed if item.import_status.is_none() => {
-            item.import_status = Some(ImportStatus::Failed);
-        }
-        TrackedDownloadState::ImportPending => {}
-        TrackedDownloadState::Importing => {
-            item.import_status = Some(match item.import_status {
-                Some(ImportStatus::Processing) => ImportStatus::Processing,
-                _ => ImportStatus::Running,
-            });
-        }
-        TrackedDownloadState::ImportBlocked => {
-            item.import_status = None;
-        }
-        _ => {}
-    }
+    apply_tracked_download_activity_projection(&mut item, tracked);
 
     if item.client_id.trim().is_empty() && !tracked.client_id.trim().is_empty() {
         item.client_id = tracked.client_id.clone();
@@ -816,9 +786,7 @@ impl AppUseCase {
             Ok(snapshot) => snapshot
                 .iter()
                 .filter_map(|(tracked_id, metadata)| {
-                    metadata
-                        .import_hold
-                        .map(|hold| (tracked_id.clone(), hold))
+                    metadata.import_hold.map(|hold| (tracked_id.clone(), hold))
                 })
                 .collect::<HashMap<_, _>>(),
             Err(_) => HashMap::new(),
@@ -1041,10 +1009,7 @@ impl AppUseCase {
             .into_iter()
             .collect::<HashSet<_>>();
         let can_view_operational_history = self
-            .has_app_permission(
-                actor,
-                scryer_domain::AppPermission::ManageSystemSettings,
-            )
+            .has_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         let (_, model) = self.current_download_queue_read_model().await?;
         let ordering = Self::legacy_download_queue_ordering(&model).await;
@@ -1052,15 +1017,16 @@ impl AppUseCase {
             .iter()
             .map(|index| &model.items[*index])
             .filter(|item| {
-                item.title_id.as_deref().map_or(
-                    can_view_operational_history,
-                    |title_id| {
-                        model.title_library_ids.get(title_id).map_or(
-                            can_view_operational_history,
-                            |library_id| allowed_library_ids.contains(library_id),
-                        )
-                    },
-                )
+                item.title_id
+                    .as_deref()
+                    .map_or(can_view_operational_history, |title_id| {
+                        model
+                            .title_library_ids
+                            .get(title_id)
+                            .map_or(can_view_operational_history, |library_id| {
+                                allowed_library_ids.contains(library_id)
+                            })
+                    })
             })
             .filter(|item| include_all_activity || item.is_scryer_origin)
             .filter(|item| {
@@ -1103,10 +1069,7 @@ impl AppUseCase {
             ));
         }
         let can_view_operational_history = self
-            .has_app_permission(
-                actor,
-                scryer_domain::AppPermission::ManageSystemSettings,
-            )
+            .has_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
 
         let limit = limit.clamp(1, 200);
@@ -1129,15 +1092,17 @@ impl AppUseCase {
         let mut total_count = 0usize;
         for index in ordering.iter().copied() {
             let item = &model.items[index];
-            let authorized = item.title_id.as_deref().map_or(
-                can_view_operational_history,
-                |title_id| {
-                    model.title_library_ids.get(title_id).map_or(
-                        can_view_operational_history,
-                        |library_id| allowed_library_ids.contains(library_id),
-                    )
-                },
-            );
+            let authorized =
+                item.title_id
+                    .as_deref()
+                    .map_or(can_view_operational_history, |title_id| {
+                        model
+                            .title_library_ids
+                            .get(title_id)
+                            .map_or(can_view_operational_history, |library_id| {
+                                allowed_library_ids.contains(library_id)
+                            })
+                    });
             if !authorized
                 || !matches_download_activity_filter(item, DownloadActivityFilter::All)
                 || title_id.is_some_and(|title_id| item.title_id.as_deref() != Some(title_id))
@@ -1183,7 +1148,11 @@ impl AppUseCase {
         metrics::gauge!("scryer_download_queue_snapshot_age_seconds").set(
             snapshot
                 .updated_at
-                .map(|updated_at| Utc::now().signed_duration_since(updated_at).num_milliseconds())
+                .map(|updated_at| {
+                    Utc::now()
+                        .signed_duration_since(updated_at)
+                        .num_milliseconds()
+                })
                 .unwrap_or_default()
                 .max(0) as f64
                 / 1_000.0,
@@ -1229,15 +1198,19 @@ impl AppUseCase {
             .download_queue_snapshot
             .snapshot()
             .await;
-        Ok(snapshot.items.iter().find(|item| {
-            item.download_client_item_id == target_download_client_item_id
-                && normalized_client_id
-                    .as_ref()
-                    .is_none_or(|client_id| item.client_id == *client_id)
-                && normalized_client_type
-                    .as_ref()
-                    .is_none_or(|client_type| item.client_type.eq_ignore_ascii_case(client_type))
-        }).cloned())
+        Ok(snapshot
+            .items
+            .iter()
+            .find(|item| {
+                item.download_client_item_id == target_download_client_item_id
+                    && normalized_client_id
+                        .as_ref()
+                        .is_none_or(|client_id| item.client_id == *client_id)
+                    && normalized_client_type.as_ref().is_none_or(|client_type| {
+                        item.client_type.eq_ignore_ascii_case(client_type)
+                    })
+            })
+            .cloned())
     }
 }
 impl AppUseCase {
@@ -1459,10 +1432,7 @@ impl AppUseCase {
             ));
         }
         let can_view_operational_history = self
-            .has_app_permission(
-                actor,
-                scryer_domain::AppPermission::ManageSystemSettings,
-            )
+            .has_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
             .await?;
         let (_, model) = self.current_download_queue_read_model().await?;
         let ordering = Self::legacy_download_queue_ordering(&model).await;
@@ -1470,15 +1440,16 @@ impl AppUseCase {
             .iter()
             .map(|index| &model.items[*index])
             .filter(|item| {
-                item.title_id.as_deref().map_or(
-                    can_view_operational_history,
-                    |title_id| {
-                        model.title_library_ids.get(title_id).map_or(
-                            can_view_operational_history,
-                            |library_id| allowed_library_ids.contains(library_id),
-                        )
-                    },
-                )
+                item.title_id
+                    .as_deref()
+                    .map_or(can_view_operational_history, |title_id| {
+                        model
+                            .title_library_ids
+                            .get(title_id)
+                            .map_or(can_view_operational_history, |library_id| {
+                                allowed_library_ids.contains(library_id)
+                            })
+                    })
             })
             .cloned()
             .collect())
