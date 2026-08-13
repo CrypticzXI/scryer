@@ -31,7 +31,7 @@ const PERSONAS: { id: ScoringPersonaId; icon: typeof Scale; labelKey: string; de
   { id: "COMPATIBLE", icon: MonitorSmartphone, labelKey: "qualityProfile.personaCompatible", descKey: "setup.personaCompatibleDesc" },
 ];
 
-const QUALITY_TARGETS: QualityTargetId[] = ["4k", "1080p"];
+const QUALITY_TARGETS: QualityTargetId[] = ["1080p", "4k"];
 
 const FACETS: { id: ViewCategoryId; labelKey: string }[] = [
   { id: "MOVIE", labelKey: "setup.facetMovies" },

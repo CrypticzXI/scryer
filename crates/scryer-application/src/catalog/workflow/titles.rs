@@ -389,7 +389,7 @@ impl AppUseCase {
             .iter()
             .map(|profile| (profile.id.as_str(), profile))
             .collect();
-        let default_profile = crate::default_quality_profile_for_search();
+        let default_profile = crate::builtin_default_quality_profile();
 
         let mut title_map = HashMap::new();
         let mut cutoff_profile_map = HashMap::new();

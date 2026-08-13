@@ -1760,7 +1760,7 @@ impl AppUseCase {
             ));
         }
 
-        let profile = default_quality_profile_for_search();
+        let profile = builtin_default_quality_profile();
         Ok(QualityProfileResolution {
             profile_id: profile.id.clone(),
             profile,

@@ -47,7 +47,7 @@ async fn seed_title_quality_profiles(ctx: &TestContext, ids: &[&str]) {
     let profiles = ids
         .iter()
         .map(|id| {
-            let mut profile = scryer_application::default_quality_profile_1080p_for_search();
+            let mut profile = scryer_application::builtin_1080p_profile();
             profile.id = (*id).to_string();
             profile.name = format!("Fixture {id}");
             profile

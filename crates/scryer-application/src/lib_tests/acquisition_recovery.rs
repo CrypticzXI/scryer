@@ -5587,7 +5587,7 @@ async fn bootstrap_rss_with_media_files_and_profiles(
         .set_value(
             SETTINGS_SCOPE_SYSTEM,
             QUALITY_PROFILE_ID_KEY,
-            &format!("\"{}\"", crate::default_quality_profile_for_search().id),
+            &format!("\"{}\"", crate::builtin_4k_profile().id),
         )
         .await;
 
@@ -5795,8 +5795,8 @@ async fn rss_library_quality_profile_overrides_global_profile() {
     let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
     quality_profiles
         .set_profiles(vec![
-            crate::default_quality_profile_for_search(),
-            crate::default_quality_profile_1080p_for_search(),
+            crate::builtin_4k_profile(),
+            crate::builtin_1080p_profile(),
         ])
         .await;
     let indexer_client = Arc::new(MultiReleaseIndexerClient::new(vec![
@@ -5860,8 +5860,8 @@ async fn add_and_queue_reuse_reconciles_quality_profile_before_submission() {
     let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
     quality_profiles
         .set_profiles(vec![
-            crate::default_quality_profile_for_search(),
-            crate::default_quality_profile_1080p_for_search(),
+            crate::builtin_4k_profile(),
+            crate::builtin_1080p_profile(),
         ])
         .await;
     let (app, user, _) = bootstrap_rss_with_media_files_and_profiles(
@@ -5952,8 +5952,8 @@ async fn rss_reused_add_clears_4k_override_and_blocks_2160p_via_library_1080p() 
     let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
     quality_profiles
         .set_profiles(vec![
-            crate::default_quality_profile_for_search(),
-            crate::default_quality_profile_1080p_for_search(),
+            crate::builtin_4k_profile(),
+            crate::builtin_1080p_profile(),
         ])
         .await;
     let indexer_client = Arc::new(MultiReleaseIndexerClient::new(vec![
@@ -6200,7 +6200,7 @@ async fn rss_does_not_grab_cutoff_met_movie() {
     let media_files = Arc::new(MockMediaFileRepo::default());
     let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
     // A profile whose cutoff is 1080p: an existing 2160p file is at/above cutoff.
-    let mut cutoff_profile = crate::default_quality_profile_for_search();
+    let mut cutoff_profile = crate::builtin_4k_profile();
     cutoff_profile.criteria.cutoff_tier = Some("1080P".to_string());
     quality_profiles.set_profiles(vec![cutoff_profile]).await;
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
@@ -6271,7 +6271,7 @@ async fn rss_upgrades_below_cutoff_movie_with_no_wanted_row() {
     let media_files = Arc::new(MockMediaFileRepo::default());
     let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
     // Cutoff at 2160p: a 720p file is below cutoff, so the scope is a target.
-    let mut profile = crate::default_quality_profile_for_search();
+    let mut profile = crate::builtin_4k_profile();
     profile.criteria.cutoff_tier = Some("2160P".to_string());
     quality_profiles.set_profiles(vec![profile]).await;
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));

@@ -1385,14 +1385,25 @@ impl AppUseCase {
                 subject.submission_scope.episode_id(),
                 subject.submission_scope.series_movie_link_id(),
             );
-        let upgrade_context = self
+        let upgrade_context = match self
             .resolve_upgrade_context_for_title_with_category_and_quality(
                 title,
                 wanted.grabbed_release.as_deref(),
                 Some(subject.owner_facet.as_str()),
                 analyzed_cutoff_quality,
             )
-            .await;
+            .await
+        {
+            Ok(context) => context,
+            Err(error) => {
+                warn!(
+                    title_id = title.id.as_str(),
+                    error = %error,
+                    "RSS grab: failed to resolve quality profile; skipping scope"
+                );
+                return;
+            }
+        };
         if upgrade_context.cutoff_reached {
             return;
         }

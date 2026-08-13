@@ -45,8 +45,8 @@ fn ensure_quality_profiles_exist(
     mut profiles: Vec<crate::QualityProfile>,
 ) -> Vec<crate::QualityProfile> {
     if profiles.is_empty() {
-        profiles.push(crate::default_quality_profile_for_search());
-        profiles.push(crate::default_quality_profile_1080p_for_search());
+        profiles.push(crate::builtin_default_quality_profile());
+        profiles.push(crate::builtin_4k_profile());
     }
 
     profiles
@@ -126,10 +126,19 @@ fn resolve_global_profile_id(
         return Ok(profile.id.clone());
     }
 
+    // A candidate that no longer resolves falls back to the canonical
+    // built-in default when the catalog still carries it. A catalog that
+    // replaced the built-ins (the setup wizard does) falls to its first
+    // profile instead — the fallback must always name a real profile.
+    if let Some(profile) =
+        quality_profile_by_id(profiles, crate::BUILTIN_DEFAULT_QUALITY_PROFILE_ID)?
+    {
+        return Ok(profile.id.clone());
+    }
     Ok(profiles
         .first()
         .map(|profile| profile.id.clone())
-        .unwrap_or_else(|| "default".to_string()))
+        .unwrap_or_else(|| crate::BUILTIN_DEFAULT_QUALITY_PROFILE_ID.to_string()))
 }
 fn merge_quality_profiles(
     existing: Vec<crate::QualityProfile>,
@@ -218,7 +227,7 @@ impl AppUseCase {
         {
             return self.canonical_quality_profile_id(&profile_id).await;
         }
-        Ok(crate::default_quality_profile_for_search().id)
+        Ok(crate::BUILTIN_DEFAULT_QUALITY_PROFILE_ID.to_string())
     }
 }
 impl AppUseCase {
@@ -710,7 +719,23 @@ impl AppUseCase {
             .await?;
             changed_keys.push(QUALITY_PROFILE_ID_KEY.to_string());
         } else if global_profile_needs_reconciliation {
-            self.delete_system_setting(QUALITY_PROFILE_ID_KEY).await?;
+            let builtin_default_available = current_profiles.iter().any(|profile| {
+                quality_profile_ids_equal(&profile.id, crate::BUILTIN_DEFAULT_QUALITY_PROFILE_ID)
+            });
+            if builtin_default_available {
+                self.delete_system_setting(QUALITY_PROFILE_ID_KEY).await?;
+            } else {
+                // The replacement catalog dropped the built-in default, so
+                // deleting the row would leave the definition default dangling
+                // until the next boot repairs it; persist the reconciled
+                // global explicitly instead (mirrors bootstrap normalization).
+                self.upsert_system_setting_json(
+                    QUALITY_PROFILE_ID_KEY,
+                    &prospective.global_profile_id,
+                    Some(actor.id.clone()),
+                )
+                .await?;
+            }
             changed_keys.push(QUALITY_PROFILE_ID_KEY.to_string());
         }
 

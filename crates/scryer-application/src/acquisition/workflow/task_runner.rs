@@ -1093,14 +1093,25 @@ async fn process_single_target(
             subject.submission_scope.series_movie_link_id(),
         );
 
-    let upgrade_context = app
+    let upgrade_context = match app
         .resolve_upgrade_context_for_title_with_category_and_quality(
             &search_title,
             item.grabbed_release.as_deref(),
             Some(subject.category.as_str()),
             analyzed_cutoff_quality,
         )
-        .await;
+        .await
+    {
+        Ok(context) => context,
+        Err(error) => {
+            warn!(
+                title_id = title.id.as_str(),
+                error = %error,
+                "background acquisition: failed to resolve quality profile; skipping target"
+            );
+            return Ok(());
+        }
+    };
     let profile = &upgrade_context.profile;
 
     // Cutoff tier check — skip upgrades if the existing file meets the cutoff quality.

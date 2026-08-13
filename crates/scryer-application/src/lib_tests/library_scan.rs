@@ -1094,8 +1094,10 @@ async fn movie_title_scan_multiple_files_picks_initial_primary_and_marks_rest_ad
     let tempdir = tempfile::tempdir().expect("tempdir");
     let title_dir = tempdir.path().join("Primary Choice (2026)");
     std::fs::create_dir(&title_dir).expect("create movie folder");
+    // Both files sit inside the built-in default (1080p) profile's tiers so
+    // the pick exercises relative scoring rather than quality gating.
     let small_path = title_dir.join("Primary.Choice.2026.720p.WEB-DL.mkv");
-    let large_path = title_dir.join("Primary.Choice.2026.2160p.WEB-DL.mkv");
+    let large_path = title_dir.join("Primary.Choice.2026.1080p.WEB-DL.mkv");
     std::fs::write(&small_path, vec![0_u8; 128]).expect("write smaller movie file");
     std::fs::write(&large_path, vec![0_u8; 512]).expect("write larger movie file");
 

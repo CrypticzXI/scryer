@@ -230,10 +230,14 @@ async fn submit_media_request_creates_request_requester_and_domain_event() {
     assert_eq!(request.id, outcome.request_id);
     assert_eq!(request.library_id, library_id);
     assert_eq!(request.status, MediaRequestStatus::Pending);
-    assert_eq!(request.requested_quality_profile_id.as_deref(), Some("4k"));
+    assert_eq!(
+        request.requested_quality_profile_id.as_deref(),
+        Some(crate::BUILTIN_DEFAULT_QUALITY_PROFILE_ID),
+        "unconfigured requests snapshot the built-in default profile"
+    );
     assert_eq!(
         request.requested_quality_profile_name.as_deref(),
-        Some("4K")
+        Some("1080P")
     );
     assert!(request.requested_monitor_type.is_none());
     assert_eq!(request.created_by_user_id, harness.user.id);
@@ -269,8 +273,14 @@ async fn submit_media_request_creates_request_requester_and_domain_event() {
             assert_eq!(data.library_id, library_id);
             assert_eq!(data.title_name, "Glass Harbor");
             assert_eq!(data.external_ids, request.external_ids);
-            assert_eq!(data.requested_quality_profile_id.as_deref(), Some("4k"));
-            assert_eq!(data.requested_quality_profile_name.as_deref(), Some("4K"));
+            assert_eq!(
+                data.requested_quality_profile_id.as_deref(),
+                Some(crate::BUILTIN_DEFAULT_QUALITY_PROFILE_ID)
+            );
+            assert_eq!(
+                data.requested_quality_profile_name.as_deref(),
+                Some("1080P")
+            );
             assert!(data.requested_monitor_type.is_none());
         }
         other => panic!("unexpected event payload: {other:?}"),
@@ -287,14 +297,14 @@ async fn pending_media_request_blocks_profile_removal_after_library_allowlist_ch
             &harness.manager,
             &library_id,
             LibrarySettingsOverrideDraft {
-                request_quality_profile_ids: Some(vec!["1080p".to_string()]),
+                request_quality_profile_ids: Some(vec!["4k".to_string()]),
                 ..empty_library_settings_override()
             },
         )
         .await
-        .expect("allow 1080p before request submission");
+        .expect("allow 4k before request submission");
     let mut input = media_request_input(library_id.clone(), 9088);
-    input.requested_quality_profile_id = Some("1080p".to_string());
+    input.requested_quality_profile_id = Some("4k".to_string());
     harness
         .app
         .submit_media_request(&harness.user, input)
@@ -307,7 +317,7 @@ async fn pending_media_request_blocks_profile_removal_after_library_allowlist_ch
             &harness.manager,
             &library_id,
             LibrarySettingsOverrideDraft {
-                request_quality_profile_ids: Some(vec!["4k".to_string()]),
+                request_quality_profile_ids: Some(vec!["1080p".to_string()]),
                 ..empty_library_settings_override()
             },
         )
@@ -316,7 +326,7 @@ async fn pending_media_request_blocks_profile_removal_after_library_allowlist_ch
 
     let error = harness
         .app
-        .delete_quality_profile(&harness.manager, "1080p")
+        .delete_quality_profile(&harness.manager, "4k")
         .await
         .expect_err("persisted pending request must remain a deletion reference");
 
@@ -354,8 +364,15 @@ async fn submit_media_request_auto_approves_for_requester_with_auto_approve_perm
     let request = &requests[0];
     assert_eq!(request.status, MediaRequestStatus::Approved);
     assert_eq!(request.created_title_id.as_deref(), Some(title_id.as_str()));
-    assert_eq!(request.approved_quality_profile_id.as_deref(), Some("4k"));
-    assert_eq!(request.approved_quality_profile_name.as_deref(), Some("4K"));
+    assert_eq!(
+        request.approved_quality_profile_id.as_deref(),
+        Some(crate::BUILTIN_DEFAULT_QUALITY_PROFILE_ID),
+        "unconfigured approvals snapshot the built-in default profile"
+    );
+    assert_eq!(
+        request.approved_quality_profile_name.as_deref(),
+        Some("1080P")
+    );
     assert_eq!(
         request.resolved_by_user_id.as_deref(),
         Some(requester.id.as_str())
@@ -1370,6 +1387,21 @@ async fn approve_media_request_accepts_legacy_case_profile_id_and_persists_canon
         .set_profiles(vec![test_quality_profile("wizard-SERIES")])
         .await;
     let library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Series);
+    // The catalog holds only the wizard profile, so the request allowlist must
+    // name it explicitly: the implicit default allowlist follows the built-in
+    // default profile, which is absent from this deliberately reduced catalog.
+    harness
+        .app
+        .update_library_settings(
+            &harness.manager,
+            &library_id,
+            LibrarySettingsOverrideDraft {
+                request_quality_profile_ids: Some(vec!["wizard-SERIES".to_string()]),
+                ..empty_library_settings_override()
+            },
+        )
+        .await
+        .expect("allow the wizard profile for requests");
     let mut input = media_request_input(library_id, 9024);
     input.facet = MediaFacet::Series;
     input.requested_quality_profile_id = Some("wizard-SERIES".to_string());

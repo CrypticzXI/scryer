@@ -1467,7 +1467,7 @@ pub async fn execute_manual_import(
         specials_folder_template,
     } = resolve_import_paths(app, &title).await?;
     let full_folder_path = effective_title_folder_path(&media_root, &title, &folder_template, None);
-    let quality_profile = resolve_import_quality_profile(app, &title).await;
+    let quality_profile = resolve_import_quality_profile(app, &title).await?;
 
     let mut results = Vec::new();
     let mut imported_any = false;

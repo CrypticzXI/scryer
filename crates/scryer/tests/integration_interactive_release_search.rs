@@ -386,7 +386,7 @@ async fn setup_app(configs: Vec<IndexerConfig>) -> (AppUseCase, User) {
         ..Default::default()
     };
 
-    let profile = scryer_application::default_quality_profile_for_search();
+    let profile = scryer_application::builtin_default_quality_profile();
     app.save_quality_profile_settings(
         &user,
         SaveQualityProfileSettings {

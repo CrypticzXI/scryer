@@ -141,8 +141,8 @@ pub(super) fn bootstrap_media_request_app() -> MediaRequestTestHarness {
     let settings = Arc::new(StoredSettingsRepo::default());
     let quality_profiles = Arc::new(StoredQualityProfileRepo {
         profiles: Arc::new(Mutex::new(vec![
-            crate::default_quality_profile_for_search(),
-            crate::default_quality_profile_1080p_for_search(),
+            crate::builtin_4k_profile(),
+            crate::builtin_1080p_profile(),
         ])),
     });
     let download_client = Arc::new(StubDownloadClient::default());

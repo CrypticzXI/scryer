@@ -71,7 +71,7 @@ async fn import_series_download(
     } = resolve_import_paths(app, title).await?;
     let full_folder_path = effective_title_folder_path(&media_root, title, &folder_template, None);
 
-    let quality_profile = resolve_import_quality_profile(app, title).await;
+    let quality_profile = resolve_import_quality_profile(app, title).await?;
 
     let nfo_enabled = app
         .resolve_nfo_write_on_import(Some(&title.library_id), &title.facet)

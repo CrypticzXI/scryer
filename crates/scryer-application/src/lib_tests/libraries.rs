@@ -1447,6 +1447,68 @@ async fn replacing_profiles_reconciles_a_removed_global_reference() {
 }
 
 #[tokio::test]
+async fn replacing_the_catalog_with_wizard_profiles_reconciles_the_global() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
+    quality_profiles
+        .set_profiles(vec![
+            test_quality_profile("4k"),
+            test_quality_profile("1080p"),
+        ])
+        .await;
+    let (app, user) = bootstrap_with_settings_repo_and_profiles(
+        Arc::clone(&settings) as Arc<dyn SettingsRepository>,
+        Arc::clone(&quality_profiles) as Arc<dyn QualityProfileRepository>,
+        Arc::new(MockIndexerClient),
+    );
+
+    // The setup wizard replaces the whole catalog, stripping every built-in
+    // profile, and sends no global. The save must reconcile the global onto a
+    // surviving profile instead of pinning the (removed) built-in default.
+    let saved = app
+        .save_quality_profile_settings(
+            &user,
+            SaveQualityProfileSettings {
+                profiles: vec![
+                    test_quality_profile("wizard-MOVIE"),
+                    test_quality_profile("wizard-SERIES"),
+                    test_quality_profile("wizard-ANIME"),
+                ],
+                replace_existing: true,
+                global_profile_id: None,
+                category_selections: Vec::new(),
+                global_scoring_persona: None,
+                category_persona_selections: Vec::new(),
+            },
+        )
+        .await
+        .expect("the wizard-shaped save must survive removing every built-in profile");
+
+    assert!(
+        saved
+            .profiles
+            .iter()
+            .all(|profile| profile.id.starts_with("wizard-"))
+    );
+    assert!(
+        saved.global_profile_id.starts_with("wizard-"),
+        "the reconciled global must name a surviving profile, got '{}'",
+        saved.global_profile_id
+    );
+    let stored_global = settings
+        .get_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY)
+        .await
+        .expect(
+            "a catalog without the built-in default must persist an explicit global: \
+             the definition default would dangle until the next restart",
+        );
+    assert!(
+        stored_global.contains("wizard-"),
+        "the persisted global must name a surviving profile, got '{stored_global}'"
+    );
+}
+
+#[tokio::test]
 async fn a_partial_quality_profile_save_preserves_the_global_reference() {
     let settings = Arc::new(StoredSettingsRepo::default());
     settings
@@ -1575,6 +1637,11 @@ async fn deleting_profile_rejects_a_title_reference() {
 #[tokio::test]
 async fn profile_deletion_waits_for_the_shared_reference_write_lock() {
     let settings = Arc::new(StoredSettingsRepo::default());
+    // Pin the global elsewhere so '1080p' is genuinely unreferenced; with no
+    // explicit global the built-in default would protect it from deletion.
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, "\"4k\"")
+        .await;
     let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
     quality_profiles
         .set_profiles(vec![
@@ -1612,6 +1679,10 @@ async fn profile_deletion_waits_for_the_shared_reference_write_lock() {
 #[tokio::test]
 async fn title_add_winning_the_profile_lock_prevents_profile_deletion() {
     let settings = Arc::new(StoredSettingsRepo::default());
+    // Pin the global elsewhere so the title tag is the only '1080p' reference.
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, "\"4k\"")
+        .await;
     let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
     quality_profiles
         .set_profiles(vec![
@@ -1678,6 +1749,10 @@ async fn title_add_winning_the_profile_lock_prevents_profile_deletion() {
 #[tokio::test]
 async fn profile_deletion_winning_the_lock_rejects_the_later_title_writer() {
     let settings = Arc::new(StoredSettingsRepo::default());
+    // Pin the global elsewhere so '1080p' is deletable once the lock frees.
+    settings
+        .set_value(SETTINGS_SCOPE_SYSTEM, QUALITY_PROFILE_ID_KEY, "\"4k\"")
+        .await;
     let quality_profiles = Arc::new(StoredQualityProfileRepo::default());
     quality_profiles
         .set_profiles(vec![
@@ -1748,7 +1823,11 @@ async fn resolve_quality_profile_uses_builtin_only_for_an_empty_unconfigured_cat
         .await
         .expect("empty, unconfigured bootstrap should retain its builtin profile");
 
-    assert_eq!(resolved.profile_id, "4k");
+    assert_eq!(
+        resolved.profile_id,
+        crate::BUILTIN_DEFAULT_QUALITY_PROFILE_ID,
+        "the empty-catalog backstop must be the canonical built-in default"
+    );
     assert_eq!(
         resolved.source,
         crate::app_usecase_discovery::QualityProfileResolutionSource::Builtin

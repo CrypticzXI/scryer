@@ -115,7 +115,7 @@ mod tests {
         MediaFileRepository, PendingImportStatus, QualityProfileRepository, SettingsRepository,
         ShowRepository, SystemInfoProvider, TitleImageKind, TitleImageRepository,
         TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository,
-        UserRepository, default_quality_profile_for_search,
+        UserRepository, builtin_4k_profile,
     };
     use scryer_domain::{
         Collection, CollectionType, Id, Library, LibraryGrant, LibraryPermission,
@@ -705,7 +705,7 @@ mod tests {
             let services =
                 PostgresServices::new_with_mode(schema_url, MigrationMode::Apply).await?;
             let quality_profiles = crate::QualityProfileStore::new(services.datastore());
-            let profiles = vec![default_quality_profile_for_search()];
+            let profiles = vec![builtin_4k_profile()];
 
             quality_profiles
                 .replace_quality_profiles("system", None, profiles.clone())

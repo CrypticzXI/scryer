@@ -1312,6 +1312,11 @@ async fn bootstrap_application(
         VERSION,
     )
     .await;
+    startup_migrations::_0006_quality_profile_default_1080p::clear_system_written_legacy_default_global_profile(
+        bootstrap_settings_store.clone(),
+        bootstrap_quality_profile_store.clone(),
+    )
+    .await;
     spawn_post_upgrade_auto_backup_if_pending(
         app_use_case.clone(),
         bootstrap_settings_store.clone(),

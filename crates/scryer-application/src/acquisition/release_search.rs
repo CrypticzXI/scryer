@@ -1325,14 +1325,25 @@ impl AppUseCase {
                 subject.submission_scope.episode_id(),
                 subject.submission_scope.series_movie_link_id(),
             );
-        let upgrade_context = self
+        let upgrade_context = match self
             .resolve_upgrade_context_for_title_with_category_and_quality(
                 title,
                 subject.grabbed_release.as_deref(),
                 Some(subject.category.as_str()),
                 analyzed_cutoff_quality,
             )
-            .await;
+            .await
+        {
+            Ok(context) => context,
+            Err(error) => {
+                tracing::warn!(
+                    title_id = title.id.as_str(),
+                    error = %error,
+                    "auto evaluation: failed to resolve quality profile; leaving candidates unevaluated"
+                );
+                return results;
+            }
+        };
 
         let evaluation_context = AutoCandidateEvaluationContext {
             title,

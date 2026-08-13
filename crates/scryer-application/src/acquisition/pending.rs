@@ -701,14 +701,28 @@ impl AppUseCase {
                 wanted.episode_id.as_deref(),
                 wanted.series_movie_link_id.as_deref(),
             );
-        let upgrade_context = self
+        // A resolution failure defers rather than errors: the callers expire
+        // parked releases on Err, and a possibly transient settings problem
+        // must not permanently burn delayed or standby candidates.
+        let upgrade_context = match self
             .resolve_upgrade_context_for_title_with_category_and_quality(
                 &title,
                 wanted.grabbed_release.as_deref(),
                 None,
                 analyzed_cutoff_quality,
             )
-            .await;
+            .await
+        {
+            Ok(context) => context,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    title_id = title.id.as_str(),
+                    "pending release: failed to resolve quality profile; keeping release pending"
+                );
+                return Ok(PendingGrabOutcome::Deferred);
+            }
+        };
 
         if upgrade_context.cutoff_reached {
             return Ok(PendingGrabOutcome::Rejected);

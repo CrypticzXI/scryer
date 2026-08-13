@@ -174,8 +174,8 @@ export function SetupWizardContainer({
   const [facetPrefs, setFacetPrefs] = useState<
     Record<ViewCategoryId, FacetQualityPrefs>
   >({
-    MOVIE: { quality: "4k", persona: "BALANCED" },
-    SERIES: { quality: "4k", persona: "BALANCED" },
+    MOVIE: { quality: "1080p", persona: "BALANCED" },
+    SERIES: { quality: "1080p", persona: "BALANCED" },
     ANIME: { quality: "1080p", persona: "BALANCED" },
   });
   const [personaSaving, setPersonaSaving] = useState(false);
