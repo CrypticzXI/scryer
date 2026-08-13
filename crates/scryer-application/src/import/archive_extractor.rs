@@ -10,16 +10,16 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::{AppError, AppResult, ArchiveExtractorPluginProvider};
+use par2_rs::{
+    DiskFileAccess, Par2FileSet, RepairOptions, Repairability, disk::PlacementFileAccess,
+    execute_repair_with_options, placement::PlacementPlan, plan_repair, scan_placement,
+    verify::verify_all,
+};
 use scryer_plugin_sdk::{
     ArchivePluginFormat, ArchivePluginOperation, ArchivePluginProcessRequest,
     ArchivePluginProcessResponse, ArchivePluginStatus,
 };
 use tracing::info;
-use weaver_par2::{
-    DiskFileAccess, Par2FileSet, RepairOptions, Repairability, disk::PlacementFileAccess,
-    execute_repair_with_options, placement::PlacementPlan, plan_repair, scan_placement,
-    verify::verify_all,
-};
 
 const EXTRACTED_DIR_NAME: &str = "_scryer_extracted";
 const ARCHIVE_STAGING_PREFIX: &str = ".scryer-ax-";
