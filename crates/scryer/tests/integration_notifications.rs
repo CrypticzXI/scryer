@@ -110,6 +110,8 @@ async fn insert_jellyfin_media_server_connection_with_api_key(
         default_library_grants: Vec::new(),
         machine_id: None,
         api_key,
+        emby_server_id: None,
+        emby_connect_enabled: false,
         path_mappings,
         created_at: now,
         updated_at: now,

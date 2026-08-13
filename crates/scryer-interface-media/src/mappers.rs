@@ -2562,6 +2562,10 @@ pub fn from_media_server_connection(
 ) -> MediaServerConnectionPayload {
     let api_key_present = connection.api_key_present();
     let machine_id_present = connection.machine_id.is_some();
+    let emby_server_id_present = connection
+        .emby_server_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
     MediaServerConnectionPayload {
         id: connection.id.into(),
         provider: MediaServerProviderValue::from_domain(connection.provider),
@@ -2593,6 +2597,8 @@ pub fn from_media_server_connection(
             .collect(),
         machine_id_present,
         api_key_present,
+        emby_server_id_present,
+        emby_connect_enabled: connection.emby_connect_enabled,
         path_mappings: connection
             .path_mappings
             .into_iter()

@@ -1595,6 +1595,12 @@ const en: LocaleDictionary = {
   "settings.indexerDownloadClient": "Download client",
   "settings.indexerDownloadClientLabel": "Download client for {{name}}",
   "settings.indexerDownloadClientAutomatic": "Automatic",
+  "settings.indexerDownloadClientLoading": "Loading download clients…",
+  "settings.indexerDownloadClientLoadRetry": "Retry loading download clients",
+  "settings.indexerDownloadClientCatalogStale":
+    "Download-client options may be out of date.",
+  "settings.indexerDownloadClientSelectionInvalid":
+    "Choose Automatic or a download client compatible with this indexer.",
   "settings.indexerDownloadClientNotApplicable": "Not applicable",
   "settings.indexerDownloadClientDisabled": "Disabled",
   "settings.indexerDownloadClientDisabledWarning":

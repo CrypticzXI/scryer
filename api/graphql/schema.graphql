@@ -169,6 +169,7 @@ type AuthRuntimeStatePayload {
 	mfaRequirePasswordLogin: Boolean!
 	mfaRequireConfigStepUp: Boolean!
 	totpRequireJellyfinLogin: Boolean!
+	totpRequireEmbyLogin: Boolean!
 }
 
 type AutoBackupSettingsPayload {
@@ -471,6 +472,7 @@ input CreateIndexerConfigInput {
 	name: String!
 	providerType: String!
 	indexerProxyConfigId: ID
+	downloadClientId: ID
 	rateLimitSeconds: Int
 	rateLimitBurst: Int
 	isEnabled: Boolean
@@ -515,6 +517,12 @@ input CreateMediaServerConnectionInput {
 	apiKey: String
 	adminUsername: String
 	adminPassword: String
+	embyConnectionMode: EmbyConnectionModeValue
+	embyLocalSetupMethod: EmbyLocalSetupMethodValue
+	embyConnectEnabled: Boolean
+	embyConnectUsernameOrEmail: String
+	embyConnectPassword: String
+	embyConnectServerId: String
 	pathMappings: [MediaServerPathMappingInput!]
 }
 
@@ -826,6 +834,11 @@ type DirectoryEntryPayload {
 	name: String!
 	path: String!
 	isDirectory: Boolean!
+}
+
+input DiscoverEmbyConnectServersInput {
+	usernameOrEmail: String!
+	password: String!
 }
 
 type DiscoveryContentCertificationPayload {
@@ -1376,6 +1389,42 @@ type DownloadSubtitlePayload {
 	downloaded: Boolean!
 }
 
+enum EmbyConnectAddressStatusValue {
+	REACHABLE
+	UNREACHABLE
+	INVALID_URL
+	SERVER_ID_MISMATCH
+}
+
+type EmbyConnectServerPayload {
+	serverId: String!
+	name: String!
+	userType: EmbyConnectUserTypeValue!
+	localAddress: String
+	remoteAddress: String
+	localApiBaseUrl: String
+	remoteApiBaseUrl: String
+	localStatus: EmbyConnectAddressStatusValue!
+	remoteStatus: EmbyConnectAddressStatusValue!
+	suggestedBaseUrl: String
+}
+
+enum EmbyConnectUserTypeValue {
+	LINKED_USER
+	GUEST
+	UNKNOWN
+}
+
+enum EmbyConnectionModeValue {
+	LOCAL
+	CONNECT
+}
+
+enum EmbyLocalSetupMethodValue {
+	API_KEY
+	ADMIN_CREDENTIALS
+}
+
 type EmptyRecycleBinPayload {
 	purgedCount: Int!
 }
@@ -1467,6 +1516,7 @@ enum ExecutionModeValue {
 enum ExternalAccountProviderValue {
 	PLEX
 	JELLYFIN
+	EMBY
 }
 
 enum ExternalAccountStatusValue {
@@ -1486,6 +1536,7 @@ type ExternalAuthRuntimeConnectionPayload {
 	displayName: String!
 	loginEnabled: Boolean!
 	linkingEnabled: Boolean!
+	embyConnectEnabled: Boolean!
 }
 
 type ExternalAuthRuntimeSettingsPayload {
@@ -1955,6 +2006,7 @@ type IndexerConfigSyncPayload {
 type IndexerDownloadClientMappingCatalogPayload {
 	clients: [IndexerDownloadClientMappingClientPayload!]!
 	indexers: [IndexerDownloadClientMappingIndexerPayload!]!
+	providerCompatibility: [IndexerDownloadClientProviderCompatibilityPayload!]!
 }
 
 type IndexerDownloadClientMappingClientPayload {
@@ -1969,6 +2021,13 @@ type IndexerDownloadClientMappingIndexerPayload {
 	id: ID!
 	name: String!
 	downloadClientId: ID
+	protocolFamilies: [String!]!
+	supportsMapping: Boolean!
+	compatibleClientIds: [ID!]!
+}
+
+type IndexerDownloadClientProviderCompatibilityPayload {
+	providerType: String!
 	protocolFamilies: [String!]!
 	supportsMapping: Boolean!
 	compatibleClientIds: [ID!]!
@@ -2357,6 +2416,13 @@ type LibrarySettingsPayload {
 	downloadClientRoutingOverride: [DownloadClientRoutingEntryPayload!]
 }
 
+input LinkEmbyAccountInput {
+	connectionId: ID!
+	mode: EmbyConnectionModeValue!
+	username: String!
+	password: String!
+}
+
 input LinkJellyfinAccountInput {
 	connectionId: ID!
 	username: String!
@@ -2402,6 +2468,16 @@ type LoginPayload {
 	expiresAt: DateTime!
 	mfaVerifiedUntil: DateTime
 	mfaEnrollmentRequired: Boolean!
+	persistSession: Boolean!
+}
+
+input LoginWithEmbyInput {
+	connectionId: ID!
+	mode: EmbyConnectionModeValue!
+	username: String!
+	password: String!
+	totpCode: String
+	persistSession: Boolean
 }
 
 input LoginWithJellyfinInput {
@@ -2624,9 +2700,16 @@ type MediaServerConnectionPayload {
 	defaultLibraryGrants: [MediaServerDefaultLibraryGrantPayload!]!
 	machineIdPresent: Boolean!
 	apiKeyPresent: Boolean!
+	embyServerIdPresent: Boolean!
+	embyConnectEnabled: Boolean!
 	pathMappings: [MediaServerPathMappingPayload!]!
 	createdAt: DateTime!
 	updatedAt: DateTime!
+}
+
+type MediaServerConnectionTestPayload {
+	status: String!
+	message: String
 }
 
 input MediaServerDefaultLibraryGrantInput {
@@ -2882,6 +2965,8 @@ type MutationRoot {
 	deleteMediaServerConnection(id: ID!): DeleteMediaServerConnectionPayload!
 	testMediaServerConnection(input: TestMediaServerConnectionInput!): ProviderValidationPayload!
 	discoverPlexMediaServers(plexAuthToken: String!): [PlexServerDiscoveryPayload!]!
+	discoverEmbyConnectServers(input: DiscoverEmbyConnectServersInput!): [EmbyConnectServerPayload!]!
+	testEmbyConnect(input: TestEmbyConnectInput!): MediaServerConnectionTestPayload!
 	upsertDelayProfile(input: DelayProfileInput!): DelayProfilePayload!
 	deleteDelayProfile(id: ID!): DelayProfileDeletionPayload!
 	updateMediaSettings(input: UpdateMediaSettingsInput!): MediaSettingsPayload!
@@ -2918,9 +3003,11 @@ type MutationRoot {
 	createExternalAccountInvite(input: CreateExternalAccountInviteInput!): LinkedAccountPayload!
 	linkPlexAccount(input: LinkPlexAccountInput!): LinkedAccountPayload!
 	linkJellyfinAccount(input: LinkJellyfinAccountInput!): LinkedAccountPayload!
+	linkEmbyAccount(input: LinkEmbyAccountInput!): LinkedAccountPayload!
 	unlinkExternalAccount(linkedAccountId: ID!): UnlinkExternalAccountPayload!
 	loginWithPlex(input: LoginWithPlexInput!): LoginPayload!
 	loginWithJellyfin(input: LoginWithJellyfinInput!): LoginPayload!
+	loginWithEmby(input: LoginWithEmbyInput!): LoginPayload!
 	createLibrary(input: CreateLibraryInput!): LibraryPayload!
 	updateLibrary(input: UpdateLibraryInput!): LibraryPayload!
 	deleteLibrary(id: ID!): DeleteLibraryPayload!
@@ -4168,6 +4255,7 @@ type SecuritySettingsPayload {
 	mfaRequireConfigStepUp: Boolean!
 	mfaRequirePasswordLogin: Boolean!
 	totpRequireJellyfinLogin: Boolean!
+	totpRequireEmbyLogin: Boolean!
 	effectiveFormLoginEnabled: Boolean!
 	envOverrideActive: Boolean!
 	envOverrideDescription: String
@@ -4472,6 +4560,12 @@ input TestDownloadClientConnectionInput {
 	id: ID
 	clientType: String!
 	config: [ProviderConfigValueInput!]!
+}
+
+input TestEmbyConnectInput {
+	connectionId: ID!
+	usernameOrEmail: String!
+	password: String!
 }
 
 input TestIndexerConnectionInput {
@@ -5060,6 +5154,7 @@ input UpdateIndexerConfigInput {
 	name: String
 	providerType: String
 	indexerProxyConfigId: ID
+	downloadClientId: ID
 	rateLimitSeconds: Int
 	rateLimitBurst: Int
 	isEnabled: Boolean
@@ -5124,6 +5219,12 @@ input UpdateMediaServerConnectionInput {
 	clearApiKey: Boolean
 	adminUsername: String
 	adminPassword: String
+	embyConnectionMode: EmbyConnectionModeValue
+	embyLocalSetupMethod: EmbyLocalSetupMethodValue
+	embyConnectEnabled: Boolean
+	embyConnectUsernameOrEmail: String
+	embyConnectPassword: String
+	embyConnectServerId: String
 	pathMappings: [MediaServerPathMappingInput!]
 }
 
@@ -5212,6 +5313,7 @@ input UpdateSecuritySettingsInput {
 	mfaRequireConfigStepUp: Boolean!
 	mfaRequirePasswordLogin: Boolean!
 	totpRequireJellyfinLogin: Boolean!
+	totpRequireEmbyLogin: Boolean!
 }
 
 input UpdateServiceSettingsInput {

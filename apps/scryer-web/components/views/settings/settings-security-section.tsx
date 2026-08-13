@@ -43,6 +43,7 @@ type SettingsSecuritySectionProps = {
   onMfaConfigStepUpChange: (enabled: boolean) => void;
   onMfaPasswordLoginChange: (enabled: boolean) => void;
   onTotpJellyfinLoginChange: (enabled: boolean) => void;
+  onTotpEmbyLoginChange: (enabled: boolean) => void;
   externalAccountInvitesPanel: React.ReactNode;
 };
 
@@ -71,6 +72,7 @@ export function SettingsSecuritySection({
   onMfaConfigStepUpChange,
   onMfaPasswordLoginChange,
   onTotpJellyfinLoginChange,
+  onTotpEmbyLoginChange,
   externalAccountInvitesPanel,
 }: SettingsSecuritySectionProps) {
   const t = useTranslate();
@@ -200,6 +202,20 @@ export function SettingsSecuritySection({
                     <InfoHelp
                       ariaLabel={t("settings.securityTotpJellyfinLogin")}
                       text={t("settings.securityTotpJellyfinLoginHelp")}
+                    />
+                  }
+                  className={`${SECURITY_INSET_CLASS} max-w-full px-3 py-2`}
+                />
+                <CheckboxField
+                  id="security-totp-emby-login"
+                  checked={settings.totpRequireEmbyLogin}
+                  disabled={busy}
+                  onCheckedChange={(checked) => onTotpEmbyLoginChange(checked === true)}
+                  label="Require TOTP for Emby login"
+                  labelAccessory={
+                    <InfoHelp
+                      ariaLabel="Require TOTP for Emby login"
+                      text="Require a Scryer TOTP code after either Local or Connect Emby authentication."
                     />
                   }
                   className={`${SECURITY_INSET_CLASS} max-w-full px-3 py-2`}

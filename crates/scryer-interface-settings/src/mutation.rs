@@ -150,6 +150,7 @@ fn from_security_settings(
         mfa_require_config_step_up: settings.mfa_require_config_step_up,
         mfa_require_password_login: settings.mfa_require_password_login,
         totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
+        totp_require_emby_login: settings.totp_require_emby_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
         env_override_description: auth_runtime.env_override_description.clone(),
@@ -231,6 +232,12 @@ fn media_server_draft(input: CreateMediaServerConnectionInput) -> MediaServerCon
         api_key: input.api_key,
         admin_username: input.admin_username,
         admin_password: input.admin_password,
+        emby_connection_mode: input.emby_connection_mode.map(emby_connection_mode),
+        emby_local_setup_method: input.emby_local_setup_method.map(emby_local_setup_method),
+        emby_connect_enabled: input.emby_connect_enabled,
+        emby_connect_username_or_email: input.emby_connect_username_or_email,
+        emby_connect_password: input.emby_connect_password,
+        emby_connect_server_id: input.emby_connect_server_id,
         path_mappings: media_server_path_mappings(input.path_mappings),
     }
 }
@@ -259,9 +266,62 @@ fn media_server_patch(input: UpdateMediaServerConnectionInput) -> MediaServerCon
         clear_api_key: input.clear_api_key.unwrap_or(false),
         admin_username: input.admin_username,
         admin_password: input.admin_password,
+        emby_connection_mode: input.emby_connection_mode.map(emby_connection_mode),
+        emby_local_setup_method: input.emby_local_setup_method.map(emby_local_setup_method),
+        emby_connect_enabled: input.emby_connect_enabled,
+        emby_connect_username_or_email: input.emby_connect_username_or_email,
+        emby_connect_password: input.emby_connect_password,
+        emby_connect_server_id: input.emby_connect_server_id,
         path_mappings: input
             .path_mappings
             .map(|mappings| media_server_path_mappings(Some(mappings))),
+    }
+}
+
+fn emby_connection_mode(value: EmbyConnectionModeValue) -> scryer_application::EmbyConnectionMode {
+    match value {
+        EmbyConnectionModeValue::Local => scryer_application::EmbyConnectionMode::Local,
+        EmbyConnectionModeValue::Connect => scryer_application::EmbyConnectionMode::Connect,
+    }
+}
+
+fn emby_local_setup_method(
+    value: EmbyLocalSetupMethodValue,
+) -> scryer_application::EmbyLocalSetupMethod {
+    match value {
+        EmbyLocalSetupMethodValue::ApiKey => scryer_application::EmbyLocalSetupMethod::ApiKey,
+        EmbyLocalSetupMethodValue::AdminCredentials => {
+            scryer_application::EmbyLocalSetupMethod::AdminCredentials
+        }
+    }
+}
+
+fn emby_connect_user_type(
+    value: scryer_application::EmbyConnectUserType,
+) -> EmbyConnectUserTypeValue {
+    match value {
+        scryer_application::EmbyConnectUserType::LinkedUser => EmbyConnectUserTypeValue::LinkedUser,
+        scryer_application::EmbyConnectUserType::Guest => EmbyConnectUserTypeValue::Guest,
+        scryer_application::EmbyConnectUserType::Unknown => EmbyConnectUserTypeValue::Unknown,
+    }
+}
+
+fn emby_connect_address_status(
+    value: scryer_application::EmbyConnectAddressStatus,
+) -> EmbyConnectAddressStatusValue {
+    match value {
+        scryer_application::EmbyConnectAddressStatus::Reachable => {
+            EmbyConnectAddressStatusValue::Reachable
+        }
+        scryer_application::EmbyConnectAddressStatus::Unreachable => {
+            EmbyConnectAddressStatusValue::Unreachable
+        }
+        scryer_application::EmbyConnectAddressStatus::InvalidUrl => {
+            EmbyConnectAddressStatusValue::InvalidUrl
+        }
+        scryer_application::EmbyConnectAddressStatus::ServerIdMismatch => {
+            EmbyConnectAddressStatusValue::ServerIdMismatch
+        }
     }
 }
 
@@ -359,6 +419,7 @@ async fn login_payload_from_user(
         expires_at,
         mfa_verified_until,
         mfa_enrollment_required: false,
+        persist_session: true,
     })
 }
 
@@ -385,6 +446,7 @@ async fn login_mfa_enrollment_payload_from_user(
         expires_at,
         mfa_verified_until: None,
         mfa_enrollment_required: true,
+        persist_session: false,
     })
 }
 
@@ -848,6 +910,7 @@ impl SettingsMutations {
                     mfa_require_config_step_up: input.mfa_require_config_step_up,
                     mfa_require_password_login: input.mfa_require_password_login,
                     totp_require_jellyfin_login: input.totp_require_jellyfin_login,
+                    totp_require_emby_login: input.totp_require_emby_login,
                 },
             )
             .await
@@ -964,6 +1027,60 @@ impl SettingsMutations {
                     .collect()
             })
             .map_err(to_gql_error)
+    }
+
+    async fn discover_emby_connect_servers(
+        &self,
+        ctx: &Context<'_>,
+        input: DiscoverEmbyConnectServersInput,
+    ) -> GqlResult<Vec<EmbyConnectServerPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
+        app.discover_emby_connect_media_servers(&actor, &input.username_or_email, &input.password)
+            .await
+            .map(|servers| {
+                servers
+                    .into_iter()
+                    .map(|server| EmbyConnectServerPayload {
+                        server_id: server.server_id,
+                        name: server.name,
+                        user_type: emby_connect_user_type(server.user_type),
+                        local_address: server.local_address,
+                        remote_address: server.remote_address,
+                        local_api_base_url: server.local_api_base_url,
+                        remote_api_base_url: server.remote_api_base_url,
+                        local_status: emby_connect_address_status(server.local_status),
+                        remote_status: emby_connect_address_status(server.remote_status),
+                        suggested_base_url: server.suggested_base_url,
+                    })
+                    .collect()
+            })
+            .map_err(to_gql_error)
+    }
+
+    async fn test_emby_connect(
+        &self,
+        ctx: &Context<'_>,
+        input: TestEmbyConnectInput,
+    ) -> GqlResult<MediaServerConnectionTestPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
+        app.test_emby_connect(
+            &actor,
+            input.connection_id.as_ref(),
+            &input.username_or_email,
+            &input.password,
+        )
+        .await
+        .map_err(to_gql_error)?;
+        Ok(MediaServerConnectionTestPayload {
+            status: "ok".into(),
+            message: None,
+        })
     }
 
     async fn upsert_delay_profile(

@@ -4,8 +4,10 @@ use quick_xml::XmlVersion;
 use quick_xml::events::Event;
 use reqwest::StatusCode;
 use scryer_application::{
-    AppError, AppResult, ExternalIdentityVerifier, JellyfinServerUser, PlexServerDiscovery,
-    PlexServerUser, VerifiedExternalIdentity,
+    AppError, AppResult, EmbyApiKeyExchange, EmbyApiKeyExchangeCleanup, EmbyAvatar,
+    EmbyConnectIdentityVerification, EmbyConnectServer, EmbyServerIdentity, EmbyServerUser,
+    ExternalIdentityVerifier, JellyfinServerUser, PlexServerDiscovery, PlexServerUser,
+    VerifiedExternalIdentity,
 };
 use scryer_domain::ExternalAccountProvider;
 use scryer_outbound_http::generic_reqwest_client;
@@ -19,14 +21,24 @@ const SCRYER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct HttpExternalIdentityVerifier {
     client: reqwest::Client,
+    emby_client: reqwest::Client,
     plex_base_url: Url,
+    emby_connect_base_url: Url,
 }
 
 impl HttpExternalIdentityVerifier {
     pub fn new() -> Self {
         Self {
             client: generic_reqwest_client(),
+            emby_client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .expect("Emby HTTP client should build"),
             plex_base_url: Url::parse(PLEX_BASE_URL).expect("valid Plex base URL"),
+            emby_connect_base_url: Url::parse("https://connect.emby.media/service/")
+                .expect("valid Emby Connect base URL"),
         }
     }
 }
@@ -42,7 +54,15 @@ impl HttpExternalIdentityVerifier {
     fn with_plex_base_url(plex_base_url: Url) -> Self {
         Self {
             client: generic_reqwest_client(),
+            emby_client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .expect("Emby HTTP client should build"),
             plex_base_url,
+            emby_connect_base_url: Url::parse("https://connect.emby.media/service/")
+                .expect("valid Emby Connect base URL"),
         }
     }
 
@@ -558,6 +578,175 @@ impl ExternalIdentityVerifier for HttpExternalIdentityVerifier {
             });
         }
         Ok(users)
+    }
+
+    async fn resolve_emby_api_base(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+    ) -> AppResult<EmbyServerIdentity> {
+        super::emby::resolve_api_base(&self.emby_client, connection_id, base_url).await
+    }
+
+    async fn test_emby_api_key(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        api_key: &str,
+        expected_server_id: Option<&str>,
+    ) -> AppResult<EmbyServerIdentity> {
+        super::emby::test_api_key(
+            &self.emby_client,
+            connection_id,
+            base_url,
+            api_key,
+            expected_server_id,
+        )
+        .await
+    }
+
+    async fn exchange_emby_local_admin_api_key(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        username: &str,
+        password: &str,
+    ) -> AppResult<EmbyApiKeyExchange> {
+        super::emby::exchange_local_admin_api_key(
+            &self.emby_client,
+            connection_id,
+            base_url,
+            username,
+            password,
+        )
+        .await
+    }
+
+    async fn discover_emby_connect_servers(
+        &self,
+        username_or_email: &str,
+        password: &str,
+    ) -> AppResult<Vec<EmbyConnectServer>> {
+        super::emby::discover_connect_servers(
+            &self.emby_client,
+            &self.emby_connect_base_url,
+            username_or_email,
+            password,
+        )
+        .await
+    }
+
+    async fn exchange_emby_connect_admin_api_key(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        server_id: &str,
+        username_or_email: &str,
+        password: &str,
+    ) -> AppResult<EmbyApiKeyExchange> {
+        super::emby::exchange_connect_admin_api_key(
+            &self.emby_client,
+            &self.emby_connect_base_url,
+            connection_id,
+            base_url,
+            server_id,
+            username_or_email,
+            password,
+        )
+        .await
+    }
+
+    async fn finish_emby_api_key_exchange(
+        &self,
+        connection_id: &str,
+        cleanup: EmbyApiKeyExchangeCleanup,
+        compensate_created_key: bool,
+    ) {
+        super::emby::finish_api_key_exchange(
+            &self.emby_client,
+            connection_id,
+            cleanup,
+            compensate_created_key,
+        )
+        .await;
+    }
+
+    async fn verify_emby_local_identity(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        expected_server_id: &str,
+        username: &str,
+        password: &str,
+    ) -> AppResult<VerifiedExternalIdentity> {
+        super::emby::verify_local_identity(
+            &self.emby_client,
+            connection_id,
+            base_url,
+            expected_server_id,
+            username,
+            password,
+        )
+        .await
+    }
+
+    async fn verify_emby_connect_identity(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        expected_server_id: &str,
+        username_or_email: &str,
+        password: &str,
+    ) -> AppResult<EmbyConnectIdentityVerification> {
+        super::emby::verify_connect_identity(
+            &self.emby_client,
+            &self.emby_connect_base_url,
+            connection_id,
+            base_url,
+            expected_server_id,
+            username_or_email,
+            password,
+        )
+        .await
+    }
+
+    async fn test_emby_connect_identity(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        expected_server_id: &str,
+        username_or_email: &str,
+        password: &str,
+    ) -> AppResult<EmbyConnectIdentityVerification> {
+        self.verify_emby_connect_identity(
+            connection_id,
+            base_url,
+            expected_server_id,
+            username_or_email,
+            password,
+        )
+        .await
+    }
+
+    async fn list_emby_users(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        api_key: &str,
+        search: Option<&str>,
+    ) -> AppResult<Vec<EmbyServerUser>> {
+        super::emby::list_users(&self.emby_client, connection_id, base_url, api_key, search).await
+    }
+
+    async fn fetch_emby_user_avatar(
+        &self,
+        _connection_id: &str,
+        base_url: &str,
+        api_key: &str,
+        user_id: &str,
+        image_tag: &str,
+    ) -> AppResult<Option<EmbyAvatar>> {
+        super::emby::fetch_avatar(&self.emby_client, base_url, api_key, user_id, image_tag).await
     }
 
     async fn list_plex_users(

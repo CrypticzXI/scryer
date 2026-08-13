@@ -25,6 +25,7 @@ const DEFAULT_SECURITY_SETTINGS: SecuritySettings = {
   mfaRequireConfigStepUp: false,
   mfaRequirePasswordLogin: false,
   totpRequireJellyfinLogin: false,
+  totpRequireEmbyLogin: false,
   effectiveFormLoginEnabled: false,
   envOverrideActive: false,
   envOverrideDescription: null,
@@ -134,6 +135,7 @@ export function SettingsSecurityContainer() {
     mfaRequireConfigStepUp: boolean,
     mfaRequirePasswordLogin: boolean,
     totpRequireJellyfinLogin: boolean,
+    totpRequireEmbyLogin: boolean = settingsRef.current.totpRequireEmbyLogin,
   ) => {
     const { data, error } = await client
       .mutation(updateSecuritySettingsMutation, {
@@ -144,6 +146,7 @@ export function SettingsSecurityContainer() {
           mfaRequireConfigStepUp,
           mfaRequirePasswordLogin,
           totpRequireJellyfinLogin,
+          totpRequireEmbyLogin,
         },
       })
       .toPromise();
@@ -152,10 +155,12 @@ export function SettingsSecurityContainer() {
       throw error ?? new Error(t("settings.securitySaveFailed"));
     }
 
-    return {
+    const nextSettings = {
       ...DEFAULT_SECURITY_SETTINGS,
       ...data.updateSecuritySettings,
     } as SecuritySettings;
+    settingsRef.current = nextSettings;
+    return nextSettings;
   }, [client, t]);
 
   const runPasswordMinLengthSave = React.useCallback(async (submittedDraft: string) => {
@@ -580,6 +585,45 @@ export function SettingsSecurityContainer() {
     t,
   ]);
 
+  const handleTotpEmbyLoginChange = React.useCallback(async (enabled: boolean) => {
+    if (confirmBusy || saveBusy || enabled === settings.totpRequireEmbyLogin) {
+      return;
+    }
+
+    await submitPasswordMinLength(false);
+    setSaveBusy(true);
+    try {
+      const nextSettings = await applySecuritySettings(
+        settings.formLoginEnabled,
+        effectivePasswordMinLength,
+        settings.skipLoginForLocalIps,
+        settings.mfaRequireConfigStepUp,
+        settings.mfaRequirePasswordLogin,
+        settings.totpRequireJellyfinLogin,
+        enabled,
+      );
+      setSettings(nextSettings);
+      toast.success(t("settings.securityPreferenceSaved"));
+    } catch (error) {
+      toast.error(errorMessage(error, t("settings.securitySaveFailed")));
+    } finally {
+      setSaveBusy(false);
+    }
+  }, [
+    applySecuritySettings,
+    confirmBusy,
+    effectivePasswordMinLength,
+    saveBusy,
+    settings.formLoginEnabled,
+    settings.skipLoginForLocalIps,
+    submitPasswordMinLength,
+    settings.mfaRequireConfigStepUp,
+    settings.mfaRequirePasswordLogin,
+    settings.totpRequireEmbyLogin,
+    settings.totpRequireJellyfinLogin,
+    t,
+  ]);
+
   const handlePasswordMinLengthSubmit = React.useCallback(
     async (value?: string) => {
       await submitPasswordMinLength(true, value);
@@ -613,6 +657,7 @@ export function SettingsSecurityContainer() {
       onMfaConfigStepUpChange={handleMfaConfigStepUpChange}
       onMfaPasswordLoginChange={handleMfaPasswordLoginChange}
       onTotpJellyfinLoginChange={handleTotpJellyfinLoginChange}
+      onTotpEmbyLoginChange={handleTotpEmbyLoginChange}
       externalAccountInvitesPanel={
         canManageExternalInvites ? (
           <ExternalAccountInvitesContainer showMediaServersLink />

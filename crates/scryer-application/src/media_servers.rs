@@ -5,7 +5,19 @@ const MEDIA_SERVER_USER_LIST_TIMEOUT: std::time::Duration = std::time::Duration:
 #[cfg(test)]
 const MEDIA_SERVER_USER_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbyConnectionMode {
+    Local,
+    Connect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbyLocalSetupMethod {
+    ApiKey,
+    AdminCredentials,
+}
+
+#[derive(Clone)]
 pub struct MediaServerConnectionDraft {
     pub provider: MediaServerProvider,
     pub display_name: String,
@@ -22,10 +34,16 @@ pub struct MediaServerConnectionDraft {
     pub api_key: Option<String>,
     pub admin_username: Option<String>,
     pub admin_password: Option<String>,
+    pub emby_connection_mode: Option<EmbyConnectionMode>,
+    pub emby_local_setup_method: Option<EmbyLocalSetupMethod>,
+    pub emby_connect_enabled: Option<bool>,
+    pub emby_connect_username_or_email: Option<String>,
+    pub emby_connect_password: Option<String>,
+    pub emby_connect_server_id: Option<String>,
     pub path_mappings: Vec<MediaServerPathMapping>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct MediaServerConnectionPatch {
     pub id: String,
     pub provider: Option<MediaServerProvider>,
@@ -45,12 +63,26 @@ pub struct MediaServerConnectionPatch {
     pub clear_api_key: bool,
     pub admin_username: Option<String>,
     pub admin_password: Option<String>,
+    pub emby_connection_mode: Option<EmbyConnectionMode>,
+    pub emby_local_setup_method: Option<EmbyLocalSetupMethod>,
+    pub emby_connect_enabled: Option<bool>,
+    pub emby_connect_username_or_email: Option<String>,
+    pub emby_connect_password: Option<String>,
+    pub emby_connect_server_id: Option<String>,
     pub path_mappings: Option<Vec<MediaServerPathMapping>>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct ResolvedPlexServerSelection {
     machine_id: Option<String>,
+}
+
+struct ResolvedEmbyCredentials {
+    base_url: String,
+    api_key: String,
+    server_id: String,
+    connect_enabled: bool,
+    cleanup: Option<EmbyApiKeyExchangeCleanup>,
 }
 
 impl AppUseCase {
@@ -89,6 +121,7 @@ impl AppUseCase {
     ) -> AppResult<MediaServerConnection> {
         self.require_media_server_permission(actor, &draft).await?;
         let now = Utc::now();
+        let connection_id = scryer_domain::Id::new().0;
         let plex_selection = self
             .resolve_plex_server_selection(
                 &draft.provider,
@@ -103,16 +136,42 @@ impl AppUseCase {
             .as_deref()
             .map(str::trim)
             .is_some_and(|value| !value.is_empty());
-        let api_key = match draft.provider {
+        let mut api_key = match draft.provider {
             MediaServerProvider::Plex => draft.api_key.clone().or(draft.plex_auth_token.clone()),
             MediaServerProvider::Jellyfin | MediaServerProvider::Emby => draft.api_key.clone(),
         };
-        let mut connection = self
+        let mut base_url = draft.base_url.clone();
+        let mut emby_server_id = None;
+        let mut emby_connect_enabled = false;
+        let mut emby_exchange_cleanup = None;
+        if draft.provider == MediaServerProvider::Emby {
+            let resolved = self
+                .resolve_emby_credentials_for_setup(
+                    &connection_id,
+                    draft.base_url.as_str(),
+                    draft.emby_connection_mode,
+                    draft.emby_local_setup_method,
+                    draft.emby_connect_enabled,
+                    draft.api_key.as_deref(),
+                    draft.admin_username.as_deref(),
+                    draft.admin_password.as_deref(),
+                    draft.emby_connect_username_or_email.as_deref(),
+                    draft.emby_connect_password.as_deref(),
+                    draft.emby_connect_server_id.as_deref(),
+                )
+                .await?;
+            base_url = resolved.base_url;
+            api_key = Some(resolved.api_key);
+            emby_server_id = Some(resolved.server_id);
+            emby_connect_enabled = resolved.connect_enabled;
+            emby_exchange_cleanup = resolved.cleanup;
+        }
+        let normalized = self
             .normalize_media_server_connection(
-                scryer_domain::Id::new().0,
+                connection_id.clone(),
                 draft.provider,
                 draft.display_name,
-                draft.base_url,
+                base_url,
                 draft.enabled,
                 draft.login_enabled,
                 draft.linking_enabled,
@@ -121,11 +180,26 @@ impl AppUseCase {
                 draft.default_library_grants,
                 plex_selection.machine_id,
                 api_key,
+                emby_server_id,
+                emby_connect_enabled,
                 draft.path_mappings,
                 now,
                 now,
             )
-            .await?;
+            .await;
+        let mut connection = match normalized {
+            Ok(connection) => connection,
+            Err(error) => {
+                if let Some(cleanup) = emby_exchange_cleanup.take() {
+                    self.services
+                        .integrations
+                        .external_identity_verifier
+                        .finish_emby_api_key_exchange(&connection_id, cleanup, true)
+                        .await;
+                }
+                return Err(error);
+            }
+        };
         connection.api_key = self
             .jellyfin_api_key_from_credentials_or_input(
                 &connection,
@@ -136,19 +210,42 @@ impl AppUseCase {
             )
             .await?;
 
-        self.test_media_server_connection_internal(
-            &connection,
-            draft.plex_auth_token.as_deref(),
-            false,
-        )
-        .await?;
-
-        let created = self
-            .services
-            .integrations
-            .media_server_connections
-            .create(connection)
+        let create_result = async {
+            self.test_media_server_connection_internal(
+                &connection,
+                draft.plex_auth_token.as_deref(),
+                false,
+            )
             .await?;
+            self.services
+                .integrations
+                .media_server_connections
+                .create(connection)
+                .await
+        }
+        .await;
+        let created = match create_result {
+            Ok(created) => {
+                if let Some(cleanup) = emby_exchange_cleanup.take() {
+                    self.services
+                        .integrations
+                        .external_identity_verifier
+                        .finish_emby_api_key_exchange(&connection_id, cleanup, false)
+                        .await;
+                }
+                created
+            }
+            Err(error) => {
+                if let Some(cleanup) = emby_exchange_cleanup.take() {
+                    self.services
+                        .integrations
+                        .external_identity_verifier
+                        .finish_emby_api_key_exchange(&connection_id, cleanup, true)
+                        .await;
+                }
+                return Err(error);
+            }
+        };
         self.emit_configuration_changed_event(
             actor,
             "media_server_connection",
@@ -224,7 +321,7 @@ impl AppUseCase {
         } else {
             None
         };
-        let api_key = if patch.clear_api_key {
+        let mut api_key = if patch.clear_api_key {
             None
         } else if provider == MediaServerProvider::Plex {
             patch
@@ -235,16 +332,67 @@ impl AppUseCase {
         } else {
             patch.api_key.clone().or(existing_api_key)
         };
+        let enabled = patch.enabled.unwrap_or(existing.enabled);
+        if provider == MediaServerProvider::Emby && enabled && patch.clear_api_key {
+            return Err(AppError::Validation(
+                "an enabled Emby connection must retain a verified API key".into(),
+            ));
+        }
+        let mut base_url = patch
+            .base_url
+            .clone()
+            .unwrap_or_else(|| existing.base_url.clone());
+        let mut emby_server_id = (provider == MediaServerProvider::Emby)
+            .then(|| existing.emby_server_id.clone())
+            .flatten();
+        let mut emby_connect_enabled = if provider == MediaServerProvider::Emby {
+            patch
+                .emby_connect_enabled
+                .unwrap_or(existing.emby_connect_enabled)
+        } else {
+            false
+        };
+        let rotate_emby_credentials = provider == MediaServerProvider::Emby
+            && (patch.emby_connection_mode.is_some()
+                || existing.provider != MediaServerProvider::Emby);
+        let mut emby_exchange_cleanup = None;
+        if rotate_emby_credentials {
+            let resolved = self
+                .resolve_emby_credentials_for_setup(
+                    &id,
+                    &base_url,
+                    patch.emby_connection_mode,
+                    patch.emby_local_setup_method,
+                    patch.emby_connect_enabled,
+                    patch.api_key.as_deref(),
+                    patch.admin_username.as_deref(),
+                    patch.admin_password.as_deref(),
+                    patch.emby_connect_username_or_email.as_deref(),
+                    patch.emby_connect_password.as_deref(),
+                    patch.emby_connect_server_id.as_deref(),
+                )
+                .await?;
+            base_url = resolved.base_url;
+            api_key = Some(resolved.api_key);
+            emby_server_id = Some(resolved.server_id);
+            emby_connect_enabled = resolved.connect_enabled;
+            emby_exchange_cleanup = resolved.cleanup;
+        }
+        if emby_connect_enabled && emby_server_id.is_none() {
+            return Err(AppError::Validation(
+                "Emby Connect login requires a verified server identity".into(),
+            ));
+        }
 
-        let mut connection = self
+        let normalized = self
             .normalize_media_server_connection(
                 id.clone(),
                 provider,
                 patch
                     .display_name
                     .unwrap_or_else(|| existing.display_name.clone()),
-                patch.base_url.unwrap_or_else(|| existing.base_url.clone()),
-                patch.enabled.unwrap_or(existing.enabled),
+                base_url,
+                enabled,
                 patch.login_enabled.unwrap_or(existing.login_enabled),
                 patch.linking_enabled.unwrap_or(existing.linking_enabled),
                 patch.auto_add_enabled.unwrap_or(existing.auto_add_enabled),
@@ -256,13 +404,28 @@ impl AppUseCase {
                     .unwrap_or_else(|| existing.default_library_grants.clone()),
                 plex_selection.machine_id,
                 api_key,
+                emby_server_id,
+                emby_connect_enabled,
                 patch
                     .path_mappings
                     .unwrap_or_else(|| existing.path_mappings.clone()),
                 existing.created_at,
                 Utc::now(),
             )
-            .await?;
+            .await;
+        let mut connection = match normalized {
+            Ok(connection) => connection,
+            Err(error) => {
+                if let Some(cleanup) = emby_exchange_cleanup.take() {
+                    self.services
+                        .integrations
+                        .external_identity_verifier
+                        .finish_emby_api_key_exchange(&id, cleanup, true)
+                        .await;
+                }
+                return Err(error);
+            }
+        };
 
         connection.api_key = self
             .jellyfin_api_key_from_credentials_or_input(
@@ -274,19 +437,42 @@ impl AppUseCase {
             )
             .await?;
 
-        self.test_media_server_connection_internal(
-            &connection,
-            patch.plex_auth_token.as_deref(),
-            false,
-        )
-        .await?;
-
-        let updated = self
-            .services
-            .integrations
-            .media_server_connections
-            .update(connection)
+        let update_result = async {
+            self.test_media_server_connection_internal(
+                &connection,
+                patch.plex_auth_token.as_deref(),
+                false,
+            )
             .await?;
+            self.services
+                .integrations
+                .media_server_connections
+                .update(connection)
+                .await
+        }
+        .await;
+        let updated = match update_result {
+            Ok(updated) => {
+                if let Some(cleanup) = emby_exchange_cleanup.take() {
+                    self.services
+                        .integrations
+                        .external_identity_verifier
+                        .finish_emby_api_key_exchange(&id, cleanup, false)
+                        .await;
+                }
+                updated
+            }
+            Err(error) => {
+                if let Some(cleanup) = emby_exchange_cleanup.take() {
+                    self.services
+                        .integrations
+                        .external_identity_verifier
+                        .finish_emby_api_key_exchange(&id, cleanup, true)
+                        .await;
+                }
+                return Err(error);
+            }
+        };
         self.emit_configuration_changed_event(
             actor,
             "media_server_connection",
@@ -348,13 +534,47 @@ impl AppUseCase {
     ) -> AppResult<()> {
         self.require_app_permission(actor, AppPermission::ManageSystemSettings)
             .await?;
-        let connection = self
+        let mut connection = self
             .services
             .integrations
             .media_server_connections
             .get_by_id(id.trim())
             .await?
             .ok_or_else(|| AppError::NotFound(format!("media server connection {}", id.trim())))?;
+        if connection.provider == MediaServerProvider::Emby {
+            let api_key = connection
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    AppError::Validation(
+                        "Emby connection test requires a saved integration API key".into(),
+                    )
+                })?;
+            let identity = self
+                .services
+                .integrations
+                .external_identity_verifier
+                .test_emby_api_key(
+                    &connection.id,
+                    &connection.base_url,
+                    api_key,
+                    connection.emby_server_id.as_deref(),
+                )
+                .await?;
+            if connection.emby_server_id.is_none() || connection.base_url != identity.api_base_url {
+                connection.base_url = identity.api_base_url;
+                connection.emby_server_id = Some(identity.server_id);
+                connection.updated_at = Utc::now();
+                self.services
+                    .integrations
+                    .media_server_connections
+                    .update(connection)
+                    .await?;
+            }
+            return Ok(());
+        }
         self.test_media_server_connection_internal(&connection, plex_auth_token, true)
             .await
     }
@@ -405,6 +625,154 @@ impl AppUseCase {
             .integrations
             .external_identity_verifier
             .list_jellyfin_users(&connection.base_url, api_key, search)
+            .await
+    }
+
+    pub async fn discover_emby_connect_media_servers(
+        &self,
+        actor: &User,
+        username_or_email: &str,
+        password: &str,
+    ) -> AppResult<Vec<EmbyConnectServer>> {
+        self.require_app_permission(actor, AppPermission::ManageSystemSettings)
+            .await?;
+        self.services
+            .integrations
+            .external_identity_verifier
+            .discover_emby_connect_servers(username_or_email, password)
+            .await
+    }
+
+    pub async fn test_emby_connect(
+        &self,
+        actor: &User,
+        connection_id: &str,
+        username_or_email: &str,
+        password: &str,
+    ) -> AppResult<()> {
+        self.require_app_permission(actor, AppPermission::ManageSystemSettings)
+            .await?;
+        let connection = self
+            .services
+            .integrations
+            .media_server_connections
+            .get_by_id(connection_id.trim())
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("media server connection {connection_id}"))
+            })?;
+        if connection.provider != MediaServerProvider::Emby {
+            return Err(AppError::Validation(
+                "Emby Connect test requires an Emby connection".into(),
+            ));
+        }
+        if !connection.emby_connect_enabled {
+            return Err(AppError::Validation(
+                "Emby Connect sign-in is disabled for this connection".into(),
+            ));
+        }
+        let server_id = connection.emby_server_id.as_deref().ok_or_else(|| {
+            AppError::Validation("Emby connection has no verified server identity".into())
+        })?;
+        let verification = self
+            .services
+            .integrations
+            .external_identity_verifier
+            .test_emby_connect_identity(
+                &connection.id,
+                &connection.base_url,
+                server_id,
+                username_or_email,
+                password,
+            )
+            .await?;
+        if verification.resolved_api_base_url != connection.base_url
+            && let Err(error) = self
+                .services
+                .integrations
+                .media_server_connections
+                .compare_and_set_emby_base_url(
+                    &connection.id,
+                    &connection.base_url,
+                    server_id,
+                    &verification.resolved_api_base_url,
+                )
+                .await
+        {
+            tracing::warn!(
+                connection_id = connection.id,
+                operation = "emby_connect_address_refresh",
+                error_class = %error,
+                "Emby Connect address refresh failed after successful connection test"
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn list_emby_server_users(
+        &self,
+        actor: &User,
+        connection_id: &str,
+        search: Option<&str>,
+    ) -> AppResult<Vec<EmbyServerUser>> {
+        self.require_app_permission(actor, AppPermission::ManageUsers)
+            .await?;
+        let connection = self
+            .services
+            .integrations
+            .media_server_connections
+            .get_by_id(connection_id.trim())
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("media server connection {connection_id}"))
+            })?;
+        if connection.provider != MediaServerProvider::Emby {
+            return Err(AppError::Validation(
+                "Emby user listing requires an Emby connection".into(),
+            ));
+        }
+        let api_key = connection.api_key.as_deref().ok_or_else(|| {
+            AppError::Validation("Emby user listing requires a saved integration API key".into())
+        })?;
+        self.services
+            .integrations
+            .external_identity_verifier
+            .list_emby_users(&connection.id, &connection.base_url, api_key, search)
+            .await
+    }
+
+    pub async fn fetch_emby_server_user_avatar(
+        &self,
+        connection_id: &str,
+        user_id: &str,
+        image_tag: &str,
+    ) -> AppResult<Option<EmbyAvatar>> {
+        let connection = self
+            .services
+            .integrations
+            .media_server_connections
+            .get_by_id(connection_id.trim())
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("media server connection {connection_id}"))
+            })?;
+        if connection.provider != MediaServerProvider::Emby {
+            return Err(AppError::NotFound("Emby avatar was not found".into()));
+        }
+        let api_key = connection
+            .api_key
+            .as_deref()
+            .ok_or_else(|| AppError::NotFound("Emby avatar was not found".into()))?;
+        self.services
+            .integrations
+            .external_identity_verifier
+            .fetch_emby_user_avatar(
+                &connection.id,
+                &connection.base_url,
+                api_key,
+                user_id,
+                image_tag,
+            )
             .await
     }
 
@@ -520,6 +888,8 @@ impl AppUseCase {
         default_library_grants: Vec<MediaServerDefaultLibraryGrant>,
         machine_id: Option<String>,
         api_key: Option<String>,
+        emby_server_id: Option<String>,
+        emby_connect_enabled: bool,
         path_mappings: Vec<MediaServerPathMapping>,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
@@ -589,6 +959,11 @@ impl AppUseCase {
                 | MediaServerProvider::Emby
                 | MediaServerProvider::Plex => api_key,
             },
+            emby_server_id: match provider {
+                MediaServerProvider::Emby => normalize_optional_string(emby_server_id),
+                MediaServerProvider::Jellyfin | MediaServerProvider::Plex => None,
+            },
+            emby_connect_enabled: provider == MediaServerProvider::Emby && emby_connect_enabled,
             path_mappings: match provider {
                 MediaServerProvider::Jellyfin
                 | MediaServerProvider::Emby
@@ -596,6 +971,153 @@ impl AppUseCase {
             },
             created_at,
             updated_at,
+        })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Emby setup accepts three mutually exclusive credential modes"
+    )]
+    async fn resolve_emby_credentials_for_setup(
+        &self,
+        connection_id: &str,
+        base_url: &str,
+        mode: Option<EmbyConnectionMode>,
+        local_setup_method: Option<EmbyLocalSetupMethod>,
+        connect_enabled: Option<bool>,
+        api_key: Option<&str>,
+        admin_username: Option<&str>,
+        admin_password: Option<&str>,
+        connect_username_or_email: Option<&str>,
+        connect_password: Option<&str>,
+        connect_server_id: Option<&str>,
+    ) -> AppResult<ResolvedEmbyCredentials> {
+        fn present(value: Option<&str>) -> Option<&str> {
+            value.map(str::trim).filter(|value| !value.is_empty())
+        }
+        let api_key = present(api_key);
+        let admin_username = present(admin_username);
+        let admin_password = present(admin_password);
+        let connect_username_or_email = present(connect_username_or_email);
+        let connect_password = present(connect_password);
+        let connect_server_id = present(connect_server_id);
+        let mode = mode.unwrap_or(EmbyConnectionMode::Local);
+
+        let mut exchange = match mode {
+            EmbyConnectionMode::Local => {
+                if connect_username_or_email.is_some()
+                    || connect_password.is_some()
+                    || connect_server_id.is_some()
+                {
+                    return Err(AppError::Validation(
+                        "local Emby setup does not accept Emby Connect credentials".into(),
+                    ));
+                }
+                let method = local_setup_method.unwrap_or_else(|| {
+                    if api_key.is_some() {
+                        EmbyLocalSetupMethod::ApiKey
+                    } else {
+                        EmbyLocalSetupMethod::AdminCredentials
+                    }
+                });
+                match method {
+                    EmbyLocalSetupMethod::ApiKey => {
+                        if admin_username.is_some() || admin_password.is_some() {
+                            return Err(AppError::Validation(
+                                "choose either an Emby API key or local administrator credentials, not both"
+                                    .into(),
+                            ));
+                        }
+                        let api_key = api_key.ok_or_else(|| {
+                            AppError::Validation("Emby API key is required".into())
+                        })?;
+                        let identity = self
+                            .services
+                            .integrations
+                            .external_identity_verifier
+                            .test_emby_api_key(connection_id, base_url, api_key, None)
+                            .await?;
+                        EmbyApiKeyExchange {
+                            api_key: api_key.to_string(),
+                            server_identity: identity,
+                            created_new_key: false,
+                            cleanup: None,
+                        }
+                    }
+                    EmbyLocalSetupMethod::AdminCredentials => {
+                        if api_key.is_some() {
+                            return Err(AppError::Validation(
+                                "choose either an Emby API key or local administrator credentials, not both"
+                                    .into(),
+                            ));
+                        }
+                        let (Some(username), Some(password)) = (admin_username, admin_password)
+                        else {
+                            return Err(AppError::Validation(
+                                "both Emby administrator username and password are required".into(),
+                            ));
+                        };
+                        self.services
+                            .integrations
+                            .external_identity_verifier
+                            .exchange_emby_local_admin_api_key(
+                                connection_id,
+                                base_url,
+                                username,
+                                password,
+                            )
+                            .await?
+                    }
+                }
+            }
+            EmbyConnectionMode::Connect => {
+                if api_key.is_some() || admin_username.is_some() || admin_password.is_some() {
+                    return Err(AppError::Validation(
+                        "Emby Connect setup does not accept a pasted API key or local administrator credentials"
+                            .into(),
+                    ));
+                }
+                let username = connect_username_or_email.ok_or_else(|| {
+                    AppError::Validation("Emby Connect username or email is required".into())
+                })?;
+                let password = connect_password.ok_or_else(|| {
+                    AppError::Validation("Emby Connect password is required".into())
+                })?;
+                let server_id = connect_server_id
+                    .ok_or_else(|| AppError::Validation("select an Emby Connect server".into()))?;
+                self.services
+                    .integrations
+                    .external_identity_verifier
+                    .exchange_emby_connect_admin_api_key(
+                        connection_id,
+                        base_url,
+                        server_id,
+                        username,
+                        password,
+                    )
+                    .await?
+            }
+        };
+        if let Some(expected) = connect_server_id
+            && exchange.server_identity.server_id != expected
+        {
+            if let Some(cleanup) = exchange.cleanup.take() {
+                self.services
+                    .integrations
+                    .external_identity_verifier
+                    .finish_emby_api_key_exchange(connection_id, cleanup, true)
+                    .await;
+            }
+            return Err(AppError::Validation(
+                "selected Emby Connect server identity does not match the reachable server".into(),
+            ));
+        }
+        Ok(ResolvedEmbyCredentials {
+            base_url: exchange.server_identity.api_base_url,
+            api_key: exchange.api_key,
+            server_id: exchange.server_identity.server_id,
+            connect_enabled: connect_enabled.unwrap_or(mode == EmbyConnectionMode::Connect),
+            cleanup: exchange.cleanup,
         })
     }
 
@@ -699,7 +1221,37 @@ impl AppUseCase {
                     }
                 }
             }
-            MediaServerProvider::Emby => {}
+            MediaServerProvider::Emby => {
+                let api_key = connection
+                    .api_key
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let Some(api_key) = api_key else {
+                    if !connection.enabled {
+                        return Ok(());
+                    }
+                    return Err(AppError::Validation(
+                        "Emby connection requires a verified integration API key".into(),
+                    ));
+                };
+                let identity = self
+                    .services
+                    .integrations
+                    .external_identity_verifier
+                    .test_emby_api_key(
+                        &connection.id,
+                        &connection.base_url,
+                        api_key,
+                        connection.emby_server_id.as_deref(),
+                    )
+                    .await?;
+                if connection.emby_server_id.as_deref() != Some(identity.server_id.as_str()) {
+                    return Err(AppError::Validation(
+                        "Emby server identity does not match the saved connection".into(),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1129,6 +1681,36 @@ async fn list_media_server_user_group(
                 }
             }
         }
+        scryer_domain::ExternalAccountProvider::Emby => {
+            let Some(api_key) = connection
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                group.status = MediaServerUserGroupStatus::MissingCredentials;
+                group.error_message =
+                    Some("Save an Emby integration API key to load users from this server".into());
+                return group;
+            };
+            match verifier
+                .list_emby_users(
+                    &connection.id,
+                    &connection.base_url,
+                    api_key,
+                    search.as_deref(),
+                )
+                .await
+            {
+                Ok(users) => {
+                    group.users = users.into_iter().map(MediaServerUser::from).collect();
+                }
+                Err(error) => {
+                    group.status = MediaServerUserGroupStatus::Error;
+                    group.error_message = Some(error.to_string());
+                }
+            }
+        }
     }
 
     group.users.sort_by(|left, right| {
@@ -1160,7 +1742,7 @@ fn external_account_provider_for_media_server(
     match provider {
         MediaServerProvider::Jellyfin => Some(scryer_domain::ExternalAccountProvider::Jellyfin),
         MediaServerProvider::Plex => Some(scryer_domain::ExternalAccountProvider::Plex),
-        MediaServerProvider::Emby => None,
+        MediaServerProvider::Emby => Some(scryer_domain::ExternalAccountProvider::Emby),
     }
 }
 
@@ -1277,12 +1859,24 @@ mod tests {
     #[derive(Default)]
     struct TestMediaServerConnectionRepository {
         connections: Mutex<Vec<MediaServerConnection>>,
+        fail_create: bool,
+        fail_update: bool,
     }
 
     impl TestMediaServerConnectionRepository {
         fn new(connections: Vec<MediaServerConnection>) -> Self {
             Self {
                 connections: Mutex::new(connections),
+                fail_create: false,
+                fail_update: false,
+            }
+        }
+
+        fn failing(connections: Vec<MediaServerConnection>, create: bool, update: bool) -> Self {
+            Self {
+                connections: Mutex::new(connections),
+                fail_create: create,
+                fail_update: update,
             }
         }
     }
@@ -1321,6 +1915,9 @@ mod tests {
             &self,
             connection: MediaServerConnection,
         ) -> AppResult<MediaServerConnection> {
+            if self.fail_create {
+                return Err(AppError::Repository("injected create failure".into()));
+            }
             self.connections.lock().await.push(connection.clone());
             Ok(connection)
         }
@@ -1329,6 +1926,9 @@ mod tests {
             &self,
             connection: MediaServerConnection,
         ) -> AppResult<MediaServerConnection> {
+            if self.fail_update {
+                return Err(AppError::Repository("injected update failure".into()));
+            }
             let mut connections = self.connections.lock().await;
             if let Some(existing) = connections
                 .iter_mut()
@@ -1337,6 +1937,25 @@ mod tests {
                 *existing = connection.clone();
             }
             Ok(connection)
+        }
+
+        async fn compare_and_set_emby_base_url(
+            &self,
+            connection_id: &str,
+            expected_base_url: &str,
+            expected_server_id: &str,
+            new_base_url: &str,
+        ) -> AppResult<bool> {
+            let mut connections = self.connections.lock().await;
+            let Some(connection) = connections.iter_mut().find(|connection| {
+                connection.id == connection_id
+                    && connection.base_url == expected_base_url
+                    && connection.emby_server_id.as_deref() == Some(expected_server_id)
+            }) else {
+                return Ok(false);
+            };
+            connection.base_url = new_base_url.to_string();
+            Ok(true)
         }
 
         async fn delete(&self, id: &str) -> AppResult<()> {
@@ -1528,6 +2147,123 @@ mod tests {
         }
     }
 
+    struct EmbySetupVerifier {
+        finish_compensation: Arc<Mutex<Vec<bool>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ExternalIdentityVerifier for EmbySetupVerifier {
+        async fn verify_plex(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> AppResult<VerifiedExternalIdentity> {
+            unreachable!()
+        }
+
+        async fn discover_plex_servers(&self, _: &str) -> AppResult<Vec<PlexServerDiscovery>> {
+            Ok(Vec::new())
+        }
+
+        async fn verify_jellyfin(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<VerifiedExternalIdentity> {
+            unreachable!()
+        }
+
+        async fn test_jellyfin_connection(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn test_jellyfin_api_key(&self, _: &str, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn exchange_jellyfin_admin_api_key(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<String> {
+            unreachable!()
+        }
+
+        async fn list_jellyfin_users(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> AppResult<Vec<JellyfinServerUser>> {
+            Ok(Vec::new())
+        }
+
+        async fn exchange_emby_local_admin_api_key(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<EmbyApiKeyExchange> {
+            Ok(EmbyApiKeyExchange {
+                api_key: "new-key".into(),
+                server_identity: EmbyServerIdentity {
+                    api_base_url: "https://emby.example.test".into(),
+                    server_id: "emby-server-id".into(),
+                    server_name: "Emby".into(),
+                    version: "4.9.5.0".into(),
+                },
+                created_new_key: true,
+                cleanup: Some(EmbyApiKeyExchangeCleanup::new(
+                    "https://emby.example.test".into(),
+                    "admin-id".into(),
+                    "temporary-token".into(),
+                    Some("new-key".into()),
+                )),
+            })
+        }
+
+        async fn test_emby_api_key(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> AppResult<EmbyServerIdentity> {
+            Ok(EmbyServerIdentity {
+                api_base_url: "https://emby.example.test".into(),
+                server_id: "emby-server-id".into(),
+                server_name: "Emby".into(),
+                version: "4.9.5.0".into(),
+            })
+        }
+
+        async fn finish_emby_api_key_exchange(
+            &self,
+            _: &str,
+            _: EmbyApiKeyExchangeCleanup,
+            compensate_created_key: bool,
+        ) {
+            self.finish_compensation
+                .lock()
+                .await
+                .push(compensate_created_key);
+        }
+
+        async fn list_plex_users(
+            &self,
+            _: &str,
+            _: Option<&str>,
+        ) -> AppResult<Vec<PlexServerUser>> {
+            Ok(Vec::new())
+        }
+    }
+
     struct TestNotificationPluginProvider;
 
     impl NotificationPluginProvider for TestNotificationPluginProvider {
@@ -1644,6 +2380,16 @@ mod tests {
         connections: Vec<MediaServerConnection>,
         verifier: Arc<dyn ExternalIdentityVerifier>,
     ) -> AppUseCase {
+        app_with_repository_and_verifier(
+            Arc::new(TestMediaServerConnectionRepository::new(connections)),
+            verifier,
+        )
+    }
+
+    fn app_with_repository_and_verifier(
+        repository: Arc<dyn MediaServerConnectionRepository>,
+        verifier: Arc<dyn ExternalIdentityVerifier>,
+    ) -> AppUseCase {
         let services = AppServices::builder(
             Arc::new(NullTitleRepository),
             Arc::new(NullShowRepository),
@@ -1658,9 +2404,7 @@ mod tests {
             String::new(),
         )
         .with_external_identity_verifier(verifier)
-        .with_media_server_connection_store(Arc::new(TestMediaServerConnectionRepository::new(
-            connections,
-        )))
+        .with_media_server_connection_store(repository)
         .with_notification_provider(Arc::new(TestNotificationPluginProvider))
         .with_domain_events(Arc::new(TestDomainEventRepository))
         .build_partial_for_tests();
@@ -1738,6 +2482,8 @@ mod tests {
             }],
             machine_id: None,
             api_key: Some("api-key-1".to_string()),
+            emby_server_id: None,
+            emby_connect_enabled: false,
             path_mappings: Vec::new(),
             created_at: now,
             updated_at: now,
@@ -1752,6 +2498,19 @@ mod tests {
         connection.base_url = "https://plex.tv".to_string();
         connection.machine_id = Some("machine-1".to_string());
         connection.api_key = None;
+        connection
+    }
+
+    fn emby_connection(enabled: bool, api_key: Option<&str>) -> MediaServerConnection {
+        let mut connection = grant_bearing_jellyfin_connection();
+        connection.id = "emby-main".to_string();
+        connection.provider = MediaServerProvider::Emby;
+        connection.display_name = "Emby".to_string();
+        connection.base_url = "https://emby.example.test".to_string();
+        connection.enabled = enabled;
+        connection.api_key = api_key.map(ToString::to_string);
+        connection.emby_server_id = Some("emby-server-id".to_string());
+        connection.emby_connect_enabled = false;
         connection
     }
 
@@ -1818,6 +2577,12 @@ mod tests {
                     api_key: Some("saved-api-key".to_string()),
                     admin_username: None,
                     admin_password: None,
+                    emby_connection_mode: None,
+                    emby_local_setup_method: None,
+                    emby_connect_enabled: None,
+                    emby_connect_username_or_email: None,
+                    emby_connect_password: None,
+                    emby_connect_server_id: None,
                     path_mappings: Vec::new(),
                 },
             )
@@ -1826,6 +2591,164 @@ mod tests {
 
         assert!(error.to_string().contains("Jellyfin is unreachable"));
         assert_eq!(test_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn disabled_emby_connection_can_clear_api_key_without_retesting_it() {
+        let app = app_with_connection(emby_connection(true, Some("stored-key")));
+        let mut patch = empty_update_patch("emby-main");
+        patch.enabled = Some(false);
+        patch.clear_api_key = true;
+
+        let updated = app
+            .update_media_server_connection(&system_settings_user(), patch)
+            .await
+            .expect("disabled Emby connection may clear its key");
+
+        assert!(!updated.enabled);
+        assert_eq!(updated.api_key, None);
+    }
+
+    #[tokio::test]
+    async fn enabled_emby_connection_cannot_clear_api_key() {
+        let app = app_with_connection(emby_connection(true, Some("stored-key")));
+        let mut patch = empty_update_patch("emby-main");
+        patch.clear_api_key = true;
+
+        let error = app
+            .update_media_server_connection(&system_settings_user(), patch)
+            .await
+            .expect_err("enabled Emby connection must retain its key");
+
+        assert!(matches!(error, AppError::Validation(message) if message.contains("retain")));
+    }
+
+    #[tokio::test]
+    async fn emby_base_url_refresh_compare_and_set_never_clobbers_concurrent_changes() {
+        let repository = TestMediaServerConnectionRepository::new(vec![emby_connection(
+            true,
+            Some("stored-key"),
+        )]);
+
+        assert!(
+            !repository
+                .compare_and_set_emby_base_url(
+                    "emby-main",
+                    "https://stale.example.test",
+                    "emby-server-id",
+                    "https://fresh.example.test",
+                )
+                .await
+                .expect("stale CAS")
+        );
+        assert!(
+            !repository
+                .compare_and_set_emby_base_url(
+                    "emby-main",
+                    "https://emby.example.test",
+                    "different-server",
+                    "https://fresh.example.test",
+                )
+                .await
+                .expect("server mismatch CAS")
+        );
+        assert_eq!(
+            repository
+                .get_by_id("emby-main")
+                .await
+                .expect("read connection")
+                .expect("connection")
+                .base_url,
+            "https://emby.example.test"
+        );
+        assert!(
+            repository
+                .compare_and_set_emby_base_url(
+                    "emby-main",
+                    "https://emby.example.test",
+                    "emby-server-id",
+                    "https://fresh.example.test",
+                )
+                .await
+                .expect("matching CAS")
+        );
+    }
+
+    #[tokio::test]
+    async fn newly_created_emby_key_is_compensated_when_create_persistence_fails() {
+        let finish = Arc::new(Mutex::new(Vec::new()));
+        let app = app_with_repository_and_verifier(
+            Arc::new(TestMediaServerConnectionRepository::failing(
+                Vec::new(),
+                true,
+                false,
+            )),
+            Arc::new(EmbySetupVerifier {
+                finish_compensation: Arc::clone(&finish),
+            }),
+        );
+
+        let error = app
+            .create_media_server_connection(
+                &system_settings_user(),
+                MediaServerConnectionDraft {
+                    provider: MediaServerProvider::Emby,
+                    display_name: "Emby".into(),
+                    base_url: "https://emby.example.test".into(),
+                    enabled: true,
+                    login_enabled: false,
+                    linking_enabled: false,
+                    auto_add_enabled: false,
+                    default_app_permissions: AppPermissionMask::NONE,
+                    default_library_grants: Vec::new(),
+                    machine_id: None,
+                    plex_auth_token: None,
+                    plex_server_id: None,
+                    api_key: None,
+                    admin_username: Some("admin".into()),
+                    admin_password: Some("password".into()),
+                    emby_connection_mode: Some(EmbyConnectionMode::Local),
+                    emby_local_setup_method: Some(EmbyLocalSetupMethod::AdminCredentials),
+                    emby_connect_enabled: Some(false),
+                    emby_connect_username_or_email: None,
+                    emby_connect_password: None,
+                    emby_connect_server_id: None,
+                    path_mappings: Vec::new(),
+                },
+            )
+            .await
+            .expect_err("repository failure");
+
+        assert!(error.to_string().contains("injected create failure"));
+        assert_eq!(&*finish.lock().await, &[true]);
+    }
+
+    #[tokio::test]
+    async fn newly_created_emby_key_is_compensated_when_rotation_persistence_fails() {
+        let finish = Arc::new(Mutex::new(Vec::new()));
+        let app = app_with_repository_and_verifier(
+            Arc::new(TestMediaServerConnectionRepository::failing(
+                vec![emby_connection(true, Some("old-key"))],
+                false,
+                true,
+            )),
+            Arc::new(EmbySetupVerifier {
+                finish_compensation: Arc::clone(&finish),
+            }),
+        );
+        let mut patch = empty_update_patch("emby-main");
+        patch.emby_connection_mode = Some(EmbyConnectionMode::Local);
+        patch.emby_local_setup_method = Some(EmbyLocalSetupMethod::AdminCredentials);
+        patch.admin_username = Some("admin".into());
+        patch.admin_password = Some("password".into());
+
+        let error = app
+            .update_media_server_connection(&system_settings_user(), patch)
+            .await
+            .expect_err("repository failure");
+
+        assert!(error.to_string().contains("injected update failure"));
+        assert_eq!(&*finish.lock().await, &[true]);
     }
 
     #[tokio::test]
@@ -2048,6 +2971,12 @@ mod tests {
                     api_key: None,
                     admin_username: None,
                     admin_password: None,
+                    emby_connection_mode: None,
+                    emby_local_setup_method: None,
+                    emby_connect_enabled: None,
+                    emby_connect_username_or_email: None,
+                    emby_connect_password: None,
+                    emby_connect_server_id: None,
                     path_mappings: vec![MediaServerPathMapping {
                         source_path: "/mnt/plex".to_string(),
                         destination_path: "/data/media".to_string(),

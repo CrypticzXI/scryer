@@ -1,6 +1,7 @@
 
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
+import { useClient } from "urql";
 import {
   Archive,
   Bell,
@@ -32,6 +33,18 @@ import {
   type ProviderCatalogFamily,
   useProviderCatalogSubscription,
 } from "@/lib/hooks/use-provider-catalog-subscription";
+import { indexerDownloadClientMappingCatalogQuery } from "@/lib/graphql/queries";
+import type {
+  IndexerDownloadClientMappingCatalog,
+  IndexerDownloadClientMappingCatalogResource,
+} from "@/lib/types";
+import {
+  beginIndexerDownloadClientCatalogRequest,
+  completeIndexerDownloadClientCatalogRequest,
+  failIndexerDownloadClientCatalogRequest,
+  isLatestIndexerDownloadClientCatalogRequest,
+  normalizeIndexerDownloadClientMappingCatalog,
+} from "@/lib/utils/indexer-download-client-mapping";
 
 const SettingsOverviewContainer = lazy(async () => ({
   default: (await import("@/components/containers/settings/settings-overview-container")).SettingsOverviewContainer,
@@ -137,6 +150,63 @@ export const SettingsContainer = memo(function SettingsContainer({
   onSelectLanguage,
 }: SettingsContainerProps) {
   const t = useTranslate();
+  const client = useClient();
+  const [indexerDownloadClientMappingCatalogResource, setIndexerDownloadClientMappingCatalogResource] =
+    useState<IndexerDownloadClientMappingCatalogResource>({
+      catalog: null,
+      status: "idle",
+      error: null,
+    });
+  const indexerMappingCatalogRequestRef = useRef(0);
+  const updateIndexerDownloadClientMappingCatalog = useCallback(
+    (updater: (catalog: IndexerDownloadClientMappingCatalog) => IndexerDownloadClientMappingCatalog) => {
+      setIndexerDownloadClientMappingCatalogResource((previous) =>
+        previous.catalog
+          ? { ...previous, catalog: updater(previous.catalog) }
+          : previous,
+      );
+    },
+    [],
+  );
+  const refreshIndexerDownloadClientMappingCatalog = useCallback(async () => {
+    const requestSequence = indexerMappingCatalogRequestRef.current + 1;
+    indexerMappingCatalogRequestRef.current = requestSequence;
+    setIndexerDownloadClientMappingCatalogResource(
+      beginIndexerDownloadClientCatalogRequest,
+    );
+    try {
+      const { data, error } = await client
+        .query(
+          indexerDownloadClientMappingCatalogQuery,
+          {},
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) throw error;
+      if (!isLatestIndexerDownloadClientCatalogRequest(
+        requestSequence,
+        indexerMappingCatalogRequestRef.current,
+      )) return;
+      setIndexerDownloadClientMappingCatalogResource(
+        completeIndexerDownloadClientCatalogRequest(
+          normalizeIndexerDownloadClientMappingCatalog(
+            data?.indexerDownloadClientMappingCatalog,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!isLatestIndexerDownloadClientCatalogRequest(
+        requestSequence,
+        indexerMappingCatalogRequestRef.current,
+      )) return;
+      setIndexerDownloadClientMappingCatalogResource((previous) =>
+        failIndexerDownloadClientCatalogRequest(
+          previous,
+          error instanceof Error ? error.message : t("status.failedToLoad"),
+        ),
+      );
+    }
+  }, [client, t]);
   const [providerCatalogVersions, setProviderCatalogVersions] = useState<
     Record<ProviderCatalogFamily, number>
   >({
@@ -146,6 +216,11 @@ export const SettingsContainer = memo(function SettingsContainer({
     DOWNLOAD_CLIENT: 0,
     ARCHIVE_EXTRACTOR: 0,
   });
+  useEffect(() => {
+    if (settingsSection === "indexers") {
+      void refreshIndexerDownloadClientMappingCatalog();
+    }
+  }, [refreshIndexerDownloadClientMappingCatalog, settingsSection]);
   const showPluginsLink =
     settingsSection === "downloadClients" ||
     settingsSection === "indexers" ||
@@ -518,6 +593,15 @@ export const SettingsContainer = memo(function SettingsContainer({
           ) : settingsSection === "indexers" ? (
             <SettingsIndexersContainer
               providerCatalogVersion={providerCatalogVersions.INDEXER}
+              indexerDownloadClientMappingCatalogResource={
+                indexerDownloadClientMappingCatalogResource
+              }
+              updateIndexerDownloadClientMappingCatalog={
+                updateIndexerDownloadClientMappingCatalog
+              }
+              refreshIndexerDownloadClientMappingCatalog={
+                refreshIndexerDownloadClientMappingCatalog
+              }
             />
           ) : settingsSection === "downloadClients" ? (
             <SettingsDownloadClientsContainer
@@ -525,6 +609,7 @@ export const SettingsContainer = memo(function SettingsContainer({
                 providerCatalogVersions.DOWNLOAD_CLIENT
                 + providerCatalogVersions.ARCHIVE_EXTRACTOR
               }
+              onDownloadClientsChanged={refreshIndexerDownloadClientMappingCatalog}
             />
           ) : settingsSection === "rules" ? (
             <SettingsRulesContainer />

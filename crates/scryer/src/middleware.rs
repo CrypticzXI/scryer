@@ -5,7 +5,7 @@ use aws_lc_rs::hmac;
 use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 use axum::Json;
 use axum::body::Body;
-use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, Path as AxumPath, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
@@ -1195,6 +1195,66 @@ pub(crate) async fn graphql_handler(
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))
         .unwrap()
+}
+
+pub(crate) async fn emby_avatar_handler(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    AxumPath((connection_id, user_id, image_tag)): AxumPath<(String, String, String)>,
+) -> Response {
+    if resolve_actor(&state, &headers, Some(remote_addr))
+        .await
+        .is_none()
+    {
+        return Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(Body::empty())
+            .unwrap();
+    }
+    if connection_id.len() > 256
+        || user_id.len() > 256
+        || image_tag.len() > 256
+        || connection_id.is_empty()
+        || user_id.is_empty()
+        || image_tag.is_empty()
+    {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
+    }
+    let avatar = match state
+        .app
+        .fetch_emby_server_user_avatar(&connection_id, &user_id, &image_tag)
+        .await
+    {
+        Ok(Some(avatar)) => avatar,
+        Ok(None) | Err(AppError::NotFound(_)) | Err(AppError::Unauthorized(_)) => {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap();
+        }
+        Err(error) => {
+            tracing::warn!(connection_id, operation = "emby_avatar", error = %error, "Emby avatar proxy failed");
+            return Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(Body::empty())
+                .unwrap();
+        }
+    };
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, avatar.content_type)
+        .header(header::CACHE_CONTROL, "private, max-age=300");
+    if let Some(etag) = avatar.etag {
+        response = response.header(header::ETAG, etag);
+    }
+    if let Some(last_modified) = avatar.last_modified {
+        response = response.header(header::LAST_MODIFIED, last_modified);
+    }
+    response.body(Body::from(avatar.bytes)).unwrap()
 }
 
 pub(crate) async fn enforce_authless_access_guard(

@@ -131,6 +131,7 @@ async fn existing_short_password_remains_valid_after_minimum_is_raised() {
             mfa_require_config_step_up: false,
             mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
+            totp_require_emby_login: false,
         },
     )
     .await
@@ -193,6 +194,49 @@ async fn security_settings_read_legacy_totp_mfa_keys_when_new_keys_are_unset() {
             .await
             .as_deref(),
         Some("true")
+    );
+}
+
+#[tokio::test]
+async fn emby_totp_requirement_round_trips_through_settings_values() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let settings_handle = settings.clone();
+    let (app, admin) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+    );
+
+    app.update_security_settings(
+        &admin,
+        UpdateSecuritySettings {
+            form_login_enabled: false,
+            password_min_length: 8,
+            skip_login_for_local_ips: false,
+            mfa_require_config_step_up: false,
+            mfa_require_password_login: false,
+            totp_require_jellyfin_login: false,
+            totp_require_emby_login: true,
+        },
+    )
+    .await
+    .expect("save Emby TOTP setting");
+
+    assert_eq!(
+        settings_handle
+            .get_value(
+                SETTINGS_SCOPE_SYSTEM,
+                settings::keys::TOTP_REQUIRE_EMBY_LOGIN_KEY,
+            )
+            .await
+            .as_deref(),
+        Some("true")
+    );
+    assert!(
+        app.security_settings()
+            .await
+            .expect("reload security settings")
+            .totp_require_emby_login
     );
 }
 
@@ -293,6 +337,7 @@ async fn existing_short_v1_password_rehashes_after_minimum_is_raised() {
             mfa_require_config_step_up: false,
             mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
+            totp_require_emby_login: false,
         },
     )
     .await

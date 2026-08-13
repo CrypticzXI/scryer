@@ -251,11 +251,11 @@ pub use contracts::{
     DownloadSubmissionActorSnapshot, DownloadSubmissionIdentity, DownloadSubmissionPurpose,
     EpisodeUpdate, ImportArtifact, IndexerConfigSyncResult, IndexerConfigUpdate,
     IndexerDownloadClientMappingCatalog, IndexerDownloadClientMappingClient,
-    IndexerDownloadClientMappingIndexer, IndexerProxyConfigUpdate, IndexerProxyTestResult,
-    IndexerRoutingEntry, IndexerRoutingPlan, IndexerSyncPlan, IndexerValidationResult,
-    InsertMediaFileInput, ManagedIndexerChildPlan, ManagedIndexerRoutingScope,
-    MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole, NewBlocklistEntry,
-    NewIndexerProxyConfig, NotificationScopeIdUpdate, PendingReleasePageSort,
+    IndexerDownloadClientMappingIndexer, IndexerDownloadClientProviderCompatibility,
+    IndexerProxyConfigUpdate, IndexerProxyTestResult, IndexerRoutingEntry, IndexerRoutingPlan,
+    IndexerSyncPlan, IndexerValidationResult, InsertMediaFileInput, ManagedIndexerChildPlan,
+    ManagedIndexerRoutingScope, MediaAnalysisOutcome, MediaFileAnalysis, MediaFileRole,
+    NewBlocklistEntry, NewIndexerProxyConfig, NotificationScopeIdUpdate, PendingReleasePageSort,
     PendingReleasesPageQuery, PendingStagedNzb, QueueDownloadOutcome, QueuedDownloadResult,
     QueuedReleaseSelection, ReleaseDecisionsQuery, ResolvedDownloadArtifact, SearchMode,
     StagedNzbRef, SubmissionConflictPolicy, SubmissionScope, SubmissionScopeConflict,
@@ -313,7 +313,10 @@ pub use media_requests::{
     ListMediaRequestsInput, SubmitMediaRequestInput, SubmitMediaRequestOutcome,
     UpdateMediaRequestInput,
 };
-pub use media_servers::{MediaServerConnectionDraft, MediaServerConnectionPatch};
+pub use media_servers::{
+    EmbyConnectionMode, EmbyLocalSetupMethod, MediaServerConnectionDraft,
+    MediaServerConnectionPatch,
+};
 pub use plugins::plugins::{
     ManualPluginPreview, PluginCatalogStatus, RegistryPlugin, RulePackRegistryEntry,
     RulePackTemplate,
@@ -416,7 +419,9 @@ pub use ports::{
     ArchiveExtractorPluginProvider, BlocklistRepository, BuiltinDownloadClientConnectionTester,
     DatastoreInfo, DomainEventRepository, DownloadClient, DownloadClientConfigRepository,
     DownloadClientPluginProvider, DownloadQueueCommandRepository, DownloadSubmissionRepository,
-    ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,
+    EmbyApiKeyExchange, EmbyApiKeyExchangeCleanup, EmbyAvatar, EmbyConnectAddressStatus,
+    EmbyConnectIdentityVerification, EmbyConnectServer, EmbyConnectUserType, EmbyServerIdentity,
+    EmbyServerUser, ExternalIdentityVerifier, ExternalImportMonitorSnapshotRepository,
     ExternalImportSetupInstanceApiKeyDraft, ExternalImportSetupSecretDraft,
     ExternalImportSetupSecretDraftInput, ExternalImportSetupSecretDraftRepository,
     ExternalImportSetupSecretDraftSaveResult, ExternalImportSetupSecretDraftStatus,
@@ -517,7 +522,8 @@ pub use settings::keys::{
     SERIES_ROOT_FOLDERS_KEY, SET_PERMISSIONS_LINUX_KEY, SETTINGS_SCOPE_MEDIA,
     SETTINGS_SCOPE_SYSTEM, SETTINGS_SOURCE_TYPED_GRAPHQL, SETUP_COMPLETE_KEY,
     SKIP_LOGIN_FOR_LOCAL_IPS_KEY, SPECIALS_FOLDER_TEMPLATE_KEY, TITLE_REQUIRED_AUDIO_OVERRIDE_KEY,
-    TLS_CERT_PATH_KEY, TLS_KEY_PATH_KEY, TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
+    TLS_CERT_PATH_KEY, TLS_KEY_PATH_KEY, TOTP_REQUIRE_EMBY_LOGIN_KEY,
+    TOTP_REQUIRE_JELLYFIN_LOGIN_KEY,
 };
 pub use settings::runtime::is_bootstrap_default_library_root_set;
 pub(crate) use types::JwtClaims;

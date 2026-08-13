@@ -16,7 +16,6 @@ import {
   downloadClientProviderTypesQuery,
   downloadClientsInitQuery,
   downloadClientsQuery,
-  indexerDownloadClientMappingCatalogQuery,
 } from "@/lib/graphql/queries";
 import { DEFAULT_DOWNLOAD_CLIENT_DRAFT } from "@/lib/constants/download-clients";
 import { useClient } from "urql";
@@ -52,6 +51,7 @@ const DOWNLOAD_CLIENT_ADJACENT_PLUGIN_TYPES = ["archive_extractor"] as const;
 
 type SettingsDownloadClientsContainerProps = {
   providerCatalogVersion?: number;
+  onDownloadClientsChanged?: () => Promise<void> | void;
 };
 
 type PendingDownloadClientEditorAction =
@@ -68,6 +68,7 @@ function cloneDownloadClientDraft(
 
 export function SettingsDownloadClientsContainer({
   providerCatalogVersion = 0,
+  onDownloadClientsChanged,
 }: SettingsDownloadClientsContainerProps) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
@@ -143,17 +144,6 @@ export function SettingsDownloadClientsContainer({
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToLoad"));
     }
   }, [client, setGlobalStatus, t]);
-
-  const refreshIndexerDownloadClientMappingCatalog = useCallback(async () => {
-    const { error } = await client
-      .query(
-        indexerDownloadClientMappingCatalogQuery,
-        {},
-        { requestPolicy: "network-only" },
-      )
-      .toPromise();
-    if (error) throw error;
-  }, [client]);
 
   const refreshProviderTypes = useCallback(async () => {
     const { data, error } = await client
@@ -372,6 +362,7 @@ export function SettingsDownloadClientsContainer({
       setIsEditorOpen(false);
       setEditorMode("create");
       setAwaitingBaselineSync(true);
+      void onDownloadClientsChanged?.();
       await refreshDownloadClients();
     } catch (error) {
       if (!isReportedConnectionFeedbackError(error)) {
@@ -570,13 +561,14 @@ export function SettingsDownloadClientsContainer({
       }).toPromise();
       if (error) throw error;
       setGlobalStatus(t("status.downloadClientUpdated"));
+      void onDownloadClientsChanged?.();
       await refreshDownloadClients();
     } catch (error) {
       setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
     } finally {
       setMutatingDownloadClientId(null);
     }
-  }, [client, refreshDownloadClients, setGlobalStatus, t]);
+  }, [client, onDownloadClientsChanged, refreshDownloadClients, setGlobalStatus, t]);
 
   const deleteDownloadClient = useCallback(async (downloadClient: DownloadClientRecord) => {
     setPendingDeleteDownloadClient(downloadClient);
@@ -595,10 +587,8 @@ export function SettingsDownloadClientsContainer({
       if (error) throw error;
       const clearedIndexerMappingCount =
         data?.deleteDownloadClientConfig?.clearedIndexerMappingCount ?? 0;
-      await Promise.all([
-        refreshDownloadClients(),
-        refreshIndexerDownloadClientMappingCatalog(),
-      ]);
+      void onDownloadClientsChanged?.();
+      await refreshDownloadClients();
       setGlobalStatus(
         t("status.downloadClientDeletedWithMappings", {
           name: downloadClient.name,
@@ -621,8 +611,8 @@ export function SettingsDownloadClientsContainer({
     client,
     editingDownloadClientId,
     pendingDeleteDownloadClient,
+    onDownloadClientsChanged,
     refreshDownloadClients,
-    refreshIndexerDownloadClientMappingCatalog,
     resetDownloadClientDraft,
     setGlobalStatus,
     t,

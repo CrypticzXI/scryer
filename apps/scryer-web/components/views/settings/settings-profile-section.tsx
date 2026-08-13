@@ -74,10 +74,12 @@ type Props = {
   linkedAccountConnectionLabels: Record<string, string>;
   linkableJellyfinConnections: ExternalAuthRuntimeConnection[];
   linkablePlexConnections: ExternalAuthRuntimeConnection[];
+  linkableEmbyConnections: ExternalAuthRuntimeConnection[];
   linkingProvider: ExternalAccountProvider | null;
   linkAccountConnectionId: string;
   linkAccountUsername: string;
   linkAccountPassword: string;
+  linkAccountEmbyMode: "LOCAL" | "CONNECT";
   linkAccountBusy: boolean;
   linkAccountError: string | null;
   loadingPasskeys: boolean;
@@ -104,7 +106,9 @@ type Props = {
   onLinkAccountConnectionChange: (value: string) => void;
   onLinkAccountUsernameChange: (value: string) => void;
   onLinkAccountPasswordChange: (value: string) => void;
+  onLinkAccountEmbyModeChange: (value: "LOCAL" | "CONNECT") => void;
   onSubmitJellyfinLink: (event: FormEvent<HTMLFormElement>) => void;
+  onSubmitEmbyLink: (event: FormEvent<HTMLFormElement>) => void;
   onSubmitPlexLink: (event: FormEvent<HTMLFormElement>) => void;
   onUnlinkExternalAccount: (id: string) => void;
 };
@@ -122,6 +126,8 @@ function providerLabel(provider: LinkedAccount["provider"]): string {
       return "Plex";
     case "JELLYFIN":
       return "Jellyfin";
+    case "EMBY":
+      return "Emby";
     default:
       return provider;
   }
@@ -189,10 +195,12 @@ export function SettingsProfileSection({
   linkedAccountConnectionLabels,
   linkableJellyfinConnections,
   linkablePlexConnections,
+  linkableEmbyConnections,
   linkingProvider,
   linkAccountConnectionId,
   linkAccountUsername,
   linkAccountPassword,
+  linkAccountEmbyMode,
   linkAccountBusy,
   linkAccountError,
   loadingPasskeys,
@@ -219,7 +227,9 @@ export function SettingsProfileSection({
   onLinkAccountConnectionChange,
   onLinkAccountUsernameChange,
   onLinkAccountPasswordChange,
+  onLinkAccountEmbyModeChange,
   onSubmitJellyfinLink,
+  onSubmitEmbyLink,
   onSubmitPlexLink,
   onUnlinkExternalAccount,
 }: Props) {
@@ -239,7 +249,9 @@ export function SettingsProfileSection({
   const selectedLinkConnections =
     linkingProvider === "JELLYFIN"
       ? linkableJellyfinConnections
-      : isVisibleExternalAccountProvider("PLEX")
+      : linkingProvider === "EMBY"
+        ? linkableEmbyConnections
+        : isVisibleExternalAccountProvider("PLEX")
         ? linkablePlexConnections
         : [];
   const selectedLinkConnection = selectedLinkConnections.find(
@@ -849,6 +861,17 @@ export function SettingsProfileSection({
                 {t("profile.linkJellyfinAccount")}
               </Button>
             ) : null}
+            {linkableEmbyConnections.length > 0 ? (
+              <Button
+                id="profile-link-emby"
+                type="button"
+                variant={linkingProvider === "EMBY" ? "secondary" : "outline"}
+                onClick={() => onStartLinkAccount("EMBY")}
+                disabled={linkAccountBusy}
+              >
+                Link Emby account
+              </Button>
+            ) : null}
             {isVisibleExternalAccountProvider("PLEX") &&
             linkablePlexConnections.length > 0 ? (
               <Button
@@ -982,6 +1005,109 @@ export function SettingsProfileSection({
                 onClick={onCancelLinkAccount}
                 disabled={linkAccountBusy}
                 className="w-fit"
+              >
+                {t("profile.linkAccountCancel")}
+              </Button>
+            </div>
+          </form>
+        ) : null}
+
+        {linkingProvider === "EMBY" ? (
+          <form
+            className="grid gap-3 rounded-[12px] border border-[var(--scry-line2)] bg-[var(--scry-card2)] p-4 md:max-w-xl"
+            onSubmit={onSubmitEmbyLink}
+          >
+            <div className="space-y-1.5">
+              <Label htmlFor="profile-link-emby-connection">
+                {t("profile.linkAccountConnection")}
+              </Label>
+              <Select
+                value={linkAccountConnectionId}
+                onValueChange={onLinkAccountConnectionChange}
+                disabled={linkAccountBusy}
+              >
+                <SelectTrigger id="profile-link-emby-connection" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {selectedLinkConnections.map((connection) => (
+                    <SelectItem
+                      id={selectorId("profile-link-emby-connection-option", connection.id)}
+                      key={connection.id}
+                      value={connection.id}
+                    >
+                      {connectionLabel(connection)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {selectedLinkConnection?.embyConnectEnabled ? (
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  id="profile-link-emby-mode-local"
+                  type="button"
+                  variant={linkAccountEmbyMode === "LOCAL" ? "secondary" : "outline"}
+                  onClick={() => onLinkAccountEmbyModeChange("LOCAL")}
+                >
+                  Local
+                </Button>
+                <Button
+                  id="profile-link-emby-mode-connect"
+                  type="button"
+                  variant={linkAccountEmbyMode === "CONNECT" ? "secondary" : "outline"}
+                  onClick={() => onLinkAccountEmbyModeChange("CONNECT")}
+                >
+                  Connect
+                </Button>
+              </div>
+            ) : null}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="profile-link-emby-username">
+                  {linkAccountEmbyMode === "CONNECT"
+                    ? "Emby Connect username or email"
+                    : t("profile.linkAccountUsername")}
+                </Label>
+                <Input
+                  id="profile-link-emby-username"
+                  value={linkAccountUsername}
+                  onChange={(event) => onLinkAccountUsernameChange(event.target.value)}
+                  disabled={linkAccountBusy}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="profile-link-emby-password">
+                  {t("profile.linkAccountPassword")}
+                </Label>
+                <Input
+                  id="profile-link-emby-password"
+                  type="password"
+                  value={linkAccountPassword}
+                  onChange={(event) => onLinkAccountPasswordChange(event.target.value)}
+                  disabled={linkAccountBusy}
+                />
+              </div>
+            </div>
+            {linkAccountError ? (
+              <p id="profile-link-emby-error" className="text-sm text-destructive">
+                {linkAccountError}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                id="profile-link-emby-submit"
+                type="submit"
+                disabled={linkAccountBusy || !linkAccountConnectionId || !linkAccountUsername.trim()}
+              >
+                {linkAccountBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {t("profile.linkAccountSubmit")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={onCancelLinkAccount}
+                disabled={linkAccountBusy}
               >
                 {t("profile.linkAccountCancel")}
               </Button>

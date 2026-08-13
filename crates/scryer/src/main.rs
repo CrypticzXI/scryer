@@ -78,8 +78,9 @@ use middleware::{
     AuthState, AuthlessAccessAllowlist, AuthlessAccessGuardState, AuthlessAccessPolicy,
     AuthlessWebClientProofRouteState, AuthlessWebClientProofState, CorsConfig,
     UNAUTHENTICATED_PUBLIC_ACCESS_ALLOWLIST_ENV, WebSocketOriginPolicy,
-    authless_web_client_proof_handler, cors_handler, enforce_authless_access_guard,
-    graphql_handler, graphql_ws_handler, health_handler, rate_limit_http_api,
+    authless_web_client_proof_handler, cors_handler, emby_avatar_handler,
+    enforce_authless_access_guard, graphql_handler, graphql_ws_handler, health_handler,
+    rate_limit_http_api,
 };
 use oauth_routes::{OAuthRouteState, oauth_router};
 use rate_limit::ScryerRateLimiter;
@@ -1638,6 +1639,10 @@ async fn bootstrap_application(
         .route(
             "/images/media/{token}/{variant}",
             get(image_proxy_handler).with_state(image_proxy_runtime),
+        )
+        .route(
+            "/api/media-server-avatars/{connection_id}/{user_id}/{image_tag}",
+            get(emby_avatar_handler).with_state(auth_state.clone()),
         )
         .route(
             "/images/titles/{title_id}/{kind}/{variant}",

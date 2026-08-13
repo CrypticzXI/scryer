@@ -152,6 +152,39 @@ impl MediaServerConnectionRepository for MediaServerConnectionStore {
         .await
     }
 
+    async fn compare_and_set_emby_base_url(
+        &self,
+        connection_id: &str,
+        expected_base_url: &str,
+        expected_server_id: &str,
+        new_base_url: &str,
+    ) -> AppResult<bool> {
+        let rows = SqlRuntime::execute_write(
+            &self.datastore,
+            "compare_and_set_emby_base_url",
+            "UPDATE media_server_connections
+                SET base_url = {}, updated_at = {}
+              WHERE id = {}
+                AND provider = 'emby'
+                AND base_url = {}
+                AND EXISTS (
+                    SELECT 1
+                      FROM emby_media_server_details
+                     WHERE connection_id = media_server_connections.id
+                       AND server_id = {}
+                )",
+            vec![
+                SqlArg::Text(new_base_url.to_string()),
+                SqlArg::Timestamp(chrono::Utc::now()),
+                SqlArg::Text(connection_id.to_string()),
+                SqlArg::Text(expected_base_url.to_string()),
+                SqlArg::Text(expected_server_id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(rows == 1)
+    }
+
     async fn delete(&self, id: &str) -> AppResult<()> {
         let id = id.to_string();
         SqlRuntime::run_in_transaction(
@@ -271,11 +304,14 @@ async fn replace_connection_details(
         MediaServerProvider::Emby => {
             SqlRuntime::execute(
                 SqlExec::Tx(tx),
-                "INSERT INTO emby_media_server_details (connection_id, api_key, created_at, updated_at)
-                 VALUES ({}, {}, {}, {})",
+                "INSERT INTO emby_media_server_details (
+                     connection_id, api_key, server_id, connect_enabled, created_at, updated_at
+                 ) VALUES ({}, {}, {}, {}, {}, {})",
                 &[
                     SqlArg::Text(connection.id.clone()),
                     encrypted_api_key_arg(encryption_key, connection.api_key.as_ref())?,
+                    SqlArg::OptText(connection.emby_server_id.clone()),
+                    SqlArg::Bool(connection.emby_connect_enabled),
                     SqlArg::Timestamp(connection.created_at),
                     SqlArg::Timestamp(connection.updated_at),
                 ],
@@ -382,6 +418,8 @@ async fn row_to_connection(
         default_library_grants: Vec::new(),
         machine_id: None,
         api_key: None,
+        emby_server_id: None,
+        emby_connect_enabled: false,
         path_mappings: Vec::new(),
         created_at: row.timestamp("created_at")?,
         updated_at: row.timestamp("updated_at")?,
@@ -405,6 +443,9 @@ async fn row_to_connection(
         MediaServerProvider::Emby => {
             connection.api_key =
                 load_api_key(datastore, "emby_media_server_details", &id, encryption_key).await?;
+            let (server_id, connect_enabled) = load_emby_details(datastore, &id).await?;
+            connection.emby_server_id = server_id;
+            connection.emby_connect_enabled = connect_enabled;
         }
     }
     connection.path_mappings = load_path_mappings(datastore, &id).await?;
@@ -431,6 +472,23 @@ async fn load_api_key(
     })
     .transpose()
     .map(Option::flatten)
+}
+
+async fn load_emby_details(
+    datastore: &StoreDatastore,
+    id: &str,
+) -> AppResult<(Option<String>, bool)> {
+    let row = SqlRuntime::fetch_optional(
+        datastore.read_exec(),
+        "SELECT server_id, connect_enabled
+           FROM emby_media_server_details
+          WHERE connection_id = {}",
+        &[SqlArg::Text(id.to_string())],
+    )
+    .await?;
+    row.map(|row| Ok((row.opt_text("server_id")?, row.bool("connect_enabled")?)))
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 async fn load_plex_machine_id(datastore: &StoreDatastore, id: &str) -> AppResult<Option<String>> {

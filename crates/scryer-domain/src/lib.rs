@@ -1108,6 +1108,7 @@ pub struct NewIndexerConfig {
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
     pub indexer_proxy_config_id: Option<String>,
+    pub download_client_id: Option<String>,
     pub config_json: Option<String>,
 }
 
@@ -3318,14 +3319,14 @@ impl MediaServerProvider {
     }
 
     pub fn supports_external_auth(&self) -> bool {
-        matches!(self, Self::Jellyfin | Self::Plex)
+        matches!(self, Self::Jellyfin | Self::Plex | Self::Emby)
     }
 
     pub fn external_account_provider(&self) -> Option<ExternalAccountProvider> {
         match self {
             Self::Jellyfin => Some(ExternalAccountProvider::Jellyfin),
             Self::Plex => Some(ExternalAccountProvider::Plex),
-            Self::Emby => None,
+            Self::Emby => Some(ExternalAccountProvider::Emby),
         }
     }
 }
@@ -3357,6 +3358,8 @@ pub struct MediaServerConnection {
     pub default_library_grants: Vec<MediaServerDefaultLibraryGrant>,
     pub machine_id: Option<String>,
     pub api_key: Option<String>,
+    pub emby_server_id: Option<String>,
+    pub emby_connect_enabled: bool,
     pub path_mappings: Vec<MediaServerPathMapping>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -3375,6 +3378,7 @@ impl MediaServerConnection {
 pub enum ExternalAccountProvider {
     Plex,
     Jellyfin,
+    Emby,
 }
 
 impl ExternalAccountProvider {
@@ -3382,6 +3386,7 @@ impl ExternalAccountProvider {
         match self {
             Self::Plex => "plex",
             Self::Jellyfin => "jellyfin",
+            Self::Emby => "emby",
         }
     }
 
@@ -3389,6 +3394,7 @@ impl ExternalAccountProvider {
         match value.trim().to_ascii_lowercase().as_str() {
             "plex" => Some(Self::Plex),
             "jellyfin" => Some(Self::Jellyfin),
+            "emby" => Some(Self::Emby),
             _ => None,
         }
     }

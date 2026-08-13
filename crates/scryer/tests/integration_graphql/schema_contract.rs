@@ -164,6 +164,8 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Episode media availability adds one object and one enum: public types
     // 547->549, OBJECT 287->288, ENUM 94->95.
     // Restore the operator-selected replacement mutation: mutation 170->171.
+    // Provider-level indexer/download-client compatibility adds one object so
+    // unsaved indexer drafts can use the same server-derived routing contract.
     assert_eq!(
         query_field_count, 119,
         "query fields: {query_field_names:?}"
@@ -173,8 +175,8 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 549);
-    assert_eq!(kind_count("OBJECT"), 288);
+    assert_eq!(public_types.len(), 550);
+    assert_eq!(kind_count("OBJECT"), 289);
     assert_eq!(kind_count("INPUT_OBJECT"), 154);
     assert_eq!(kind_count("ENUM"), 95);
     assert_eq!(kind_count("SCALAR"), 10);
@@ -1887,10 +1889,16 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
             fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
           }
           createIndexerInput: __type(name: "CreateIndexerConfigInput") {
-            inputFields { name }
+            inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
           }
           updateIndexerInput: __type(name: "UpdateIndexerConfigInput") {
             inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+          }
+          indexerMappingCatalog: __type(name: "IndexerDownloadClientMappingCatalogPayload") {
+            fields { name }
+          }
+          indexerProviderCompatibility: __type(name: "IndexerDownloadClientProviderCompatibilityPayload") {
+            fields { name }
           }
           testIndexerInput: __type(name: "TestIndexerConnectionInput") {
             inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
@@ -2093,6 +2101,10 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
         output_field("indexerPayload", "managedParentConfigId"),
         "IndexerConfigPayload.managedParentConfigId",
     );
+    assert_optional_id(
+        output_field("indexerPayload", "downloadClientId"),
+        "IndexerConfigPayload.downloadClientId",
+    );
     assert_non_null_id(
         output_field("downloadClientPayload", "id"),
         "DownloadClientConfigPayload.id",
@@ -2118,6 +2130,27 @@ async fn graphql_introspection_provider_configs_use_typed_config_values() {
     assert_non_null_id(
         input_field("updateIndexerInput", "id"),
         "UpdateIndexerConfigInput.id",
+    );
+    assert_optional_id(
+        input_field("createIndexerInput", "downloadClientId"),
+        "CreateIndexerConfigInput.downloadClientId",
+    );
+    assert_optional_id(
+        input_field("updateIndexerInput", "downloadClientId"),
+        "UpdateIndexerConfigInput.downloadClientId",
+    );
+    assert_eq!(
+        field_names("indexerMappingCatalog", "fields"),
+        vec!["clients", "indexers", "providerCompatibility"]
+    );
+    assert_eq!(
+        field_names("indexerProviderCompatibility", "fields"),
+        vec![
+            "providerType",
+            "protocolFamilies",
+            "supportsMapping",
+            "compatibleClientIds"
+        ]
     );
     assert_optional_id(
         input_field("testIndexerInput", "indexerId"),

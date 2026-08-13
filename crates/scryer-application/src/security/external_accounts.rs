@@ -7,6 +7,7 @@ pub struct ExternalAuthRuntimeConnection {
     pub display_name: String,
     pub login_enabled: bool,
     pub linking_enabled: bool,
+    pub emby_connect_enabled: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -58,7 +59,12 @@ impl AppUseCase {
                     }
                     scryer_domain::ExternalAccountProvider::Plex
                 }
-                scryer_domain::MediaServerProvider::Emby => continue,
+                scryer_domain::MediaServerProvider::Emby => {
+                    if connection.emby_server_id.is_none() {
+                        continue;
+                    }
+                    scryer_domain::ExternalAccountProvider::Emby
+                }
             };
             if connection.login_enabled && !login_providers.contains(&provider) {
                 login_providers.push(provider.clone());
@@ -72,6 +78,7 @@ impl AppUseCase {
                 display_name: connection.display_name,
                 login_enabled: connection.login_enabled,
                 linking_enabled: connection.linking_enabled,
+                emby_connect_enabled: connection.emby_connect_enabled,
             });
         }
 
@@ -107,6 +114,9 @@ impl AppUseCase {
             }
             scryer_domain::ExternalAccountProvider::Plex => {
                 scryer_domain::MediaServerProvider::Plex
+            }
+            scryer_domain::ExternalAccountProvider::Emby => {
+                scryer_domain::MediaServerProvider::Emby
             }
         };
         if connection.provider != expected_provider {
@@ -424,6 +434,56 @@ impl AppUseCase {
                     user.avatar_url,
                 )
             }
+            scryer_domain::ExternalAccountProvider::Emby => {
+                let emby_user_id = provider_user_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "Emby invites require selecting an Emby user from the picker".into(),
+                        )
+                    })?;
+                let api_key = connection.api_key.as_deref().ok_or_else(|| {
+                    AppError::Validation("Emby invites require a saved integration API key".into())
+                })?;
+                let user = self
+                    .services
+                    .integrations
+                    .external_identity_verifier
+                    .list_emby_users(
+                        &connection.id,
+                        &connection.base_url,
+                        api_key,
+                        Some(emby_user_id),
+                    )
+                    .await?
+                    .into_iter()
+                    .find(|user| user.id.eq_ignore_ascii_case(emby_user_id))
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "selected Emby user was not found on the configured server".into(),
+                        )
+                    })?;
+                if self
+                    .services
+                    .identity
+                    .external_accounts
+                    .get_by_provider_identity(provider.clone(), &connection_id, &user.id)
+                    .await?
+                    .is_some()
+                {
+                    return Err(AppError::Validation(
+                        "Emby account is already linked or invited".into(),
+                    ));
+                }
+                (
+                    Some(user.id),
+                    user.username,
+                    user.display_name,
+                    user.avatar_url,
+                )
+            }
         };
 
         let mut account = scryer_domain::UserExternalAccount::pending_claim(
@@ -491,6 +551,116 @@ impl AppUseCase {
             .await?;
         self.ensure_verified_identity_matches_request(&provider, &connection_id, &verified)?;
         self.link_verified_external_account(actor, verified).await
+    }
+
+    pub async fn link_emby_account(
+        &self,
+        actor: &User,
+        connection_id: String,
+        mode: EmbyConnectionMode,
+        username: String,
+        password: String,
+    ) -> AppResult<scryer_domain::UserExternalAccount> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
+        let provider = scryer_domain::ExternalAccountProvider::Emby;
+        let connection_id = normalize_connection_id(connection_id);
+        let connection = self
+            .auth_connection_for_use(provider.clone(), &connection_id, ExternalAuthUse::Linking)
+            .await?;
+        let (verified, refreshed_base_url) = self
+            .verify_emby_identity(&connection, mode, &username, &password)
+            .await
+            .map_err(|_| AppError::Unauthorized("Emby sign-in failed".into()))?;
+        if password.is_empty() && verified.remote_password_configured != Some(false) {
+            return Err(AppError::Unauthorized("Emby sign-in failed".into()));
+        }
+        self.refresh_emby_base_url_if_needed(&connection, refreshed_base_url.as_deref())
+            .await;
+        self.ensure_verified_identity_matches_request(&provider, &connection_id, &verified)?;
+        self.link_verified_external_account(actor, verified).await
+    }
+
+    async fn verify_emby_identity(
+        &self,
+        connection: &scryer_domain::MediaServerConnection,
+        mode: EmbyConnectionMode,
+        username: &str,
+        password: &str,
+    ) -> AppResult<(VerifiedExternalIdentity, Option<String>)> {
+        let server_id = connection.emby_server_id.as_deref().ok_or_else(|| {
+            AppError::Validation("Emby connection has no verified server identity".into())
+        })?;
+        match mode {
+            EmbyConnectionMode::Local => self
+                .services
+                .integrations
+                .external_identity_verifier
+                .verify_emby_local_identity(
+                    &connection.id,
+                    &connection.base_url,
+                    server_id,
+                    username,
+                    password,
+                )
+                .await
+                .map(|identity| (identity, None)),
+            EmbyConnectionMode::Connect => {
+                if !connection.emby_connect_enabled {
+                    return Err(AppError::Validation(
+                        "Emby Connect sign-in is disabled for this connection".into(),
+                    ));
+                }
+                self.services
+                    .integrations
+                    .external_identity_verifier
+                    .verify_emby_connect_identity(
+                        &connection.id,
+                        &connection.base_url,
+                        server_id,
+                        username,
+                        password,
+                    )
+                    .await
+                    .map(|verification| {
+                        let refreshed = (verification.resolved_api_base_url != connection.base_url)
+                            .then_some(verification.resolved_api_base_url);
+                        (verification.identity, refreshed)
+                    })
+            }
+        }
+    }
+
+    async fn refresh_emby_base_url_if_needed(
+        &self,
+        connection: &scryer_domain::MediaServerConnection,
+        refreshed_base_url: Option<&str>,
+    ) {
+        let Some(refreshed_base_url) = refreshed_base_url else {
+            return;
+        };
+        let Some(server_id) = connection.emby_server_id.as_deref() else {
+            return;
+        };
+        if let Err(error) = self
+            .services
+            .integrations
+            .media_server_connections
+            .compare_and_set_emby_base_url(
+                &connection.id,
+                &connection.base_url,
+                server_id,
+                refreshed_base_url,
+            )
+            .await
+        {
+            tracing::warn!(
+                connection_id = connection.id,
+                operation = "emby_connect_address_refresh",
+                error_class = %error,
+                "Emby Connect address refresh failed after successful authentication"
+            );
+        }
     }
 
     async fn link_verified_external_account(
@@ -627,6 +797,35 @@ impl AppUseCase {
                 "invalid Jellyfin credentials".into(),
             ));
         }
+        self.ensure_verified_identity_matches_request(&provider, &connection_id, &verified)?;
+        self.login_verified_external_account(verified, connection)
+            .await
+    }
+
+    pub async fn federated_login_with_emby(
+        &self,
+        connection_id: String,
+        mode: EmbyConnectionMode,
+        username: String,
+        password: String,
+    ) -> AppResult<User> {
+        if password.trim().is_empty() {
+            return Err(AppError::Unauthorized("Emby sign-in failed".into()));
+        }
+        let provider = scryer_domain::ExternalAccountProvider::Emby;
+        let connection_id = normalize_connection_id(connection_id);
+        let connection = self
+            .auth_connection_for_use(provider.clone(), &connection_id, ExternalAuthUse::Login)
+            .await?;
+        let (verified, refreshed_base_url) = self
+            .verify_emby_identity(&connection, mode, &username, &password)
+            .await
+            .map_err(|_| AppError::Unauthorized("Emby sign-in failed".into()))?;
+        if mode == EmbyConnectionMode::Local && verified.remote_password_configured == Some(false) {
+            return Err(AppError::Unauthorized("Emby sign-in failed".into()));
+        }
+        self.refresh_emby_base_url_if_needed(&connection, refreshed_base_url.as_deref())
+            .await;
         self.ensure_verified_identity_matches_request(&provider, &connection_id, &verified)?;
         self.login_verified_external_account(verified, connection)
             .await
@@ -1593,6 +1792,9 @@ mod tests {
                 | scryer_domain::MediaServerProvider::Emby => None,
             },
             api_key: None,
+            emby_server_id: (provider == scryer_domain::MediaServerProvider::Emby)
+                .then(|| "emby-server".to_string()),
+            emby_connect_enabled: provider == scryer_domain::MediaServerProvider::Emby,
             path_mappings: Vec::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -2148,14 +2350,16 @@ mod tests {
             settings.login_providers,
             vec![
                 ExternalAccountProvider::Jellyfin,
-                ExternalAccountProvider::Plex
+                ExternalAccountProvider::Plex,
+                ExternalAccountProvider::Emby,
             ]
         );
         assert_eq!(
             settings.linking_providers,
             vec![
                 ExternalAccountProvider::Jellyfin,
-                ExternalAccountProvider::Plex
+                ExternalAccountProvider::Plex,
+                ExternalAccountProvider::Emby,
             ]
         );
         assert_eq!(
@@ -2164,7 +2368,7 @@ mod tests {
                 .iter()
                 .map(|connection| connection.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["jellyfin-login", "jellyfin-link", "plex-main"]
+            vec!["jellyfin-login", "jellyfin-link", "plex-main", "emby-main"]
         );
         assert_eq!(settings.connections[0].display_name, "Jellyfin Login");
         assert!(settings.connections[0].login_enabled);
@@ -2175,6 +2379,11 @@ mod tests {
             settings.connections[2].provider,
             ExternalAccountProvider::Plex
         );
+        assert_eq!(
+            settings.connections[3].provider,
+            ExternalAccountProvider::Emby
+        );
+        assert!(settings.connections[3].emby_connect_enabled);
     }
 
     #[tokio::test]

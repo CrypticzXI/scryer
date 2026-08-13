@@ -23,6 +23,7 @@ import type {
   IndexerRecord,
   ProviderTypeInfo,
   IndexerDownloadClientMappingCatalog,
+  IndexerDownloadClientMappingCatalogResource,
 } from "@/lib/types";
 import { runConnectionFeedback } from "@/lib/utils/connection-feedback";
 import {
@@ -30,13 +31,12 @@ import {
   buildUpdateIndexerProxyInput,
 } from "@/lib/utils/settings-mutation-inputs";
 import {
-  normalizeIndexerDownloadClientMappingCatalog,
+  getIndexerDownloadClientDraftMappingViewModel,
   updateIndexerDownloadClientMapping,
   updatePendingIndexerMappingIds,
 } from "@/lib/utils/indexer-download-client-mapping";
 import {
   indexerProviderTypesQuery,
-  indexerDownloadClientMappingCatalogQuery,
   indexerProxyConfigsQuery,
   indexersInitQuery,
   indexersQuery,
@@ -66,6 +66,7 @@ const INDEXER_INITIAL_DRAFT = {
   name: "",
   providerType: "",
   indexerProxyConfigId: null as string | null,
+  downloadClientId: null as string | null,
   storedSecretKeys: [] as string[],
   isEnabled: true,
   enableInteractiveSearch: true,
@@ -209,6 +210,19 @@ function findMissingRequiredConfigField(
 
 type SettingsIndexersContainerProps = {
   providerCatalogVersion?: number;
+  indexerDownloadClientMappingCatalogResource: IndexerDownloadClientMappingCatalogResource;
+  updateIndexerDownloadClientMappingCatalog: (
+    updater: (
+      catalog: IndexerDownloadClientMappingCatalog,
+    ) => IndexerDownloadClientMappingCatalog,
+  ) => void;
+  refreshIndexerDownloadClientMappingCatalog: () => Promise<void>;
+};
+
+const EMPTY_INDEXER_DOWNLOAD_CLIENT_MAPPING_CATALOG: IndexerDownloadClientMappingCatalog = {
+  clients: [],
+  indexers: [],
+  providerCompatibility: [],
 };
 
 type PendingIndexerEditorAction =
@@ -229,16 +243,17 @@ function cloneIndexerDraft(
 
 export function SettingsIndexersContainer({
   providerCatalogVersion = 0,
+  indexerDownloadClientMappingCatalogResource,
+  updateIndexerDownloadClientMappingCatalog,
+  refreshIndexerDownloadClientMappingCatalog,
 }: SettingsIndexersContainerProps) {
   const setGlobalStatus = useGlobalStatus();
   const t = useTranslate();
   const client = useClient();
   const [settingsIndexers, setSettingsIndexers] = useState<IndexerRecord[]>([]);
-  const [indexerDownloadClientMappingCatalog, setIndexerDownloadClientMappingCatalog] =
-    useState<IndexerDownloadClientMappingCatalog>(() => ({
-      clients: [],
-      indexers: [],
-    }));
+  const indexerDownloadClientMappingCatalog =
+    indexerDownloadClientMappingCatalogResource.catalog ??
+    EMPTY_INDEXER_DOWNLOAD_CLIENT_MAPPING_CATALOG;
   const [mutatingIndexerMappingIds, setMutatingIndexerMappingIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -324,28 +339,6 @@ export function SettingsIndexersContainer({
     }
   }, [client, settingsIndexerFilter, setGlobalStatus, t]);
 
-  const refreshIndexerDownloadClientMappingCatalog = useCallback(async () => {
-    try {
-      const { data, error } = await client
-        .query(
-          indexerDownloadClientMappingCatalogQuery,
-          {},
-          { requestPolicy: "network-only" },
-        )
-        .toPromise();
-      if (error) throw error;
-      setIndexerDownloadClientMappingCatalog(
-        normalizeIndexerDownloadClientMappingCatalog(
-          data?.indexerDownloadClientMappingCatalog,
-        ),
-      );
-    } catch (error) {
-      setGlobalStatus(
-        error instanceof Error ? error.message : t("status.failedToLoad"),
-      );
-    }
-  }, [client, setGlobalStatus, t]);
-
   const refreshIndexerProxyConfigs = useCallback(async () => {
     try {
       const { data, error } = await client
@@ -391,10 +384,6 @@ export function SettingsIndexersContainer({
       cancelled = true;
     };
   }, [client, setGlobalStatus, t]);
-
-  useEffect(() => {
-    void refreshIndexerDownloadClientMappingCatalog();
-  }, [refreshIndexerDownloadClientMappingCatalog]);
 
   useIndexersSubscription(() => {
     void refreshIndexers();
@@ -495,6 +484,7 @@ export function SettingsIndexersContainer({
       name: indexerDraft.name.trim(),
       providerType: normalizedProviderType,
       indexerProxyConfigId: indexerDraft.indexerProxyConfigId,
+      downloadClientId: indexerDraft.downloadClientId,
       isEnabled: indexerDraft.isEnabled,
       enableInteractiveSearch: indexerDraft.enableInteractiveSearch,
       enableAutoSearch: indexerDraft.enableAutoSearch,
@@ -515,9 +505,29 @@ export function SettingsIndexersContainer({
       return;
     }
 
+    if (indexerDownloadClientMappingCatalogResource.catalog) {
+      const mappingModel = getIndexerDownloadClientDraftMappingViewModel(
+        payload.providerType,
+        payload.downloadClientId,
+        indexerDownloadClientMappingCatalogResource.catalog,
+      );
+      if (
+        payload.downloadClientId &&
+        (mappingModel.isNotApplicable ||
+          mappingModel.invalidReason === "missing" ||
+          mappingModel.invalidReason === "incompatible")
+      ) {
+        setGlobalStatus(t("settings.indexerDownloadClientSelectionInvalid"));
+        return;
+      }
+    }
+
     setMutatingIndexerId(editingIndexerId || "new");
     try {
       if (editingIndexerId) {
+        const existingDownloadClientId =
+          settingsIndexers.find((indexer) => indexer.id === editingIndexerId)
+            ?.downloadClientId ?? null;
         const { error } = await client
           .mutation(updateIndexerMutation, {
             input: {
@@ -529,6 +539,9 @@ export function SettingsIndexersContainer({
               enableInteractiveSearch: payload.enableInteractiveSearch,
               enableAutoSearch: payload.enableAutoSearch,
               config: payload.config,
+              ...(payload.downloadClientId !== existingDownloadClientId
+                ? { downloadClientId: payload.downloadClientId }
+                : {}),
             },
           })
           .toPromise();
@@ -544,6 +557,7 @@ export function SettingsIndexersContainer({
               isEnabled: payload.isEnabled,
               enableInteractiveSearch: payload.enableInteractiveSearch,
               enableAutoSearch: payload.enableAutoSearch,
+              downloadClientId: payload.downloadClientId,
               config: payload.config,
             },
           })
@@ -555,7 +569,10 @@ export function SettingsIndexersContainer({
       setIsEditorOpen(false);
       setEditorMode("create");
       setAwaitingBaselineSync(true);
-      await refreshIndexers();
+      await Promise.all([
+        refreshIndexers(),
+        refreshIndexerDownloadClientMappingCatalog(),
+      ]);
     } catch (error) {
       setGlobalStatus(
         error instanceof Error ? error.message : t("status.failedToUpdate"),
@@ -581,6 +598,7 @@ export function SettingsIndexersContainer({
       name: indexer.name,
       providerType: indexer.providerType,
       indexerProxyConfigId: indexer.indexerProxyConfigId ?? null,
+      downloadClientId: indexer.downloadClientId ?? null,
       storedSecretKeys: indexer.storedSecretKeys,
       isEnabled: indexer.isEnabled,
       enableInteractiveSearch: indexer.enableInteractiveSearch,
@@ -680,7 +698,7 @@ export function SettingsIndexersContainer({
       setMutatingIndexerMappingIds((previous) =>
         updatePendingIndexerMappingIds(previous, indexerId, true),
       );
-      setIndexerDownloadClientMappingCatalog((previous) =>
+      updateIndexerDownloadClientMappingCatalog((previous) =>
         updateIndexerDownloadClientMapping(previous, indexerId, downloadClientId),
       );
       if (selectedClient?.isEnabled === false) {
@@ -707,7 +725,7 @@ export function SettingsIndexersContainer({
         const resolvedDownloadClientId = response
           ? response.downloadClientId ?? null
           : downloadClientId;
-        setIndexerDownloadClientMappingCatalog((previous) =>
+        updateIndexerDownloadClientMappingCatalog((previous) =>
           updateIndexerDownloadClientMapping(
             previous,
             indexerId,
@@ -724,7 +742,7 @@ export function SettingsIndexersContainer({
           refreshIndexerDownloadClientMappingCatalog(),
         ]);
       } catch (error) {
-        setIndexerDownloadClientMappingCatalog((previous) =>
+        updateIndexerDownloadClientMappingCatalog((previous) =>
           updateIndexerDownloadClientMapping(
             previous,
             indexerId,
@@ -748,6 +766,7 @@ export function SettingsIndexersContainer({
       setGlobalStatus,
       settingsIndexers,
       t,
+      updateIndexerDownloadClientMappingCatalog,
     ],
   );
 
@@ -1050,7 +1069,12 @@ export function SettingsIndexersContainer({
         settingsIndexerFilter={settingsIndexerFilter}
         setSettingsIndexerFilter={setSettingsIndexerFilter}
         settingsIndexers={settingsIndexers}
-        indexerDownloadClientMappingCatalog={indexerDownloadClientMappingCatalog}
+        indexerDownloadClientMappingCatalogResource={
+          indexerDownloadClientMappingCatalogResource
+        }
+        refreshIndexerDownloadClientMappingCatalog={
+          refreshIndexerDownloadClientMappingCatalog
+        }
         mutatingIndexerMappingIds={mutatingIndexerMappingIds}
         setIndexerDownloadClientMapping={setIndexerDownloadClientMapping}
         indexerProxyConfigs={indexerProxyConfigs}

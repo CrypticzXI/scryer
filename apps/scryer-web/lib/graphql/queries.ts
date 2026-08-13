@@ -769,6 +769,8 @@ export const MEDIA_SERVER_CONNECTION_FIELDS = `
     }
     machineIdPresent
     apiKeyPresent
+    embyServerIdPresent
+    embyConnectEnabled
     pathMappings {
       sourcePath
       destinationPath
@@ -2497,6 +2499,7 @@ export const securitySettingsQuery = `query SecuritySettings {
     mfaRequireConfigStepUp
     mfaRequirePasswordLogin
     totpRequireJellyfinLogin
+    totpRequireEmbyLogin
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
@@ -2513,6 +2516,7 @@ export const externalAuthRuntimeSettingsQuery = `query ExternalAuthRuntimeSettin
       displayName
       loginEnabled
       linkingEnabled
+      embyConnectEnabled
     }
   }
 }`;
@@ -3539,6 +3543,12 @@ export const indexerDownloadClientMappingCatalogQuery = `query IndexerDownloadCl
       id
       name
       downloadClientId
+      protocolFamilies
+      supportsMapping
+      compatibleClientIds
+    }
+    providerCompatibility {
+      providerType
       protocolFamilies
       supportsMapping
       compatibleClientIds

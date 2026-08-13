@@ -15,7 +15,21 @@ export type IndexerDownloadClientMappingIndexer = {
   compatibleClientIds: string[];
 };
 
+export type IndexerDownloadClientProviderCompatibility = {
+  providerType: string;
+  protocolFamilies: string[];
+  supportsMapping: boolean;
+  compatibleClientIds: string[];
+};
+
 export type IndexerDownloadClientMappingCatalog = {
   clients: IndexerDownloadClientMappingClient[];
   indexers: IndexerDownloadClientMappingIndexer[];
+  providerCompatibility: IndexerDownloadClientProviderCompatibility[];
+};
+
+export type IndexerDownloadClientMappingCatalogResource = {
+  catalog: IndexerDownloadClientMappingCatalog | null;
+  status: "idle" | "loading" | "ready" | "refreshing" | "error";
+  error: string | null;
 };

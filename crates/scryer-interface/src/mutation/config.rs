@@ -153,6 +153,7 @@ impl ConfigMutations {
                     enable_interactive_search: input.enable_interactive_search.unwrap_or(true),
                     enable_auto_search: input.enable_auto_search.unwrap_or(true),
                     indexer_proxy_config_id: input.indexer_proxy_config_id.map(|id| id.to_string()),
+                    download_client_id: input.download_client_id.map(|id| id.to_string()),
                     config_json,
                 },
             )
@@ -191,7 +192,7 @@ impl ConfigMutations {
                     enable_interactive_search: input.enable_interactive_search,
                     enable_auto_search: input.enable_auto_search,
                     indexer_proxy_config_id: optional_id_input(input.indexer_proxy_config_id),
-                    download_client_id: None,
+                    download_client_id: optional_id_input(input.download_client_id),
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,

@@ -2810,6 +2810,7 @@ impl ExternalImportMutations {
                             enable_interactive_search: false,
                             enable_auto_search: false,
                             indexer_proxy_config_id: None,
+                            download_client_id: None,
                             config_json: Some(config_json.clone()),
                         },
                     )
@@ -2945,6 +2946,7 @@ impl ExternalImportMutations {
                         enable_interactive_search: true,
                         enable_auto_search: true,
                         indexer_proxy_config_id: None,
+                        download_client_id: None,
                         config_json: Some(config_json),
                     },
                 )

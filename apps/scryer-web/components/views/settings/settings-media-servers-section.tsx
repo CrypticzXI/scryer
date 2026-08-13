@@ -78,12 +78,16 @@ type SettingsMediaServersSectionProps = {
   plexServerOptions: PlexServerDiscovery[];
   plexDiscoveryBusy: boolean;
   discoverPlexServers: () => Promise<void> | void;
+  embyConnectBusy: boolean;
+  discoverEmbyConnectServers: () => Promise<void> | void;
+  testSavedEmbyConnect: () => Promise<void> | void;
   editorError: string | null;
 };
 
 const PROVIDERS: Array<{ value: VisibleMediaServerProvider; label: string }> = [
   { value: "JELLYFIN", label: "Jellyfin" },
   { value: "PLEX", label: "Plex" },
+  { value: "EMBY", label: "Emby" },
 ];
 
 const DEFAULT_BASE_URL_BY_PROVIDER: Record<MediaServerProvider, string> = {
@@ -103,7 +107,7 @@ function providerLabel(provider: MediaServerProvider): string {
 }
 
 function providerSupportsAuth(provider: MediaServerProvider): boolean {
-  return provider === "JELLYFIN" || provider === "PLEX";
+  return provider === "JELLYFIN" || provider === "PLEX" || provider === "EMBY";
 }
 
 function updateLibraryGrant(
@@ -125,10 +129,6 @@ function capabilityBadges(
   effectiveFormLoginEnabled: boolean,
 ): Array<{ label: string; tone: CapabilityBadgeTone }> {
   const badges: Array<{ label: string; tone: CapabilityBadgeTone }> = [];
-  if (connection.provider === "EMBY") {
-    badges.push({ label: "Notifications", tone: "info" });
-    return badges;
-  }
   if (effectiveFormLoginEnabled && connection.loginEnabled) {
     badges.push({ label: "Login", tone: "positive" });
   }
@@ -184,6 +184,9 @@ export function SettingsMediaServersSection({
   plexServerOptions,
   plexDiscoveryBusy,
   discoverPlexServers,
+  embyConnectBusy,
+  discoverEmbyConnectServers,
+  testSavedEmbyConnect,
   editorError,
 }: SettingsMediaServersSectionProps) {
   const t = useTranslate();
@@ -223,8 +226,17 @@ export function SettingsMediaServersSection({
           plexServerId: provider === "PLEX" ? previous.plexServerId : "",
           jellyfinCredentialMode:
             provider === "JELLYFIN" ? "adminLogin" : previous.jellyfinCredentialMode,
-          apiKey: provider === "JELLYFIN" ? "" : previous.apiKey,
-          clearApiKey: provider === "JELLYFIN" ? false : previous.clearApiKey,
+          embyConnectionMode: provider === "EMBY" ? "LOCAL" : previous.embyConnectionMode,
+          embyLocalSetupMethod:
+            provider === "EMBY" ? "API_KEY" : previous.embyLocalSetupMethod,
+          embyConnectEnabled: provider === "EMBY" ? false : previous.embyConnectEnabled,
+          embyConnectUsernameOrEmail: "",
+          embyConnectPassword: "",
+          embyConnectServerId: "",
+          embyDiscoveredServers: [],
+          apiKey: provider === "JELLYFIN" || provider === "EMBY" ? "" : previous.apiKey,
+          clearApiKey:
+            provider === "JELLYFIN" || provider === "EMBY" ? false : previous.clearApiKey,
         };
       });
     },
@@ -281,6 +293,36 @@ export function SettingsMediaServersSection({
                       ) : (
                         <span className="text-muted-foreground">{t("settings.plexServerMissing")}</span>
                       )
+                    ) : connection.provider === "EMBY" ? (
+                      <div className="space-y-1">
+                        <span
+                          id="settings-emby-api-key-present"
+                          className={cn(
+                            "inline-flex items-center gap-1",
+                            connection.apiKeyPresent
+                              ? "text-[var(--scry-success-text)]"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          <KeyRound className="h-3.5 w-3.5" />
+                          {connection.apiKeyPresent
+                            ? t("settings.apiKeyConfigured")
+                            : t("settings.apiKeyMissing")}
+                        </span>
+                        <span
+                          id="settings-emby-server-id-present"
+                          className={cn(
+                            "block",
+                            connection.embyServerIdPresent
+                              ? "text-[var(--scry-success-text)]"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          {connection.embyServerIdPresent
+                            ? "Server identity verified"
+                            : "Server identity missing"}
+                        </span>
+                      </div>
                     ) : connection.apiKeyPresent ? (
                       <span className="inline-flex items-center gap-1 text-[var(--scry-success-text)]">
                         <KeyRound className="h-3.5 w-3.5" />
@@ -386,7 +428,7 @@ export function SettingsMediaServersSection({
                       <SelectContent>
                         {PROVIDERS.map((provider) => (
                           <SelectItem
-                            id={selectorId("settings-media-server-provider-option", provider.value)}
+                            id={selectorId("settings-media-server-provider", provider.value)}
                             key={provider.value}
                             value={provider.value}
                           >
@@ -414,11 +456,22 @@ export function SettingsMediaServersSection({
                     />
                   </label>
                   <label>
-                    <Label className="mb-2 block" htmlFor="settings-media-server-base-url">
+                    <Label
+                      className="mb-2 block"
+                      htmlFor={
+                        draft.provider === "EMBY" && draft.embyConnectionMode === "CONNECT"
+                          ? "settings-emby-connect-base-url"
+                          : "settings-media-server-base-url"
+                      }
+                    >
                       {t("settings.baseUrl")}
                     </Label>
                     <Input
-                      id="settings-media-server-base-url"
+                      id={
+                        draft.provider === "EMBY" && draft.embyConnectionMode === "CONNECT"
+                          ? "settings-emby-connect-base-url"
+                          : "settings-media-server-base-url"
+                      }
                       value={draft.baseUrl}
                       onChange={(event) =>
                         setDraft((previous) => ({
@@ -512,6 +565,197 @@ export function SettingsMediaServersSection({
 
                 {draft.provider === "JELLYFIN" || draft.provider === "EMBY" ? (
                   <div className="space-y-3">
+                    {draft.provider === "EMBY" ? (
+                      <>
+                        <div className="inline-flex rounded-md border border-border p-1">
+                          <Button
+                            id="settings-emby-mode-local"
+                            type="button"
+                            variant={draft.embyConnectionMode === "LOCAL" ? "default" : "ghost"}
+                            size="sm"
+                            onClick={() =>
+                              setDraft((previous) => ({
+                                ...previous,
+                                embyConnectionMode: "LOCAL",
+                                embyConnectUsernameOrEmail: "",
+                                embyConnectPassword: "",
+                                embyConnectServerId: "",
+                                embyDiscoveredServers: [],
+                              }))
+                            }
+                          >
+                            Local
+                          </Button>
+                          <Button
+                            id="settings-emby-mode-connect"
+                            type="button"
+                            variant={draft.embyConnectionMode === "CONNECT" ? "default" : "ghost"}
+                            size="sm"
+                            onClick={() =>
+                              setDraft((previous) => ({
+                                ...previous,
+                                embyConnectionMode: "CONNECT",
+                                embyConnectEnabled: true,
+                                apiKey: "",
+                                adminUsername: "",
+                                adminPassword: "",
+                              }))
+                            }
+                          >
+                            Connect
+                          </Button>
+                        </div>
+
+                        {draft.embyConnectionMode === "LOCAL" ? (
+                          <div className="inline-flex rounded-md border border-border p-1">
+                            <Button
+                              id="settings-emby-setup-api-key"
+                              type="button"
+                              variant={draft.embyLocalSetupMethod === "API_KEY" ? "default" : "ghost"}
+                              size="sm"
+                              onClick={() =>
+                                setDraft((previous) => ({
+                                  ...previous,
+                                  embyLocalSetupMethod: "API_KEY",
+                                  adminUsername: "",
+                                  adminPassword: "",
+                                }))
+                              }
+                            >
+                              {t("settings.setupViaApiKey")}
+                            </Button>
+                            <Button
+                              id="settings-emby-setup-admin-credentials"
+                              type="button"
+                              variant={
+                                draft.embyLocalSetupMethod === "ADMIN_CREDENTIALS"
+                                  ? "default"
+                                  : "ghost"
+                              }
+                              size="sm"
+                              onClick={() =>
+                                setDraft((previous) => ({
+                                  ...previous,
+                                  embyLocalSetupMethod: "ADMIN_CREDENTIALS",
+                                  apiKey: "",
+                                  clearApiKey: false,
+                                }))
+                              }
+                            >
+                              {t("settings.loginAsAdmin")}
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="space-y-3 rounded border border-border bg-background/40 p-3">
+                            <p className="text-xs text-muted-foreground">
+                              The selected Emby Connect user must be a local administrator for setup.
+                            </p>
+                            <div className="grid gap-3 md:grid-cols-2">
+                              <label>
+                                <Label className="mb-2 block" htmlFor="settings-emby-connect-username">
+                                  Emby Connect username or email
+                                </Label>
+                                <Input
+                                  id="settings-emby-connect-username"
+                                  value={draft.embyConnectUsernameOrEmail}
+                                  onChange={(event) =>
+                                    setDraft((previous) => ({
+                                      ...previous,
+                                      embyConnectUsernameOrEmail: event.target.value,
+                                    }))
+                                  }
+                                  autoComplete="off"
+                                />
+                              </label>
+                              <label>
+                                <Label className="mb-2 block" htmlFor="settings-emby-connect-password">
+                                  Password
+                                </Label>
+                                <Input
+                                  id="settings-emby-connect-password"
+                                  value={draft.embyConnectPassword}
+                                  onChange={(event) =>
+                                    setDraft((previous) => ({
+                                      ...previous,
+                                      embyConnectPassword: event.target.value,
+                                    }))
+                                  }
+                                  type="password"
+                                  autoComplete="off"
+                                />
+                              </label>
+                            </div>
+                            <Button
+                              id="settings-emby-connect-discover"
+                              type="button"
+                              variant="outline"
+                              disabled={embyConnectBusy}
+                              onClick={() => void discoverEmbyConnectServers()}
+                            >
+                              {embyConnectBusy ? "Discovering…" : "Discover servers"}
+                            </Button>
+                            {draft.embyDiscoveredServers.length > 0 ? (
+                              <label>
+                                <Label className="mb-2 block" htmlFor="settings-emby-connect-server">
+                                  Emby server
+                                </Label>
+                                <Select
+                                  value={draft.embyConnectServerId}
+                                  onValueChange={(value) => {
+                                    const selected = draft.embyDiscoveredServers.find(
+                                      (server) => server.serverId === value,
+                                    );
+                                    setDraft((previous) => ({
+                                      ...previous,
+                                      embyConnectServerId: value,
+                                      baseUrl: selected?.suggestedBaseUrl ?? previous.baseUrl,
+                                    }));
+                                  }}
+                                >
+                                  <SelectTrigger id="settings-emby-connect-server">
+                                    <SelectValue placeholder="Select a server" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {draft.embyDiscoveredServers.map((server) => (
+                                      <SelectItem key={server.serverId} value={server.serverId}>
+                                        {server.name} · local {server.localStatus.toLowerCase()} · remote{" "}
+                                        {server.remoteStatus.toLowerCase()}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </label>
+                            ) : null}
+                          </div>
+                        )}
+
+                        <label className="flex items-center gap-3 rounded border border-border bg-background/40 p-3">
+                          <Checkbox
+                            id="settings-emby-connect-enabled"
+                            checked={draft.embyConnectEnabled}
+                            onCheckedChange={(checked) =>
+                              setDraft((previous) => ({
+                                ...previous,
+                                embyConnectEnabled: checked === true,
+                              }))
+                            }
+                          />
+                          <span>Allow users to sign in through Emby Connect</span>
+                        </label>
+                        {editingConnectionId && draft.embyConnectEnabled ? (
+                          <Button
+                            id="settings-emby-test-connect"
+                            type="button"
+                            variant="outline"
+                            disabled={embyConnectBusy}
+                            onClick={() => void testSavedEmbyConnect()}
+                          >
+                            Test Connect
+                          </Button>
+                        ) : null}
+                      </>
+                    ) : null}
+
                     {draft.provider === "JELLYFIN" ? (
                       <div className="inline-flex rounded-md border border-border p-1">
                         <Button
@@ -549,14 +793,28 @@ export function SettingsMediaServersSection({
                       </div>
                     ) : null}
                     <div className="grid gap-3 md:grid-cols-2">
-                      {draft.provider === "EMBY" || draft.jellyfinCredentialMode === "apiKey" ? (
+                      {(draft.provider === "JELLYFIN" && draft.jellyfinCredentialMode === "apiKey") ||
+                      (draft.provider === "EMBY" &&
+                        draft.embyConnectionMode === "LOCAL" &&
+                        draft.embyLocalSetupMethod === "API_KEY") ? (
                         <>
                           <label>
-                            <Label className="mb-2 block" htmlFor="settings-media-server-api-key">
+                            <Label
+                              className="mb-2 block"
+                              htmlFor={
+                                draft.provider === "EMBY"
+                                  ? "settings-emby-api-key"
+                                  : "settings-media-server-api-key"
+                              }
+                            >
                               {t("settings.apiKey")}
                             </Label>
                             <Input
-                              id="settings-media-server-api-key"
+                              id={
+                                draft.provider === "EMBY"
+                                  ? "settings-emby-api-key"
+                                  : "settings-media-server-api-key"
+                              }
                               value={draft.apiKey}
                               onChange={(event) =>
                                 setDraft((previous) => ({
@@ -569,7 +827,7 @@ export function SettingsMediaServersSection({
                               placeholder={t("form.apiKeyInputPlaceholder")}
                             />
                           </label>
-                          {editingConnectionId ? (
+                          {editingConnectionId && draft.provider === "JELLYFIN" ? (
                             <label className="flex items-end gap-2 pb-2">
                               <Checkbox
                                 checked={draft.clearApiKey}
@@ -584,14 +842,28 @@ export function SettingsMediaServersSection({
                             </label>
                           ) : null}
                         </>
-                      ) : (
+                      ) : (draft.provider === "JELLYFIN" ||
+                          (draft.provider === "EMBY" &&
+                            draft.embyConnectionMode === "LOCAL" &&
+                            draft.embyLocalSetupMethod === "ADMIN_CREDENTIALS")) ? (
                         <>
                           <label>
-                            <Label className="mb-2 block" htmlFor="settings-media-server-admin-username">
+                            <Label
+                              className="mb-2 block"
+                              htmlFor={
+                                draft.provider === "EMBY"
+                                  ? "settings-emby-admin-username"
+                                  : "settings-media-server-admin-username"
+                              }
+                            >
                               {t("settings.adminUsername")}
                             </Label>
                             <Input
-                              id="settings-media-server-admin-username"
+                              id={
+                                draft.provider === "EMBY"
+                                  ? "settings-emby-admin-username"
+                                  : "settings-media-server-admin-username"
+                              }
                               value={draft.adminUsername}
                               onChange={(event) =>
                                 setDraft((previous) => ({
@@ -604,11 +876,22 @@ export function SettingsMediaServersSection({
                             />
                           </label>
                           <label>
-                            <Label className="mb-2 block" htmlFor="settings-media-server-admin-password">
+                            <Label
+                              className="mb-2 block"
+                              htmlFor={
+                                draft.provider === "EMBY"
+                                  ? "settings-emby-admin-password"
+                                  : "settings-media-server-admin-password"
+                              }
+                            >
                               {t("settings.adminPassword")}
                             </Label>
                             <Input
-                              id="settings-media-server-admin-password"
+                              id={
+                                draft.provider === "EMBY"
+                                  ? "settings-emby-admin-password"
+                                  : "settings-media-server-admin-password"
+                              }
                               value={draft.adminPassword}
                               onChange={(event) =>
                                 setDraft((previous) => ({
@@ -622,7 +905,7 @@ export function SettingsMediaServersSection({
                             />
                           </label>
                         </>
-                      )}
+                      ) : null}
                     </div>
                     <div>
                       <LocalRemotePathMappingsField

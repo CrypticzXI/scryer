@@ -5,6 +5,7 @@ import { authRuntimeStateQuery, meQuery } from "@/lib/graphql/queries";
 import { loginMutation } from "@/lib/graphql/mutations";
 import type { AuthRuntimeState } from "@/lib/types/settings";
 import type { UserAccountKind } from "@/lib/types/users";
+import { authSessionPersistence } from "@/lib/utils/auth-session-persistence";
 import {
   normalizeJwtPermissionClaims,
   type AppPermission,
@@ -12,6 +13,7 @@ import {
 } from "@/lib/utils/permissions";
 
 const SESSION_STORAGE_KEY = "scryer_auth_token";
+const PERSISTENT_STORAGE_KEY = "scryer_auth_token_persistent";
 export const AUTH_SESSION_CHANGED_EVENT = "scryer:auth-session-changed";
 
 export type AuthUser = {
@@ -45,7 +47,9 @@ export function getAuthToken(): string | null {
     return null;
   }
 
-  const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+  const stored =
+    window.sessionStorage.getItem(SESSION_STORAGE_KEY) ??
+    window.localStorage.getItem(PERSISTENT_STORAGE_KEY);
   if (!stored) {
     return null;
   }
@@ -73,7 +77,9 @@ export function getMfaEnrollmentToken(): string | null {
     return null;
   }
 
-  const stored = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
+  const stored =
+    window.sessionStorage.getItem(SESSION_STORAGE_KEY) ??
+    window.localStorage.getItem(PERSISTENT_STORAGE_KEY);
   if (!stored || !isMfaEnrollmentToken(stored)) {
     return null;
   }
@@ -93,8 +99,14 @@ function dispatchAuthSessionChanged() {
   window.dispatchEvent(new CustomEvent(AUTH_SESSION_CHANGED_EVENT));
 }
 
-function persistAuthToken(token: string) {
-  sessionStorage.setItem(SESSION_STORAGE_KEY, token);
+function persistAuthToken(token: string, persistSession: boolean) {
+  sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  localStorage.removeItem(PERSISTENT_STORAGE_KEY);
+  if (authSessionPersistence(persistSession) === "persistent") {
+    localStorage.setItem(PERSISTENT_STORAGE_KEY, token);
+  } else {
+    sessionStorage.setItem(SESSION_STORAGE_KEY, token);
+  }
   currentToken = token;
   dispatchAuthSessionChanged();
 }
@@ -103,10 +115,12 @@ function clearPersistedAuthToken() {
   const hadCurrentToken = currentToken !== null;
   const hadPersistedToken =
     typeof window !== "undefined" &&
-    sessionStorage.getItem(SESSION_STORAGE_KEY) !== null;
+    (sessionStorage.getItem(SESSION_STORAGE_KEY) !== null ||
+      localStorage.getItem(PERSISTENT_STORAGE_KEY) !== null);
 
   if (typeof window !== "undefined") {
     sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    localStorage.removeItem(PERSISTENT_STORAGE_KEY);
   }
   currentToken = null;
   if (hadCurrentToken || hadPersistedToken) {
@@ -358,8 +372,9 @@ function applyAuthenticatedSession(
   user: AuthUser | null,
   setToken: (value: string | null) => void,
   setUser: (value: AuthUser | null) => void,
+  persistSession: boolean,
 ) {
-  persistAuthToken(token);
+  persistAuthToken(token, persistSession);
   setToken(token);
   setUser(isMfaEnrollmentToken(token) ? null : user);
 }
@@ -378,7 +393,11 @@ export type AuthState = {
     password: string,
     options?: AuthLoginOptions,
   ) => Promise<AuthLoginResult>;
-  adoptSession: (token: string, user: AuthUser | null) => void;
+  adoptSession: (
+    token: string,
+    user: AuthUser | null,
+    persistSession?: boolean,
+  ) => void;
   logout: () => void;
 };
 
@@ -455,7 +474,7 @@ export function useAuth(): AuthState {
     const nextUser = normalizeAuthUser(data.login.user) ?? userFromToken(newToken);
 
     if (options?.persistSession !== false) {
-      applyAuthenticatedSession(newToken, nextUser, setToken, setUser);
+      applyAuthenticatedSession(newToken, nextUser, setToken, setUser, true);
       rememberAuthBootstrapSession(newToken, nextUser);
     }
 
@@ -466,11 +485,24 @@ export function useAuth(): AuthState {
     };
   }, []);
 
-  const adoptSession = useCallback((nextToken: string, nextUser: AuthUser | null) => {
-    const normalizedUser = normalizeAuthUser(nextUser) ?? userFromToken(nextToken);
-    applyAuthenticatedSession(nextToken, normalizedUser, setToken, setUser);
-    rememberAuthBootstrapSession(nextToken, normalizedUser);
-  }, []);
+  const adoptSession = useCallback(
+    (
+      nextToken: string,
+      nextUser: AuthUser | null,
+      persistSession = false,
+    ) => {
+      const normalizedUser = normalizeAuthUser(nextUser) ?? userFromToken(nextToken);
+      applyAuthenticatedSession(
+        nextToken,
+        normalizedUser,
+        setToken,
+        setUser,
+        persistSession,
+      );
+      rememberAuthBootstrapSession(nextToken, normalizedUser);
+    },
+    [],
+  );
 
   const logout = useCallback(() => {
     clearPersistedAuthToken();

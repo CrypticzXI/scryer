@@ -15,6 +15,13 @@ use scryer_interface_media::types::*;
 #[derive(Default)]
 pub struct UserMutations;
 
+fn emby_connection_mode(value: EmbyConnectionModeValue) -> scryer_application::EmbyConnectionMode {
+    match value {
+        EmbyConnectionModeValue::Local => scryer_application::EmbyConnectionMode::Local,
+        EmbyConnectionModeValue::Connect => scryer_application::EmbyConnectionMode::Connect,
+    }
+}
+
 async fn user_payload_from_user(
     app: &scryer_application::AppUseCase,
     user: scryer_domain::User,
@@ -31,6 +38,7 @@ async fn login_payload_from_user(
     user: scryer_domain::User,
     mfa_verified_until: Option<chrono::DateTime<Utc>>,
     mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+    persist_session: bool,
 ) -> GqlResult<LoginPayload> {
     let user = app
         .load_user_for_auth_payload(&user)
@@ -47,12 +55,14 @@ async fn login_payload_from_user(
         expires_at,
         mfa_verified_until,
         mfa_enrollment_required: false,
+        persist_session,
     })
 }
 
 async fn login_mfa_enrollment_payload_from_user(
     app: &scryer_application::AppUseCase,
     user: scryer_domain::User,
+    persist_session: bool,
 ) -> GqlResult<LoginPayload> {
     let user = app
         .load_user_for_auth_payload(&user)
@@ -69,6 +79,7 @@ async fn login_mfa_enrollment_payload_from_user(
         expires_at,
         mfa_verified_until: None,
         mfa_enrollment_required: true,
+        persist_session,
     })
 }
 
@@ -322,6 +333,25 @@ impl UserMutations {
         .map_err(to_gql_error)
     }
 
+    async fn link_emby_account(
+        &self,
+        ctx: &Context<'_>,
+        input: LinkEmbyAccountInput,
+    ) -> GqlResult<LinkedAccountPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.link_emby_account(
+            &actor,
+            input.connection_id.to_string(),
+            emby_connection_mode(input.mode),
+            input.username,
+            input.password,
+        )
+        .await
+        .map(from_linked_account)
+        .map_err(to_gql_error)
+    }
+
     async fn unlink_external_account(
         &self,
         ctx: &Context<'_>,
@@ -343,6 +373,7 @@ impl UserMutations {
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let started_at = Instant::now();
+        let persist_session = input.persist_session.unwrap_or(true);
         let user = match app
             .federated_login_with_plex(input.connection_id.to_string(), input.plex_auth_token)
             .await
@@ -358,7 +389,7 @@ impl UserMutations {
                 .await);
             }
         };
-        login_payload_from_user(&app, user, None, None).await
+        login_payload_from_user(&app, user, None, None, persist_session).await
     }
 
     async fn login_with_jellyfin(
@@ -368,6 +399,7 @@ impl UserMutations {
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let started_at = Instant::now();
+        let persist_session = input.persist_session.unwrap_or(true);
         let user = match app
             .federated_login_with_jellyfin(
                 input.connection_id.to_string(),
@@ -398,7 +430,7 @@ impl UserMutations {
                 .totp_require_jellyfin_login;
         let mfa_verified_until = if jellyfin_mfa_required {
             if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
-                return login_mfa_enrollment_payload_from_user(&app, user).await;
+                return login_mfa_enrollment_payload_from_user(&app, user, persist_session).await;
             }
             let code = input.totp_code.as_deref().ok_or_else(|| {
                 to_gql_error(AppError::MfaStepUpRequired(
@@ -413,6 +445,62 @@ impl UserMutations {
         } else {
             None
         };
-        login_payload_from_user(&app, user, mfa_verified_until, None).await
+        login_payload_from_user(&app, user, mfa_verified_until, None, persist_session).await
+    }
+
+    async fn login_with_emby(
+        &self,
+        ctx: &Context<'_>,
+        input: LoginWithEmbyInput,
+    ) -> GqlResult<LoginPayload> {
+        let app = app_from_ctx(ctx)?;
+        let started_at = Instant::now();
+        let persist_session = input.persist_session.unwrap_or(true);
+        let user = match app
+            .federated_login_with_emby(
+                input.connection_id.to_string(),
+                emby_connection_mode(input.mode),
+                input.username,
+                input.password,
+            )
+            .await
+        {
+            Ok(user) => user,
+            Err(err) => {
+                return Err(to_login_gql_error_after_timing(
+                    "emby",
+                    LoginFailureTimingClass::FastMasked,
+                    started_at,
+                    err,
+                )
+                .await);
+            }
+        };
+        let emby_mfa_required = auth_runtime_from_ctx(ctx)
+            .snapshot()
+            .effective_form_login_enabled
+            && app
+                .security_settings()
+                .await
+                .map_err(to_gql_error)?
+                .totp_require_emby_login;
+        let mfa_verified_until = if emby_mfa_required {
+            if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
+                return login_mfa_enrollment_payload_from_user(&app, user, persist_session).await;
+            }
+            let code = input.totp_code.as_deref().ok_or_else(|| {
+                to_gql_error(AppError::MfaStepUpRequired(
+                    "TOTP code is required for Emby login".into(),
+                ))
+            })?;
+            Some(
+                app.verify_totp_for_user(&user, code)
+                    .await
+                    .map_err(to_gql_error)?,
+            )
+        } else {
+            None
+        };
+        login_payload_from_user(&app, user, mfa_verified_until, None, persist_session).await
     }
 }

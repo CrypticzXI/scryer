@@ -392,6 +392,7 @@ async fn form_login_prevents_disabling_last_usable_full_admin() {
             mfa_require_config_step_up: false,
             mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
+            totp_require_emby_login: false,
         },
     )
     .await
@@ -417,6 +418,7 @@ async fn form_login_transition_requires_usable_admin_and_repairs_default_identit
         mfa_require_config_step_up: false,
         mfa_require_password_login: false,
         totp_require_jellyfin_login: false,
+        totp_require_emby_login: false,
     };
 
     assert!(

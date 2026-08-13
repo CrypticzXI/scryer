@@ -748,26 +748,49 @@ function WantedItemsCard({
           <div
             className={
               shouldScrollDesktopTable
-                ? "min-h-0 flex-1 overflow-y-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]"
+                ? "min-h-0 flex-1 overflow-auto rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]"
                 : "overflow-hidden rounded-[14px] border border-[var(--scry-border2)] bg-[var(--scry-surfC)]"
             }
           >
-            <Table overflow="clip" layout="fixed" density="dense">
+            <Table
+              overflow="visible"
+              layout="auto"
+              density="dense"
+              className="min-w-[1280px]"
+            >
               <TableHeader
                 className={shouldScrollDesktopTable ? "[&_th]:sticky [&_th]:top-0 [&_th]:z-10" : undefined}
               >
                 <TableRow>
-                  <TableHead className="w-10 text-center" />
-                  <TableHead>{t("wanted.colTitle")}</TableHead>
-                  <TableHead className="w-32 text-center">Library</TableHead>
-                  <TableHead className="w-24 text-center">{t("wanted.colType")}</TableHead>
-                  <TableHead className="w-28 text-center">{t("wanted.colStatus")}</TableHead>
-                  <TableHead className="w-36 text-center">{t("wanted.colConvergence")}</TableHead>
-                  <TableHead className="w-36 text-center">{t("wanted.colLatestDecision")}</TableHead>
-                  <TableHead className="w-32 text-center">{t("wanted.colLastSearch")}</TableHead>
-                  <TableHead className="w-20 text-center">{t("wanted.colScore")}</TableHead>
-                  <TableHead className="w-24 text-center">{t("wanted.colIndexers")}</TableHead>
-                  <TableActionsHead className="w-36">{t("label.actions")}</TableActionsHead>
+                  <TableHead className="w-10 min-w-10 text-center" />
+                  <TableHead className="w-[30%] min-w-[280px]">
+                    {t("wanted.colTitle")}
+                  </TableHead>
+                  <TableHead className="min-w-[112px] text-center">Library</TableHead>
+                  <TableHead className="min-w-[80px] text-center">
+                    {t("wanted.colType")}
+                  </TableHead>
+                  <TableHead className="min-w-[96px] text-center">
+                    {t("wanted.colStatus")}
+                  </TableHead>
+                  <TableHead className="min-w-[128px] text-center">
+                    {t("wanted.colConvergence")}
+                  </TableHead>
+                  <TableHead className="min-w-[144px] text-center">
+                    {t("wanted.colLatestDecision")}
+                  </TableHead>
+                  <TableHead className="min-w-[128px] text-center">
+                    {t("wanted.colLastSearch")}
+                  </TableHead>
+                  <TableHead className="min-w-[64px] text-center">
+                    {t("wanted.colScore")}
+                  </TableHead>
+                  <TableHead className="min-w-[80px] text-center">
+                    {t("wanted.colIndexers")}
+                  </TableHead>
+                  <TableActionsHead className="min-w-[120px]">
+                    {t("label.actions")}
+                  </TableActionsHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -801,7 +824,7 @@ function WantedItemsCard({
                           className="block min-w-0 max-w-full text-left hover:text-foreground"
                           onClick={() => openWantedItemOverview(item)}
                         >
-                          <div className="truncate font-medium hover:underline">
+                          <div className="whitespace-normal break-words font-medium hover:underline">
                             {item.titleName ?? item.titleId.slice(0, 8)}
                           </div>
                           <div className="truncate text-xs text-muted-foreground">
@@ -857,7 +880,7 @@ function WantedItemsCard({
                       <TableCodeCell className="text-center">
                         {item.indexersCovered}/{item.indexersRouted}
                       </TableCodeCell>
-                      <TableActionsCell className="w-36">
+                      <TableActionsCell className="min-w-[120px]">
                         <div className="flex flex-wrap justify-center gap-1">
                           <IconButton
                             id={wantedItemSearchNowId(item.id)}

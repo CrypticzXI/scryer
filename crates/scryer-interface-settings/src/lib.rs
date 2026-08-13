@@ -93,6 +93,7 @@ mod tests {
                         display_name: "Main Jellyfin".to_string(),
                         login_enabled: true,
                         linking_enabled: false,
+                        emby_connect_enabled: false,
                     },
                     scryer_application::ExternalAuthRuntimeConnection {
                         id: "plex-main".to_string(),
@@ -100,6 +101,7 @@ mod tests {
                         display_name: "Main Plex".to_string(),
                         login_enabled: false,
                         linking_enabled: true,
+                        emby_connect_enabled: false,
                     },
                 ],
             },
@@ -137,6 +139,7 @@ mod tests {
                     display_name: "Main Jellyfin".to_string(),
                     login_enabled: true,
                     linking_enabled: true,
+                    emby_connect_enabled: false,
                 }],
             },
             false,
@@ -221,6 +224,7 @@ fn from_security_settings(
         mfa_require_config_step_up: settings.mfa_require_config_step_up,
         mfa_require_password_login: settings.mfa_require_password_login,
         totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
+        totp_require_emby_login: settings.totp_require_emby_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
         env_override_description: auth_runtime.env_override_description.clone(),
@@ -437,6 +441,7 @@ fn from_external_auth_runtime_settings(
                 display_name: connection.display_name,
                 login_enabled: effective_form_login_enabled && connection.login_enabled,
                 linking_enabled: connection.linking_enabled,
+                emby_connect_enabled: connection.emby_connect_enabled,
             })
             .collect(),
     }
@@ -457,6 +462,8 @@ fn from_auth_runtime_state(
             && security_settings.mfa_require_config_step_up,
         totp_require_jellyfin_login: auth_runtime.effective_form_login_enabled
             && security_settings.totp_require_jellyfin_login,
+        totp_require_emby_login: auth_runtime.effective_form_login_enabled
+            && security_settings.totp_require_emby_login,
     }
 }
 
@@ -852,6 +859,22 @@ impl SettingsQueries {
                         .map(Into::into)
                         .collect(),
                 })
+                .collect(),
+            provider_compatibility: catalog
+                .provider_compatibility
+                .into_iter()
+                .map(
+                    |provider| IndexerDownloadClientProviderCompatibilityPayload {
+                        provider_type: provider.provider_type,
+                        protocol_families: provider.protocol_families,
+                        supports_mapping: provider.supports_mapping,
+                        compatible_client_ids: provider
+                            .compatible_client_ids
+                            .into_iter()
+                            .map(Into::into)
+                            .collect(),
+                    },
+                )
                 .collect(),
         })
     }

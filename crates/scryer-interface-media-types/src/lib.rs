@@ -1278,6 +1278,7 @@ pub struct LoginInput {
 pub enum ExternalAccountProviderValue {
     Plex,
     Jellyfin,
+    Emby,
 }
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
@@ -1286,6 +1287,37 @@ pub enum MediaServerProviderValue {
     Jellyfin,
     Plex,
     Emby,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum EmbyConnectionModeValue {
+    Local,
+    Connect,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum EmbyLocalSetupMethodValue {
+    ApiKey,
+    AdminCredentials,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum EmbyConnectAddressStatusValue {
+    Reachable,
+    Unreachable,
+    InvalidUrl,
+    ServerIdMismatch,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum EmbyConnectUserTypeValue {
+    LinkedUser,
+    Guest,
+    Unknown,
 }
 
 impl MediaServerProviderValue {
@@ -1311,6 +1343,7 @@ impl ExternalAccountProviderValue {
         match self {
             Self::Plex => scryer_domain::ExternalAccountProvider::Plex,
             Self::Jellyfin => scryer_domain::ExternalAccountProvider::Jellyfin,
+            Self::Emby => scryer_domain::ExternalAccountProvider::Emby,
         }
     }
 
@@ -1318,6 +1351,7 @@ impl ExternalAccountProviderValue {
         match provider {
             scryer_domain::ExternalAccountProvider::Plex => Self::Plex,
             scryer_domain::ExternalAccountProvider::Jellyfin => Self::Jellyfin,
+            scryer_domain::ExternalAccountProvider::Emby => Self::Emby,
         }
     }
 }
@@ -1357,6 +1391,16 @@ pub struct LoginWithJellyfinInput {
 }
 
 #[derive(InputObject)]
+pub struct LoginWithEmbyInput {
+    pub connection_id: ID,
+    pub mode: EmbyConnectionModeValue,
+    pub username: String,
+    pub password: String,
+    pub totp_code: Option<String>,
+    pub persist_session: Option<bool>,
+}
+
+#[derive(InputObject)]
 pub struct WebauthnCompleteInput {
     pub challenge_id: ID,
     pub response_json: Json<serde_json::Value>,
@@ -1376,6 +1420,7 @@ pub struct LoginPayload {
     pub expires_at: DateTime<Utc>,
     pub mfa_verified_until: Option<DateTime<Utc>>,
     pub mfa_enrollment_required: bool,
+    pub persist_session: bool,
 }
 
 #[derive(InputObject)]
@@ -2380,6 +2425,7 @@ pub struct IndexerConfigPayload {
 pub struct IndexerDownloadClientMappingCatalogPayload {
     pub clients: Vec<IndexerDownloadClientMappingClientPayload>,
     pub indexers: Vec<IndexerDownloadClientMappingIndexerPayload>,
+    pub provider_compatibility: Vec<IndexerDownloadClientProviderCompatibilityPayload>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -2396,6 +2442,14 @@ pub struct IndexerDownloadClientMappingIndexerPayload {
     pub id: ID,
     pub name: String,
     pub download_client_id: Option<ID>,
+    pub protocol_families: Vec<String>,
+    pub supports_mapping: bool,
+    pub compatible_client_ids: Vec<ID>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct IndexerDownloadClientProviderCompatibilityPayload {
+    pub provider_type: String,
     pub protocol_families: Vec<String>,
     pub supports_mapping: bool,
     pub compatible_client_ids: Vec<ID>,
@@ -2888,6 +2942,7 @@ pub struct SecuritySettingsPayload {
     pub mfa_require_config_step_up: bool,
     pub mfa_require_password_login: bool,
     pub totp_require_jellyfin_login: bool,
+    pub totp_require_emby_login: bool,
     pub effective_form_login_enabled: bool,
     pub env_override_active: bool,
     pub env_override_description: Option<String>,
@@ -3010,6 +3065,7 @@ pub struct AuthRuntimeStatePayload {
     pub mfa_require_password_login: bool,
     pub mfa_require_config_step_up: bool,
     pub totp_require_jellyfin_login: bool,
+    pub totp_require_emby_login: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3469,6 +3525,7 @@ pub struct UpdateSecuritySettingsInput {
     pub mfa_require_config_step_up: bool,
     pub mfa_require_password_login: bool,
     pub totp_require_jellyfin_login: bool,
+    pub totp_require_emby_login: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3478,6 +3535,7 @@ pub struct ExternalAuthRuntimeConnectionPayload {
     pub display_name: String,
     pub login_enabled: bool,
     pub linking_enabled: bool,
+    pub emby_connect_enabled: bool,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -3534,6 +3592,8 @@ pub struct MediaServerConnectionPayload {
     pub default_library_grants: Vec<MediaServerDefaultLibraryGrantPayload>,
     pub machine_id_present: bool,
     pub api_key_present: bool,
+    pub emby_server_id_present: bool,
+    pub emby_connect_enabled: bool,
     pub path_mappings: Vec<MediaServerPathMappingPayload>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -3584,6 +3644,39 @@ pub struct PlexServerDiscoveryPayload {
     pub name: String,
 }
 
+#[derive(SimpleObject, Clone)]
+pub struct EmbyConnectServerPayload {
+    pub server_id: String,
+    pub name: String,
+    pub user_type: EmbyConnectUserTypeValue,
+    pub local_address: Option<String>,
+    pub remote_address: Option<String>,
+    pub local_api_base_url: Option<String>,
+    pub remote_api_base_url: Option<String>,
+    pub local_status: EmbyConnectAddressStatusValue,
+    pub remote_status: EmbyConnectAddressStatusValue,
+    pub suggested_base_url: Option<String>,
+}
+
+#[derive(InputObject, Clone)]
+pub struct DiscoverEmbyConnectServersInput {
+    pub username_or_email: String,
+    pub password: String,
+}
+
+#[derive(InputObject, Clone)]
+pub struct TestEmbyConnectInput {
+    pub connection_id: ID,
+    pub username_or_email: String,
+    pub password: String,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct MediaServerConnectionTestPayload {
+    pub status: String,
+    pub message: Option<String>,
+}
+
 #[derive(InputObject, Clone)]
 pub struct CreateMediaServerConnectionInput {
     pub provider: MediaServerProviderValue,
@@ -3601,6 +3694,12 @@ pub struct CreateMediaServerConnectionInput {
     pub api_key: Option<String>,
     pub admin_username: Option<String>,
     pub admin_password: Option<String>,
+    pub emby_connection_mode: Option<EmbyConnectionModeValue>,
+    pub emby_local_setup_method: Option<EmbyLocalSetupMethodValue>,
+    pub emby_connect_enabled: Option<bool>,
+    pub emby_connect_username_or_email: Option<String>,
+    pub emby_connect_password: Option<String>,
+    pub emby_connect_server_id: Option<String>,
     pub path_mappings: Option<Vec<MediaServerPathMappingInput>>,
 }
 
@@ -3624,6 +3723,12 @@ pub struct UpdateMediaServerConnectionInput {
     pub clear_api_key: Option<bool>,
     pub admin_username: Option<String>,
     pub admin_password: Option<String>,
+    pub emby_connection_mode: Option<EmbyConnectionModeValue>,
+    pub emby_local_setup_method: Option<EmbyLocalSetupMethodValue>,
+    pub emby_connect_enabled: Option<bool>,
+    pub emby_connect_username_or_email: Option<String>,
+    pub emby_connect_password: Option<String>,
+    pub emby_connect_server_id: Option<String>,
     pub path_mappings: Option<Vec<MediaServerPathMappingInput>>,
 }
 
@@ -3642,6 +3747,14 @@ pub struct LinkPlexAccountInput {
 #[derive(InputObject, Clone)]
 pub struct LinkJellyfinAccountInput {
     pub connection_id: ID,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(InputObject, Clone)]
+pub struct LinkEmbyAccountInput {
+    pub connection_id: ID,
+    pub mode: EmbyConnectionModeValue,
     pub username: String,
     pub password: String,
 }
@@ -3781,6 +3894,7 @@ pub struct CreateIndexerConfigInput {
     pub name: String,
     pub provider_type: String,
     pub indexer_proxy_config_id: Option<ID>,
+    pub download_client_id: Option<ID>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
     pub is_enabled: Option<bool>,
@@ -3795,6 +3909,7 @@ pub struct UpdateIndexerConfigInput {
     pub name: Option<String>,
     pub provider_type: Option<String>,
     pub indexer_proxy_config_id: MaybeUndefined<ID>,
+    pub download_client_id: MaybeUndefined<ID>,
     pub rate_limit_seconds: Option<i64>,
     pub rate_limit_burst: Option<i64>,
     pub is_enabled: Option<bool>,

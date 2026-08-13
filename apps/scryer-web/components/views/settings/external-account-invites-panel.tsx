@@ -103,6 +103,8 @@ function providerLabel(provider: ExternalAccountProvider): string {
       return "Plex";
     case "JELLYFIN":
       return "Jellyfin";
+    case "EMBY":
+      return "Emby";
     default:
       return provider;
   }

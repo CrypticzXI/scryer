@@ -47,6 +47,7 @@ export type IndexerDraft = {
   name: string;
   providerType: string;
   indexerProxyConfigId: string | null;
+  downloadClientId: string | null;
   storedSecretKeys: string[];
   isEnabled: boolean;
   enableInteractiveSearch: boolean;
