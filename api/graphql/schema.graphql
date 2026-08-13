@@ -2827,6 +2827,12 @@ type MutationRoot {
 	setEpisodeMonitored(input: SetEpisodeMonitoredInput!): EpisodePayload!
 	setSeriesMovieMonitored(input: SetSeriesMovieMonitoredInput!): SeriesMovieLinkPayload!
 	queueExistingTitleDownload(input: QueueDownloadInput!): QueueDownloadPayload!
+	"""
+	Queue an operator-chosen release to replace the existing primary file.
+	Scope comes from the signed candidate token and purpose is always the
+	server-owned manual-replacement purpose.
+	"""
+	queueReplacementRelease(input: QueueDownloadInput!): QueueDownloadPayload!
 	queueBestRelease(input: QueueBestReleaseInput!): QueueDownloadPayload!
 	queueManualImport(input: QueueManualImportInput!): DownloadQueueActionPayload!
 	beginManualImportSelection(input: BeginManualImportSelectionInput!): ManualImportSelectionPayload!

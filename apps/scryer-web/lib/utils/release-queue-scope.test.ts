@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ReleaseQueueScope } from "@/lib/types/releases";
-import { releaseSupportsAdditionalFileQueue } from "./release-queue-scope.ts";
+import {
+  hasPrimaryMediaFile,
+  releaseSupportsAdditionalFileQueue,
+} from "./release-queue-scope.ts";
 
 test("additional-file queue eligibility uses the signed release queue scope", () => {
   assert.equal(
@@ -56,4 +59,12 @@ test("additional-file queue eligibility uses the signed release queue scope", ()
   }
 
   assert.equal(releaseSupportsAdditionalFileQueue({ queueScope: null }, "movie"), false);
+});
+
+test("manual replacement selection requires an existing primary file", () => {
+  assert.equal(hasPrimaryMediaFile(undefined), false);
+  assert.equal(hasPrimaryMediaFile([]), false);
+  assert.equal(hasPrimaryMediaFile([{ role: "additional" }]), false);
+  assert.equal(hasPrimaryMediaFile([{ role: "PRIMARY" }]), true);
+  assert.equal(hasPrimaryMediaFile([{ role: null }, { role: "primary" }]), true);
 });

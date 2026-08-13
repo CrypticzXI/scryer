@@ -84,7 +84,11 @@ function renderEpisodeTypeBadges(episode: CollectionEpisode, t: TranslateFn) {
 function renderEpisodeQualityBadge(episode: CollectionEpisode, t: TranslateFn) {
   const pill = episodeAvailabilityPill(episode.mediaAvailability, t);
   return pill ? (
-    <Badge tone={pill.tone} className="px-1.5 text-[10px]">
+    <Badge
+      id={selectorId("series-overview-episode-availability", episode.id)}
+      tone={pill.tone}
+      className="px-1.5 text-[10px]"
+    >
       {pill.label}
     </Badge>
   ) : null;

@@ -237,6 +237,12 @@ fn prepare_mp4_metadata_from_reader<R: Read + Seek>(
     let mut output = Vec::new();
     let mut pos = 0_u64;
     let mut file_len_hint = 0_u64;
+    let input_len = reader
+        .seek(SeekFrom::End(0))
+        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|e| MediaInfoError::Io(e.to_string()))?;
 
     loop {
         let start = pos;
@@ -245,6 +251,21 @@ fn prepare_mp4_metadata_from_reader<R: Read + Seek>(
         };
         pos = pos.saturating_add(header.header_size as u64);
         let keep = should_copy_top_level_box(&header.name);
+
+        if header.size != 0 {
+            let box_end = start.checked_add(header.size).ok_or_else(|| {
+                MediaInfoError::Parse(format!(
+                    "MP4 box {} size overflow",
+                    fourcc_to_string(header.name)
+                ))
+            })?;
+            if box_end > input_len {
+                return Err(MediaInfoError::Parse(format!(
+                    "MP4 box {} extends past end of input",
+                    fourcc_to_string(header.name)
+                )));
+            }
+        }
 
         if keep {
             if header.size == 0 {
@@ -314,10 +335,10 @@ fn sanitize_prepared_mp4_metadata(data: &mut Vec<u8>) {
         start: 0,
         end: data.len(),
     };
-    sanitize_mp4_box_range(data, range);
+    sanitize_mp4_box_range(data, range, 0);
 }
 
-fn sanitize_mp4_box_range(data: &mut Vec<u8>, mut range: Range<usize>) -> usize {
+fn sanitize_mp4_box_range(data: &mut Vec<u8>, mut range: Range<usize>, depth: usize) -> usize {
     if !mp4_box_name_present(&data[range.start..range.end], &[*b"hdlr"]) {
         return 0;
     }
@@ -336,8 +357,10 @@ fn sanitize_mp4_box_range(data: &mut Vec<u8>, mut range: Range<usize>) -> usize 
 
         let box_delta = if &header.name == b"hdlr" {
             sanitize_hdlr_box(data, pos, header)
-        } else if let Some(child_range) = mp4_child_range(pos, header, box_size) {
-            let child_delta = sanitize_mp4_box_range(data, child_range);
+        } else if depth < MP4_BOX_MAX_DEPTH
+            && let Some(child_range) = mp4_child_range(pos, header, box_size)
+        {
+            let child_delta = sanitize_mp4_box_range(data, child_range, depth + 1);
             if child_delta > 0 {
                 box_size += child_delta;
                 write_box_size_at(data, pos, header.header_size, box_size as u64);
@@ -1853,6 +1876,51 @@ mod tests {
             stats
         );
         assert!(stats.seeks >= 1, "expected explicit mdat skip: {:?}", stats);
+    }
+
+    #[test]
+    fn metadata_copy_rejects_truncated_kept_box_before_allocating() {
+        let file = [
+            &(MP4_KEEP_BOX_MAX_BYTES as u32).to_be_bytes(),
+            b"moov".as_slice(),
+        ]
+        .concat();
+        let mut reader = TrackedReader::new(Cursor::new(file));
+
+        let error = prepare_mp4_metadata_from_reader(&mut reader)
+            .expect_err("truncated moov must be rejected before allocation");
+        let MediaInfoError::Parse(message) = error else {
+            panic!("expected parse error for truncated moov");
+        };
+        assert!(message.contains("extends past end of input"));
+    }
+
+    #[test]
+    fn sanitize_prepared_metadata_stops_at_depth_limit() {
+        const DEPTH: usize = 65_000;
+        const FIXTURE_BYTES: usize = 2_665_000;
+
+        let hdlr = make_box(b"hdlr", &[0_u8; 24]);
+        let free_payload_len = FIXTURE_BYTES - DEPTH * 8 - hdlr.len() - 8;
+        let mut metadata = vec![0_u8; FIXTURE_BYTES];
+
+        for level in 0..DEPTH {
+            let offset = level * 8;
+            let size = u32::try_from(FIXTURE_BYTES - offset).unwrap();
+            metadata[offset..offset + 4].copy_from_slice(&size.to_be_bytes());
+            metadata[offset + 4..offset + 8].copy_from_slice(b"moov");
+        }
+
+        let hdlr_start = DEPTH * 8;
+        metadata[hdlr_start..hdlr_start + hdlr.len()].copy_from_slice(&hdlr);
+        let free_start = hdlr_start + hdlr.len();
+        let free_size = u32::try_from(free_payload_len + 8).unwrap();
+        metadata[free_start..free_start + 4].copy_from_slice(&free_size.to_be_bytes());
+        metadata[free_start + 4..free_start + 8].copy_from_slice(b"free");
+
+        sanitize_prepared_mp4_metadata(&mut metadata);
+
+        assert_eq!(metadata.len(), FIXTURE_BYTES);
     }
 
     #[test]

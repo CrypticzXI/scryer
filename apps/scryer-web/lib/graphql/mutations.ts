@@ -1120,6 +1120,49 @@ export const queueExistingMutation = `mutation QueueExisting($input: QueueDownlo
   }
 }`;
 
+export const queueReplacementMutation = `mutation QueueReplacement($input: QueueDownloadInput!) {
+  queueReplacementRelease(input: $input) {
+    status
+    jobId
+    titleId
+    titleName
+    sourceTitle
+    sourceKind
+    conflict {
+      titleId
+      titleName
+      downloadClientId
+      downloadClientType
+      downloadClientItemId
+      sourceTitle
+      sourceKind
+      state
+      replaceable
+      scope {
+        __typename
+        ... on EpisodeScopePayload {
+          episodeId
+        }
+        ... on EpisodeSetScopePayload {
+          episodeIds
+        }
+        ... on SeriesMovieScopePayload {
+          seriesMovieLinkId
+        }
+        ... on CollectionScopePayload {
+          collectionId
+        }
+        ... on TitleScopePayload {
+          wholeTitle
+        }
+        ... on OrphanScopePayload {
+          orphaned
+        }
+      }
+    }
+  }
+}`;
+
 export const triggerTitleMismatchRecoverySearchMutation = `mutation TriggerTitleMismatchRecoverySearch($titleId: ID!) {
   triggerTitleMismatchRecoverySearch(titleId: $titleId) {
     titleId

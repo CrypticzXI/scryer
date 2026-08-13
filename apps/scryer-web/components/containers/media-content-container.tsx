@@ -16,6 +16,7 @@ import {
   deleteLibraryMutation,
   queueBestReleaseMutation,
   queueExistingMutation,
+  queueReplacementMutation,
   scanLibraryMutation,
   deleteTitlesMutation,
   setPrimaryMovieFileMutation,
@@ -84,7 +85,10 @@ import {
   titleCatalogQueryKey,
   type TitleCatalogAdvancedFilters,
 } from "@/lib/utils/title-catalog-query";
-import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
+import {
+  hasPrimaryMediaFile,
+  releaseQueueScopeInput,
+} from "@/lib/utils/release-queue-scope";
 import { validateLibraryRootPaths } from "@/lib/utils/library-root-validation";
 import {
   catalogRootValidationState,
@@ -3616,14 +3620,20 @@ export const MediaContentContainer = React.memo(function MediaContentContainer({
           scope: releaseQueueScopeInput(release, { title: true }),
           candidateToken: release.candidateToken,
         };
+        const replacesPrimary = hasPrimaryMediaFile(title.mediaFiles);
+        const mutation = replacesPrimary
+          ? queueReplacementMutation
+          : queueExistingMutation;
         const payload = await retryWithReplaceOnConflict(
           input,
           async (nextInput) => {
             const { data, error } = await client
-              .mutation(queueExistingMutation, { input: nextInput })
+              .mutation(mutation, { input: nextInput })
               .toPromise();
             if (error) throw error;
-            return data?.queueExistingTitleDownload;
+            return replacesPrimary
+              ? data?.queueReplacementRelease
+              : data?.queueExistingTitleDownload;
           },
           "A download is already in progress for this title.",
           confirmReplaceConflict,

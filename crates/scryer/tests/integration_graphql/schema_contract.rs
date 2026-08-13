@@ -161,19 +161,22 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     // Explicit indexer download-client mapping adds one query root, one mutation
     // root, and three payload objects: query 118->119, mutation 169->170,
     // OBJECT 284->287, INPUT_OBJECT 153->154, public types 543->547.
+    // Episode media availability adds one object and one enum: public types
+    // 547->549, OBJECT 287->288, ENUM 94->95.
+    // Restore the operator-selected replacement mutation: mutation 170->171.
     assert_eq!(
         query_field_count, 119,
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 170,
+        mutation_field_count, 171,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 547);
-    assert_eq!(kind_count("OBJECT"), 287);
+    assert_eq!(public_types.len(), 549);
+    assert_eq!(kind_count("OBJECT"), 288);
     assert_eq!(kind_count("INPUT_OBJECT"), 154);
-    assert_eq!(kind_count("ENUM"), 94);
+    assert_eq!(kind_count("ENUM"), 95);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));
@@ -253,7 +256,7 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
     assert!(!query_field_names.contains(&"mediaServerConnection"));
     assert!(!query_field_names.contains(&"outboundRateLimitSnapshot"));
     assert!(!query_field_names.contains(&"upstreamSchedulerSnapshot"));
-    assert!(!mutation_field_names.contains(&"queueReplacementRelease"));
+    assert!(mutation_field_names.contains(&"queueReplacementRelease"));
     assert!(!public_type_names.contains(&"OutboundRateLimitSnapshotPayload"));
     assert!(!public_type_names.contains(&"OutboundHostRpsSnapshotEntryPayload"));
     assert!(!public_type_names.contains(&"OutboundDestinationCooldownSnapshotEntryPayload"));

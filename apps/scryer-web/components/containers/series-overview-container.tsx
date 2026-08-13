@@ -18,6 +18,7 @@ import {
   setCollectionMonitoredMutation,
   queueBestReleaseMutation,
   queueExistingMutation,
+  queueReplacementMutation,
   setEpisodeMonitoredMutation,
   setPrimaryMovieFileMutation,
   setSeriesMovieMonitoredMutation,
@@ -32,7 +33,10 @@ import type { TitleRatings } from "@/components/views/title-ratings-strip";
 import { DEFAULT_SERIES_LIBRARY_PATH } from "@/lib/constants/settings";
 import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import { qualityProfileSettingsToEntries } from "@/lib/utils/quality-profiles";
-import { releaseQueueScopeInput } from "@/lib/utils/release-queue-scope";
+import {
+  hasPrimaryMediaFile,
+  releaseQueueScopeInput,
+} from "@/lib/utils/release-queue-scope";
 import {
   episodeIdsForCollections,
   mergeLoadedEpisodeDetailsForCollections,
@@ -1406,14 +1410,23 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
           scope: releaseQueueScopeInput(release, { collection: collection.id }),
           candidateToken: release.candidateToken,
         };
+        const replacesPrimary = (episodesByCollection[collection.id] ?? []).some(
+          (episode) =>
+            hasPrimaryMediaFile(mediaFilesByEpisode[episode.id]),
+        );
+        const mutation = replacesPrimary
+          ? queueReplacementMutation
+          : queueExistingMutation;
         const payload = await retryWithReplaceOnConflict(
           input,
           async (nextInput) => {
             const { data, error } = await client
-              .mutation(queueExistingMutation, { input: nextInput })
+              .mutation(mutation, { input: nextInput })
               .toPromise();
             if (error) throw error;
-            return data?.queueExistingTitleDownload;
+            return replacesPrimary
+              ? data?.queueReplacementRelease
+              : data?.queueExistingTitleDownload;
           },
           "A download is already in progress for this collection.",
           confirmReplaceConflict,
@@ -1425,7 +1438,16 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         setGlobalStatus(userFacingGraphQlErrorMessage(error, t("status.queueFailed")));
       }
     },
-    [client, confirmReplaceConflict, title, refreshTitleDetail, setGlobalStatus, t],
+    [
+      client,
+      confirmReplaceConflict,
+      episodesByCollection,
+      mediaFilesByEpisode,
+      title,
+      refreshTitleDetail,
+      setGlobalStatus,
+      t,
+    ],
   );
 
   const handleOpenManualImport = React.useCallback(

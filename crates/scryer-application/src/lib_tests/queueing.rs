@@ -1753,7 +1753,7 @@ async fn trigger_title_wanted_search_skips_conflicted_first_seed_episode_items()
 }
 
 #[tokio::test]
-async fn queue_existing_title_download_from_candidate_token_accepts_authenticated_actor() {
+async fn queue_replacement_release_from_candidate_token_marks_manual_replacement() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -1822,17 +1822,16 @@ async fn queue_existing_title_download_from_candidate_token_accepts_authenticate
         .expect("issue candidate token");
 
     let outcome = app
-        .queue_existing_title_download_from_candidate_token(
+        .queue_replacement_release_from_candidate_token(
             &authenticated_user,
             &title.id,
             &candidate_token,
-            SubmissionScope::Title,
             SubmissionConflictPolicy::Abort,
         )
         .await
-        .expect("queue existing title download from candidate token");
+        .expect("queue replacement release from candidate token");
     let QueueDownloadOutcome::Queued(outcome) = outcome else {
-        panic!("token queue should not conflict");
+        panic!("replacement queue should not conflict");
     };
 
     assert_eq!(outcome.job_id, format!("job-for-{}", title.id));
@@ -1844,6 +1843,12 @@ async fn queue_existing_title_download_from_candidate_token_accepts_authenticate
             .await
             .as_slice(),
         &["Token Queue".to_string()]
+    );
+    let submissions = download_submissions.store.lock().await.clone();
+    assert_eq!(submissions.len(), 1);
+    assert_eq!(
+        submissions[0].purpose,
+        crate::DownloadSubmissionPurpose::ManualReplacement
     );
 }
 

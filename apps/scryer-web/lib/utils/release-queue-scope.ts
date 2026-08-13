@@ -55,3 +55,9 @@ export function releaseSupportsAdditionalFileQueue(
   }
   return false;
 }
+
+export function hasPrimaryMediaFile(
+  files: readonly { role?: string | null }[] | null | undefined,
+): boolean {
+  return files?.some((file) => file.role?.toLowerCase() === "primary") ?? false;
+}

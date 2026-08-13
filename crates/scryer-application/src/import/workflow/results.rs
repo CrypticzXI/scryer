@@ -179,12 +179,7 @@ async fn reconcile_terminal_download_cleanup(
 fn terminal_tracked_state_for_import_result(result: &ImportResult) -> Option<TrackedDownloadState> {
     match result.decision {
         ImportDecision::Imported => Some(TrackedDownloadState::Imported),
-        ImportDecision::Failed | ImportDecision::Rejected => Some(TrackedDownloadState::Failed),
-        ImportDecision::Skipped
-            if result.skip_reason == Some(ImportSkipReason::AlreadyImported) =>
-        {
-            Some(TrackedDownloadState::Imported)
-        }
+        ImportDecision::Failed => Some(TrackedDownloadState::Failed),
         _ => None,
     }
 }

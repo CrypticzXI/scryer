@@ -20,7 +20,7 @@ import {
   pauseWantedItemMutation,
   resumeWantedItemMutation,
   queueBestReleaseMutation,
-  queueExistingMutation,
+  queueReplacementMutation,
   forceGrabPendingReleaseMutation,
   dismissPendingReleaseMutation,
 } from "@/lib/graphql/mutations";
@@ -704,10 +704,10 @@ export const WantedContainer = memo(function WantedContainer({
           input,
           async (nextInput) => {
             const { data, error } = await client
-              .mutation(queueExistingMutation, { input: nextInput })
+              .mutation(queueReplacementMutation, { input: nextInput })
               .toPromise();
             if (error) throw error;
-            return data?.queueExistingTitleDownload;
+            return data?.queueReplacementRelease;
           },
           conflictMessage,
           confirmReplaceConflict,

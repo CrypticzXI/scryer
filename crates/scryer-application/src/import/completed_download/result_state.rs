@@ -135,7 +135,8 @@ pub(super) async fn apply_import_result_with_completed(
     files_imported_this_pass: usize,
     completed: Option<&CompletedDownload>,
 ) -> bool {
-    let already_imported = result.skip_reason == Some(ImportSkipReason::AlreadyImported);
+    let already_imported = result.decision == ImportDecision::Skipped
+        && result.skip_reason == Some(ImportSkipReason::AlreadyImported);
     if result.decision == ImportDecision::Imported || already_imported {
         td.clear_no_video_import_retry();
         if verify_import_inner(app, td, files_imported_this_pass, completed).await {
@@ -145,19 +146,15 @@ pub(super) async fn apply_import_result_with_completed(
             return true;
         }
 
-        if already_imported {
-            td.state = TrackedDownloadState::Imported;
-            td.status = TrackedDownloadStatus::Ok;
-            td.status_messages.clear();
-            return true;
+        if result.decision == ImportDecision::Imported {
+            td.state = TrackedDownloadState::ImportPending;
+            td.status = TrackedDownloadStatus::Warning;
+            td.status_messages = vec![
+                "Import partially completed; waiting for remaining files or verification."
+                    .to_string(),
+            ];
+            return false;
         }
-
-        td.state = TrackedDownloadState::ImportPending;
-        td.status = TrackedDownloadStatus::Warning;
-        td.status_messages = vec![
-            "Import partially completed; waiting for remaining files or verification.".to_string(),
-        ];
-        return false;
     }
 
     if apply_no_video_import_backoff(app, td, &result).await {
