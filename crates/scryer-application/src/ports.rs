@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::TitleCatalogFilterCounts;
+use crate::types::{EpisodeMediaAvailability, TitleCatalogFilterCounts};
 use async_trait::async_trait;
 use scryer_domain::{
     CanonicalMediaTag, ImportTransferPhase, ImportType, IndexerCapsSnapshot,
@@ -3536,6 +3536,15 @@ pub trait MediaFileRepository: Send + Sync {
         &self,
         title_ids: &[String],
     ) -> AppResult<Vec<TitleEpisodeProgressSummary>>;
+
+    /// Compact row data for episode availability. Implementations must not
+    /// hydrate full media-file records for this projection.
+    async fn list_episode_media_availability(
+        &self,
+        _title_ids: &[String],
+    ) -> AppResult<Vec<EpisodeMediaAvailability>> {
+        Ok(Vec::new())
+    }
 
     async fn list_collection_episode_progress_summaries(
         &self,

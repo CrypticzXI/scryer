@@ -179,21 +179,22 @@ test("reactive side panel refresh omits recommendations", () => {
   assert.equal(result.query.includes("moreLikeThis("), false);
 });
 
-test("series side panel overview includes media files for collapsed-row status", () => {
+test("series side panel overview uses compact media availability for collapsed rows", () => {
   assert.equal(seriesSidePanelOverviewQuery.includes("aliases"), false);
-  assert.equal(seriesSidePanelOverviewQuery.includes("mediaFiles {"), true);
+  assert.equal(seriesSidePanelOverviewQuery.includes("mediaAvailability {"), true);
+  assert.equal(seriesSidePanelOverviewQuery.includes("primaryQualityLabel"), true);
+  assert.equal(seriesSidePanelOverviewQuery.includes("mediaFiles {"), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("wantedItems"), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("titleHistory("), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("titleAcquisitionDiagnostics"), false);
   assert.equal(seriesSidePanelOverviewQuery.includes("overview"), true);
   assert.equal(/episodes\s*\{[^}]*\boverview\b/s.test(seriesSidePanelOverviewQuery), false);
   assert.equal(/episodes\s*\{[^}]*\bimageUrl\b/s.test(seriesSidePanelOverviewQuery), false);
-  assert.equal(seriesSidePanelOverviewQuery.includes("episodeId"), true);
-  assert.equal(seriesSidePanelOverviewQuery.includes("sizeBytes"), true);
-  assert.equal(seriesSidePanelOverviewQuery.includes("qualityLabel"), true);
+  assert.equal(seriesSidePanelOverviewQuery.includes("sizeBytes"), false);
+  assert.equal(seriesSidePanelOverviewQuery.includes("qualityLabel"), false);
 });
 
-test("series reactive side panel refresh includes media files", () => {
+test("series reactive side panel refresh uses compact media availability", () => {
   const result = buildReactiveRefreshQuery([
     {
       key: "titleSidePanelOverview:title-1:300:series",
@@ -204,7 +205,8 @@ test("series reactive side panel refresh includes media files", () => {
     },
   ]);
 
-  assert.equal(result.query.includes("mediaFiles {"), true);
+  assert.equal(result.query.includes("mediaAvailability {"), true);
+  assert.equal(result.query.includes("mediaFiles {"), false);
   assert.equal(result.query.includes("episodeMediaFiles("), false);
   assert.equal(result.query.includes("titleHistory("), false);
   assert.equal(result.query.includes("titleAcquisitionDiagnostics"), false);
@@ -219,6 +221,8 @@ test("episode side panel detail query loads nested media files", () => {
   assert.equal(episodeSidePanelDetailQuery.includes("episodeMediaFiles("), false);
   assert.equal(episodeSidePanelDetailQuery.includes("overview"), true);
   assert.equal(episodeSidePanelDetailQuery.includes("imageUrl"), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("mediaAvailability {"), true);
+  assert.equal(episodeSidePanelDetailQuery.includes("primaryQualityLabel"), true);
   assert.equal(episodeSidePanelDetailQuery.includes("mediaFiles {"), true);
   assert.equal(episodeSidePanelDetailQuery.includes("filePath"), true);
 });

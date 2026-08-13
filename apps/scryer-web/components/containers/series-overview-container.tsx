@@ -37,6 +37,7 @@ import {
   episodeIdsForCollections,
   mergeLoadedEpisodeDetailsForCollections,
   pruneEpisodeRecord,
+  pruneSeriesMovieLinkMediaFiles,
 } from "@/lib/utils/series-episode-details";
 import { useClient } from "urql";
 import { useTranslate } from "@/lib/context/translate-context";
@@ -223,6 +224,10 @@ export type CollectionEpisode = {
   absoluteNumber: string | null;
   imageUrl?: string | null;
   monitored: boolean;
+  mediaAvailability: {
+    state: "AVAILABLE" | "PENDING_SCAN" | "SCAN_FAILED" | "MISSING" | "UNMONITORED";
+    primaryQualityLabel: string | null;
+  };
   createdAt: string;
 };
 
@@ -275,7 +280,6 @@ export type EpisodeMediaFile = {
 
 type SeriesOverviewSnapshotTitle = TitleDetail & {
   collections?: TitleCollection[];
-  mediaFiles?: EpisodeMediaFile[] | null;
 };
 
 type SeriesOverviewContainerProps = {
@@ -462,8 +466,6 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       const nextTitle = snapshot.title;
       const nextCollections = nextTitle?.collections ?? [];
       const nextSeriesMovieLinks = nextTitle?.seriesMovieLinks ?? [];
-      const nextMediaFiles = nextTitle?.mediaFiles ?? [];
-      const nextMediaFilesByEpisode = groupMediaFilesByEpisode(nextMediaFiles);
       setTitle((current) => {
         if (
           nextTitle &&
@@ -505,16 +507,11 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
       setEpisodeDetailsLoading((current) =>
         pruneEpisodeRecord(current, nextEpisodeIds),
       );
-      setMediaFilesByEpisode(() =>
-        Object.fromEntries(
-          Object.entries(nextMediaFilesByEpisode).filter(
-            ([episodeId]) =>
-              episodeId !== "__unlinked__" && nextEpisodeIds.has(episodeId),
-          ),
-        ),
+      setMediaFilesByEpisode((current) =>
+        pruneEpisodeRecord(current, nextEpisodeIds),
       );
-      setMediaFilesBySeriesMovieLink(
-        groupMediaFilesBySeriesMovieLink(nextMediaFiles),
+      setMediaFilesBySeriesMovieLink((current) =>
+        pruneSeriesMovieLinkMediaFiles(current, nextEpisodeIds),
       );
       if (!nextTitle) {
         setMediaFilesByEpisode({});

@@ -1,5 +1,8 @@
 use async_graphql::{ComplexObject, Context, ID, Result as GqlResult};
-use scryer_application::{AcquisitionScopeStatesQuery, ReleaseDecisionsQuery};
+use scryer_application::{
+    AcquisitionScopeStatesQuery, EpisodeMediaAvailability, EpisodeMediaAvailabilityState,
+    ReleaseDecisionsQuery,
+};
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, loaders::loaders_from_ctx, to_gql_error,
 };
@@ -28,6 +31,37 @@ fn relation_page_limit(limit: i32) -> i32 {
 
 fn relation_page_offset(offset: i32) -> i32 {
     offset.max(0)
+}
+
+fn from_episode_media_availability(
+    availability: EpisodeMediaAvailability,
+) -> EpisodeMediaAvailabilityPayload {
+    let state = match availability.state {
+        EpisodeMediaAvailabilityState::Available => EpisodeMediaAvailabilityStateValue::Available,
+        EpisodeMediaAvailabilityState::PendingScan => {
+            EpisodeMediaAvailabilityStateValue::PendingScan
+        }
+        EpisodeMediaAvailabilityState::ScanFailed => EpisodeMediaAvailabilityStateValue::ScanFailed,
+        EpisodeMediaAvailabilityState::Missing => EpisodeMediaAvailabilityStateValue::Missing,
+        EpisodeMediaAvailabilityState::Unmonitored => {
+            EpisodeMediaAvailabilityStateValue::Unmonitored
+        }
+    };
+    EpisodeMediaAvailabilityPayload {
+        state,
+        primary_quality_label: availability.primary_quality_label,
+    }
+}
+
+fn fallback_episode_media_availability(monitored: bool) -> EpisodeMediaAvailabilityPayload {
+    EpisodeMediaAvailabilityPayload {
+        state: if monitored {
+            EpisodeMediaAvailabilityStateValue::Missing
+        } else {
+            EpisodeMediaAvailabilityStateValue::Unmonitored
+        },
+        primary_quality_label: None,
+    }
 }
 
 #[ComplexObject]
@@ -874,6 +908,35 @@ impl EpisodePayload {
                 .transpose()
                 .map_err(to_gql_error)?;
             Ok(wanted_item)
+        })
+        .await
+    }
+
+    async fn media_availability(
+        &self,
+        ctx: &Context<'_>,
+    ) -> GqlResult<EpisodeMediaAvailabilityPayload> {
+        if let Some(loaders) = loaders_from_ctx(ctx) {
+            let availability = loaders
+                .episode_media_availability
+                .load_one((self.title_id.to_string(), self.id.to_string()))
+                .await?;
+            return Ok(availability
+                .map(from_episode_media_availability)
+                .unwrap_or_else(|| fallback_episode_media_availability(self.monitored)));
+        }
+        Box::pin(async move {
+            let app = app_from_ctx(ctx)?;
+            let actor = actor_from_ctx(ctx)?;
+            let availability = app
+                .list_episode_media_availability(&actor, std::slice::from_ref(&*self.title_id))
+                .await
+                .map_err(to_gql_error)?
+                .into_iter()
+                .find(|summary| summary.episode_id == self.id.as_ref());
+            Ok(availability
+                .map(from_episode_media_availability)
+                .unwrap_or_else(|| fallback_episode_media_availability(self.monitored)))
         })
         .await
     }

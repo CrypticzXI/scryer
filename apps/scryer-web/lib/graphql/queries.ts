@@ -298,6 +298,10 @@ const SERIES_SIDE_PANEL_EPISODE_ROW_FIELDS = `
       isRecap
       absoluteNumber
       monitored
+      mediaAvailability {
+        state
+        primaryQualityLabel
+      }
       createdAt`;
 
 const MOVIE_SIDE_PANEL_COLLECTION_FIELDS = `
@@ -560,8 +564,6 @@ const SERIES_SIDE_PANEL_TITLE_FIELDS = `
     seriesMovieLinks {${SERIES_SIDE_PANEL_MOVIE_LINK_FIELDS}
     }
     ratings {${TITLE_RATING_SUMMARY_FIELDS}
-    }
-    mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }`;
 
 export const TITLE_MUTATION_RESULT_FIELDS = `
@@ -940,6 +942,10 @@ export const episodeSidePanelDetailQuery = `query EpisodeSidePanelDetail($titleI
     id
     overview
     imageUrl
+    mediaAvailability {
+      state
+      primaryQualityLabel
+    }
     mediaFiles {${TITLE_MEDIA_FILE_FIELDS}
     }
   }

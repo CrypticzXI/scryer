@@ -203,6 +203,22 @@ pub struct SeriesMovieLinkPayload {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct EpisodeMediaAvailabilityPayload {
+    pub state: EpisodeMediaAvailabilityStateValue,
+    pub primary_quality_label: Option<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+pub enum EpisodeMediaAvailabilityStateValue {
+    Available,
+    PendingScan,
+    ScanFailed,
+    Missing,
+    Unmonitored,
+}
+
+#[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 pub struct EpisodePayload {
     pub id: ID,

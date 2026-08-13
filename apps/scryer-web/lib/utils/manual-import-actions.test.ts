@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { manualImportActions } from "./manual-import-actions.ts";
 
-for (const facet of ["movie", "series", "anime"] as const) {
+for (const facet of ["MOVIE", "SERIES", "ANIME"] as const) {
   test(`pending ${facet} import exposes no manual action`, () => {
     assert.deepEqual(
       manualImportActions({
@@ -18,7 +18,7 @@ for (const facet of ["movie", "series", "anime"] as const) {
 
 for (const displayState of ["IMPORT_BLOCKED", "IMPORT_FAILED"] as const) {
   test(`${displayState} series and anime imports use interactive mapping`, () => {
-    for (const facet of ["series", "anime"] as const) {
+    for (const facet of ["SERIES", "ANIME"] as const) {
       assert.deepEqual(
         manualImportActions({ displayState, facet, hasTitle: true }),
         { direct: false, interactive: true },
@@ -30,7 +30,7 @@ for (const displayState of ["IMPORT_BLOCKED", "IMPORT_FAILED"] as const) {
     assert.deepEqual(
       manualImportActions({
         displayState,
-        facet: "movie",
+        facet: "MOVIE",
         hasTitle: true,
       }),
       { direct: true, interactive: false },
@@ -46,5 +46,16 @@ test("manual import actions require an assigned title", () => {
       hasTitle: false,
     }),
     { direct: false, interactive: false },
+  );
+});
+
+test("manual import actions tolerate legacy lowercase facet values", () => {
+  assert.deepEqual(
+    manualImportActions({
+      displayState: "IMPORT_BLOCKED",
+      facet: "series",
+      hasTitle: true,
+    }),
+    { direct: false, interactive: true },
   );
 });

@@ -2009,6 +2009,80 @@ pub struct TitleEpisodeProgressSummary {
     pub total_episodes: i64,
 }
 
+/// Compact availability information for an episode row. This intentionally
+/// excludes the full media-file payload used by the expanded episode panel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EpisodeMediaAvailabilityState {
+    Available,
+    PendingScan,
+    ScanFailed,
+    Missing,
+    Unmonitored,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EpisodeMediaAvailability {
+    pub title_id: String,
+    pub episode_id: String,
+    pub state: EpisodeMediaAvailabilityState,
+    pub primary_quality_label: Option<String>,
+}
+
+pub fn derive_primary_quality_label(
+    video_width: Option<i32>,
+    video_height: Option<i32>,
+    quality_label: Option<&str>,
+    resolution: Option<&str>,
+) -> Option<String> {
+    match video_width.filter(|width| *width > 0) {
+        Some(width) if width >= 3840 => return Some("4K".to_string()),
+        Some(width) if width >= 1920 => return Some("1080p".to_string()),
+        Some(width) if width >= 1280 => return Some("720p".to_string()),
+        _ => {}
+    }
+    if let Some(height) = video_height.filter(|height| *height > 0) {
+        return Some(format!("{height}p"));
+    }
+    quality_label
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .or_else(|| resolution.map(str::trim).filter(|label| !label.is_empty()))
+        .map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod primary_quality_label_tests {
+    use super::derive_primary_quality_label;
+
+    #[test]
+    fn prefers_dimensions_then_stored_quality_metadata() {
+        assert_eq!(
+            derive_primary_quality_label(Some(3840), Some(1080), Some("1080p"), None),
+            Some("4K".to_string())
+        );
+        assert_eq!(
+            derive_primary_quality_label(Some(1920), Some(720), Some("720p"), None),
+            Some("1080p".to_string())
+        );
+        assert_eq!(
+            derive_primary_quality_label(Some(1280), Some(1080), Some("1080p"), None),
+            Some("720p".to_string())
+        );
+        assert_eq!(
+            derive_primary_quality_label(None, Some(576), Some("1080p"), None),
+            Some("576p".to_string())
+        );
+        assert_eq!(
+            derive_primary_quality_label(None, None, Some("  WEB  "), Some("1080p")),
+            Some("WEB".to_string())
+        );
+        assert_eq!(
+            derive_primary_quality_label(None, None, Some("  "), Some("  480p  ")),
+            Some("480p".to_string())
+        );
+    }
+}
+
 /// Aggregated episode progress counts per collection.
 #[derive(Clone, Debug)]
 pub struct CollectionEpisodeProgressSummary {

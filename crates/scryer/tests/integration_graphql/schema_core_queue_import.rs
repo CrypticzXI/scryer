@@ -1322,6 +1322,7 @@ async fn graphql_introspection_exposes_core_graph_relationship_fields() {
     assert!(episode_fields.contains(&"parentTitle"));
     assert!(episode_fields.contains(&"collection"));
     assert!(episode_fields.contains(&"wantedItem"));
+    assert!(episode_fields.contains(&"mediaAvailability"));
     assert!(episode_fields.contains(&"mediaFiles"));
 
     let queue_item_fields: Vec<&str> = body["data"]["queueItem"]["fields"]
@@ -1601,6 +1602,10 @@ async fn graphql_traverses_core_graph_relationships() {
                 parentTitle { id }
                 collection { id }
                 wantedItem { id }
+                mediaAvailability {
+                  state
+                  primaryQualityLabel
+                }
                 mediaFiles {
                   id
                   title { id }
@@ -1667,6 +1672,10 @@ async fn graphql_traverses_core_graph_relationships() {
           episode(titleId: $titleId, episodeId: $episodeId) {
             id
             parentTitle { id }
+            mediaAvailability {
+              state
+              primaryQualityLabel
+            }
             mediaFiles {
               id
               episode { id }
@@ -1701,6 +1710,14 @@ async fn graphql_traverses_core_graph_relationships() {
     assert_eq!(
         title_data["collections"][0]["episodes"][0]["wantedItem"]["id"],
         wanted_item.id
+    );
+    assert_eq!(
+        title_data["collections"][0]["episodes"][0]["mediaAvailability"]["state"],
+        "PENDING_SCAN"
+    );
+    assert_eq!(
+        title_data["collections"][0]["episodes"][0]["mediaAvailability"]["primaryQualityLabel"],
+        serde_json::Value::Null
     );
     assert_eq!(
         title_data["collections"][0]["episodes"][0]["mediaFiles"][0]["id"],
@@ -1745,12 +1762,71 @@ async fn graphql_traverses_core_graph_relationships() {
     );
     assert_eq!(body["data"]["episode"]["id"], episode.id);
     assert_eq!(body["data"]["episode"]["parentTitle"]["id"], title.id);
+    assert_eq!(
+        body["data"]["episode"]["mediaAvailability"]["state"],
+        "PENDING_SCAN"
+    );
     assert_eq!(body["data"]["episode"]["mediaFiles"][0]["id"], file_id);
     assert_eq!(
         body["data"]["episode"]["mediaFiles"][0]["episode"]["id"],
         episode.id
     );
     assert!(body["data"]["mismatchedEpisode"].is_null());
+
+    scryer_application::MediaFileRepository::update_media_file_analysis(
+        &ctx.media_files,
+        &file_id,
+        scryer_application::MediaFileAnalysis {
+            video_codec: None,
+            video_width: Some(1920),
+            video_height: Some(1080),
+            video_bitrate_kbps: None,
+            video_bit_depth: None,
+            video_hdr_format: None,
+            video_frame_rate: None,
+            video_profile: None,
+            audio_codec: None,
+            audio_profile: None,
+            audio_channels: None,
+            audio_bitrate_kbps: None,
+            audio_languages: vec![],
+            audio_streams: vec![],
+            subtitle_languages: vec![],
+            subtitle_codecs: vec![],
+            subtitle_streams: vec![],
+            has_multiaudio: false,
+            duration_seconds: None,
+            num_chapters: None,
+            container_format: None,
+        },
+    )
+    .await
+    .expect("mark primary media file scanned");
+
+    let availability_body = gql(
+        &ctx,
+        r#"
+        query EpisodeAvailability($titleId: ID!, $episodeId: ID!) {
+          episode(titleId: $titleId, episodeId: $episodeId) {
+            mediaAvailability {
+              state
+              primaryQualityLabel
+            }
+          }
+        }
+        "#,
+        json!({ "titleId": title.id, "episodeId": episode.id }),
+    )
+    .await;
+    assert_no_errors(&availability_body);
+    assert_eq!(
+        availability_body["data"]["episode"]["mediaAvailability"]["state"],
+        "AVAILABLE"
+    );
+    assert_eq!(
+        availability_body["data"]["episode"]["mediaAvailability"]["primaryQualityLabel"],
+        "1080p"
+    );
 }
 
 #[tokio::test]

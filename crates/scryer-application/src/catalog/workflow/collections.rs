@@ -885,6 +885,25 @@ impl AppUseCase {
             .await
     }
 
+    pub async fn list_episode_media_availability(
+        &self,
+        actor: &User,
+        title_ids: &[String],
+    ) -> AppResult<Vec<crate::types::EpisodeMediaAvailability>> {
+        let title_ids = self
+            .filter_title_ids_for_permission(
+                actor,
+                title_ids,
+                scryer_domain::LibraryPermission::View,
+            )
+            .await?;
+        self.services
+            .library
+            .media_files
+            .list_episode_media_availability(&title_ids)
+            .await
+    }
+
     pub async fn list_collection_episode_progress_summaries(
         &self,
         actor: &User,
