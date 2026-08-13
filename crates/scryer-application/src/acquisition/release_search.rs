@@ -803,10 +803,7 @@ pub(crate) fn external_id_agreement(
     if agreements.contains(&Some(false)) {
         return Some(false);
     }
-    agreements
-        .iter()
-        .any(|agreement| *agreement == Some(true))
-        .then_some(true)
+    agreements.contains(&Some(true)).then_some(true)
 }
 
 fn numeric_external_id_agreement(response: Option<&str>, subject: Option<&str>) -> Option<bool> {

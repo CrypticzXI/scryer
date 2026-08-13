@@ -4310,7 +4310,7 @@ async fn acquisition_cycle_submits_bluey_episode_media_request_candidate() {
         .add_title(
             &user,
             NewTitle {
-                name: "Bluey (2018)".into(),
+                name: "Bluey".into(),
                 sort_title: Some("Bluey".into()),
                 slug: Some("bluey-2018".into()),
                 facet: MediaFacet::Series,

@@ -425,12 +425,13 @@ impl AppUseCase {
         if profile_id.is_empty() {
             return Err(AppError::Validation("quality profile id is required".to_string()));
         }
-        let profiles = self
-            .services
-            .config
-            .quality_profiles
-            .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
-            .await?;
+        let profiles = ensure_quality_profiles_exist(
+            self.services
+                .config
+                .quality_profiles
+                .list_quality_profiles(SETTINGS_SCOPE_SYSTEM, None)
+                .await?,
+        );
         quality_profile_by_id(&profiles, profile_id)?
             .map(|profile| profile.id.clone())
             .ok_or_else(|| AppError::Validation(format!(

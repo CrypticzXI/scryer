@@ -232,7 +232,7 @@ impl AppUseCase {
             ),
             None => None,
         };
-        let mut tags = tags;
+        let mut tags = tags.map(|tags| crate::helpers::normalize_tags(&tags));
         if let Some(tags) = tags.as_mut() {
             self.canonicalize_title_quality_profile_tags(tags).await?;
         }
