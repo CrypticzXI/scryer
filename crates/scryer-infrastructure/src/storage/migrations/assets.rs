@@ -697,6 +697,38 @@ mod tests {
     }
 
     #[test]
+    fn migration_0155_widens_external_account_provider_constraint_for_both_engines() {
+        let db_root = source_db_root();
+        let manifest = fs::read_to_string(db_root.join("migration_manifest.toml"))
+            .expect("migration manifest should be readable");
+        assert!(manifest.contains("version = 155"));
+
+        let sqlite_sql = fs::read_to_string(db_root.join("migrations/0155_emby_first_class.sql"))
+            .expect("SQLite 0155 migration should be readable");
+        assert!(sqlite_sql.contains("CHECK (provider IN ('plex', 'jellyfin', 'emby'))"));
+        assert!(sqlite_sql.contains("FROM user_external_accounts"));
+        assert!(sqlite_sql.contains("DROP TABLE user_external_accounts"));
+        for index in [
+            "idx_user_external_accounts_pending_username",
+            "idx_user_external_accounts_provider_identity",
+            "idx_user_external_accounts_user_provider_connection",
+            "idx_user_external_accounts_user_status",
+        ] {
+            assert!(
+                sqlite_sql.contains(index),
+                "SQLite 0155 must restore {index}"
+            );
+        }
+
+        let postgres_sql =
+            fs::read_to_string(db_root.join("postgres/migrations/0155_emby_first_class.sql"))
+                .expect("PostgreSQL 0155 migration should be readable");
+        assert!(postgres_sql.contains("DROP CONSTRAINT user_external_accounts_provider_check"));
+        assert!(postgres_sql.contains("ADD CONSTRAINT user_external_accounts_provider_check"));
+        assert!(postgres_sql.contains("CHECK (provider IN ('plex', 'jellyfin', 'emby'))"));
+    }
+
+    #[test]
     fn postgres_0140_baseline_keeps_title_aware_unmatched_items_schema() {
         let sql = source_postgres_0140_baseline_sql();
         assert!(

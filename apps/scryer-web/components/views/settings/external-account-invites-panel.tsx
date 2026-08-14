@@ -43,6 +43,12 @@ import type {
   UiDateTimeFormat,
 } from "@/lib/types/settings";
 import { cn } from "@/lib/utils";
+import { scryerFetch } from "@/lib/graphql/urql-client";
+import { getAuthToken } from "@/lib/hooks/use-auth";
+import {
+  fetchProtectedMediaServerAvatar,
+  isProtectedMediaServerAvatarUrl,
+} from "@/lib/utils/authenticated-avatar";
 import { formatUiDateTime } from "@/lib/utils/date-format";
 import { selectorId } from "@/lib/utils/dom-ids";
 
@@ -152,6 +158,53 @@ function providerIdentityLabel(account: LinkedAccount): string {
   return account.displayName || account.username;
 }
 
+function useProviderAvatarSource(
+  avatarUrl: string | null | undefined,
+): string | null {
+  const protectedAvatar =
+    typeof window !== "undefined" &&
+    Boolean(
+      avatarUrl &&
+        isProtectedMediaServerAvatarUrl(avatarUrl, window.location.origin),
+    );
+  const [loaded, setLoaded] = React.useState<{
+    requestedUrl: string;
+    objectUrl: string;
+  } | null>(null);
+
+  React.useEffect(() => {
+    if (!protectedAvatar || !avatarUrl) return;
+    const token = getAuthToken();
+    if (!token) return;
+
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    void fetchProtectedMediaServerAvatar(
+      avatarUrl,
+      window.location.origin,
+      token,
+      controller.signal,
+      scryerFetch,
+    )
+      .then((blob) => {
+        if (controller.signal.aborted) return;
+        objectUrl = window.URL.createObjectURL(blob);
+        setLoaded({ requestedUrl: avatarUrl, objectUrl });
+      })
+      .catch(() => {
+        // The initial/fallback avatar remains visible for auth, network, and image failures.
+      });
+
+    return () => {
+      controller.abort();
+      if (objectUrl) window.URL.revokeObjectURL(objectUrl);
+    };
+  }, [avatarUrl, protectedAvatar]);
+
+  if (!protectedAvatar) return avatarUrl ?? null;
+  return loaded && loaded.requestedUrl === avatarUrl ? loaded.objectUrl : null;
+}
+
 function ProviderAvatar({
   avatarUrl,
   label,
@@ -159,12 +212,15 @@ function ProviderAvatar({
   avatarUrl: string | null | undefined;
   label: string;
 }) {
-  return avatarUrl ? (
+  const source = useProviderAvatarSource(avatarUrl);
+  const [failedSource, setFailedSource] = React.useState<string | null>(null);
+  return source && failedSource !== source ? (
     <img
-      src={avatarUrl}
+      src={source}
       alt=""
       className="h-7 w-7 shrink-0 rounded-full border border-border object-cover"
       loading="lazy"
+      onError={() => setFailedSource(source)}
     />
   ) : (
     <span

@@ -500,6 +500,158 @@ async fn migrations_apply_then_validate_is_idempotent() {
 }
 
 #[tokio::test]
+async fn migration_0155_allows_emby_external_accounts_and_preserves_legacy_rows() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("create SQLite migration fixture");
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .expect("enable foreign keys");
+    sqlx::raw_sql(
+        "CREATE TABLE users (id TEXT PRIMARY KEY);
+         CREATE TABLE media_server_connections (id TEXT PRIMARY KEY);
+         CREATE TABLE emby_media_server_details (
+             connection_id TEXT PRIMARY KEY,
+             api_key_encrypted TEXT NOT NULL
+         );
+         CREATE TABLE user_external_accounts (
+             id TEXT PRIMARY KEY,
+             user_id TEXT NOT NULL,
+             provider TEXT NOT NULL,
+             connection_id TEXT NOT NULL,
+             external_user_id TEXT,
+             username TEXT NOT NULL,
+             display_name TEXT,
+             avatar_url TEXT,
+             status TEXT NOT NULL,
+             verified_at TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             last_login_at TEXT,
+             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+             FOREIGN KEY (connection_id) REFERENCES media_server_connections(id),
+             CHECK (provider IN ('plex', 'jellyfin')),
+             CHECK (status IN ('pending_claim', 'active', 'disabled'))
+         );
+         CREATE UNIQUE INDEX idx_user_external_accounts_pending_username
+             ON user_external_accounts (provider, connection_id, LOWER(username))
+             WHERE status = 'pending_claim' AND external_user_id IS NULL;
+         CREATE UNIQUE INDEX idx_user_external_accounts_provider_identity
+             ON user_external_accounts (provider, connection_id, external_user_id);
+         CREATE UNIQUE INDEX idx_user_external_accounts_user_provider_connection
+             ON user_external_accounts (user_id, provider, connection_id);
+         CREATE INDEX idx_user_external_accounts_user_status
+             ON user_external_accounts (user_id, status);
+         INSERT INTO users (id) VALUES ('plex-user'), ('jellyfin-user'), ('emby-user');
+         INSERT INTO media_server_connections (id)
+             VALUES ('plex-main'), ('jellyfin-main'), ('emby-main');
+         INSERT INTO emby_media_server_details (connection_id, api_key_encrypted)
+             VALUES ('emby-main', 'encrypted-key');
+         INSERT INTO user_external_accounts (
+             id, user_id, provider, connection_id, external_user_id, username,
+             display_name, avatar_url, status, verified_at, created_at, updated_at,
+             last_login_at
+         ) VALUES
+             ('plex-account', 'plex-user', 'plex', 'plex-main', 'plex-id', 'Plex User',
+              'Plex Display', '/plex-avatar', 'active', '2026-01-01T00:00:00Z',
+              '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', '2026-01-03T00:00:00Z'),
+             ('jellyfin-invite', 'jellyfin-user', 'jellyfin', 'jellyfin-main',
+              'jellyfin-id', 'Jellyfin User', NULL, NULL, 'pending_claim', NULL,
+              '2026-02-01T00:00:00Z', '2026-02-02T00:00:00Z', NULL);",
+    )
+    .execute(&pool)
+    .await
+    .expect("initialize pre-0155 schema");
+
+    run_embedded_migration(
+        &pool,
+        include_str!("../../../scryer/src/db/migrations/0155_emby_first_class.sql"),
+    )
+    .await;
+
+    let legacy: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, provider, status, last_login_at
+           FROM user_external_accounts
+          ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read preserved legacy accounts");
+    assert_eq!(
+        legacy,
+        vec![
+            (
+                "jellyfin-invite".into(),
+                "jellyfin".into(),
+                "pending_claim".into(),
+                None,
+            ),
+            (
+                "plex-account".into(),
+                "plex".into(),
+                "active".into(),
+                Some("2026-01-03T00:00:00Z".into()),
+            ),
+        ]
+    );
+
+    sqlx::query(
+        "INSERT INTO user_external_accounts (
+             id, user_id, provider, connection_id, external_user_id, username,
+             status, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("emby-invite")
+    .bind("emby-user")
+    .bind("emby")
+    .bind("emby-main")
+    .bind("emby-local-user-id")
+    .bind("Emby User")
+    .bind("pending_claim")
+    .bind("2026-03-01T00:00:00Z")
+    .bind("2026-03-01T00:00:00Z")
+    .execute(&pool)
+    .await
+    .expect("0155 must allow Emby invite rows");
+    let emby_provider: String =
+        sqlx::query_scalar("SELECT provider FROM user_external_accounts WHERE id = 'emby-invite'")
+            .fetch_one(&pool)
+            .await
+            .expect("round-trip Emby invite provider");
+    assert_eq!(emby_provider, "emby");
+
+    let indexes: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master
+          WHERE type = 'index' AND name LIKE 'idx_user_external_accounts_%'
+          ORDER BY name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("list restored external account indexes");
+    assert_eq!(
+        indexes.len(),
+        4,
+        "all external account indexes must survive"
+    );
+
+    let invalid_provider = sqlx::query(
+        "INSERT INTO user_external_accounts (
+             id, user_id, provider, connection_id, username, status, created_at, updated_at
+         ) VALUES ('invalid', 'emby-user', 'unknown', 'emby-main', 'Invalid',
+                   'pending_claim', '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        invalid_provider.is_err(),
+        "unknown providers remain rejected"
+    );
+}
+
+#[tokio::test]
 async fn migration_0140_rollup_creates_scheduler_tables_and_rss_gap_columns() {
     let db = std::env::temp_dir().join(format!(
         "scryer_migration_0140_scheduler_{}.db",

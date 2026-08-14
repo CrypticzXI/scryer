@@ -806,7 +806,9 @@ mod tests {
                 verified_at TEXT,
                 last_login_at TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                CHECK (provider IN ('plex', 'jellyfin', 'emby')),
+                CHECK (status IN ('pending_claim', 'active', 'disabled'))
             )",
         )
         .execute(&pool)
@@ -917,6 +919,33 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    #[tokio::test]
+    async fn emby_pending_invite_provider_round_trips_through_repository() {
+        let store = test_store().await;
+        UserRepository::create(&store, test_user("emby_invited_user"))
+            .await
+            .expect("create invited user");
+        let expected = test_account(
+            "emby-invite",
+            "emby_invited_user",
+            ExternalAccountProvider::Emby,
+            "emby-main",
+            "emby-local-user-id",
+        );
+
+        let stored = UserExternalAccountRepository::create(&store, expected.clone())
+            .await
+            .expect("persist Emby pending invite");
+
+        assert_eq!(stored, expected);
+        assert_eq!(stored.provider, ExternalAccountProvider::Emby);
+        assert_eq!(stored.status, ExternalAccountStatus::PendingClaim);
+        assert_eq!(
+            stored.external_user_id.as_deref(),
+            Some("emby-local-user-id")
+        );
     }
 
     #[tokio::test]
