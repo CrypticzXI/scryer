@@ -1375,7 +1375,8 @@ async fn list_titles_due_for_hydration_excludes_active_facets_in_due_order() {
 
     sqlx::query(
         "UPDATE titles
-         SET metadata_hydration_next_attempt_at = ?,
+         SET metadata_fetched_at = '2025-12-31T00:00:00Z',
+             metadata_hydration_next_attempt_at = ?,
              metadata_hydration_attempt_count = 0
          WHERE id IN (?, ?, ?)",
     )
@@ -1400,6 +1401,16 @@ async fn list_titles_due_for_hydration_excludes_active_facets_in_due_order() {
         due_ids,
         vec!["anime-due".to_string(), "movie-due".to_string()]
     );
+
+    TitleRepository::clear_title_metadata_hydration_retry_state(&catalog, "anime-due")
+        .await
+        .expect("successful hydration should clear the retry schedule");
+    let remaining =
+        TitleRepository::list_titles_due_for_hydration(&catalog, 10, &[MediaFacet::Series])
+            .await
+            .expect("load due titles after clearing successful hydration");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].title.id, "movie-due");
 
     let _ = std::fs::remove_file(db);
 }

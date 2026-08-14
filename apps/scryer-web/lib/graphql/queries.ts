@@ -2662,6 +2662,7 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
     effectiveFormLoginEnabled
     skipLoginForLocalIps
     passkeyEnabled
+    defaultPersistSession
     envOverrideActive
     mfaRequirePasswordLogin
     mfaRequireConfigStepUp

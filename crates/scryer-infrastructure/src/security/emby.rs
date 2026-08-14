@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream};
 use reqwest::{Client, Response, StatusCode};
 use scryer_application::{
     AppError, AppResult, EmbyApiKeyExchange, EmbyApiKeyExchangeCleanup, EmbyAvatar,
@@ -17,6 +17,8 @@ const JSON_LIMIT: usize = 1024 * 1024;
 const AVATAR_LIMIT: usize = 2 * 1024 * 1024;
 const PAGE_LIMIT: usize = 100;
 const RECORD_LIMIT: usize = 10_000;
+const CONNECT_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const CONNECT_PROBE_CONCURRENCY: usize = 8;
 
 #[derive(Clone)]
 struct ConnectSession {
@@ -855,7 +857,13 @@ async fn authenticate_connect(
         .body(body)
         .send()
         .await
-        .map_err(|_| AppError::Repository("failed to reach Emby Connect".into()))?;
+        .map_err(|error| {
+            AppError::Repository(if error.is_timeout() {
+                "Emby Connect discovery timed out during authentication".into()
+            } else {
+                "failed to reach Emby Connect".into()
+            })
+        })?;
     match response.status() {
         status if status.is_success() => {}
         StatusCode::BAD_REQUEST
@@ -902,7 +910,13 @@ async fn connect_servers(
         .header("X-Connect-UserToken", &session.access_token)
         .send()
         .await
-        .map_err(|_| AppError::Repository("failed to discover Emby Connect servers".into()))?;
+        .map_err(|error| {
+            AppError::Repository(if error.is_timeout() {
+                "Emby Connect discovery timed out while loading servers".into()
+            } else {
+                "failed to discover Emby Connect servers".into()
+            })
+        })?;
     match response.status() {
         status if status.is_success() => {}
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
@@ -983,39 +997,110 @@ pub(super) async fn discover_connect_servers(
     username_or_email: &str,
     password: &str,
 ) -> AppResult<Vec<EmbyConnectServer>> {
-    let session =
-        authenticate_connect(client, connect_base, username_or_email.trim(), password).await?;
-    let mut servers = Vec::new();
-    for secret in connect_servers(client, connect_base, &session).await? {
-        let (local_api_base_url, local_status) = probe_connect_address(
-            client,
-            "connect-discovery",
-            secret.local_address.as_deref(),
-            &secret.system_id,
-        )
-        .await;
-        let (remote_api_base_url, remote_status) = probe_connect_address(
-            client,
-            "connect-discovery",
-            secret.remote_address.as_deref(),
-            &secret.system_id,
-        )
-        .await;
-        let suggested_base_url = local_api_base_url
-            .clone()
-            .or_else(|| remote_api_base_url.clone());
-        servers.push(EmbyConnectServer {
-            server_id: secret.system_id,
-            name: secret.name,
+    discover_connect_servers_with_timeout(
+        client,
+        connect_base,
+        username_or_email,
+        password,
+        CONNECT_DISCOVERY_TIMEOUT,
+    )
+    .await
+}
+
+async fn discover_connect_servers_with_timeout(
+    client: &Client,
+    connect_base: &Url,
+    username_or_email: &str,
+    password: &str,
+    timeout: std::time::Duration,
+) -> AppResult<Vec<EmbyConnectServer>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let session = tokio::time::timeout_at(
+        deadline,
+        authenticate_connect(client, connect_base, username_or_email.trim(), password),
+    )
+    .await
+    .map_err(|_| AppError::Repository("Emby Connect discovery timed out".into()))??;
+    let secrets =
+        tokio::time::timeout_at(deadline, connect_servers(client, connect_base, &session))
+            .await
+            .map_err(|_| AppError::Repository("Emby Connect discovery timed out".into()))??;
+
+    let mut servers = secrets
+        .iter()
+        .map(|secret| EmbyConnectServer {
+            server_id: secret.system_id.clone(),
+            name: secret.name.clone(),
             user_type: secret.user_type,
-            local_address: secret.local_address,
-            remote_address: secret.remote_address,
-            local_api_base_url,
-            remote_api_base_url,
-            local_status,
-            remote_status,
-            suggested_base_url,
-        });
+            local_address: secret.local_address.clone(),
+            remote_address: secret.remote_address.clone(),
+            local_api_base_url: None,
+            remote_api_base_url: None,
+            local_status: EmbyConnectAddressStatus::Unreachable,
+            remote_status: EmbyConnectAddressStatus::Unreachable,
+            suggested_base_url: None,
+        })
+        .collect::<Vec<_>>();
+
+    let probes = secrets
+        .iter()
+        .enumerate()
+        .flat_map(|(index, secret)| {
+            [
+                (
+                    index,
+                    true,
+                    secret.local_address.clone(),
+                    secret.system_id.clone(),
+                ),
+                (
+                    index,
+                    false,
+                    secret.remote_address.clone(),
+                    secret.system_id.clone(),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let mut probes = stream::iter(probes)
+        .map(|(index, is_local, address, system_id)| {
+            let client = client.clone();
+            async move {
+                let result = probe_connect_address(
+                    &client,
+                    "connect-discovery",
+                    address.as_deref(),
+                    &system_id,
+                )
+                .await;
+                (index, is_local, result)
+            }
+        })
+        .buffer_unordered(CONNECT_PROBE_CONCURRENCY);
+
+    loop {
+        let next = match tokio::time::timeout_at(deadline, probes.next()).await {
+            Ok(next) => next,
+            Err(_) => break,
+        };
+        let Some((index, is_local, (api_base_url, status))) = next else {
+            break;
+        };
+        let server = &mut servers[index];
+        if is_local {
+            server.local_api_base_url = api_base_url;
+            server.local_status = status;
+        } else {
+            server.remote_api_base_url = api_base_url;
+            server.remote_status = status;
+        }
+    }
+
+    for server in &mut servers {
+        server.suggested_base_url = server
+            .local_api_base_url
+            .clone()
+            .or_else(|| server.remote_api_base_url.clone());
     }
     servers.sort_by(|a, b| {
         a.name
@@ -2191,6 +2276,167 @@ mod tests {
             "nameOrEmail=alice%2Btag%40example.test&rawpw=spaces+%26+symbols%3Dwork"
         );
         connect.verify().await;
+    }
+
+    #[tokio::test]
+    async fn connect_discovery_probes_all_addresses_concurrently() {
+        let connect = MockServer::start().await;
+        let first = MockServer::start().await;
+        let second = MockServer::start().await;
+        for (server, server_id) in [(&first, "server-a"), (&second, "server-b")] {
+            Mock::given(method("GET"))
+                .and(path("/System/Info/Public"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_delay(std::time::Duration::from_millis(200))
+                        .set_body_json(serde_json::json!({
+                            "Id": server_id,
+                            "ServerName": "Test Emby",
+                            "Version": "4.9.5.0"
+                        })),
+                )
+                .expect(2)
+                .mount(server)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/user/authenticate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ConnectAccessToken": "connect-token",
+                "ConnectUserId": "connect-user"
+            })))
+            .mount(&connect)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/servers"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"SystemId": "server-a", "AccessKey": "key-a", "Name": "Alpha", "LocalAddress": first.uri(), "Url": first.uri()},
+                {"SystemId": "server-b", "AccessKey": "key-b", "Name": "Beta", "LocalAddress": second.uri(), "Url": second.uri()}
+            ])))
+            .mount(&connect)
+            .await;
+
+        let servers = discover_connect_servers_with_timeout(
+            &test_client(),
+            &normalized_candidate(&connect.uri()).expect("Connect base"),
+            "alice",
+            "password",
+            std::time::Duration::from_millis(600),
+        )
+        .await
+        .expect("all concurrent probes should finish inside the aggregate deadline");
+
+        assert_eq!(servers.len(), 2);
+        assert!(servers.iter().all(|server| {
+            server.local_status == EmbyConnectAddressStatus::Reachable
+                && server.remote_status == EmbyConnectAddressStatus::Reachable
+        }));
+        first.verify().await;
+        second.verify().await;
+    }
+
+    #[tokio::test]
+    async fn connect_discovery_preserves_completed_probes_at_deadline() {
+        let connect = MockServer::start().await;
+        let fast = MockServer::start().await;
+        let slow = MockServer::start().await;
+        mount_public_info(&fast, "server-fast").await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info/Public"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(2))
+                    .set_body_json(serde_json::json!({
+                        "Id": "server-slow",
+                        "ServerName": "Slow Emby",
+                        "Version": "4.9.5.0"
+                    })),
+            )
+            .mount(&slow)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/user/authenticate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ConnectAccessToken": "connect-token",
+                "ConnectUserId": "connect-user"
+            })))
+            .mount(&connect)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/servers"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"SystemId": "server-fast", "AccessKey": "key-fast", "Name": "Fast", "LocalAddress": fast.uri()},
+                {"SystemId": "server-slow", "AccessKey": "key-slow", "Name": "Slow", "LocalAddress": slow.uri()}
+            ])))
+            .mount(&connect)
+            .await;
+
+        let servers = discover_connect_servers_with_timeout(
+            &test_client(),
+            &normalized_candidate(&connect.uri()).expect("Connect base"),
+            "alice",
+            "password",
+            std::time::Duration::from_millis(250),
+        )
+        .await
+        .expect("probe deadline should return partial discovery results");
+
+        assert_eq!(servers.len(), 2);
+        let fast = servers
+            .iter()
+            .find(|server| server.server_id == "server-fast")
+            .expect("fast server");
+        let slow = servers
+            .iter()
+            .find(|server| server.server_id == "server-slow")
+            .expect("slow server");
+        assert_eq!(fast.local_status, EmbyConnectAddressStatus::Reachable);
+        assert_eq!(slow.local_status, EmbyConnectAddressStatus::Unreachable);
+        assert!(slow.local_api_base_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn connect_discovery_reports_authentication_and_server_list_timeouts() {
+        for delay_authentication in [true, false] {
+            let connect = MockServer::start().await;
+            let auth = ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ConnectAccessToken": "connect-token",
+                "ConnectUserId": "connect-user"
+            }));
+            Mock::given(method("POST"))
+                .and(path("/user/authenticate"))
+                .respond_with(if delay_authentication {
+                    auth.set_delay(std::time::Duration::from_millis(200))
+                } else {
+                    auth
+                })
+                .mount(&connect)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/servers"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_delay(if delay_authentication {
+                            std::time::Duration::ZERO
+                        } else {
+                            std::time::Duration::from_millis(200)
+                        })
+                        .set_body_json(serde_json::json!([])),
+                )
+                .mount(&connect)
+                .await;
+
+            let error = discover_connect_servers_with_timeout(
+                &test_client(),
+                &normalized_candidate(&connect.uri()).expect("Connect base"),
+                "alice",
+                "password",
+                std::time::Duration::from_millis(25),
+            )
+            .await
+            .expect_err("discovery phase should time out");
+            assert!(error.to_string().contains("discovery timed out"), "{error}");
+        }
     }
 
     #[tokio::test]

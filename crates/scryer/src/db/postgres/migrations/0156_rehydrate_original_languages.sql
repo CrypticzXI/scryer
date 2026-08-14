@@ -1,6 +1,5 @@
 UPDATE titles
-SET metadata_fetched_at = NULL,
-    metadata_hydration_next_attempt_at = NOW(),
+SET metadata_hydration_next_attempt_at = NOW(),
     metadata_hydration_attempt_count = 0
 WHERE EXISTS (
     SELECT 1

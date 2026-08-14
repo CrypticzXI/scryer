@@ -92,7 +92,7 @@ export function useDownloadQueuePage({
     DownloadClientFilterOption[]
   >([]);
   const [queueReady, setQueueReady] = useState(false);
-  const [queueStale, setQueueStale] = useState(false);
+  const [queueSnapshotStale, setQueueSnapshotStale] = useState(false);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
   const nextOffsetRef = useRef(0);
   const visibleOffsetRef = useRef(0);
@@ -141,7 +141,9 @@ export function useDownloadQueuePage({
       setQueueTotalCount(payload.totalCount);
       setQueueAvailableClients(payload.availableClients);
       setQueueReady(payload.ready);
-      setQueueStale(payload.stale || [...next.values()].some((page) => page.stale));
+      // Retained-page staleness drives revalidation; only the server snapshot
+      // health belongs in the user-facing stale warning.
+      setQueueSnapshotStale(payload.stale);
       revisionRef.current = Math.max(revisionRef.current, payload.revision);
       setLastRefreshedAt(payload.updatedAt ? new Date(payload.updatedAt) : null);
       setQueueError(null);
@@ -312,7 +314,6 @@ export function useDownloadQueuePage({
       const next = markDownloadQueuePagesStale(pagesRef.current, sync.revision);
       pagesRef.current = next;
       setPages(next);
-      setQueueStale(true);
       scheduleSync();
     },
     onError(error) {
@@ -337,7 +338,7 @@ export function useDownloadQueuePage({
     setPages(emptyPages);
     setQueueHasMore(false);
     setQueueTotalCount(0);
-    setQueueStale(false);
+    setQueueSnapshotStale(false);
     setQueueLoading(true);
     void queryPage(0, DOWNLOAD_QUEUE_PAGE_SIZE, { reset: true })
       .catch(reportError)
@@ -406,7 +407,7 @@ export function useDownloadQueuePage({
     queueTotalCount,
     queueAvailableClients,
     queueReady,
-    queueStale,
+    queueStale: queueSnapshotStale,
     lastRefreshedAt,
     refreshQueue,
     loadMoreQueue,

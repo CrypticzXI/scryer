@@ -5,15 +5,17 @@ import { authRuntimeStateQuery, meQuery } from "@/lib/graphql/queries";
 import { loginMutation } from "@/lib/graphql/mutations";
 import type { AuthRuntimeState } from "@/lib/types/settings";
 import type { UserAccountKind } from "@/lib/types/users";
-import { authSessionPersistence } from "@/lib/utils/auth-session-persistence";
+import {
+  PERSISTENT_STORAGE_KEY,
+  SESSION_STORAGE_KEY,
+  storeAuthToken,
+} from "@/lib/utils/auth-session-persistence";
 import {
   normalizeJwtPermissionClaims,
   type AppPermission,
   type LibraryPermissionGrant,
 } from "@/lib/utils/permissions";
 
-const SESSION_STORAGE_KEY = "scryer_auth_token";
-const PERSISTENT_STORAGE_KEY = "scryer_auth_token_persistent";
 export const AUTH_SESSION_CHANGED_EVENT = "scryer:auth-session-changed";
 
 export type AuthUser = {
@@ -27,7 +29,12 @@ export type AuthUser = {
   libraryPermissions: LibraryPermissionGrant[];
 };
 type AuthLoginOptions = { persistSession?: boolean; totpCode?: string | null };
-type AuthLoginResult = { token: string; user: AuthUser | null; mfaEnrollmentRequired: boolean };
+type AuthLoginResult = {
+  token: string;
+  user: AuthUser | null;
+  mfaEnrollmentRequired: boolean;
+  persistSession: boolean;
+};
 
 // Module-level token ref so getAuthToken() can be called outside React
 let currentToken: string | null = null;
@@ -100,13 +107,7 @@ function dispatchAuthSessionChanged() {
 }
 
 function persistAuthToken(token: string, persistSession: boolean) {
-  sessionStorage.removeItem(SESSION_STORAGE_KEY);
-  localStorage.removeItem(PERSISTENT_STORAGE_KEY);
-  if (authSessionPersistence(persistSession) === "persistent") {
-    localStorage.setItem(PERSISTENT_STORAGE_KEY, token);
-  } else {
-    sessionStorage.setItem(SESSION_STORAGE_KEY, token);
-  }
+  storeAuthToken(token, persistSession);
   currentToken = token;
   dispatchAuthSessionChanged();
 }
@@ -164,6 +165,7 @@ type AuthBootstrapSnapshot = {
   user: AuthUser | null;
   effectiveFormLoginEnabled: boolean | null;
   passkeyEnabled: boolean;
+  defaultPersistSession: boolean;
   mfaRequirePasswordLogin: boolean;
   mfaRequireConfigStepUp: boolean | null;
   totpRequireJellyfinLogin: boolean;
@@ -226,6 +228,7 @@ function rememberAuthBootstrapSession(token: string | null, user: AuthUser | nul
     effectiveFormLoginEnabled:
       authBootstrapSnapshot?.effectiveFormLoginEnabled ?? null,
     passkeyEnabled: authBootstrapSnapshot?.passkeyEnabled ?? false,
+    defaultPersistSession: authBootstrapSnapshot?.defaultPersistSession ?? false,
     mfaRequirePasswordLogin:
       authBootstrapSnapshot?.mfaRequirePasswordLogin ?? false,
     mfaRequireConfigStepUp:
@@ -239,6 +242,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
   let runtimeState: AuthRuntimeState | null = null;
   let effectiveFormLoginEnabled: boolean | null = null;
   let passkeyEnabled = false;
+  let defaultPersistSession = false;
   let mfaRequirePasswordLogin = false;
   let mfaRequireConfigStepUp: boolean | null = null;
   let totpRequireJellyfinLogin = false;
@@ -253,6 +257,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
         ? runtimeState.effectiveFormLoginEnabled
         : null;
     passkeyEnabled = runtimeState?.passkeyEnabled === true;
+    defaultPersistSession = runtimeState?.defaultPersistSession === true;
     mfaRequirePasswordLogin = runtimeState?.mfaRequirePasswordLogin === true;
     mfaRequireConfigStepUp =
       typeof runtimeState?.mfaRequireConfigStepUp === "boolean"
@@ -271,6 +276,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
       user: await loadUserFromBypass(),
       effectiveFormLoginEnabled,
       passkeyEnabled,
+      defaultPersistSession,
       mfaRequirePasswordLogin,
       mfaRequireConfigStepUp,
       totpRequireJellyfinLogin,
@@ -282,6 +288,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
     user: null,
     effectiveFormLoginEnabled,
     passkeyEnabled,
+    defaultPersistSession,
     mfaRequirePasswordLogin,
     mfaRequireConfigStepUp,
     totpRequireJellyfinLogin,
@@ -300,6 +307,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
         user: authUser,
         effectiveFormLoginEnabled,
         passkeyEnabled,
+        defaultPersistSession,
         mfaRequirePasswordLogin,
         mfaRequireConfigStepUp,
         totpRequireJellyfinLogin,
@@ -322,6 +330,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
         user: authUser,
         effectiveFormLoginEnabled,
         passkeyEnabled,
+        defaultPersistSession,
         mfaRequirePasswordLogin,
         mfaRequireConfigStepUp,
         totpRequireJellyfinLogin,
@@ -347,6 +356,7 @@ async function computeAuthBootstrapSnapshot(): Promise<AuthBootstrapSnapshot> {
     user,
     effectiveFormLoginEnabled,
     passkeyEnabled,
+    defaultPersistSession,
     mfaRequirePasswordLogin,
     mfaRequireConfigStepUp,
     totpRequireJellyfinLogin,
@@ -385,6 +395,7 @@ export type AuthState = {
   loading: boolean;
   effectiveFormLoginEnabled: boolean | null;
   passkeyEnabled: boolean;
+  defaultPersistSession: boolean;
   mfaRequirePasswordLogin: boolean;
   mfaRequireConfigStepUp: boolean | null;
   totpRequireJellyfinLogin: boolean;
@@ -427,6 +438,7 @@ export function useAuth(): AuthState {
   const [loading, setLoading] = useState(true);
   const [effectiveFormLoginEnabled, setEffectiveFormLoginEnabled] = useState<boolean | null>(null);
   const [passkeyEnabled, setPasskeyEnabled] = useState(false);
+  const [defaultPersistSession, setDefaultPersistSession] = useState(false);
   const [mfaRequirePasswordLogin, setMfaRequirePasswordLogin] = useState(false);
   const [mfaRequireConfigStepUp, setMfaRequireConfigStepUp] = useState<
     boolean | null
@@ -447,6 +459,7 @@ export function useAuth(): AuthState {
       setUser(snapshot.user);
       setEffectiveFormLoginEnabled(snapshot.effectiveFormLoginEnabled);
       setPasskeyEnabled(snapshot.passkeyEnabled);
+      setDefaultPersistSession(snapshot.defaultPersistSession);
       setMfaRequirePasswordLogin(snapshot.mfaRequirePasswordLogin);
       setMfaRequireConfigStepUp(snapshot.mfaRequireConfigStepUp);
       setTotpRequireJellyfinLogin(snapshot.totpRequireJellyfinLogin);
@@ -465,7 +478,12 @@ export function useAuth(): AuthState {
     options?: AuthLoginOptions,
   ) => {
     const { data, error } = await backendClient.mutation(loginMutation, {
-      input: { username, password, totpCode: options?.totpCode ?? null },
+      input: {
+        username,
+        password,
+        totpCode: options?.totpCode ?? null,
+        persistSession: options?.persistSession,
+      },
     }).toPromise();
     if (error || !data?.login) {
       throw error ?? new Error("Login failed");
@@ -473,15 +491,15 @@ export function useAuth(): AuthState {
     const newToken = data.login.token;
     const nextUser = normalizeAuthUser(data.login.user) ?? userFromToken(newToken);
 
-    if (options?.persistSession !== false) {
-      applyAuthenticatedSession(newToken, nextUser, setToken, setUser, true);
-      rememberAuthBootstrapSession(newToken, nextUser);
-    }
+    const persistSession = data.login.persistSession === true;
+    applyAuthenticatedSession(newToken, nextUser, setToken, setUser, persistSession);
+    rememberAuthBootstrapSession(newToken, nextUser);
 
     return {
       token: newToken,
       user: nextUser,
       mfaEnrollmentRequired: data.login.mfaEnrollmentRequired === true,
+      persistSession,
     };
   }, []);
 
@@ -517,6 +535,7 @@ export function useAuth(): AuthState {
     loading,
     effectiveFormLoginEnabled,
     passkeyEnabled,
+    defaultPersistSession,
     mfaRequirePasswordLogin,
     mfaRequireConfigStepUp,
     totpRequireJellyfinLogin,

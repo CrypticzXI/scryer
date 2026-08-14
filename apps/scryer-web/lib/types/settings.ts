@@ -256,6 +256,7 @@ export type AuthRuntimeState = {
   effectiveFormLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;
   passkeyEnabled: boolean;
+  defaultPersistSession: boolean;
   envOverrideActive: boolean;
   mfaRequirePasswordLogin: boolean;
   mfaRequireConfigStepUp: boolean;

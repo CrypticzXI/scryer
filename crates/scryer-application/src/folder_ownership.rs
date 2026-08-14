@@ -70,6 +70,12 @@ pub(crate) async fn ensure_folder_available_to_title(
     }
     let folder_path = path_to_stored_string(folder_path);
 
+    if non_empty_folder_path(title.folder_path.as_deref())
+        .is_some_and(|owned_path| folder_paths_match(owned_path, &folder_path))
+    {
+        return Ok(());
+    }
+
     if let Some(owner) = find_other_folder_owner(app, title, &folder_path).await? {
         let owned_path = owner.folder_path.as_deref().unwrap_or_default();
         return Err(AppError::Validation(format!(
@@ -79,9 +85,6 @@ pub(crate) async fn ensure_folder_available_to_title(
     }
 
     if let Some(owned_path) = non_empty_folder_path(title.folder_path.as_deref()) {
-        if folder_paths_match(owned_path, &folder_path) {
-            return Ok(());
-        }
         return Err(AppError::Validation(format!(
             "title {} already owns another folder: {owned_path}",
             title.name

@@ -1177,8 +1177,7 @@ impl TitleRepository for TitleStore {
         let mut sql = format!(
             "SELECT {TITLE_COLUMNS}, metadata_hydration_attempt_count
                FROM titles
-              WHERE metadata_fetched_at IS NULL
-                AND metadata_hydration_next_attempt_at IS NOT NULL
+              WHERE metadata_hydration_next_attempt_at IS NOT NULL
                 AND metadata_hydration_next_attempt_at <= {{}}"
         );
         let mut args = vec![SqlArg::Timestamp(Utc::now())];

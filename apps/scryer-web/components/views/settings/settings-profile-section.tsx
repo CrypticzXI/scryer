@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { SettingsToggleSwitch } from "@/components/common/settings-toggle-switch";
+import { AuthenticatedAvatar } from "@/components/common/authenticated-avatar";
 import { Input, integerInputProps } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -139,20 +140,13 @@ function connectionLabel(connection: ExternalAuthRuntimeConnection): string {
 
 function LinkedAccountAvatar({ account }: { account: LinkedAccount }) {
   const label = account.displayName || account.username;
-  return account.avatarUrl ? (
-    <img
-      src={account.avatarUrl}
-      alt=""
-      className="h-9 w-9 shrink-0 rounded-full border border-[var(--scry-border2)] object-cover"
-      loading="lazy"
+  return (
+    <AuthenticatedAvatar
+      avatarUrl={account.avatarUrl}
+      label={label}
+      imageClassName="h-9 w-9 shrink-0 rounded-full border border-[var(--scry-border2)] object-cover"
+      fallbackClassName="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--scry-border2)] bg-[var(--scry-inset)] text-sm font-medium text-[var(--scry-muted2)]"
     />
-  ) : (
-    <span
-      aria-hidden="true"
-      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--scry-border2)] bg-[var(--scry-inset)] text-sm font-medium text-[var(--scry-muted2)]"
-    >
-      {label.trim().slice(0, 1).toUpperCase() || "?"}
-    </span>
   );
 }
 

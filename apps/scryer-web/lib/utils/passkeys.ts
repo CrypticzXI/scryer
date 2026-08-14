@@ -46,6 +46,7 @@ type LoginPayload = {
   user: AuthUser | null;
   mfaEnrollmentRequired?: boolean;
   mfaVerifiedUntil?: string | null;
+  persistSession: boolean;
 };
 
 type PublicKeyCredentialJsonHelpers = {
@@ -295,6 +296,7 @@ export function passkeysSupported(): boolean {
 
 export async function authenticateWithPasskey(
   username?: string,
+  persistSession?: boolean,
   client: Client = backendClient,
 ): Promise<LoginPayload> {
   ensurePasskeySupport();
@@ -324,7 +326,7 @@ export async function authenticateWithPasskey(
 
     return runMutation<
       { webauthnAuthenticateComplete: LoginPayload },
-      { input: { challengeId: string; responseJson: unknown } }
+      { input: { challengeId: string; responseJson: unknown; persistSession?: boolean } }
     >(
       client,
       webauthnAuthenticateCompleteMutation,
@@ -332,6 +334,7 @@ export async function authenticateWithPasskey(
         input: {
           challengeId: start.challengeId,
           responseJson: credentialToJson(credential),
+          persistSession,
         },
       },
       "webauthnAuthenticateComplete",

@@ -282,6 +282,60 @@ impl AppUseCase {
 }
 impl AppUseCase {
     /// Toggle a plugin's enabled/disabled state.
+    pub async fn get_plugin_installation(
+        &self,
+        actor: &User,
+        plugin_id: &str,
+    ) -> AppResult<Option<PluginInstallation>> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        self.services
+            .customization
+            .plugin_installations
+            .get_plugin_installation(plugin_id)
+            .await
+    }
+
+    pub async fn plugin_declares_provider_alias(
+        &self,
+        actor: &User,
+        plugin_id: &str,
+        provider_alias: &str,
+    ) -> AppResult<bool> {
+        self.require_app_permission(actor, scryer_domain::AppPermission::ManageSystemSettings)
+            .await?;
+        let installation = self
+            .services
+            .customization
+            .plugin_installations
+            .get_plugin_installation(plugin_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("plugin '{plugin_id}' not installed")))?;
+        let runtime_plugin = self
+            .load_runtime_plugin_for_installation(&installation)
+            .await?;
+        let descriptor_loader = self
+            .services
+            .customization
+            .plugin_descriptor_loader
+            .clone();
+        let wasm_bytes = runtime_plugin.wasm_bytes;
+        let descriptor = tokio::task::spawn_blocking(move || {
+            descriptor_loader.load_descriptor_from_wasm_bytes(&wasm_bytes)
+        })
+        .await
+        .map_err(|error| {
+            AppError::Repository(format!(
+                "plugin descriptor loading task failed: {error}"
+            ))
+        })??;
+        let provider_alias = provider_alias.trim().to_ascii_lowercase();
+        Ok(descriptor
+            .provider_aliases()
+            .iter()
+            .any(|alias| alias.trim().to_ascii_lowercase() == provider_alias))
+    }
+
     pub async fn toggle_plugin(
         &self,
         actor: &User,

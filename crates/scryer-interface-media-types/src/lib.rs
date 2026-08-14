@@ -1593,6 +1593,8 @@ pub struct LoginInput {
     pub password: String,
     /// Optional six-digit TOTP code, required only when password-login MFA is enabled.
     pub totp_code: Option<String>,
+    /// Whether the returned session should persist; absent or null uses the request policy.
+    pub persist_session: Option<bool>,
 }
 
 /// External media provider used for account linking or login.
@@ -1730,7 +1732,7 @@ pub struct LoginWithPlexInput {
     pub connection_id: ID,
     /// Plex authentication token used only for login.
     pub plex_auth_token: String,
-    /// Whether the returned session should persist; absent or null defaults to `true`.
+    /// Whether the returned session should persist; absent or null uses the request policy.
     pub persist_session: Option<bool>,
 }
 
@@ -1745,7 +1747,7 @@ pub struct LoginWithJellyfinInput {
     pub password: String,
     /// Optional TOTP code used when Jellyfin-login MFA is enabled.
     pub totp_code: Option<String>,
-    /// Whether the returned session should persist; absent or null defaults to `true`.
+    /// Whether the returned session should persist; absent or null uses the request policy.
     pub persist_session: Option<bool>,
 }
 
@@ -1762,7 +1764,7 @@ pub struct LoginWithEmbyInput {
     pub password: String,
     /// Optional TOTP code used when Emby-login MFA is enabled.
     pub totp_code: Option<String>,
-    /// Whether the returned session should persist; absent or null defaults to `true`.
+    /// Whether the returned session should persist; absent or null uses the request policy.
     pub persist_session: Option<bool>,
 }
 
@@ -1773,6 +1775,8 @@ pub struct WebauthnCompleteInput {
     pub challenge_id: ID,
     /// Browser assertion JSON; credential material is consumed for verification and not echoed.
     pub response_json: Json<serde_json::Value>,
+    /// Whether the returned session should persist; absent or null uses the request policy.
+    pub persist_session: Option<bool>,
 }
 
 /// WebAuthn registration response paired with a previously issued challenge.
@@ -4551,6 +4555,8 @@ pub struct AuthRuntimeStatePayload {
     pub skip_login_for_local_ips: bool,
     /// Whether passkey authentication is enabled.
     pub passkey_enabled: bool,
+    /// Whether this request's network provenance defaults sessions to persistent storage.
+    pub default_persist_session: bool,
     /// Whether an environment override is active.
     pub env_override_active: bool,
     /// Whether password login is required alongside MFA.

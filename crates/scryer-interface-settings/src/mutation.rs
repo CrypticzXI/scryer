@@ -16,8 +16,9 @@ use scryer_application::{
 
 use super::{from_ui_settings, ui_settings_update_from_input};
 use scryer_interface_core::{
-    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, mfa_enrollment_actor_from_ctx,
-    mfa_verification_from_ctx, require_config_app_permission, to_gql_error, to_login_gql_error,
+    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, default_persist_session_from_ctx,
+    mfa_enrollment_actor_from_ctx, mfa_verification_from_ctx, persist_session_or_default,
+    require_config_app_permission, to_gql_error, to_login_gql_error,
     to_login_gql_error_after_timing,
 };
 use scryer_interface_media::mappers::{
@@ -406,7 +407,12 @@ async fn login_payload_from_user(
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_access_token_with_mfa(&user, mfa_verified_until, mfa_step_up_verified_until)
+        .issue_access_token_with_mfa_and_persistence(
+            &user,
+            mfa_verified_until,
+            mfa_step_up_verified_until,
+            persist_session,
+        )
         .await
         .map_err(to_gql_error)?;
     let auth_factor_status = app
@@ -427,13 +433,14 @@ async fn login_payload_from_user(
 async fn login_mfa_enrollment_payload_from_user(
     app: &scryer_application::AppUseCase,
     user: scryer_domain::User,
+    persist_session: bool,
 ) -> Result<LoginPayload, Error> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_mfa_enrollment_token(&user, false)
+        .issue_mfa_enrollment_token(&user, persist_session)
         .await
         .map_err(to_gql_error)?;
     let auth_factor_status = app
@@ -447,7 +454,7 @@ async fn login_mfa_enrollment_payload_from_user(
         expires_at,
         mfa_verified_until: None,
         mfa_enrollment_required: true,
-        persist_session: false,
+        persist_session,
     })
 }
 
@@ -1693,7 +1700,11 @@ impl SettingsMutations {
                 .await);
             }
         };
-        login_payload_from_user(&app, user, None, None, true).await
+        let persist_session = persist_session_or_default(
+            input.persist_session,
+            default_persist_session_from_ctx(ctx),
+        );
+        login_payload_from_user(&app, user, None, None, persist_session).await
     }
 
     /// Deletes the authenticated actor's passkey identified by `id`.
@@ -1758,7 +1769,15 @@ impl SettingsMutations {
                 .mfa_require_password_login;
         let mfa_verified_until = if password_login_mfa_required {
             if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
-                return login_mfa_enrollment_payload_from_user(&app, user).await;
+                return login_mfa_enrollment_payload_from_user(
+                    &app,
+                    user,
+                    persist_session_or_default(
+                        input.persist_session,
+                        default_persist_session_from_ctx(ctx),
+                    ),
+                )
+                .await;
             }
             let code = input.totp_code.as_deref().ok_or_else(|| {
                 to_gql_error(scryer_application::AppError::MfaStepUpRequired(
@@ -1773,7 +1792,11 @@ impl SettingsMutations {
         } else {
             None
         };
-        login_payload_from_user(&app, user, mfa_verified_until, None, true).await
+        let persist_session = persist_session_or_default(
+            input.persist_session,
+            default_persist_session_from_ctx(ctx),
+        );
+        login_payload_from_user(&app, user, mfa_verified_until, None, persist_session).await
     }
 
     /// Mark the setup wizard as complete.

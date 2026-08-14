@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Fingerprint, KeyRound, Loader2 } from "lucide-react";
 import { TotpQrCode } from "@/components/common/totp-qr-code";
@@ -112,6 +112,7 @@ export default function LoginPage() {
     loading: authLoading,
     effectiveFormLoginEnabled,
     passkeyEnabled,
+    defaultPersistSession,
   } = useAuth();
   // Default to the Scryer password method so its form is in the DOM and visible
   // at first paint. Password managers detect credential fields on load; a form
@@ -121,6 +122,8 @@ export default function LoginPage() {
   const [activeMethod, setActiveMethod] = useState<LoginMethod>("password");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [persistSession, setPersistSession] = useState(false);
+  const persistSessionInitialized = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [localTotpCode, setLocalTotpCode] = useState("");
@@ -150,6 +153,13 @@ export default function LoginPage() {
   const [jellyfinMfaBusy, setJellyfinMfaBusy] = useState(false);
   const [plexSubmitting, setPlexSubmitting] = useState(false);
   const redirectTarget = resolveRedirectTarget(searchParams.get("redirect"));
+
+  useEffect(() => {
+    if (!authLoading && !persistSessionInitialized.current) {
+      setPersistSession(defaultPersistSession);
+      persistSessionInitialized.current = true;
+    }
+  }, [authLoading, defaultPersistSession]);
   const jellyfinConnections =
     externalAuthSettings?.loginProviders.includes("JELLYFIN")
       ? externalAuthSettings.connections.filter(
@@ -290,8 +300,8 @@ export default function LoginPage() {
       setError(null);
       setPasskeySubmitting(true);
       try {
-        const result = await authenticateWithPasskey();
-        adoptSession(result.token, result.user);
+        const result = await authenticateWithPasskey(undefined, persistSession);
+        adoptSession(result.token, result.user, result.persistSession);
         navigate(redirectTarget, { replace: true });
       } catch (err) {
         if (err instanceof PasskeyClientError) {
@@ -310,7 +320,7 @@ export default function LoginPage() {
         setPasskeySubmitting(false);
       }
     },
-    [adoptSession, navigate, redirectTarget, t],
+    [adoptSession, navigate, persistSession, redirectTarget, t],
   );
 
   const startJellyfinMfaEnrollment = useCallback(async () => {
@@ -343,10 +353,11 @@ export default function LoginPage() {
       try {
         const result = await login(username, password, {
           totpCode: localTotpPrompted ? localTotpCode || null : null,
+          persistSession,
         });
         if (result.mfaEnrollmentRequired) {
           setJellyfinMfaSetupActive(true);
-          adoptSession(result.token, result.user ?? null);
+          adoptSession(result.token, result.user ?? null, result.persistSession);
           await startJellyfinMfaEnrollment();
           return;
         }
@@ -370,6 +381,7 @@ export default function LoginPage() {
       login,
       navigate,
       password,
+      persistSession,
       redirectTarget,
       startJellyfinMfaEnrollment,
       t,
@@ -449,7 +461,7 @@ export default function LoginPage() {
               username: jellyfinUsername,
               password: jellyfinPassword,
               totpCode: jellyfinTotpPrompted ? jellyfinTotpCode || null : null,
-              persistSession: true,
+              persistSession,
             },
           })
           .toPromise();
@@ -493,6 +505,7 @@ export default function LoginPage() {
       jellyfinTotpPrompted,
       jellyfinUsername,
       navigate,
+      persistSession,
       redirectTarget,
       startJellyfinMfaEnrollment,
       t,
@@ -513,7 +526,7 @@ export default function LoginPage() {
             username: embyUsername,
             password: embyPassword,
             totpCode: embyTotpPrompted ? embyTotpCode || null : null,
-            persistSession: true,
+            persistSession,
           },
         })
         .toPromise();
@@ -557,6 +570,7 @@ export default function LoginPage() {
     embyTotpPrompted,
     embyUsername,
     navigate,
+    persistSession,
     redirectTarget,
     startJellyfinMfaEnrollment,
   ]);
@@ -574,7 +588,7 @@ export default function LoginPage() {
             input: {
               connectionId: plexConnectionId,
               plexAuthToken,
-              persistSession: true,
+              persistSession,
             },
           })
           .toPromise();
@@ -593,7 +607,7 @@ export default function LoginPage() {
         setPlexSubmitting(false);
       }
     },
-    [adoptSession, navigate, plexConnectionId, redirectTarget, t],
+    [adoptSession, navigate, persistSession, plexConnectionId, redirectTarget, t],
   );
 
   if (serviceRestarting) {
@@ -735,6 +749,20 @@ export default function LoginPage() {
             {error}
           </div>
         )}
+
+        <label className="flex items-center gap-2 text-sm text-[var(--scry-muted)]">
+          <input
+            id="persist-session"
+            type="checkbox"
+            checked={persistSession}
+            onChange={(event) => {
+              persistSessionInitialized.current = true;
+              setPersistSession(event.target.checked);
+            }}
+            disabled={anySubmitting}
+          />
+          Keep me signed in
+        </label>
 
         <div className="space-y-3">
           {localPasswordAvailable ? (

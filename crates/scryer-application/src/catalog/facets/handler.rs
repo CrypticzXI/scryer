@@ -70,7 +70,7 @@ fn non_empty(s: String) -> Option<String> {
 fn original_language_update(language: Option<&str>) -> MetadataFieldUpdate<String> {
     language
         .and_then(crate::normalize_detected_audio_language_code)
-        .map_or(MetadataFieldUpdate::Clear, MetadataFieldUpdate::Set)
+        .map_or(MetadataFieldUpdate::Unchanged, MetadataFieldUpdate::Set)
 }
 
 pub(crate) fn primary_anime_mapping(anime_mappings: &[AnimeMapping]) -> Option<&AnimeMapping> {
@@ -402,13 +402,29 @@ mod tests {
     }
 
     #[test]
-    fn series_hydration_explicitly_clears_missing_original_language() {
+    fn series_hydration_preserves_language_when_original_language_is_missing() {
         let mut series = test_series(vec![]);
         series.original_language = None;
 
         let result = series_to_hydration_result(series, "eng");
 
-        assert_eq!(result.metadata_update.language, MetadataFieldUpdate::Clear);
+        assert_eq!(
+            result.metadata_update.language,
+            MetadataFieldUpdate::Unchanged
+        );
+    }
+
+    #[test]
+    fn series_hydration_preserves_language_when_original_language_is_invalid() {
+        let mut series = test_series(vec![]);
+        series.original_language = Some("und".to_string());
+
+        let result = series_to_hydration_result(series, "eng");
+
+        assert_eq!(
+            result.metadata_update.language,
+            MetadataFieldUpdate::Unchanged
+        );
     }
 
     #[test]

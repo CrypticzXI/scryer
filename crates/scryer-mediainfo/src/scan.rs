@@ -1857,7 +1857,44 @@ mod tests {
     }
 
     fn simd_scan_fixture() -> &'static [u8] {
-        include_bytes!("../tests/media/simd_scan_dense.bin")
+        static FIXTURE: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+            let mut data = vec![0x55; 0x3060];
+            let patterns: &[(usize, &[u8])] = &[
+                (0x0400, &[0xA7]),
+                (0x0601, &[0x47]),
+                (0x0A02, &[0x00, 0x00, 0x01, 0xB3]),
+                (0x0E06, &[0x00, 0x00, 0x00, 0x01, 0x67]),
+                (0x100B, &[0xFF, 0xF1, 0x50, 0x80]),
+                (0x120F, &[0x56, 0xE0, 0x00, 0x00]),
+                (0x1413, &[0xFF, 0xE2, 0x00, 0x00]),
+                (0x1617, &[0x0B, 0x77, 0x00, 0x00]),
+                (0x181B, &[0x7F, 0xFE, 0x80, 0x01]),
+                (0x1C1F, &[0x1F, 0x43, 0xB6, 0x75]),
+                (0x1E23, &[0xA3]),
+                (0x2024, &[0x75, 0xA1]),
+                (0x2226, &[0xE7]),
+                (0x2627, &[0x4E, 0x01, 0x50, 0x00]),
+                (0x2A2B, &[0xB5, 0x00, 0x3C, 0x00, 0x01, 0x04]),
+                (0x2C31, &[0x00, 0x00, 0x03, 0x01]),
+                (
+                    0x3035,
+                    &[0x00, 0x00, 0x00, 0x0C, b'm', b'o', b'o', b'v', 0, 0, 0, 0],
+                ),
+                (
+                    0x3050,
+                    &[
+                        b'0', b'2', b'w', b'b', 0, 0, 0, 0, 0x80, 0, 0, 0, 0x40, 0, 0, 0,
+                    ],
+                ),
+            ];
+
+            for &(offset, pattern) in patterns {
+                data[offset..offset + pattern.len()].copy_from_slice(pattern);
+            }
+            data
+        });
+
+        FIXTURE.as_slice()
     }
 
     fn slice_from_pattern<'a>(data: &'a [u8], pattern: &[u8]) -> &'a [u8] {

@@ -6,8 +6,9 @@ use scryer_application::{AppError, LoginFailureTimingClass};
 use scryer_domain::AppPermission;
 
 use scryer_interface_core::{
-    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, require_config_app_permission,
-    to_gql_error, to_login_gql_error_after_timing,
+    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, default_persist_session_from_ctx,
+    persist_session_or_default, require_config_app_permission, to_gql_error,
+    to_login_gql_error_after_timing,
 };
 use scryer_interface_media::mappers::{from_linked_account, from_user_with_auth_factor_status};
 use scryer_interface_media::types::*;
@@ -45,7 +46,12 @@ async fn login_payload_from_user(
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_access_token_with_mfa(&user, mfa_verified_until, mfa_step_up_verified_until)
+        .issue_access_token_with_mfa_and_persistence(
+            &user,
+            mfa_verified_until,
+            mfa_step_up_verified_until,
+            persist_session,
+        )
         .await
         .map_err(to_gql_error)?;
     let expires_at = Utc::now() + chrono::Duration::seconds(app.token_lifetime());
@@ -407,7 +413,7 @@ impl UserMutations {
         Ok(UnlinkExternalAccountPayload { linked_account_id })
     }
 
-    /// Authenticates through Plex and issues a session token, defaulting `persist_session` to true.
+    /// Authenticates through Plex and issues a session token.
     async fn login_with_plex(
         &self,
         ctx: &Context<'_>,
@@ -418,7 +424,10 @@ impl UserMutations {
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let started_at = Instant::now();
-        let persist_session = input.persist_session.unwrap_or(true);
+        let persist_session = persist_session_or_default(
+            input.persist_session,
+            default_persist_session_from_ctx(ctx),
+        );
         let user = match app
             .federated_login_with_plex(input.connection_id.to_string(), input.plex_auth_token)
             .await
@@ -448,7 +457,10 @@ impl UserMutations {
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let started_at = Instant::now();
-        let persist_session = input.persist_session.unwrap_or(true);
+        let persist_session = persist_session_or_default(
+            input.persist_session,
+            default_persist_session_from_ctx(ctx),
+        );
         let user = match app
             .federated_login_with_jellyfin(
                 input.connection_id.to_string(),
@@ -508,7 +520,10 @@ impl UserMutations {
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let started_at = Instant::now();
-        let persist_session = input.persist_session.unwrap_or(true);
+        let persist_session = persist_session_or_default(
+            input.persist_session,
+            default_persist_session_from_ctx(ctx),
+        );
         let user = match app
             .federated_login_with_emby(
                 input.connection_id.to_string(),

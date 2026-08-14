@@ -539,6 +539,10 @@ type AuthRuntimeStatePayload {
 	"""
 	passkeyEnabled: Boolean!
 	"""
+	Whether this request's network provenance defaults sessions to persistent storage.
+	"""
+	defaultPersistSession: Boolean!
+	"""
 	Whether an environment override is active.
 	"""
 	envOverrideActive: Boolean!
@@ -7649,6 +7653,10 @@ input LoginInput {
 	Optional six-digit TOTP code, required only when password-login MFA is enabled.
 	"""
 	totpCode: String
+	"""
+	Whether the returned session should persist; absent or null uses the request policy.
+	"""
+	persistSession: Boolean
 }
 
 """
@@ -7724,7 +7732,7 @@ input LoginWithEmbyInput {
 	"""
 	totpCode: String
 	"""
-	Whether the returned session should persist; absent or null defaults to `true`.
+	Whether the returned session should persist; absent or null uses the request policy.
 	"""
 	persistSession: Boolean
 }
@@ -7750,7 +7758,7 @@ input LoginWithJellyfinInput {
 	"""
 	totpCode: String
 	"""
-	Whether the returned session should persist; absent or null defaults to `true`.
+	Whether the returned session should persist; absent or null uses the request policy.
 	"""
 	persistSession: Boolean
 }
@@ -7768,7 +7776,7 @@ input LoginWithPlexInput {
 	"""
 	plexAuthToken: String!
 	"""
-	Whether the returned session should persist; absent or null defaults to `true`.
+	Whether the returned session should persist; absent or null uses the request policy.
 	"""
 	persistSession: Boolean
 }
@@ -18551,6 +18559,10 @@ input WebauthnCompleteInput {
 	Browser assertion JSON; credential material is consumed for verification and not echoed.
 	"""
 	responseJson: JSON!
+	"""
+	Whether the returned session should persist; absent or null uses the request policy.
+	"""
+	persistSession: Boolean
 }
 
 """

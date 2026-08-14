@@ -1,6 +1,5 @@
 UPDATE titles
-SET metadata_fetched_at = NULL,
-    metadata_hydration_next_attempt_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+SET metadata_hydration_next_attempt_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
     metadata_hydration_attempt_count = 0
 WHERE EXISTS (
     SELECT 1

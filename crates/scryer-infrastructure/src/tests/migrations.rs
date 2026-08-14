@@ -2488,7 +2488,7 @@ async fn migration_0136_rejects_duplicate_existing_root_paths_before_rekey() {
 }
 
 #[tokio::test]
-async fn migration_0156_queues_only_tvdb_backed_titles_for_rehydration() {
+async fn migration_0156_queues_tvdb_titles_without_clearing_last_fetch() {
     let db = std::env::temp_dir().join(format!(
         "scryer_original_language_rehydration_{}.db",
         chrono::Utc::now().timestamp_micros()
@@ -2539,7 +2539,7 @@ async fn migration_0156_queues_only_tvdb_backed_titles_for_rehydration() {
     .fetch_one(&services.pool)
     .await
     .expect("TVDB hydration state should load");
-    assert_eq!(tvdb_state.0, None);
+    assert_eq!(tvdb_state.0.as_deref(), Some("2026-01-01T00:00:00Z"));
     assert!(tvdb_state.1.is_some());
     assert_eq!(tvdb_state.2, 0);
 

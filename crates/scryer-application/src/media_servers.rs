@@ -759,10 +759,13 @@ impl AppUseCase {
 
     pub async fn fetch_emby_server_user_avatar(
         &self,
+        actor: &User,
         connection_id: &str,
         user_id: &str,
         image_tag: &str,
     ) -> AppResult<Option<EmbyAvatar>> {
+        self.require_app_permission(actor, AppPermission::ManageUsers)
+            .await?;
         let connection = self
             .services
             .integrations
@@ -1492,7 +1495,7 @@ fn media_server_patch_changes_external_auth_identity(
     match provider {
         MediaServerProvider::Plex => media_server_plex_identity_changed(existing, patch),
         MediaServerProvider::Jellyfin => media_server_jellyfin_identity_changed(existing, patch),
-        MediaServerProvider::Emby => false,
+        MediaServerProvider::Emby => media_server_emby_identity_changed(existing, patch),
     }
 }
 
@@ -1578,8 +1581,36 @@ fn media_server_jellyfin_identity_changed(
         || option_has_non_empty_text(patch.admin_password.as_deref())
 }
 
+fn media_server_emby_identity_changed(
+    existing: &MediaServerConnection,
+    patch: &MediaServerConnectionPatch,
+) -> bool {
+    (patch.clear_api_key && existing.api_key.is_some())
+        || patch.api_key.as_ref().is_some_and(|api_key| {
+            normalize_optional_string(Some(api_key.clone())) != existing.api_key
+        })
+        || option_has_non_empty_text(patch.admin_username.as_deref())
+        || option_has_non_empty_secret(patch.admin_password.as_deref())
+        || patch.emby_connection_mode.is_some()
+        || patch
+            .emby_connect_enabled
+            .is_some_and(|enabled| enabled != existing.emby_connect_enabled)
+        || option_has_non_empty_text(patch.emby_connect_username_or_email.as_deref())
+        || option_has_non_empty_secret(patch.emby_connect_password.as_deref())
+        || patch
+            .emby_connect_server_id
+            .as_ref()
+            .is_some_and(|server_id| {
+                normalize_optional_string(Some(server_id.clone())) != existing.emby_server_id
+            })
+}
+
 fn option_has_non_empty_text(value: Option<&str>) -> bool {
     value.map(str::trim).is_some_and(|value| !value.is_empty())
+}
+
+fn option_has_non_empty_secret(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
 }
 
 fn default_media_server_display_name(provider: &MediaServerProvider) -> &'static str {
@@ -2097,6 +2128,7 @@ mod tests {
 
     struct CountingExternalIdentityVerifier {
         test_jellyfin_api_key_calls: Arc<AtomicUsize>,
+        emby_avatar_fetch_calls: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -2163,6 +2195,23 @@ mod tests {
             _: Option<&str>,
         ) -> AppResult<Vec<PlexServerUser>> {
             Ok(Vec::new())
+        }
+
+        async fn fetch_emby_user_avatar(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<Option<EmbyAvatar>> {
+            self.emby_avatar_fetch_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(EmbyAvatar {
+                content_type: "image/png".into(),
+                bytes: vec![1, 2, 3],
+                etag: None,
+                last_modified: None,
+            }))
         }
     }
 
@@ -2599,12 +2648,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn emby_avatar_fetch_requires_manage_users_before_upstream() {
+        let avatar_fetch_calls = Arc::new(AtomicUsize::new(0));
+        let app = app_with_connections_and_verifier(
+            vec![emby_connection(true, Some("emby-admin-key"))],
+            Arc::new(CountingExternalIdentityVerifier {
+                test_jellyfin_api_key_calls: Arc::new(AtomicUsize::new(0)),
+                emby_avatar_fetch_calls: Arc::clone(&avatar_fetch_calls),
+            }),
+        );
+
+        let error = app
+            .fetch_emby_server_user_avatar(
+                &system_settings_user(),
+                "emby-main",
+                "external-user",
+                "avatar-tag",
+            )
+            .await
+            .expect_err("an actor without ManageUsers must not retrieve an Emby avatar");
+        assert_unauthorized(error);
+        assert_eq!(avatar_fetch_calls.load(Ordering::SeqCst), 0);
+
+        let avatar = app
+            .fetch_emby_server_user_avatar(
+                &user_with_permissions(
+                    "manage-users",
+                    AppPermissionMask::from_permissions([AppPermission::ManageUsers]),
+                ),
+                "emby-main",
+                "external-user",
+                "avatar-tag",
+            )
+            .await
+            .expect("ManageUsers actor should retrieve the Emby avatar")
+            .expect("configured Emby avatar");
+        assert_eq!(avatar.bytes, vec![1, 2, 3]);
+        assert_eq!(avatar_fetch_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn media_server_create_with_api_key_tests_connection_on_save() {
         let test_calls = Arc::new(AtomicUsize::new(0));
         let app = app_with_connections_and_verifier(
             Vec::new(),
             Arc::new(CountingExternalIdentityVerifier {
                 test_jellyfin_api_key_calls: Arc::clone(&test_calls),
+                emby_avatar_fetch_calls: Arc::new(AtomicUsize::new(0)),
             }),
         );
 
@@ -2666,7 +2756,7 @@ mod tests {
         patch.clear_api_key = true;
 
         let error = app
-            .update_media_server_connection(&system_settings_user(), patch)
+            .update_media_server_connection(&permission_manager_user(), patch)
             .await
             .expect_err("enabled Emby connection must retain its key");
 
@@ -2828,6 +2918,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn emby_credential_rotation_with_grants_requires_manage_permissions_before_verifier() {
+        let local_admin_passwords = Arc::new(Mutex::new(Vec::new()));
+        let connect_passwords = Arc::new(Mutex::new(Vec::new()));
+        let verifier = Arc::new(EmbySetupVerifier {
+            finish_compensation: Arc::new(Mutex::new(Vec::new())),
+            local_admin_passwords: Arc::clone(&local_admin_passwords),
+            connect_passwords: Arc::clone(&connect_passwords),
+        });
+        let app = app_with_repository_and_verifier(
+            Arc::new(TestMediaServerConnectionRepository::new(vec![
+                emby_connection(true, Some("old-key")),
+            ])),
+            verifier,
+        );
+        let mut patch = empty_update_patch("emby-main");
+        patch.emby_connection_mode = Some(EmbyConnectionMode::Local);
+        patch.emby_local_setup_method = Some(EmbyLocalSetupMethod::AdminCredentials);
+        patch.admin_username = Some("attacker-admin".into());
+        patch.admin_password = Some("attacker-password".into());
+
+        let error = app
+            .update_media_server_connection(&system_settings_user(), patch)
+            .await
+            .expect_err("credential rotation should require ManagePermissions");
+
+        assert_unauthorized(error);
+        assert!(local_admin_passwords.lock().await.is_empty());
+        assert!(connect_passwords.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn emby_credential_rotation_with_grants_allows_permission_manager() {
+        let local_admin_passwords = Arc::new(Mutex::new(Vec::new()));
+        let connect_passwords = Arc::new(Mutex::new(Vec::new()));
+        let app = app_with_repository_and_verifier(
+            Arc::new(TestMediaServerConnectionRepository::new(vec![
+                emby_connection(true, Some("old-key")),
+            ])),
+            Arc::new(EmbySetupVerifier {
+                finish_compensation: Arc::new(Mutex::new(Vec::new())),
+                local_admin_passwords: Arc::clone(&local_admin_passwords),
+                connect_passwords: Arc::clone(&connect_passwords),
+            }),
+        );
+
+        let mut local_patch = empty_update_patch("emby-main");
+        local_patch.emby_connection_mode = Some(EmbyConnectionMode::Local);
+        local_patch.emby_local_setup_method = Some(EmbyLocalSetupMethod::ApiKey);
+        local_patch.api_key = Some("replacement-api-key".into());
+        let locally_rotated = app
+            .update_media_server_connection(&permission_manager_user(), local_patch)
+            .await
+            .expect("permission manager should rotate a local Emby API key");
+        assert_eq!(
+            locally_rotated.api_key.as_deref(),
+            Some("replacement-api-key")
+        );
+
+        let mut connect_patch = empty_update_patch("emby-main");
+        connect_patch.emby_connection_mode = Some(EmbyConnectionMode::Connect);
+        connect_patch.emby_connect_enabled = Some(true);
+        connect_patch.emby_connect_username_or_email = Some("connect@example.test".into());
+        connect_patch.emby_connect_password = Some("connect-password".into());
+        connect_patch.emby_connect_server_id = Some("emby-server-id".into());
+        let connect_rotated = app
+            .update_media_server_connection(&permission_manager_user(), connect_patch)
+            .await
+            .expect("permission manager should rotate Emby Connect credentials and server");
+
+        assert_eq!(connect_rotated.api_key.as_deref(), Some("connect-key"));
+        assert!(connect_rotated.emby_connect_enabled);
+        assert_eq!(&*local_admin_passwords.lock().await, &[] as &[String]);
+        assert_eq!(&*connect_passwords.lock().await, &["connect-password"]);
+    }
+
+    #[tokio::test]
     async fn newly_created_emby_key_is_compensated_when_create_persistence_fails() {
         let finish = Arc::new(Mutex::new(Vec::new()));
         let app = app_with_repository_and_verifier(
@@ -2900,7 +3066,7 @@ mod tests {
         patch.admin_password = Some("password".into());
 
         let error = app
-            .update_media_server_connection(&system_settings_user(), patch)
+            .update_media_server_connection(&permission_manager_user(), patch)
             .await
             .expect_err("repository failure");
 
@@ -3006,6 +3172,67 @@ mod tests {
                 {
                     let mut patch = empty_update_patch("plex-main");
                     patch.clear_api_key = true;
+                    patch
+                },
+            ),
+            ("Emby API key", emby_connection(true, Some("old-key")), {
+                let mut patch = empty_update_patch("emby-main");
+                patch.api_key = Some("replacement-key".to_string());
+                patch
+            }),
+            (
+                "Emby clear API key",
+                emby_connection(true, Some("old-key")),
+                {
+                    let mut patch = empty_update_patch("emby-main");
+                    patch.clear_api_key = true;
+                    patch
+                },
+            ),
+            (
+                "Emby administrator credentials",
+                emby_connection(true, Some("old-key")),
+                {
+                    let mut patch = empty_update_patch("emby-main");
+                    patch.admin_username = Some("admin".to_string());
+                    patch.admin_password = Some("password".to_string());
+                    patch
+                },
+            ),
+            (
+                "Emby connection mode",
+                emby_connection(true, Some("old-key")),
+                {
+                    let mut patch = empty_update_patch("emby-main");
+                    patch.emby_connection_mode = Some(EmbyConnectionMode::Local);
+                    patch
+                },
+            ),
+            (
+                "Emby Connect credentials",
+                emby_connection(true, Some("old-key")),
+                {
+                    let mut patch = empty_update_patch("emby-main");
+                    patch.emby_connect_username_or_email = Some("connect@example.test".to_string());
+                    patch.emby_connect_password = Some("password".to_string());
+                    patch
+                },
+            ),
+            (
+                "Emby Connect enablement",
+                emby_connection(true, Some("old-key")),
+                {
+                    let mut patch = empty_update_patch("emby-main");
+                    patch.emby_connect_enabled = Some(true);
+                    patch
+                },
+            ),
+            (
+                "Emby Connect server ID",
+                emby_connection(true, Some("old-key")),
+                {
+                    let mut patch = empty_update_patch("emby-main");
+                    patch.emby_connect_server_id = Some("other-emby-server".to_string());
                     patch
                 },
             ),

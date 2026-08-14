@@ -12,6 +12,7 @@ async fn graphql_auth_runtime_state_is_public() {
             effectiveFormLoginEnabled
             skipLoginForLocalIps
             passkeyEnabled
+            defaultPersistSession
             mfaRequireConfigStepUp
           }
         }
@@ -30,6 +31,10 @@ async fn graphql_auth_runtime_state_is_public() {
         false
     );
     assert_eq!(body["data"]["authRuntimeState"]["passkeyEnabled"], false);
+    assert_eq!(
+        body["data"]["authRuntimeState"]["defaultPersistSession"], false,
+        "schema execution without HTTP provenance must fail closed"
+    );
     assert_eq!(
         body["data"]["authRuntimeState"]["mfaRequireConfigStepUp"],
         false

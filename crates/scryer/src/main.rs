@@ -1318,6 +1318,11 @@ async fn bootstrap_application(
         bootstrap_quality_profile_store.clone(),
     )
     .await;
+    startup_migrations::_0007_emby_plugin_compatibility::migrate_emby_plugin_compatibility(
+        &app_use_case,
+        bootstrap_settings_store.clone(),
+    )
+    .await;
     spawn_post_upgrade_auto_backup_if_pending(
         app_use_case.clone(),
         bootstrap_settings_store.clone(),

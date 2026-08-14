@@ -605,6 +605,24 @@ impl AppUseCase {
         .await
     }
 
+    pub async fn issue_access_token_with_mfa_and_persistence(
+        &self,
+        actor: &User,
+        mfa_verified_until: Option<chrono::DateTime<Utc>>,
+        mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+        persist_session: bool,
+    ) -> AppResult<String> {
+        self.issue_access_token_with_mfa_and_scope(
+            actor,
+            mfa_verified_until,
+            mfa_step_up_verified_until,
+            JwtSessionScope::Full,
+            self.token_lifetime(),
+            persist_session,
+        )
+        .await
+    }
+
     pub async fn issue_mfa_enrollment_token(
         &self,
         actor: &User,

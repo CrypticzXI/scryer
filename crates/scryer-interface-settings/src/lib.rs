@@ -3,7 +3,8 @@ mod mutation;
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_interface_core::{
-    AuthRuntimeStateSnapshot, actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error,
+    AuthRuntimeStateSnapshot, actor_from_ctx, app_from_ctx, auth_runtime_from_ctx,
+    default_persist_session_from_ctx, to_gql_error,
 };
 use scryer_interface_media::mappers::{
     from_download_client_config_with_fields, from_download_client_routing_entry,
@@ -450,11 +451,13 @@ fn from_external_auth_runtime_settings(
 fn from_auth_runtime_state(
     auth_runtime: &AuthRuntimeStateSnapshot,
     security_settings: scryer_application::SecuritySettings,
+    default_persist_session: bool,
 ) -> AuthRuntimeStatePayload {
     AuthRuntimeStatePayload {
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         skip_login_for_local_ips: auth_runtime.skip_login_for_local_ips,
         passkey_enabled: auth_runtime.passkey_enabled,
+        default_persist_session,
         env_override_active: auth_runtime.env_override_active,
         mfa_require_password_login: auth_runtime.effective_form_login_enabled
             && security_settings.mfa_require_password_login,
@@ -690,6 +693,7 @@ impl SettingsQueries {
         Ok(from_auth_runtime_state(
             &auth_runtime.snapshot(),
             security_settings,
+            default_persist_session_from_ctx(ctx),
         ))
     }
 
