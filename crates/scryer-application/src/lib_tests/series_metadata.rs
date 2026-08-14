@@ -167,6 +167,7 @@ async fn anime_hybrid_movie_mapping_creates_series_movie_link() {
                     poster_url: "https://example.com/mugen-train.jpg".into(),
                     background_url: None,
                     language: "eng".into(),
+                    original_language: Some("jpn".into()),
                     runtime_minutes: 117,
                     sort_title: "Mugen Train".into(),
                     imdb_id: "tt11032374".into(),

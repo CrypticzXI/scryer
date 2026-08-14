@@ -2485,3 +2485,76 @@ async fn migration_0136_rejects_duplicate_existing_root_paths_before_rekey() {
         "unexpected migration error: {err}"
     );
 }
+
+#[tokio::test]
+async fn migration_0156_queues_only_tvdb_backed_titles_for_rehydration() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_original_language_rehydration_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+
+    let mut tvdb_title = make_test_title("title-tvdb-original-language", None);
+    tvdb_title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "12345".to_string(),
+    }];
+    TitleRepository::create(&catalog, tvdb_title.clone())
+        .await
+        .expect("TVDB title should insert");
+    let local_title = make_test_title("title-local-original-language", None);
+    TitleRepository::create(&catalog, local_title.clone())
+        .await
+        .expect("local title should insert");
+
+    sqlx::query(
+        "UPDATE titles
+            SET metadata_fetched_at = '2026-01-01T00:00:00Z',
+                metadata_hydration_next_attempt_at = NULL,
+                metadata_hydration_attempt_count = 7
+          WHERE id IN (?, ?)",
+    )
+    .bind(&tvdb_title.id)
+    .bind(&local_title.id)
+    .execute(&services.pool)
+    .await
+    .expect("hydration state should seed");
+
+    run_embedded_migration(
+        &services.pool,
+        include_str!("../../../scryer/src/db/migrations/0156_rehydrate_original_languages.sql"),
+    )
+    .await;
+
+    let tvdb_state: (Option<String>, Option<String>, i64) = sqlx::query_as(
+        "SELECT metadata_fetched_at, metadata_hydration_next_attempt_at,
+                metadata_hydration_attempt_count
+           FROM titles WHERE id = ?",
+    )
+    .bind(&tvdb_title.id)
+    .fetch_one(&services.pool)
+    .await
+    .expect("TVDB hydration state should load");
+    assert_eq!(tvdb_state.0, None);
+    assert!(tvdb_state.1.is_some());
+    assert_eq!(tvdb_state.2, 0);
+
+    let local_state: (Option<String>, Option<String>, i64) = sqlx::query_as(
+        "SELECT metadata_fetched_at, metadata_hydration_next_attempt_at,
+                metadata_hydration_attempt_count
+           FROM titles WHERE id = ?",
+    )
+    .bind(&local_title.id)
+    .fetch_one(&services.pool)
+    .await
+    .expect("local hydration state should load");
+    assert_eq!(local_state.0.as_deref(), Some("2026-01-01T00:00:00Z"));
+    assert_eq!(local_state.1, None);
+    assert_eq!(local_state.2, 7);
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
+}

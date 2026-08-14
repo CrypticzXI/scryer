@@ -2030,6 +2030,7 @@ fn movie_metadata_from_item(m: MovieItem) -> MovieMetadata {
         poster_url: normalize_artwork_url(&m.poster_url),
         background_url: pick_artwork_url(&m.artworks, "background"),
         language: m.language,
+        original_language: m.original_language,
         runtime_minutes: m.runtime_minutes,
         sort_title: m.sort_title,
         imdb_id: m.imdb_id,
@@ -2058,6 +2059,7 @@ fn series_metadata_from_item(s: SeriesItem) -> SeriesMetadata {
         runtime_minutes: s.runtime_minutes,
         poster_url: normalize_artwork_url(&s.poster_url),
         background_url: pick_artwork_url(&s.artworks, "background"),
+        original_language: s.original_language,
         country: s.country,
         canonical_tags: canonical_tags_from_gateway(s.canonical_tags),
         aliases: s.aliases,
@@ -2451,6 +2453,11 @@ mod tests {
         assert!(graphql_docs::METADATA_BULK_QUERY.contains("metadataBulk"));
         assert!(graphql_docs::METADATA_BULK_QUERY.contains("external_ratings"));
         assert!(graphql_docs::GET_SERIES_QUERY.contains("tagged_aliases"));
+        assert!(
+            queries
+                .iter()
+                .all(|query| query.contains("original_language"))
+        );
         assert!(queries.iter().all(|query| !query.contains("target_key")));
     }
 
@@ -3456,6 +3463,7 @@ mod tests {
                     "overview": "External Movie overview",
                     "poster_url": "https://example.com/poster.jpg",
                     "language": "eng",
+                    "original_language": "jpn",
                     "runtime_minutes": 100,
                     "sort_title": "External Movie",
                     "imdb_id": "tt9100100",
@@ -3469,6 +3477,7 @@ mod tests {
         .expect("movie response should deserialize");
 
         assert_eq!(data.movie.movie.tmdb_id, Some(810_010));
+        assert_eq!(data.movie.movie.original_language.as_deref(), Some("jpn"));
     }
 }
 
@@ -3686,6 +3695,8 @@ struct MovieItem {
     overview: String,
     poster_url: String,
     language: String,
+    #[serde(default)]
+    original_language: Option<String>,
     runtime_minutes: i32,
     sort_title: String,
     imdb_id: String,
@@ -3959,6 +3970,8 @@ struct SeriesItem {
     network: String,
     runtime_minutes: i32,
     poster_url: String,
+    #[serde(default)]
+    original_language: Option<String>,
     country: String,
     #[serde(default)]
     canonical_tags: Vec<CanonicalTagItem>,
@@ -4330,6 +4343,7 @@ impl MetadataGateway for MetadataGatewayClient {
             poster_url: normalize_artwork_url(&m.poster_url),
             background_url: pick_artwork_url(&m.artworks, "background"),
             language: m.language,
+            original_language: m.original_language,
             runtime_minutes: m.runtime_minutes,
             sort_title: m.sort_title,
             imdb_id: m.imdb_id,
@@ -4374,6 +4388,7 @@ impl MetadataGateway for MetadataGatewayClient {
             runtime_minutes: s.runtime_minutes,
             poster_url: normalize_artwork_url(&s.poster_url),
             background_url: pick_artwork_url(&s.artworks, "background"),
+            original_language: s.original_language,
             country: s.country,
             canonical_tags: canonical_tags_from_gateway(s.canonical_tags),
             aliases: s.aliases,

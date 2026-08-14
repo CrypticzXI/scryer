@@ -64,6 +64,54 @@ async fn title_quality_profile_reference_count_matches_resolver_normalization() 
 }
 
 #[tokio::test]
+async fn hydrated_original_language_can_be_set_cleared_or_left_unchanged() {
+    let (services, db) = temp_services("scryer_title_original_language_update").await;
+    let catalog = title_store(&services);
+    let title = make_test_title("title-original-language-update", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let set = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            language: MetadataFieldUpdate::Set("jpn".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("original language should set");
+    assert_eq!(set.language.as_deref(), Some("jpn"));
+
+    let unchanged = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            overview: Some("partial update".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("partial metadata should update");
+    assert_eq!(unchanged.language.as_deref(), Some("jpn"));
+
+    let cleared = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            language: MetadataFieldUpdate::Clear,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("missing authoritative language should clear stale metadata");
+    assert_eq!(cleared.language, None);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_create_requires_an_existing_library_for_the_title_facet() {
     let (services, db) = temp_services("scryer_title_library_ownership_validation").await;
     let catalog = title_store(&services);
@@ -546,7 +594,7 @@ async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
             popularity: None,
             canonical_tags: vec![],
             content_status: None,
-            language: None,
+            language: MetadataFieldUpdate::Unchanged,
             first_aired: None,
             network: None,
             studio: None,

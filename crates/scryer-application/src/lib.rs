@@ -527,6 +527,7 @@ pub use settings::keys::{
 };
 pub use settings::runtime::is_bootstrap_default_library_root_set;
 pub(crate) use types::JwtClaims;
+pub use types::MetadataFieldUpdate;
 #[cfg(test)]
 pub(crate) use types::ReleaseCandidateTokenClaims;
 pub use types::{

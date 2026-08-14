@@ -629,7 +629,11 @@ impl TitleRepository for MockTitleRepo {
         title.imdb_id = metadata.imdb_id;
         title.runtime_minutes = metadata.runtime_minutes;
         title.content_status = metadata.content_status;
-        title.language = metadata.language;
+        match metadata.language {
+            MetadataFieldUpdate::Unchanged => {}
+            MetadataFieldUpdate::Set(language) => title.language = Some(language),
+            MetadataFieldUpdate::Clear => title.language = None,
+        }
         title.first_aired = metadata.first_aired;
         title.network = metadata.network;
         title.studio = metadata.studio;

@@ -31,6 +31,14 @@ pub struct TitleRatingSummary {
     pub external_ratings: Vec<TitleExternalRating>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum MetadataFieldUpdate<T> {
+    #[default]
+    Unchanged,
+    Set(T),
+    Clear,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TitleMetadataUpdate {
     pub name: Option<String>,
@@ -45,7 +53,8 @@ pub struct TitleMetadataUpdate {
     pub popularity: Option<f64>,
     pub canonical_tags: Vec<CanonicalMediaTag>,
     pub content_status: Option<String>,
-    pub language: Option<String>,
+    /// Authoritative original-language update from the metadata provider.
+    pub language: MetadataFieldUpdate<String>,
     pub first_aired: Option<String>,
     pub network: Option<String>,
     pub studio: Option<String>,

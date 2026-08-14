@@ -126,6 +126,7 @@ fn make_series_metadata(tvdb_id: i64, name: &str) -> SeriesMetadata {
         runtime_minutes: 24,
         poster_url: format!("https://example.com/{tvdb_id}.jpg"),
         background_url: None,
+        original_language: Some("jpn".to_string()),
         country: "JP".to_string(),
         canonical_tags: vec![],
         aliases: Vec::new(),

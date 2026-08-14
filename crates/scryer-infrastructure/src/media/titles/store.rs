@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use scryer_application::{
     AppError, AppResult, CatalogOwnedExternalIdRecord, CatalogOwnedTitleRecord, CreateTitleOutcome,
-    PendingImportStatus, PendingTitleHydration, SortDirection, TitleArtworkUrlUpdate,
-    TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogFilterCounts,
+    MetadataFieldUpdate, PendingImportStatus, PendingTitleHydration, SortDirection,
+    TitleArtworkUrlUpdate, TitleCatalogContentStatus, TitleCatalogFilter, TitleCatalogFilterCounts,
     TitleCatalogFilterOptions, TitleCatalogResult, TitleCatalogSort, TitleCatalogSortKey,
     TitleCatalogTagFilterOption, TitleDeletePreviewInfo, TitleExternalIdLookup,
     TitleExternalIdLookupMatch, TitleMetadataUpdate, TitleOptionsPatch, TitleRatingSummary,
@@ -1924,7 +1924,11 @@ fn apply_title_metadata_update(title: &mut Title, metadata: TitleMetadataUpdate)
     }
     title.popularity = metadata.popularity;
     merge_optional_title_text(&mut title.content_status, metadata.content_status);
-    merge_optional_title_text(&mut title.language, metadata.language);
+    match metadata.language {
+        MetadataFieldUpdate::Unchanged => {}
+        MetadataFieldUpdate::Set(language) => title.language = Some(language),
+        MetadataFieldUpdate::Clear => title.language = None,
+    }
     merge_optional_title_text(&mut title.first_aired, metadata.first_aired);
     merge_optional_title_text(&mut title.network, metadata.network);
     merge_optional_title_text(&mut title.studio, metadata.studio);
