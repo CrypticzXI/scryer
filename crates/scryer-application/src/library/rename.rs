@@ -424,6 +424,7 @@ impl AppUseCase {
         actor: &User,
         preview: RenamePlan,
     ) -> AppResult<RenameApplyResult> {
+        self.preflight_rename_folder_ownership(&preview).await?;
         self.services
             .library
             .library_renamer
@@ -484,6 +485,47 @@ impl AppUseCase {
         self.emit_rename_notifications(actor, &result.items).await;
 
         Ok(result)
+    }
+
+    async fn preflight_rename_folder_ownership(&self, preview: &RenamePlan) -> AppResult<()> {
+        for item in &preview.items {
+            if !matches!(
+                item.write_action,
+                RenameWriteAction::Move | RenameWriteAction::Replace
+            ) {
+                continue;
+            }
+            let Some(proposed_path) = item.proposed_path.as_deref() else {
+                continue;
+            };
+            let probe = RenameApplyItemResult {
+                collection_id: item.collection_id.clone(),
+                media_file_id: item.media_file_id.clone(),
+                series_movie_link_ids: item.series_movie_link_ids.clone(),
+                current_path: item.current_path.clone(),
+                proposed_path: item.proposed_path.clone(),
+                final_path: None,
+                write_action: item.write_action.clone(),
+                status: RenameApplyStatus::Skipped,
+                reason_code: String::new(),
+                error_message: None,
+            };
+            let Some(title) = self.resolve_title_for_rename_item(&probe).await? else {
+                continue;
+            };
+            let Some(folder_path) =
+                infer_title_folder_path_after_rename(&title, &item.current_path, proposed_path)
+            else {
+                continue;
+            };
+            crate::folder_ownership::ensure_folder_move_available_to_title(
+                self,
+                &title,
+                &stored_path_to_path_buf(&folder_path),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn emit_rename_notifications(&self, actor: &User, items: &[RenameApplyItemResult]) {

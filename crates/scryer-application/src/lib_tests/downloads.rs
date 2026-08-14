@@ -5297,6 +5297,126 @@ async fn path_manual_import_can_target_series_movie_link() {
 }
 
 #[tokio::test]
+async fn path_manual_import_rejects_another_title_folder_before_source_mutation() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) =
+        bootstrap_with_cleanup_tracking(download_client, download_submissions, pending_releases);
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_file_importer(Arc::new(CopyingFileImporter))
+            .with_media_files(media_files.clone())
+    });
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .expect("seed manual import actor");
+
+    let owner = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Fixture Owner".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create owner title");
+    let candidate = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Fixture Candidate".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create candidate title");
+    let import_paths = crate::import_workflow::resolve_import_paths(&app, &candidate)
+        .await
+        .expect("resolve import paths");
+    let candidate_folder = crate::effective_title_folder_path(
+        &import_paths.media_root,
+        &candidate,
+        &import_paths.folder_template,
+        None,
+    );
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(
+            &owner.id,
+            &crate::stored_paths::path_to_stored_string(&candidate_folder),
+        )
+        .await
+        .expect("assign candidate destination to owner");
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file = source_dir.path().join("Fixture.Candidate.2026.1080p.mkv");
+    std::fs::File::create(&source_file)
+        .expect("create source video")
+        .set_len(51 * 1024 * 1024)
+        .expect("size source video above sample threshold");
+    let source_size = std::fs::metadata(&source_file)
+        .expect("source metadata")
+        .len();
+
+    let error = crate::import_workflow::execute_manual_import(
+        &app,
+        &user,
+        "manual-import-folder-conflict",
+        &candidate.id,
+        None,
+        vec![ManualImportFileMapping {
+            file_path: source_file.to_string_lossy().into_owned(),
+            episode_id: None,
+            series_movie_link_id: None,
+            quality: Some("1080p".to_string()),
+        }],
+        Some(std::fs::canonicalize(source_dir.path()).expect("canonical source root")),
+    )
+    .await
+    .expect_err("manual import must reject another title's folder");
+
+    assert!(
+        error
+            .to_string()
+            .contains("already owned by title Fixture Owner")
+    );
+    assert_eq!(
+        std::fs::metadata(&source_file)
+            .expect("source remains")
+            .len(),
+        source_size
+    );
+    assert!(!candidate_folder.exists());
+    assert!(
+        media_files
+            .list_media_files_for_title(&candidate.id)
+            .await
+            .expect("list candidate media")
+            .is_empty()
+    );
+    let refreshed_candidate = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&candidate.id)
+        .await
+        .expect("load candidate title")
+        .expect("candidate title exists");
+    assert_eq!(refreshed_candidate.folder_path, None);
+}
+
+#[tokio::test]
 async fn try_import_completed_downloads_blocks_origin_scope_conflict() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());

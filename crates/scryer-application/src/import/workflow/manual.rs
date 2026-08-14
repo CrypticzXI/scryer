@@ -1226,6 +1226,7 @@ async fn execute_manual_series_movie_import(
         0,
     )
     .join(rendered_filename);
+    persist_title_folder_path_if_missing(app, title, full_folder_path).await?;
     if let Some(parent) = dest_path.parent()
         && let Err(error) = tokio::fs::create_dir_all(parent).await
     {
@@ -1268,8 +1269,6 @@ async fn execute_manual_series_movie_import(
             ));
         }
     };
-    persist_title_folder_path_if_missing(app, title, full_folder_path).await;
-
     let quality_label = mapping.quality.clone().or_else(|| parsed.quality.clone());
     let started_at = Utc::now();
     let imported_media_file_id = match app
@@ -1467,10 +1466,10 @@ pub async fn execute_manual_import(
         specials_folder_template,
     } = resolve_import_paths(app, &title).await?;
     let full_folder_path = effective_title_folder_path(&media_root, &title, &folder_template, None);
+    ensure_import_title_folder_available(app, &title, &full_folder_path).await?;
     let quality_profile = resolve_import_quality_profile(app, &title).await?;
 
     let mut results = Vec::new();
-    let mut imported_any = false;
 
     for mapping in &files {
         let source = stored_path_to_path_buf(&mapping.file_path);
@@ -1553,7 +1552,6 @@ pub async fn execute_manual_import(
                     Ok(import_result) => {
                         let success = import_result.dest_path.is_some()
                             && import_result.error_message.is_none();
-                        imported_any |= success;
                         manual_import_file_result(
                             mapping,
                             success,
@@ -1592,7 +1590,6 @@ pub async fn execute_manual_import(
                     rename_enabled,
                 )
                 .await?;
-                imported_any |= result.success;
                 results.push(result);
                 continue;
             }
@@ -1676,7 +1673,6 @@ pub async fn execute_manual_import(
         .await
         {
             Ok(EpisodeImportOutcome::Imported { dest_path, .. }) => {
-                imported_any = true;
                 results.push(manual_import_file_result(
                     mapping,
                     true,
@@ -1720,10 +1716,6 @@ pub async fn execute_manual_import(
                 ));
             }
         }
-    }
-
-    if imported_any {
-        persist_title_folder_path_if_missing(app, &title, &full_folder_path).await;
     }
 
     let imported_updates: Vec<NotificationMediaUpdate> = results

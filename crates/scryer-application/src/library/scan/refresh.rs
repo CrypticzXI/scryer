@@ -284,7 +284,9 @@ pub(super) async fn background_refresh_series(
     for folder in folders {
         summary.scanned += 1;
         let folder_key = path_to_stored_string(&folder);
-        if let Some(&index) = existing_titles_by_folder_path.get(&folder_key) {
+        let owner_index = crate::stored_paths::folder_path_identity_key(&folder_key)
+            .and_then(|key| existing_titles_by_folder_path.get(&key).copied());
+        if let Some(index) = owner_index {
             let title = &mut existing_titles[index];
             maybe_probe_existing_series_title_for_background_refresh(
                 app,
@@ -309,6 +311,10 @@ pub(super) async fn background_refresh_series(
         for candidate in prepared_candidates {
             let candidate = process_series_refresh_candidate(
                 app,
+                facet,
+                library_id,
+                library_path,
+                session_id,
                 candidate,
                 &mut executor,
                 &mut existing_titles,
@@ -348,6 +354,8 @@ pub(super) async fn background_refresh_series(
                     actor,
                     facet,
                     library_id,
+                    library_path,
+                    session_id,
                     candidate,
                     &batch_search_results,
                     &mut executor,
@@ -440,8 +448,10 @@ pub(super) async fn background_refresh_movies(
     let metadata_language = app.metadata_language().await;
     for entry in entries {
         summary.scanned += 1;
-        let entry_key = path_to_stored_string(&entry.path);
-        if let Some(&index) = existing_titles_by_probe_path.get(&entry_key) {
+        let owner_index =
+            crate::stored_paths::folder_path_identity_key(&path_to_stored_string(&entry.path))
+                .and_then(|key| existing_titles_by_probe_path.get(&key).copied());
+        if let Some(index) = owner_index {
             let title = &existing_titles[index];
             let collections = collections_by_title
                 .get(&title.id)

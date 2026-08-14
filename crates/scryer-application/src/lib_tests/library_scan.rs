@@ -817,7 +817,9 @@ async fn manual_title_create_without_hydration_does_not_fetch_poster() {
 #[tokio::test]
 async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let first_path = tempdir.path().join("Unknown.One.2020.1080p.WEB-DL.mkv");
+    let first_folder = tempdir.path().join("Unknown One (2020)");
+    std::fs::create_dir(&first_folder).expect("create first movie folder");
+    let first_path = first_folder.join("Unknown.One.2020.1080p.WEB-DL.mkv");
     std::fs::write(&first_path, b"movie").expect("write first movie file");
 
     let settings = Arc::new(StoredSettingsRepo::default());
@@ -849,7 +851,7 @@ async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
     let first_items = unmatched_items.items().await;
     assert_eq!(first_items.len(), 1);
     assert_eq!(first_items[0].facet, MediaFacet::Movie);
-    assert_eq!(first_items[0].item_path, first_path.to_string_lossy());
+    assert_eq!(first_items[0].item_path, first_folder.to_string_lossy());
     let first_session_id = first_items[0].scan_session_id.clone();
 
     let second_summary = app
@@ -862,8 +864,10 @@ async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
     assert_eq!(second_items.len(), 1);
     assert_ne!(second_items[0].scan_session_id, first_session_id);
 
-    std::fs::remove_file(&first_path).expect("remove first movie file");
-    let second_path = tempdir.path().join("Unknown.Two.2021.2160p.BluRay.mkv");
+    std::fs::remove_dir_all(&first_folder).expect("remove first movie folder");
+    let second_folder = tempdir.path().join("Unknown Two (2021)");
+    std::fs::create_dir(&second_folder).expect("create second movie folder");
+    let second_path = second_folder.join("Unknown.Two.2021.2160p.BluRay.mkv");
     std::fs::write(&second_path, b"movie").expect("write second movie file");
     let third_summary = app
         .scan_library(&user, MediaFacet::Movie)
@@ -874,7 +878,7 @@ async fn movie_full_scan_persists_and_reconciles_unmatched_items() {
 
     let third_items = unmatched_items.items().await;
     assert_eq!(third_items.len(), 1);
-    assert_eq!(third_items[0].item_path, second_path.to_string_lossy());
+    assert_eq!(third_items[0].item_path, second_folder.to_string_lossy());
 }
 
 #[tokio::test]
@@ -2068,7 +2072,7 @@ async fn movie_title_scan_cleans_out_of_canonical_folder_pollution() {
 }
 
 #[tokio::test]
-async fn movie_full_scan_skips_duplicate_same_title_sibling_folder_without_unmatched_item() {
+async fn movie_full_scan_records_duplicate_same_title_sibling_folder_as_ownership_conflict() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let first_dir = tempdir.path().join("Duplicate Title (2026)");
     let second_dir = tempdir.path().join("Duplicate Title Copy (2026)");
@@ -2101,8 +2105,15 @@ async fn movie_full_scan_skips_duplicate_same_title_sibling_folder_without_unmat
         .await
         .expect("scan movie library");
 
-    assert_eq!(summary.skipped, 0);
-    assert!(unmatched_items.items().await.is_empty());
+    assert_eq!(summary.unmatched, 1);
+    let unmatched = unmatched_items.items().await;
+    assert_eq!(unmatched.len(), 1);
+    assert_eq!(
+        unmatched[0].reason_code,
+        crate::library_scan_unmatched::LIBRARY_SCAN_TITLE_ALREADY_OWNS_ANOTHER_FOLDER
+    );
+    assert_eq!(unmatched[0].title_id.as_ref(), Some(&title.id));
+    assert_eq!(unmatched[0].item_path, second_path.to_string_lossy());
     let titles = app
         .list_titles_unpaged(&user, Some(MediaFacet::Movie), None, None)
         .await
@@ -2118,13 +2129,102 @@ async fn movie_full_scan_skips_duplicate_same_title_sibling_folder_without_unmat
         .expect("list media files");
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].file_path, first_path.to_string_lossy());
+    assert!(first_path.exists());
+    assert!(second_path.exists());
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn series_full_scan_records_case_distinct_folder_as_ownership_conflict() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let owned_folder = tempdir.path().join("CASE SPLIT FIXTURE");
+    let candidate_folder = tempdir.path().join("Case Split Fixture");
+    std::fs::create_dir(&candidate_folder).expect("create case-distinct series folder");
+    let episode_path = candidate_folder.join("Case Split Fixture - S01E01.mkv");
+    std::fs::write(&episode_path, vec![0_u8; 128]).expect("write episode file");
+
+    let settings = Arc::new(StoredSettingsRepo::default());
+    settings
+        .set_value(
+            SETTINGS_SCOPE_MEDIA,
+            "series.path",
+            tempdir.path().to_string_lossy().as_ref(),
+        )
+        .await;
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_and_metadata_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        unmatched_items.clone(),
+        Arc::new(EmptySearchMetadataGateway),
+    );
+    app.reconcile_default_library_roots()
+        .await
+        .expect("reconcile series root");
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Case Split Fixture".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, owned_folder.to_string_lossy().as_ref())
+        .await
+        .expect("set owned series folder");
+    app.services
+        .library
+        .media_files
+        .insert_media_file(&InsertMediaFileInput {
+            title_id: title.id.clone(),
+            file_path: episode_path.to_string_lossy().to_string(),
+            size_bytes: 128,
+            role: MediaFileRole::Primary,
+            ..Default::default()
+        })
+        .await
+        .expect("seed catalog row in losing folder");
+
+    let summary = app
+        .scan_library(&user, MediaFacet::Series)
+        .await
+        .expect("scan series library");
+
+    assert_eq!(summary.unmatched, 1);
+    let unmatched = unmatched_items.items().await;
+    assert_eq!(unmatched.len(), 1);
+    assert_eq!(
+        unmatched[0].reason_code,
+        crate::library_scan_unmatched::LIBRARY_SCAN_TITLE_ALREADY_OWNS_ANOTHER_FOLDER
+    );
+    assert_eq!(unmatched[0].title_id.as_ref(), Some(&title.id));
+    assert_eq!(unmatched[0].item_path, candidate_folder.to_string_lossy());
+    assert!(episode_path.exists());
+    assert!(
+        app.services
+            .library
+            .media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .expect("list media files")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
 async fn movie_full_scan_external_id_nfo_without_gateway_match_persists_unmatched_item() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let movie_path = tempdir.path().join("Broken.Movie.2020.mkv");
-    let nfo_path = tempdir.path().join("movie.nfo");
+    let movie_folder = tempdir.path().join("Broken Movie (2020)");
+    std::fs::create_dir(&movie_folder).expect("create movie folder");
+    let movie_path = movie_folder.join("Broken.Movie.2020.mkv");
+    let nfo_path = movie_folder.join("movie.nfo");
     std::fs::write(&movie_path, b"movie").expect("write movie file");
     std::fs::write(
         &nfo_path,
@@ -2185,7 +2285,9 @@ async fn movie_full_scan_external_id_nfo_without_gateway_match_persists_unmatche
 #[tokio::test]
 async fn movie_full_scan_title_create_failure_from_search_persists_unmatched_item() {
     let tempdir = tempfile::tempdir().expect("tempdir");
-    let movie_path = tempdir.path().join("Matched.Movie.2020.mkv");
+    let movie_folder = tempdir.path().join("Matched Movie (2020)");
+    std::fs::create_dir(&movie_folder).expect("create movie folder");
+    let movie_path = movie_folder.join("Matched.Movie.2020.mkv");
     std::fs::write(&movie_path, b"movie").expect("write movie file");
 
     let settings = Arc::new(StoredSettingsRepo::default());
@@ -2306,8 +2408,12 @@ async fn movie_full_scan_scans_all_configured_roots_in_one_session() {
     let root_two = tempdir.path().join("movies-b");
     std::fs::create_dir_all(&root_one).expect("create movie root one");
     std::fs::create_dir_all(&root_two).expect("create movie root two");
-    std::fs::write(root_one.join("Unknown.One.2020.mkv"), b"movie-one").expect("seed movie one");
-    std::fs::write(root_two.join("Unknown.Two.2021.mkv"), b"movie-two").expect("seed movie two");
+    let movie_one = root_one.join("Unknown One (2020)");
+    let movie_two = root_two.join("Unknown Two (2021)");
+    std::fs::create_dir(&movie_one).expect("create movie one folder");
+    std::fs::create_dir(&movie_two).expect("create movie two folder");
+    std::fs::write(movie_one.join("Unknown.One.2020.mkv"), b"movie-one").expect("seed movie one");
+    std::fs::write(movie_two.join("Unknown.Two.2021.mkv"), b"movie-two").expect("seed movie two");
 
     let settings = Arc::new(StoredSettingsRepo::default());
     let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
@@ -2787,7 +2893,9 @@ async fn movie_full_scan_marks_title_match_total_known_before_completion() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let movie_root = tempdir.path().join("movies");
     std::fs::create_dir_all(&movie_root).expect("create movie root");
-    let movie_path = movie_root.join("Unknown.One.2020.mkv");
+    let movie_folder = movie_root.join("Unknown One (2020)");
+    std::fs::create_dir(&movie_folder).expect("create movie folder");
+    let movie_path = movie_folder.join("Unknown.One.2020.mkv");
     std::fs::write(&movie_path, b"movie").expect("seed movie");
 
     let settings = Arc::new(StoredSettingsRepo::default());
@@ -4195,7 +4303,9 @@ async fn movie_full_scan_skips_invalid_roots_and_finishes_warning() {
     let valid_root = tempdir.path().join("movies-valid");
     let invalid_root = tempdir.path().join("movies-missing");
     std::fs::create_dir_all(&valid_root).expect("create valid movie root");
-    std::fs::write(valid_root.join("Unknown.One.2020.mkv"), b"movie-one").expect("seed movie");
+    let movie_folder = valid_root.join("Unknown One (2020)");
+    std::fs::create_dir(&movie_folder).expect("create movie folder");
+    std::fs::write(movie_folder.join("Unknown.One.2020.mkv"), b"movie-one").expect("seed movie");
 
     let settings = Arc::new(StoredSettingsRepo::default());
     let (app, user) = bootstrap_with_scan_unmatched_tracking(
@@ -4246,8 +4356,12 @@ async fn background_refresh_movies_scans_all_configured_roots() {
     let root_two = tempdir.path().join("movies-b");
     std::fs::create_dir_all(&root_one).expect("create movie root one");
     std::fs::create_dir_all(&root_two).expect("create movie root two");
-    std::fs::write(root_one.join("Unknown.One.2020.mkv"), b"movie-one").expect("seed movie one");
-    std::fs::write(root_two.join("Unknown.Two.2021.mkv"), b"movie-two").expect("seed movie two");
+    let movie_one = root_one.join("Unknown One (2020)");
+    let movie_two = root_two.join("Unknown Two (2021)");
+    std::fs::create_dir(&movie_one).expect("create movie one folder");
+    std::fs::create_dir(&movie_two).expect("create movie two folder");
+    std::fs::write(movie_one.join("Unknown.One.2020.mkv"), b"movie-one").expect("seed movie one");
+    std::fs::write(movie_two.join("Unknown.Two.2021.mkv"), b"movie-two").expect("seed movie two");
 
     let settings = Arc::new(StoredSettingsRepo::default());
     let (app, user) = bootstrap_with_scan_unmatched_tracking(
@@ -4755,6 +4869,12 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         )
         .await
         .expect("seed known movie title");
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&known_movie_title.title.id, "/movies/Known Movie")
+        .await
+        .expect("set known movie folder");
     let known_series_title = app
         .create_title_without_hydration(
             &user,
@@ -4794,6 +4914,22 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         .upsert_library_scan_unmatched_item(&matched_movie)
         .await
         .expect("seed matched movie item");
+    let mut ownership_conflict = build_test_unmatched_item(
+        "movie-ownership-conflict-1",
+        MediaFacet::Movie,
+        "/movies",
+        "/movies/Known Movie Copy/Known.Movie.2020.mkv",
+        "Known Movie",
+        "Known Movie",
+        Some(2020),
+    );
+    ownership_conflict.title_id = Some(known_movie_title.title.id.clone());
+    ownership_conflict.reason_code =
+        crate::library_scan_unmatched::LIBRARY_SCAN_TITLE_ALREADY_OWNS_ANOTHER_FOLDER.to_string();
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&ownership_conflict)
+        .await
+        .expect("seed ownership conflict");
     let mut series_item = build_test_unmatched_item(
         "series-1",
         MediaFacet::Series,
@@ -4827,7 +4963,7 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         .pending_import_counts(&user)
         .await
         .expect("pending import counts");
-    assert_eq!(counts.movie, 1);
+    assert_eq!(counts.movie, 2);
     assert_eq!(counts.series, 1);
     assert_eq!(counts.anime, 0);
 
@@ -4842,11 +4978,25 @@ async fn pending_import_counts_and_items_are_facet_scoped() {
         )
         .await
         .expect("movie pending imports");
-    assert_eq!(movie_items.total, 1);
-    assert_eq!(movie_items.items.len(), 1);
-    assert_eq!(movie_items.items[0].display_name, "Unknown Movie");
-    assert_eq!(movie_items.items[0].path, "/movies/Unknown.Movie.2020.mkv");
-    assert_eq!(movie_items.items[0].folder_path, None);
+    assert_eq!(movie_items.total, 2);
+    assert_eq!(movie_items.items.len(), 2);
+    let unknown_movie = movie_items
+        .items
+        .iter()
+        .find(|item| item.id == "movie-1")
+        .expect("unknown movie pending import");
+    assert_eq!(unknown_movie.display_name, "Unknown Movie");
+    assert_eq!(unknown_movie.path, "/movies/Unknown.Movie.2020.mkv");
+    assert_eq!(unknown_movie.folder_path, None);
+    let ownership_conflict = movie_items
+        .items
+        .iter()
+        .find(|item| item.id == "movie-ownership-conflict-1")
+        .expect("ownership conflict pending import");
+    assert_eq!(
+        ownership_conflict.title_id.as_deref(),
+        Some(known_movie_title.title.id.as_str())
+    );
 
     let ignored_movie_items = app
         .pending_imports(
@@ -6856,4 +7006,81 @@ async fn resolve_pending_import_rejects_existing_title_in_same_library() {
         refreshed_title.folder_path.as_deref(),
         Some("/existing/movies/Existing Movie")
     );
+}
+
+#[tokio::test]
+async fn ownership_conflict_pending_import_cannot_be_bound_or_adopted() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let unmatched_items = Arc::new(TrackingLibraryScanUnmatchedItemRepo::default());
+    let (app, user) = bootstrap_with_scan_unmatched_tracking(
+        settings,
+        Arc::new(MutableLibraryScanner::default()),
+        unmatched_items.clone(),
+    );
+    let title = app
+        .create_title_without_hydration(
+            &user,
+            NewTitle {
+                name: "Case Split Fixture".to_string(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                ..NewTitle::default()
+            },
+        )
+        .await
+        .expect("seed existing title")
+        .title;
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(&title.id, "/series/CASE SPLIT FIXTURE")
+        .await
+        .expect("set owned folder");
+    let mut conflict = build_test_unmatched_item(
+        "series-ownership-conflict-1",
+        MediaFacet::Series,
+        "/series",
+        "/series/Case Split Fixture/Season 01/Case Split Fixture - S01E01.mkv",
+        "Case Split Fixture",
+        "Case Split Fixture",
+        None,
+    );
+    conflict.title_id = Some(title.id.clone());
+    conflict.reason_code =
+        crate::library_scan_unmatched::LIBRARY_SCAN_TITLE_ALREADY_OWNS_ANOTHER_FOLDER.to_string();
+    unmatched_items
+        .upsert_library_scan_unmatched_item(&conflict)
+        .await
+        .expect("seed ownership conflict");
+
+    let resolve_error = app
+        .resolve_pending_import(
+            &user,
+            &conflict.id,
+            pending_import_title_request(
+                MediaFacet::Series,
+                "Case Split Fixture",
+                Some("123"),
+                None,
+            ),
+        )
+        .await
+        .expect_err("ownership conflict must not be adopted");
+    let preview_error = app
+        .preview_title_bound_pending_import(&user, &conflict.id)
+        .await
+        .expect_err("ownership conflict must not be previewed for binding");
+    let bind_error = app
+        .bind_title_bound_pending_import(&user, &conflict.id, None, &[])
+        .await
+        .expect_err("ownership conflict must not be bound");
+
+    for error in [resolve_error, preview_error, bind_error] {
+        assert!(
+            error
+                .to_string()
+                .contains("folder ownership conflicts cannot be bound or adopted")
+        );
+    }
+    assert_eq!(unmatched_items.items().await, vec![conflict]);
 }

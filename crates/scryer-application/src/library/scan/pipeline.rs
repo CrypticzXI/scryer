@@ -1,10 +1,10 @@
 use super::*;
-use crate::library_discovery::list_series_loose_root_files;
+use crate::library_discovery::count_series_loose_root_files;
 use crate::library_scan_helpers::require_directory_library_path;
 use crate::library_scan_metadata::{
     BatchMetadataSearchKey, MovieCandidateEvidence, execute_batch_metadata_searches,
     prepare_movie_candidate_evidence, prepare_series_library_scan_candidate,
-    prepare_series_library_scan_candidate_from_file, split_ready_metadata_candidates,
+    split_ready_metadata_candidates,
 };
 use crate::library_scan_unmatched::{
     IgnoredLibraryScanItemArgs, LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE,
@@ -99,9 +99,6 @@ enum ScanCandidateJobEvent {
     Candidate {
         key: ScanCandidateKey,
         candidate: ScanPipelineCandidate,
-        /// Scoped candidates (loose root files) carry their own file list in
-        /// the matched work and never rendezvous with an inventory result.
-        scoped: bool,
         inline_inventory: Option<Vec<LibraryFile>>,
         inventory_cancel: CancellationToken,
     },
@@ -212,7 +209,6 @@ fn candidate_inventory_state_name(state: &CandidateInventoryState) -> &'static s
 
 struct CandidateRuntime {
     item_path: String,
-    scoped: bool,
     match_state: CandidateMatchState,
     inventory: CandidateInventoryState,
     inventory_cancel: CancellationToken,
@@ -895,7 +891,7 @@ fn matched_inventory_totals_ready(
                 false
             }
             CandidateMatchState::Dispatched | CandidateMatchState::Terminal => {
-                runtime.scoped || runtime.inventory_terminal()
+                runtime.inventory_terminal()
             }
         })
 }
@@ -915,7 +911,7 @@ fn log_file_total_latch_blocked(
                     true
                 }
                 CandidateMatchState::Dispatched | CandidateMatchState::Terminal => {
-                    !runtime.scoped && !runtime.inventory_terminal()
+                    !runtime.inventory_terminal()
                 }
             };
             blocked.then(|| {
@@ -985,7 +981,6 @@ async fn handle_candidate_job_event(
         ScanCandidateJobEvent::Candidate {
             key,
             candidate,
-            scoped,
             inline_inventory,
             inventory_cancel,
         } => {
@@ -1004,7 +999,6 @@ async fn handle_candidate_job_event(
                 key,
                 CandidateRuntime {
                     item_path,
-                    scoped,
                     match_state: CandidateMatchState::Pending,
                     inventory,
                     inventory_cancel,
@@ -1211,7 +1205,6 @@ async fn handle_inventory_ready(
             key,
             files = files.len(),
             stored_inventory_paths = *stored_inventory_paths,
-            runtime_scoped = runtime.scoped,
             match_state = candidate_match_state_name(&runtime.match_state),
             inventory_state = candidate_inventory_state_name(&runtime.inventory),
             "library scan inventory ready diagnostic"
@@ -1272,30 +1265,12 @@ async fn handle_match_decision(
     };
     let initial_match_state = candidate_match_state_name(&runtime.match_state);
     let initial_inventory_state = candidate_inventory_state_name(&runtime.inventory);
-    let scoped = runtime.scoped;
     let matched = matched_work.is_some();
     let matched_title_name = matched_work.as_ref().map(|work| work.title.name.clone());
     let mut file_count = 0usize;
     let outcome: &'static str;
 
     match matched_work {
-        Some(work) if runtime.scoped => {
-            // Scoped work already carries its own file list.
-            runtime.match_state = CandidateMatchState::Dispatched;
-            let files = work.discovered_files().cloned().unwrap_or_default();
-            file_count = files.len();
-            outcome = "dispatched_scoped";
-            dispatch_media_work(
-                coordinator,
-                hydration,
-                pool,
-                media_dedup_skips,
-                media_file_total_counted,
-                work,
-                files,
-            )
-            .await?;
-        }
         Some(work) => {
             match std::mem::replace(&mut runtime.inventory, CandidateInventoryState::Consumed) {
                 CandidateInventoryState::Ready(files) => {
@@ -1359,7 +1334,6 @@ async fn handle_match_decision(
             key,
             title_name = matched_title_name.as_deref(),
             matched,
-            scoped,
             file_count,
             outcome,
             initial_match_state,
@@ -1796,7 +1770,6 @@ enum EvidenceJobOutput {
     Candidate {
         key: ScanCandidateKey,
         candidate: ScanPipelineCandidate,
-        scoped: bool,
         inline_inventory: Option<Vec<LibraryFile>>,
         inventory_target: Option<PathBuf>,
     },
@@ -1840,7 +1813,6 @@ impl<'a> CandidateJobRunner<'a> {
             EvidenceJobOutput::Candidate {
                 key,
                 candidate,
-                scoped,
                 inline_inventory,
                 inventory_target,
             } => {
@@ -1852,7 +1824,6 @@ impl<'a> CandidateJobRunner<'a> {
                     .send(ScanCandidateJobEvent::Candidate {
                         key,
                         candidate,
-                        scoped,
                         inline_inventory,
                         inventory_cancel: inventory_cancel.clone(),
                     })
@@ -2253,7 +2224,6 @@ async fn movie_evidence_job(
         }) => EvidenceJobOutput::Candidate {
             key,
             candidate: ScanPipelineCandidate::Movie(candidate),
-            scoped: false,
             inventory_target: (inline_inventory.is_none() && is_dir).then_some(entry_path),
             inline_inventory,
         },
@@ -2347,22 +2317,16 @@ async fn run_series_candidate_jobs(ctx: &CandidateJobContext) -> AppResult<()> {
         }
     }
 
-    // Loose root-level files become scoped candidates after the folder pass.
+    // A title owns a directory, never the library root. Loose root-level media
+    // remains untouched and outside the catalog until the operator organizes it.
     if !library_scan_cancel_requested(ctx.cancel_token.as_ref()) {
-        let loose_root_files = list_series_loose_root_files(&root).await?;
-        if !loose_root_files.is_empty() {
-            coordinator
-                .register_discovery_batch(loose_root_files.len(), false)
-                .await;
-            coordinator.publish_progress().await;
-            for file in loose_root_files {
-                let key = runner.allocate_key();
-                let scan_hints = ctx.scan_hints.clone();
-                let library_path = ctx.library_path.clone();
-                runner.evidence_set.spawn(async move {
-                    series_loose_file_evidence_job(file, library_path, scan_hints, key).await
-                });
-            }
+        let loose_root_file_count = count_series_loose_root_files(&root).await?;
+        if loose_root_file_count > 0 {
+            warn!(
+                root = %root.display(),
+                files = loose_root_file_count,
+                "skipping loose media files in library root"
+            );
         }
     }
 
@@ -2393,30 +2357,8 @@ async fn series_evidence_job(
         Ok(candidate) => EvidenceJobOutput::Candidate {
             key,
             candidate: ScanPipelineCandidate::Series(Box::new(candidate)),
-            scoped: false,
             inline_inventory: None,
             inventory_target: Some(folder),
-        },
-        Err(error) => EvidenceJobOutput::Failed { item_path, error },
-    }
-}
-
-async fn series_loose_file_evidence_job(
-    file: LibraryFile,
-    library_path: String,
-    scan_hints: Option<LibraryScanHintSet>,
-    key: ScanCandidateKey,
-) -> EvidenceJobOutput {
-    let item_path = file.path.clone();
-    match prepare_series_library_scan_candidate_from_file(file, &library_path, scan_hints.as_ref())
-        .await
-    {
-        Ok(candidate) => EvidenceJobOutput::Candidate {
-            key,
-            candidate: ScanPipelineCandidate::Series(Box::new(candidate)),
-            scoped: true,
-            inline_inventory: None,
-            inventory_target: None,
         },
         Err(error) => EvidenceJobOutput::Failed { item_path, error },
     }

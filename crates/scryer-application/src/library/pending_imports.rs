@@ -265,7 +265,20 @@ fn library_scan_summary_has_pending_import_success(summary: &LibraryScanSummary)
 }
 
 fn pending_import_item_requires_action(item: &LibraryScanUnmatchedItem) -> bool {
-    !(item.facet == MediaFacet::Movie && item.title_id.is_some())
+    item.reason_code
+        == crate::library_scan_unmatched::LIBRARY_SCAN_TITLE_ALREADY_OWNS_ANOTHER_FOLDER
+        || !(item.facet == MediaFacet::Movie && item.title_id.is_some())
+}
+
+fn reject_folder_ownership_conflict_resolution(item: &LibraryScanUnmatchedItem) -> AppResult<()> {
+    if item.reason_code
+        == crate::library_scan_unmatched::LIBRARY_SCAN_TITLE_ALREADY_OWNS_ANOTHER_FOLDER
+    {
+        return Err(AppError::Validation(
+            "folder ownership conflicts cannot be bound or adopted".into(),
+        ));
+    }
+    Ok(())
 }
 
 struct PendingImportResolutionGuard {
@@ -507,6 +520,7 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ManageTitles,
         )
         .await?;
+        reject_folder_ownership_conflict_resolution(&item)?;
         if item.title_id.is_some() {
             return Err(AppError::Validation(
                 "pending import requires explicit episode binding".into(),
@@ -671,6 +685,7 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ResolveImports,
         )
         .await?;
+        reject_folder_ownership_conflict_resolution(&item)?;
         let title_id = item.title_id.as_deref().ok_or_else(|| {
             AppError::Validation("pending import does not have a known title".into())
         })?;
@@ -748,6 +763,7 @@ impl AppUseCase {
             scryer_domain::LibraryPermission::ResolveImports,
         )
         .await?;
+        reject_folder_ownership_conflict_resolution(&item)?;
         let title_id = item.title_id.as_deref().ok_or_else(|| {
             AppError::Validation("pending import does not have a known title".into())
         })?;

@@ -854,6 +854,17 @@ file = "postgres/migrations/0156_rehydrate_original_languages.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 157
+description = "single title folder ownership"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "migrate_title_folder_ownership"
+engine = "all"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

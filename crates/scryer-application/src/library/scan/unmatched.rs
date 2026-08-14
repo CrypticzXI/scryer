@@ -18,6 +18,8 @@ pub(crate) const LIBRARY_SCAN_SKIPPED_UNUSABLE_TITLE_EVIDENCE: &str =
     "skipped_unusable_title_evidence";
 pub(crate) const LIBRARY_SCAN_SKIPPED_FILE_METADATA_UNREADABLE: &str =
     "skipped_file_metadata_unreadable";
+pub(crate) const LIBRARY_SCAN_TITLE_ALREADY_OWNS_ANOTHER_FOLDER: &str =
+    "title_already_owns_another_folder";
 
 #[derive(Clone, Debug)]
 struct MovieUnmatchedScanRecord {
@@ -92,11 +94,9 @@ fn build_library_scan_unmatched_item(
     }
 }
 
-fn series_unmatched_display_name(candidate: &PreparedSeriesLibraryScanCandidate) -> String {
-    if let Some(file) = candidate.source_file.as_ref() {
-        return file.display_name.clone();
-    }
-
+pub(crate) fn series_unmatched_display_name(
+    candidate: &PreparedSeriesLibraryScanCandidate,
+) -> String {
     candidate
         .folder_name
         .as_deref()

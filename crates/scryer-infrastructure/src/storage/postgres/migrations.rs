@@ -480,6 +480,10 @@ async fn run_postgres_rust_hook(
             crate::migrations::title_catalog_sort_keys::migrate_title_catalog_sort_keys_postgres(tx)
                 .await
         }
+        "migrate_title_folder_ownership" => {
+            crate::migrations::title_folder_ownership::migrate_title_folder_ownership_postgres(tx)
+                .await
+        }
         "migrate_title_image_blobs" => {
             crate::migrations::title_image_blobs::migrate_title_image_blobs_postgres(tx).await
         }

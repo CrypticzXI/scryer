@@ -853,6 +853,17 @@ fn build_title_delete_manifest(context: TitleDeleteContext) -> AppResult<UserDel
     }
 
     for tracked in other_titles {
+        if crate::stored_paths::folder_paths_match(&raw_folder_path, &tracked.folder_path)
+            || crate::stored_paths::stored_path_is_within_folder(
+                &raw_folder_path,
+                &tracked.folder_path,
+            )
+        {
+            return Err(AppError::Validation(format!(
+                "refusing to delete title folder {raw_folder_path} because it includes tracked title folder {} ({})",
+                tracked.title_name, tracked.folder_path
+            )));
+        }
         let other_path = normalize_absolute_path(&stored_path_to_path_buf(&tracked.folder_path))?;
         if other_path == normalized_folder || path_is_under_root(&other_path, &normalized_folder) {
             return Err(AppError::Validation(format!(

@@ -108,10 +108,10 @@ pub(crate) fn update_series_title_folder_path_index(
     if let Some(folder_path) = title
         .folder_path
         .as_deref()
-        .map(str::trim)
         .filter(|value| !value.is_empty())
+        .and_then(crate::stored_paths::folder_path_identity_key)
     {
-        existing_titles_by_folder_path.insert(folder_path.to_string(), index);
+        existing_titles_by_folder_path.insert(folder_path, index);
     }
 }
 
@@ -217,8 +217,11 @@ pub(crate) fn build_movie_probe_path_indexes(
             .get(&title.id)
             .cloned()
             .unwrap_or_default();
-        if let Some(probe_path) = derive_movie_probe_path(root, title, &collections) {
-            existing_titles_by_probe_path.insert(path_to_stored_string(&probe_path), index);
+        if let Some(probe_path) = derive_movie_probe_path(root, title, &collections)
+            && let Some(key) =
+                crate::stored_paths::folder_path_identity_key(&path_to_stored_string(&probe_path))
+        {
+            existing_titles_by_probe_path.insert(key, index);
         }
     }
 

@@ -29,6 +29,7 @@ pub use download_identity::{
 mod events;
 pub mod external_import;
 pub mod file_source_signature;
+mod folder_ownership;
 pub mod fs_integrity;
 mod fs_safety;
 mod health;
