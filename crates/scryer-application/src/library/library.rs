@@ -247,7 +247,14 @@ fn normalized_movie_work_folder(path: Option<&str>) -> Option<String> {
 }
 
 fn movie_work_folders_match(left: Option<&str>, right: Option<&str>) -> bool {
-    normalized_movie_work_folder(left) == normalized_movie_work_folder(right)
+    match (
+        normalized_movie_work_folder(left),
+        normalized_movie_work_folder(right),
+    ) {
+        (Some(left), Some(right)) => crate::stored_paths::folder_paths_match(&left, &right),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 fn merge_library_scan_title_work(

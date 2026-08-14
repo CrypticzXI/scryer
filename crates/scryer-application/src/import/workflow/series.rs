@@ -70,6 +70,7 @@ async fn import_series_download(
         specials_folder_template,
     } = resolve_import_paths(app, title).await?;
     let full_folder_path = effective_title_folder_path(&media_root, title, &folder_template, None);
+    ensure_import_title_folder_available(app, title, &full_folder_path).await?;
 
     let quality_profile = resolve_import_quality_profile(app, title).await?;
 
@@ -164,7 +165,7 @@ async fn import_series_download(
     }
 
     if imported_count > 0 {
-        persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
+        persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
         write_series_sidecars(app, title, &full_folder_path, nfo_enabled).await;
     }
 

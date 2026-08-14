@@ -820,6 +820,17 @@ file = "postgres/migrations/0154_indexer_download_client_mapping.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 155
+description = "single title folder ownership"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "migrate_title_folder_ownership"
+engine = "all"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

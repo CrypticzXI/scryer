@@ -1156,13 +1156,17 @@ async fn migration_0140_upgrades_v0_16_8_title_metadata_and_media_in_place() {
         .expect("migrations through the 0.16.8 head should apply");
 
     let library_id = scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Movie);
-    let root_folder_id: String = sqlx::query_scalar(
-        "SELECT id FROM library_roots WHERE library_id = ? ORDER BY is_default DESC, path LIMIT 1",
+    let (root_folder_id, root_path): (String, String) = sqlx::query_as(
+        "SELECT id, path FROM library_roots WHERE library_id = ? ORDER BY is_default DESC, path LIMIT 1",
     )
     .bind(&library_id)
     .fetch_one(&pool)
     .await
     .expect("0.16.8 default movie root should exist");
+    let media_path = format!(
+        "{}/Sasaki and Miyano Graduation/movie.mkv",
+        root_path.trim_end_matches('/')
+    );
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
@@ -1221,7 +1225,7 @@ async fn migration_0140_upgrades_v0_16_8_title_metadata_and_media_in_place() {
     )
     .bind("file-v0-16-8")
     .bind("title-v0-16-8")
-    .bind("/data/movies2/Sasaki and Miyano Graduation/movie.mkv")
+    .bind(&media_path)
     .bind(1234i64)
     .bind(&now)
     .execute(&pool)
@@ -1342,10 +1346,7 @@ async fn migration_0140_upgrades_v0_16_8_title_metadata_and_media_in_place() {
             .await
             .expect("upgraded media file should remain attached to its title");
     assert_eq!(media.0, "title-v0-16-8");
-    assert_eq!(
-        media.1,
-        "/data/movies2/Sasaki and Miyano Graduation/movie.mkv"
-    );
+    assert_eq!(media.1, media_path);
 
     let image_blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
         .fetch_one(&services.pool)

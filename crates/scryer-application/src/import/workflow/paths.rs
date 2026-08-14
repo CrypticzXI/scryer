@@ -1019,21 +1019,21 @@ pub(crate) struct ImportPathSettings {
     pub(crate) season_folder_template: String,
     pub(crate) specials_folder_template: String,
 }
-async fn persist_title_folder_path_if_missing(app: &AppUseCase, title: &Title, folder_path: &Path) {
-    let has_folder_path = title
-        .folder_path
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| !value.is_empty());
-    if has_folder_path {
-        return;
-    }
-    let _ = app
-        .services
-        .catalog
-        .titles
-        .set_folder_path(&title.id, &path_to_stored_string(folder_path))
-        .await;
+async fn ensure_import_title_folder_available(
+    app: &AppUseCase,
+    title: &Title,
+    folder_path: &Path,
+) -> AppResult<()> {
+    crate::folder_ownership::ensure_folder_available_to_title(app, title, folder_path).await
+}
+
+async fn persist_title_folder_path_if_missing(
+    app: &AppUseCase,
+    title: &Title,
+    folder_path: &Path,
+) -> AppResult<()> {
+    let mut title = title.clone();
+    crate::folder_ownership::claim_title_folder_if_missing(app, &mut title, folder_path).await
 }
 pub(crate) fn preserved_import_filename(source_path: &Path) -> String {
     let raw = source_path

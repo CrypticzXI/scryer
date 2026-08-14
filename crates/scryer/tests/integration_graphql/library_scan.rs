@@ -1715,7 +1715,7 @@ async fn library_series_scan_counts_new_title_files_before_post_hydration_scan_p
 }
 
 #[tokio::test]
-async fn library_movie_scan_does_not_rehome_existing_title_from_conflicting_folder() {
+async fn library_movie_scan_records_owned_folder_conflict_without_rehoming_title() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
@@ -1793,8 +1793,34 @@ async fn library_movie_scan_does_not_rehome_existing_title_from_conflicting_fold
     assert_eq!(summary.scanned, 1);
     assert_eq!(summary.matched, 0);
     assert_eq!(summary.imported, 0);
-    assert_eq!(summary.skipped, 1);
-    assert_eq!(summary.unmatched, 0);
+    assert_eq!(summary.skipped, 0);
+    assert_eq!(summary.unmatched, 1);
+
+    let pending = gql(
+        &ctx,
+        r#"
+        query PendingMovieFolderOwnershipConflicts {
+          pendingImports(facet: MOVIE, status: PENDING) {
+            totalCount
+            items {
+              titleId
+              titleName
+              path
+              reason
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&pending);
+    assert_eq!(pending["data"]["pendingImports"]["totalCount"], 1);
+    let pending_item = &pending["data"]["pendingImports"]["items"][0];
+    assert_eq!(pending_item["titleId"], title.id);
+    assert_eq!(pending_item["titleName"], title.name);
+    assert_eq!(pending_item["path"], movie_path.to_string_lossy().as_ref());
+    assert_eq!(pending_item["reason"], "title_already_owns_another_folder");
 
     let refreshed_title = ctx
         .titles
@@ -2139,10 +2165,12 @@ async fn library_movie_scan_handles_more_than_one_batch_of_titles() {
     let media_root = tempfile::tempdir().expect("media root tempdir");
     for index in 0..300 {
         let display_name = format!("Movie.Title.{index:04}.2024");
-        let video_path = media_root.path().join(format!("{display_name}.mkv"));
+        let movie_folder = media_root.path().join(&display_name);
+        std::fs::create_dir(&movie_folder).expect("create movie folder");
+        let video_path = movie_folder.join(format!("{display_name}.mkv"));
         std::fs::write(&video_path, b"video").expect("write movie");
         std::fs::write(
-            video_path.with_extension("nfo"),
+            movie_folder.join("movie.nfo"),
             format!(
                 "<movie><title>Movie {index:04}</title><tvdbid>{}</tvdbid><year>2024</year></movie>",
                 800_000 + index
