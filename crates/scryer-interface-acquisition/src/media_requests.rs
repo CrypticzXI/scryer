@@ -14,9 +14,13 @@ pub struct MediaRequestMutations;
 
 #[Object]
 impl MediaRequestMutations {
+    /// Create a media request with the requested metadata and acquisition preferences.
     async fn submit_media_request(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Library, facet, title metadata, and optional quality and monitoring preferences."
+        )]
         input: SubmitMediaRequestInput,
     ) -> GqlResult<SubmitMediaRequestPayload> {
         let app = app_from_ctx(ctx)?;
@@ -59,9 +63,11 @@ impl MediaRequestMutations {
         })
     }
 
+    /// Approve a request, create or update its title, and report any queued search attempt.
     async fn approve_media_request(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Request identity and optional quality and monitoring overrides.")]
         input: ApproveMediaRequestInput,
     ) -> GqlResult<ApproveMediaRequestPayload> {
         let app = app_from_ctx(ctx)?;
@@ -88,10 +94,11 @@ impl MediaRequestMutations {
         })
     }
 
+    /// Dismiss a media request without creating a catalog title.
     async fn dismiss_media_request(
         &self,
         ctx: &Context<'_>,
-        request_id: ID,
+        #[graphql(desc = "Request identity to dismiss.")] request_id: ID,
     ) -> GqlResult<MediaRequestActionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -105,9 +112,13 @@ impl MediaRequestMutations {
         })
     }
 
+    /// Update the caller's pending request preferences and return the current request.
     async fn update_my_media_request(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Request identity and the replacement quality and monitoring preferences."
+        )]
         input: UpdateMediaRequestInput,
     ) -> GqlResult<MediaRequestPayload> {
         let app = app_from_ctx(ctx)?;
@@ -129,10 +140,11 @@ impl MediaRequestMutations {
         Ok(from_media_request(&app, request))
     }
 
+    /// Cancel the caller's request without deleting an already-created title.
     async fn cancel_my_media_request(
         &self,
         ctx: &Context<'_>,
-        request_id: ID,
+        #[graphql(desc = "Request identity to cancel.")] request_id: ID,
     ) -> GqlResult<MediaRequestActionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;

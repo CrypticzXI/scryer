@@ -4,17 +4,26 @@ use scryer_application::{AppError, DownloadSubtitleForMediaFileRequest};
 use crate::context::{actor_from_ctx, app_from_ctx, to_gql_error};
 
 #[derive(InputObject)]
+/// Identifies an external subtitle deletion and its optional destructive-action confirmation.
 pub struct DeleteExternalSubtitleInput {
+    /// External subtitle file ID to delete.
     pub external_subtitle_id: ID,
+    /// Fingerprint returned by the required deletion preview.
     pub preview_fingerprint: Option<String>,
+    /// Required confirmation text when the preview reports a protected deletion.
     pub typed_confirmation: Option<String>,
 }
 
 #[derive(InputObject)]
+/// Identifies a provider-backed subtitle to delete and add to the subtitle blocklist.
 pub struct BlocklistExternalSubtitleInput {
+    /// External subtitle file ID to delete and blocklist.
     pub external_subtitle_id: ID,
+    /// Optional operator-supplied reason stored with the blocklist entry.
     pub reason: Option<String>,
+    /// Fingerprint returned by the required deletion preview.
     pub preview_fingerprint: Option<String>,
+    /// Required confirmation text when the preview reports a protected deletion.
     pub typed_confirmation: Option<String>,
 }
 
@@ -24,59 +33,98 @@ type GqlResult<T> = async_graphql::Result<T>;
 pub struct SubtitleMutations;
 
 #[derive(InputObject)]
+/// Selects a media file and language for subtitle provider searches.
 pub struct SearchSubtitlesInput {
+    /// Media file ID whose release metadata is used for matching.
     pub media_file_id: ID,
+    /// Requested subtitle language code.
     pub language: String,
 }
 
 #[derive(InputObject)]
+/// Identifies a provider result and its matching metadata for subtitle download.
 pub struct DownloadSubtitleInput {
+    /// Media file ID that will receive the external subtitle.
     pub media_file_id: ID,
+    /// Subtitle provider name; null defaults to OpenSubtitles.
     pub provider: Option<String>,
+    /// Provider-specific subtitle file ID.
     pub provider_file_id: String,
+    /// Subtitle language code.
     pub language: String,
+    /// Whether the subtitle is intended only for forced dialogue; null defaults to false.
     pub forced: Option<bool>,
+    /// Whether the subtitle includes hearing-impaired cues; null defaults to false.
     pub hearing_impaired: Option<bool>,
+    /// Optional provider match score retained with the downloaded subtitle.
     pub score: Option<i32>,
+    /// Optional release information retained for later matching and blocklisting.
     pub release_info: Option<String>,
+    /// Optional provider uploader name.
     pub uploader: Option<String>,
+    /// Whether the subtitle was translated with generative AI; null defaults to false.
     pub ai_translated: Option<bool>,
+    /// Whether the subtitle was machine translated; null defaults to false.
     pub machine_translated: Option<bool>,
 }
 
 #[derive(SimpleObject)]
+/// Confirms the provider subtitle saved for a media file.
 pub struct DownloadSubtitlePayload {
+    /// Media file ID that received the subtitle.
     pub media_file_id: ID,
+    /// Provider-specific subtitle file ID that was downloaded.
     pub provider_file_id: String,
+    /// Whether the subtitle download and import completed.
     pub downloaded: bool,
 }
 
 #[derive(SimpleObject)]
+/// Reports the result of deleting an external subtitle.
 pub struct DeleteExternalSubtitlePayload {
+    /// External subtitle ID targeted by the deletion.
     pub id: ID,
+    /// Whether the subtitle file and tracked record were deleted.
     pub deleted: bool,
 }
 
 #[derive(SimpleObject)]
+/// Reports the result of deleting and blocklisting an external subtitle.
 pub struct BlocklistExternalSubtitlePayload {
+    /// External subtitle ID targeted by the operation.
     pub id: ID,
+    /// Whether the subtitle was deleted and its provider result blocklisted.
     pub blocklisted: bool,
 }
 
 #[derive(SimpleObject)]
+/// Describes a subtitle provider result and its match characteristics.
 pub struct SubtitleSearchResult {
+    /// Provider that returned the subtitle.
     pub provider: String,
+    /// Provider-specific subtitle file ID used for download.
     pub provider_file_id: String,
+    /// Subtitle language code.
     pub language: String,
+    /// Provider release information; null when unavailable.
     pub release_info: Option<String>,
+    /// Raw subtitle match score.
     pub score: i32,
+    /// Match score normalized to a percentage.
     pub score_percent: i32,
+    /// Whether the subtitle includes hearing-impaired cues.
     pub hearing_impaired: bool,
+    /// Whether the subtitle is intended only for forced dialogue.
     pub forced: bool,
+    /// Whether the subtitle was translated with generative AI.
     pub ai_translated: bool,
+    /// Whether the subtitle was machine translated.
     pub machine_translated: bool,
+    /// Provider uploader name; null when unavailable.
     pub uploader: Option<String>,
+    /// Provider-reported download count; null when unavailable.
     pub download_count: Option<i64>,
+    /// Whether the subtitle matched the media file hash.
     pub hash_matched: bool,
 }
 
@@ -102,10 +150,11 @@ fn from_subtitle_match(
 
 #[Object]
 impl SubtitleMutations {
-    /// Search for subtitles for a media file in a given language.
+    /// Search configured providers for subtitles matching a media file and language.
     async fn search_subtitles(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Media file ID and requested subtitle language.")]
         input: SearchSubtitlesInput,
     ) -> GqlResult<Vec<SubtitleSearchResult>> {
         let app = app_from_ctx(ctx)?;
@@ -118,10 +167,13 @@ impl SubtitleMutations {
         Ok(results.into_iter().map(from_subtitle_match).collect())
     }
 
-    /// Download a specific subtitle and save to disk next to the video.
+    /// Download a provider subtitle and save it beside the selected media file.
     async fn download_subtitle(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Provider result, media file ID, language, and matching metadata to retain."
+        )]
         input: DownloadSubtitleInput,
     ) -> GqlResult<DownloadSubtitlePayload> {
         let app = app_from_ctx(ctx)?;
@@ -160,6 +212,9 @@ impl SubtitleMutations {
     async fn delete_external_subtitle(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "External subtitle ID plus the required preview fingerprint and any confirmation text."
+        )]
         input: DeleteExternalSubtitleInput,
     ) -> GqlResult<DeleteExternalSubtitlePayload> {
         let app = app_from_ctx(ctx)?;
@@ -188,10 +243,13 @@ impl SubtitleMutations {
         })
     }
 
-    /// Blocklist a downloaded provider-backed subtitle: delete the file and DB record, then add to the blocklist.
+    /// Delete a provider-backed subtitle and add its provider result to the subtitle blocklist.
     async fn blocklist_external_subtitle(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "External subtitle ID, optional reason, required preview fingerprint, and any confirmation text."
+        )]
         input: BlocklistExternalSubtitleInput,
     ) -> GqlResult<BlocklistExternalSubtitlePayload> {
         let app = app_from_ctx(ctx)?;

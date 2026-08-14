@@ -9,10 +9,11 @@ pub struct JobMutations;
 
 #[Object]
 impl JobMutations {
+    /// Start the configured background job and return its accepted run snapshot.
     async fn trigger_job(
         &self,
         ctx: &Context<'_>,
-        job_key: JobKeyValue,
+        #[graphql(desc = "Job key identifying the server-side job to start.")] job_key: JobKeyValue,
     ) -> GqlResult<JobRunPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;

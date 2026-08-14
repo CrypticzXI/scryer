@@ -1700,9 +1700,13 @@ fn imported_indexer_config_json(
 
 #[Object]
 impl ExternalImportMutations {
+    /// Save the caller's external-import secret draft and report whether another draft was replaced.
     async fn save_external_import_setup_secret_draft(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Instance secrets and masked provider credentials keyed by their import deduplication keys."
+        )]
         input: SaveExternalImportSetupSecretDraftInput,
     ) -> GqlResult<SaveExternalImportSetupSecretDraftPayload> {
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -1716,6 +1720,7 @@ impl ExternalImportMutations {
         .map_err(to_gql_error)
     }
 
+    /// Clear the caller's external-import secret draft; clearing an absent draft is harmless.
     async fn clear_external_import_setup_secret_draft(
         &self,
         ctx: &Context<'_>,
@@ -1728,9 +1733,13 @@ impl ExternalImportMutations {
             .map_err(to_gql_error)
     }
 
+    /// Start or reuse a background Sonarr or Radarr warmup and return its current progress snapshot.
     async fn start_external_import_arr_source_warmup(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Arr source kind and connection credentials used to identify the warmup session."
+        )]
         input: StartExternalImportArrSourceWarmupInput,
     ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
@@ -1789,9 +1798,11 @@ impl ExternalImportMutations {
         Ok(from_external_import_monitor_warmup_progress(begin.snapshot))
     }
 
+    /// Start or reuse a background Prowlarr warmup and return its current progress snapshot.
     async fn start_external_import_prowlarr_warmup(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Prowlarr connection credentials used to identify the warmup session.")]
         input: StartExternalImportProwlarrWarmupInput,
     ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
         require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -1839,10 +1850,11 @@ impl ExternalImportMutations {
         Ok(from_external_import_monitor_warmup_progress(begin.snapshot))
     }
 
+    /// Request cancellation of an Arr source warmup and report whether cancellation was accepted.
     async fn cancel_external_import_arr_source_warmup(
         &self,
         ctx: &Context<'_>,
-        session_id: ID,
+        #[graphql(desc = "Warmup session identity to cancel.")] session_id: ID,
     ) -> GqlResult<CancelExternalImportMonitorWarmupPayload> {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
         let actor = actor_from_ctx(ctx)?;
@@ -1863,15 +1875,11 @@ impl ExternalImportMutations {
         })
     }
 
-    /// Lightweight connection probe for the Connect step. Tests reachability +
-    /// credentials for a single Sonarr/Radarr/Prowlarr instance without kicking
-    /// off the (expensive) warmup that fetches the whole library. The wizard
-    /// fires this on field blur; on success it starts the per-instance warmup
-    /// separately so warmups run concurrently while the user keeps adding
-    /// connections.
+    /// Test one Sonarr, Radarr, or Prowlarr connection without starting a full warmup.
     async fn validate_external_import_connection(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "External application kind and connection credentials to validate.")]
         input: ValidateExternalImportConnectionInput,
     ) -> GqlResult<ExternalImportConnectionValidationPayload> {
         let kind = input.kind;
@@ -1938,6 +1946,9 @@ impl ExternalImportMutations {
     async fn preview_external_import(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Completed or running warmup sessions and optional direct Prowlarr credentials."
+        )]
         input: PreviewExternalImportInput,
     ) -> GqlResult<ExternalImportPreviewPayload> {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
@@ -2131,9 +2142,14 @@ impl ExternalImportMutations {
         Ok(payload)
     }
 
+    /// Apply selected source mappings, imported monitoring state, scan hints, and safe settings.
+    /// The operation consumes completed warmup sessions after successful reconciliation.
     async fn finalize_external_import(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Warmup sessions and validated library root mappings to reconcile into the catalog."
+        )]
         input: FinalizeExternalImportInput,
     ) -> GqlResult<FinalizeExternalImportPayload> {
         require_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
@@ -2527,6 +2543,9 @@ impl ExternalImportMutations {
     async fn execute_external_import(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Selected imported clients and indexers plus any credentials needed to create them."
+        )]
         input: ExecuteExternalImportInput,
     ) -> GqlResult<ExternalImportResultPayload> {
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;

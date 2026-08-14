@@ -34,6 +34,319 @@ async fn graphql_introspection_mutation_type() {
     );
 }
 
+fn graphql_description_is_blank(value: &Value) -> bool {
+    value
+        .as_str()
+        .is_none_or(|description| description.trim().is_empty())
+}
+
+fn graphql_description_contains_em_dash(value: &Value) -> bool {
+    value
+        .as_str()
+        .is_some_and(|description| description.contains('\u{2014}'))
+}
+
+fn record_graphql_description(
+    missing: &mut Vec<String>,
+    em_dashes: &mut Vec<String>,
+    path: String,
+    description: &Value,
+) {
+    if graphql_description_is_blank(description) {
+        missing.push(path);
+    } else if graphql_description_contains_em_dash(description) {
+        em_dashes.push(path);
+    }
+}
+
+#[tokio::test]
+async fn graphql_http_schema_is_fully_documented() {
+    let ctx = TestContext::new().await;
+    let body = gql(
+        &ctx,
+        r#"
+        {
+          __schema {
+            queryType { name }
+            mutationType { name }
+            types {
+              kind
+              name
+              description
+              fields(includeDeprecated: true) {
+                name
+                description
+                isDeprecated
+                deprecationReason
+                args(includeDeprecated: true) {
+                  name
+                  description
+                  isDeprecated
+                  deprecationReason
+                  type {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                      ofType {
+                        kind
+                        name
+                        ofType { kind name }
+                      }
+                    }
+                  }
+                }
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                      ofType { kind name }
+                    }
+                  }
+                }
+              }
+              interfaces { name }
+              inputFields(includeDeprecated: true) {
+                name
+                description
+                isDeprecated
+                deprecationReason
+                type {
+                  kind
+                  name
+                  ofType {
+                    kind
+                    name
+                    ofType {
+                      kind
+                      name
+                      ofType { kind name }
+                    }
+                  }
+                }
+              }
+              enumValues(includeDeprecated: true) {
+                name
+                description
+                isDeprecated
+                deprecationReason
+              }
+              possibleTypes { name }
+            }
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+
+    let schema = &body["data"]["__schema"];
+    let query_root = schema["queryType"]["name"]
+        .as_str()
+        .expect("GraphQL query root name");
+    let mutation_root = schema["mutationType"]["name"]
+        .as_str()
+        .expect("GraphQL mutation root name");
+    let type_by_name: BTreeMap<&str, &Value> = schema["types"]
+        .as_array()
+        .expect("GraphQL schema types")
+        .iter()
+        .filter_map(|ty| ty["name"].as_str().map(|name| (name, ty)))
+        .collect();
+
+    let built_in_scalars = ["Boolean", "Float", "ID", "Int", "String"];
+    let mut pending = vec![query_root.to_string(), mutation_root.to_string()];
+    let mut visited = std::collections::BTreeSet::new();
+    let mut missing = Vec::new();
+    let mut em_dashes = Vec::new();
+
+    while let Some(type_name) = pending.pop() {
+        if type_name == "SubscriptionRoot" || type_name.starts_with("__") {
+            continue;
+        }
+        if !visited.insert(type_name.clone()) {
+            continue;
+        }
+        let ty = type_by_name
+            .get(type_name.as_str())
+            .unwrap_or_else(|| panic!("reachable GraphQL type {type_name} must exist"));
+        let kind = ty["kind"].as_str().expect("GraphQL type kind");
+        let is_root = type_name == query_root || type_name == mutation_root;
+        let is_built_in_scalar = kind == "SCALAR" && built_in_scalars.contains(&type_name.as_str());
+
+        if !is_root && !is_built_in_scalar {
+            record_graphql_description(
+                &mut missing,
+                &mut em_dashes,
+                format!("type {type_name}"),
+                &ty["description"],
+            );
+        }
+
+        match kind {
+            "OBJECT" | "INTERFACE" => {
+                for field in ty["fields"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("fields for GraphQL type {type_name}"))
+                {
+                    let field_name = field["name"].as_str().expect("GraphQL field name");
+                    let field_path = format!("{type_name}.{field_name}");
+                    record_graphql_description(
+                        &mut missing,
+                        &mut em_dashes,
+                        field_path.clone(),
+                        &field["description"],
+                    );
+                    if field["isDeprecated"].as_bool() == Some(true) {
+                        record_graphql_description(
+                            &mut missing,
+                            &mut em_dashes,
+                            format!("{field_path} deprecation reason"),
+                            &field["deprecationReason"],
+                        );
+                    }
+                    for argument in field["args"]
+                        .as_array()
+                        .unwrap_or_else(|| panic!("arguments for GraphQL field {field_path}"))
+                    {
+                        let argument_name =
+                            argument["name"].as_str().expect("GraphQL argument name");
+                        record_graphql_description(
+                            &mut missing,
+                            &mut em_dashes,
+                            format!("{field_path}({argument_name}:)"),
+                            &argument["description"],
+                        );
+                        if argument["isDeprecated"].as_bool() == Some(true) {
+                            record_graphql_description(
+                                &mut missing,
+                                &mut em_dashes,
+                                format!("{field_path}({argument_name}:) deprecation reason"),
+                                &argument["deprecationReason"],
+                            );
+                        }
+                        if let Some(argument_type) = graphql_type_leaf_name(&argument["type"])
+                            && !built_in_scalars.contains(&argument_type)
+                        {
+                            pending.push(argument_type.to_string());
+                        }
+                    }
+                    if let Some(field_type) = graphql_type_leaf_name(&field["type"])
+                        && !built_in_scalars.contains(&field_type)
+                    {
+                        pending.push(field_type.to_string());
+                    }
+                }
+                if let Some(implemented_types) = ty["interfaces"].as_array() {
+                    for implemented_type in implemented_types {
+                        pending.push(
+                            implemented_type["name"]
+                                .as_str()
+                                .expect("GraphQL interface name")
+                                .to_string(),
+                        );
+                    }
+                }
+                if kind == "INTERFACE" {
+                    for possible_type in ty["possibleTypes"].as_array().unwrap_or_else(|| {
+                        panic!("possible types for GraphQL interface {type_name}")
+                    }) {
+                        pending.push(
+                            possible_type["name"]
+                                .as_str()
+                                .expect("GraphQL interface member name")
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            "INPUT_OBJECT" => {
+                for field in ty["inputFields"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("input fields for GraphQL type {type_name}"))
+                {
+                    let field_name = field["name"].as_str().expect("GraphQL input field name");
+                    record_graphql_description(
+                        &mut missing,
+                        &mut em_dashes,
+                        format!("{type_name}.{field_name}"),
+                        &field["description"],
+                    );
+                    if field["isDeprecated"].as_bool() == Some(true) {
+                        record_graphql_description(
+                            &mut missing,
+                            &mut em_dashes,
+                            format!("{type_name}.{field_name} deprecation reason"),
+                            &field["deprecationReason"],
+                        );
+                    }
+                    if let Some(field_type) = graphql_type_leaf_name(&field["type"])
+                        && !built_in_scalars.contains(&field_type)
+                    {
+                        pending.push(field_type.to_string());
+                    }
+                }
+            }
+            "ENUM" => {
+                for value in ty["enumValues"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("enum values for GraphQL type {type_name}"))
+                {
+                    let value_name = value["name"].as_str().expect("GraphQL enum value name");
+                    let value_path = format!("{type_name}.{value_name}");
+                    record_graphql_description(
+                        &mut missing,
+                        &mut em_dashes,
+                        value_path.clone(),
+                        &value["description"],
+                    );
+                    if value["isDeprecated"].as_bool() == Some(true) {
+                        record_graphql_description(
+                            &mut missing,
+                            &mut em_dashes,
+                            format!("{value_path} deprecation reason"),
+                            &value["deprecationReason"],
+                        );
+                    }
+                }
+            }
+            "UNION" => {
+                for possible_type in ty["possibleTypes"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("possible types for GraphQL union {type_name}"))
+                {
+                    pending.push(
+                        possible_type["name"]
+                            .as_str()
+                            .expect("GraphQL union member name")
+                            .to_string(),
+                    );
+                }
+            }
+            "SCALAR" => {}
+            unexpected => panic!("unsupported reachable GraphQL type kind {unexpected}"),
+        }
+    }
+
+    missing.sort();
+    em_dashes.sort();
+    assert!(
+        missing.is_empty() && em_dashes.is_empty(),
+        "public HTTP GraphQL schema documentation is incomplete\nmissing descriptions ({}):\n{}\ndescriptions containing em dashes ({}):\n{}",
+        missing.len(),
+        missing.join("\n"),
+        em_dashes.len(),
+        em_dashes.join("\n"),
+    );
+}
+
 #[tokio::test]
 async fn graphql_introspection_schema_census_matches_contract_baseline() {
     let ctx = TestContext::new().await;

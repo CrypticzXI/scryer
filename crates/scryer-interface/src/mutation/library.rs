@@ -109,9 +109,11 @@ pub(crate) struct LibraryMutations;
 
 #[Object]
 impl LibraryMutations {
+    /// Create a media library with roots and optional acquisition or import settings.
     async fn create_library(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Library facet, name, root paths, and optional settings.")]
         input: CreateLibraryInput,
     ) -> GqlResult<LibraryPayload> {
         let app = app_from_ctx(ctx)?;
@@ -138,9 +140,11 @@ impl LibraryMutations {
         Ok(from_library(library))
     }
 
+    /// Patch a library while preserving omitted fields.
     async fn update_library(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Library identity and optional replacement name, roots, or settings.")]
         input: UpdateLibraryInput,
     ) -> GqlResult<LibraryPayload> {
         let app = app_from_ctx(ctx)?;
@@ -167,7 +171,12 @@ impl LibraryMutations {
         Ok(from_library(library))
     }
 
-    async fn delete_library(&self, ctx: &Context<'_>, id: ID) -> GqlResult<DeleteLibraryPayload> {
+    /// Delete the library configuration identified by the supplied ID.
+    async fn delete_library(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Library identity to delete.")] id: ID,
+    ) -> GqlResult<DeleteLibraryPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let id = id.to_string();
@@ -177,9 +186,13 @@ impl LibraryMutations {
         Ok(DeleteLibraryPayload { id: ID::from(id) })
     }
 
+    /// Start a library scan and return the accepted scan session snapshot.
     async fn scan_library(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Library identity and optional completed import-warmup session for scan hints."
+        )]
         input: ScanLibraryInput,
     ) -> GqlResult<LibraryScanProgressPayload> {
         let app = app_from_ctx(ctx)?;
@@ -203,10 +216,11 @@ impl LibraryMutations {
         Ok(from_library_scan_session(session))
     }
 
+    /// Scan the library paths associated with one title and return the summary.
     async fn scan_title_library(
         &self,
         ctx: &Context<'_>,
-        title_id: ID,
+        #[graphql(desc = "Title identity whose library paths should be scanned.")] title_id: ID,
     ) -> GqlResult<LibraryScanSummaryPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -218,10 +232,11 @@ impl LibraryMutations {
         Ok(from_library_scan_summary(summary))
     }
 
+    /// Request cancellation of a library scan and return the cancellation result.
     async fn cancel_library_scan(
         &self,
         ctx: &Context<'_>,
-        session_id: ID,
+        #[graphql(desc = "Library scan session identity to cancel.")] session_id: ID,
     ) -> GqlResult<CancelLibraryScanPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -233,9 +248,11 @@ impl LibraryMutations {
         Ok(from_cancel_library_scan_result(result))
     }
 
+    /// Resolve a pending import by creating or selecting its title metadata.
     async fn resolve_pending_import(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Pending-import identity and title metadata used to resolve it.")]
         input: ResolvePendingImportInput,
     ) -> GqlResult<ResolvePendingImportPayload> {
         let app = app_from_ctx(ctx)?;
@@ -258,9 +275,13 @@ impl LibraryMutations {
         Ok(from_resolve_pending_import_result(&app, result))
     }
 
+    /// Bind a pending import to an existing collection and optional episodes.
     async fn bind_pending_import(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Pending-import identity, optional collection identity, and episode identities to bind."
+        )]
         input: BindPendingImportInput,
     ) -> GqlResult<ResolvePendingImportPayload> {
         let app = app_from_ctx(ctx)?;
@@ -284,10 +305,11 @@ impl LibraryMutations {
         Ok(from_resolve_pending_import_result(&app, result))
     }
 
+    /// Mark a pending import ignored without importing its files.
     async fn ignore_pending_import(
         &self,
         ctx: &Context<'_>,
-        pending_import_id: ID,
+        #[graphql(desc = "Pending-import identity to ignore.")] pending_import_id: ID,
     ) -> GqlResult<IgnorePendingImportPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -299,9 +321,13 @@ impl LibraryMutations {
         Ok(from_ignore_pending_import_result(result))
     }
 
+    /// Apply a title rename plan after validating its preview fingerprint and optional idempotency key.
     async fn apply_media_rename(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Facet, title identity, preview fingerprint, and optional idempotency key."
+        )]
         input: MediaRenameApplyInput,
     ) -> GqlResult<MediaRenameApplyPayload> {
         let app = app_from_ctx(ctx)?;
@@ -335,9 +361,13 @@ impl LibraryMutations {
         Ok(from_media_rename_apply(result))
     }
 
+    /// Accept a background job to delete a media file, optionally removing it from disk.
     async fn delete_media_file(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Media-file identity, disk-deletion choice, and optional preview fingerprint and typed confirmation."
+        )]
         input: DeleteMediaFileInput,
     ) -> GqlResult<DeleteMediaFilePayload> {
         let app = app_from_ctx(ctx)?;
@@ -363,9 +393,11 @@ impl LibraryMutations {
         })
     }
 
+    /// Apply a facet-wide rename plan after validating its preview fingerprint and optional idempotency key.
     async fn apply_media_rename_bulk(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Facet, preview fingerprint, and optional idempotency key.")]
         input: MediaRenameBulkApplyInput,
     ) -> GqlResult<MediaRenameApplyPayload> {
         let app = app_from_ctx(ctx)?;
@@ -398,9 +430,11 @@ impl LibraryMutations {
         Ok(from_media_rename_apply(result))
     }
 
+    /// Rehydrate accessible title metadata for one language and report cleared title counts.
     async fn rehydrate_all_metadata(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Metadata language code used for rehydration.")]
         input: RehydrateAllMetadataInput,
     ) -> GqlResult<RehydrateAllMetadataPayload> {
         let app = app_from_ctx(ctx)?;

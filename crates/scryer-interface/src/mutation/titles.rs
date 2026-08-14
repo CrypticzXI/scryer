@@ -203,9 +203,13 @@ async fn resolve_update_title_options(
 
 #[Object]
 impl TitleMutations {
+    /// Create or reuse a title in an accessible library and return its hydration state.
     async fn add_title(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Title metadata, library selection, and optional tri-state title settings."
+        )]
         input: AddTitleInput,
     ) -> GqlResult<AddTitleResult> {
         let app = app_from_ctx(ctx)?;
@@ -252,9 +256,13 @@ impl TitleMutations {
         })
     }
 
+    /// Create or reuse a title and enqueue a download using the supplied source metadata.
     async fn add_title_and_queue_download(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Title metadata, library selection, title settings, and optional source release details."
+        )]
         input: AddTitleInput,
     ) -> GqlResult<AddTitleResult> {
         let app = app_from_ctx(ctx)?;
@@ -319,9 +327,11 @@ impl TitleMutations {
         })
     }
 
+    /// Patch title metadata and settings while preserving omitted fields.
     async fn update_title(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Title identity and optional metadata or tri-state settings changes.")]
         input: UpdateTitleInput,
     ) -> GqlResult<TitlePayload> {
         let app = app_from_ctx(ctx)?;
@@ -368,9 +378,11 @@ impl TitleMutations {
         Ok(from_title(&app, title))
     }
 
+    /// Set the primary media file for a movie title.
     async fn set_primary_movie_file(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Movie title identity and media-file identity to make primary.")]
         input: SetPrimaryMovieFileInput,
     ) -> GqlResult<TitlePayload> {
         let app = app_from_ctx(ctx)?;
@@ -384,9 +396,11 @@ impl TitleMutations {
         Ok(from_title(&app, title))
     }
 
+    /// Associate a title with a TVDB identity and return any hydration or scan result.
     async fn fix_title_match(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Title identity and TVDB identity used for the rematch.")]
         input: FixTitleMatchInput,
     ) -> GqlResult<FixTitleMatchPayload> {
         let app = app_from_ctx(ctx)?;
@@ -405,9 +419,13 @@ impl TitleMutations {
         })
     }
 
+    /// Delete one title, optionally removing its files after preview confirmation.
     async fn delete_title(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Title identity, disk-deletion choice, and optional preview fingerprint and typed confirmation."
+        )]
         input: DeleteTitleInput,
     ) -> GqlResult<DeleteTitlePayload> {
         let app = app_from_ctx(ctx)?;
@@ -431,9 +449,13 @@ impl TitleMutations {
         })
     }
 
+    /// Accept a background job to delete selected titles and optionally their files.
     async fn delete_titles(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Title deletion items, optional disk-deletion choice, and typed confirmation."
+        )]
         input: DeleteTitlesInput,
     ) -> GqlResult<DeleteTitlesPayload> {
         let app = app_from_ctx(ctx)?;
@@ -466,10 +488,11 @@ impl TitleMutations {
         })
     }
 
+    /// Clear one title release blocklist entry so it can be considered again.
     async fn clear_title_release_blocklist_entry(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Title release blocklist entry identity to clear.")] id: ID,
     ) -> GqlResult<ClearTitleReleaseBlocklistEntryPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -480,9 +503,11 @@ impl TitleMutations {
         Ok(ClearTitleReleaseBlocklistEntryPayload { id: ID::from(id) })
     }
 
+    /// Replace a title's monitored state.
     async fn set_title_monitored(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Title identity and desired monitored state.")]
         input: SetTitleMonitoredInput,
     ) -> GqlResult<TitlePayload> {
         let app = app_from_ctx(ctx)?;

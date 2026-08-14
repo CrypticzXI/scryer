@@ -66,6 +66,7 @@ fn fallback_episode_media_availability(monitored: bool) -> EpisodeMediaAvailabil
 
 #[ComplexObject]
 impl LibraryPayload {
+    /// Effective title quality-profile ID for this library; requires title-management or catalog-settings access.
     async fn quality_profile_id(&self, ctx: &Context<'_>) -> GqlResult<ID> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -75,6 +76,7 @@ impl LibraryPayload {
             .map_err(to_gql_error)
     }
 
+    /// Quality-profile IDs currently allowed for requests in this library; access requires request, title-management, or relevant application permission.
     async fn request_quality_profile_ids(&self, ctx: &Context<'_>) -> GqlResult<Vec<ID>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -85,6 +87,7 @@ impl LibraryPayload {
         Ok(settings.profile_ids.into_iter().map(Into::into).collect())
     }
 
+    /// Default request quality-profile ID, selected from the library's effective allowed profiles.
     async fn request_quality_profile_default_id(&self, ctx: &Context<'_>) -> GqlResult<ID> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -95,6 +98,7 @@ impl LibraryPayload {
         Ok(settings.default_profile_id.into())
     }
 
+    /// Effective library settings; requires library-management permission.
     async fn settings(&self, ctx: &Context<'_>) -> GqlResult<LibrarySettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -333,6 +337,7 @@ impl TitlePayload {
         .await
     }
 
+    /// Name of the title's library when it is visible to the caller, otherwise null.
     async fn library_name(&self, ctx: &Context<'_>) -> GqlResult<Option<String>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let library = loaders
@@ -357,6 +362,7 @@ impl TitlePayload {
         .await
     }
 
+    /// Stable slug of the title's caller-visible library, otherwise null.
     async fn library_slug(&self, ctx: &Context<'_>) -> GqlResult<Option<String>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let library = loaders
@@ -381,6 +387,7 @@ impl TitlePayload {
         .await
     }
 
+    /// Aggregated title ratings; the rating is null and source lists are empty when no rating exists.
     async fn ratings(&self, ctx: &Context<'_>) -> GqlResult<TitleRatingPayload> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let summary = loaders.ratings.load_one(self.id.to_string()).await?;
@@ -403,10 +410,15 @@ impl TitlePayload {
         .await
     }
 
+    /// Discovery items related to this title, limited to the requested count.
     async fn more_like_this(
         &self,
         ctx: &Context<'_>,
-        #[graphql(default = 12)] limit: i32,
+        #[graphql(
+            desc = "Maximum related items to return; defaults to 12 and clamps to 0 through 100.",
+            default = 12
+        )]
+        limit: i32,
     ) -> GqlResult<Vec<DiscoveryItemPayload>> {
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -423,6 +435,7 @@ impl TitlePayload {
         .await
     }
 
+    /// Absolute root-folder path for this title; requires view permission on its library.
     async fn root_folder_path(&self, ctx: &Context<'_>) -> GqlResult<String> {
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -445,6 +458,7 @@ impl TitlePayload {
         .await
     }
 
+    /// Title-specific required audio-language override, or null when the facet setting is inherited.
     async fn required_audio_languages_override(
         &self,
         ctx: &Context<'_>,
@@ -464,6 +478,7 @@ impl TitlePayload {
         .await
     }
 
+    /// Required audio languages after applying the title override or facet default.
     async fn effective_required_audio_languages(
         &self,
         ctx: &Context<'_>,
@@ -493,6 +508,7 @@ impl TitlePayload {
         .await
     }
 
+    /// Whether the title uses the facet-level required audio-language setting without an override.
     async fn inherits_required_audio_languages(&self, ctx: &Context<'_>) -> GqlResult<bool> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             return Ok(loaders
@@ -511,6 +527,7 @@ impl TitlePayload {
         .await
     }
 
+    /// Collections belonging to this title, or an empty list when none are available.
     async fn collections(&self, ctx: &Context<'_>) -> GqlResult<Vec<CollectionPayload>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let collections = loaders
@@ -532,6 +549,7 @@ impl TitlePayload {
         .await
     }
 
+    /// Series-movie links for this title, or an empty list when none exist.
     async fn series_movie_links(
         &self,
         ctx: &Context<'_>,
@@ -563,6 +581,7 @@ impl TitlePayload {
         .await
     }
 
+    /// Media files for this title that are visible to the caller, or an empty list when none are available.
     async fn media_files(&self, ctx: &Context<'_>) -> GqlResult<Vec<TitleMediaFilePayload>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let files = loaders
@@ -584,12 +603,22 @@ impl TitlePayload {
         .await
     }
 
+    /// Wanted scopes for this title, optionally filtered by status and returned as a page without a total count.
     async fn wanted_items(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Optional wanted status filter; omitted includes all statuses.")]
         status: Option<WantedStatusValue>,
-        #[graphql(default = 50)] limit: i32,
-        #[graphql(default = 0)] offset: i32,
+        #[graphql(
+            desc = "Page size; defaults to 50 and clamps to 1 through 300.",
+            default = 50
+        )]
+        limit: i32,
+        #[graphql(
+            desc = "Zero-based page offset; defaults to 0 and negative values become 0.",
+            default = 0
+        )]
+        offset: i32,
     ) -> GqlResult<WantedItemsPagePayload> {
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -626,11 +655,20 @@ impl TitlePayload {
         .await
     }
 
+    /// Release decisions for this title with a total count and continuation flag.
     async fn release_decisions(
         &self,
         ctx: &Context<'_>,
-        #[graphql(default = 50)] limit: i64,
-        #[graphql(default = 0)] offset: i32,
+        #[graphql(
+            desc = "Page size; defaults to 50 and clamps to 1 through 300.",
+            default = 50
+        )]
+        limit: i64,
+        #[graphql(
+            desc = "Zero-based page offset; defaults to 0 and negative values become 0.",
+            default = 0
+        )]
+        offset: i32,
     ) -> GqlResult<ReleaseDecisionsPagePayload> {
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -664,12 +702,19 @@ impl TitlePayload {
         .await
     }
 
+    /// Queue items associated with this title after the supplied activity filters are applied.
     async fn download_queue_items(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Include all queue activity instead of only active activity; defaults to false."
+        )]
         include_all_activity: Option<bool>,
+        #[graphql(desc = "Restrict results to history entries; defaults to false.")]
         include_history_only: Option<bool>,
+        #[graphql(desc = "Include import activity; defaults to false.")]
         include_import_activity: Option<bool>,
+        #[graphql(desc = "Activity-state filter; omitted defaults to ALL.")]
         activity_filter: Option<DownloadActivityFilterValue>,
     ) -> GqlResult<Vec<DownloadQueueItemPayload>> {
         Box::pin(async move {
@@ -696,9 +741,7 @@ impl TitlePayload {
 
 #[ComplexObject]
 impl CollectionPayload {
-    /// Byte size of the file backing this collection, resolved on demand from the
-    /// media-file index (`media_files.file_path` matching this collection's
-    /// `ordered_path`). Resolved lazily so reads that omit the field pay nothing.
+    /// Size in bytes of the media file associated with this collection, or null when unavailable.
     async fn file_size_bytes(&self, ctx: &Context<'_>) -> GqlResult<Option<Long>> {
         let Some(ordered_path) = self.ordered_path.clone() else {
             return Ok(None);
@@ -793,6 +836,7 @@ impl CollectionPayload {
         .await
     }
 
+    /// Parent title for this collection, or null if the title is no longer available to the caller.
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
         let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
@@ -812,6 +856,7 @@ impl CollectionPayload {
         .await
     }
 
+    /// Episodes belonging to this collection, or an empty list when none are available.
     async fn episodes(&self, ctx: &Context<'_>) -> GqlResult<Vec<EpisodePayload>> {
         let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
@@ -843,6 +888,7 @@ impl CollectionPayload {
 
 #[ComplexObject]
 impl EpisodePayload {
+    /// Parent title for this episode, or null if it is no longer available to the caller.
     async fn parent_title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
         let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
@@ -862,6 +908,7 @@ impl EpisodePayload {
         .await
     }
 
+    /// Containing collection when the episode has one, otherwise null.
     async fn collection(&self, ctx: &Context<'_>) -> GqlResult<Option<CollectionPayload>> {
         let Some(collection_id) = self.collection_id.as_deref() else {
             return Ok(None);
@@ -886,6 +933,7 @@ impl EpisodePayload {
         .await
     }
 
+    /// Acquisition state for this episode, or null when no wanted state exists.
     async fn wanted_item(&self, ctx: &Context<'_>) -> GqlResult<Option<WantedItemPayload>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let state = loaders
@@ -912,6 +960,7 @@ impl EpisodePayload {
         .await
     }
 
+    /// Media readiness for this episode, including missing and unmonitored states.
     async fn media_availability(
         &self,
         ctx: &Context<'_>,
@@ -941,6 +990,7 @@ impl EpisodePayload {
         .await
     }
 
+    /// Media files associated with this episode, or an empty list when none are available.
     async fn media_files(&self, ctx: &Context<'_>) -> GqlResult<Vec<TitleMediaFilePayload>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let files = loaders
@@ -965,6 +1015,7 @@ impl EpisodePayload {
 
 #[ComplexObject]
 impl TitleMediaFilePayload {
+    /// Parent title for this media file, or null if it is no longer available to the caller.
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
         let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
@@ -984,6 +1035,7 @@ impl TitleMediaFilePayload {
         .await
     }
 
+    /// Episode represented by this file, or null for title-level media.
     async fn episode(&self, ctx: &Context<'_>) -> GqlResult<Option<EpisodePayload>> {
         let Some(episode_id) = self.episode_id.as_deref() else {
             return Ok(None);
@@ -1009,6 +1061,7 @@ impl TitleMediaFilePayload {
 
 #[ComplexObject]
 impl WantedItemPayload {
+    /// Title targeted by this wanted scope, or null when it is no longer available to the caller.
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
         let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
@@ -1028,6 +1081,7 @@ impl WantedItemPayload {
         .await
     }
 
+    /// Collection targeted by this scope, or null when the scope is not collection-based.
     async fn collection(&self, ctx: &Context<'_>) -> GqlResult<Option<CollectionPayload>> {
         let Some(collection_id) = self.collection_id.as_deref() else {
             return Ok(None);
@@ -1052,6 +1106,7 @@ impl WantedItemPayload {
         .await
     }
 
+    /// Episode targeted by this scope, or null for title, collection, and series-movie scopes.
     async fn episode(&self, ctx: &Context<'_>) -> GqlResult<Option<EpisodePayload>> {
         let Some(episode_id) = self.episode_id.as_deref() else {
             return Ok(None);
@@ -1074,11 +1129,20 @@ impl WantedItemPayload {
         .await
     }
 
+    /// Release decisions for this wanted scope with a total count and continuation flag.
     async fn release_decisions(
         &self,
         ctx: &Context<'_>,
-        #[graphql(default = 50)] limit: i64,
-        #[graphql(default = 0)] offset: i32,
+        #[graphql(
+            desc = "Page size; defaults to 50 and clamps to 1 through 300.",
+            default = 50
+        )]
+        limit: i64,
+        #[graphql(
+            desc = "Zero-based page offset; defaults to 0 and negative values become 0.",
+            default = 0
+        )]
+        offset: i32,
     ) -> GqlResult<ReleaseDecisionsPagePayload> {
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -1112,11 +1176,20 @@ impl WantedItemPayload {
         .await
     }
 
+    /// Pending releases for this wanted scope with a total count and continuation flag.
     async fn pending_releases(
         &self,
         ctx: &Context<'_>,
-        #[graphql(default = 50)] limit: i32,
-        #[graphql(default = 0)] offset: i32,
+        #[graphql(
+            desc = "Page size; defaults to 50 and clamps to 1 through 300.",
+            default = 50
+        )]
+        limit: i32,
+        #[graphql(
+            desc = "Zero-based page offset; defaults to 0 and negative values become 0.",
+            default = 0
+        )]
+        offset: i32,
     ) -> GqlResult<PendingReleasesPayload> {
         Box::pin(async move {
             let app = app_from_ctx(ctx)?;
@@ -1151,6 +1224,7 @@ impl WantedItemPayload {
 
 #[ComplexObject]
 impl ReleaseDecisionPayload {
+    /// Title associated with this release decision, or null when it is no longer available to the caller.
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
         let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
@@ -1170,6 +1244,7 @@ impl ReleaseDecisionPayload {
         .await
     }
 
+    /// Wanted scope evaluated by this decision, or null when it is no longer available to the caller.
     async fn wanted_item(&self, ctx: &Context<'_>) -> GqlResult<Option<WantedItemPayload>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let item = loaders
@@ -1196,6 +1271,7 @@ impl ReleaseDecisionPayload {
 
 #[ComplexObject]
 impl DownloadQueueItemPayload {
+    /// Acquisition scope for this queue item, or its episode scope when no more specific scope is available.
     async fn queue_scope(&self, ctx: &Context<'_>) -> GqlResult<Option<QueueDownloadScopePayload>> {
         Box::pin(async move {
             let client_type = self.client_type.trim();
@@ -1229,6 +1305,7 @@ impl DownloadQueueItemPayload {
         .await
     }
 
+    /// Caller-visible matched title, or null when the queue item is unmatched or inaccessible.
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
         let Some(title_id) = self.title_id.as_deref() else {
             return Ok(None);
@@ -1257,6 +1334,7 @@ impl DownloadQueueItemPayload {
 
 #[ComplexObject]
 impl PendingReleasePayload {
+    /// Title associated with this pending release, or null when it is no longer available to the caller.
     async fn title(&self, ctx: &Context<'_>) -> GqlResult<Option<TitlePayload>> {
         let image_app = app_from_ctx(ctx)?;
         if let Some(loaders) = loaders_from_ctx(ctx) {
@@ -1279,6 +1357,7 @@ impl PendingReleasePayload {
         .await
     }
 
+    /// Wanted scope holding this release, or null when it is no longer available to the caller.
     async fn wanted_item(&self, ctx: &Context<'_>) -> GqlResult<Option<WantedItemPayload>> {
         if let Some(loaders) = loaders_from_ctx(ctx) {
             let item = loaders

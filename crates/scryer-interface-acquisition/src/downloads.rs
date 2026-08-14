@@ -69,9 +69,14 @@ pub(crate) fn queue_download_conflict_payload(
 
 #[Object]
 impl DownloadMutations {
+    /// Queue the release represented by a signed candidate token for an existing title.
+    /// Returns a job id when accepted or a conflict payload when the submission scope is busy.
     async fn queue_existing_title_download(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Signed candidate token and submission options; the token supplies the release identity."
+        )]
         input: QueueDownloadInput,
     ) -> GqlResult<QueueDownloadPayload> {
         let app = app_from_ctx(ctx)?;
@@ -134,6 +139,9 @@ impl DownloadMutations {
     async fn queue_replacement_release(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Signed candidate token for the replacement release; its scope and purpose override the input values."
+        )]
         input: QueueDownloadInput,
     ) -> GqlResult<QueueDownloadPayload> {
         let app = app_from_ctx(ctx)?;
@@ -186,9 +194,13 @@ impl DownloadMutations {
         })
     }
 
+    /// Select and queue the best available release for a title within the requested scope.
     async fn queue_best_release(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Title, scope, and optional replacement policy for the best-release submission."
+        )]
         input: QueueBestReleaseInput,
     ) -> GqlResult<QueueDownloadPayload> {
         let app = app_from_ctx(ctx)?;
@@ -236,9 +248,13 @@ impl DownloadMutations {
         })
     }
 
+    /// Accept a manual file-to-title mapping and enqueue the import for background processing.
     async fn queue_manual_import(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Selection id and candidate mappings chosen from a prior manual-import preview."
+        )]
         input: QueueManualImportInput,
     ) -> GqlResult<DownloadQueueActionPayload> {
         let app = app_from_ctx(ctx)?;
@@ -272,9 +288,13 @@ impl DownloadMutations {
         }))
     }
 
+    /// Inspect a tracked download and persist a server-owned selection of importable files.
     async fn begin_manual_import_selection(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Download client identity and title used to build the manual-import preview."
+        )]
         input: BeginManualImportSelectionInput,
     ) -> GqlResult<ManualImportSelectionPayload> {
         let app = app_from_ctx(ctx)?;
@@ -331,6 +351,9 @@ impl DownloadMutations {
     async fn retry_import(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Failed import identity and optional archive password used for the retry."
+        )]
         input: RetryImportInput,
     ) -> GqlResult<ImportResultPayload> {
         let app = app_from_ctx(ctx)?;
@@ -356,9 +379,11 @@ impl DownloadMutations {
         })
     }
 
+    /// Mark a tracked download ignored without deleting it from the download client.
     async fn ignore_tracked_download(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Download client identity used to locate the tracked item.")]
         input: IgnoreTrackedDownloadInput,
     ) -> GqlResult<DownloadQueueActionPayload> {
         let app = app_from_ctx(ctx)?;
@@ -395,9 +420,11 @@ impl DownloadMutations {
         }))
     }
 
+    /// Mark a tracked download failed and optionally suppress automatic reacquisition.
     async fn mark_tracked_download_failed(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Download client identity and the failure handling option.")]
         input: MarkTrackedDownloadFailedInput,
     ) -> GqlResult<DownloadQueueActionPayload> {
         let app = app_from_ctx(ctx)?;
@@ -435,9 +462,11 @@ impl DownloadMutations {
         }))
     }
 
+    /// Attach a tracked download to a title and acquisition scope.
     async fn assign_tracked_download_title(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Download client identity, title identity, and target scope.")]
         input: AssignTrackedDownloadTitleInput,
     ) -> GqlResult<DownloadQueueActionPayload> {
         let app = app_from_ctx(ctx)?;
@@ -482,10 +511,11 @@ impl DownloadMutations {
         }))
     }
 
+    /// Pause a tracked download through its configured download client.
     async fn pause_download(
         &self,
         ctx: &Context<'_>,
-        input: PauseDownloadInput,
+        #[graphql(desc = "Download client item identity to pause.")] input: PauseDownloadInput,
     ) -> GqlResult<DownloadQueueActionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -515,10 +545,11 @@ impl DownloadMutations {
         }))
     }
 
+    /// Resume a paused tracked download through its configured download client.
     async fn resume_download(
         &self,
         ctx: &Context<'_>,
-        input: ResumeDownloadInput,
+        #[graphql(desc = "Download client item identity to resume.")] input: ResumeDownloadInput,
     ) -> GqlResult<DownloadQueueActionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -552,9 +583,13 @@ impl DownloadMutations {
         }))
     }
 
+    /// Delete a tracked download through its configured client and return its prior queue state.
     async fn delete_download(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Download client identity and whether the item should be treated as history."
+        )]
         input: DeleteDownloadInput,
     ) -> GqlResult<DownloadQueueActionPayload> {
         let app = app_from_ctx(ctx)?;
