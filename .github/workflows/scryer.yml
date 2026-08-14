@@ -1299,15 +1299,13 @@ jobs:
           $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=. -C target-feature=+crt-static -W linker-messages"
           if ($env:USE_CLANG_CL -eq "true") {
             $compiler = "clang-cl"
-          } else {
-            $compiler = "cl.exe"
-          }
-          if ($env:SCRYER_SCCACHE_ENABLED -eq "true") {
-            $env:CC = "sccache $compiler"
-            $env:CXX = "sccache $compiler"
-          } else {
-            $env:CC = $compiler
-            $env:CXX = $compiler
+            if ($env:SCRYER_SCCACHE_ENABLED -eq "true") {
+              $env:CC = "sccache $compiler"
+              $env:CXX = "sccache $compiler"
+            } else {
+              $env:CC = $compiler
+              $env:CXX = $compiler
+            }
           }
           if ($env:USE_LLD_LINK -eq "true") {
             $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
