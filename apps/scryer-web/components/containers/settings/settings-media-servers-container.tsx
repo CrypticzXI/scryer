@@ -39,6 +39,7 @@ import {
   localPathStyleFromRuntimeValue,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
+import { nonEmptySecret } from "@/lib/utils/secret-input";
 
 type SettingsMediaServersSectionProps = ComponentProps<typeof SettingsMediaServersSection>;
 
@@ -201,7 +202,7 @@ function buildCreateInput(
 
   const apiKey = normalizeOptional(draft.apiKey);
   const adminUsername = normalizeOptional(draft.adminUsername);
-  const adminPassword = normalizeOptional(draft.adminPassword);
+  const adminPassword = nonEmptySecret(draft.adminPassword);
   if (draft.provider === "PLEX" && draft.plexServerId && plexAuthToken) {
     input.plexServerId = draft.plexServerId;
     input.plexAuthToken = plexAuthToken;
@@ -218,7 +219,7 @@ function buildCreateInput(
       }
     } else {
       const connectUsername = normalizeOptional(draft.embyConnectUsernameOrEmail);
-      const connectPassword = normalizeOptional(draft.embyConnectPassword);
+      const connectPassword = nonEmptySecret(draft.embyConnectPassword);
       const connectServerId = normalizeOptional(draft.embyConnectServerId);
       if (connectUsername) input.embyConnectUsernameOrEmail = connectUsername;
       if (connectPassword) input.embyConnectPassword = connectPassword;
@@ -253,10 +254,10 @@ function buildUpdateInput(
         ((draft.embyLocalSetupMethod === "API_KEY" && Boolean(apiKey)) ||
           (draft.embyLocalSetupMethod === "ADMIN_CREDENTIALS" &&
             Boolean(normalizeOptional(draft.adminUsername)) &&
-            Boolean(normalizeOptional(draft.adminPassword))))) ||
+            Boolean(nonEmptySecret(draft.adminPassword))))) ||
       (draft.embyConnectionMode === "CONNECT" &&
         Boolean(normalizeOptional(draft.embyConnectUsernameOrEmail)) &&
-        Boolean(normalizeOptional(draft.embyConnectPassword)) &&
+        Boolean(nonEmptySecret(draft.embyConnectPassword)) &&
         Boolean(normalizeOptional(draft.embyConnectServerId)));
     if (!hasRotationCredentials) {
       delete input.embyConnectionMode;

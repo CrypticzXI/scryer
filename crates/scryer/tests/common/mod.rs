@@ -1278,6 +1278,7 @@ async fn test_graphql_handler(
             verified_until: claims.mfa_verified_until,
             step_up_verified_until: claims.mfa_step_up_verified_until,
             session_scope: claims.session_scope,
+            persist_session: claims.persist_session,
             oauth_authorization_source: claims.oauth_authorization_source,
         });
         let mut user = app

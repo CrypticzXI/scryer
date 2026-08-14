@@ -1699,6 +1699,7 @@ pub struct AuthenticatedTokenClaims {
     pub mfa_verified_until: Option<i64>,
     pub mfa_step_up_verified_until: Option<i64>,
     pub session_scope: JwtSessionScope,
+    pub persist_session: bool,
     pub oauth_client_id: Option<String>,
     pub oauth_grant_id: Option<String>,
     pub oauth_authorization_source: OAuthAuthorizationSource,
@@ -1825,6 +1826,8 @@ pub(crate) struct JwtClaims {
     pub mfa_step_up_verified_until: Option<i64>,
     #[serde(default, rename = "authScope")]
     pub auth_scope: JwtSessionScope,
+    #[serde(default, rename = "persistSession")]
+    pub persist_session: bool,
     #[serde(default, rename = "oauthClientId")]
     pub oauth_client_id: Option<String>,
     #[serde(default, rename = "oauthGrantId")]

@@ -272,13 +272,20 @@ async fn probe_public(client: &Client, base: &Url) -> AppResult<Option<EmbyServe
         .send()
         .await
         .map_err(|_| AppError::Repository("failed to reach Emby server".into()))?;
-    if response.status() == StatusCode::NOT_FOUND || !response.status().is_success() {
+    if response.status() == StatusCode::NOT_FOUND {
         return Ok(None);
     }
-    match json_response::<PublicSystemInfo>(response, "public system info").await {
-        Ok(info) => identity_from_public(base, info).map(Some),
-        Err(_) => Ok(None),
+    if !response.status().is_success() {
+        return Err(AppError::Repository(format!(
+            "Emby public system-info request failed with status {}",
+            response.status()
+        )));
     }
+    let bytes = limited_bytes(response, JSON_LIMIT, "public system info").await?;
+    let Ok(info) = serde_json::from_slice::<PublicSystemInfo>(&bytes) else {
+        return Ok(None);
+    };
+    Ok(identity_from_public(base, info).ok())
 }
 
 pub(super) async fn resolve_api_base(
@@ -665,9 +672,10 @@ async fn list_keys(
             return Err(AppError::Repository("Emby repeated an API key page".into()));
         }
         let count = page.items.len();
-        keys.extend(page.items);
+        let remaining = RECORD_LIMIT.saturating_sub(keys.len());
+        keys.extend(page.items.into_iter().take(remaining));
         start += count;
-        if count == 0 || start >= page.total_record_count || start >= RECORD_LIMIT {
+        if count == 0 || start >= page.total_record_count || keys.len() >= RECORD_LIMIT {
             break;
         }
     }
@@ -1296,7 +1304,8 @@ pub(super) async fn list_users(
             ));
         }
         let count = page.items.len();
-        users.extend(page.items.into_iter().filter(|user| {
+        let remaining = RECORD_LIMIT.saturating_sub(start);
+        users.extend(page.items.into_iter().take(remaining).filter(|user| {
             !user
                 .policy
                 .as_ref()
@@ -1368,7 +1377,7 @@ pub(super) async fn fetch_avatar(
     let mut url = base.clone();
     url.path_segments_mut()
         .map_err(|_| AppError::Validation("Emby base URL cannot contain path segments".into()))?
-        .push("Items")
+        .push("Users")
         .push(user_id)
         .push("Images")
         .push("Primary");
@@ -1424,7 +1433,10 @@ pub(super) async fn fetch_avatar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{body_json, header, method, path, query_param};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn test_client() -> Client {
@@ -1483,6 +1495,113 @@ mod tests {
         assert!(!header.contains("Token"));
     }
 
+    #[tokio::test]
+    async fn emby_api_root_falls_back_after_404_and_preserves_reverse_proxy_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/reverse/System/Info/Public"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/reverse/emby/System/Info/Public"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Id": "server-1", "ServerName": "Emby", "Version": "4.9.5.0"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let identity = resolve_api_base(
+            &test_client(),
+            "connection-1",
+            &format!("{}/reverse", server.uri()),
+        )
+        .await
+        .expect("fallback API root");
+
+        assert_eq!(
+            identity.api_base_url,
+            format!("{}/reverse/emby", server.uri())
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_api_root_falls_back_after_non_emby_success_but_never_doubles_emby() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info/Public"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "product": "not Emby"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/emby/System/Info/Public"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Id": "server-1", "ServerName": "Emby", "Version": "4.9.5.0"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let identity = resolve_api_base(&test_client(), "connection-1", &server.uri())
+            .await
+            .expect("fallback API root");
+        assert_eq!(identity.api_base_url, format!("{}/emby", server.uri()));
+
+        let error = resolve_api_base(
+            &test_client(),
+            "connection-1",
+            &format!("{}/missing/emby", server.uri()),
+        )
+        .await
+        .expect_err("an existing emby suffix must not be appended twice");
+        assert!(matches!(error, AppError::Validation(_)));
+        assert!(
+            server
+                .received_requests()
+                .await
+                .expect("recorded requests")
+                .iter()
+                .all(|request| !request.url.path().contains("/emby/emby/"))
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_api_root_does_not_fallback_or_follow_redirects_for_upstream_failures() {
+        for status in [301, 401, 403, 500] {
+            let server = MockServer::start().await;
+            let response = if status == 301 {
+                ResponseTemplate::new(status).insert_header("Location", "/emby/System/Info/Public")
+            } else {
+                ResponseTemplate::new(status)
+            };
+            Mock::given(method("GET"))
+                .and(path("/System/Info/Public"))
+                .respond_with(response)
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let error = resolve_api_base(&test_client(), "connection-1", &server.uri())
+                .await
+                .expect_err("upstream failure must be returned");
+            assert!(
+                matches!(error, AppError::Repository(_)),
+                "status {status}: {error}"
+            );
+            let requests = server.received_requests().await.expect("recorded requests");
+            assert_eq!(requests.len(), 1, "status {status} triggered a fallback");
+            assert_eq!(requests[0].url.path(), "/System/Info/Public");
+            server.verify().await;
+        }
+    }
+
     #[test]
     fn avatar_proxy_url_does_not_contain_upstream_credentials() {
         let url =
@@ -1531,14 +1650,6 @@ mod tests {
         mount_public_info(&server, "server-1").await;
         Mock::given(method("POST"))
             .and(path("/Users/AuthenticateByName"))
-            .and(header(
-                "X-Emby-Authorization",
-                client_authorization("connection-1", None),
-            ))
-            .and(body_json(serde_json::json!({
-                "Username": "alice",
-                "Pw": "correct horse"
-            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "User": {"Id": "user-1", "Name": "Alice", "Policy": {"IsDisabled": false}},
                 "AccessToken": "temporary-token",
@@ -1585,7 +1696,724 @@ mod tests {
 
         assert_eq!(verified.external_user_id, "user-1");
         assert_eq!(verified.remote_password_configured, Some(true));
+        let requests = server.received_requests().await.expect("recorded requests");
+        let authentication = requests
+            .iter()
+            .find(|request| request.url.path() == "/Users/AuthenticateByName")
+            .expect("authentication request");
+        assert_eq!(
+            authentication
+                .headers
+                .get("X-Emby-Authorization")
+                .expect("authorization header")
+                .to_str()
+                .expect("authorization header text"),
+            client_authorization("connection-1", None)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&authentication.body)
+                .expect("authentication JSON"),
+            serde_json::json!({"Username": "alice", "Pw": "correct horse"})
+        );
         server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_local_auth_maps_credential_and_upstream_statuses() {
+        for (status, unauthorized) in [(400, true), (401, true), (403, true), (429, false)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/Users/AuthenticateByName"))
+                .respond_with(ResponseTemplate::new(status))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let base = normalized_candidate(&server.uri()).expect("base URL");
+            let result =
+                authenticate_local(&test_client(), "connection-1", &base, "alice", "password")
+                    .await;
+            let error = match result {
+                Ok(_) => panic!("authentication must fail"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                matches!(error, AppError::Unauthorized(_)),
+                unauthorized,
+                "unexpected mapping for {status}: {error}"
+            );
+            server.verify().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn emby_local_auth_rejects_disabled_and_admin_setup_rejects_non_admin() {
+        for (disabled, administrator, expected_text) in
+            [(true, true, "disabled"), (false, false, "administrator")]
+        {
+            let server = MockServer::start().await;
+            mount_public_info(&server, "server-1").await;
+            Mock::given(method("POST"))
+                .and(path("/Users/AuthenticateByName"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "User": {
+                        "Id": "admin-1", "Name": "Admin",
+                        "Policy": {"IsDisabled": disabled, "IsAdministrator": administrator}
+                    },
+                    "AccessToken": "temporary-token", "ServerId": "server-1"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            if !disabled {
+                Mock::given(method("POST"))
+                    .and(path("/Sessions/Logout"))
+                    .respond_with(ResponseTemplate::new(204))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            }
+
+            let error = exchange_local_admin_api_key(
+                &test_client(),
+                "connection-1",
+                &server.uri(),
+                "admin",
+                "password",
+            )
+            .await
+            .expect_err("invalid administrator must fail");
+            assert!(error.to_string().contains(expected_text), "{error}");
+            server.verify().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn emby_local_identity_rejects_server_id_mismatch_and_always_logs_out() {
+        let server = MockServer::start().await;
+        mount_public_info(&server, "server-1").await;
+        Mock::given(method("POST"))
+            .and(path("/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "User": {"Id": "user-1", "Name": "Alice"},
+                "AccessToken": "temporary-token", "ServerId": "server-other"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/Sessions/Logout"))
+            .and(header("X-Emby-Token", "temporary-token"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = verify_local_identity(
+            &test_client(),
+            "connection-1",
+            &server.uri(),
+            "server-1",
+            "alice",
+            "password",
+        )
+        .await
+        .expect_err("server mismatch must fail");
+
+        assert!(error.to_string().contains("identity"), "{error}");
+        server.verify().await;
+    }
+
+    #[test]
+    fn emby_passwordless_state_uses_both_compatibility_fields() {
+        let make_user = |has_password, has_configured_password| UserDto {
+            id: "user-1".into(),
+            name: Some("Alice".into()),
+            connect_user_name: None,
+            primary_image_tag: None,
+            policy: None,
+            has_password,
+            has_configured_password,
+        };
+        assert_eq!(
+            verified_identity("connection-1", &make_user(Some(false), None))
+                .remote_password_configured,
+            Some(false)
+        );
+        assert_eq!(
+            verified_identity("connection-1", &make_user(None, Some(false)))
+                .remote_password_configured,
+            Some(false)
+        );
+        assert_eq!(
+            verified_identity("connection-1", &make_user(None, None)).remote_password_configured,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn emby_api_key_pages_accept_both_casings_and_reuse_newest_valid_scryer_key() {
+        let server = MockServer::start().await;
+        mount_public_info(&server, "server-1").await;
+        Mock::given(method("POST"))
+            .and(path("/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "User": {"Id": "admin-1", "Name": "Admin", "Policy": {"IsAdministrator": true}},
+                "AccessToken": "admin-token", "ServerId": "server-1"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info"))
+            .and(header("X-Emby-Token", "admin-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Id": "server-1", "ServerName": "Emby", "Version": "4.9.5.0"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Auth/Keys"))
+            .and(query_param("StartIndex", "0"))
+            .and(query_param("Limit", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Items": [
+                    {"AppName": "sCrYeR", "AccessToken": "invalid-newest", "DateCreated": "2026-08-13T12:00:00Z"},
+                    {"AppName": "unrelated", "AccessToken": "other", "DateCreated": "2026-08-12T12:00:00Z"}
+                ],
+                "TotalRecordCount": 3
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Auth/Keys"))
+            .and(query_param("StartIndex", "2"))
+            .and(query_param("Limit", "100"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    {"appName": "Scryer", "accessToken": "valid-older", "dateCreated": "2026-08-11T12:00:00Z"}
+                ],
+                "totalRecordCount": 3
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info"))
+            .and(header("X-Emby-Token", "invalid-newest"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info"))
+            .and(header("X-Emby-Token", "valid-older"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Id": "server-1", "ServerName": "Emby", "Version": "4.9.5.0"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Users/Query"))
+            .and(header("X-Emby-Token", "valid-older"))
+            .and(query_param("IsDisabled", "false"))
+            .and(query_param("StartIndex", "0"))
+            .and(query_param("Limit", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Items": [], "TotalRecordCount": 0
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/Sessions/Logout"))
+            .and(header("X-Emby-Token", "admin-token"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut exchange = exchange_local_admin_api_key(
+            &test_client(),
+            "connection-1",
+            &server.uri(),
+            "admin",
+            "password",
+        )
+        .await
+        .expect("reused API key");
+        assert_eq!(exchange.api_key, "valid-older");
+        assert!(!exchange.created_new_key);
+        finish_api_key_exchange(
+            &test_client(),
+            "connection-1",
+            exchange.cleanup.take().expect("cleanup"),
+            false,
+        )
+        .await;
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_created_key_is_relisted_verified_and_percent_encoded_when_compensated() {
+        let server = MockServer::start().await;
+        mount_public_info(&server, "server-1").await;
+        Mock::given(method("POST"))
+            .and(path("/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "User": {"Id": "admin-1", "Name": "Admin", "Policy": {"IsAdministrator": true}},
+                "AccessToken": "admin-token", "ServerId": "server-1"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info"))
+            .and(header("X-Emby-Token", "admin-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Id": "server-1", "ServerName": "Emby", "Version": "4.9.5.0"
+            })))
+            .mount(&server)
+            .await;
+        let list_calls = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("GET"))
+            .and(path("/Auth/Keys"))
+            .and(query_param("StartIndex", "0"))
+            .respond_with({
+                let list_calls = Arc::clone(&list_calls);
+                move |_: &wiremock::Request| {
+                    if list_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                            "Items": [], "TotalRecordCount": 0
+                        }))
+                    } else {
+                        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                            "Items": [{
+                                "AppName": "Scryer", "AccessToken": "created/key ?#",
+                                "DateCreated": "2026-08-13T12:00:00Z"
+                            }],
+                            "TotalRecordCount": 1
+                        }))
+                    }
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/Auth/Keys"))
+            .and(query_param("App", "Scryer"))
+            .and(header("X-Emby-Token", "admin-token"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info"))
+            .and(header("X-Emby-Token", "created/key ?#"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Id": "server-1", "ServerName": "Emby", "Version": "4.9.5.0"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Users/Query"))
+            .and(header("X-Emby-Token", "created/key ?#"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Items": [], "TotalRecordCount": 0
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/Auth/Keys/created%2Fkey%20%3F%23"))
+            .and(header("X-Emby-Token", "admin-token"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/Sessions/Logout"))
+            .and(header("X-Emby-Token", "admin-token"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut exchange = exchange_local_admin_api_key(
+            &test_client(),
+            "connection-1",
+            &server.uri(),
+            "admin",
+            "password",
+        )
+        .await
+        .expect("created API key");
+        assert!(exchange.created_new_key);
+        assert_eq!(exchange.api_key, "created/key ?#");
+        finish_api_key_exchange(
+            &test_client(),
+            "connection-1",
+            exchange.cleanup.take().expect("cleanup"),
+            true,
+        )
+        .await;
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_api_key_list_truncates_oversized_page_at_record_cap() {
+        let server = MockServer::start().await;
+        let items = (0..=RECORD_LIMIT)
+            .map(|index| serde_json::json!({"AccessToken": format!("key-{index}")}))
+            .collect::<Vec<_>>();
+        Mock::given(method("GET"))
+            .and(path("/Auth/Keys"))
+            .and(query_param("StartIndex", "0"))
+            .and(query_param("Limit", "100"))
+            .and(header("X-Emby-Token", "admin-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Items": items,
+                "TotalRecordCount": RECORD_LIMIT + PAGE_LIMIT
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let keys = list_keys(
+            &test_client(),
+            "connection-1",
+            &normalized_candidate(&server.uri()).expect("base URL"),
+            "admin-1",
+            "admin-token",
+        )
+        .await
+        .expect("capped key list");
+
+        assert_eq!(keys.len(), RECORD_LIMIT);
+        assert_eq!(keys[0].access_token.as_deref(), Some("key-0"));
+        assert_eq!(
+            keys[RECORD_LIMIT - 1].access_token.as_deref(),
+            Some("key-9999")
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_api_key_create_without_discoverable_key_is_protocol_failure_and_logs_out() {
+        let server = MockServer::start().await;
+        mount_public_info(&server, "server-1").await;
+        Mock::given(method("POST"))
+            .and(path("/Users/AuthenticateByName"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "User": {"Id": "admin-1", "Name": "Admin", "Policy": {"IsAdministrator": true}},
+                "AccessToken": "admin-token", "ServerId": "server-1"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info"))
+            .and(header("X-Emby-Token", "admin-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Id": "server-1", "ServerName": "Emby", "Version": "4.9.5.0"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Auth/Keys"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Items": [], "TotalRecordCount": 0
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/Auth/Keys"))
+            .and(query_param("App", "Scryer"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/Sessions/Logout"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = exchange_local_admin_api_key(
+            &test_client(),
+            "connection-1",
+            &server.uri(),
+            "admin",
+            "password",
+        )
+        .await
+        .expect_err("missing created key must fail");
+        assert!(error.to_string().contains("did not expose"), "{error}");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_connect_primary_auth_shape_uses_exact_form_wire() {
+        let connect = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/user/authenticate"))
+            .and(header("Accept", "application/json"))
+            .and(header("X-Application", format!("Scryer/{SCRYER_VERSION}")))
+            .and(header(
+                "Content-Type",
+                "application/x-www-form-urlencoded; charset=UTF-8",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "AccessToken": "connect-token", "User": {"Id": "connect-user", "Name": "Alice"}
+            })))
+            .expect(1)
+            .mount(&connect)
+            .await;
+
+        let session = authenticate_connect(
+            &test_client(),
+            &normalized_candidate(&connect.uri()).expect("Connect base"),
+            "alice+tag@example.test",
+            "spaces & symbols=work",
+        )
+        .await
+        .expect("Connect authentication");
+
+        assert_eq!(session.user_id, "connect-user");
+        let requests = connect
+            .received_requests()
+            .await
+            .expect("recorded requests");
+        assert_eq!(
+            std::str::from_utf8(&requests[0].body).expect("form body"),
+            "nameOrEmail=alice%2Btag%40example.test&rawpw=spaces+%26+symbols%3Dwork"
+        );
+        connect.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_connect_empty_404_is_invalid_credentials() {
+        let connect = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/user/authenticate"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&connect)
+            .await;
+
+        let result = authenticate_connect(
+            &test_client(),
+            &normalized_candidate(&connect.uri()).expect("Connect base"),
+            "alice",
+            "wrong",
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("empty 404 must be invalid credentials"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, AppError::Unauthorized(_)));
+        connect.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_connect_uses_stored_then_fresh_local_candidate_and_rejects_stored_id_mismatch() {
+        let connect = MockServer::start().await;
+        let stored = MockServer::start().await;
+        let local = MockServer::start().await;
+        mount_public_info(&stored, "wrong-server").await;
+        mount_public_info(&local, "server-1").await;
+        Mock::given(method("POST"))
+            .and(path("/user/authenticate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "AccessToken": "connect-token", "User": {"Id": "connect-user"}
+            })))
+            .mount(&connect)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/servers"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "SystemId": "server-1", "AccessKey": "server-access-key", "Name": "Emby",
+                    "LocalAddress": local.uri()
+                }])),
+            )
+            .mount(&connect)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Connect/Exchange"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "LocalUserId": "local-user", "AccessToken": "local-token"
+            })))
+            .expect(1)
+            .mount(&local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Users/local-user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Id": "local-user", "Name": "Alice", "Policy": {"IsDisabled": false}
+            })))
+            .mount(&local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/System/Info"))
+            .and(header("X-Emby-Token", "local-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Id": "server-1", "ServerName": "Emby", "Version": "4.9.5.0"
+            })))
+            .mount(&local)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/Sessions/Logout"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&local)
+            .await;
+
+        let verification = verify_connect_identity(
+            &test_client(),
+            &normalized_candidate(&connect.uri()).expect("Connect base"),
+            "connection-1",
+            &stored.uri(),
+            "server-1",
+            "alice",
+            "password",
+        )
+        .await
+        .expect("fresh local candidate");
+
+        assert_eq!(
+            verification.resolved_api_base_url,
+            local.uri().trim_end_matches('/')
+        );
+        assert_eq!(
+            stored
+                .received_requests()
+                .await
+                .expect("stored requests")
+                .len(),
+            1,
+            "stored candidate must be tried first"
+        );
+        let local_requests = local.received_requests().await.expect("local requests");
+        let exchange_request = local_requests
+            .iter()
+            .find(|request| request.url.path() == "/Connect/Exchange")
+            .expect("Connect exchange request");
+        let query = exchange_request
+            .url
+            .query_pairs()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            query.get("format").map(|value| value.as_ref()),
+            Some("json")
+        );
+        assert_eq!(
+            query.get("ConnectUserId").map(|value| value.as_ref()),
+            Some("connect-user")
+        );
+        assert_eq!(
+            exchange_request
+                .headers
+                .get("X-Emby-Token")
+                .expect("server access key header")
+                .to_str()
+                .expect("header text"),
+            "server-access-key"
+        );
+        assert_eq!(
+            exchange_request
+                .headers
+                .get("X-Emby-Authorization")
+                .expect("client authorization")
+                .to_str()
+                .expect("header text"),
+            client_authorization("connection-1", None)
+        );
+        stored.verify().await;
+        local.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_connect_exchange_rejects_disabled_user_and_server_id_mismatch() {
+        for (disabled, system_id, expected_text) in [
+            (true, "server-1", "verification"),
+            (false, "server-other", "identity"),
+        ] {
+            let emby = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/Connect/Exchange"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "LocalUserId": "local-user", "AccessToken": "local-token"
+                })))
+                .mount(&emby)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/Users/local-user"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "Id": "local-user", "Name": "Alice", "Policy": {"IsDisabled": disabled}
+                })))
+                .mount(&emby)
+                .await;
+            if !disabled {
+                Mock::given(method("GET"))
+                    .and(path("/System/Info"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "Id": system_id, "ServerName": "Emby", "Version": "4.9.5.0"
+                    })))
+                    .mount(&emby)
+                    .await;
+            }
+            let base = normalized_candidate(&emby.uri()).expect("Emby base");
+            let result = exchange_connect_session(
+                &test_client(),
+                "connection-1",
+                &base,
+                "connect-user",
+                "server-access-key",
+            )
+            .await;
+            let error = match result {
+                Ok(auth) => require_server_id(
+                    &EmbyServerIdentity {
+                        api_base_url: emby.uri(),
+                        server_id: "server-1".into(),
+                        server_name: "Emby".into(),
+                        version: "4.9.5.0".into(),
+                    },
+                    auth.server_id.as_deref(),
+                )
+                .expect_err("server mismatch must fail"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains(expected_text), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn emby_connect_admin_setup_rejects_non_admin_local_user() {
+        let base = normalized_candidate("https://emby.example.test").expect("base URL");
+        let auth = AuthResponse {
+            user: UserDto {
+                id: "user-1".into(),
+                name: Some("Alice".into()),
+                connect_user_name: None,
+                primary_image_tag: None,
+                policy: Some(UserPolicy {
+                    is_administrator: false,
+                    is_disabled: false,
+                }),
+                has_password: Some(true),
+                has_configured_password: None,
+            },
+            access_token: Some("temporary-token".into()),
+            server_id: Some("server-1".into()),
+        };
+        let error = exchange_admin_session(&test_client(), "connection-1", &base, &auth)
+            .await
+            .expect_err("non-admin Connect user must fail setup");
+        assert!(error.to_string().contains("administrator"), "{error}");
     }
 
     #[tokio::test]
@@ -1665,14 +2493,200 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn avatar_rejects_oversized_content_length_without_buffering_body() {
+    async fn emby_users_paginate_include_hidden_exclude_disabled_and_filter_all_local_fields() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/Items/user/Images/Primary"))
+            .and(path("/Users/Query"))
+            .and(query_param("IsDisabled", "false"))
+            .and(query_param("StartIndex", "0"))
+            .and(query_param("Limit", "100"))
+            .and(query_param("SortOrder", "Ascending"))
+            .and(header("X-Emby-Token", "static-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Items": [
+                    {"Id": "hidden-id", "Name": "Hidden User", "ConnectUserName": "connect-alias", "PrimaryImageTag": "image-tag", "Policy": {"IsHidden": true, "IsDisabled": false}},
+                    {"Id": "disabled-id", "Name": "Disabled", "ConnectUserName": "connect-alias", "Policy": {"IsDisabled": true}}
+                ],
+                "TotalRecordCount": 3
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Users/Query"))
+            .and(query_param("StartIndex", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Items": [{"Id": "other-id", "Name": "Other", "Policy": {"IsDisabled": false}}],
+                "TotalRecordCount": 3
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let users = list_users(
+            &test_client(),
+            "connection id",
+            &server.uri(),
+            "static-key",
+            Some("CONNECT-ALIAS"),
+        )
+        .await
+        .expect("user list");
+
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].id, "hidden-id");
+        assert_eq!(users[0].username, "Hidden User");
+        assert_eq!(
+            users[0].avatar_url.as_deref(),
+            Some("/api/media-server-avatars/connection+id/hidden-id/image-tag")
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_users_reject_repeated_pages_and_stop_at_record_cap() {
+        let repeated = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/Users/Query"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Items": [{"Id": "same-user", "Name": "Same"}], "TotalRecordCount": 3
+            })))
+            .expect(2)
+            .mount(&repeated)
+            .await;
+        let error = list_users(
+            &test_client(),
+            "connection-1",
+            &repeated.uri(),
+            "static-key",
+            None,
+        )
+        .await
+        .expect_err("repeated page must fail");
+        assert!(error.to_string().contains("repeated"), "{error}");
+        repeated.verify().await;
+
+        let capped = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/Users/Query"))
+            .respond_with(|request: &wiremock::Request| {
+                let start = request
+                    .url
+                    .query_pairs()
+                    .find_map(|(name, value)| (name == "StartIndex").then(|| value.into_owned()))
+                    .expect("StartIndex")
+                    .parse::<usize>()
+                    .expect("numeric StartIndex");
+                let page_size = if start == 0 { RECORD_LIMIT - 1 } else { 5 };
+                let items = (start..start + page_size)
+                    .map(|index| serde_json::json!({"Id": format!("user-{index}"), "Name": format!("User {index}")}))
+                    .collect::<Vec<_>>();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "Items": items, "TotalRecordCount": RECORD_LIMIT + PAGE_LIMIT
+                }))
+            })
+            .expect(2)
+            .mount(&capped)
+            .await;
+        let users = list_users(
+            &test_client(),
+            "connection-1",
+            &capped.uri(),
+            "static-key",
+            None,
+        )
+        .await
+        .expect("capped users");
+        assert_eq!(users.len(), RECORD_LIMIT);
+        assert!(users.iter().any(|user| user.id == "user-9999"));
+        assert!(users.iter().all(|user| user.id != "user-10000"));
+        capped.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_avatar_uses_static_key_safe_query_and_forwards_cache_metadata() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/Users/user%2Fid/Images/Primary"))
+            .and(query_param("Tag", "tag value"))
+            .and(query_param("MaxWidth", "256"))
+            .and(query_param("MaxHeight", "256"))
+            .and(query_param("Quality", "90"))
+            .and(header("X-Emby-Token", "static-key"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("Content-Type", "image/png")
-                    .insert_header("Content-Length", (AVATAR_LIMIT + 1).to_string()),
+                    .insert_header("ETag", "\"etag-value\"")
+                    .insert_header("Last-Modified", "Wed, 13 Aug 2026 12:00:00 GMT")
+                    .set_body_bytes(vec![1, 2, 3]),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let avatar = fetch_avatar(
+            &test_client(),
+            &server.uri(),
+            "static-key",
+            "user/id",
+            "tag value",
+        )
+        .await
+        .expect("avatar request")
+        .expect("avatar");
+
+        assert_eq!(avatar.content_type, "image/png");
+        assert_eq!(avatar.bytes, vec![1, 2, 3]);
+        assert_eq!(avatar.etag.as_deref(), Some("\"etag-value\""));
+        assert_eq!(
+            avatar.last_modified.as_deref(),
+            Some("Wed, 13 Aug 2026 12:00:00 GMT")
+        );
+        let request = &server.received_requests().await.expect("requests")[0];
+        assert!(!request.url.as_str().contains("static-key"));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn emby_avatar_maps_missing_statuses_and_rejects_non_image_content() {
+        for status in [401, 403, 404] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+            assert!(
+                fetch_avatar(&test_client(), &server.uri(), "static-key", "user", "tag")
+                    .await
+                    .expect("missing avatar response")
+                    .is_none(),
+                "status {status}"
+            );
+        }
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "text/plain")
+                    .set_body_string("not an image"),
+            )
+            .mount(&server)
+            .await;
+        let error = fetch_avatar(&test_client(), &server.uri(), "static-key", "user", "tag")
+            .await
+            .expect_err("non-image avatar must fail");
+        assert!(error.to_string().contains("not an image"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn avatar_rejects_oversized_content_length_without_buffering_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/Users/user/Images/Primary"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/png")
+                    .set_body_bytes(vec![0; AVATAR_LIMIT + 1]),
             )
             .mount(&server)
             .await;

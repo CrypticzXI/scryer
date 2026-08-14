@@ -2,6 +2,41 @@ use super::*;
 use std::{collections::HashMap, path::Path};
 
 #[test]
+fn media_server_connection_redacts_api_key_from_debug_and_serialization() {
+    let now = chrono::Utc::now();
+    let connection = MediaServerConnection {
+        id: "emby-main".into(),
+        provider: MediaServerProvider::Emby,
+        display_name: "Emby".into(),
+        base_url: "http://emby.test/emby".into(),
+        enabled: true,
+        login_enabled: true,
+        linking_enabled: true,
+        auto_add_enabled: false,
+        default_app_permissions: AppPermissionMask::NONE,
+        default_library_grants: vec![],
+        machine_id: None,
+        api_key: Some("super-secret-api-key".into()),
+        emby_server_id: Some("server-id".into()),
+        emby_connect_enabled: false,
+        path_mappings: vec![],
+        created_at: now,
+        updated_at: now,
+    };
+
+    let debug = format!("{connection:?}");
+    assert!(!debug.contains("super-secret-api-key"));
+    assert!(debug.contains("[REDACTED]"));
+
+    let mut serialized = serde_json::to_value(&connection).expect("serialize connection");
+    assert!(serialized.get("api_key").is_none());
+    serialized["api_key"] = serde_json::json!("restored-secret");
+    let restored: MediaServerConnection =
+        serde_json::from_value(serialized).expect("deserialize legacy/backup connection");
+    assert_eq!(restored.api_key.as_deref(), Some("restored-secret"));
+}
+
+#[test]
 fn library_root_trimming_preserves_filesystem_roots() {
     assert_eq!(trim_library_root_path(" / "), "/");
     assert_eq!(trim_library_root_path("C:\\"), "C:\\");

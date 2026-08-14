@@ -5816,6 +5816,7 @@ dependencies = [
  "icu_collator",
  "icu_locale",
  "serde",
+ "serde_json",
  "strum 0.28.0",
  "thiserror 2.0.20",
  "unicode-normalization",

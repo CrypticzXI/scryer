@@ -14,6 +14,8 @@ mod backups;
 mod dataloader_enrichment;
 #[path = "integration_graphql/downloads_housekeeping_system.rs"]
 mod downloads_housekeeping_system;
+#[path = "integration_graphql/emby_contract.rs"]
+mod emby_contract;
 #[path = "integration_graphql/external_import_secret_drafts.rs"]
 mod external_import_secret_drafts;
 #[path = "integration_graphql/library_scan.rs"]
@@ -1203,6 +1205,15 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 category: "security".into(),
                 scope: "system".into(),
                 key_name: "auth.totp.require_jellyfin_login".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
+                key_name: "auth.totp.require_emby_login".into(),
                 data_type: "boolean".into(),
                 default_value_json: "false".into(),
                 is_sensitive: false,

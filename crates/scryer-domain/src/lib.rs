@@ -3344,7 +3344,7 @@ pub struct MediaServerDefaultLibraryGrant {
     pub permissions: LibraryPermissionMask,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MediaServerConnection {
     pub id: String,
     pub provider: MediaServerProvider,
@@ -3357,12 +3357,38 @@ pub struct MediaServerConnection {
     pub default_app_permissions: AppPermissionMask,
     pub default_library_grants: Vec<MediaServerDefaultLibraryGrant>,
     pub machine_id: Option<String>,
+    #[serde(default, skip_serializing)]
     pub api_key: Option<String>,
     pub emby_server_id: Option<String>,
     pub emby_connect_enabled: bool,
     pub path_mappings: Vec<MediaServerPathMapping>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for MediaServerConnection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MediaServerConnection")
+            .field("id", &self.id)
+            .field("provider", &self.provider)
+            .field("display_name", &self.display_name)
+            .field("base_url", &self.base_url)
+            .field("enabled", &self.enabled)
+            .field("login_enabled", &self.login_enabled)
+            .field("linking_enabled", &self.linking_enabled)
+            .field("auto_add_enabled", &self.auto_add_enabled)
+            .field("default_app_permissions", &self.default_app_permissions)
+            .field("default_library_grants", &self.default_library_grants)
+            .field("machine_id", &self.machine_id)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("emby_server_id", &self.emby_server_id)
+            .field("emby_connect_enabled", &self.emby_connect_enabled)
+            .field("path_mappings", &self.path_mappings)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
 }
 
 impl MediaServerConnection {

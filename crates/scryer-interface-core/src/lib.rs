@@ -143,6 +143,7 @@ pub struct MfaVerification {
     pub verified_until: Option<i64>,
     pub step_up_verified_until: Option<i64>,
     pub session_scope: JwtSessionScope,
+    pub persist_session: bool,
     pub oauth_authorization_source: OAuthAuthorizationSource,
 }
 

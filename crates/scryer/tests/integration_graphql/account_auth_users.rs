@@ -233,6 +233,7 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: false
           }) {
             effectiveFormLoginEnabled
           }
@@ -249,7 +250,7 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
 
     let token = ctx
         .app
-        .issue_mfa_enrollment_token(&admin)
+        .issue_mfa_enrollment_token(&admin, false)
         .await
         .expect("issue enrollment token");
 
@@ -2564,6 +2565,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: true
             totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: false
           }) {
             effectiveFormLoginEnabled
             mfaRequirePasswordLogin
@@ -2605,12 +2607,19 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
     assert_eq!(payload["user"]["username"], "localmfa");
 
     let token = payload["token"].as_str().expect("enrollment token");
-    let (_user, claims) = ctx
+    let (user, claims) = ctx
         .app
         .authenticate_token_with_claims(token)
         .await
         .expect("authenticate enrollment token");
     assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
+    assert!(!claims.persist_session);
+    let persistent_token = ctx
+        .app
+        .issue_mfa_enrollment_token(&user, true)
+        .await
+        .expect("issue persistent enrollment token");
+    let token = persistent_token.as_str();
 
     let enrollment_start = gql_with_token(
         &ctx,
@@ -2638,6 +2647,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
               token
               mfaEnrollmentRequired
               mfaVerifiedUntil
+              persistSession
               user { username }
             }
           }
@@ -2662,6 +2672,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
     );
     let login_payload = &complete_payload["login"];
     assert_eq!(login_payload["mfaEnrollmentRequired"], false);
+    assert_eq!(login_payload["persistSession"], true);
     assert!(login_payload["mfaVerifiedUntil"].as_str().is_some());
     assert_eq!(login_payload["user"]["username"], "localmfa");
     let full_token = login_payload["token"].as_str().expect("full token");
@@ -2735,6 +2746,7 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: true
+            totpRequireEmbyLogin: false
           }) {
             effectiveFormLoginEnabled
             totpRequireJellyfinLogin
@@ -2762,6 +2774,7 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
             connectionId: $connectionId
             username: $username
             password: $password
+            persistSession: false
           }) {
             token
             mfaEnrollmentRequired
@@ -2817,6 +2830,7 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
               token
               mfaEnrollmentRequired
               mfaVerifiedUntil
+              persistSession
               user { username }
             }
           }
@@ -2841,6 +2855,7 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
     );
     let login_payload = &complete_payload["login"];
     assert_eq!(login_payload["mfaEnrollmentRequired"], false);
+    assert_eq!(login_payload["persistSession"], false);
     assert!(login_payload["mfaVerifiedUntil"].as_str().is_some());
     assert_eq!(login_payload["user"]["username"], "jellyfin-mfa");
     let full_token = login_payload["token"].as_str().expect("full token");
@@ -2956,6 +2971,7 @@ async fn graphql_jellyfin_pending_invite_for_existing_user_starts_mfa_enrollment
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: true
+            totpRequireEmbyLogin: false
           }) {
             totpRequireJellyfinLogin
           }
@@ -3075,6 +3091,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: true
             totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: false
           }) {
             effectiveFormLoginEnabled
             mfaRequirePasswordLogin

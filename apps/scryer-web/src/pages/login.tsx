@@ -407,6 +407,7 @@ export default function LoginPage() {
       adoptSession(
         data.completeLoginMfaEnrollment.login.token,
         data.completeLoginMfaEnrollment.login.user ?? null,
+        data.completeLoginMfaEnrollment.login.persistSession,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : t("auth.mfaSetupCompleteFailed"));

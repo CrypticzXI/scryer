@@ -80,7 +80,7 @@ docs](https://www.scryer.media/scryer/docs/getting-started/#docker-compose).
 
 ## Development
 
-- [Contributors guide](CONTRIBUTORS.md)
+- [Contributing guide](CONTRIBUTING.md)
 - [Architecture notes](ARCHITECTURE.md)
 - [Issues](https://github.com/scryer-media/scryer/issues)
 

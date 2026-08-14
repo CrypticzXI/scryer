@@ -18,6 +18,15 @@ use crate::types::{
 
 const DUMMY_LOGIN_PASSWORD_HASH: &str = "v2$$argon2id$v=19$m=19456,t=2,p=1$zyGbHzPhFQTT8+t6oz3ZNw$CtJ2dcsWSe1CCV4O30Gm9zPD/03F7MfEIMDvBvjc/ig";
 
+struct AccessTokenOptions {
+    mfa_verified_until: Option<chrono::DateTime<Utc>>,
+    mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+    auth_scope: JwtSessionScope,
+    ttl_seconds: i64,
+    persist_session: bool,
+    oauth: Option<(String, String, OAuthAuthorizationSource)>,
+}
+
 impl AppUseCase {
     const BACKUP_DOWNLOAD_TOKEN_KIND: &'static str = "backup_download_v1";
     const BACKUP_DOWNLOAD_TOKEN_TTL_SECONDS: i64 = 5 * 60;
@@ -591,17 +600,23 @@ impl AppUseCase {
             mfa_step_up_verified_until,
             JwtSessionScope::Full,
             self.token_lifetime(),
+            false,
         )
         .await
     }
 
-    pub async fn issue_mfa_enrollment_token(&self, actor: &User) -> AppResult<String> {
+    pub async fn issue_mfa_enrollment_token(
+        &self,
+        actor: &User,
+        persist_session: bool,
+    ) -> AppResult<String> {
         self.issue_access_token_with_mfa_and_scope(
             actor,
             None,
             None,
             JwtSessionScope::MfaEnrollment,
             self.mfa_enrollment_token_lifetime(),
+            persist_session,
         )
         .await
     }
@@ -630,15 +645,18 @@ impl AppUseCase {
     ) -> AppResult<String> {
         self.issue_access_token_with_mfa_scope_and_oauth(
             actor,
-            None,
-            None,
-            JwtSessionScope::Full,
-            Self::OAUTH_ACCESS_TOKEN_TTL_SECONDS,
-            Some((
-                client_id.to_string(),
-                grant_id.to_string(),
-                authorization_source,
-            )),
+            AccessTokenOptions {
+                mfa_verified_until: None,
+                mfa_step_up_verified_until: None,
+                auth_scope: JwtSessionScope::Full,
+                ttl_seconds: Self::OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+                persist_session: false,
+                oauth: Some((
+                    client_id.to_string(),
+                    grant_id.to_string(),
+                    authorization_source,
+                )),
+            },
         )
         .await
     }
@@ -650,14 +668,18 @@ impl AppUseCase {
         mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
         auth_scope: JwtSessionScope,
         ttl_seconds: i64,
+        persist_session: bool,
     ) -> AppResult<String> {
         self.issue_access_token_with_mfa_scope_and_oauth(
             actor,
-            mfa_verified_until,
-            mfa_step_up_verified_until,
-            auth_scope,
-            ttl_seconds,
-            None,
+            AccessTokenOptions {
+                mfa_verified_until,
+                mfa_step_up_verified_until,
+                auth_scope,
+                ttl_seconds,
+                persist_session,
+                oauth: None,
+            },
         )
         .await
     }
@@ -665,12 +687,16 @@ impl AppUseCase {
     async fn issue_access_token_with_mfa_scope_and_oauth(
         &self,
         actor: &User,
-        mfa_verified_until: Option<chrono::DateTime<Utc>>,
-        mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
-        auth_scope: JwtSessionScope,
-        ttl_seconds: i64,
-        oauth: Option<(String, String, OAuthAuthorizationSource)>,
+        options: AccessTokenOptions,
     ) -> AppResult<String> {
+        let AccessTokenOptions {
+            mfa_verified_until,
+            mfa_step_up_verified_until,
+            auth_scope,
+            ttl_seconds,
+            persist_session,
+            oauth,
+        } = options;
         let actor = self.load_user_for_auth_payload(actor).await?;
         let is_authless_oauth = matches!(
             oauth.as_ref().map(|(_, _, source)| source),
@@ -717,6 +743,7 @@ impl AppUseCase {
             mfa_verified_until: mfa_verified_until.map(|value| value.timestamp()),
             mfa_step_up_verified_until: mfa_step_up_verified_until.map(|value| value.timestamp()),
             auth_scope,
+            persist_session,
             oauth_client_id,
             oauth_grant_id,
             oauth_authorization_source,
@@ -1191,6 +1218,7 @@ impl AppUseCase {
             mfa_verified_until: claims.mfa_verified_until,
             mfa_step_up_verified_until: claims.mfa_step_up_verified_until,
             session_scope: claims.auth_scope,
+            persist_session: claims.persist_session,
             oauth_client_id: claims.oauth_client_id,
             oauth_grant_id: claims.oauth_grant_id,
             oauth_authorization_source: claims.oauth_authorization_source,

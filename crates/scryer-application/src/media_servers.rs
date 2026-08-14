@@ -378,6 +378,22 @@ impl AppUseCase {
             emby_connect_enabled = resolved.connect_enabled;
             emby_exchange_cleanup = resolved.cleanup;
         }
+        if provider == MediaServerProvider::Emby
+            && patch.base_url.is_some()
+            && !rotate_emby_credentials
+        {
+            let stored_api_key = api_key.as_deref().ok_or_else(|| {
+                AppError::Validation("changing an Emby server URL requires a stored API key".into())
+            })?;
+            let identity = self
+                .services
+                .integrations
+                .external_identity_verifier
+                .test_emby_api_key(&id, &base_url, stored_api_key, emby_server_id.as_deref())
+                .await?;
+            base_url = identity.api_base_url;
+            emby_server_id = Some(identity.server_id);
+        }
         if emby_connect_enabled && emby_server_id.is_none() {
             return Err(AppError::Validation(
                 "Emby Connect login requires a verified server identity".into(),
@@ -995,11 +1011,14 @@ impl AppUseCase {
         fn present(value: Option<&str>) -> Option<&str> {
             value.map(str::trim).filter(|value| !value.is_empty())
         }
+        fn present_secret(value: Option<&str>) -> Option<&str> {
+            value.filter(|value| !value.is_empty())
+        }
         let api_key = present(api_key);
         let admin_username = present(admin_username);
-        let admin_password = present(admin_password);
+        let admin_password = present_secret(admin_password);
         let connect_username_or_email = present(connect_username_or_email);
-        let connect_password = present(connect_password);
+        let connect_password = present_secret(connect_password);
         let connect_server_id = present(connect_server_id);
         let mode = mode.unwrap_or(EmbyConnectionMode::Local);
 
@@ -2149,6 +2168,8 @@ mod tests {
 
     struct EmbySetupVerifier {
         finish_compensation: Arc<Mutex<Vec<bool>>>,
+        local_admin_passwords: Arc<Mutex<Vec<String>>>,
+        connect_passwords: Arc<Mutex<Vec<String>>>,
     }
 
     #[async_trait::async_trait]
@@ -2208,8 +2229,12 @@ mod tests {
             _: &str,
             _: &str,
             _: &str,
-            _: &str,
+            password: &str,
         ) -> AppResult<EmbyApiKeyExchange> {
+            self.local_admin_passwords
+                .lock()
+                .await
+                .push(password.to_string());
             Ok(EmbyApiKeyExchange {
                 api_key: "new-key".into(),
                 server_identity: EmbyServerIdentity {
@@ -2225,6 +2250,31 @@ mod tests {
                     "temporary-token".into(),
                     Some("new-key".into()),
                 )),
+            })
+        }
+
+        async fn exchange_emby_connect_admin_api_key(
+            &self,
+            _: &str,
+            _: &str,
+            server_id: &str,
+            _: &str,
+            password: &str,
+        ) -> AppResult<EmbyApiKeyExchange> {
+            self.connect_passwords
+                .lock()
+                .await
+                .push(password.to_string());
+            Ok(EmbyApiKeyExchange {
+                api_key: "connect-key".into(),
+                server_identity: EmbyServerIdentity {
+                    api_base_url: "https://emby.example.test/emby".into(),
+                    server_id: server_id.into(),
+                    server_name: "Emby".into(),
+                    version: "4.9.5.0".into(),
+                },
+                created_new_key: false,
+                cleanup: None,
             })
         }
 
@@ -2675,6 +2725,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn emby_setup_preserves_admin_and_connect_password_bytes() {
+        let local_passwords = Arc::new(Mutex::new(Vec::new()));
+        let connect_passwords = Arc::new(Mutex::new(Vec::new()));
+        let verifier = Arc::new(EmbySetupVerifier {
+            finish_compensation: Arc::new(Mutex::new(Vec::new())),
+            local_admin_passwords: Arc::clone(&local_passwords),
+            connect_passwords: Arc::clone(&connect_passwords),
+        });
+        let app = app_with_repository_and_verifier(
+            Arc::new(TestMediaServerConnectionRepository::new(Vec::new())),
+            verifier,
+        );
+        let draft = |mode, local_password: Option<&str>, connect_password: Option<&str>| {
+            MediaServerConnectionDraft {
+                provider: MediaServerProvider::Emby,
+                display_name: "Emby".into(),
+                base_url: "https://emby.example.test".into(),
+                enabled: true,
+                login_enabled: false,
+                linking_enabled: false,
+                auto_add_enabled: false,
+                default_app_permissions: AppPermissionMask::NONE,
+                default_library_grants: Vec::new(),
+                machine_id: None,
+                plex_auth_token: None,
+                plex_server_id: None,
+                api_key: None,
+                admin_username: (mode == EmbyConnectionMode::Local).then(|| " admin ".into()),
+                admin_password: local_password.map(str::to_string),
+                emby_connection_mode: Some(mode),
+                emby_local_setup_method: Some(EmbyLocalSetupMethod::AdminCredentials),
+                emby_connect_enabled: Some(mode == EmbyConnectionMode::Connect),
+                emby_connect_username_or_email: (mode == EmbyConnectionMode::Connect)
+                    .then(|| " connect@example.test ".into()),
+                emby_connect_password: connect_password.map(str::to_string),
+                emby_connect_server_id: (mode == EmbyConnectionMode::Connect)
+                    .then(|| "emby-server-id".into()),
+                path_mappings: Vec::new(),
+            }
+        };
+
+        let empty_local = app
+            .create_media_server_connection(
+                &system_settings_user(),
+                draft(EmbyConnectionMode::Local, Some(""), None),
+            )
+            .await;
+        assert!(
+            matches!(empty_local, Err(AppError::Validation(message)) if message == "both Emby administrator username and password are required")
+        );
+        let empty_connect = app
+            .create_media_server_connection(
+                &system_settings_user(),
+                draft(EmbyConnectionMode::Connect, None, Some("")),
+            )
+            .await;
+        assert!(
+            matches!(empty_connect, Err(AppError::Validation(message)) if message == "Emby Connect password is required")
+        );
+
+        app.create_media_server_connection(
+            &system_settings_user(),
+            draft(EmbyConnectionMode::Local, Some("   "), None),
+        )
+        .await
+        .expect("create local Emby connection");
+        app.create_media_server_connection(
+            &system_settings_user(),
+            draft(EmbyConnectionMode::Connect, None, Some("\t ")),
+        )
+        .await
+        .expect("create Connect Emby connection");
+
+        assert_eq!(&*local_passwords.lock().await, &["   "]);
+        assert_eq!(&*connect_passwords.lock().await, &["\t "]);
+    }
+
+    #[tokio::test]
+    async fn emby_base_url_only_update_persists_verified_canonical_api_root() {
+        let app = app_with_repository_and_verifier(
+            Arc::new(TestMediaServerConnectionRepository::new(vec![
+                emby_connection(true, Some("stored-key")),
+            ])),
+            Arc::new(EmbySetupVerifier {
+                finish_compensation: Arc::new(Mutex::new(Vec::new())),
+                local_admin_passwords: Arc::new(Mutex::new(Vec::new())),
+                connect_passwords: Arc::new(Mutex::new(Vec::new())),
+            }),
+        );
+        let mut patch = empty_update_patch("emby-main");
+        patch.base_url = Some("https://proxy.example.test".into());
+
+        let updated = app
+            .update_media_server_connection(&permission_manager_user(), patch)
+            .await
+            .expect("update Emby base URL");
+
+        assert_eq!(updated.base_url, "https://emby.example.test");
+        assert_eq!(updated.api_key.as_deref(), Some("stored-key"));
+        assert_eq!(updated.emby_server_id.as_deref(), Some("emby-server-id"));
+    }
+
+    #[tokio::test]
     async fn newly_created_emby_key_is_compensated_when_create_persistence_fails() {
         let finish = Arc::new(Mutex::new(Vec::new()));
         let app = app_with_repository_and_verifier(
@@ -2685,6 +2838,8 @@ mod tests {
             )),
             Arc::new(EmbySetupVerifier {
                 finish_compensation: Arc::clone(&finish),
+                local_admin_passwords: Arc::new(Mutex::new(Vec::new())),
+                connect_passwords: Arc::new(Mutex::new(Vec::new())),
             }),
         );
 
@@ -2734,6 +2889,8 @@ mod tests {
             )),
             Arc::new(EmbySetupVerifier {
                 finish_compensation: Arc::clone(&finish),
+                local_admin_passwords: Arc::new(Mutex::new(Vec::new())),
+                connect_passwords: Arc::new(Mutex::new(Vec::new())),
             }),
         );
         let mut patch = empty_update_patch("emby-main");

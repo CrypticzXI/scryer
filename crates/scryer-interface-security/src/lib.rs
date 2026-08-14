@@ -69,7 +69,7 @@ async fn login_mfa_enrollment_payload_from_user(
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_mfa_enrollment_token(&user)
+        .issue_mfa_enrollment_token(&user, persist_session)
         .await
         .map_err(to_gql_error)?;
     let expires_at = Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime());

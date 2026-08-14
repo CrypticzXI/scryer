@@ -31,6 +31,7 @@ use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
 mod discovery_pending_context_changes;
+mod emby_media_servers;
 mod external_import_setup_secret_drafts;
 mod imports_download_submissions;
 mod library_scan_unmatched;

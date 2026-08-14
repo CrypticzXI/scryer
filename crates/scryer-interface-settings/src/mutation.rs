@@ -399,6 +399,7 @@ async fn login_payload_from_user(
     user: scryer_domain::User,
     mfa_verified_until: Option<chrono::DateTime<Utc>>,
     mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+    persist_session: bool,
 ) -> Result<LoginPayload, Error> {
     let user = app
         .load_user_for_auth_payload(&user)
@@ -419,7 +420,7 @@ async fn login_payload_from_user(
         expires_at,
         mfa_verified_until,
         mfa_enrollment_required: false,
-        persist_session: true,
+        persist_session,
     })
 }
 
@@ -432,7 +433,7 @@ async fn login_mfa_enrollment_payload_from_user(
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_mfa_enrollment_token(&user)
+        .issue_mfa_enrollment_token(&user, false)
         .await
         .map_err(to_gql_error)?;
     let auth_factor_status = app
@@ -1468,14 +1469,20 @@ impl SettingsMutations {
         input: TotpEnrollmentCompleteInput,
     ) -> GqlResult<LoginMfaEnrollmentCompletePayload> {
         let app = app_from_ctx(ctx)?;
+        let mfa = mfa_verification_from_ctx(ctx);
         let actor = mfa_enrollment_actor_from_ctx(ctx)?;
         let complete = app
             .complete_login_mfa_enrollment(&actor, input.challenge_id.as_ref(), &input.code)
             .await
             .map_err(to_gql_error)?;
-        let login =
-            login_payload_from_user(&app, actor, Some(app.mfa_freshness_verified_until()), None)
-                .await?;
+        let login = login_payload_from_user(
+            &app,
+            actor,
+            Some(app.mfa_freshness_verified_until()),
+            None,
+            mfa.persist_session,
+        )
+        .await?;
         Ok(LoginMfaEnrollmentCompletePayload {
             status: from_totp_status(complete.status),
             recovery_codes: complete.recovery_codes,
@@ -1494,7 +1501,7 @@ impl SettingsMutations {
             .mfa_verify_step_up(&actor, &input.code)
             .await
             .map_err(to_gql_error)?;
-        login_payload_from_user(&app, actor, None, Some(mfa_step_up_verified_until)).await
+        login_payload_from_user(&app, actor, None, Some(mfa_step_up_verified_until), true).await
     }
 
     async fn totp_disable(
@@ -1584,7 +1591,7 @@ impl SettingsMutations {
                 .await);
             }
         };
-        login_payload_from_user(&app, user, None, None).await
+        login_payload_from_user(&app, user, None, None, true).await
     }
 
     async fn delete_my_passkey(
@@ -1656,7 +1663,7 @@ impl SettingsMutations {
         } else {
             None
         };
-        login_payload_from_user(&app, user, mfa_verified_until, None).await
+        login_payload_from_user(&app, user, mfa_verified_until, None, true).await
     }
 
     /// Mark the setup wizard as complete.

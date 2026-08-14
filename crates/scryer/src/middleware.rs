@@ -1374,6 +1374,7 @@ impl ResolvedActor {
             verified_until: self.token_claims.mfa_verified_until,
             step_up_verified_until: self.token_claims.mfa_step_up_verified_until,
             session_scope: self.token_claims.session_scope,
+            persist_session: self.token_claims.persist_session,
             oauth_authorization_source: self.token_claims.oauth_authorization_source,
         }
     }

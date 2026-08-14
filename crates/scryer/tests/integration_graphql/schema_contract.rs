@@ -171,14 +171,14 @@ async fn graphql_introspection_schema_census_matches_contract_baseline() {
         "query fields: {query_field_names:?}"
     );
     assert_eq!(
-        mutation_field_count, 171,
+        mutation_field_count, 175,
         "mutation fields: {mutation_field_names:?}"
     );
     assert_eq!(subscription_field_count, 13);
-    assert_eq!(public_types.len(), 550);
-    assert_eq!(kind_count("OBJECT"), 289);
-    assert_eq!(kind_count("INPUT_OBJECT"), 154);
-    assert_eq!(kind_count("ENUM"), 95);
+    assert_eq!(public_types.len(), 560);
+    assert_eq!(kind_count("OBJECT"), 291);
+    assert_eq!(kind_count("INPUT_OBJECT"), 158);
+    assert_eq!(kind_count("ENUM"), 99);
     assert_eq!(kind_count("SCALAR"), 10);
     assert_eq!(kind_count("UNION"), 2);
     assert!(query_field_names.contains(&"backupSettings"));

@@ -1997,17 +1997,17 @@ mod tests {
                     .row_counts
                     .get("settings_definitions")
                     .copied(),
-                Some(3),
+                Some(4),
                 "backup should include the seeded setting definition rows"
             );
             assert_eq!(
                 inspected.row_counts.get("settings_definitions").copied(),
-                Some(3),
+                Some(4),
                 "inspected bundle should persist the setting definition row count"
             );
             assert_eq!(
                 inspected.row_counts.get("settings_values").copied(),
-                Some(3),
+                Some(4),
                 "inspected bundle should persist the seeded setting value row count"
             );
             assert_eq!(
@@ -2459,6 +2459,16 @@ mod tests {
                 None,
             )
             .await?;
+        settings
+            .upsert_setting_json(
+                "system",
+                "auth.totp.require_emby_login",
+                None,
+                "true".to_string(),
+                "backup_matrix_test",
+                None,
+            )
+            .await?;
 
         UserRepository::create(users, User::new_admin("backup-matrix-admin")).await?;
         TitleRepository::create(titles, backup_matrix_title()).await?;
@@ -2497,6 +2507,7 @@ mod tests {
             ],
         )
         .await?;
+        seed_backup_matrix_emby_connection(datastore, coverage_fingerprint).await?;
 
         let discovery_state = DiscoverySyncStateRecord {
             last_subject_fingerprint: Some(discovery_marker.to_string()),
@@ -2507,7 +2518,70 @@ mod tests {
             .await
     }
 
+    async fn seed_backup_matrix_emby_connection(
+        datastore: &StoreDatastore,
+        fingerprint: &str,
+    ) -> AppResult<()> {
+        let now = chrono::Utc::now();
+        SqlRuntime::execute(
+            datastore.read_exec(),
+            "INSERT INTO media_server_connections (
+                 id, provider, display_name, base_url, enabled, login_enabled,
+                 linking_enabled, auto_add_enabled, default_app_permissions, created_at, updated_at
+             ) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+            &[
+                SqlArg::Text("backup-matrix-emby".to_string()),
+                SqlArg::Text("emby".to_string()),
+                SqlArg::Text("Backup Matrix Emby".to_string()),
+                SqlArg::Text(format!("https://{fingerprint}.emby.invalid/emby")),
+                SqlArg::Bool(true),
+                SqlArg::Bool(true),
+                SqlArg::Bool(true),
+                SqlArg::Bool(false),
+                SqlArg::I64(0),
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await?;
+        SqlRuntime::execute(
+            datastore.read_exec(),
+            "INSERT INTO emby_media_server_details (
+                 connection_id, api_key, server_id, connect_enabled, created_at, updated_at
+             ) VALUES ({}, {}, {}, {}, {}, {})",
+            &[
+                SqlArg::Text("backup-matrix-emby".to_string()),
+                SqlArg::Text(format!("{fingerprint}-emby-api-key")),
+                SqlArg::Text(format!("{fingerprint}-emby-server-id")),
+                SqlArg::Bool(fingerprint == "source-fingerprint"),
+                SqlArg::Timestamp(now),
+                SqlArg::Timestamp(now),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn verify_backup_matrix_runtime_state(datastore: &StoreDatastore) -> AppResult<()> {
+        let emby = SqlRuntime::fetch_optional(
+            datastore.read_exec(),
+            "SELECT connection.base_url, detail.api_key, detail.server_id, detail.connect_enabled
+               FROM media_server_connections connection
+               JOIN emby_media_server_details detail
+                 ON detail.connection_id = connection.id
+              WHERE connection.id = {}",
+            &[SqlArg::Text("backup-matrix-emby".to_string())],
+        )
+        .await?
+        .expect("restored Emby connection should exist");
+        assert_eq!(
+            emby.text("base_url")?,
+            "https://source-fingerprint.emby.invalid/emby"
+        );
+        assert_eq!(emby.text("api_key")?, "source-fingerprint-emby-api-key");
+        assert_eq!(emby.text("server_id")?, "source-fingerprint-emby-server-id");
+        assert!(emby.bool("connect_enabled")?);
+
         let coverage = ScopeIndexerCoverageStore::new(datastore.clone());
         assert_eq!(
             coverage
@@ -2599,6 +2673,15 @@ mod tests {
             backup_matrix_setting_definition(),
             backup_matrix_convergence_setting_definition("acquisition.convergence_resume_after"),
             backup_matrix_convergence_setting_definition("acquisition.convergence_seeded_at"),
+            SettingDefinitionSeed {
+                category: "authentication".to_string(),
+                scope: "system".to_string(),
+                key_name: "auth.totp.require_emby_login".to_string(),
+                data_type: "boolean".to_string(),
+                default_value_json: "false".to_string(),
+                is_sensitive: false,
+                validation_json: None,
+            },
         ]
     }
 
@@ -2645,6 +2728,13 @@ mod tests {
                 .await?
                 .as_deref(),
             Some("\"2026-07-17T00:00:00Z\"")
+        );
+        assert_eq!(
+            settings
+                .get_setting_json("system", "auth.totp.require_emby_login", None)
+                .await?
+                .as_deref(),
+            Some("true")
         );
 
         let user = UserRepository::get_by_username(users, "backup-matrix-admin").await?;
