@@ -1572,21 +1572,51 @@ h6 {
 }
 .fc-scryer .fc-scryer-header-toolbar {
   align-items: center;
+  display: grid;
   gap: 1rem;
-  margin-bottom: 1.25rem;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  margin-bottom: 0.75rem;
 }
 .fc-scryer .fc-scryer-toolbar-section {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.5rem;
+}
+.fc-scryer .fc-scryer-toolbar-section:first-child {
+  justify-content: flex-start;
+}
+.fc-scryer .fc-scryer-toolbar-section:last-child {
+  justify-content: flex-end;
+}
+.fc-scryer-calendar-filters {
+  min-width: 0;
 }
 .fc-scryer .fc-scryer-button {
   border-radius: 0.625rem;
   box-shadow: none;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 600;
+  height: 2rem;
+  padding-block: 0;
   text-transform: none;
+}
+.fc-scryer .fc-scryer-button-group {
+  display: inline-flex;
+}
+.fc-scryer .fc-scryer-button-group .fc-scryer-button {
+  border-radius: 0;
+}
+.fc-scryer .fc-scryer-button-group .fc-scryer-button:first-child {
+  border-bottom-left-radius: 0.625rem;
+  border-top-left-radius: 0.625rem;
+}
+.fc-scryer .fc-scryer-button-group .fc-scryer-button:last-child {
+  border-bottom-right-radius: 0.625rem;
+  border-top-right-radius: 0.625rem;
+}
+.fc-scryer .fc-scryer-button-group .fc-scryer-button:not(:first-child) {
+  margin-inline-start: -1px;
 }
 .fc-scryer .fc-scryer-button:not(:disabled).is-selected {
   background: linear-gradient(135deg, var(--scry-accent), var(--scry-accent2));
@@ -1618,7 +1648,7 @@ h6 {
 .fc-scryer .fc-scryer-toolbar-title {
   color: #fff;
   font-family: var(--font-space-grotesk), "Space Grotesk", sans-serif;
-  font-size: 1.5rem;
+  font-size: 1.75rem;
   font-weight: 700;
   letter-spacing: -0.01em;
 }
@@ -1709,8 +1739,31 @@ h6 {
   min-width: 0;
   padding: 7px 9px 7px 14px;
 }
+.fc-scryer .fc-scryer-event-title-row {
+  align-items: flex-start;
+  display: flex;
+  gap: 5px;
+  margin-bottom: 5px;
+  min-width: 0;
+}
+.fc-scryer .fc-scryer-event-monitoring-icon {
+  display: inline-flex;
+  flex: none;
+  margin-top: 1px;
+}
+.fc-scryer .fc-scryer-event-monitoring-icon svg {
+  height: 12px;
+  width: 12px;
+}
+.fc-scryer .fc-scryer-event-monitoring-icon.is-monitored {
+  color: var(--scry-success-text);
+}
+.fc-scryer .fc-scryer-event-monitoring-icon.is-unmonitored {
+  color: var(--scry-danger-text);
+}
 .fc-scryer .fc-scryer-event-title {
   color: #fff;
+  flex: 1 1 auto;
   font-size: 12.5px;
   font-weight: 700;
   line-height: 1.25;
@@ -1718,7 +1771,7 @@ h6 {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  margin-bottom: 5px;
+  min-width: 0;
   text-shadow: 0 1px 1px rgb(0 0 0 / 0.18);
 }
 .fc-scryer .fc-scryer-event-meta {
@@ -1943,6 +1996,17 @@ h6 {
   }
   .fc-scryer .fc-scryer-event-card {
     padding: 0.28rem 0.24rem 0.3rem 0.38rem;
+  }
+  .fc-scryer .fc-scryer-event-title-row {
+    gap: 0.2rem;
+    margin-bottom: 0;
+  }
+  .fc-scryer .fc-scryer-event-monitoring-icon {
+    margin-top: 0;
+  }
+  .fc-scryer .fc-scryer-event-monitoring-icon svg {
+    height: 0.58rem;
+    width: 0.58rem;
   }
   .fc-scryer .fc-scryer-event-title {
     display: block;

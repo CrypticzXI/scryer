@@ -18,9 +18,10 @@ import type {
   MountInfo,
 } from "@fullcalendar/react";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
-import { CalendarClock } from "lucide-react";
+import { CalendarClock, Eye, EyeOff } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import type { LibraryRecord } from "@/lib/types";
 import { artworkFallbackStyle } from "@/lib/utils/artwork-fallback";
@@ -48,6 +49,63 @@ export type CalendarEpisodeItem = {
   monitored: boolean;
   mediaAvailability: EpisodeMediaAvailability;
 };
+
+type CalendarMonitoringStatus = "monitored" | "unmonitored";
+
+function CalendarMonitoringFilterControl({
+  visibleStatuses,
+  counts,
+  onValueChange,
+  className = "",
+}: {
+  visibleStatuses: CalendarMonitoringStatus[];
+  counts: Record<CalendarMonitoringStatus, number>;
+  onValueChange: (statuses: CalendarMonitoringStatus[]) => void;
+  className?: string;
+}) {
+  return (
+    <ToggleGroup
+      type="multiple"
+      variant="outline"
+      size="sm"
+      value={visibleStatuses}
+      onValueChange={(values) => {
+        const statuses = values.filter(
+          (value): value is CalendarMonitoringStatus =>
+            value === "monitored" || value === "unmonitored",
+        );
+        if (statuses.length > 0) onValueChange(statuses);
+      }}
+      aria-label="Calendar monitoring filter"
+      className={`shrink-0 ${className}`}
+    >
+      <ToggleGroupItem
+        value="monitored"
+        variant="outline"
+        size="sm"
+        className="gap-1.5"
+      >
+        <Eye aria-hidden="true" className="h-3.5 w-3.5 text-[var(--scry-success-text)]" />
+        <span>Monitored</span>
+        <Badge tone="neutral" className="h-4 min-w-5 rounded-full px-1 py-0 text-[10px]">
+          {counts.monitored}
+        </Badge>
+      </ToggleGroupItem>
+      <ToggleGroupItem
+        value="unmonitored"
+        variant="outline"
+        size="sm"
+        className="gap-1.5"
+      >
+        <EyeOff aria-hidden="true" className="h-3.5 w-3.5 text-[var(--scry-danger-text)]" />
+        <span>Unmonitored</span>
+        <Badge tone="neutral" className="h-4 min-w-5 rounded-full px-1 py-0 text-[10px]">
+          {counts.unmonitored}
+        </Badge>
+      </ToggleGroupItem>
+    </ToggleGroup>
+  );
+}
 
 type CalendarViewProps = {
   episodes: CalendarEpisodeItem[];
@@ -92,6 +150,69 @@ const FACET_LABELS: Record<string, string> = {
   movie: "Movie",
   series: "Series",
 };
+
+function CalendarLibraryFacetFilters({
+  libraries,
+  librariesLoading,
+  selectedLibraryIds,
+  onSelectedLibraryIdsChange,
+  facetFilter,
+  onFacetFilterChange,
+}: {
+  libraries: LibraryRecord[];
+  librariesLoading: boolean;
+  selectedLibraryIds: string[];
+  onSelectedLibraryIdsChange: (value: string[]) => void;
+  facetFilter: string[];
+  onFacetFilterChange: (value: string[]) => void;
+}) {
+  return (
+    <div className="fc-scryer-calendar-filters flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+      <LibraryMultiSelect
+        libraries={libraries}
+        selectedLibraryIds={selectedLibraryIds}
+        onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+        disabled={librariesLoading || libraries.length === 0}
+        triggerClassName="h-8 w-full rounded-[10px] text-[12.5px] sm:w-[150px]"
+      />
+      <ToggleGroup
+        type="multiple"
+        variant="outline"
+        size="sm"
+        value={facetFilter}
+        onValueChange={(values) => {
+          if (values.length > 0) onFacetFilterChange(values);
+        }}
+        aria-label="Calendar media types"
+        className="w-full sm:w-auto"
+      >
+        {FACET_ORDER.map((facet) => {
+          const active = facetFilter.includes(facet);
+          const color = FACET_COLORS[facet];
+          return (
+            <ToggleGroupItem
+              key={facet}
+              value={facet}
+              variant="outline"
+              size="sm"
+              className="flex-1 gap-1.5 sm:flex-none"
+            >
+              <span
+                className="h-[9px] w-[9px] rounded-full"
+                style={{
+                  background: color,
+                  opacity: active ? 1 : 0.35,
+                  boxShadow: active ? `0 0 7px ${FACET_GLOWS[facet]}` : "none",
+                }}
+              />
+              {FACET_LABELS[facet]}
+            </ToggleGroupItem>
+          );
+        })}
+      </ToggleGroup>
+    </div>
+  );
+}
 
 function formatEpisodeLabel(ep: CalendarEpisodeItem): string {
   const parts: string[] = [ep.titleName];
@@ -232,9 +353,9 @@ function CalendarEventHoverCard({ preview }: { preview: CalendarHoverPreview }) 
           </span>
           {badge ? <span className="fc-scryer-hover-card-meta-badge">{badge}</span> : null}
           {availabilityPill ? (
-            <Badge tone={availabilityPill.tone} className="px-1.5 text-[10px]">
+            <span className="fc-scryer-hover-card-meta-badge">
               {availabilityPill.label}
-            </Badge>
+            </span>
           ) : null}
           {!episode.monitored ? (
             <span className="fc-scryer-hover-card-meta-badge">Unmonitored</span>
@@ -275,6 +396,9 @@ export function CalendarView({
   const t = useTranslate();
   const isMobile = useIsMobile();
   const [facetFilter, setFacetFilter] = useState<string[]>(["anime", "movie", "series"]);
+  const [visibleMonitoringStatuses, setVisibleMonitoringStatuses] = useState<
+    CalendarMonitoringStatus[]
+  >(["monitored", "unmonitored"]);
   const [hoverPreview, setHoverPreview] = useState<CalendarHoverPreview | null>(null);
   const hoverTimerRef = useRef<number | null>(null);
 
@@ -298,9 +422,26 @@ export function CalendarView({
     };
   }, [hoverPreview]);
 
+  const monitoringCounts = useMemo(() => {
+    const counts: Record<CalendarMonitoringStatus, number> = {
+      monitored: 0,
+      unmonitored: 0,
+    };
+    for (const episode of episodes) {
+      if (!facetFilter.includes(episode.titleFacet)) continue;
+      counts[episode.monitored ? "monitored" : "unmonitored"] += 1;
+    }
+    return counts;
+  }, [episodes, facetFilter]);
+
   const filteredEpisodes = useMemo(
-    () => episodes.filter((ep) => facetFilter.includes(ep.titleFacet)),
-    [episodes, facetFilter],
+    () =>
+      episodes.filter(
+        (ep) =>
+          facetFilter.includes(ep.titleFacet) &&
+          visibleMonitoringStatuses.includes(ep.monitored ? "monitored" : "unmonitored"),
+      ),
+    [episodes, facetFilter, visibleMonitoringStatuses],
   );
 
   const dayEventCounts = useMemo(() => {
@@ -398,14 +539,25 @@ export function CalendarView({
 
     return (
       <div className="fc-scryer-event-card">
-        <div className="fc-scryer-event-title">{ep.titleName}</div>
+        <div className="fc-scryer-event-title-row">
+          <span
+            role="img"
+            aria-label={ep.monitored ? "Monitored" : "Unmonitored"}
+            className={`fc-scryer-event-monitoring-icon${
+              ep.monitored ? " is-monitored" : " is-unmonitored"
+            }`}
+          >
+            {ep.monitored ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+          </span>
+          <div className="fc-scryer-event-title">{ep.titleName}</div>
+        </div>
         {badge || availabilityPill || time ? (
           <div className="fc-scryer-event-meta">
             {badge ? <span className="fc-scryer-event-badge">{badge}</span> : null}
             {availabilityPill ? (
-              <Badge tone={availabilityPill.tone} className="px-1.5 text-[10px]">
+              <span className="fc-scryer-event-badge">
                 {availabilityPill.label}
-              </Badge>
+              </span>
             ) : null}
             {time ? <span className="fc-scryer-event-time">{time}</span> : null}
           </div>
@@ -445,65 +597,25 @@ export function CalendarView({
   return (
     <>
       <Card className="flex min-h-0 flex-1 flex-col rounded-none border-0 bg-transparent shadow-none">
-      <CardContent className="flex min-h-0 flex-1 flex-col p-0">
-        <div className="mb-4 flex flex-wrap items-center gap-3 max-sm:gap-2">
-          <LibraryMultiSelect
-            libraries={libraries}
-            selectedLibraryIds={selectedLibraryIds}
-            onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
-            disabled={librariesLoading || libraries.length === 0}
-            triggerClassName="h-10 w-full rounded-[11px] text-[13px] sm:w-[188px]"
-          />
-          <div className="grid w-full grid-cols-3 items-center gap-2 sm:flex sm:w-auto">
-            {FACET_ORDER.map((facet) => {
-              const active = facetFilter.includes(facet);
-              const color = FACET_COLORS[facet];
-              return (
-                <button
-                  key={facet}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() =>
-                    handleFacetChange(
-                      active
-                        ? facetFilter.filter((f) => f !== facet)
-                        : [...facetFilter, facet],
-                    )
-                  }
-                  className="flex h-9 items-center justify-center gap-2 rounded-[10px] border px-2.5 text-[12.5px] font-semibold transition sm:px-3.5"
-                  style={{
-                    borderColor: active ? color : "var(--scry-border2)",
-                    background: active ? "rgba(255,255,255,0.04)" : "transparent",
-                    color: active ? "var(--scry-ink2)" : "var(--scry-faint)",
-                  }}
-                >
-                  <span
-                    className="h-[9px] w-[9px] rounded-full"
-                    style={{
-                      background: color,
-                      opacity: active ? 1 : 0.35,
-                      boxShadow: active ? `0 0 7px ${FACET_GLOWS[facet]}` : "none",
-                    }}
-                  />
-                  {FACET_LABELS[facet]}
-                </button>
-              );
-            })}
-          </div>
-          <div className="ml-auto flex w-full items-center justify-end gap-2 text-[12.5px] text-[var(--scry-muted3)] sm:w-auto">
-            <CalendarClock className="h-[15px] w-[15px] text-[var(--scry-faint)]" />
-            <span className="font-semibold text-[var(--scry-text4)]">
-              {filteredEpisodes.length}
-            </span>
-            airings this month
-          </div>
-        </div>
-        <p
-          aria-live="polite"
-          className="mb-2 min-h-5 text-sm text-muted-foreground"
-        >
-          {loading ? t("label.loading") : "\u00a0"}
-        </p>
+        <CardContent className="flex min-h-0 flex-1 flex-col p-0">
+          {isMobile ? (
+            <div className="mb-3 flex w-full flex-col gap-2">
+              <CalendarLibraryFacetFilters
+                libraries={libraries}
+                librariesLoading={librariesLoading}
+                selectedLibraryIds={selectedLibraryIds}
+                onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+                facetFilter={facetFilter}
+                onFacetFilterChange={handleFacetChange}
+              />
+              <CalendarMonitoringFilterControl
+                visibleStatuses={visibleMonitoringStatuses}
+                counts={monitoringCounts}
+                onValueChange={setVisibleMonitoringStatuses}
+                className="w-full"
+              />
+            </div>
+          ) : null}
         <div className="fc-scryer min-h-0 flex-1">
           <FullCalendar
             key={isMobile ? "calendar-mobile" : "calendar-desktop"}
@@ -552,10 +664,30 @@ export function CalendarView({
             popoverClass="fc-scryer-popover"
             moreLinkClass="fc-scryer-more-link"
             moreLinkContent={renderMoreLinkContent}
+            buttonGroupClass="fc-scryer-button-group"
             buttons={{
               today: { text: "Today" },
               dayGridMonth: { text: "Month" },
               dayGridWeek: { text: "Week" },
+            }}
+            toolbarElements={{
+              calendarLibraryFacetFilters: () => (
+                <CalendarLibraryFacetFilters
+                  libraries={libraries}
+                  librariesLoading={librariesLoading}
+                  selectedLibraryIds={selectedLibraryIds}
+                  onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+                  facetFilter={facetFilter}
+                  onFacetFilterChange={handleFacetChange}
+                />
+              ),
+              calendarMonitoringFilter: () => (
+                <CalendarMonitoringFilterControl
+                  visibleStatuses={visibleMonitoringStatuses}
+                  counts={monitoringCounts}
+                  onValueChange={setVisibleMonitoringStatuses}
+                />
+              ),
             }}
             headerToolbar={
               isMobile
@@ -565,9 +697,9 @@ export function CalendarView({
                     right: "today",
                   }
                 : {
-                    left: "prev,next today",
+                    left: "calendarLibraryFacetFilters calendarMonitoringFilter",
                     center: "title",
-                    right: "dayGridMonth,dayGridWeek",
+                    right: "today dayGridMonth,dayGridWeek prev,next",
                   }
             }
             views={{
@@ -591,6 +723,16 @@ export function CalendarView({
             displayEventTime={false}
           />
         </div>
+          <div className="mt-2 flex min-h-5 items-center justify-between gap-3 text-[12.5px] text-[var(--scry-muted3)]">
+            <span aria-live="polite">{loading ? t("label.loading") : null}</span>
+            <div className="flex items-center justify-end gap-2">
+              <CalendarClock className="h-[15px] w-[15px] text-[var(--scry-faint)]" />
+              <span className="font-semibold text-[var(--scry-text4)]">
+                {filteredEpisodes.length}
+              </span>
+              airings this month
+            </div>
+          </div>
         </CardContent>
       </Card>
       {!isMobile && hoverPreview ? <CalendarEventHoverCard preview={hoverPreview} /> : null}

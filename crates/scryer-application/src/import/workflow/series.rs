@@ -1336,16 +1336,6 @@ pub(crate) async fn resolve_target_episodes(
 
     episodes
 }
-fn prefer_broader_coverage_episodes(
-    target_episodes: &[scryer_domain::Episode],
-    claimed_episodes: Vec<scryer_domain::Episode>,
-) -> Vec<scryer_domain::Episode> {
-    if claimed_episodes.len() > target_episodes.len() {
-        claimed_episodes
-    } else {
-        target_episodes.to_vec()
-    }
-}
 async fn write_series_sidecars(
     app: &AppUseCase,
     title: &scryer_domain::Title,

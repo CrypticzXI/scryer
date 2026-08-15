@@ -837,7 +837,7 @@ type CalendarEpisodePayload {
 	"""
 	airDate: Date
 	"""
-	Whether the episode is monitored.
+	Whether both the episode and its parent title are monitored.
 	"""
 	monitored: Boolean!
 	"""

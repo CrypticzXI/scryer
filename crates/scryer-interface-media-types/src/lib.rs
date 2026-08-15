@@ -7112,7 +7112,7 @@ pub struct CalendarEpisodePayload {
     pub image_url: Option<String>,
     /// Air date, or null when unavailable.
     pub air_date: Option<Date>,
-    /// Whether the episode is monitored.
+    /// Whether both the episode and its parent title are monitored.
     pub monitored: bool,
     /// Compact availability derived from the episode's primary media file.
     pub media_availability: EpisodeMediaAvailabilityPayload,

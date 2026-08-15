@@ -350,7 +350,7 @@ export function WantedView({
     {
       section: "pending" as const,
       label: t("pending.title"),
-      count: pendingState.items.length,
+      count: pendingState.total,
       icon: Clock,
     },
     {

@@ -1834,6 +1834,7 @@ async fn graphql_traverses_core_graph_relationships() {
         query CalendarAvailability($start: Date!, $end: Date!) {
           calendarEpisodes(startDate: $start, endDate: $end) {
             id
+            monitored
             mediaAvailability {
               state
               primaryQualityLabel
@@ -1848,6 +1849,10 @@ async fn graphql_traverses_core_graph_relationships() {
     assert_eq!(
         calendar_body["data"]["calendarEpisodes"][0]["id"],
         episode.id
+    );
+    assert_eq!(
+        calendar_body["data"]["calendarEpisodes"][0]["monitored"],
+        true
     );
     assert_eq!(
         calendar_body["data"]["calendarEpisodes"][0]["mediaAvailability"]["state"],

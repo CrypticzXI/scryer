@@ -2049,25 +2049,33 @@ mod tests {
 
     #[test]
     fn completed_download_uses_single_directory_content_path_for_series_pack() {
-        let completed = map_completed_download(
-            PluginCompletedDownload {
-                client_item_id: "series-pack-id".to_string(),
-                download_id: None,
-                info_hash: None,
-                name: "Show Season 1".to_string(),
-                dest_dir: "/downloads/series".to_string(),
-                category: Some("series".to_string()),
-                output_kind: None,
-                content_paths: vec!["/downloads/series/Show Season 1".to_string()],
-                size_bytes: None,
-                completed_at: None,
-                parameters: Vec::new(),
-            },
-            "client-1",
-            "plugin-client",
-        );
+        for content_paths in [
+            vec!["/downloads/series/Show Season 1".to_string()],
+            vec![
+                "   ".to_string(),
+                "/downloads/series/Show Season 1".to_string(),
+            ],
+        ] {
+            let completed = map_completed_download(
+                PluginCompletedDownload {
+                    client_item_id: "series-pack-id".to_string(),
+                    download_id: None,
+                    info_hash: None,
+                    name: "Show Season 1".to_string(),
+                    dest_dir: "/downloads/series".to_string(),
+                    category: Some("series".to_string()),
+                    output_kind: None,
+                    content_paths,
+                    size_bytes: None,
+                    completed_at: None,
+                    parameters: Vec::new(),
+                },
+                "client-1",
+                "plugin-client",
+            );
 
-        assert_eq!(completed.dest_dir, "/downloads/series/Show Season 1");
+            assert_eq!(completed.dest_dir, "/downloads/series/Show Season 1");
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 
 import * as React from "react";
-import { facetByMetadataKey } from "@/lib/facets/registry";
+import { facetById } from "@/lib/facets/registry";
 import {
   deleteMediaFilePreviewQuery,
   deleteTitlePreviewQuery,
@@ -967,7 +967,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         setRootFolders([]);
         return;
       }
-      const facet = facetByMetadataKey(title?.facet ?? "")?.id;
+      const facet = title ? facetById(title.facet)?.id : undefined;
       if (!facet) {
         setRootFolders([]);
         return;

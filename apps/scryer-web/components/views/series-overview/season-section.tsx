@@ -414,8 +414,8 @@ export function SeasonSection({
             ) : (
               <div className={cn(showCollectionHeader && "border-t border-border")}>
                 <Table overflow="clip" layout="fixed" density="dense">
-                  <TableHeader>
-                    <TableRow>
+                  <TableHeader aria-hidden="true">
+                    <TableRow className="collapse">
                       <TableHead className="w-10 text-center" />
                       <TableHead className="w-12 text-center">{t("episode.numberLabel")}</TableHead>
                       <TableHead>{t("label.title")}</TableHead>

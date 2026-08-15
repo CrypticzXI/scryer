@@ -11,6 +11,7 @@ import {
   pendingReleasesQuery,
   releaseDecisionsQuery,
   wantedItemsQuery,
+  wantedNavigationCountsQuery,
 } from "@/lib/graphql/queries";
 import { runIterativeReleaseSearch } from "@/lib/graphql/release-search";
 import {
@@ -170,6 +171,33 @@ export const WantedContainer = memo(function WantedContainer({
   const pendingLoadInFlightRef = useRef(false);
   const [, executeForceGrab] = useMutation(forceGrabPendingReleaseMutation);
   const [, executeDismiss] = useMutation(dismissPendingReleaseMutation);
+
+  const refreshWantedNavigationCounts = useCallback(async () => {
+    try {
+      const { data, error } = await client
+        .query(
+          wantedNavigationCountsQuery,
+          {
+            libraryIds: selectedLibraryIdsToQueryValue(selectedLibraryIds),
+            titleSearch: selectedTitle?.name?.trim() || null,
+            cutoffFacet: cutoffFacetFilter ?? null,
+          },
+          { requestPolicy: "network-only" },
+        )
+        .toPromise();
+      if (error) throw error;
+
+      setTotal(Number(data?.wantedItems?.totalCount ?? 0));
+      setCutoffTotal(Number(data?.cutoffUnmetTitlesPage?.totalCount ?? 0));
+      setPendingTotal(Number(data?.pendingReleases?.totalCount ?? 0));
+    } catch (error) {
+      console.warn("Failed to refresh wanted navigation counts", error);
+    }
+  }, [client, cutoffFacetFilter, selectedLibraryIds, selectedTitle]);
+
+  useEffect(() => {
+    void refreshWantedNavigationCounts();
+  }, [refreshWantedNavigationCounts]);
 
   const refreshPending = useCallback(async () => {
     pendingLoadInFlightRef.current = false;

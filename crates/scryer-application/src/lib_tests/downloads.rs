@@ -1196,6 +1196,139 @@ async fn manual_import_source_uses_retained_tracked_source_when_live_history_is_
 }
 
 #[tokio::test]
+async fn queued_manual_import_rejects_foreign_targets_before_consuming_or_queueing() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) =
+        bootstrap_with_cleanup_tracking(download_client, download_submissions, pending_releases);
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+    let bound_title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Bound Manual Import Title".to_string(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create bound title");
+    let foreign_title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Foreign Manual Import Title".to_string(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create foreign title");
+    let foreign_episode = scryer_domain::Episode {
+        id: Id::new().0,
+        title_id: foreign_title.id.clone(),
+        collection_id: None,
+        episode_type: scryer_domain::EpisodeType::Standard,
+        episode_number: Some("1".to_string()),
+        season_number: Some("1".to_string()),
+        episode_label: Some("S01E01".to_string()),
+        title: Some("Foreign Episode".to_string()),
+        air_date: None,
+        duration_seconds: Some(1440),
+        has_multi_audio: false,
+        has_subtitle: false,
+        is_filler: false,
+        is_recap: false,
+        absolute_number: None,
+        overview: None,
+        tvdb_id: None,
+        image_url: None,
+        monitored: true,
+        created_at: Utc::now(),
+    };
+    app.services
+        .catalog
+        .shows
+        .create_episode(foreign_episode.clone())
+        .await
+        .expect("create foreign episode");
+    let foreign_series_movie = app
+        .services
+        .catalog
+        .shows
+        .upsert_series_movie_link(test_series_movie_link(
+            &foreign_title.id,
+            "Foreign Manual Import Movie",
+            Some(2026),
+            None,
+            None,
+        ))
+        .await
+        .expect("create foreign series-movie link");
+    let selection = crate::ManualImportSelection {
+        id: Id::new().0,
+        actor_user_id: user.id.clone(),
+        title_id: bound_title.id.clone(),
+        source_identity: DownloadSourceIdentity {
+            client_id: Some("qbittorrent-primary".to_string()),
+            client_type: "qbittorrent".to_string(),
+            item_id: "foreign-target-selection".to_string(),
+        },
+        candidates: vec![crate::ManualImportSelectionCandidate {
+            id: "candidate-1".to_string(),
+            canonical_path: "/private/tmp/foreign-target-selection.mkv".to_string(),
+            quality: Some("1080p".to_string()),
+        }],
+    };
+    *import_repo.manual_import_selection.lock().await = Some(selection.clone());
+
+    for mapping in [
+        crate::ManualImportCandidateMapping {
+            candidate_id: "candidate-1".to_string(),
+            episode_id: Some(foreign_episode.id),
+            series_movie_link_id: None,
+        },
+        crate::ManualImportCandidateMapping {
+            candidate_id: "candidate-1".to_string(),
+            episode_id: None,
+            series_movie_link_id: Some(foreign_series_movie.id),
+        },
+    ] {
+        let error = app
+            .queue_manual_import_selection(&user, selection.id.clone(), vec![mapping])
+            .await
+            .expect_err("foreign target should be rejected before queueing");
+        assert!(
+            error.to_string().contains("does not belong to title"),
+            "unexpected validation error: {error}"
+        );
+    }
+
+    assert_eq!(
+        import_repo
+            .manual_import_selection_consume_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "scope validation must happen before consuming the selection"
+    );
+    assert!(import_repo.records.lock().await.is_empty());
+    assert_eq!(
+        import_repo
+            .manual_import_selection
+            .lock()
+            .await
+            .as_ref()
+            .map(|stored| stored.id.as_str()),
+        Some(selection.id.as_str()),
+        "rejected mappings must leave the selection available"
+    );
+}
+
+#[tokio::test]
 async fn queued_manual_import_reports_prior_automatic_import_after_source_cleanup() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());

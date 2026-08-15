@@ -729,10 +729,45 @@ impl crate::ImportArtifactRepository for RecordingImportArtifactRepo {
 pub(super) struct TrackingImportRepo {
     pub(super) records: Arc<Mutex<Vec<ImportRecord>>>,
     pub(super) identities: ImportIdentities,
+    pub(super) manual_import_selection: Arc<Mutex<Option<crate::ManualImportSelection>>>,
+    pub(super) manual_import_selection_consume_calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[async_trait]
 impl ImportRepository for TrackingImportRepo {
+    async fn get_manual_import_selection(
+        &self,
+        selection_id: &str,
+        actor_user_id: &str,
+    ) -> AppResult<Option<crate::ManualImportSelection>> {
+        Ok(self
+            .manual_import_selection
+            .lock()
+            .await
+            .clone()
+            .filter(|selection| {
+                selection.id == selection_id && selection.actor_user_id == actor_user_id
+            }))
+    }
+
+    async fn consume_manual_import_selection(
+        &self,
+        selection_id: &str,
+        actor_user_id: &str,
+        _candidate_ids: &[String],
+    ) -> AppResult<Option<crate::ManualImportSelection>> {
+        self.manual_import_selection_consume_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self
+            .manual_import_selection
+            .lock()
+            .await
+            .clone()
+            .filter(|selection| {
+                selection.id == selection_id && selection.actor_user_id == actor_user_id
+            }))
+    }
+
     async fn queue_import_request(
         &self,
         source_identity: DownloadSourceIdentity,

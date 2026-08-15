@@ -2917,6 +2917,18 @@ export const serviceLogLinesSubscription = `subscription ServiceLogLines {
   serviceLogLines
 }`;
 
+export const wantedNavigationCountsQuery = `query WantedNavigationCounts($libraryIds: [ID!], $titleSearch: String, $cutoffFacet: MediaFacetValue) {
+  wantedItems(wantedKind: MISSING, facet: null, libraryIds: $libraryIds, titleSearch: $titleSearch, limit: 1, offset: 0) {
+    totalCount
+  }
+  cutoffUnmetTitlesPage(facet: $cutoffFacet, libraryIds: $libraryIds, limit: 1, offset: 0) {
+    totalCount
+  }
+  pendingReleases(filter: null, limit: 1, offset: 0) {
+    totalCount
+  }
+}`;
+
 export const wantedItemsQuery = `query WantedItems($wantedKind: WantedKindValue!, $facet: MediaFacetValue, $libraryIds: [ID!], $titleSearch: String, $limit: Int, $offset: Int) {
   wantedItems(wantedKind: $wantedKind, facet: $facet, libraryIds: $libraryIds, titleSearch: $titleSearch, limit: $limit, offset: $offset) {
     items {

@@ -8,9 +8,41 @@ use tracing::{debug, info, warn};
 
 const TITLE_HYDRATION_MAX_BATCH: usize = HYDRATION_BULK_BATCH_SIZE;
 const TITLE_HYDRATION_IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const TITLE_HYDRATION_STARTUP_JITTER_MAX: Duration = Duration::from_secs(10 * 60);
+const TITLE_HYDRATION_BATCH_DELAY_MIN: Duration = Duration::from_secs(10);
+const TITLE_HYDRATION_BATCH_DELAY_MAX: Duration = Duration::from_secs(30);
 const TITLE_HYDRATION_RETRY_BASE: Duration = Duration::from_secs(10);
 const TITLE_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(300);
 const TITLE_HYDRATION_MAX_ATTEMPTS: i64 = 12;
+
+fn title_hydration_jitter_delay(
+    seed: &str,
+    stream: &str,
+    minimum: Duration,
+    maximum: Duration,
+) -> Duration {
+    debug_assert!(minimum <= maximum);
+    let minimum_seconds = minimum.as_secs();
+    let window_seconds = maximum
+        .as_secs()
+        .saturating_sub(minimum_seconds)
+        .saturating_add(1);
+    minimum
+        + crate::scheduler::stable_jitter_offset(
+            seed,
+            "title_hydration",
+            stream,
+            Duration::from_secs(window_seconds),
+        )
+}
+
+fn randomized_title_hydration_delay(
+    stream: &str,
+    minimum: Duration,
+    maximum: Duration,
+) -> Duration {
+    title_hydration_jitter_delay(&uuid::Uuid::new_v4().to_string(), stream, minimum, maximum)
+}
 
 fn active_scan_facet_labels(facets: &[MediaFacet]) -> Vec<&'static str> {
     facets.iter().map(MediaFacet::as_str).collect()
@@ -24,11 +56,32 @@ pub async fn start_background_title_hydration_loop(
     info!(
         max_batch = TITLE_HYDRATION_MAX_BATCH,
         idle_poll_secs = TITLE_HYDRATION_IDLE_POLL_INTERVAL.as_secs(),
+        startup_jitter_max_secs = TITLE_HYDRATION_STARTUP_JITTER_MAX.as_secs(),
+        batch_delay_min_secs = TITLE_HYDRATION_BATCH_DELAY_MIN.as_secs(),
+        batch_delay_max_secs = TITLE_HYDRATION_BATCH_DELAY_MAX.as_secs(),
         retry_base_secs = TITLE_HYDRATION_RETRY_BASE.as_secs(),
         retry_max_secs = TITLE_HYDRATION_RETRY_MAX.as_secs(),
         max_attempts = TITLE_HYDRATION_MAX_ATTEMPTS,
         "background title hydration loop started"
     );
+
+    let startup_delay = randomized_title_hydration_delay(
+        "startup",
+        Duration::ZERO,
+        TITLE_HYDRATION_STARTUP_JITTER_MAX,
+    );
+    if !startup_delay.is_zero() {
+        info!(
+            delay_secs = startup_delay.as_secs(),
+            "title hydration loop: staggering initial backlog drain"
+        );
+        if !worker
+            .wait_for_wake_or_timeout(&app.runtime.catalog.title_hydration_wake, startup_delay)
+            .await
+        {
+            return;
+        }
+    }
 
     loop {
         let blocked_facets = app
@@ -230,6 +283,19 @@ pub async fn start_background_title_hydration_loop(
                 }
             }
         }
+
+        let batch_delay = randomized_title_hydration_delay(
+            "between_batches",
+            TITLE_HYDRATION_BATCH_DELAY_MIN,
+            TITLE_HYDRATION_BATCH_DELAY_MAX,
+        );
+        debug!(
+            delay_secs = batch_delay.as_secs(),
+            "title hydration loop: pacing next background batch"
+        );
+        if !worker.wait_for_sleep(batch_delay).await {
+            return;
+        }
     }
 }
 
@@ -317,6 +383,35 @@ fn title_hydration_retry_delay(attempt_count: i64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_batch_jitter_stays_between_ten_and_thirty_seconds() {
+        assert_eq!(TITLE_HYDRATION_BATCH_DELAY_MIN, Duration::from_secs(10));
+        assert_eq!(TITLE_HYDRATION_BATCH_DELAY_MAX, Duration::from_secs(30));
+        for seed in ["instance-a", "instance-b", "instance-c", "instance-d"] {
+            let delay = title_hydration_jitter_delay(
+                seed,
+                "between_batches",
+                TITLE_HYDRATION_BATCH_DELAY_MIN,
+                TITLE_HYDRATION_BATCH_DELAY_MAX,
+            );
+            assert!(
+                (TITLE_HYDRATION_BATCH_DELAY_MIN..=TITLE_HYDRATION_BATCH_DELAY_MAX)
+                    .contains(&delay)
+            );
+        }
+    }
+
+    #[test]
+    fn startup_jitter_is_ephemeral_and_bounded() {
+        let delay = title_hydration_jitter_delay(
+            "ephemeral-process-seed",
+            "startup",
+            Duration::ZERO,
+            TITLE_HYDRATION_STARTUP_JITTER_MAX,
+        );
+        assert!(delay <= TITLE_HYDRATION_STARTUP_JITTER_MAX);
+    }
 
     #[test]
     fn next_title_hydration_retry_stops_after_max_attempts() {

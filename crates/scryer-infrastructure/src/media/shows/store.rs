@@ -1196,7 +1196,7 @@ async fn list_episodes_in_date_range_query(
                 e.season_number, e.episode_number, e.title AS episode_title, \
                 CASE WHEN t.facet = 'movie' THEN t.overview ELSE COALESCE(e.overview, t.overview) END AS overview, \
                 CASE WHEN t.facet = 'movie' THEN t.poster_url ELSE e.image_url END AS image_url, \
-                e.air_date, e.monitored \
+                e.air_date, (e.monitored AND t.monitored) AS monitored \
            FROM episodes e \
            JOIN titles t ON e.title_id = t.id \
            LEFT JOIN libraries l ON l.id = t.library_id \

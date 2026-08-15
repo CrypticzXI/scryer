@@ -1,6 +1,7 @@
 import * as React from "react";
 import { buttonVariants } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ChevronDown, Search, X } from "lucide-react";
 import {
   SUBTITLE_LANGUAGES,
@@ -47,8 +48,6 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
   optionIdPrefix,
 }: SubtitleLanguagePickerProps) {
   const t = useTranslate();
-  const pickerRef = React.useRef<HTMLDivElement>(null);
-  const floatingPanelRef = React.useRef<HTMLDivElement>(null);
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const [isOpen, setIsOpen] = React.useState(false);
   const [filter, setFilter] = React.useState("");
@@ -60,27 +59,10 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
   }, [isOpen]);
 
   React.useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
     if (disabled) {
       setIsOpen(false);
-      return;
     }
-    const handlePointerDown = (event: MouseEvent) => {
-      if (
-        !pickerRef.current?.contains(event.target as Node) &&
-        !floatingPanelRef.current?.contains(event.target as Node)
-      ) {
-        setIsOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handlePointerDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-    };
-  }, [disabled, isOpen]);
+  }, [disabled]);
 
   const selectedSet = React.useMemo(() => new Set<string>(value), [value]);
   const selectedLabel = React.useMemo(() => {
@@ -132,12 +114,6 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
     onChange(value.filter((c) => c !== code));
   };
 
-  const toggleOpen = React.useCallback(() => {
-    if (!disabled) {
-      setIsOpen((previous) => !previous);
-    }
-  }, [disabled]);
-
   const handleTriggerKeyDown = React.useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (disabled) {
@@ -157,10 +133,12 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
   const floatingPanel =
     isOpen
       ? (
-          <div
+          <PopoverContent
             id={panelId}
-            ref={floatingPanelRef}
-            className="absolute top-[calc(100%+0.5rem)] left-0 z-20 flex max-h-80 w-full min-w-[20rem] flex-col overflow-hidden rounded-xl border border-border bg-popover shadow-lg"
+            className="z-50 flex max-h-80 w-[var(--radix-popover-trigger-width)] min-w-[20rem] flex-col overflow-hidden rounded-xl border border-border bg-popover p-0 shadow-lg"
+            align="end"
+            side="bottom"
+            sideOffset={8}
           >
             {/* Search input */}
             <div className="border-b border-border p-2">
@@ -215,32 +193,33 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
                 </div>
               )}
             </div>
-          </div>
+          </PopoverContent>
         )
       : null;
 
   return (
-    <div ref={pickerRef} className={cn("relative inline-block w-full", className)}>
-      <div
-        id={triggerId}
-        role="button"
-        tabIndex={disabled ? -1 : 0}
-        aria-disabled={disabled}
-        aria-expanded={isOpen}
-        aria-haspopup="dialog"
-        aria-controls={panelId}
-        className={cn(
-          buttonVariants({ variant: "secondary" }),
-          "h-auto min-h-10 w-full justify-between gap-2 border border-input bg-field px-3 py-2 text-sm",
-          "cursor-pointer",
-          compact && "h-9 min-h-9 py-0",
-          disabled && "pointer-events-none cursor-not-allowed opacity-50",
-          buttonClassName,
-        )}
-        onClick={toggleOpen}
-        onKeyDown={handleTriggerKeyDown}
-        aria-label={t("settings.sub.languagePickerAriaLabel")}
-      >
+    <div className={cn("inline-block w-full", className)}>
+      <Popover open={isOpen} onOpenChange={setIsOpen}>
+        <PopoverTrigger asChild>
+        <div
+          id={triggerId}
+          role="button"
+          tabIndex={disabled ? -1 : 0}
+          aria-disabled={disabled}
+          aria-expanded={isOpen}
+          aria-haspopup="dialog"
+          aria-controls={panelId}
+          className={cn(
+            buttonVariants({ variant: "secondary" }),
+            "h-auto min-h-10 w-full justify-between gap-2 border border-input bg-field px-3 py-2 text-sm",
+            "cursor-pointer",
+            compact && "h-9 min-h-9 py-0",
+            disabled && "pointer-events-none cursor-not-allowed opacity-50",
+            buttonClassName,
+          )}
+          onKeyDown={handleTriggerKeyDown}
+          aria-label={t("settings.sub.languagePickerAriaLabel")}
+        >
         {compact ? (
           <span className={cn("min-w-0 flex-1 truncate text-left", value.length === 0 && "text-muted-foreground")}>
             {selectedLabel}
@@ -279,8 +258,10 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
         <ChevronDown
           className={`h-4 w-4 shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`}
         />
-      </div>
-      {floatingPanel}
+        </div>
+        </PopoverTrigger>
+        {floatingPanel}
+      </Popover>
     </div>
   );
 });

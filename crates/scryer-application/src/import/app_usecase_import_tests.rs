@@ -1295,61 +1295,6 @@ fn manual_import_error_from_skip_reason_maps_policy_mismatch() {
 }
 
 #[test]
-fn prefer_broader_coverage_episodes_returns_claimed_pack() {
-    let target = vec![scryer_domain::Episode {
-        id: "ep-1".to_string(),
-        title_id: "title-1".to_string(),
-        collection_id: Some("season-1".to_string()),
-        episode_type: scryer_domain::EpisodeType::Standard,
-        episode_number: Some("1".to_string()),
-        season_number: Some("1".to_string()),
-        episode_label: Some("S01E01".to_string()),
-        title: Some("Episode 1".to_string()),
-        air_date: None,
-        duration_seconds: Some(24 * 60),
-        has_multi_audio: false,
-        has_subtitle: false,
-        is_filler: false,
-        is_recap: false,
-        absolute_number: None,
-        overview: None,
-        tvdb_id: None,
-        image_url: None,
-        monitored: true,
-        created_at: chrono::Utc::now(),
-    }];
-    let mut claimed = target.clone();
-    claimed.push(scryer_domain::Episode {
-        id: "ep-2".to_string(),
-        title_id: "title-1".to_string(),
-        collection_id: Some("season-1".to_string()),
-        episode_type: scryer_domain::EpisodeType::Standard,
-        episode_number: Some("2".to_string()),
-        season_number: Some("1".to_string()),
-        episode_label: Some("S01E02".to_string()),
-        title: Some("Episode 2".to_string()),
-        air_date: None,
-        duration_seconds: Some(24 * 60),
-        has_multi_audio: false,
-        has_subtitle: false,
-        is_filler: false,
-        is_recap: false,
-        absolute_number: None,
-        overview: None,
-        tvdb_id: None,
-        image_url: None,
-        monitored: true,
-        created_at: chrono::Utc::now(),
-    });
-
-    let coverage = prefer_broader_coverage_episodes(&target, claimed);
-
-    assert_eq!(coverage.len(), 2);
-    assert_eq!(coverage[0].id, "ep-1");
-    assert_eq!(coverage[1].id, "ep-2");
-}
-
-#[test]
 fn parsed_with_quality_override_replaces_parsed_quality() {
     let parsed = test_parsed();
 
