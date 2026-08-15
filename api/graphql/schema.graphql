@@ -9976,7 +9976,7 @@ type MutationRoot {
 		linkedAccountId: ID!
 	): UnlinkExternalAccountPayload!
 	"""
-	Authenticates through Plex and issues a session token, defaulting `persist_session` to true.
+	Authenticates through Plex and issues a session token.
 	"""
 	loginWithPlex(
 		"""
@@ -18047,9 +18047,9 @@ input UpdateSecuritySettingsInput {
 	"""
 	totpRequireJellyfinLogin: Boolean!
 	"""
-	Whether Emby login requires TOTP.
+	Whether Emby login requires TOTP. Omission preserves the saved setting.
 	"""
-	totpRequireEmbyLogin: Boolean!
+	totpRequireEmbyLogin: Boolean
 }
 
 """
