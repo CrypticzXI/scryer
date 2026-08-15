@@ -439,7 +439,6 @@ export function SettingsMediaServersSection({
                       onValueChange={(value) => handleProviderChange(value as MediaServerProvider)}
                     >
                       <SelectTrigger id="settings-media-server-provider" className="w-full">
-                        <MediaServerProviderLogo provider={draft.provider} />
                         <SelectValue aria-label={selectedProviderLabel} />
                       </SelectTrigger>
                       <SelectContent>
