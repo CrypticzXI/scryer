@@ -2211,6 +2211,15 @@ async fn media_file_aggregates_ignore_additional_files_but_listing_includes_them
         .link_file_to_episode(&episode_one_primary_id, &episode_one.id)
         .await
         .expect("primary file should link to episode one");
+    media_files
+        .set_media_file_roles_for_episode(
+            &series_title.id,
+            &episode_one.id,
+            &episode_one_primary_id,
+            &[],
+        )
+        .await
+        .expect("episode one primary role should set");
 
     for (file_path, episode_id) in [
         (

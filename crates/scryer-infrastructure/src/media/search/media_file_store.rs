@@ -116,18 +116,11 @@ impl MediaFileRepository for MediaFileStore {
         execute_write(
             &self.datastore,
             "link_file_to_episode",
-            "INSERT INTO file_episode_map (file_id, episode_id, role)
-             SELECT {}, {},
-                    CASE WHEN EXISTS (
-                        SELECT 1
-                        FROM file_episode_map
-                        WHERE episode_id = {}
-                          AND role = 'primary'
-                    ) THEN 'additional' ELSE 'primary' END
+            "INSERT INTO file_episode_map (file_id, episode_id)
+             VALUES ({}, {})
              ON CONFLICT(file_id, episode_id) DO NOTHING",
             vec![
                 SqlArg::Text(file_id.to_string()),
-                SqlArg::Text(episode_id.to_string()),
                 SqlArg::Text(episode_id.to_string()),
             ],
         )
@@ -216,6 +209,7 @@ impl MediaFileRepository for MediaFileStore {
         let placeholders = placeholders(episode_ids.len());
         let sql = format!(
             "SELECT {},
+                    mf.role AS title_role,
                     {} AS episode_ids_json,
                     {} AS primary_episode_ids_json
              FROM media_files mf
@@ -1313,11 +1307,7 @@ fn serialized_media_analysis(analysis: &MediaFileAnalysis) -> AppResult<String> 
     canonical_json_text(analysis)
 }
 
-fn media_file_select_columns(
-    dialect: SqlDialect,
-    episode_expr: &str,
-    role_expr: &str,
-) -> String {
+fn media_file_select_columns(dialect: SqlDialect, episode_expr: &str, role_expr: &str) -> String {
     let series_movie_link_ids_json = series_movie_link_ids_aggregate(dialect);
     format!(
         "mf.id, mf.title_id, {episode_expr} AS episode_id,
@@ -1562,6 +1552,11 @@ fn parse_stored_video_codec(
 
 fn row_to_episode_scoped_media_file(row: &SqlRow) -> AppResult<EpisodeScopedMediaFile> {
     let media_file = row_to_title_media_file(row)?;
+    let title_role = row
+        .opt_text("title_role")?
+        .as_deref()
+        .map(scryer_application::MediaFileRole::from_label)
+        .unwrap_or_default();
     let mut episode_ids =
         string_array_from_json_column(row, "episode_ids_json", "media_files.episode_ids_json");
     episode_ids.sort();
@@ -1576,6 +1571,7 @@ fn row_to_episode_scoped_media_file(row: &SqlRow) -> AppResult<EpisodeScopedMedi
 
     Ok(EpisodeScopedMediaFile {
         media_file,
+        title_role,
         episode_ids,
         primary_episode_ids,
     })
@@ -1818,6 +1814,10 @@ mod tests {
             .link_file_to_episode(&live_file_id, &episode_one.id)
             .await
             .expect("live file should link");
+        media_files
+            .set_media_file_roles_for_episode(&title.id, &episode_one.id, &live_file_id, &[])
+            .await
+            .expect("live file should promote for episode one");
 
         let recycled_file_id = media_files
             .insert_media_file(&InsertMediaFileInput {
@@ -2414,6 +2414,15 @@ mod tests {
             .update_media_file_analysis(&larger_additional_for_primary, analysis(3840))
             .await
             .expect("larger additional file should scan");
+        media_files
+            .set_media_file_roles_for_episode(
+                &title.id,
+                &available.id,
+                &available_file,
+                std::slice::from_ref(&larger_additional_for_primary),
+            )
+            .await
+            .expect("available episode association should promote");
 
         let pending_file = media_files
             .insert_media_file(&insert_file("S01E04", MediaFileRole::Primary))
@@ -2423,6 +2432,10 @@ mod tests {
             .link_file_to_episode(&pending_file, &pending.id)
             .await
             .expect("pending primary should link");
+        media_files
+            .set_media_file_roles_for_episode(&title.id, &pending.id, &pending_file, &[])
+            .await
+            .expect("pending episode association should promote");
 
         let failed_file = media_files
             .insert_media_file(&insert_file("S01E05", MediaFileRole::Primary))
@@ -2432,6 +2445,10 @@ mod tests {
             .link_file_to_episode(&failed_file, &failed.id)
             .await
             .expect("failed primary should link");
+        media_files
+            .set_media_file_roles_for_episode(&title.id, &failed.id, &failed_file, &[])
+            .await
+            .expect("failed episode association should promote");
         media_files
             .mark_scan_failed(&failed_file, "test failure")
             .await
@@ -2445,6 +2462,15 @@ mod tests {
             .link_file_to_episode(&unmonitored_owned_file, &unmonitored_owned.id)
             .await
             .expect("unmonitored primary should link");
+        media_files
+            .set_media_file_roles_for_episode(
+                &title.id,
+                &unmonitored_owned.id,
+                &unmonitored_owned_file,
+                &[],
+            )
+            .await
+            .expect("unmonitored episode association should promote");
         media_files
             .update_media_file_analysis(&unmonitored_owned_file, analysis(1280))
             .await
@@ -2708,6 +2734,25 @@ mod tests {
             .link_file_to_episode(&pack_file_id, &episode_two.id)
             .await
             .expect("pack should link episode two");
+        let linked_pack = media_files
+            .list_live_media_files_for_episode_ids(
+                &title.id,
+                &[episode_one.id.clone(), episode_two.id.clone()],
+            )
+            .await
+            .expect("neutral episode links should load")
+            .into_iter()
+            .next()
+            .expect("linked pack should be returned");
+        assert!(linked_pack.title_role.is_primary());
+        assert!(linked_pack.primary_episode_ids.is_empty());
+
+        for episode_id in [&episode_one.id, &episode_two.id] {
+            media_files
+                .set_media_file_roles_for_episode(&title.id, episode_id, &pack_file_id, &[])
+                .await
+                .expect("pack should promote for linked episode");
+        }
 
         let single_file_id = media_files
             .insert_media_file(&InsertMediaFileInput {

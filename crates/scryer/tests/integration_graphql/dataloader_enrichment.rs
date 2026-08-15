@@ -105,8 +105,7 @@ async fn seed_enriched_series_title(ctx: &TestContext, name: &str) -> EnrichedTi
                 })
                 .await
                 .expect("insert media file");
-            ctx.media_files
-                .link_file_to_episode(&file_id, &episode.id)
+            ctx.link_primary_file_to_episode(&title.id, &file_id, &episode.id)
                 .await
                 .expect("link media file to episode");
         }

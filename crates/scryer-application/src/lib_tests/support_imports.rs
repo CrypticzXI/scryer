@@ -394,6 +394,7 @@ impl MediaFileRepository for MockMediaFileRepo {
             })
             .cloned()
             .map(|media_file| {
+                let title_role = media_file.role;
                 let episode_ids = media_file
                     .episode_id
                     .clone()
@@ -406,6 +407,7 @@ impl MediaFileRepository for MockMediaFileRepo {
                 };
                 EpisodeScopedMediaFile {
                     media_file,
+                    title_role,
                     episode_ids,
                     primary_episode_ids,
                 }

@@ -85,8 +85,7 @@ async fn graphql_media_rename_preview_for_anime_uses_media_file_rows() {
         })
         .await
         .expect("insert media file");
-    ctx.media_files
-        .link_file_to_episode(&file_id, &episode.id)
+    ctx.link_primary_file_to_episode(&title.id, &file_id, &episode.id)
         .await
         .expect("link file to episode");
 
@@ -237,8 +236,7 @@ async fn graphql_media_rename_preview_for_anime_uses_saved_anime_template() {
         })
         .await
         .expect("insert media file");
-    ctx.media_files
-        .link_file_to_episode(&file_id, &episode.id)
+    ctx.link_primary_file_to_episode(&title.id, &file_id, &episode.id)
         .await
         .expect("link file to episode");
 
@@ -395,8 +393,7 @@ async fn graphql_media_rename_preview_for_anime_series_movie_uses_season_zero_nu
         })
         .await
         .expect("insert series movie file");
-    ctx.media_files
-        .link_file_to_episode(&file_id, &special_episode.id)
+    ctx.link_primary_file_to_episode(&title.id, &file_id, &special_episode.id)
         .await
         .expect("link series movie special episode");
     ctx.media_files
@@ -543,8 +540,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_series_movie_speci
         })
         .await
         .expect("insert regular file");
-    ctx.media_files
-        .link_file_to_episode(&regular_file_id, &episode.id)
+    ctx.link_primary_file_to_episode(&title.id, &regular_file_id, &episode.id)
         .await
         .expect("link regular file");
 
@@ -601,8 +597,7 @@ async fn apply_media_rename_for_anime_updates_media_files_and_series_movie_speci
         })
         .await
         .expect("insert series movie media file");
-    ctx.media_files
-        .link_file_to_episode(&series_movie_file_id, &series_movie_episode.id)
+    ctx.link_primary_file_to_episode(&title.id, &series_movie_file_id, &series_movie_episode.id)
         .await
         .expect("link series movie special");
     ctx.media_files
@@ -1098,8 +1093,7 @@ async fn graphql_media_rename_preview_for_anime_tracked_destination_returns_erro
         })
         .await
         .expect("insert source media file");
-    ctx.media_files
-        .link_file_to_episode(&file_id, &episode.id)
+    ctx.link_primary_file_to_episode(&title.id, &file_id, &episode.id)
         .await
         .expect("link file to episode");
 
@@ -1348,12 +1342,10 @@ async fn graphql_media_rename_preview_for_anime_multi_episode_file_uses_episode_
         })
         .await
         .expect("insert media file");
-    ctx.media_files
-        .link_file_to_episode(&file_id, &episode_one.id)
+    ctx.link_primary_file_to_episode(&title.id, &file_id, &episode_one.id)
         .await
         .expect("link first episode");
-    ctx.media_files
-        .link_file_to_episode(&file_id, &episode_two.id)
+    ctx.link_primary_file_to_episode(&title.id, &file_id, &episode_two.id)
         .await
         .expect("link second episode");
 
@@ -1578,8 +1570,7 @@ async fn apply_media_rename_for_anime_rolls_back_when_media_file_update_fails() 
         })
         .await
         .expect("insert media file");
-    ctx.media_files
-        .link_file_to_episode(&file_id, &episode.id)
+    ctx.link_primary_file_to_episode(&title.id, &file_id, &episode.id)
         .await
         .expect("link file to episode");
 

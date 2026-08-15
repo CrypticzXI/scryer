@@ -967,7 +967,7 @@ export const SeriesOverviewContainer = React.memo(function SeriesOverviewContain
         setRootFolders([]);
         return;
       }
-      const facet = title ? facetById(title.facet)?.id : undefined;
+      const facet = facetById(title?.facet)?.id;
       if (!facet) {
         setRootFolders([]);
         return;

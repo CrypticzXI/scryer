@@ -22,8 +22,9 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 use scryer_application::{
     AcquisitionScopeStateRepository, AppResult, AppServices, AppUseCase, AuthenticatedTokenClaims,
     BlocklistRepository, ExternalIdentityVerifier, FacetRegistry, HousekeepingRepository,
-    IndexerPluginProvider, JwtAuthConfig, MovieFacetHandler, OAuthAuthorizationSource,
-    PendingReleaseRepository, SeriesFacetHandler, SubtitleDownloadRepository,
+    IndexerPluginProvider, JwtAuthConfig, MediaFileRepository, MovieFacetHandler,
+    OAuthAuthorizationSource, PendingReleaseRepository, SeriesFacetHandler,
+    SubtitleDownloadRepository,
 };
 use scryer_infrastructure::sqlite::{
     LibraryStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore,
@@ -895,6 +896,20 @@ impl TestContext {
             staged_nzb_store,
             staged_nzb_dir,
         }
+    }
+
+    pub async fn link_primary_file_to_episode(
+        &self,
+        title_id: &str,
+        file_id: &str,
+        episode_id: &str,
+    ) -> AppResult<()> {
+        self.media_files
+            .link_file_to_episode(file_id, episode_id)
+            .await?;
+        self.media_files
+            .set_media_file_roles_for_episode(title_id, episode_id, file_id, &[])
+            .await
     }
 
     /// URL for the GraphQL endpoint.

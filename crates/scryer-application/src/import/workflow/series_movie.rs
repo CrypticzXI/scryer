@@ -1936,21 +1936,41 @@ async fn import_series_movie_download(
                             "failed to link upgraded file to series movie"
                         );
                     }
-                    if let Some(linked_episode_id) = link.linked_episode_id.as_deref()
-                        && let Err(error) = app
+                    if let Some(linked_episode_id) = link.linked_episode_id.as_deref() {
+                        let link_result = app
                             .services
                             .library
                             .media_files
                             .link_file_to_episode(&outcome.new_file_id, linked_episode_id)
+                            .await;
+                        if let Err(error) = link_result {
+                            tracing::warn!(
+                                error = %error,
+                                file_id = %outcome.new_file_id,
+                                episode_id = %linked_episode_id,
+                                series_movie_link_id = %series_movie_link_id,
+                                "failed to link upgraded series movie file to linked episode"
+                            );
+                        } else if let Err(error) = app
+                            .services
+                            .library
+                            .media_files
+                            .set_media_file_roles_for_episode(
+                                &title.id,
+                                linked_episode_id,
+                                &outcome.new_file_id,
+                                &[],
+                            )
                             .await
-                    {
-                        tracing::warn!(
-                            error = %error,
-                            file_id = %outcome.new_file_id,
-                            episode_id = %linked_episode_id,
-                            series_movie_link_id = %series_movie_link_id,
-                            "failed to link upgraded series movie file to linked episode"
-                        );
+                        {
+                            tracing::warn!(
+                                error = %error,
+                                file_id = %outcome.new_file_id,
+                                episode_id = %linked_episode_id,
+                                series_movie_link_id = %series_movie_link_id,
+                                "failed to promote upgraded series movie file for linked episode"
+                            );
+                        }
                     }
                     mark_wanted_completed_for_series_movie_link(
                         app,
@@ -2224,20 +2244,36 @@ async fn import_series_movie_download(
     }
     if let Some(file_id) = imported_media_file_id.as_deref()
         && let Some(linked_episode_id) = link.linked_episode_id.as_deref()
-        && let Err(err) = app
+    {
+        let link_result = app
             .services
             .library
             .media_files
             .link_file_to_episode(file_id, linked_episode_id)
+            .await;
+        if let Err(err) = link_result {
+            tracing::warn!(
+                error = %err,
+                file_id = %file_id,
+                episode_id = %linked_episode_id,
+                series_movie_link_id = %series_movie_link_id,
+                "failed to link imported series movie file to linked episode"
+            );
+        } else if let Err(err) = app
+            .services
+            .library
+            .media_files
+            .set_media_file_roles_for_episode(&title.id, linked_episode_id, file_id, &[])
             .await
-    {
-        tracing::warn!(
-            error = %err,
-            file_id = %file_id,
-            episode_id = %linked_episode_id,
-            series_movie_link_id = %series_movie_link_id,
-            "failed to link imported series movie file to linked episode"
-        );
+        {
+            tracing::warn!(
+                error = %err,
+                file_id = %file_id,
+                episode_id = %linked_episode_id,
+                series_movie_link_id = %series_movie_link_id,
+                "failed to promote imported series movie file for linked episode"
+            );
+        }
     }
 
     // Write Jellyfin-compatible NFO with airsbefore_season

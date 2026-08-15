@@ -1549,8 +1549,7 @@ async fn graphql_titles_expose_episode_progress_excluding_specials() {
             })
             .await
             .expect("insert media file");
-        ctx.media_files
-            .link_file_to_episode(&file_id, &episode.id)
+        ctx.link_primary_file_to_episode(&title.id, &file_id, &episode.id)
             .await
             .expect("link file to episode");
     }
@@ -1741,8 +1740,7 @@ async fn graphql_titles_exclude_tba_or_incomplete_metadata_episodes_from_progres
             })
             .await
             .expect("insert media file");
-        ctx.media_files
-            .link_file_to_episode(&file_id, &episode.id)
+        ctx.link_primary_file_to_episode(&title.id, &file_id, &episode.id)
             .await
             .expect("link file to episode");
     }

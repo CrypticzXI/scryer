@@ -673,6 +673,7 @@ pub struct TitleMediaFile {
 #[derive(Clone, Debug)]
 pub struct EpisodeScopedMediaFile {
     pub media_file: TitleMediaFile,
+    pub title_role: crate::MediaFileRole,
     pub episode_ids: Vec<String>,
     pub primary_episode_ids: Vec<String>,
 }

@@ -530,7 +530,7 @@ fn select_primary_episodic_media_file(
     episode_id: &str,
     allow_existing_additional_role_promotion: bool,
 ) -> Option<String> {
-    let primary_files = files
+    let association_primary_files = files
         .iter()
         .copied()
         .filter(|file| {
@@ -539,17 +539,26 @@ fn select_primary_episodic_media_file(
                 .any(|primary_episode_id| primary_episode_id == episode_id)
         })
         .collect::<Vec<_>>();
-    if let [file] = primary_files.as_slice() {
+    if let [file] = association_primary_files.as_slice() {
         return Some(file.media_file.id.clone());
     }
 
-    let mut ranked = if primary_files.is_empty() {
-        if !allow_existing_additional_role_promotion {
-            return None;
+    let mut ranked = if association_primary_files.is_empty() {
+        let title_primary_files = files
+            .iter()
+            .copied()
+            .filter(|file| file.title_role.is_primary())
+            .collect::<Vec<_>>();
+        if title_primary_files.is_empty() {
+            if !allow_existing_additional_role_promotion {
+                return None;
+            }
+            files.to_vec()
+        } else {
+            title_primary_files
         }
-        files.to_vec()
     } else {
-        primary_files
+        association_primary_files
     };
     ranked.sort_by(|left, right| {
         right

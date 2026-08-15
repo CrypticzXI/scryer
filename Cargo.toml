@@ -83,8 +83,9 @@ strip = true
 panic = "abort"
 
 [profile.test]
-debug = "line-tables-only"
-split-debuginfo = "packed"
+debug = 0
+split-debuginfo = "off"
+incremental = false
 
 [profile.e2e]
 inherits = "release"

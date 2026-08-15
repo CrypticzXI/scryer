@@ -1686,6 +1686,11 @@ async fn manual_import_multi_episode_filename_keeps_the_explicit_single_episode_
         )
         .await
         .expect("list episode-scoped media files");
+    assert_eq!(scoped_files.len(), 1);
+    assert_eq!(
+        scoped_files[0].primary_episode_ids,
+        vec![episode_1.id.clone()]
+    );
     let linked_episode_ids = scoped_files
         .iter()
         .flat_map(|file| file.episode_ids.iter().cloned())
@@ -1982,6 +1987,12 @@ async fn manual_import_series_rejects_when_incumbent_covers_broader_episode_set(
         .link_file_to_episode(&existing_file_id, &episode2.id)
         .await
         .expect("link incumbent episode 2");
+    for episode_id in [&episode1.id, &episode2.id] {
+        ctx.media_files
+            .set_media_file_roles_for_episode(&title.id, episode_id, &existing_file_id, &[])
+            .await
+            .expect("incumbent pack should be primary for linked episode");
+    }
 
     let completed = scryer_completed(
         "dl-manual-series-broader-incumbent",

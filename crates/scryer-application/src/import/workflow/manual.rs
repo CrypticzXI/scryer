@@ -1370,6 +1370,16 @@ async fn execute_manual_series_movie_import(
             .media_files
             .link_file_to_episode(&imported_media_file_id, linked_episode_id)
             .await?;
+        app.services
+            .library
+            .media_files
+            .set_media_file_roles_for_episode(
+                &title.id,
+                linked_episode_id,
+                &imported_media_file_id,
+                &[],
+            )
+            .await?;
     }
 
     analyze_and_persist_imported_media_file(app, &title.id, &imported_media_file_id, &dest_path)

@@ -1434,7 +1434,7 @@ mod tests {
         assert_eq!(
             history
                 .iter()
-                .map(|record| record.event_type.clone())
+                .map(|record| record.event_type)
                 .collect::<Vec<_>>(),
             vec![
                 TitleHistoryEventType::FileUpgraded,

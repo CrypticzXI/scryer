@@ -1520,6 +1520,10 @@ pub(crate) fn is_sample_file(path: &Path) -> bool {
         return true;
     }
 
+    if scryer_domain::canonical_video_extension(path) == Some("strm") {
+        return false;
+    }
+
     // Small files in multi-episode directories are almost certainly samples/promos
     std::fs::metadata(path)
         .map(|m| m.len() < SAMPLE_SIZE_THRESHOLD)

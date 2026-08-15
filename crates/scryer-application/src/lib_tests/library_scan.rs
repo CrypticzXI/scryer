@@ -1492,7 +1492,7 @@ async fn series_title_scan_imports_episode_file_as_primary() {
 }
 
 #[tokio::test]
-async fn series_title_scan_marks_duplicate_episode_files_as_additional() {
+async fn series_library_scan_marks_duplicate_episode_files_as_additional() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let title_dir = tempdir.path().join("Fresh Show (2026)");
     std::fs::create_dir(&title_dir).expect("create series folder");
@@ -1593,9 +1593,9 @@ async fn series_title_scan_marks_duplicate_episode_files_as_additional() {
         .await
         .expect("create episode");
 
-    app.scan_title_library(&user, &title.id)
+    app.scan_library(&user, MediaFacet::Series)
         .await
-        .expect("scan series title");
+        .expect("scan series library");
 
     let files = app
         .services

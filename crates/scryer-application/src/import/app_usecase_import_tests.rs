@@ -490,6 +490,15 @@ fn is_sample_file_allows_normal_video_file() {
     )));
 }
 
+#[test]
+fn is_sample_file_allows_small_double_extension_strm_pointer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pointer = dir.path().join("Show.S01E01.1080p.mkv.strm");
+    std::fs::write(&pointer, b"https://nzbdav.example/stream/episode").expect("write strm");
+
+    assert!(!is_sample_file(&pointer));
+}
+
 // ── pick_largest_file ─────────────────────────────────────────────────────────
 
 #[test]
@@ -1075,6 +1084,17 @@ fn find_video_files_filters_samples_when_flag_set() {
 }
 
 #[test]
+fn find_video_files_keeps_small_strm_when_filtering_samples() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pointer = dir.path().join("Show.S01E01.1080p.mkv.strm");
+    std::fs::write(&pointer, b"https://nzbdav.example/stream/episode").expect("write strm");
+
+    let files = find_video_files(dir.path(), true).expect("find");
+
+    assert_eq!(files, vec![pointer]);
+}
+
+#[test]
 fn find_video_files_returns_error_for_missing_dir() {
     let result = find_video_files(std::path::Path::new("/nonexistent/dir/abc"), false);
     assert!(result.is_err());
@@ -1229,6 +1249,7 @@ fn scoped_media_file(
             original_file_path: None,
             release_hash: None,
         },
+        title_role: crate::MediaFileRole::Primary,
         episode_ids: episode_ids
             .iter()
             .map(|value| (*value).to_string())

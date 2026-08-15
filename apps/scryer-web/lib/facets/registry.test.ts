@@ -14,8 +14,6 @@ test("canonical facets use the canonical facet lookup", () => {
   assert.equal(facetById("SERIES")?.metadataKey, "series");
   assert.equal(facetById("ANIME")?.metadataKey, "anime");
 
-  if (false) {
-    // @ts-expect-error Canonical GraphQL enum values are not metadata keys.
-    facetByMetadataKey("ANIME");
-  }
+  // @ts-expect-error Canonical GraphQL enum values are not metadata keys.
+  assert.equal(facetByMetadataKey("ANIME"), undefined);
 });

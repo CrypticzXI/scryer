@@ -656,14 +656,30 @@ async fn execute_resolved_episode_import(
 
     let mut episode_link_failed = false;
     for episode in target_episodes {
-        if let Err(err) = app
+        let link_result = app
             .services
             .library
             .media_files
             .link_file_to_episode(&media_file_id, &episode.id)
+            .await;
+        if let Err(err) = link_result {
+            tracing::warn!(error = %err, episode_id = %episode.id, "failed to link file to episode");
+            episode_link_failed = true;
+            continue;
+        }
+        if let Err(err) = app
+            .services
+            .library
+            .media_files
+            .set_media_file_roles_for_episode(&title.id, &episode.id, &media_file_id, &[])
             .await
         {
-            tracing::warn!(error = %err, episode_id = %episode.id, "failed to link file to episode");
+            tracing::warn!(
+                error = %err,
+                episode_id = %episode.id,
+                file_id = %media_file_id,
+                "failed to promote imported file for episode"
+            );
             episode_link_failed = true;
         }
     }
