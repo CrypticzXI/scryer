@@ -135,7 +135,7 @@ export const SubtitleLanguagePicker = React.memo(function SubtitleLanguagePicker
       ? (
           <PopoverContent
             id={panelId}
-            className="z-50 flex max-h-80 w-[var(--radix-popover-trigger-width)] min-w-[20rem] flex-col overflow-hidden rounded-xl border border-border bg-popover p-0 shadow-lg"
+            className="z-[90] flex max-h-80 w-[var(--radix-popover-trigger-width)] min-w-[20rem] flex-col overflow-hidden rounded-xl border border-border bg-popover p-0 shadow-lg"
             align="end"
             side="bottom"
             sideOffset={8}

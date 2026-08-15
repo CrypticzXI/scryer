@@ -50,6 +50,95 @@ async fn graphql_typed_security_settings_defaults() {
 }
 
 #[tokio::test]
+async fn graphql_security_settings_omitted_emby_requirement_preserves_saved_value() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let enable = schema_exec(
+        &ctx,
+        r#"
+        mutation EnableEmbyTotp {
+          updateSecuritySettings(input: {
+            formLoginEnabled: false
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: true
+          }) {
+            totpRequireEmbyLogin
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&enable);
+    assert_eq!(
+        enable["data"]["updateSecuritySettings"]["totpRequireEmbyLogin"],
+        true
+    );
+
+    let omitted = schema_exec(
+        &ctx,
+        r#"
+        mutation PreserveEmbyTotp {
+          updateSecuritySettings(input: {
+            formLoginEnabled: false
+            passwordMinLength: 9
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: false
+          }) {
+            passwordMinLength
+            totpRequireEmbyLogin
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&omitted);
+    assert_eq!(
+        omitted["data"]["updateSecuritySettings"]["passwordMinLength"],
+        9
+    );
+    assert_eq!(
+        omitted["data"]["updateSecuritySettings"]["totpRequireEmbyLogin"],
+        true
+    );
+
+    let disable = schema_exec(
+        &ctx,
+        r#"
+        mutation DisableEmbyTotp {
+          updateSecuritySettings(input: {
+            formLoginEnabled: false
+            passwordMinLength: 9
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: false
+          }) {
+            totpRequireEmbyLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&disable);
+    assert_eq!(
+        disable["data"]["updateSecuritySettings"]["totpRequireEmbyLogin"],
+        false
+    );
+}
+
+#[tokio::test]
 async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled() {
     let ctx = TestContext::new().await;
     seed_typed_settings_definitions(&ctx).await;

@@ -131,7 +131,7 @@ async fn existing_short_password_remains_valid_after_minimum_is_raised() {
             mfa_require_config_step_up: false,
             mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
-            totp_require_emby_login: false,
+            totp_require_emby_login: Some(false),
         },
     )
     .await
@@ -216,7 +216,7 @@ async fn emby_totp_requirement_round_trips_through_settings_values() {
             mfa_require_config_step_up: false,
             mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
-            totp_require_emby_login: true,
+            totp_require_emby_login: Some(true),
         },
     )
     .await
@@ -337,7 +337,7 @@ async fn existing_short_v1_password_rehashes_after_minimum_is_raised() {
             mfa_require_config_step_up: false,
             mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
-            totp_require_emby_login: false,
+            totp_require_emby_login: Some(false),
         },
     )
     .await

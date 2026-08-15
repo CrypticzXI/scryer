@@ -21,7 +21,7 @@ pub struct UpdateSecuritySettings {
     pub mfa_require_config_step_up: bool,
     pub mfa_require_password_login: bool,
     pub totp_require_jellyfin_login: bool,
-    pub totp_require_emby_login: bool,
+    pub totp_require_emby_login: Option<bool>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateServiceSettings {
@@ -159,6 +159,9 @@ impl AppUseCase {
             .await?;
 
         let current = self.load_security_settings().await?;
+        let totp_require_emby_login = input
+            .totp_require_emby_login
+            .unwrap_or(current.totp_require_emby_login);
 
         if input.password_min_length < PASSWORD_MIN_LENGTH_MIN as i32 {
             return Err(AppError::Validation(format!(
@@ -232,12 +235,14 @@ impl AppUseCase {
             Some(actor.id.clone()),
         )
         .await?;
-        self.upsert_system_setting_json(
-            TOTP_REQUIRE_EMBY_LOGIN_KEY,
-            &input.totp_require_emby_login,
-            Some(actor.id.clone()),
-        )
-        .await?;
+        if let Some(value) = input.totp_require_emby_login {
+            self.upsert_system_setting_json(
+                TOTP_REQUIRE_EMBY_LOGIN_KEY,
+                &value,
+                Some(actor.id.clone()),
+            )
+            .await?;
+        }
         self.upsert_system_setting_json(
             MFA_REQUIRE_PASSWORD_LOGIN_KEY,
             &input.mfa_require_password_login,
@@ -250,20 +255,19 @@ impl AppUseCase {
                 .await?;
         }
 
-        self.emit_settings_saved(
-            actor,
-            "security_settings",
-            None,
-            vec![
-                FORM_LOGIN_ENABLED_KEY.to_string(),
-                PASSWORD_MIN_LENGTH_KEY.to_string(),
-                SKIP_LOGIN_FOR_LOCAL_IPS_KEY.to_string(),
-                MFA_REQUIRE_CONFIG_STEP_UP_KEY.to_string(),
-                MFA_REQUIRE_PASSWORD_LOGIN_KEY.to_string(),
-                TOTP_REQUIRE_JELLYFIN_LOGIN_KEY.to_string(),
-            ],
-        )
-        .await;
+        let mut saved_keys = vec![
+            FORM_LOGIN_ENABLED_KEY.to_string(),
+            PASSWORD_MIN_LENGTH_KEY.to_string(),
+            SKIP_LOGIN_FOR_LOCAL_IPS_KEY.to_string(),
+            MFA_REQUIRE_CONFIG_STEP_UP_KEY.to_string(),
+            MFA_REQUIRE_PASSWORD_LOGIN_KEY.to_string(),
+            TOTP_REQUIRE_JELLYFIN_LOGIN_KEY.to_string(),
+        ];
+        if input.totp_require_emby_login.is_some() {
+            saved_keys.push(TOTP_REQUIRE_EMBY_LOGIN_KEY.to_string());
+        }
+        self.emit_settings_saved(actor, "security_settings", None, saved_keys)
+            .await;
 
         Ok(SecuritySettings {
             form_login_enabled: input.form_login_enabled,
@@ -272,7 +276,7 @@ impl AppUseCase {
             mfa_require_config_step_up: input.mfa_require_config_step_up,
             mfa_require_password_login: input.mfa_require_password_login,
             totp_require_jellyfin_login: input.totp_require_jellyfin_login,
-            totp_require_emby_login: input.totp_require_emby_login,
+            totp_require_emby_login,
         })
     }
 }

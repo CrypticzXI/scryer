@@ -5322,8 +5322,8 @@ pub struct UpdateSecuritySettingsInput {
     pub mfa_require_password_login: bool,
     /// Whether Jellyfin login requires TOTP.
     pub totp_require_jellyfin_login: bool,
-    /// Whether Emby login requires TOTP.
-    pub totp_require_emby_login: bool,
+    /// Whether Emby login requires TOTP. Omission preserves the saved setting.
+    pub totp_require_emby_login: Option<bool>,
 }
 
 #[derive(SimpleObject, Clone)]
