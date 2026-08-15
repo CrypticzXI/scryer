@@ -320,6 +320,37 @@ fn build_augmented_episode_import_metadata_prefers_download_title_for_single_obf
 }
 
 #[test]
+fn ambiguous_obfuscated_episode_message_explains_season_assignment() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let completed = test_completed_download(
+        "[Erai-raws].Hime-sama.Goumon.no.Jikan.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]",
+        dir.path(),
+    );
+
+    assert_eq!(
+        ambiguous_obfuscated_episode_message(&file_path, &completed).as_deref(),
+        Some(
+            "Automatic import could not choose a season for episode 9: the release name does not include a season and the downloaded filename is obfuscated. Open Manual Import and assign the correct season and episode."
+        )
+    );
+}
+
+#[test]
+fn ambiguous_obfuscated_episode_message_ignores_release_with_explicit_season() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let completed = test_completed_download(
+        "Hime-sama.Goumon.no.Jikan.Desu.S02E09.1080p.WEB-DL",
+        dir.path(),
+    );
+
+    assert!(ambiguous_obfuscated_episode_message(&file_path, &completed).is_none());
+}
+
+#[test]
 fn build_augmented_episode_import_metadata_uses_immediate_parent_for_obfuscated_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest_dir = dir.path().join("job-123");
@@ -1199,6 +1230,10 @@ fn scoped_media_file(
             release_hash: None,
         },
         episode_ids: episode_ids
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        primary_episode_ids: episode_ids
             .iter()
             .map(|value| (*value).to_string())
             .collect(),

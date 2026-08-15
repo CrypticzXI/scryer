@@ -946,6 +946,12 @@ const de: LocaleDictionary = {
     "Manueller Import ist für Warteschlangenelemente verfügbar, die Aufmerksamkeit erfordern.",
   "queue.releaseTitle": "Veröffentlichung",
   "queue.blockReason": "Sperrgrund",
+  "queue.blockReasonFallbackUnassigned":
+    "Der automatische Import konnte keinen Bibliothekstitel erkennen. Weisen Sie einen Titel zu, um fortzufahren.",
+  "queue.blockReasonFallbackEpisodic":
+    "Der automatische Import konnte Staffel und Episode nicht eindeutig zuordnen. Öffnen Sie den manuellen Import und weisen Sie die richtige Staffel und Episode zu.",
+  "queue.blockReasonFallbackReview":
+    "Der automatische Import muss geprüft werden. Öffnen Sie den manuellen Import und bestätigen Sie die Dateizuordnung, um fortzufahren.",
   "queue.errorCode": "Fehlercode",
   "queue.showDetails": "Details anzeigen",
   "queue.hideDetails": "Details ausblenden",

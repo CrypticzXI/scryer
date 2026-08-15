@@ -876,6 +876,12 @@ const zh_CN: LocaleDictionary = {
   "queue.manualImportTooltip": "手动导入可用于需要关注的队列项。",
   "queue.releaseTitle": "发布资源",
   "queue.blockReason": "阻止原因",
+  "queue.blockReasonFallbackUnassigned":
+    "自动导入无法识别媒体库标题。请指定标题后继续。",
+  "queue.blockReasonFallbackEpisodic":
+    "自动导入无法确定唯一的季和集映射。请打开手动导入并指定正确的季和集。",
+  "queue.blockReasonFallbackReview":
+    "自动导入需要人工检查。请打开手动导入并确认文件映射后继续。",
   "queue.errorCode": "错误代码",
   "queue.showDetails": "显示详情",
   "queue.hideDetails": "隐藏详情",

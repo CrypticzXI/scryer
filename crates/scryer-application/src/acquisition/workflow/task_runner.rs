@@ -820,6 +820,32 @@ async fn process_single_target(
                                             item,
                                             episode.as_ref(),
                                         );
+                                    let mut grabbed_episode_ids = match &submission_scope {
+                                        SubmissionScope::Episode { episode_id } => {
+                                            vec![episode_id.clone()]
+                                        }
+                                        SubmissionScope::EpisodeSet { episode_ids } => {
+                                            episode_ids.clone()
+                                        }
+                                        SubmissionScope::Collection { collection_id } => app
+                                            .services
+                                            .catalog
+                                            .shows
+                                            .list_episodes_for_collection(collection_id)
+                                            .await
+                                            .map(|episodes| {
+                                                episodes
+                                                    .into_iter()
+                                                    .map(|episode| episode.id)
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default(),
+                                        SubmissionScope::Title
+                                        | SubmissionScope::SeriesMovie { .. }
+                                        | SubmissionScope::Orphan => Vec::new(),
+                                    };
+                                    grabbed_episode_ids.sort();
+                                    grabbed_episode_ids.dedup();
                                     let covered_wanted_item_ids = app
                                         .covered_wanted_item_ids_for_submission_scope(
                                             &title.id,
@@ -901,11 +927,7 @@ async fn process_single_target(
                                                     source_hint: Some(best_pack.source.clone()),
                                                     source_provider: Some(best_pack.source.clone()),
                                                     download_id: Some(download_job_id),
-                                                    episode_ids: item
-                                                        .episode_id
-                                                        .iter()
-                                                        .cloned()
-                                                        .collect(),
+                                                    episode_ids: grabbed_episode_ids,
                                                 },
                                             ),
                                         ))

@@ -31,6 +31,14 @@ async fn identity_tracked_state_does_not_create_submission_row_for_live_item_id(
         .await
         .expect("identity tracked state lookup should succeed");
     assert_eq!(tracked_state.as_deref(), Some("import_blocked"));
+    let detail = workflow_store
+        .get_identity_tracked_state_detail(&identity, None)
+        .await
+        .expect("identity tracked state detail lookup should succeed");
+    assert_eq!(
+        detail.as_deref(),
+        Some("download id observed without a matching submission")
+    );
 
     let submission_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM download_submissions WHERE download_client_type = ? AND download_client_item_id = ?",

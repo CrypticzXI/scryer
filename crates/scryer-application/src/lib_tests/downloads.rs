@@ -2243,6 +2243,141 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
 }
 
 #[tokio::test]
+async fn external_failed_snapshot_dispatches_failure_worker_without_completed_rows() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let blocklist_repo = Arc::new(MockBlocklistRepo::default());
+    let app = base_app
+        .with_test_overrides(|services| services.with_blocklist_repo(blocklist_repo.clone()));
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary Weaver", "weaver").await;
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Failed External Snapshot".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie title");
+    let item_id = "weaver-external-failed-1";
+    let release_title = "Failed.External.Snapshot.2026.1080p.WEB-DL";
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some(config.id.clone()),
+            download_client_type: "weaver".to_string(),
+            download_client_item_id: item_id.to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some(release_title.to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record failed download submission");
+
+    let (_command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(8);
+    let ingest = crate::tracked_downloads::TrackedDownloadSnapshotIngestHandle::new(snapshot_tx);
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(
+        crate::integration::start_download_queue_poller_with_options(
+            app.clone(),
+            token.child_token(),
+            tracked_download_rx,
+            snapshot_rx,
+            crate::integration::DownloadQueuePollerOptions {
+                interval: Duration::from_secs(60),
+                excluded_client_types: vec!["weaver".to_string()],
+                ..Default::default()
+            },
+        ),
+    );
+
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Downloading, 40);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = "weaver".to_string();
+    item.title_id = Some(title.id.clone());
+    item.title_name = release_title.to_string();
+    item.facet = Some("movie".to_string());
+    let tracked_id = crate::tracked_downloads::tracked_download_id_for_item(&item);
+    ingest
+        .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+            scope: crate::tracked_downloads::TrackedDownloadSnapshotScope::Delta,
+            items: vec![item.clone()],
+            completed_downloads: Vec::new(),
+            actor_id: None,
+        })
+        .await
+        .expect("publish initial downloading update");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if app
+                .runtime
+                .acquisition
+                .tracked_download_snapshot
+                .read()
+                .await
+                .get(&tracked_id)
+                .is_some_and(|metadata| metadata.state == TrackedDownloadState::Downloading)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("initial external snapshot should be tracked as downloading");
+
+    item.state = DownloadQueueState::Failed;
+    item.progress_percent = 100;
+    item.attention_reason = Some("download verification failed".to_string());
+    ingest
+        .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+            scope: crate::tracked_downloads::TrackedDownloadSnapshotScope::Delta,
+            items: vec![item],
+            completed_downloads: Vec::new(),
+            actor_id: None,
+        })
+        .await
+        .expect("publish failed-only external update");
+
+    let expected_source_title = crate::normalize_release_attempt_title(Some(release_title));
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if blocklist_repo.entries.lock().await.iter().any(|entry| {
+                entry.title_id == title.id && entry.source_title == expected_source_title
+            }) {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("failed-only external snapshot should run the failure worker");
+
+    token.cancel();
+    poller
+        .await
+        .expect("download queue poller should stop cleanly");
+}
+
+#[tokio::test]
 async fn external_weaver_snapshot_uses_tracked_runtime_and_provided_completed_rows() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());

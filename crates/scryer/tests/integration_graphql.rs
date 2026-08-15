@@ -65,9 +65,9 @@ use scryer_domain::{
     AppPermissionMask, Collection, CollectionType, DomainEventActorKind, DomainEventPayload,
     DomainEventStream, DomainExternalIds, DownloadFailedEventData, Episode, EpisodeType,
     ExternalId, Id, ImportCompletedEventData, Library, LibraryPermission, LibraryPermissionMask,
-    MediaFacet, MediaPathUpdate, MediaServerConnection, MediaServerProvider, MediaUpdateType,
-    NewDomainEvent, ReleaseBlocklistedEventData, Title, TitleContextSnapshot, User,
-    UserAuthorization,
+    MediaFacet, MediaFileAnalyzedEventData, MediaPathUpdate, MediaServerConnection,
+    MediaServerProvider, MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData, Title,
+    TitleContextSnapshot, User, UserAuthorization,
 };
 use scryer_infrastructure::{
     DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, MediaServerConnectionStore,
@@ -540,6 +540,23 @@ impl MediaFileRepository for FailingMediaFileRepo {
             .await
     }
 
+    async fn set_media_file_roles_for_episode(
+        &self,
+        title_id: &str,
+        episode_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        self.inner
+            .set_media_file_roles_for_episode(
+                title_id,
+                episode_id,
+                primary_file_id,
+                additional_file_ids,
+            )
+            .await
+    }
+
     async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {
         self.inner.mark_scan_failed(file_id, error).await
     }
@@ -709,6 +726,23 @@ impl MediaFileRepository for CountingMediaFileRepo {
     ) -> AppResult<()> {
         self.inner
             .set_media_file_roles_for_title(title_id, primary_file_id, additional_file_ids)
+            .await
+    }
+
+    async fn set_media_file_roles_for_episode(
+        &self,
+        title_id: &str,
+        episode_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        self.inner
+            .set_media_file_roles_for_episode(
+                title_id,
+                episode_id,
+                primary_file_id,
+                additional_file_ids,
+            )
             .await
     }
 

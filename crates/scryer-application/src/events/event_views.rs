@@ -594,6 +594,31 @@ pub(crate) fn title_history_record_from_domain_event(
             None,
             None,
         ),
+        DomainEventPayload::MediaFileAnalyzed(data) => (
+            Some(data.title.title_name.clone()),
+            Some(data.title.facet.clone()),
+            TitleHistoryEventType::Scanned,
+            (data.media_updates.len() == 1)
+                .then(|| data.media_updates.first().map(|update| update.path.clone()))
+                .flatten(),
+            (data.media_updates.len() == 1)
+                .then(|| data.media_updates.first().map(|update| update.path.clone()))
+                .flatten(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            data.media_updates.first().map(|update| update.path.clone()),
+            None,
+        ),
         DomainEventPayload::MediaFileDeleted(data) => (
             Some(data.title.title_name.clone()),
             Some(data.title.facet.clone()),
@@ -831,8 +856,10 @@ fn event_episode_ids(event: &DomainEvent) -> Vec<String> {
         DomainEventPayload::ReleaseBlocklisted(data) => data.episode_ids.iter(),
         DomainEventPayload::ImportCompleted(data) => data.episode_ids.iter(),
         DomainEventPayload::ImportRejected(data) => data.episode_ids.iter(),
+        DomainEventPayload::MediaFileAnalyzed(data) => data.episode_ids.iter(),
         DomainEventPayload::MediaFileRenamed(data) => data.episode_ids.iter(),
         DomainEventPayload::MediaFileDeleted(data) => data.episode_ids.iter(),
+        DomainEventPayload::MediaFileUpgraded(data) => data.episode_ids.iter(),
         _ => return ids,
     };
 
@@ -1351,7 +1378,7 @@ mod tests {
     #[test]
     fn upgrade_recycle_and_purge_project_in_audit_order() {
         let now = Utc::now();
-        let snapshot = title_snapshot("Example", MediaFacet::Movie);
+        let snapshot = title_snapshot("Example", MediaFacet::Series);
         let events = [
             event(
                 1,
@@ -1362,6 +1389,7 @@ mod tests {
                         path: "/data/new.mkv".to_string(),
                         update_type: MediaUpdateType::Created,
                     }],
+                    episode_ids: vec!["ep-1".to_string()],
                     previous_file_id: Some("old-file".to_string()),
                     current_file_id: Some("new-file".to_string()),
                     old_score: Some(10),
@@ -1379,7 +1407,7 @@ mod tests {
                     }],
                     file_id: Some("old-file".to_string()),
                     reason: MediaFileDeletedReason::UpgradeCleanup,
-                    episode_ids: Vec::new(),
+                    episode_ids: vec!["ep-1".to_string()],
                 }),
             ),
             event(
@@ -1401,17 +1429,21 @@ mod tests {
         let history = events
             .iter()
             .filter_map(title_history_record_from_domain_event)
-            .map(|record| record.event_type)
             .collect::<Vec<_>>();
 
         assert_eq!(
-            history,
+            history
+                .iter()
+                .map(|record| record.event_type.clone())
+                .collect::<Vec<_>>(),
             vec![
                 TitleHistoryEventType::FileUpgraded,
                 TitleHistoryEventType::FileRecycled,
                 TitleHistoryEventType::FileDeleted,
             ]
         );
+        assert_eq!(history[0].episode_ids, vec!["ep-1".to_string()]);
+        assert_eq!(history[1].episode_ids, vec!["ep-1".to_string()]);
     }
 
     fn queue_item(
@@ -1522,7 +1554,7 @@ mod tests {
 
     #[test]
     fn media_file_analyzed_projects_to_file_analyzed_activity() {
-        let activity = activity_event_from_domain_event(&event(
+        let domain_event = event(
             1,
             Utc::now(),
             DomainEventPayload::MediaFileAnalyzed(MediaFileAnalyzedEventData {
@@ -1535,12 +1567,19 @@ mod tests {
                 analysis_status: "scanned".to_string(),
                 episode_ids: vec!["ep-1".to_string()],
             }),
-        ))
-        .expect("media file analyzed should project to activity");
+        );
+        let activity = activity_event_from_domain_event(&domain_event)
+            .expect("media file analyzed should project to activity");
 
         assert_eq!(activity.kind, ActivityKind::FileAnalyzed);
         assert_eq!(activity.severity, ActivitySeverity::Info);
         assert_eq!(activity.title_id.as_deref(), Some("title-1"));
+
+        let history = title_history_record_from_domain_event(&domain_event)
+            .expect("media file analyzed should project to title history");
+        assert_eq!(history.event_type, TitleHistoryEventType::Scanned);
+        assert_eq!(history.episode_ids, vec!["ep-1".to_string()]);
+        assert_eq!(history.source_title.as_deref(), Some("/data/episode.mkv"));
     }
 
     #[test]

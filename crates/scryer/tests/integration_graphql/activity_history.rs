@@ -401,7 +401,7 @@ async fn graphql_title_history_filters_by_episode_id() {
             payload: DomainEventPayload::ImportCompleted(ImportCompletedEventData {
                 title: TitleContextSnapshot {
                     title_name: title.name.clone(),
-                    facet: title.facet,
+                    facet: title.facet.clone(),
                     external_ids: DomainExternalIds::default(),
                     poster_url: title.poster_url.clone(),
                     year: title.year,
@@ -430,6 +430,42 @@ async fn graphql_title_history_filters_by_episode_id() {
         .await
         .expect("append import completed event");
 
+    let scanned_path = "/library/Episode Scoped History Fixture/S01E01.mkv";
+    ctx.app
+        .append_domain_event(NewDomainEvent {
+            event_id: Id::new().0,
+            occurred_at: Utc::now(),
+            actor_kind: DomainEventActorKind::System,
+            actor_user_id: None,
+            actor_display_name: "System".to_string(),
+            title_id: Some(title.id.clone()),
+            facet: Some(MediaFacet::Series),
+            correlation_id: None,
+            causation_id: None,
+            schema_version: 1,
+            stream: DomainEventStream::Title {
+                title_id: title.id.clone(),
+            },
+            payload: DomainEventPayload::MediaFileAnalyzed(MediaFileAnalyzedEventData {
+                title: TitleContextSnapshot {
+                    title_name: title.name.clone(),
+                    facet: title.facet,
+                    external_ids: DomainExternalIds::default(),
+                    poster_url: title.poster_url.clone(),
+                    year: title.year,
+                },
+                media_updates: vec![MediaPathUpdate {
+                    path: scanned_path.to_string(),
+                    update_type: MediaUpdateType::Modified,
+                }],
+                file_id: "scanned-file-1".to_string(),
+                analysis_status: "scanned".to_string(),
+                episode_ids: vec![episode_one.id.clone()],
+            }),
+        })
+        .await
+        .expect("append media file analyzed event");
+
     let body = gql(
         &ctx,
         r#"
@@ -439,6 +475,7 @@ async fn graphql_title_history_filters_by_episode_id() {
             items {
               eventType
               episodeId
+              sourceTitle
             }
           }
         }
@@ -448,13 +485,17 @@ async fn graphql_title_history_filters_by_episode_id() {
     .await;
     assert_no_errors(&body);
 
-    assert_eq!(body["data"]["titleHistory"]["totalCount"], 1);
+    assert_eq!(body["data"]["titleHistory"]["totalCount"], 2);
     let records = body["data"]["titleHistory"]["items"]
         .as_array()
         .expect("title history items array");
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["eventType"], "imported");
-    assert_eq!(records[0]["episodeId"], episode_one.id);
+    assert_eq!(records.len(), 2);
+    let scanned = records
+        .iter()
+        .find(|record| record["eventType"] == "scanned")
+        .expect("scanned history event");
+    assert_eq!(scanned["episodeId"], episode_one.id);
+    assert_eq!(scanned["sourceTitle"], scanned_path);
 }
 
 #[tokio::test]

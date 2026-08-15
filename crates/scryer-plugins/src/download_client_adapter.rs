@@ -337,6 +337,13 @@ fn map_queue_item(
     }
 }
 
+fn retain_queue_item(item: &PluginDownloadItem) -> bool {
+    !matches!(
+        item.state,
+        DownloadItemState::Completed | DownloadItemState::Seeding
+    )
+}
+
 fn map_completed_download(
     item: PluginCompletedDownload,
     client_id: &str,
@@ -967,15 +974,7 @@ impl DownloadClient for WasmDownloadClient {
             let items = decode_command_result(result, "download list_queue")?;
             return Ok(items
                 .into_iter()
-                .filter(|item| {
-                    !matches!(
-                        item.state,
-                        DownloadItemState::Completed
-                            | DownloadItemState::Seeding
-                            | DownloadItemState::Failed
-                            | DownloadItemState::Error
-                    )
-                })
+                .filter(retain_queue_item)
                 .map(|item| {
                     map_queue_item(
                         item,
@@ -1006,15 +1005,7 @@ impl DownloadClient for WasmDownloadClient {
 
         Ok(items
             .into_iter()
-            .filter(|item| {
-                !matches!(
-                    item.state,
-                    DownloadItemState::Completed
-                        | DownloadItemState::Seeding
-                        | DownloadItemState::Failed
-                        | DownloadItemState::Error
-                )
-            })
+            .filter(retain_queue_item)
             .map(|item| {
                 map_queue_item(
                     item,
@@ -1572,6 +1563,48 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use scryer_plugin_sdk::PluginTorrentItem;
+
+    fn queue_filter_item(state: DownloadItemState) -> PluginDownloadItem {
+        PluginDownloadItem {
+            client_item_id: format!("{state:?}"),
+            download_id: None,
+            info_hash: None,
+            title: format!("{state:?}"),
+            state,
+            message: None,
+            category: None,
+            remote_output_path: None,
+            torrent: None,
+            total_size_bytes: None,
+            remaining_size_bytes: None,
+            eta_seconds: None,
+            progress_percent: None,
+            can_move_files: None,
+            can_remove: None,
+            removed: None,
+            raw_state: None,
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn queue_filter_retains_failed_and_error_items_only_as_terminal_observations() {
+        assert!(retain_queue_item(&queue_filter_item(
+            DownloadItemState::Failed
+        )));
+        assert!(retain_queue_item(&queue_filter_item(
+            DownloadItemState::Error
+        )));
+        assert!(retain_queue_item(&queue_filter_item(
+            DownloadItemState::Downloading
+        )));
+        assert!(!retain_queue_item(&queue_filter_item(
+            DownloadItemState::Completed
+        )));
+        assert!(!retain_queue_item(&queue_filter_item(
+            DownloadItemState::Seeding
+        )));
+    }
     use tokio::io::AsyncWriteExt;
 
     #[tokio::test]

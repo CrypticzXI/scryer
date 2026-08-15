@@ -700,6 +700,20 @@ impl TrackedDownloadService {
             && (state.is_terminal() || state == TrackedDownloadState::ImportBlocked)
         {
             td.state = state;
+            if state == TrackedDownloadState::ImportBlocked {
+                let detail = app
+                    .services
+                    .workflow
+                    .download_submissions
+                    .get_identity_tracked_state_detail(
+                        &observed_identity,
+                        Some(&observed_source_identity),
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+                set_import_blocked_status(td, detail);
+            }
             return;
         }
 
@@ -717,6 +731,9 @@ impl TrackedDownloadService {
                 && (state.is_terminal() || state == TrackedDownloadState::ImportBlocked)
             {
                 td.state = state;
+                if state == TrackedDownloadState::ImportBlocked {
+                    set_import_blocked_status(td, None);
+                }
                 return;
             }
         }
@@ -953,11 +970,37 @@ fn snapshot_absence_exceeds_grace(td: &mut TrackedDownload, now: DateTime<Utc>) 
     }
 }
 
+fn import_blocked_fallback_message(td: &TrackedDownload) -> String {
+    if !title_id_present(td.title_id.as_deref()) {
+        return "Automatic import could not identify a library title. Assign a title to continue."
+            .to_string();
+    }
+
+    match td.facet.as_deref().map(str::to_ascii_lowercase).as_deref() {
+        Some("series" | "anime") => "Automatic import could not determine a unique season and episode mapping. Open Manual Import and assign the correct season and episode."
+            .to_string(),
+        _ => "Automatic import needs operator review. Open Manual Import and confirm the file mapping to continue."
+            .to_string(),
+    }
+}
+
+fn set_import_blocked_status(td: &mut TrackedDownload, detail: Option<String>) {
+    let message = detail
+        .and_then(|detail| {
+            let detail = detail.trim();
+            (!detail.is_empty()).then(|| detail.to_string())
+        })
+        .unwrap_or_else(|| import_blocked_fallback_message(td));
+    td.status = TrackedDownloadStatus::Warning;
+    td.status_messages = vec![message];
+}
+
 pub(crate) async fn assign_title_to_tracked_download(
     app: &AppUseCase,
     td: &mut TrackedDownload,
     title: &Title,
 ) {
+    let was_blocked = td.state == TrackedDownloadState::ImportBlocked;
     td.title_id = Some(title.id.clone());
     td.facet = Some(title.facet.as_str().to_string());
     td.match_type = TitleMatchType::Submission;
@@ -967,7 +1010,16 @@ pub(crate) async fn assign_title_to_tracked_download(
 
     // Assignment identifies the title but does not authorize import. Movies use
     // the same explicit manual-import decision point as episodic downloads.
-    if td.state == TrackedDownloadState::ImportBlocked {
+    if was_blocked {
+        set_import_blocked_status(td, None);
+        persist_tracked_download_state_marker(
+            app,
+            td,
+            TrackedDownloadState::ImportBlocked,
+            Some("manual_import_mapping_required"),
+            td.status_messages.first().map(String::as_str),
+        )
+        .await;
         return;
     }
 
@@ -1519,6 +1571,7 @@ mod tests {
         download_id_submissions:
             Arc<Mutex<Vec<(crate::DownloadSubmission, crate::DownloadSubmissionIdentity)>>>,
         identity_tracked_states: Arc<Mutex<HashMap<String, String>>>,
+        identity_tracked_state_details: Arc<Mutex<HashMap<String, String>>>,
     }
 
     fn test_download_identity_state_key(
@@ -1692,13 +1745,19 @@ mod tests {
             source_identity: Option<&DownloadSourceIdentity>,
             tracked_state: &str,
             _: Option<&str>,
-            _: Option<&str>,
+            detail: Option<&str>,
         ) -> AppResult<()> {
             if let Some(key) = test_download_identity_state_key(identity, source_identity) {
                 self.identity_tracked_states
                     .lock()
                     .await
-                    .insert(key, tracked_state.to_string());
+                    .insert(key.clone(), tracked_state.to_string());
+                if let Some(detail) = detail {
+                    self.identity_tracked_state_details
+                        .lock()
+                        .await
+                        .insert(key, detail.to_string());
+                }
             }
             Ok(())
         }
@@ -1712,6 +1771,22 @@ mod tests {
                 return Ok(None);
             };
             Ok(self.identity_tracked_states.lock().await.get(&key).cloned())
+        }
+
+        async fn get_identity_tracked_state_detail(
+            &self,
+            identity: &crate::DownloadSubmissionIdentity,
+            source_identity: Option<&DownloadSourceIdentity>,
+        ) -> AppResult<Option<String>> {
+            let Some(key) = test_download_identity_state_key(identity, source_identity) else {
+                return Ok(None);
+            };
+            Ok(self
+                .identity_tracked_state_details
+                .lock()
+                .await
+                .get(&key)
+                .cloned())
         }
     }
 
@@ -2967,6 +3042,7 @@ mod tests {
             recorded_submissions: Arc::new(Mutex::new(vec![])),
             download_id_submissions: Arc::new(Mutex::new(vec![])),
             identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
+            identity_tracked_state_details: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo {
             import_record: Some(ImportRecord {
@@ -3009,6 +3085,39 @@ mod tests {
                 .as_slice(),
             ["imported"]
         );
+    }
+
+    #[tokio::test]
+    async fn reconstruct_state_restores_import_blocked_detail() {
+        let download_id = "scryer-download:blocked-recovery";
+        let identity = crate::DownloadSubmissionIdentity {
+            download_id: Some(download_id.to_string()),
+        };
+        let source_identity = DownloadSourceIdentity::new(Some("client-1"), "nzbget", "dl-1");
+        let detail = "Automatic import could not choose a season for episode 9: the release name does not include a season and the downloaded filename is obfuscated. Open Manual Import and assign the correct season and episode.";
+        let download_submissions = Arc::new(TestDownloadSubmissionRepo::default());
+        download_submissions
+            .record_identity_tracked_state(
+                &identity,
+                Some(&source_identity),
+                TrackedDownloadState::ImportBlocked.as_str(),
+                Some("import_blocked_after_import"),
+                Some(detail),
+            )
+            .await
+            .expect("blocked state should record");
+        let app = build_app(download_submissions, Arc::new(TestImportRepo::default()));
+        let mut tracker = TrackedDownloadService::new();
+        let mut item = build_client_item();
+        item.download_id = Some(download_id.to_string());
+        let tracked_id = tracked_download_id_for_item(&item);
+
+        tracker.track(&app, item).await;
+
+        let tracked = tracker.find(&tracked_id).expect("tracked download");
+        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+        assert_eq!(tracked.status, TrackedDownloadStatus::Warning);
+        assert_eq!(tracked.status_messages, vec![detail.to_string()]);
     }
 
     #[tokio::test]
@@ -3212,6 +3321,7 @@ mod tests {
             recorded_submissions: Arc::new(Mutex::new(vec![])),
             download_id_submissions: Arc::new(Mutex::new(vec![])),
             identity_tracked_states: Arc::new(Mutex::new(HashMap::new())),
+            identity_tracked_state_details: Arc::new(Mutex::new(HashMap::new())),
         });
         let imports = Arc::new(TestImportRepo::default());
         let tempdir = tempfile::tempdir().expect("tempdir");
@@ -3506,9 +3616,33 @@ mod tests {
         assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
         assert_eq!(tracked.match_type, TitleMatchType::Submission);
         assert!(!tracked.import_attempted);
+        assert_eq!(
+            tracked.status_messages,
+            vec![
+                "Automatic import needs operator review. Open Manual Import and confirm the file mapping to continue."
+                    .to_string()
+            ]
+        );
 
         crate::completed_download_handler::check(&app, tracked).await;
         assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+    }
+
+    #[test]
+    fn import_blocked_fallback_explains_episode_mapping_for_assigned_anime() {
+        let mut tracked = build_tracked_download("job-ambiguous-anime");
+        tracked.title_id = Some("title-1".to_string());
+        tracked.facet = Some("anime".to_string());
+
+        set_import_blocked_status(&mut tracked, None);
+
+        assert_eq!(
+            tracked.status_messages,
+            vec![
+                "Automatic import could not determine a unique season and episode mapping. Open Manual Import and assign the correct season and episode."
+                    .to_string()
+            ]
+        );
     }
 
     #[tokio::test]

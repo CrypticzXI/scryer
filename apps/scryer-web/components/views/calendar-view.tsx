@@ -27,6 +27,10 @@ import type { LibraryRecord } from "@/lib/types";
 import { artworkFallbackStyle } from "@/lib/utils/artwork-fallback";
 import { buildCalendarEventHref } from "@/lib/utils/calendar-event-href";
 import {
+  readStoredCalendarViewMode,
+  writeStoredCalendarViewMode,
+} from "@/lib/utils/calendar-view-mode";
+import {
   episodeAvailabilityPill,
   type EpisodeMediaAvailability,
 } from "@/lib/utils/episode-media-availability";
@@ -395,6 +399,7 @@ export function CalendarView({
 }: CalendarViewProps) {
   const t = useTranslate();
   const isMobile = useIsMobile();
+  const [initialCalendarView] = useState(readStoredCalendarViewMode);
   const [facetFilter, setFacetFilter] = useState<string[]>(["anime", "movie", "series"]);
   const [visibleMonitoringStatuses, setVisibleMonitoringStatuses] = useState<
     CalendarMonitoringStatus[]
@@ -468,6 +473,9 @@ export function CalendarView({
   );
 
   const handleDatesSet = (arg: DatesSetInfo) => {
+    if (arg.view.type === "dayGridMonth" || arg.view.type === "dayGridWeek") {
+      writeStoredCalendarViewMode(arg.view.type);
+    }
     const start = arg.startStr.slice(0, 10);
     const end = arg.endStr.slice(0, 10);
     onDateRangeChange(start, end);
@@ -620,7 +628,7 @@ export function CalendarView({
           <FullCalendar
             key={isMobile ? "calendar-mobile" : "calendar-desktop"}
             plugins={[dayGridPlugin, classicThemePlugin]}
-            initialView="dayGridMonth"
+            initialView={initialCalendarView}
             headerToolbarClass="fc-scryer-header-toolbar"
             toolbarSectionClass="fc-scryer-toolbar-section"
             toolbarTitleClass="fc-scryer-toolbar-title"
@@ -723,16 +731,11 @@ export function CalendarView({
             displayEventTime={false}
           />
         </div>
-          <div className="mt-2 flex min-h-5 items-center justify-between gap-3 text-[12.5px] text-[var(--scry-muted3)]">
-            <span aria-live="polite">{loading ? t("label.loading") : null}</span>
-            <div className="flex items-center justify-end gap-2">
-              <CalendarClock className="h-[15px] w-[15px] text-[var(--scry-faint)]" />
-              <span className="font-semibold text-[var(--scry-text4)]">
-                {filteredEpisodes.length}
-              </span>
-              airings this month
-            </div>
-          </div>
+          {loading ? (
+            <p aria-live="polite" className="mt-2 text-[12.5px] text-[var(--scry-muted3)]">
+              {t("label.loading")}
+            </p>
+          ) : null}
         </CardContent>
       </Card>
       {!isMobile && hoverPreview ? <CalendarEventHoverCard preview={hoverPreview} /> : null}

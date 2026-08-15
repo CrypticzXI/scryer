@@ -399,9 +399,15 @@ impl MediaFileRepository for MockMediaFileRepo {
                     .clone()
                     .into_iter()
                     .collect::<Vec<_>>();
+                let primary_episode_ids = if media_file.role.is_primary() {
+                    episode_ids.clone()
+                } else {
+                    Vec::new()
+                };
                 EpisodeScopedMediaFile {
                     media_file,
                     episode_ids,
+                    primary_episode_ids,
                 }
             })
             .collect())
@@ -611,6 +617,38 @@ impl MediaFileRepository for MockMediaFileRepo {
         if updated != additional_ids.len() + 1 {
             return Err(AppError::NotFound(format!(
                 "media files for title {title_id}"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn set_media_file_roles_for_episode(
+        &self,
+        title_id: &str,
+        episode_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        let additional_ids = additional_file_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let mut list = self.store.lock().await;
+        let mut updated = 0usize;
+        for entry in list.iter_mut().filter(|entry| {
+            entry.title_id == title_id && entry.episode_id.as_deref() == Some(episode_id)
+        }) {
+            if entry.id == primary_file_id {
+                entry.role = crate::MediaFileRole::Primary;
+                updated += 1;
+            } else if additional_ids.contains(entry.id.as_str()) {
+                entry.role = crate::MediaFileRole::Additional;
+                updated += 1;
+            }
+        }
+        if updated != additional_ids.len() + 1 {
+            return Err(AppError::NotFound(format!(
+                "media files for episode {episode_id}"
             )));
         }
         Ok(())

@@ -865,6 +865,23 @@ hook_id = "migrate_title_folder_ownership"
 engine = "all"
 scope = "all"
 
+[[migration]]
+version = 158
+description = "episode scoped media file roles"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0158_episode_scoped_media_file_roles.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0158_episode_scoped_media_file_roles.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

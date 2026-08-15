@@ -3199,6 +3199,14 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         Ok(None)
     }
 
+    async fn get_identity_tracked_state_detail(
+        &self,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
     async fn list_identity_tracked_states_for_client_items(
         &self,
         _client_items: &[DownloadSourceIdentity],
@@ -3842,6 +3850,14 @@ pub trait MediaFileRepository: Send + Sync {
     async fn set_media_file_roles_for_title(
         &self,
         title_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()>;
+
+    async fn set_media_file_roles_for_episode(
+        &self,
+        title_id: &str,
+        episode_id: &str,
         primary_file_id: &str,
         additional_file_ids: &[String],
     ) -> AppResult<()>;

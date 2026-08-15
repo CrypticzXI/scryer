@@ -3632,8 +3632,17 @@ impl AppUseCase {
                     return None;
                 }
 
+                let is_primary = scoped_file
+                    .primary_episode_ids
+                    .iter()
+                    .any(|primary_episode_id| primary_episode_id == episode_id);
                 let mut media_file = scoped_file.media_file;
                 media_file.episode_id = Some(episode_id.to_string());
+                media_file.role = if is_primary {
+                    crate::MediaFileRole::Primary
+                } else {
+                    crate::MediaFileRole::Additional
+                };
                 Some(media_file)
             })
             .collect())
@@ -3678,6 +3687,15 @@ impl AppUseCase {
                 {
                     let mut media_file = scoped_file.media_file.clone();
                     media_file.episode_id = Some(episode_id.clone());
+                    media_file.role = if scoped_file
+                        .primary_episode_ids
+                        .iter()
+                        .any(|primary_episode_id| primary_episode_id == episode_id)
+                    {
+                        crate::MediaFileRole::Primary
+                    } else {
+                        crate::MediaFileRole::Additional
+                    };
                     files_by_episode
                         .entry(episode_id.clone())
                         .or_default()

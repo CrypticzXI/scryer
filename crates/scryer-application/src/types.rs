@@ -674,6 +674,7 @@ pub struct TitleMediaFile {
 pub struct EpisodeScopedMediaFile {
     pub media_file: TitleMediaFile,
     pub episode_ids: Vec<String>,
+    pub primary_episode_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug)]

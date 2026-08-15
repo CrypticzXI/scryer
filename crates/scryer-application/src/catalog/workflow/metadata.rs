@@ -279,32 +279,45 @@ impl AppUseCase {
             .find(|file| file.id == file_id)
             .ok_or_else(|| AppError::NotFound(format!("media file {file_id}")))?;
         if title.facet != MediaFacet::Movie {
-            let additional_file_ids = if let Some(episode_id) = selected_file.episode_id.as_deref() {
-                media_files
+            if let Some(episode_id) = selected_file.episode_id.as_deref() {
+                let additional_file_ids = media_files
                     .iter()
                     .filter(|file| file.id != selected_file.id)
                     .filter(|file| file.episode_id.as_deref() == Some(episode_id))
                     .map(|file| file.id.clone())
-                    .collect::<Vec<_>>()
-            } else {
-                let series_movie_link_id =
-                    selected_file.series_movie_link_ids.first().ok_or_else(|| {
-                        AppError::Validation(
-                            "primary movie file can only be set for movie titles, series movie files, or episode files"
-                                .to_string(),
-                        )
-                    })?;
-                media_files
-                    .iter()
-                    .filter(|file| file.id != selected_file.id)
-                    .filter(|file| {
-                        file.series_movie_link_ids
-                            .iter()
-                            .any(|link_id| link_id == series_movie_link_id)
-                    })
-                    .map(|file| file.id.clone())
-                    .collect::<Vec<_>>()
-            };
+                    .collect::<Vec<_>>();
+
+                self.services
+                    .library
+                    .media_files
+                    .set_media_file_roles_for_episode(
+                        &title.id,
+                        episode_id,
+                        &selected_file.id,
+                        &additional_file_ids,
+                    )
+                    .await?;
+                self.emit_title_updated_activity(actor, &title).await;
+                return Ok(title);
+            }
+
+            let series_movie_link_id =
+                selected_file.series_movie_link_ids.first().ok_or_else(|| {
+                    AppError::Validation(
+                        "primary movie file can only be set for movie titles, series movie files, or episode files"
+                            .to_string(),
+                    )
+                })?;
+            let additional_file_ids = media_files
+                .iter()
+                .filter(|file| file.id != selected_file.id)
+                .filter(|file| {
+                    file.series_movie_link_ids
+                        .iter()
+                        .any(|link_id| link_id == series_movie_link_id)
+                })
+                .map(|file| file.id.clone())
+                .collect::<Vec<_>>();
 
             self.services
                 .library

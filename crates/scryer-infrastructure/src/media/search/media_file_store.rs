@@ -116,11 +116,18 @@ impl MediaFileRepository for MediaFileStore {
         execute_write(
             &self.datastore,
             "link_file_to_episode",
-            "INSERT INTO file_episode_map (file_id, episode_id)
-             VALUES ({}, {})
+            "INSERT INTO file_episode_map (file_id, episode_id, role)
+             SELECT {}, {},
+                    CASE WHEN EXISTS (
+                        SELECT 1
+                        FROM file_episode_map
+                        WHERE episode_id = {}
+                          AND role = 'primary'
+                    ) THEN 'additional' ELSE 'primary' END
              ON CONFLICT(file_id, episode_id) DO NOTHING",
             vec![
                 SqlArg::Text(file_id.to_string()),
+                SqlArg::Text(episode_id.to_string()),
                 SqlArg::Text(episode_id.to_string()),
             ],
         )
@@ -157,7 +164,7 @@ impl MediaFileRepository for MediaFileStore {
              WHERE mf.title_id = {{}}
                AND {}
              ORDER BY mf.created_at DESC",
-            media_file_select_columns(dialect, "fem.episode_id"),
+            media_file_select_columns(dialect, "fem.episode_id", "COALESCE(fem.role, mf.role)"),
             live_media_file_predicate(dialect, "mf")
         );
         fetch_media_files(
@@ -185,7 +192,7 @@ impl MediaFileRepository for MediaFileStore {
              WHERE mf.title_id IN ({placeholders})
                AND {}
              ORDER BY mf.title_id, mf.created_at DESC",
-            media_file_select_columns(dialect, "fem.episode_id"),
+            media_file_select_columns(dialect, "fem.episode_id", "COALESCE(fem.role, mf.role)"),
             live_media_file_predicate(dialect, "mf")
         );
         let args = title_ids
@@ -209,7 +216,8 @@ impl MediaFileRepository for MediaFileStore {
         let placeholders = placeholders(episode_ids.len());
         let sql = format!(
             "SELECT {},
-                    {} AS episode_ids_json
+                    {} AS episode_ids_json,
+                    {} AS primary_episode_ids_json
              FROM media_files mf
              INNER JOIN file_episode_map fem_target ON fem_target.file_id = mf.id
              LEFT JOIN file_episode_map fem_all ON fem_all.file_id = mf.id
@@ -218,8 +226,14 @@ impl MediaFileRepository for MediaFileStore {
                AND fem_target.episode_id IN ({placeholders})
              GROUP BY mf.id
              ORDER BY mf.created_at DESC",
-            media_file_select_columns(dialect, "NULL"),
+            media_file_select_columns(
+                dialect,
+                "NULL",
+                "CASE WHEN MAX(CASE WHEN fem_target.role = 'primary' THEN 1 ELSE 0 END) = 1
+                      THEN 'primary' ELSE 'additional' END"
+            ),
             episode_ids_aggregate(dialect),
+            primary_episode_ids_aggregate(dialect),
             live_media_file_predicate(dialect, "mf")
         );
         let mut args = vec![SqlArg::Text(title_id.to_string())];
@@ -533,7 +547,7 @@ impl MediaFileRepository for MediaFileStore {
                     SELECT 1 FROM file_episode_map fem
                      INNER JOIN media_files mf ON mf.id = fem.file_id
                      WHERE fem.episode_id = e.id
-                       AND mf.role = 'primary'
+                       AND fem.role = 'primary'
                        AND {live_file}
                 )
               ORDER BY e.id",
@@ -655,7 +669,7 @@ impl MediaFileRepository for MediaFileStore {
              FROM episodes e
              INNER JOIN collections c ON c.id = e.collection_id
              LEFT JOIN file_episode_map fem ON fem.episode_id = e.id
-             LEFT JOIN media_files mf ON mf.id = fem.file_id AND {} AND mf.role = 'primary'
+             LEFT JOIN media_files mf ON mf.id = fem.file_id AND {} AND fem.role = 'primary'
              WHERE e.title_id IN ({placeholders})
                AND c.collection_type <> 'specials'
                AND c.collection_index <> '0'
@@ -709,15 +723,15 @@ impl MediaFileRepository for MediaFileStore {
                        mf.resolution,
                        ROW_NUMBER() OVER (
                            PARTITION BY fem.episode_id
-                           ORDER BY CASE WHEN mf.role = 'primary' THEN 0 ELSE 1 END,
-                                    CASE WHEN mf.role = 'primary' THEN 0 ELSE mf.size_bytes END DESC,
+                           ORDER BY CASE WHEN fem.role = 'primary' THEN 0 ELSE 1 END,
+                                    CASE WHEN fem.role = 'primary' THEN 0 ELSE mf.size_bytes END DESC,
                                     mf.created_at DESC,
                                     mf.id DESC
                        ) AS row_number
                 FROM file_episode_map fem
                 INNER JOIN requested_episodes e ON e.id = fem.episode_id
                 INNER JOIN media_files mf ON mf.id = fem.file_id
-                WHERE {} AND mf.role IN ('primary', 'additional')
+                WHERE {} AND fem.role IN ('primary', 'additional')
              )
              SELECT e.title_id,
                     e.id AS episode_id,
@@ -788,7 +802,7 @@ impl MediaFileRepository for MediaFileStore {
                     COUNT(DISTINCT CASE WHEN mf.id IS NOT NULL THEN e.id END) AS owned_episodes
              FROM episodes e
              LEFT JOIN file_episode_map fem ON fem.episode_id = e.id
-             LEFT JOIN media_files mf ON mf.id = fem.file_id AND {} AND mf.role = 'primary'
+             LEFT JOIN media_files mf ON mf.id = fem.file_id AND {} AND fem.role = 'primary'
              WHERE e.title_id IN ({placeholders})
                AND e.collection_id IS NOT NULL
                AND trim(COALESCE(e.title, '')) <> ''
@@ -950,6 +964,103 @@ impl MediaFileRepository for MediaFileStore {
         Ok(())
     }
 
+    async fn set_media_file_roles_for_episode(
+        &self,
+        title_id: &str,
+        episode_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        let mut ids = Vec::with_capacity(additional_file_ids.len() + 1);
+        ids.push(primary_file_id.to_string());
+        for file_id in additional_file_ids {
+            if file_id != primary_file_id && !ids.contains(file_id) {
+                ids.push(file_id.clone());
+            }
+        }
+
+        let title_id = title_id.to_string();
+        let episode_id = episode_id.to_string();
+        let primary_file_id = primary_file_id.to_string();
+        SqlRuntime::run_in_transaction(
+            &self.datastore,
+            "set_media_file_roles_for_episode",
+            move |tx| {
+                let title_id = title_id.clone();
+                let episode_id = episode_id.clone();
+                let primary_file_id = primary_file_id.clone();
+                let ids = ids.clone();
+                Box::pin(async move {
+                    let mut candidate_args = vec![SqlArg::Text(episode_id.clone())];
+                    candidate_args.extend(ids.iter().cloned().map(SqlArg::Text));
+                    candidate_args.push(SqlArg::Text(title_id.clone()));
+                    let updated = SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        &format!(
+                            "UPDATE file_episode_map
+                                SET role = 'additional'
+                              WHERE episode_id = {{}}
+                                AND file_id IN ({})
+                                AND EXISTS (
+                                    SELECT 1
+                                    FROM media_files mf
+                                    WHERE mf.id = file_episode_map.file_id
+                                      AND mf.title_id = {{}}
+                                )",
+                            placeholders(ids.len())
+                        ),
+                        &candidate_args,
+                    )
+                    .await?;
+                    if updated != ids.len() as u64 {
+                        return Err(AppError::Repository(format!(
+                            "expected to update {} episode media file roles, updated {updated}",
+                            ids.len()
+                        )));
+                    }
+
+                    SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "UPDATE file_episode_map
+                            SET role = 'additional'
+                          WHERE episode_id = {}
+                            AND role = 'primary'",
+                        &[SqlArg::Text(episode_id.clone())],
+                    )
+                    .await?;
+
+                    let promoted = SqlRuntime::execute(
+                        SqlExec::Tx(tx),
+                        "UPDATE file_episode_map
+                            SET role = 'primary'
+                          WHERE episode_id = {}
+                            AND file_id = {}
+                            AND EXISTS (
+                                SELECT 1
+                                FROM media_files mf
+                                WHERE mf.id = file_episode_map.file_id
+                                  AND mf.title_id = {}
+                            )",
+                        &[
+                            SqlArg::Text(episode_id),
+                            SqlArg::Text(primary_file_id.clone()),
+                            SqlArg::Text(title_id),
+                        ],
+                    )
+                    .await?;
+                    if promoted != 1 {
+                        return Err(AppError::Repository(format!(
+                            "expected to promote one episode media file, promoted {promoted}: {primary_file_id}"
+                        )));
+                    }
+
+                    Ok(())
+                })
+            },
+        )
+        .await
+    }
+
     async fn replace_media_file_for_upgrade(
         &self,
         old_file_id: &str,
@@ -968,6 +1079,25 @@ impl MediaFileRepository for MediaFileStore {
                 let replacement_file_id = replacement_file_id.clone();
                 let replacement_file_path = replacement_file_path.clone();
                 Box::pin(async move {
+                    let primary_episode_ids = SqlRuntime::fetch_all(
+                        SqlExec::Tx(tx),
+                        "SELECT old_link.episode_id
+                           FROM file_episode_map old_link
+                           INNER JOIN file_episode_map replacement_link
+                                   ON replacement_link.episode_id = old_link.episode_id
+                                  AND replacement_link.file_id = {}
+                          WHERE old_link.file_id = {}
+                            AND old_link.role = 'primary'",
+                        &[
+                            SqlArg::Text(replacement_file_id.clone()),
+                            SqlArg::Text(old_file_id.clone()),
+                        ],
+                    )
+                    .await?
+                    .iter()
+                    .map(|row| row.text("episode_id"))
+                    .collect::<AppResult<Vec<_>>>()?;
+
                     let deleted = SqlRuntime::execute(
                         SqlExec::Tx(tx),
                         "DELETE FROM media_files WHERE id = {}",
@@ -978,6 +1108,26 @@ impl MediaFileRepository for MediaFileStore {
                         return Err(AppError::Repository(format!(
                             "expected to delete one old media file during upgrade replacement, deleted {deleted}: {old_file_id}"
                         )));
+                    }
+
+                    for episode_id in primary_episode_ids {
+                        let promoted = SqlRuntime::execute(
+                            SqlExec::Tx(tx),
+                            "UPDATE file_episode_map
+                                SET role = 'primary'
+                              WHERE file_id = {}
+                                AND episode_id = {}",
+                            &[
+                                SqlArg::Text(replacement_file_id.clone()),
+                                SqlArg::Text(episode_id.clone()),
+                            ],
+                        )
+                        .await?;
+                        if promoted != 1 {
+                            return Err(AppError::Repository(format!(
+                                "expected to transfer one episode primary role, transferred {promoted}: {episode_id}"
+                            )));
+                        }
                     }
 
                     let updated = SqlRuntime::execute(
@@ -1022,7 +1172,7 @@ impl MediaFileRepository for MediaFileStore {
             "SELECT {}
              FROM media_files mf
              WHERE mf.id = {{}}",
-            media_file_select_columns(dialect, "NULL")
+            media_file_select_columns(dialect, "NULL", "mf.role")
         );
         fetch_optional_media_file(
             self.datastore.read_exec(),
@@ -1067,7 +1217,7 @@ impl MediaFileRepository for MediaFileStore {
              FROM media_files mf
              WHERE {where_clause}
              LIMIT 1",
-            media_file_select_columns(dialect, "NULL")
+            media_file_select_columns(dialect, "NULL", "mf.role")
         );
         fetch_optional_media_file(self.datastore.read_exec(), &sql, &args).await
     }
@@ -1163,13 +1313,18 @@ fn serialized_media_analysis(analysis: &MediaFileAnalysis) -> AppResult<String> 
     canonical_json_text(analysis)
 }
 
-fn media_file_select_columns(dialect: SqlDialect, episode_expr: &str) -> String {
+fn media_file_select_columns(
+    dialect: SqlDialect,
+    episode_expr: &str,
+    role_expr: &str,
+) -> String {
     let series_movie_link_ids_json = series_movie_link_ids_aggregate(dialect);
     format!(
         "mf.id, mf.title_id, {episode_expr} AS episode_id,
             {series_movie_link_ids_json} AS series_movie_link_ids_json,
             mf.file_path,
-            mf.size_bytes, mf.role, mf.source_signature_scheme, mf.source_signature_value,
+            mf.size_bytes, {role_expr} AS role,
+            mf.source_signature_scheme, mf.source_signature_value,
             mf.quality_id, mf.scan_status, mf.created_at,
             mf.video_codec, mf.video_width, mf.video_height,
             mf.video_bitrate_kbps, mf.video_bit_depth,
@@ -1221,6 +1376,25 @@ fn episode_ids_aggregate(dialect: SqlDialect) -> &'static str {
             "COALESCE(
                 jsonb_agg(DISTINCT fem_all.episode_id)
                     FILTER (WHERE fem_all.episode_id IS NOT NULL),
+                '[]'::jsonb
+             )::text"
+        }
+    }
+}
+
+fn primary_episode_ids_aggregate(dialect: SqlDialect) -> &'static str {
+    match dialect {
+        SqlDialect::Sqlite => {
+            "COALESCE(
+                json_group_array(DISTINCT fem_all.episode_id)
+                    FILTER (WHERE fem_all.role = 'primary'),
+                '[]'
+             )"
+        }
+        SqlDialect::Postgres => {
+            "COALESCE(
+                jsonb_agg(DISTINCT fem_all.episode_id)
+                    FILTER (WHERE fem_all.role = 'primary'),
                 '[]'::jsonb
              )::text"
         }
@@ -1392,10 +1566,18 @@ fn row_to_episode_scoped_media_file(row: &SqlRow) -> AppResult<EpisodeScopedMedi
         string_array_from_json_column(row, "episode_ids_json", "media_files.episode_ids_json");
     episode_ids.sort();
     episode_ids.dedup();
+    let mut primary_episode_ids = string_array_from_json_column(
+        row,
+        "primary_episode_ids_json",
+        "media_files.primary_episode_ids_json",
+    );
+    primary_episode_ids.sort();
+    primary_episode_ids.dedup();
 
     Ok(EpisodeScopedMediaFile {
         media_file,
         episode_ids,
+        primary_episode_ids,
     })
 }
 
@@ -2322,6 +2504,15 @@ mod tests {
             .update_media_file_analysis(&newer_legacy_primary, analysis(1920))
             .await
             .expect("newer legacy primary should scan");
+        media_files
+            .set_media_file_roles_for_episode(
+                &title.id,
+                &legacy_multiple_primary.id,
+                &newer_legacy_primary,
+                std::slice::from_ref(&older_legacy_primary),
+            )
+            .await
+            .expect("newer episode association should promote");
 
         let summaries = media_files
             .list_episode_media_availability(std::slice::from_ref(&title.id))
@@ -2386,7 +2577,7 @@ mod tests {
                 .primary_quality_label
                 .as_deref(),
             Some("1080p"),
-            "the newest primary wins for legacy duplicate associations"
+            "the episode-scoped primary supplies the collapsed-row quality"
         );
 
         let _ = std::fs::remove_file(db);
@@ -2561,6 +2752,69 @@ mod tests {
         assert_eq!(
             scoped[0].episode_ids,
             vec![episode_one.id.clone(), episode_two.id.clone()]
+        );
+        assert_eq!(
+            scoped[0].primary_episode_ids,
+            vec![episode_one.id.clone(), episode_two.id.clone()]
+        );
+
+        let episode_two_replacement_id = media_files
+            .insert_media_file(&InsertMediaFileInput {
+                title_id: title.id.clone(),
+                file_path: "/library/Show/Season 01/Show - S01E02 alternate.mkv".to_string(),
+                size_bytes: 2_500,
+                ..Default::default()
+            })
+            .await
+            .expect("episode two replacement should insert");
+        media_files
+            .link_file_to_episode(&episode_two_replacement_id, &episode_two.id)
+            .await
+            .expect("replacement should link episode two");
+        media_files
+            .set_media_file_roles_for_episode(
+                &title.id,
+                &episode_two.id,
+                &episode_two_replacement_id,
+                std::slice::from_ref(&pack_file_id),
+            )
+            .await
+            .expect("episode two replacement should promote");
+
+        let scoped = media_files
+            .list_live_media_files_for_episode_ids(
+                &title.id,
+                &[episode_one.id.clone(), episode_two.id.clone()],
+            )
+            .await
+            .expect("promoted episode scoped query should succeed");
+        let pack = scoped
+            .iter()
+            .find(|file| file.media_file.id == pack_file_id)
+            .expect("shared pack should remain linked");
+        assert_eq!(pack.primary_episode_ids, vec![episode_one.id.clone()]);
+        let replacement = scoped
+            .iter()
+            .find(|file| file.media_file.id == episode_two_replacement_id)
+            .expect("replacement should be returned");
+        assert_eq!(
+            replacement.primary_episode_ids,
+            vec![episode_two.id.clone()]
+        );
+
+        let episode_two_files = media_files
+            .list_media_files_for_title(&title.id)
+            .await
+            .expect("title media files should load")
+            .into_iter()
+            .filter(|file| file.episode_id.as_deref() == Some(episode_two.id.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            episode_two_files
+                .iter()
+                .filter(|file| file.role.is_primary())
+                .count(),
+            1
         );
 
         let _ = std::fs::remove_file(db);
