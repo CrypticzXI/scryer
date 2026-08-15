@@ -1528,7 +1528,7 @@ jobs:
 
   docker-export:
     name: docker-export-${{ matrix.platform_id }}
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ always() && github.event_name == 'pull_request' && needs.rust-clippy.result == 'success' && needs.rust-nextest.result == 'success' && needs.launcher-build.result == 'success' && needs.linux-build.result == 'success' }}
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 20
     needs: [rust-clippy, rust-nextest, launcher-build, linux-build]
@@ -1617,7 +1617,7 @@ jobs:
 
   docker-publish-pr-rc:
     name: docker-publish-pr-rc
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.rust-clippy.result == 'success' && needs.rust-nextest.result == 'success' && needs.launcher-build.result == 'success' && needs.linux-build.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     needs: [rust-clippy, rust-nextest, launcher-build, linux-build]
