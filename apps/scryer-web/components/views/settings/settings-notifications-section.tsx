@@ -700,7 +700,16 @@ export function SettingsNotificationsSection({
             </CardHeader>
             <CardContent>
               {providerTypeOptions.length === 0 ? (
-                <p className="text-sm text-muted-foreground">{t("settings.notificationNoProviders")}</p>
+                <div className="space-y-2 text-sm text-muted-foreground">
+                  <p>{t("settings.notificationNoProviders")}</p>
+                  <p>
+                    To notify a media server (ie. Jellyfin), first create a{" "}
+                    <Link className="underline hover:text-foreground" to="/settings/media-servers">
+                      media server connection
+                    </Link>
+                    .
+                  </p>
+                </div>
               ) : (
                 <form id="settings-notification-channel-form" className="space-y-3" onSubmit={submitChannel}>
                <div className="grid gap-3 md:grid-cols-2">

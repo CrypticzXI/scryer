@@ -920,6 +920,8 @@ pub struct CalendarEpisode {
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
     pub episode_title: Option<String>,
+    pub overview: Option<String>,
+    pub image_url: Option<String>,
     pub air_date: Option<String>,
     pub monitored: bool,
 }

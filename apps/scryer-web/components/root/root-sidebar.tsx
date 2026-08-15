@@ -36,6 +36,7 @@ import {
   Archive,
   Bell,
   Captions,
+  ChevronDown,
   Database,
   Download,
   FileText,
@@ -408,6 +409,43 @@ const WANTED_SUB_PAGES: Array<{ id: WantedSection; labelKey: string }> = [
   { id: "history", labelKey: "history.title" },
 ];
 
+const SIDEBAR_COLLAPSED_GROUPS_STORAGE_KEY = "scryer:sidebar-collapsed-groups";
+
+function readCollapsedTopNavGroups(): ReadonlySet<string> {
+  if (typeof window === "undefined") {
+    return new Set();
+  }
+
+  try {
+    const storedValue = window.localStorage.getItem(
+      SIDEBAR_COLLAPSED_GROUPS_STORAGE_KEY,
+    );
+    const parsedValue: unknown = storedValue ? JSON.parse(storedValue) : [];
+    return new Set(
+      Array.isArray(parsedValue)
+        ? parsedValue.filter((value): value is string => typeof value === "string")
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function persistCollapsedTopNavGroups(groups: ReadonlySet<string>) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      SIDEBAR_COLLAPSED_GROUPS_STORAGE_KEY,
+      JSON.stringify([...groups]),
+    );
+  } catch {
+    // Local storage can be unavailable in private browsing contexts.
+  }
+}
+
 const LEAF_NAV_BADGE_BASE_CLASS =
   "ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-md px-1 text-[10px] font-medium leading-none tabular-nums";
 
@@ -530,7 +568,22 @@ function RootSidebarContent({
   } = useUiSettings();
   const themeSaveSequenceRef = React.useRef(0);
   const [themeMounted, setThemeMounted] = React.useState(false);
+  const [collapsedTopNavGroups, setCollapsedTopNavGroups] = React.useState<
+    ReadonlySet<string>
+  >(readCollapsedTopNavGroups);
   React.useEffect(() => setThemeMounted(true), []);
+  const toggleTopNavGroup = React.useCallback((groupId: string) => {
+    setCollapsedTopNavGroups((previous) => {
+      const next = new Set(previous);
+      if (next.has(groupId)) {
+        next.delete(groupId);
+      } else {
+        next.add(groupId);
+      }
+      persistCollapsedTopNavGroups(next);
+      return next;
+    });
+  }, []);
   const cycleTheme = React.useCallback(() => {
     const nextTheme = getNextTheme(theme);
     setTheme(nextTheme);
@@ -988,12 +1041,34 @@ function RootSidebarContent({
           </div>
         </SidebarHeader>
         <SidebarContent className="overflow-y-auto px-3 pb-3 [scrollbar-color:var(--scry-border2)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-2.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-[3px] [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-[var(--scry-border2)] [&::-webkit-scrollbar-thumb]:bg-clip-content">
-          {groupedTopNav.map((group) => (
-            <SidebarGroup key={group.id} className="px-0 py-1 first:pt-0">
-              <SidebarGroupLabel className="h-6 px-2 text-[10.5px] font-bold uppercase tracking-[0.13em] text-[var(--scry-faint3)]">
-                {group.label}
+          {groupedTopNav.map((group) => {
+            const isCollapsed = collapsedTopNavGroups.has(group.id);
+            const groupContentId = selectorId("root-sidebar-group", group.id);
+
+            return (
+            <SidebarGroup
+              key={group.id}
+              className="px-0 py-1 first:pt-0"
+            >
+              <SidebarGroupLabel asChild className="h-auto p-0">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between rounded-md px-1 py-1.5 text-left text-[10.5px] font-bold uppercase tracking-[0.13em] text-[var(--scry-faint3)] hover:text-[var(--scry-ink2)] focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-controls={groupContentId}
+                  aria-expanded={!isCollapsed}
+                  onClick={() => toggleTopNavGroup(group.id)}
+                >
+                  {group.label}
+                  <ChevronDown
+                    className={cn(
+                      "h-4 w-4 transition-transform",
+                      isCollapsed && "-rotate-90",
+                    )}
+                  />
+                </button>
               </SidebarGroupLabel>
-              <SidebarMenu className="space-y-0.5">
+              {isCollapsed ? null : (
+              <SidebarMenu id={groupContentId} className="space-y-0.5">
                 {group.items.map((item) => {
                   const Icon = item.icon;
                   if (item.kind === "requests") {
@@ -1450,8 +1525,10 @@ function RootSidebarContent({
                   );
                 })}
               </SidebarMenu>
+              )}
             </SidebarGroup>
-          ))}
+            );
+          })}
         </SidebarContent>
         <SidebarFooter className="space-y-1.5 border-t border-[var(--scry-border3)] px-3.5 py-2.5">
           <div

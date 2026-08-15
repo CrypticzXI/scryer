@@ -7057,6 +7057,31 @@ pub struct MetadataEpisodePayload {
 }
 
 #[derive(SimpleObject, Clone)]
+/// Availability summary for an episode's primary media.
+pub struct EpisodeMediaAvailabilityPayload {
+    /// Current availability or scan state.
+    pub state: EpisodeMediaAvailabilityStateValue,
+    /// Quality label of the primary file, or null before a file is available.
+    pub primary_quality_label: Option<String>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq)]
+#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
+/// States used to describe an episode's media availability.
+pub enum EpisodeMediaAvailabilityStateValue {
+    /// A playable primary media file is available.
+    Available,
+    /// A library scan has not yet completed for the episode.
+    PendingScan,
+    /// The latest media scan failed.
+    ScanFailed,
+    /// No media file currently satisfies the episode requirements.
+    Missing,
+    /// The episode is not monitored and is excluded from acquisition.
+    Unmonitored,
+}
+
+#[derive(SimpleObject, Clone)]
 /// Calendar episode with title, library, monitoring, and air-date context.
 pub struct CalendarEpisodePayload {
     /// Episode ID.
@@ -7081,10 +7106,16 @@ pub struct CalendarEpisodePayload {
     pub episode_number: Option<String>,
     /// Episode title, or null when unavailable.
     pub episode_title: Option<String>,
+    /// Movie or episode overview, or null when unavailable.
+    pub overview: Option<String>,
+    /// Proxied movie poster or episode-still URL.
+    pub image_url: Option<String>,
     /// Air date, or null when unavailable.
     pub air_date: Option<Date>,
     /// Whether the episode is monitored.
     pub monitored: bool,
+    /// Compact availability derived from the episode's primary media file.
+    pub media_availability: EpisodeMediaAvailabilityPayload,
 }
 
 // ── Plugins ────────────────────────────────────────────────────────────────

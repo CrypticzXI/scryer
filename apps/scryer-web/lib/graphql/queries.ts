@@ -3347,8 +3347,14 @@ export const calendarEpisodesQuery = `query CalendarEpisodes($startDate: Date!, 
     seasonNumber
     episodeNumber
     episodeTitle
+    overview
+    imageUrl
     airDate
     monitored
+    mediaAvailability {
+      state
+      primaryQualityLabel
+    }
   }
 }`;
 

@@ -488,7 +488,15 @@ async fn seed_second_series_episode(
     title: &Title,
     collection_id: &str,
 ) -> Episode {
-    seed_series_episode_in_collection(ctx, title, collection_id, 2).await
+    seed_series_episode_in_collection(ctx, title, collection_id, 2, Some(1440)).await
+}
+
+async fn seed_second_short_form_series_episode(
+    ctx: &TestContext,
+    title: &Title,
+    collection_id: &str,
+) -> Episode {
+    seed_series_episode_in_collection(ctx, title, collection_id, 2, Some(60)).await
 }
 
 async fn seed_series_episode_in_collection(
@@ -496,6 +504,7 @@ async fn seed_series_episode_in_collection(
     title: &Title,
     collection_id: &str,
     episode_number: u32,
+    duration_seconds: Option<i64>,
 ) -> Episode {
     let episode = Episode {
         id: Id::new().0,
@@ -507,7 +516,7 @@ async fn seed_series_episode_in_collection(
         episode_label: Some(format!("S01E{episode_number:02}")),
         title: Some(format!("Episode {episode_number}")),
         air_date: None,
-        duration_seconds: Some(1440),
+        duration_seconds,
         has_multi_audio: false,
         has_subtitle: false,
         is_filler: false,
@@ -524,6 +533,59 @@ async fn seed_series_episode_in_collection(
         .await
         .expect("create seeded episode");
     episode
+}
+
+async fn seed_series_movie_link(
+    ctx: &TestContext,
+    title: &Title,
+) -> scryer_domain::SeriesMovieLink {
+    let now = chrono::Utc::now();
+    let link = scryer_domain::SeriesMovieLink {
+        id: Id::new().0,
+        series_title_id: title.id.clone(),
+        movie: scryer_domain::MovieEntity {
+            id: Id::new().0,
+            title: format!("{} Movie", title.name),
+            sort_title: None,
+            slug: None,
+            year: Some(2024),
+            overview: None,
+            poster_url: None,
+            background_url: None,
+            language: None,
+            runtime_minutes: Some(90),
+            content_status: Some("released".to_string()),
+            studio: None,
+            digital_release_date: None,
+            imdb_id: None,
+            tvdb_id: None,
+            tmdb_id: None,
+            mal_id: None,
+            anidb_id: None,
+            created_at: now,
+            updated_at: now,
+        },
+        placement: None,
+        narrative_order: None,
+        after_season: None,
+        before_season: None,
+        linked_episode_id: None,
+        association_confidence: None,
+        continuity_status: None,
+        movie_form: Some("movie".to_string()),
+        confidence: None,
+        signal_summary: None,
+        source: Some("test".to_string()),
+        monitored: true,
+        legacy_collection_id: None,
+        created_at: now,
+        updated_at: now,
+    };
+    ctx.shows
+        .upsert_series_movie_link(link.clone())
+        .await
+        .expect("create seeded series-movie link");
+    link
 }
 
 #[test]
@@ -1407,6 +1469,334 @@ score_entry["too_few_chapters"] := scryer.block_score() if {
     assert_eq!(
         updated_wanted.status,
         scryer_application::AcquisitionScopeStatus::Wanted
+    );
+}
+
+#[tokio::test]
+async fn automatic_import_series_pack_imports_every_episode_from_the_bounded_directory() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx).await;
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file_1 = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Pack.Show.S01E01.1080p.WEB-DL.H264.mkv",
+    );
+    let source_file_2 = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Pack.Show.S01E02.1080p.WEB-DL.H264.mkv",
+    );
+    pad_file_past_series_sample_threshold(&source_file_1);
+    pad_file_past_series_sample_threshold(&source_file_2);
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_short_form_series_title(
+        &ctx,
+        "title-automatic-series-pack",
+        "Pack Show",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+    let episode_1 = seed_short_form_series_episode(&ctx, &title).await;
+    let episode_2 = seed_second_short_form_series_episode(
+        &ctx,
+        &title,
+        episode_1.collection_id.as_deref().expect("collection id"),
+    )
+    .await;
+    let completed = scryer_completed(
+        "dl-automatic-series-pack",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "series",
+    );
+
+    let result = import_completed_download(&app, &user, &completed)
+        .await
+        .expect("import completed series pack");
+
+    assert_eq!(
+        result.decision,
+        ImportDecision::Imported,
+        "unexpected series-pack import result: {result:?}"
+    );
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(media_files.len(), 2);
+    let episode_ids = media_files
+        .iter()
+        .filter_map(|media_file| media_file.episode_id.as_deref())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        episode_ids,
+        std::collections::BTreeSet::from([episode_1.id.as_str(), episode_2.id.as_str()])
+    );
+}
+
+#[tokio::test]
+async fn manual_import_series_pack_maps_each_file_within_the_bound_title() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx).await;
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file_1 = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Manual.Pack.Show.S01E01.1080p.WEB-DL.H264.mkv",
+    );
+    let source_file_2 = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Manual.Pack.Show.S01E02.1080p.WEB-DL.H264.mkv",
+    );
+    pad_file_past_series_sample_threshold(&source_file_1);
+    pad_file_past_series_sample_threshold(&source_file_2);
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_series_title(
+        &ctx,
+        "title-manual-series-pack",
+        "Manual Pack Show",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+    let episode_1 = seed_series_episode(&ctx, &title).await;
+    let episode_2 = seed_second_series_episode(
+        &ctx,
+        &title,
+        episode_1.collection_id.as_deref().expect("collection id"),
+    )
+    .await;
+    let completed = scryer_completed(
+        "dl-manual-series-pack",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "series",
+    );
+
+    let results = scryer_application::execute_manual_import(
+        &app,
+        &user,
+        "manual-series-pack-import",
+        &title.id,
+        Some(&completed),
+        vec![
+            scryer_application::ManualImportFileMapping {
+                file_path: source_file_1.to_string_lossy().to_string(),
+                episode_id: Some(episode_1.id.clone()),
+                series_movie_link_id: None,
+                quality: Some("1080P".to_string()),
+            },
+            scryer_application::ManualImportFileMapping {
+                file_path: source_file_2.to_string_lossy().to_string(),
+                episode_id: Some(episode_2.id.clone()),
+                series_movie_link_id: None,
+                quality: Some("1080P".to_string()),
+            },
+        ],
+        Some(source_dir.path().to_path_buf()),
+    )
+    .await
+    .expect("execute manual series-pack import");
+
+    assert_eq!(results.len(), 2);
+    assert!(
+        results.iter().all(|result| result.success),
+        "manual pack files should import successfully: {results:#?}"
+    );
+    let media_files = ctx
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(media_files.len(), 2);
+    let episode_ids = media_files
+        .iter()
+        .filter_map(|media_file| media_file.episode_id.as_deref())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        episode_ids,
+        std::collections::BTreeSet::from([episode_1.id.as_str(), episode_2.id.as_str()])
+    );
+}
+
+#[tokio::test]
+async fn manual_import_multi_episode_filename_keeps_the_explicit_single_episode_mapping() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx).await;
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Manual.Show.S01E01-E02.1080p.WEB-DL.H264.mkv",
+    );
+    pad_file_past_series_sample_threshold(&source_file);
+    let dest_root = tempfile::tempdir().expect("dest tempdir");
+    let title = add_series_title(
+        &ctx,
+        "title-manual-single-target",
+        "Manual Show",
+        dest_root.path().to_str().unwrap(),
+    )
+    .await;
+    let episode_1 = seed_series_episode(&ctx, &title).await;
+    let episode_2 = seed_second_series_episode(
+        &ctx,
+        &title,
+        episode_1.collection_id.as_deref().expect("collection id"),
+    )
+    .await;
+    let completed = scryer_completed(
+        "dl-manual-single-target",
+        source_dir.path().to_str().unwrap(),
+        &title.id,
+        "series",
+    );
+
+    let results = scryer_application::execute_manual_import(
+        &app,
+        &user,
+        "manual-single-target-import",
+        &title.id,
+        Some(&completed),
+        vec![scryer_application::ManualImportFileMapping {
+            file_path: source_file.to_string_lossy().to_string(),
+            episode_id: Some(episode_1.id.clone()),
+            series_movie_link_id: None,
+            quality: Some("1080P".to_string()),
+        }],
+        Some(source_dir.path().to_path_buf()),
+    )
+    .await
+    .expect("execute manual import");
+
+    assert!(
+        results.iter().all(|result| result.success),
+        "manual import should succeed: {results:#?}"
+    );
+    let scoped_files = ctx
+        .media_files
+        .list_live_media_files_for_episode_ids(
+            &title.id,
+            &[episode_1.id.clone(), episode_2.id.clone()],
+        )
+        .await
+        .expect("list episode-scoped media files");
+    let linked_episode_ids = scoped_files
+        .iter()
+        .flat_map(|file| file.episode_ids.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        linked_episode_ids,
+        std::collections::BTreeSet::from([episode_1.id])
+    );
+}
+
+#[tokio::test]
+async fn manual_import_rejects_a_mixed_title_pack_before_moving_any_file() {
+    let ctx = TestContext::new().await;
+    let app = app_with_real_imports(&ctx).await;
+    let user = ctx.app.find_or_create_default_user().await.unwrap();
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file_1 = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Bound.Show.S01E01.1080p.WEB-DL.H264.mkv",
+    );
+    let source_file_2 = copy_fixture(
+        source_dir.path(),
+        "h264_aac.mkv",
+        "Bound.Show.S01E02.1080p.WEB-DL.H264.mkv",
+    );
+    pad_file_past_series_sample_threshold(&source_file_1);
+    pad_file_past_series_sample_threshold(&source_file_2);
+    let bound_dest_root = tempfile::tempdir().expect("bound dest tempdir");
+    let bound_title = add_series_title(
+        &ctx,
+        "title-manual-pack-bound",
+        "Bound Show",
+        bound_dest_root.path().to_str().unwrap(),
+    )
+    .await;
+    let foreign_title = add_series_title(
+        &ctx,
+        "title-manual-pack-foreign",
+        "Foreign Show",
+        bound_dest_root.path().to_str().unwrap(),
+    )
+    .await;
+    let bound_episode = seed_series_episode(&ctx, &bound_title).await;
+    let foreign_episode = seed_series_episode(&ctx, &foreign_title).await;
+    let foreign_series_movie = seed_series_movie_link(&ctx, &foreign_title).await;
+    let completed = scryer_completed(
+        "dl-manual-pack-mixed-title",
+        source_dir.path().to_str().unwrap(),
+        &bound_title.id,
+        "series",
+    );
+
+    let error = scryer_application::execute_manual_import(
+        &app,
+        &user,
+        "manual-pack-mixed-title-import",
+        &bound_title.id,
+        Some(&completed),
+        vec![
+            scryer_application::ManualImportFileMapping {
+                file_path: source_file_1.to_string_lossy().to_string(),
+                episode_id: Some(bound_episode.id),
+                series_movie_link_id: None,
+                quality: Some("1080P".to_string()),
+            },
+            scryer_application::ManualImportFileMapping {
+                file_path: source_file_2.to_string_lossy().to_string(),
+                episode_id: Some(foreign_episode.id),
+                series_movie_link_id: None,
+                quality: Some("1080P".to_string()),
+            },
+        ],
+        Some(source_dir.path().to_path_buf()),
+    )
+    .await
+    .expect_err("mixed-title pack should be rejected before import");
+
+    assert!(error.to_string().contains("does not belong to title"));
+    assert!(source_file_1.exists());
+    assert!(source_file_2.exists());
+
+    let series_movie_error = scryer_application::execute_manual_import(
+        &app,
+        &user,
+        "manual-pack-foreign-series-movie-import",
+        &bound_title.id,
+        Some(&completed),
+        vec![scryer_application::ManualImportFileMapping {
+            file_path: source_file_1.to_string_lossy().to_string(),
+            episode_id: None,
+            series_movie_link_id: Some(foreign_series_movie.id),
+            quality: Some("1080P".to_string()),
+        }],
+        Some(source_dir.path().to_path_buf()),
+    )
+    .await
+    .expect_err("foreign series-movie target should be rejected before import");
+
+    assert!(
+        series_movie_error
+            .to_string()
+            .contains("does not belong to title")
+    );
+    assert!(source_file_1.exists());
+    assert!(
+        ctx.media_files
+            .list_media_files_for_title(&bound_title.id)
+            .await
+            .expect("list bound-title media files")
+            .is_empty()
     );
 }
 

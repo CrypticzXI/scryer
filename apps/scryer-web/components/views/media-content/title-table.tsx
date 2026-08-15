@@ -128,16 +128,16 @@ export const TitleTable = React.memo(function TitleTable({
   view,
   titles,
   titleLoading,
-  catalogHasMoreTitles = false,
-  catalogLoadingMoreTitles = false,
+  catalogHasMoreTitles: catalogHasMoreTitlesProp,
+  catalogLoadingMoreTitles: catalogLoadingMoreTitlesProp,
   onCatalogEndReached,
   sortKey,
   sortDirection,
   onSortChange,
-  visibleColumns = DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
+  visibleColumns: visibleColumnsProp,
   onOpenOverview,
   selectedTitleId,
-  selectedPaneMode = false,
+  selectedPaneMode: selectedPaneModeProp,
   contextPanelId,
   onSelectTitle,
   onDelete,
@@ -151,17 +151,28 @@ export const TitleTable = React.memo(function TitleTable({
   selectedTitleIds,
   onToggleSelected,
   onToggleSelectAll,
-  selectionMode = false,
+  selectionMode: selectionModeProp,
   bulkActionBusy,
-  showScanLibraryAction = false,
-  showConfigureRootsAction = false,
-  configureRootsReason = "missing",
+  showScanLibraryAction: showScanLibraryActionProp,
+  showConfigureRootsAction: showConfigureRootsActionProp,
+  configureRootsReason: configureRootsReasonProp,
   configureRootsHref,
   onScanLibrary,
-  scanLibraryLoading = false,
-  scanLibraryDisabled = false,
+  scanLibraryLoading: scanLibraryLoadingProp,
+  scanLibraryDisabled: scanLibraryDisabledProp,
   scanLibraryNotice,
 }: TitleTableProps) {
+  const catalogHasMoreTitles = catalogHasMoreTitlesProp ?? false;
+  const catalogLoadingMoreTitles = catalogLoadingMoreTitlesProp ?? false;
+  const visibleColumns =
+    visibleColumnsProp ?? DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS;
+  const selectedPaneMode = selectedPaneModeProp ?? false;
+  const selectionMode = selectionModeProp ?? false;
+  const showScanLibraryAction = showScanLibraryActionProp ?? false;
+  const showConfigureRootsAction = showConfigureRootsActionProp ?? false;
+  const configureRootsReason = configureRootsReasonProp ?? "missing";
+  const scanLibraryLoading = scanLibraryLoadingProp ?? false;
+  const scanLibraryDisabled = scanLibraryDisabledProp ?? false;
   const location = useLocation();
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();

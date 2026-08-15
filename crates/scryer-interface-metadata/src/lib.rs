@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use scryer_application::{AppError, AppUseCase, ImageProxyKind};
 use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
@@ -283,6 +285,30 @@ impl MetadataQueries {
             .list_calendar_episodes(&actor, &start_date, &end_date, library_ids)
             .await
             .map_err(to_gql_error)?;
-        Ok(episodes.into_iter().map(from_calendar_episode).collect())
+        if episodes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut title_ids = episodes
+            .iter()
+            .map(|episode| episode.title_id.clone())
+            .collect::<Vec<_>>();
+        title_ids.sort_unstable();
+        title_ids.dedup();
+        let mut availability_by_episode = app
+            .list_episode_media_availability(&actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?
+            .into_iter()
+            .map(|availability| (availability.episode_id.clone(), availability))
+            .collect::<HashMap<_, _>>();
+
+        Ok(episodes
+            .into_iter()
+            .map(|episode| {
+                let availability = availability_by_episode.remove(&episode.id);
+                from_calendar_episode(&app, episode, availability)
+            })
+            .collect())
     }
 }

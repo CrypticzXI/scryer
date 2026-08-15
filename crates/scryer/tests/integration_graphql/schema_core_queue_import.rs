@@ -1469,7 +1469,7 @@ async fn graphql_traverses_core_graph_relationships() {
         season_number: Some("1".to_string()),
         episode_label: Some("S01E01".to_string()),
         title: Some("Pilot".to_string()),
-        air_date: None,
+        air_date: Some("2024-01-01".to_string()),
         duration_seconds: Some(1440),
         has_multi_audio: false,
         has_subtitle: false,
@@ -1825,6 +1825,36 @@ async fn graphql_traverses_core_graph_relationships() {
     );
     assert_eq!(
         availability_body["data"]["episode"]["mediaAvailability"]["primaryQualityLabel"],
+        "1080p"
+    );
+
+    let calendar_body = gql(
+        &ctx,
+        r#"
+        query CalendarAvailability($start: Date!, $end: Date!) {
+          calendarEpisodes(startDate: $start, endDate: $end) {
+            id
+            mediaAvailability {
+              state
+              primaryQualityLabel
+            }
+          }
+        }
+        "#,
+        json!({ "start": "2024-01-01", "end": "2024-01-02" }),
+    )
+    .await;
+    assert_no_errors(&calendar_body);
+    assert_eq!(
+        calendar_body["data"]["calendarEpisodes"][0]["id"],
+        episode.id
+    );
+    assert_eq!(
+        calendar_body["data"]["calendarEpisodes"][0]["mediaAvailability"]["state"],
+        "AVAILABLE"
+    );
+    assert_eq!(
+        calendar_body["data"]["calendarEpisodes"][0]["mediaAvailability"]["primaryQualityLabel"],
         "1080p"
     );
 }

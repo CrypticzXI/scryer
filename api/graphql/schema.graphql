@@ -825,6 +825,14 @@ type CalendarEpisodePayload {
 	"""
 	episodeTitle: String
 	"""
+	Movie or episode overview, or null when unavailable.
+	"""
+	overview: String
+	"""
+	Proxied movie poster or episode-still URL.
+	"""
+	imageUrl: String
+	"""
 	Air date, or null when unavailable.
 	"""
 	airDate: Date
@@ -832,6 +840,10 @@ type CalendarEpisodePayload {
 	Whether the episode is monitored.
 	"""
 	monitored: Boolean!
+	"""
+	Compact availability derived from the episode's primary media file.
+	"""
+	mediaAvailability: EpisodeMediaAvailabilityPayload!
 }
 
 """

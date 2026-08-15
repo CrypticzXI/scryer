@@ -1,17 +1,14 @@
 use async_graphql::{ComplexObject, Context, ID, Result as GqlResult};
-use scryer_application::{
-    AcquisitionScopeStatesQuery, EpisodeMediaAvailability, EpisodeMediaAvailabilityState,
-    ReleaseDecisionsQuery,
-};
+use scryer_application::{AcquisitionScopeStatesQuery, ReleaseDecisionsQuery};
 use scryer_interface_core::{
     actor_from_ctx, app_from_ctx, loaders::loaders_from_ctx, to_gql_error,
 };
 
 use crate::mappers::{
-    from_collection, from_discovery_item, from_download_queue_item, from_episode,
-    from_library_settings, from_pending_release, from_release_decision, from_series_movie_link,
-    from_submission_scope, from_title, from_title_media_file, from_title_rating_summary,
-    from_wanted_item,
+    fallback_episode_media_availability, from_collection, from_discovery_item,
+    from_download_queue_item, from_episode, from_episode_media_availability, from_library_settings,
+    from_pending_release, from_release_decision, from_series_movie_link, from_submission_scope,
+    from_title, from_title_media_file, from_title_rating_summary, from_wanted_item,
 };
 use crate::types::*;
 
@@ -31,37 +28,6 @@ fn relation_page_limit(limit: i32) -> i32 {
 
 fn relation_page_offset(offset: i32) -> i32 {
     offset.max(0)
-}
-
-fn from_episode_media_availability(
-    availability: EpisodeMediaAvailability,
-) -> EpisodeMediaAvailabilityPayload {
-    let state = match availability.state {
-        EpisodeMediaAvailabilityState::Available => EpisodeMediaAvailabilityStateValue::Available,
-        EpisodeMediaAvailabilityState::PendingScan => {
-            EpisodeMediaAvailabilityStateValue::PendingScan
-        }
-        EpisodeMediaAvailabilityState::ScanFailed => EpisodeMediaAvailabilityStateValue::ScanFailed,
-        EpisodeMediaAvailabilityState::Missing => EpisodeMediaAvailabilityStateValue::Missing,
-        EpisodeMediaAvailabilityState::Unmonitored => {
-            EpisodeMediaAvailabilityStateValue::Unmonitored
-        }
-    };
-    EpisodeMediaAvailabilityPayload {
-        state,
-        primary_quality_label: availability.primary_quality_label,
-    }
-}
-
-fn fallback_episode_media_availability(monitored: bool) -> EpisodeMediaAvailabilityPayload {
-    EpisodeMediaAvailabilityPayload {
-        state: if monitored {
-            EpisodeMediaAvailabilityStateValue::Missing
-        } else {
-            EpisodeMediaAvailabilityStateValue::Unmonitored
-        },
-        primary_quality_label: None,
-    }
 }
 
 #[ComplexObject]

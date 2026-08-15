@@ -213,6 +213,7 @@ mod catalog_artifact_selection_tests {
             version: "1.0.0".to_string(),
             sdk_constraint: scryer_plugin_sdk::current_sdk_constraint(),
             min_scryer_version: None,
+            max_scryer_version: None,
             artifacts,
         }
     }
@@ -523,6 +524,33 @@ mod catalog_artifact_selection_tests {
         newer_release.min_scryer_version = Some("999.0.0".to_string());
 
         let plugin = plugin(vec![compatible_release, newer_release]);
+
+        let (selected_release, _) = select_catalog_release_and_artifact(
+            &plugin,
+            &HashSet::new(),
+            RuntimePerformanceClass::Slow,
+        )
+        .expect("compatible release");
+
+        assert_eq!(selected_release.version, "1.0.0");
+    }
+
+    #[test]
+    fn catalog_selection_skips_release_past_its_max_scryer_version() {
+        let compatible_release = release(vec![artifact(&[], "https://example.invalid/plugin.zst")]);
+        let mut retired_release = release(vec![artifact(
+            &[],
+            "https://example.invalid/plugin-v2.zst",
+        )]);
+        retired_release.version = "2.0.0".to_string();
+        retired_release.min_scryer_version = Some("0.17.0".to_string());
+        retired_release.max_scryer_version = Some("0.18.11".to_string());
+        assert_eq!(
+            catalog_release_scryer_constraint(&retired_release).as_deref(),
+            Some(">=0.17.0, <=0.18.11")
+        );
+
+        let plugin = plugin(vec![compatible_release, retired_release]);
 
         let (selected_release, _) = select_catalog_release_and_artifact(
             &plugin,

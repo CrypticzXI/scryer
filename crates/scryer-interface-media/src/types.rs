@@ -355,31 +355,6 @@ pub struct SeriesMovieLinkPayload {
 }
 
 #[derive(SimpleObject, Clone)]
-/// Availability summary for an episode's primary media.
-pub struct EpisodeMediaAvailabilityPayload {
-    /// Current availability or scan state.
-    pub state: EpisodeMediaAvailabilityStateValue,
-    /// Quality label of the primary file, or null before a file is available.
-    pub primary_quality_label: Option<String>,
-}
-
-#[derive(Enum, Copy, Clone, Eq, PartialEq)]
-#[graphql(rename_items = "SCREAMING_SNAKE_CASE")]
-/// States used to describe an episode's media availability.
-pub enum EpisodeMediaAvailabilityStateValue {
-    /// A playable primary media file is available.
-    Available,
-    /// A library scan has not yet completed for the episode.
-    PendingScan,
-    /// The latest media scan failed.
-    ScanFailed,
-    /// No media file currently satisfies the episode requirements.
-    Missing,
-    /// The episode is not monitored and is excluded from acquisition.
-    Unmonitored,
-}
-
-#[derive(SimpleObject, Clone)]
 #[graphql(complex)]
 /// Episode identity, schedule metadata, flags, and media readiness fields.
 pub struct EpisodePayload {

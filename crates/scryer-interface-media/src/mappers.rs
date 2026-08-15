@@ -8,17 +8,18 @@ use scryer_application::{
     DiscoveryFacetRecord, DiscoveryHomeFilterOptions, DiscoveryHomeFilters, DiscoveryHomeQuery,
     DiscoveryHomeResult, DiscoveryItemDetailQuery, DiscoveryItemRecord, DiscoveryItemsQuery,
     DiscoveryItemsResult, DiscoverySectionResult, DiscoverySyncStateRecord, DiscoverySyncStatus,
-    DownloadClientRoutingSettingsEntry, FacetScoringPersonaSelection, IgnorePendingImportResult,
-    ImageProxyKind, IndexerProxyTestResult, IndexerRoutingSettingsEntry, IndexerSearchResult,
-    JobDefinition, JobRun, LibraryPathsSettings, LibraryScanSummary, LibrarySettings,
-    ManualPluginPreview, MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata,
-    ParsedReleaseMetadata, PendingImportConnection, PendingImportCounts, PendingImportItem,
-    PendingImportSearchAttempt, PendingRelease, PluginCatalogStatus, QualityProfile,
-    QualityProfileCriteria, QualityProfileDecision, QualityProfileSelection,
-    QualityProfileSettings, RegistryPlugin, RenameApplyItemResult, RenameApplyResult, RenamePlan,
-    RenamePlanItem, ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource,
-    ServiceSettings, SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope,
-    SystemHealth, TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
+    DownloadClientRoutingSettingsEntry, EpisodeMediaAvailability, EpisodeMediaAvailabilityState,
+    FacetScoringPersonaSelection, IgnorePendingImportResult, ImageProxyKind,
+    IndexerProxyTestResult, IndexerRoutingSettingsEntry, IndexerSearchResult, JobDefinition,
+    JobRun, LibraryPathsSettings, LibraryScanSummary, LibrarySettings, ManualPluginPreview,
+    MediaRequestCounts, MediaSettings, ParsedEpisodeMetadata, ParsedReleaseMetadata,
+    PendingImportConnection, PendingImportCounts, PendingImportItem, PendingImportSearchAttempt,
+    PendingRelease, PluginCatalogStatus, QualityProfile, QualityProfileCriteria,
+    QualityProfileDecision, QualityProfileSelection, QualityProfileSettings, RegistryPlugin,
+    RenameApplyItemResult, RenameApplyResult, RenamePlan, RenamePlanItem,
+    ResolvePendingImportResult, RssSyncReport, ScoringEntry, ScoringSource, ServiceSettings,
+    SmgScryerUpdateNotice, SmgVersionCompatibilityNotice, SubmissionScope, SystemHealth,
+    TitleHistoryPage, TitleRatingSummary, TitleReleaseBlocklistEntry,
 };
 use scryer_domain::{
     CalendarEpisode, Collection, ConfigFieldDef, ConfigFieldType, DomainEvent,
@@ -2393,7 +2394,57 @@ pub fn from_episode(app: &AppUseCase, episode: Episode) -> EpisodePayload {
     }
 }
 
-pub fn from_calendar_episode(ep: CalendarEpisode) -> CalendarEpisodePayload {
+pub fn from_episode_media_availability(
+    availability: EpisodeMediaAvailability,
+) -> EpisodeMediaAvailabilityPayload {
+    let state = match availability.state {
+        EpisodeMediaAvailabilityState::Available => EpisodeMediaAvailabilityStateValue::Available,
+        EpisodeMediaAvailabilityState::PendingScan => {
+            EpisodeMediaAvailabilityStateValue::PendingScan
+        }
+        EpisodeMediaAvailabilityState::ScanFailed => EpisodeMediaAvailabilityStateValue::ScanFailed,
+        EpisodeMediaAvailabilityState::Missing => EpisodeMediaAvailabilityStateValue::Missing,
+        EpisodeMediaAvailabilityState::Unmonitored => {
+            EpisodeMediaAvailabilityStateValue::Unmonitored
+        }
+    };
+    EpisodeMediaAvailabilityPayload {
+        state,
+        primary_quality_label: availability.primary_quality_label,
+    }
+}
+
+pub fn fallback_episode_media_availability(monitored: bool) -> EpisodeMediaAvailabilityPayload {
+    EpisodeMediaAvailabilityPayload {
+        state: if monitored {
+            EpisodeMediaAvailabilityStateValue::Missing
+        } else {
+            EpisodeMediaAvailabilityStateValue::Unmonitored
+        },
+        primary_quality_label: None,
+    }
+}
+
+pub fn from_calendar_episode(
+    app: &AppUseCase,
+    ep: CalendarEpisode,
+    availability: Option<EpisodeMediaAvailability>,
+) -> CalendarEpisodePayload {
+    let media_availability = availability
+        .map(from_episode_media_availability)
+        .unwrap_or_else(|| fallback_episode_media_availability(ep.monitored));
+    let is_movie = ep.title_facet == "movie";
+    let image_url = app.media_image_url(
+        ep.image_url.as_deref(),
+        Some(if is_movie { "title" } else { "episode" }),
+        Some(if is_movie { &ep.title_id } else { &ep.id }),
+        if is_movie {
+            ImageProxyKind::Poster
+        } else {
+            ImageProxyKind::EpisodeStill
+        },
+        if is_movie { "w250" } else { "w300" },
+    );
     CalendarEpisodePayload {
         id: ep.id.into(),
         title_id: ep.title_id.into(),
@@ -2406,8 +2457,11 @@ pub fn from_calendar_episode(ep: CalendarEpisode) -> CalendarEpisodePayload {
         season_number: ep.season_number,
         episode_number: ep.episode_number,
         episode_title: ep.episode_title,
+        overview: ep.overview,
+        image_url,
         air_date: parse_date(ep.air_date),
         monitored: ep.monitored,
+        media_availability,
     }
 }
 

@@ -106,6 +106,17 @@ function providerLabel(provider: MediaServerProvider): string {
   return PROVIDERS.find((candidate) => candidate.value === provider)?.label ?? provider;
 }
 
+function MediaServerProviderLogo({ provider }: { provider: MediaServerProvider }) {
+  return (
+    <img
+      src={`/auth-providers/${provider.toLowerCase()}.svg`}
+      alt=""
+      aria-hidden="true"
+      className="h-5 w-5 shrink-0 object-contain"
+    />
+  );
+}
+
 function providerSupportsAuth(provider: MediaServerProvider): boolean {
   return provider === "JELLYFIN" || provider === "PLEX" || provider === "EMBY";
 }
@@ -266,7 +277,12 @@ export function SettingsMediaServersSection({
                   id={selectorId("settings-media-server-row", connection.id)}
                 >
                   <TableCell className="font-medium">{connection.displayName}</TableCell>
-                  <TableCell>{providerLabel(connection.provider)}</TableCell>
+                  <TableCell>
+                    <span className="flex items-center gap-2">
+                      <MediaServerProviderLogo provider={connection.provider} />
+                      {providerLabel(connection.provider)}
+                    </span>
+                  </TableCell>
                   <TableCell className="max-w-72 truncate">{connection.baseUrl || "-"}</TableCell>
                   <TableCell className="text-center">
                     <RenderBooleanIcon
@@ -423,6 +439,7 @@ export function SettingsMediaServersSection({
                       onValueChange={(value) => handleProviderChange(value as MediaServerProvider)}
                     >
                       <SelectTrigger id="settings-media-server-provider" className="w-full">
+                        <MediaServerProviderLogo provider={draft.provider} />
                         <SelectValue aria-label={selectedProviderLabel} />
                       </SelectTrigger>
                       <SelectContent>
@@ -432,7 +449,10 @@ export function SettingsMediaServersSection({
                             key={provider.value}
                             value={provider.value}
                           >
-                            {provider.label}
+                            <span className="flex items-center gap-2">
+                              <MediaServerProviderLogo provider={provider.value} />
+                              {provider.label}
+                            </span>
                           </SelectItem>
                         ))}
                       </SelectContent>

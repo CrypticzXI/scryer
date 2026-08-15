@@ -342,6 +342,17 @@ fn map_completed_download(
     client_id: &str,
     client_type: &str,
 ) -> CompletedDownload {
+    let dest_dir = {
+        let mut content_paths = item
+            .content_paths
+            .iter()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty());
+        match (content_paths.next(), content_paths.next()) {
+            (Some(content_path), None) => content_path.to_string(),
+            _ => item.dest_dir.clone(),
+        }
+    };
     let info_hash = normalized_plugin_info_hash(item.info_hash.as_deref())
         .or_else(|| normalized_plugin_info_hash(Some(item.client_item_id.as_str())));
     let observed_identity = scryer_application::observed_download_identity(
@@ -357,7 +368,7 @@ fn map_completed_download(
         download_client_item_id: item.client_item_id,
         download_id: observed_identity.download_id,
         name: item.name,
-        dest_dir: item.dest_dir,
+        dest_dir,
         category: item.category,
         size_bytes: item.size_bytes,
         completed_at: parse_timestamp(item.completed_at),
@@ -2026,10 +2037,67 @@ mod tests {
 
         assert_eq!(completed.download_client_item_id, "native-id-2");
         assert_eq!(completed.download_id.as_deref(), Some(info_hash));
-        assert_eq!(completed.dest_dir, "/downloads/movies");
+        assert_eq!(
+            completed.dest_dir,
+            "/downloads/movies/Decypharr.Completed.mkv"
+        );
         assert_eq!(
             completed.parameters,
             vec![("source".to_string(), "decypharr".to_string())]
         );
+    }
+
+    #[test]
+    fn completed_download_uses_single_directory_content_path_for_series_pack() {
+        let completed = map_completed_download(
+            PluginCompletedDownload {
+                client_item_id: "series-pack-id".to_string(),
+                download_id: None,
+                info_hash: None,
+                name: "Show Season 1".to_string(),
+                dest_dir: "/downloads/series".to_string(),
+                category: Some("series".to_string()),
+                output_kind: None,
+                content_paths: vec!["/downloads/series/Show Season 1".to_string()],
+                size_bytes: None,
+                completed_at: None,
+                parameters: Vec::new(),
+            },
+            "client-1",
+            "plugin-client",
+        );
+
+        assert_eq!(completed.dest_dir, "/downloads/series/Show Season 1");
+    }
+
+    #[test]
+    fn completed_download_keeps_reported_root_for_zero_or_multiple_content_paths() {
+        for content_paths in [
+            Vec::new(),
+            vec![
+                "/downloads/series/Show.S01E01.mkv".to_string(),
+                "/downloads/series/Show.S01E02.mkv".to_string(),
+            ],
+        ] {
+            let completed = map_completed_download(
+                PluginCompletedDownload {
+                    client_item_id: "native-id-3".to_string(),
+                    download_id: None,
+                    info_hash: None,
+                    name: "Show Season 1".to_string(),
+                    dest_dir: "/downloads/series/Show Season 1".to_string(),
+                    category: Some("series".to_string()),
+                    output_kind: None,
+                    content_paths,
+                    size_bytes: None,
+                    completed_at: None,
+                    parameters: Vec::new(),
+                },
+                "client-1",
+                "plugin-client",
+            );
+
+            assert_eq!(completed.dest_dir, "/downloads/series/Show Season 1");
+        }
     }
 }

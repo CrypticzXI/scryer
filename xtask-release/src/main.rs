@@ -193,6 +193,8 @@ struct CatalogV3Release {
     #[serde(default)]
     min_scryer_version: Option<String>,
     #[serde(default)]
+    max_scryer_version: Option<String>,
+    #[serde(default)]
     sdk_constraint: Option<String>,
     artifacts: Vec<CatalogV3PluginArtifact>,
 }
@@ -2394,7 +2396,23 @@ fn catalog_release_supports_scryer_version(
             release.version, min_scryer_version
         )
     })?;
-    Ok(scryer_version >= &min_scryer_version)
+    let max_scryer_version = release
+        .max_scryer_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .map(Version::parse)
+        .transpose()
+        .with_context(|| {
+            format!(
+                "{plugin_id} {} has invalid max_scryer_version",
+                release.version
+            )
+        })?;
+    Ok(scryer_version >= &min_scryer_version
+        && max_scryer_version
+            .as_ref()
+            .is_none_or(|max| scryer_version <= max))
 }
 
 fn catalog_release_is_builtin_compatible(
@@ -2508,7 +2526,7 @@ fn sync_builtin_plugin(
         .context("failed to parse official plugin catalog-v3 redirect")?;
     let catalog_artifact = redirect
         .artifacts
-        .first()
+        .last()
         .ok_or_else(|| anyhow!("official plugin catalog-v3 redirect has no artifacts"))?;
     let catalog_artifact_bytes = fetch_verified_bytes(
         ctx,
@@ -3929,6 +3947,7 @@ mod tests {
         let release = CatalogV3Release {
             version: "0.2.15".to_string(),
             min_scryer_version: Some("0.16.0".to_string()),
+            max_scryer_version: None,
             sdk_constraint: Some(">=3.0.0, <4.0.0".to_string()),
             artifacts: vec![
                 catalog_v3_plugin_artifact(
@@ -4006,18 +4025,28 @@ mod tests {
         let compatible = CatalogV3Release {
             version: "0.2.16".to_string(),
             min_scryer_version: Some("0.16.0".to_string()),
+            max_scryer_version: Some("0.16.6".to_string()),
             sdk_constraint: Some(">=3.0.0, <4.0.0".to_string()),
             artifacts: vec![],
         };
         let too_new_scryer = CatalogV3Release {
             version: "0.2.18".to_string(),
             min_scryer_version: Some("0.17.0".to_string()),
+            max_scryer_version: None,
+            sdk_constraint: Some(">=3.0.0, <4.0.0".to_string()),
+            artifacts: vec![],
+        };
+        let retired_scryer = CatalogV3Release {
+            version: "0.2.17".to_string(),
+            min_scryer_version: Some("0.16.0".to_string()),
+            max_scryer_version: Some("0.16.5".to_string()),
             sdk_constraint: Some(">=3.0.0, <4.0.0".to_string()),
             artifacts: vec![],
         };
         let too_new_sdk = CatalogV3Release {
             version: "0.2.19".to_string(),
             min_scryer_version: Some("0.16.0".to_string()),
+            max_scryer_version: None,
             sdk_constraint: Some(next_sdk_minor_constraint),
             artifacts: vec![],
         };
@@ -4026,6 +4055,9 @@ mod tests {
         assert!(catalog_release_is_builtin_compatible("newznab", &compatible, &target).unwrap());
         assert!(
             !catalog_release_is_builtin_compatible("newznab", &too_new_scryer, &target).unwrap()
+        );
+        assert!(
+            !catalog_release_is_builtin_compatible("newznab", &retired_scryer, &target).unwrap()
         );
         assert!(!catalog_release_is_builtin_compatible("newznab", &too_new_sdk, &target).unwrap());
     }
