@@ -67,9 +67,8 @@ async fn record_release_decision(
         title_id: title.id.clone(),
         release_title: decision_candidate.title.clone(),
         release_url: decision_candidate
-            .download_url
-            .clone()
-            .or_else(|| decision_candidate.link.clone()),
+            .canonical_download_source()
+            .map(|(source, _)| source),
         release_size_bytes: decision_candidate.size_bytes,
         decision_code: decision_code.as_str().to_string(),
         candidate_score,

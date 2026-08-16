@@ -1319,9 +1319,8 @@ async fn persist_standby_candidates(
         }
 
         let source_hint = candidate
-            .download_url
-            .clone()
-            .or_else(|| candidate.link.clone());
+            .canonical_download_source()
+            .map(|(source, _)| source);
         let Some(source_hint_value) = source_hint else {
             continue;
         };

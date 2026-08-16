@@ -13,12 +13,14 @@ use scryer_application::{
     IndexerConfigRepository, IndexerProxyConfigRepository, RateLimitCooldownAction,
     ResolvedDownloadArtifact, SettingsRepository, StagedNzbRef, StagedNzbStore,
     accepted_inputs_for_client, apply_remote_path_mappings_to_completed_download,
-    apply_remote_path_mappings_to_status, parse_download_client_remote_path_mappings,
+    apply_remote_path_mappings_to_status, extract_magnet_info_hash, is_valid_magnet_uri,
+    parse_download_client_remote_path_mappings,
 };
 use scryer_domain::{DownloadClientConfig, DownloadQueueItem, IndexerProxyConfig, MediaFacet};
 use scryer_outbound_http::{
-    OutboundHttpClient, RateLimitRegistry, generic_reqwest_client, prepare_plugin_http_target,
-    send_reqwest_request,
+    AsyncOutboundHttpError, OutboundHttpClient, RateLimitRegistry, generic_reqwest_client,
+    prepare_plugin_http_target, prepare_plugin_http_target_from_url,
+    send_reqwest_request_with_cooldown_budget,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
@@ -36,6 +38,7 @@ use super::{
 const DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY: &str = "download_client.routing";
 const LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY: &str = "nzbget.client_routing";
 const DOWNLOAD_CLIENT_FEEDBACK_TIMEOUT_SECS: u64 = 10;
+const DIRECT_DOWNLOAD_ARTIFACT_TIMEOUT: Duration = Duration::from_secs(30);
 const PROXIED_TORRENT_FILE_MAX_BYTES: usize = 32 * 1024 * 1024;
 const SOLVER_RESPONSE_MAX_BYTES: usize = PROXIED_TORRENT_FILE_MAX_BYTES * 2;
 
@@ -205,13 +208,6 @@ fn looks_like_rejected_download_document(bytes: &[u8]) -> bool {
         || lower.contains("<error ")
 }
 
-fn magnet_info_hash_hint(uri: &str) -> Option<String> {
-    uri.split(['?', '&'])
-        .find_map(|part| part.strip_prefix("xt=urn:btih:"))
-        .map(str::to_string)
-        .and_then(|value| scryer_application::normalize_torrent_info_hash(Some(&value)))
-}
-
 fn target_rate_limit_error(headers: Option<&serde_json::Value>) -> AppError {
     let retry_after = solver::retry_after_from_solution_headers(headers);
     AppError::TemporaryUnavailable {
@@ -221,6 +217,7 @@ fn target_rate_limit_error(headers: Option<&serde_json::Value>) -> AppError {
     }
 }
 
+#[derive(Debug)]
 struct FetchedDownloadArtifact {
     bytes: Vec<u8>,
     headers: Option<serde_json::Value>,
@@ -927,16 +924,90 @@ impl PrioritizedDownloadClientRouter {
             .map(Some)
     }
 
-    async fn prepare_proxied_download_request(
+    async fn prepare_download_request(
         &self,
         request: &DownloadClientAddRequest,
         indexer: Option<&scryer_domain::IndexerConfig>,
     ) -> AppResult<DownloadClientAddRequest> {
+        if request.resolved_download_artifact.is_some() {
+            return Ok(request.clone());
+        }
+        let download_url = request
+            .source_hint
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        if download_url.is_empty() {
+            return Ok(request.clone());
+        }
+        if is_valid_magnet_uri(download_url) {
+            let uri = download_url.to_string();
+            let mut prepared = request.clone();
+            prepared.resolved_download_artifact = Some(ResolvedDownloadArtifact::Magnet {
+                info_hash_hint: request
+                    .info_hash_hint
+                    .clone()
+                    .or_else(|| extract_magnet_info_hash(&uri)),
+                uri: uri.clone(),
+            });
+            prepared.source_kind = Some(DownloadSourceKind::MagnetUri);
+            prepared.source_hint = Some(uri);
+            return Ok(prepared);
+        }
+
+        // NZBs do not need host-side fetching unless an assigned challenge
+        // solver owns the indexer URL. Unlabelled HTTP is conservatively
+        // treated as a torrent artifact, matching the adapter's historical
+        // default and ensuring download clients never fetch arbitrary URLs.
+        let has_proxy = indexer.and_then(|value| value.indexer_proxy_config_id.as_deref());
+        if has_proxy.is_none()
+            && (request.staged_nzb.is_some()
+                || matches!(
+                    request.source_kind,
+                    Some(DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl)
+                ))
+        {
+            return Ok(request.clone());
+        }
         let Some(indexer) = indexer else {
-            return Ok(request.clone());
+            let fetched = self
+                .fetch_download_artifact_direct(
+                    "indexer",
+                    download_url,
+                    &[],
+                    DIRECT_DOWNLOAD_ARTIFACT_TIMEOUT,
+                )
+                .await?;
+            return self.prepare_resolved_request(
+                request,
+                Self::classify_resolved_download_artifact(
+                    "indexer",
+                    fetched.final_url.as_deref(),
+                    fetched.headers.as_ref(),
+                    fetched.bytes,
+                    request.info_hash_hint.clone(),
+                )?,
+            );
         };
-        let Some(proxy_config_id) = indexer.indexer_proxy_config_id.as_deref() else {
-            return Ok(request.clone());
+        let Some(proxy_config_id) = has_proxy else {
+            let fetched = self
+                .fetch_download_artifact_direct(
+                    "indexer",
+                    download_url,
+                    &[],
+                    DIRECT_DOWNLOAD_ARTIFACT_TIMEOUT,
+                )
+                .await?;
+            return self.prepare_resolved_request(
+                request,
+                Self::classify_resolved_download_artifact(
+                    "indexer",
+                    fetched.final_url.as_deref(),
+                    fetched.headers.as_ref(),
+                    fetched.bytes,
+                    request.info_hash_hint.clone(),
+                )?,
+            );
         };
         let Some(indexer_proxy_configs) = self.indexer_proxy_configs.as_ref() else {
             return Err(AppError::download_submit_unavailable(format!(
@@ -965,24 +1036,6 @@ impl PrioritizedDownloadClientRouter {
                 indexer.id, proxy_config_id
             )));
         }
-        let download_url = request
-            .source_hint
-            .as_deref()
-            .ok_or_else(|| AppError::Validation("Proxied download is missing a URL.".into()))?;
-        if download_url.trim_start().starts_with("magnet:?") {
-            let uri = download_url.trim().to_string();
-            let mut prepared = request.clone();
-            prepared.resolved_download_artifact = Some(ResolvedDownloadArtifact::Magnet {
-                info_hash_hint: request
-                    .info_hash_hint
-                    .clone()
-                    .or_else(|| magnet_info_hash_hint(&uri)),
-                uri: uri.clone(),
-            });
-            prepared.source_kind = Some(DownloadSourceKind::MagnetUri);
-            prepared.source_hint = Some(uri);
-            return Ok(prepared);
-        }
         if !Self::download_url_matches_indexer_origin(indexer, download_url) {
             return Err(AppError::Validation(
                 "Proxied download URL does not match the assigned indexer origin.".into(),
@@ -1000,6 +1053,14 @@ impl PrioritizedDownloadClientRouter {
         }
         let artifact = artifact_result?;
 
+        self.prepare_resolved_request(request, artifact)
+    }
+
+    fn prepare_resolved_request(
+        &self,
+        request: &DownloadClientAddRequest,
+        artifact: ResolvedDownloadArtifact,
+    ) -> AppResult<DownloadClientAddRequest> {
         let mut prepared = request.clone();
         prepared.resolved_download_artifact = Some(artifact.clone());
         match artifact {
@@ -1059,7 +1120,7 @@ impl PrioritizedDownloadClientRouter {
                 provider_name,
                 download_url,
                 &session_headers,
-                proxy_config.request_timeout_seconds,
+                Duration::from_secs(u64::from(proxy_config.request_timeout_seconds) + 5),
             )
             .await
         {
@@ -1192,7 +1253,7 @@ impl PrioritizedDownloadClientRouter {
                     provider_name,
                     download_url,
                     &retry_headers,
-                    proxy_config.request_timeout_seconds,
+                    Duration::from_secs(u64::from(proxy_config.request_timeout_seconds) + 5),
                 )
                 .await?;
             solver::SolvedSessionCache::shared().store_solution(
@@ -1224,7 +1285,7 @@ impl PrioritizedDownloadClientRouter {
                     provider_name,
                     download_url,
                     &retry_headers,
-                    proxy_config.request_timeout_seconds,
+                    Duration::from_secs(u64::from(proxy_config.request_timeout_seconds) + 5),
                 )
                 .await?;
             return Self::classify_resolved_download_artifact(
@@ -1257,7 +1318,7 @@ impl PrioritizedDownloadClientRouter {
                         provider_name,
                         download_url,
                         &retry_headers,
-                        proxy_config.request_timeout_seconds,
+                        Duration::from_secs(u64::from(proxy_config.request_timeout_seconds) + 5),
                     )
                     .await?;
                 Self::classify_resolved_download_artifact(
@@ -1299,97 +1360,235 @@ impl PrioritizedDownloadClientRouter {
         provider_name: &str,
         download_url: &str,
         session_headers: &[(String, String)],
-        request_timeout_seconds: u32,
+        request_timeout: Duration,
     ) -> AppResult<FetchedDownloadArtifact> {
-        let target = prepare_plugin_http_target(download_url, "indexer download artifact")
+        let original = url::Url::parse(download_url)
+            .map_err(|_| AppError::Validation("Download artifact URL is invalid.".into()))?;
+        let deadline = Instant::now() + request_timeout;
+        let origin_scheme = original.scheme().to_string();
+        let origin_host = original.host_str().map(str::to_string);
+        let origin_port = original.port_or_known_default();
+        let mut current = original;
+        let mut visited = HashSet::from([current.clone()]);
+        for redirect_count in 0..=5 {
+            if current.scheme().eq_ignore_ascii_case("magnet")
+                && is_valid_magnet_uri(current.as_str())
+            {
+                return Ok(FetchedDownloadArtifact {
+                    bytes: Vec::new(),
+                    headers: None,
+                    final_url: Some(current.to_string()),
+                });
+            }
+            if !matches!(current.scheme(), "http" | "https") {
+                return Err(AppError::Validation(
+                    "Download artifact redirects must use HTTP(S) or magnet URLs.".into(),
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(AppError::DownloadSubmitUnavailable(
+                    "The download artifact fetch timed out.".into(),
+                ));
+            }
+            let target = timeout(
+                remaining,
+                prepare_plugin_http_target_from_url(current.clone(), "indexer download artifact"),
+            )
             .await
+            .map_err(|_| {
+                AppError::DownloadSubmitUnavailable("The download artifact fetch timed out.".into())
+            })?
             .map_err(|error| {
                 warn!(error = %error, "blocked unsafe indexer download artifact URL");
                 AppError::DownloadSubmitUnavailable(
                     "Scryer refused an unsafe download artifact destination.".into(),
                 )
             })?;
-        let mut builder = target
-            .client()
-            .get(target.url().clone())
-            .timeout(Duration::from_secs(u64::from(
-                request_timeout_seconds.saturating_add(5),
-            )));
-        for (name, value) in session_headers {
-            builder = builder.header(name, value);
-        }
-        let response = send_reqwest_request(builder).await.map_err(|error| {
-            debug!(
-                proxy_provider = provider_name,
-                is_timeout = error.is_timeout(),
-                "download artifact fetch failed"
-            );
-            if error.is_timeout() {
-                AppError::DownloadSubmitUnavailable("The download artifact fetch timed out.".into())
-            } else {
-                AppError::DownloadSubmitUnavailable(
-                    "Scryer could not fetch the download artifact.".into(),
-                )
-            }
-        })?;
-        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = response
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| {
-                    scryer_outbound_http::parse_retry_after(value).map(|(delay, _)| delay)
-                });
-            return Err(AppError::TemporaryUnavailable {
-                message: solver::rate_limit_message_with_retry_after(retry_after),
-                retry_after,
-                rate_limit_cooldown: RateLimitCooldownAction::AlreadyRecorded,
-            });
-        }
-        if !response.status().is_success() {
-            return Err(AppError::DownloadSubmitUnavailable(format!(
-                "The download artifact fetch returned HTTP {}.",
-                response.status().as_u16()
-            )));
-        }
-        let final_url = Some(response.url().to_string());
-        let mut header_map = serde_json::Map::new();
-        for name in ["content-type", "content-disposition"] {
-            if let Some(value) = response
-                .headers()
-                .get(name)
-                .and_then(|value| value.to_str().ok())
-            {
-                header_map.insert(name.to_string(), serde_json::Value::from(value));
-            }
-        }
-        let headers = (!header_map.is_empty()).then_some(serde_json::Value::Object(header_map));
-        let bytes = match read_response_body_bounded(response, PROXIED_TORRENT_FILE_MAX_BYTES).await
-        {
-            Ok(bytes) => bytes,
-            Err(BoundedResponseBodyError::Read(error)) => {
-                debug!(
-                    is_timeout = error.is_timeout(),
-                    is_body = error.is_body(),
-                    is_decode = error.is_decode(),
-                    "failed to read proxied download artifact body"
-                );
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 return Err(AppError::DownloadSubmitUnavailable(
-                    "Scryer could not read the download artifact.".into(),
+                    "The download artifact fetch timed out.".into(),
                 ));
             }
-            Err(BoundedResponseBodyError::TooLarge) => {
+            let mut builder = target.client().get(target.url().clone()).timeout(remaining);
+            let same_origin = origin_scheme == target.url().scheme()
+                && origin_host
+                    .as_deref()
+                    .zip(target.url().host_str())
+                    .is_some_and(|(original, target)| original.eq_ignore_ascii_case(target))
+                && origin_port == target.url().port_or_known_default();
+            if same_origin {
+                for (name, value) in session_headers {
+                    builder = builder.header(name, value);
+                }
+            }
+            let response = timeout(
+                remaining,
+                send_reqwest_request_with_cooldown_budget(builder, Some(Duration::ZERO)),
+            )
+                .await
+                .map_err(|_| {
+                    AppError::DownloadSubmitUnavailable(
+                        "The download artifact fetch timed out.".into(),
+                    )
+                })?
+                .map_err(|error| {
+                debug!(
+                    proxy_provider = provider_name,
+                    is_timeout = matches!(&error, AsyncOutboundHttpError::Request(value) if value.is_timeout()),
+                    "download artifact fetch failed"
+                );
+                match error {
+                    AsyncOutboundHttpError::CooldownBudgetExceeded { remaining, .. } => {
+                        AppError::TemporaryUnavailable {
+                            message: "The download artifact destination is rate limited.".into(),
+                            retry_after: Some(remaining),
+                            rate_limit_cooldown: RateLimitCooldownAction::AlreadyRecorded,
+                        }
+                    }
+                    AsyncOutboundHttpError::Request(error) if error.is_timeout() => {
+                        AppError::DownloadSubmitUnavailable("The download artifact fetch timed out.".into())
+                    }
+                    AsyncOutboundHttpError::Request(_) => AppError::DownloadSubmitUnavailable(
+                        "Scryer could not fetch the download artifact.".into(),
+                    ),
+                }
+            })?;
+            if response.status().is_redirection() {
+                if !matches!(
+                    response.status(),
+                    reqwest::StatusCode::MOVED_PERMANENTLY
+                        | reqwest::StatusCode::FOUND
+                        | reqwest::StatusCode::SEE_OTHER
+                        | reqwest::StatusCode::TEMPORARY_REDIRECT
+                        | reqwest::StatusCode::PERMANENT_REDIRECT
+                ) {
+                    return Err(AppError::Validation(format!(
+                        "Download artifact returned unsupported HTTP redirect {}.",
+                        response.status().as_u16()
+                    )));
+                }
+                if redirect_count == 5 {
+                    return Err(AppError::Validation(
+                        "The download artifact exceeded the redirect limit.".into(),
+                    ));
+                }
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "Download artifact redirect was missing a location.".into(),
+                        )
+                    })?;
+                let next = if location
+                    .trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("magnet:")
+                {
+                    let magnet = url::Url::parse(location.trim()).map_err(|_| {
+                        AppError::Validation(
+                            "Download artifact magnet redirect was invalid.".into(),
+                        )
+                    })?;
+                    if !is_valid_magnet_uri(magnet.as_str()) {
+                        return Err(AppError::Validation(
+                            "Download artifact magnet redirect was invalid.".into(),
+                        ));
+                    }
+                    magnet
+                } else {
+                    current.join(location).map_err(|_| {
+                        AppError::Validation(
+                            "Download artifact redirect location was invalid.".into(),
+                        )
+                    })?
+                };
+                if !visited.insert(next.clone()) {
+                    return Err(AppError::Validation(
+                        "The download artifact redirect looped.".into(),
+                    ));
+                }
+                current = next;
+                continue;
+            }
+            if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| {
+                        scryer_outbound_http::parse_retry_after(value).map(|(delay, _)| delay)
+                    });
+                return Err(AppError::TemporaryUnavailable {
+                    message: solver::rate_limit_message_with_retry_after(retry_after),
+                    retry_after,
+                    rate_limit_cooldown: RateLimitCooldownAction::AlreadyRecorded,
+                });
+            }
+            if !response.status().is_success() {
                 return Err(AppError::DownloadSubmitUnavailable(format!(
-                    "The resolved download artifact exceeded Scryer's {} MiB limit.",
-                    PROXIED_TORRENT_FILE_MAX_BYTES / (1024 * 1024)
+                    "The download artifact fetch returned HTTP {}.",
+                    response.status().as_u16()
                 )));
             }
-        };
-        Ok(FetchedDownloadArtifact {
-            bytes,
-            headers,
-            final_url,
-        })
+            let final_url = Some(response.url().to_string());
+            let mut header_map = serde_json::Map::new();
+            for name in ["content-type", "content-disposition"] {
+                if let Some(value) = response
+                    .headers()
+                    .get(name)
+                    .and_then(|value| value.to_str().ok())
+                {
+                    header_map.insert(name.to_string(), serde_json::Value::from(value));
+                }
+            }
+            let headers = (!header_map.is_empty()).then_some(serde_json::Value::Object(header_map));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(AppError::DownloadSubmitUnavailable(
+                    "The download artifact fetch timed out.".into(),
+                ));
+            }
+            let bytes = match timeout(
+                remaining,
+                read_response_body_bounded(response, PROXIED_TORRENT_FILE_MAX_BYTES),
+            )
+            .await
+            {
+                Ok(Ok(bytes)) => bytes,
+                Ok(Err(BoundedResponseBodyError::Read(error))) => {
+                    debug!(
+                        is_timeout = error.is_timeout(),
+                        "failed to read download artifact body"
+                    );
+                    return Err(AppError::DownloadSubmitUnavailable(
+                        "Scryer could not read the download artifact.".into(),
+                    ));
+                }
+                Ok(Err(BoundedResponseBodyError::TooLarge)) => {
+                    return Err(AppError::DownloadSubmitUnavailable(format!(
+                        "The resolved download artifact exceeded Scryer's {} MiB limit.",
+                        PROXIED_TORRENT_FILE_MAX_BYTES / (1024 * 1024)
+                    )));
+                }
+                Err(_) => {
+                    return Err(AppError::DownloadSubmitUnavailable(
+                        "The download artifact fetch timed out.".into(),
+                    ));
+                }
+            };
+            return Ok(FetchedDownloadArtifact {
+                bytes,
+                headers,
+                final_url,
+            });
+        }
+        Err(AppError::Validation(
+            "The download artifact redirect loop was exhausted.".into(),
+        ))
     }
 
     fn classify_resolved_download_artifact(
@@ -1399,19 +1598,19 @@ impl PrioritizedDownloadClientRouter {
         bytes: Vec<u8>,
         info_hash_hint: Option<String>,
     ) -> AppResult<ResolvedDownloadArtifact> {
-        if final_url.is_some_and(|url| url.starts_with("magnet:")) {
+        if final_url.is_some_and(is_valid_magnet_uri) {
             let uri = final_url.unwrap().trim().to_string();
             return Ok(ResolvedDownloadArtifact::Magnet {
-                info_hash_hint: info_hash_hint.or_else(|| magnet_info_hash_hint(&uri)),
+                info_hash_hint: info_hash_hint.or_else(|| extract_magnet_info_hash(&uri)),
                 uri,
             });
         }
         if let Ok(text) = std::str::from_utf8(&bytes) {
             let trimmed = text.trim();
-            if trimmed.starts_with("magnet:?") {
+            if is_valid_magnet_uri(trimmed) {
                 let uri = trimmed.to_string();
                 return Ok(ResolvedDownloadArtifact::Magnet {
-                    info_hash_hint: info_hash_hint.or_else(|| magnet_info_hash_hint(&uri)),
+                    info_hash_hint: info_hash_hint.or_else(|| extract_magnet_info_hash(&uri)),
                     uri,
                 });
             }
@@ -1439,6 +1638,7 @@ impl PrioritizedDownloadClientRouter {
             || file_name_lower
                 .as_deref()
                 .is_some_and(|name| name.ends_with(".torrent"))
+            || looks_like_torrent_metainfo(&bytes)
         {
             if !looks_like_torrent_metainfo(&bytes) {
                 return Err(AppError::Validation(format!(
@@ -2065,7 +2265,7 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
             .map(str::trim)
             .filter(|value| !value.is_empty());
         let request = match self
-            .prepare_proxied_download_request(request, indexer_config.as_ref())
+            .prepare_download_request(request, indexer_config.as_ref())
             .await
         {
             Ok(request) => request,
@@ -2079,8 +2279,8 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
                             indexer,
                             None,
                             mapped_client_id,
-                            "proxy",
-                            format!("indexer proxy resolution failed: {error}"),
+                            "artifact",
+                            format!("indexer artifact resolution failed: {error}"),
                         )
                         .await);
                 }
@@ -3658,6 +3858,35 @@ mod tests {
         }
     }
 
+    fn test_add_request(
+        source_hint: &str,
+        source_kind: Option<DownloadSourceKind>,
+    ) -> DownloadClientAddRequest {
+        DownloadClientAddRequest {
+            title: test_title(),
+            search_facet: None,
+            purpose: scryer_application::DownloadSubmissionPurpose::Standard,
+            download_id: None,
+            source_hint: Some(source_hint.to_string()),
+            staged_nzb: None,
+            resolved_download_artifact: None,
+            source_kind,
+            source_title: Some("Test Release".to_string()),
+            source_password: None,
+            category: None,
+            queue_priority: None,
+            download_directory: None,
+            release_title: None,
+            indexer_name: None,
+            indexer_id: None,
+            info_hash_hint: None,
+            seed_goal_ratio: None,
+            seed_goal_seconds: None,
+            is_recent: None,
+            season_pack: None,
+        }
+    }
+
     #[test]
     fn torrent_metainfo_detection_requires_valid_bencoded_info_dict() {
         assert!(looks_like_torrent_metainfo(b"d4:infod4:name4:testee"));
@@ -3684,6 +3913,218 @@ mod tests {
             error.to_string(),
             "validation: Byparr resolved invalid torrent file bytes.",
         );
+    }
+
+    #[test]
+    fn classifier_accepts_extensionless_torrent_with_plain_content_type() {
+        let artifact = PrioritizedDownloadClientRouter::classify_resolved_download_artifact(
+            "Indexer",
+            Some("https://indexer.example/download?id=1"),
+            Some(&serde_json::json!({"content-type": "text/plain"})),
+            b"d4:infod4:name4:testee".to_vec(),
+            None,
+        )
+        .expect("valid metainfo is sufficient to classify a torrent");
+        assert!(matches!(
+            artifact,
+            ResolvedDownloadArtifact::TorrentFile { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn direct_artifact_fetch_follows_relative_redirect_with_same_origin_headers() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .and(header("x-indexer-session", "secret"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "/artifact"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/artifact"))
+            .and(header("x-indexer-session", "secret"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/plain")
+                    .set_body_bytes(b"d4:infod4:name4:testee"),
+            )
+            .mount(&server)
+            .await;
+
+        let fetched = no_client_router()
+            .fetch_download_artifact_direct(
+                "Indexer",
+                &format!("{}/start", server.uri()),
+                &[("x-indexer-session".to_string(), "secret".to_string())],
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("relative redirect should resolve");
+        let artifact = PrioritizedDownloadClientRouter::classify_resolved_download_artifact(
+            "Indexer",
+            fetched.final_url.as_deref(),
+            fetched.headers.as_ref(),
+            fetched.bytes,
+            None,
+        )
+        .expect("redirect target should classify as a torrent");
+
+        assert!(matches!(
+            artifact,
+            ResolvedDownloadArtifact::TorrentFile { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn direct_artifact_fetch_strips_headers_after_cross_origin_redirect() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let target = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"d4:infod4:name4:testee"))
+            .mount(&target)
+            .await;
+        let origin = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .and(header("x-indexer-session", "secret"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/artifact", target.uri())),
+            )
+            .mount(&origin)
+            .await;
+
+        no_client_router()
+            .fetch_download_artifact_direct(
+                "Indexer",
+                &format!("{}/start", origin.uri()),
+                &[("x-indexer-session".to_string(), "secret".to_string())],
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("cross-origin redirect should resolve without credentials");
+
+        let requests = target.received_requests().await.expect("recorded requests");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].headers.get("x-indexer-session").is_none());
+    }
+
+    #[tokio::test]
+    async fn direct_artifact_fetch_resolves_magnet_redirect_and_rejects_loops() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let magnet = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567";
+        Mock::given(method("GET"))
+            .and(path("/magnet"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", magnet))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/loop"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "/loop"))
+            .mount(&server)
+            .await;
+
+        let fetched = no_client_router()
+            .fetch_download_artifact_direct(
+                "Indexer",
+                &format!("{}/magnet", server.uri()),
+                &[],
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("magnet redirect should resolve");
+        assert_eq!(fetched.final_url.as_deref(), Some(magnet));
+
+        let error = no_client_router()
+            .fetch_download_artifact_direct(
+                "Indexer",
+                &format!("{}/loop", server.uri()),
+                &[],
+                Duration::from_secs(5),
+            )
+            .await
+            .expect_err("redirect loops must fail");
+        assert!(error.to_string().contains("redirect looped"));
+
+        let uppercase_btih = "MAGNET:?XT=URN:BTIH:0123456789ABCDEF0123456789ABCDEF01234567";
+        let prepared = no_client_router()
+            .prepare_download_request(
+                &test_add_request(uppercase_btih, Some(DownloadSourceKind::MagnetUri)),
+                None,
+            )
+            .await
+            .expect("uppercase btih magnet should resolve");
+        assert!(matches!(
+            prepared.resolved_download_artifact,
+            Some(ResolvedDownloadArtifact::Magnet {
+                info_hash_hint: Some(ref hash),
+                ..
+            }) if hash == "0123456789abcdef0123456789abcdef01234567"
+        ));
+
+        let btmh = format!("magnet:?xt=urn:btmh:1220{}", "ab".repeat(32));
+        let prepared = no_client_router()
+            .prepare_download_request(
+                &test_add_request(&btmh, Some(DownloadSourceKind::MagnetUri)),
+                None,
+            )
+            .await
+            .expect("btmh magnet should resolve");
+        assert!(matches!(
+            prepared.resolved_download_artifact,
+            Some(ResolvedDownloadArtifact::Magnet {
+                info_hash_hint: Some(ref hash),
+                ..
+            }) if hash == &"ab".repeat(32)
+        ));
+    }
+
+    #[tokio::test]
+    async fn direct_preparation_resolves_http_torrent_but_preserves_nzb_url() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/download"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"d4:infod4:name4:testee"))
+            .mount(&server)
+            .await;
+        let router = no_client_router();
+        let mut torrent_request = test_add_request(
+            &format!("{}/download", server.uri()),
+            Some(DownloadSourceKind::MagnetUri),
+        );
+        torrent_request.info_hash_hint = Some("known-hash".to_string());
+        let prepared = router
+            .prepare_download_request(&torrent_request, None)
+            .await
+            .expect("HTTP torrent should be resolved even with a known hash");
+        assert!(matches!(
+            prepared.resolved_download_artifact,
+            Some(ResolvedDownloadArtifact::TorrentFile { .. })
+        ));
+        assert_eq!(prepared.source_kind, Some(DownloadSourceKind::TorrentFile));
+
+        let nzb_request = test_add_request(
+            "http://127.0.0.1:1/release.nzb",
+            Some(DownloadSourceKind::NzbUrl),
+        );
+        let preserved = router
+            .prepare_download_request(&nzb_request, None)
+            .await
+            .expect("direct NZB URLs must not be fetched by torrent normalization");
+        assert_eq!(preserved.source_hint, nzb_request.source_hint);
+        assert!(preserved.resolved_download_artifact.is_none());
     }
 
     #[tokio::test]
@@ -4051,7 +4492,7 @@ mod tests {
                         solver::solver_provider_name(provider_type),
                         target,
                         &[],
-                        1,
+                        Duration::from_secs(1),
                     )
                     .await
                 {
@@ -5430,9 +5871,14 @@ mod tests {
                 search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
-                source_hint: Some("https://tracker.example/file.torrent".to_string()),
+                source_hint: None,
                 staged_nzb: None,
-                resolved_download_artifact: None,
+                resolved_download_artifact: Some(ResolvedDownloadArtifact::TorrentFile {
+                    bytes: b"d4:infod4:name4:testee".to_vec(),
+                    file_name: Some("file.torrent".to_string()),
+                    content_type: Some("application/x-bittorrent".to_string()),
+                    info_hash_hint: None,
+                }),
                 source_kind: Some(DownloadSourceKind::TorrentFile),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -5596,9 +6042,14 @@ mod tests {
                 search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
-                source_hint: Some("https://tracker.example/file.torrent".to_string()),
+                source_hint: None,
                 staged_nzb: None,
-                resolved_download_artifact: None,
+                resolved_download_artifact: Some(ResolvedDownloadArtifact::TorrentFile {
+                    bytes: b"d4:infod4:name4:testee".to_vec(),
+                    file_name: Some("file.torrent".to_string()),
+                    content_type: Some("application/x-bittorrent".to_string()),
+                    info_hash_hint: None,
+                }),
                 source_kind: Some(DownloadSourceKind::TorrentFile),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -5654,9 +6105,14 @@ mod tests {
                 search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
-                source_hint: Some("https://tracker.example/file.torrent".to_string()),
+                source_hint: None,
                 staged_nzb: None,
-                resolved_download_artifact: None,
+                resolved_download_artifact: Some(ResolvedDownloadArtifact::TorrentFile {
+                    bytes: b"d4:infod4:name4:testee".to_vec(),
+                    file_name: Some("file.torrent".to_string()),
+                    content_type: Some("application/x-bittorrent".to_string()),
+                    info_hash_hint: None,
+                }),
                 source_kind: Some(DownloadSourceKind::TorrentFile),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,
@@ -5713,9 +6169,14 @@ mod tests {
                 search_facet: None,
                 purpose: scryer_application::DownloadSubmissionPurpose::Standard,
                 download_id: None,
-                source_hint: Some("https://tracker.example/file.torrent".to_string()),
+                source_hint: None,
                 staged_nzb: None,
-                resolved_download_artifact: None,
+                resolved_download_artifact: Some(ResolvedDownloadArtifact::TorrentFile {
+                    bytes: b"d4:infod4:name4:testee".to_vec(),
+                    file_name: Some("file.torrent".to_string()),
+                    content_type: Some("application/x-bittorrent".to_string()),
+                    info_hash_hint: None,
+                }),
                 source_kind: Some(DownloadSourceKind::TorrentFile),
                 source_title: Some("Test Release".to_string()),
                 source_password: None,

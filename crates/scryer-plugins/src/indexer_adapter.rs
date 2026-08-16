@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use scryer_application::{
     AppError, AppResult, DownloadSourceKind, IndexerClient, IndexerResponseAttributes,
     IndexerRoutingPlan, IndexerSearchResponse, IndexerSearchResult, SearchMode,
-    normalize_release_password,
+    is_valid_magnet_uri, normalize_release_password,
 };
 use scryer_domain::{IndexerConfig, IndexerProxyConfig, TaggedAlias};
 use std::{collections::BTreeMap, sync::mpsc};
@@ -804,7 +804,15 @@ fn explicit_source_kind(
     match result.source_kind {
         Some(IndexerSourceKind::Usenet) => Some(DownloadSourceKind::NzbUrl),
         Some(IndexerSourceKind::Torrent) => {
-            if result.magnet_url.is_some() || extra.contains_key("magnet_uri") {
+            if result
+                .magnet_url
+                .as_deref()
+                .is_some_and(is_valid_magnet_uri)
+                || extra
+                    .get("magnet_uri")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(is_valid_magnet_uri)
+            {
                 Some(DownloadSourceKind::MagnetUri)
             } else {
                 Some(DownloadSourceKind::TorrentFile)
@@ -813,7 +821,15 @@ fn explicit_source_kind(
         Some(IndexerSourceKind::Generic) | None => match result.protocol {
             Some(IndexerProtocol::Usenet) => Some(DownloadSourceKind::NzbUrl),
             Some(IndexerProtocol::Torrent) => {
-                if result.magnet_url.is_some() || extra.contains_key("magnet_uri") {
+                if result
+                    .magnet_url
+                    .as_deref()
+                    .is_some_and(is_valid_magnet_uri)
+                    || extra
+                        .get("magnet_uri")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(is_valid_magnet_uri)
+                {
                     Some(DownloadSourceKind::MagnetUri)
                 } else {
                     Some(DownloadSourceKind::TorrentFile)

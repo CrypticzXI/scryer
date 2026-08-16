@@ -1231,13 +1231,14 @@ impl AppUseCase {
             scope
         };
 
+        let canonical_source = best.canonical_download_source();
         self.queue_existing_title_download(
             actor,
             title_id,
             QueuedReleaseSelection {
                 indexer_id: best.indexer_id.clone(),
-                source_hint: best.download_url.clone().or(best.link.clone()),
-                source_kind: best.source_kind,
+                source_hint: canonical_source.as_ref().map(|(source, _)| source.clone()),
+                source_kind: canonical_source.as_ref().map(|(_, kind)| *kind).or(best.source_kind),
                 source_title: Some(best.title.clone()),
                 source_password: best.password_hint.clone(),
             },

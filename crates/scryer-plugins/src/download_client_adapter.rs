@@ -39,45 +39,6 @@ use crate::wasmtime_host::command_host::CommandHost;
 use crate::wasmtime_host::{CommandInvocation, process_command};
 
 const DOWNLOAD_CLIENT_PLUGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const TORRENT_PREFETCH_MAX_BYTES: usize = 32 * 1024 * 1024;
-
-async fn read_torrent_body_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > TORRENT_PREFETCH_MAX_BYTES as u64)
-    {
-        return Err(format!(
-            "torrent body exceeds the {} MiB limit",
-            TORRENT_PREFETCH_MAX_BYTES / (1024 * 1024)
-        ));
-    }
-
-    let capacity = response
-        .content_length()
-        .and_then(|length| usize::try_from(length).ok())
-        .unwrap_or_default()
-        .min(TORRENT_PREFETCH_MAX_BYTES);
-    let mut body = Vec::with_capacity(capacity);
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("torrent body read failed: {error}"))?
-    {
-        let next_len = body
-            .len()
-            .checked_add(chunk.len())
-            .ok_or_else(|| "torrent body length overflowed".to_string())?;
-        if next_len > TORRENT_PREFETCH_MAX_BYTES {
-            return Err(format!(
-                "torrent body exceeds the {} MiB limit",
-                TORRENT_PREFETCH_MAX_BYTES / (1024 * 1024)
-            ));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
-}
-
 pub struct WasmDownloadClient {
     plugin: Option<Arc<Mutex<LegacyPlugin>>>,
     command: Option<Arc<CommandDownloadClient>>,
@@ -99,9 +60,6 @@ impl WasmDownloadClient {
         client_id: String,
         client_name: String,
     ) -> Self {
-        // No client is held here on purpose: the plugin-controlled download URL
-        // is fetched through the guarded plugin egress facility, which builds a
-        // per-request DNS-pinned client and re-validates every redirect hop.
         Self {
             plugin: Some(Arc::new(Mutex::new(plugin))),
             command: None,
@@ -724,17 +682,17 @@ impl DownloadClient for WasmDownloadClient {
         // pre-fetch the torrent file so the plugin can compute the hash directly.
         // Some trackers redirect .torrent URLs to magnet URIs — detect that and
         // switch to the magnet path.
-        let mut torrent_bytes_base64 = resolved_artifact
+        let torrent_bytes_base64 = resolved_artifact
             .as_ref()
             .and_then(|(_, resolved)| resolved.torrent_bytes_base64.clone());
-        let mut resolved_magnet_uri: Option<String> = resolved_artifact
+        let resolved_magnet_uri: Option<String> = resolved_artifact
             .as_ref()
             .and_then(|(_, resolved)| resolved.magnet_uri.clone());
-        let mut resolved_download_url = resolved_artifact
+        let resolved_download_url = resolved_artifact
             .is_none()
             .then(|| source_hint.clone())
             .flatten();
-        let mut torrent_url = if resolved_artifact.is_none() {
+        let torrent_url = if resolved_artifact.is_none() {
             source_hint.clone().filter(|url| {
                 matches!(source_kind, DownloadSourceKind::TorrentFile)
                     && (url.starts_with("http://") || url.starts_with("https://"))
@@ -742,10 +700,10 @@ impl DownloadClient for WasmDownloadClient {
         } else {
             None
         };
-        let mut torrent_content_type = resolved_artifact
+        let torrent_content_type = resolved_artifact
             .as_ref()
             .and_then(|(_, resolved)| resolved.torrent_content_type.clone());
-        let mut torrent_file_name = resolved_artifact
+        let torrent_file_name = resolved_artifact
             .as_ref()
             .and_then(|(_, resolved)| resolved.torrent_file_name.clone());
         let mut nzb_bytes_base64 = resolved_artifact
@@ -765,126 +723,6 @@ impl DownloadClient for WasmDownloadClient {
             nzb_bytes_base64 = Some(load_staged_nzb_payload(staged_nzb)?);
             nzb_file_name = derive_nzb_file_name(request);
             nzb_content_type = Some("application/x-nzb".to_string());
-        }
-
-        if matches!(source_kind, DownloadSourceKind::TorrentFile)
-            && request.info_hash_hint.is_none()
-            && resolved_artifact.is_none()
-            && let Some(url) = source_hint.as_ref()
-            && (url.starts_with("http://") || url.starts_with("https://"))
-            && !url.starts_with("magnet:")
-        {
-            // Route the plugin-controlled download URL through the guarded
-            // plugin egress facility: destination validated + DNS-pinned,
-            // link-local/cloud-metadata hard-blocked, and the redirect hop
-            // re-validated before it is followed.
-            match scryer_outbound_http::prepare_plugin_http_target(url, "plugin torrent fetch")
-                .await
-            {
-                Ok(target) => match scryer_outbound_http::send_reqwest_request(
-                    target.client().get(target.url().clone()),
-                )
-                .await
-                {
-                    Ok(resp) if resp.status().is_redirection() => {
-                        if let Some(location) =
-                            resp.headers().get("location").and_then(|v| v.to_str().ok())
-                        {
-                            if location.starts_with("magnet:") {
-                                debug!(url = %url, magnet = %location, "torrent URL redirected to magnet");
-                                resolved_magnet_uri = Some(location.to_string());
-                                resolved_download_url = None;
-                                torrent_url = None;
-                            } else if let Ok(redirect_url) = target.url().join(location) {
-                                let redirect_str = redirect_url.to_string();
-                                resolved_download_url = Some(redirect_str.clone());
-                                torrent_url = Some(redirect_str);
-                                // Re-validate the redirect target under the egress
-                                // policy before following it, so a declared host
-                                // cannot bounce the fetch into metadata space.
-                                match scryer_outbound_http::prepare_plugin_http_target_from_url(
-                                    redirect_url,
-                                    "plugin torrent redirect",
-                                )
-                                .await
-                                {
-                                    Ok(redirect_target) => {
-                                        if let Ok(resp) =
-                                            scryer_outbound_http::send_reqwest_request(
-                                                redirect_target
-                                                    .client()
-                                                    .get(redirect_target.url().clone()),
-                                            )
-                                            .await
-                                            && resp.status().is_success()
-                                        {
-                                            let content_type = resp
-                                                .headers()
-                                                .get(reqwest::header::CONTENT_TYPE)
-                                                .and_then(|value| value.to_str().ok())
-                                                .map(str::to_string);
-                                            match read_torrent_body_bounded(resp).await {
-                                                Ok(bytes) if !bytes.is_empty() => {
-                                                    torrent_content_type = content_type;
-                                                    torrent_file_name =
-                                                        derive_torrent_file_name(request);
-                                                    debug!(url = %url, bytes = bytes.len(), "pre-fetched torrent file (via redirect)");
-                                                    torrent_bytes_base64 =
-                                                        Some(BASE64.encode(&bytes));
-                                                }
-                                                Ok(_) => {
-                                                    debug!(url = %url, "torrent redirect fetch returned empty body")
-                                                }
-                                                Err(error) => {
-                                                    debug!(url = %url, error = %error, "torrent redirect body rejected")
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        debug!(url = %url, error = %e, "torrent redirect target rejected by plugin egress policy")
-                                    }
-                                }
-                            } else {
-                                debug!(url = %url, location = %location, "torrent redirect location was not a valid URL")
-                            }
-                        }
-                    }
-                    Ok(resp) if resp.status().is_success() => {
-                        let response_url = resp.url().to_string();
-                        if response_url != *url {
-                            resolved_download_url = Some(response_url.clone());
-                            torrent_url = Some(response_url);
-                        }
-                        let content_type = resp
-                            .headers()
-                            .get(reqwest::header::CONTENT_TYPE)
-                            .and_then(|value| value.to_str().ok())
-                            .map(str::to_string);
-                        match read_torrent_body_bounded(resp).await {
-                            Ok(bytes) if !bytes.is_empty() => {
-                                torrent_content_type = content_type;
-                                torrent_file_name = derive_torrent_file_name(request);
-                                debug!(url = %url, bytes = bytes.len(), "pre-fetched torrent file for hash derivation");
-                                torrent_bytes_base64 = Some(BASE64.encode(&bytes));
-                            }
-                            Ok(_) => {
-                                debug!(url = %url, "torrent file fetch returned empty body")
-                            }
-                            Err(e) => {
-                                debug!(url = %url, error = %e, "torrent file body read failed")
-                            }
-                        }
-                    }
-                    Ok(resp) => {
-                        debug!(url = %url, status = %resp.status(), "torrent file fetch returned non-success")
-                    }
-                    Err(e) => debug!(url = %url, error = %e, "torrent file fetch failed"),
-                },
-                Err(e) => {
-                    debug!(url = %url, error = %e, "torrent file fetch rejected by plugin egress policy")
-                }
-            }
         }
 
         let magnet_uri = resolved_magnet_uri.or_else(|| {
@@ -1605,39 +1443,6 @@ mod tests {
             DownloadItemState::Seeding
         )));
     }
-    use tokio::io::AsyncWriteExt;
-
-    #[tokio::test]
-    async fn torrent_prefetch_rejects_oversized_declared_body() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind test server");
-        let address = listener.local_addr().expect("test server address");
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept request");
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                TORRENT_PREFETCH_MAX_BYTES + 1
-            );
-            stream
-                .write_all(response.as_bytes())
-                .await
-                .expect("write response");
-        });
-
-        let response = scryer_outbound_http::generic_reqwest_client()
-            .get(format!("http://{address}/release.torrent"))
-            .send()
-            .await
-            .expect("fetch test response");
-        let error = read_torrent_body_bounded(response)
-            .await
-            .expect_err("oversized torrent body must be rejected");
-
-        assert!(error.contains("exceeds"));
-        server.await.expect("test server task");
-    }
-
     fn sample_request() -> DownloadClientAddRequest {
         DownloadClientAddRequest {
             search_facet: None,
@@ -1701,35 +1506,6 @@ mod tests {
             is_recent: Some(true),
             season_pack: Some(false),
         }
-    }
-
-    #[tokio::test]
-    async fn plugin_download_egress_blocks_cloud_metadata() {
-        let result = scryer_outbound_http::prepare_plugin_http_target(
-            "http://169.254.169.254/latest/meta-data/",
-            "plugin torrent fetch",
-        )
-        .await;
-
-        assert!(
-            matches!(
-                result,
-                Err(
-                    scryer_outbound_http::OutboundDestinationError::BlockedLinkLocalOrMetadata { .. }
-                )
-            ),
-            "cloud metadata address must be rejected on the download-client path"
-        );
-    }
-
-    #[tokio::test]
-    async fn plugin_download_egress_allows_private_tracker_host() {
-        scryer_outbound_http::prepare_plugin_http_target(
-            "http://10.10.0.5:8080/release.torrent",
-            "plugin torrent fetch",
-        )
-        .await
-        .expect("RFC1918 tracker host must be allowed for self-hosted plugins");
     }
 
     #[test]

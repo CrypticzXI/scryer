@@ -585,6 +585,7 @@ pub use types::{
 pub use types::{
     IndexerQueryOutcome, IndexerResponseAttributes, IndexerSearchOutcome, IndexerSearchResponse,
     IndexerSearchResult, ReleaseCandidateProvenance, ReleaseSearchSubjectKind, ReleaseStrategyKind,
+    extract_magnet_info_hash, is_valid_magnet_uri,
 };
 pub use types::{SmgScryerUpdateNotice, SmgVersionCompatibilityNotice};
 

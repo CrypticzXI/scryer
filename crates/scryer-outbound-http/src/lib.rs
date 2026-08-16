@@ -1550,6 +1550,67 @@ pub async fn send_reqwest_request(request: RequestBuilder) -> Result<Response, r
     Ok(response)
 }
 
+/// Sends an async request while bounding time spent waiting for a persisted
+/// destination cooldown. Artifact acquisition uses a zero-duration budget so
+/// a cooling host is surfaced as a retryable application error instead of
+/// consuming the entire fetch deadline.
+pub async fn send_reqwest_request_with_cooldown_budget(
+    request: RequestBuilder,
+    max_cooldown_wait: Option<Duration>,
+) -> Result<Response, AsyncOutboundHttpError> {
+    let registry = RateLimitRegistry::new();
+    let destination = request
+        .try_clone()
+        .and_then(|clone| clone.build().ok())
+        .and_then(|request| destination_key_from_url(request.url()));
+    let host = request
+        .try_clone()
+        .and_then(|clone| clone.build().ok())
+        .and_then(|request| host_key_from_url(request.url()));
+
+    if let Some(destination) = destination.as_ref()
+        && let Some(remaining) = registry.active_destination_cooldown(destination)
+    {
+        if let Some(budget) = max_cooldown_wait
+            && remaining > budget
+        {
+            return Err(AsyncOutboundHttpError::CooldownBudgetExceeded {
+                destination: destination.clone(),
+                remaining,
+                budget,
+            });
+        }
+        registry.wait_for_destination_if_needed(destination).await;
+    }
+    if let Some(host) = host.as_ref() {
+        let _ = registry.acquire_host_rps(host).await;
+    }
+    let response = request.send().await?;
+    if response.status() == StatusCode::TOO_MANY_REQUESTS
+        && let Some(destination) = destination_key_from_url(response.url()).or(destination)
+    {
+        let (delay, source) = retry_after_delay(response.headers(), Duration::from_secs(1));
+        let _ = registry
+            .record_destination_cooldown(&destination, delay, source)
+            .await;
+    }
+    Ok(response)
+}
+
+#[derive(Debug, Error)]
+pub enum AsyncOutboundHttpError {
+    #[error(transparent)]
+    Request(#[from] reqwest::Error),
+    #[error(
+        "destination '{destination}' is rate limited for {remaining:?}, exceeding async wait budget {budget:?}"
+    )]
+    CooldownBudgetExceeded {
+        destination: DestinationKey,
+        remaining: Duration,
+        budget: Duration,
+    },
+}
+
 pub fn send_blocking_reqwest_request(
     request: reqwest::blocking::RequestBuilder,
 ) -> Result<reqwest::blocking::Response, reqwest::Error> {
@@ -2459,6 +2520,32 @@ mod tests {
         assert!(registry.active_destination_cooldown(&child_a).is_some());
         assert!(registry.active_destination_cooldown(&child_b).is_none());
         assert_eq!(registry.snapshot().host_rps.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn async_zero_cooldown_budget_returns_without_dispatching() {
+        let (url, hits) = spawn_http_server(vec![
+            http_response(429, &[("Retry-After", "60")], "rate limited"),
+            http_response(200, &[], "must not be dispatched"),
+        ])
+        .await;
+        let client = reqwest_client_builder().build().unwrap();
+
+        let first = send_reqwest_request_with_cooldown_budget(client.get(&url), None)
+            .await
+            .expect("first request should return the 429 response");
+        assert_eq!(first.status(), StatusCode::TOO_MANY_REQUESTS);
+        drop(first);
+
+        let error =
+            send_reqwest_request_with_cooldown_budget(client.get(&url), Some(Duration::ZERO))
+                .await
+                .expect_err("active cooldown must exceed a zero wait budget");
+        assert!(matches!(
+            error,
+            AsyncOutboundHttpError::CooldownBudgetExceeded { .. }
+        ));
+        assert_eq!(hits.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]

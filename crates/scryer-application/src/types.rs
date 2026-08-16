@@ -1357,7 +1357,12 @@ impl DownloadSourceKind {
         {
             return Some(kind);
         }
-        if extra.contains_key("magnet_uri") {
+        if ["magnet_uri", "magnet_url"].into_iter().any(|key| {
+            extra
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(is_valid_magnet_uri)
+        }) {
             return Some(Self::MagnetUri);
         }
         if extra.contains_key("info_hash") {
@@ -1508,6 +1513,242 @@ pub struct IndexerSearchResult {
     pub auto_eligible: Option<bool>,
     pub auto_decision_code: Option<String>,
     pub auto_decision_summary: Option<String>,
+}
+
+/// Returns whether a plugin-provided magnet contains a usable BitTorrent
+/// identifier. Keeping this validation in the application layer prevents an
+/// HTTP download URL from being mislabeled as a magnet merely because a
+/// plugin populated an optional metadata key.
+pub fn extract_magnet_info_hash(value: &str) -> Option<String> {
+    let value = value.trim();
+    let (scheme, query) = value.split_once("?")?;
+    if !scheme.eq_ignore_ascii_case("magnet:") {
+        return None;
+    }
+    query
+        .split('&')
+        .filter_map(|part| part.split_once('='))
+        .find_map(|(key, raw)| {
+            if !key.eq_ignore_ascii_case("xt") {
+                return None;
+            }
+            let (urn, remainder) = raw.trim().split_once(':')?;
+            if !urn.eq_ignore_ascii_case("urn") {
+                return None;
+            }
+            let (kind, hash) = remainder.split_once(':')?;
+            match kind.to_ascii_lowercase().as_str() {
+                "btih"
+                    if (hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+                        || (hash.len() == 32
+                            && hash
+                                .bytes()
+                                .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'2'..=b'7'))) =>
+                {
+                    Some(hash.to_ascii_lowercase())
+                }
+                "btmh"
+                    if hash.len() == 68
+                        && hash[..4].eq_ignore_ascii_case("1220")
+                        && hash[4..].bytes().all(|b| b.is_ascii_hexdigit()) =>
+                {
+                    Some(hash[4..].to_ascii_lowercase())
+                }
+                _ => None,
+            }
+        })
+}
+
+pub fn is_valid_magnet_uri(value: &str) -> bool {
+    extract_magnet_info_hash(value).is_some()
+}
+
+impl IndexerSearchResult {
+    /// Selects the source that should be submitted to a download client.
+    /// Explicit NZB results retain their HTTP source; torrent results prefer
+    /// a validated magnet emitted by the plugin.
+    pub fn canonical_download_source(&self) -> Option<(String, DownloadSourceKind)> {
+        let explicit_nzb = matches!(
+            self.source_kind,
+            Some(DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl)
+        );
+        if !explicit_nzb {
+            for key in ["magnet_uri", "magnet_url"] {
+                if let Some(value) = self.extra.get(key).and_then(serde_json::Value::as_str)
+                    && is_valid_magnet_uri(value)
+                {
+                    return Some((value.trim().to_string(), DownloadSourceKind::MagnetUri));
+                }
+            }
+        }
+        self.download_url
+            .as_deref()
+            .or(self.link.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                let source_kind = match self.source_kind {
+                    Some(DownloadSourceKind::MagnetUri) => {
+                        DownloadSourceKind::infer_from_hint(Some(value))
+                            .unwrap_or(DownloadSourceKind::TorrentFile)
+                    }
+                    Some(kind) => kind,
+                    None => DownloadSourceKind::infer_from_hint(Some(value))
+                        .unwrap_or(DownloadSourceKind::TorrentFile),
+                };
+                (value.to_string(), source_kind)
+            })
+    }
+
+    pub fn source_aliases(&self) -> Vec<String> {
+        let mut aliases = Vec::new();
+        let explicit_nzb = matches!(
+            self.source_kind,
+            Some(DownloadSourceKind::NzbFile | DownloadSourceKind::NzbUrl)
+        );
+        if !explicit_nzb {
+            for key in ["magnet_uri", "magnet_url"] {
+                if let Some(value) = self.extra.get(key).and_then(serde_json::Value::as_str)
+                    && is_valid_magnet_uri(value)
+                {
+                    let value = value.trim();
+                    if !aliases.iter().any(|alias| alias == value) {
+                        aliases.push(value.to_string());
+                    }
+                }
+            }
+        }
+        for value in [self.download_url.as_deref(), self.link.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            let value = value.trim();
+            if !value.is_empty() && !aliases.iter().any(|alias| alias == value) {
+                aliases.push(value.to_string());
+            }
+        }
+        aliases
+    }
+}
+
+#[cfg(test)]
+mod canonical_download_source_tests {
+    use super::{
+        DownloadSourceKind, IndexerSearchResult, extract_magnet_info_hash, is_valid_magnet_uri,
+    };
+    use std::collections::HashMap;
+
+    fn result(magnet: Option<&str>) -> IndexerSearchResult {
+        let mut extra = HashMap::new();
+        if let Some(magnet) = magnet {
+            extra.insert(
+                "magnet_url".to_string(),
+                serde_json::Value::String(magnet.to_string()),
+            );
+        }
+        IndexerSearchResult {
+            indexer_id: None,
+            source: "test".to_string(),
+            title: "release".to_string(),
+            link: Some("https://example.test/link".to_string()),
+            download_url: Some("https://example.test/download".to_string()),
+            source_kind: Some(DownloadSourceKind::TorrentFile),
+            size_bytes: None,
+            published_at: None,
+            thumbs_up: None,
+            thumbs_down: None,
+            indexer_languages: None,
+            indexer_subtitles: None,
+            indexer_grabs: None,
+            password_hint: None,
+            parsed_release_metadata: None,
+            quality_profile_decision: None,
+            extra,
+            response_attributes: Default::default(),
+            guid: None,
+            info_url: None,
+            provenance: None,
+            candidate_token: None,
+            queue_scope: None,
+            auto_eligible: None,
+            auto_decision_code: None,
+            auto_decision_summary: None,
+        }
+    }
+
+    #[test]
+    fn validates_btih_and_btmh_magnets() {
+        let uppercase_btih = "MAGNET:?XT=URN:BTIH:0123456789ABCDEF0123456789ABCDEF01234567";
+        assert!(is_valid_magnet_uri(uppercase_btih));
+        assert_eq!(
+            extract_magnet_info_hash(uppercase_btih).as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+        let multihash = format!("magnet:?xt=urn:btmh:1220{}", "ab".repeat(32));
+        assert!(is_valid_magnet_uri(&multihash));
+        assert_eq!(extract_magnet_info_hash(&multihash), Some("ab".repeat(32)));
+        assert!(!is_valid_magnet_uri("magnet:?xt=urn:btih:not-a-hash"));
+    }
+
+    #[test]
+    fn prefers_valid_magnet_and_keeps_http_aliases() {
+        let result = result(Some(
+            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+        ));
+        assert_eq!(
+            result.canonical_download_source().unwrap().1,
+            DownloadSourceKind::MagnetUri
+        );
+        assert_eq!(result.source_aliases().len(), 3);
+    }
+
+    #[test]
+    fn invalid_magnet_falls_back_to_download_url() {
+        let mut result = result(Some("magnet:?xt=urn:btih:invalid"));
+        result.source_kind = Some(DownloadSourceKind::MagnetUri);
+        assert_eq!(
+            result.canonical_download_source().unwrap(),
+            (
+                "https://example.test/download".to_string(),
+                DownloadSourceKind::TorrentFile,
+            )
+        );
+        assert_eq!(result.source_aliases().len(), 2);
+    }
+
+    #[test]
+    fn explicit_nzb_ignores_stray_magnet_metadata() {
+        let mut result = result(Some(
+            "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+        ));
+        result.source_kind = Some(DownloadSourceKind::NzbUrl);
+
+        assert_eq!(
+            result.canonical_download_source().unwrap(),
+            (
+                "https://example.test/download".to_string(),
+                DownloadSourceKind::NzbUrl,
+            )
+        );
+        assert_eq!(result.source_aliases().len(), 2);
+    }
+
+    #[test]
+    fn indexer_inference_requires_a_valid_magnet_value() {
+        let invalid = HashMap::from([(
+            "magnet_uri".to_string(),
+            serde_json::Value::String("magnet:?xt=urn:btih:invalid".to_string()),
+        )]);
+        assert_eq!(
+            DownloadSourceKind::infer_from_indexer_result(
+                Some("torrent_indexer"),
+                Some("https://example.test/download"),
+                None,
+                &invalid,
+            ),
+            Some(DownloadSourceKind::TorrentFile)
+        );
+    }
 }
 
 /// Per-indexer outcome of a single search query. Determines

@@ -166,16 +166,17 @@ impl AppUseCase {
         }
 
         let now = Utc::now();
+        let canonical_source = candidate.canonical_download_source();
         let pending = PendingRelease {
             id: Id::new().0,
             wanted_item_id: wanted.id.clone(),
             title_id: title.id.clone(),
             release_title: candidate.title.clone(),
-            release_url: candidate
-                .download_url
-                .clone()
-                .or_else(|| candidate.link.clone()),
-            source_kind: candidate.source_kind,
+            release_url: canonical_source.as_ref().map(|(source, _)| source.clone()),
+            source_kind: canonical_source
+                .as_ref()
+                .map(|(_, kind)| *kind)
+                .or(candidate.source_kind),
             release_size_bytes: candidate.size_bytes,
             release_score,
             scoring_log_json,

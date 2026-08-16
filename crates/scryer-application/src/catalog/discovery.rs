@@ -1355,10 +1355,14 @@ impl AppUseCase {
                     .unwrap_or_else(|| subject.submission_scope.clone())
             };
             result.queue_scope = Some(scope.clone());
+            let canonical_source = result.canonical_download_source();
             let selection = QueuedReleaseSelection {
                 indexer_id: result.indexer_id.clone(),
-                source_hint: result.download_url.clone().or(result.link.clone()),
-                source_kind: result.source_kind,
+                source_hint: canonical_source.as_ref().map(|(source, _)| source.clone()),
+                source_kind: canonical_source
+                    .as_ref()
+                    .map(|(_, kind)| *kind)
+                    .or(result.source_kind),
                 source_title: Some(result.title.clone()),
                 source_password: result.password_hint.clone(),
             };
@@ -1577,15 +1581,10 @@ pub(crate) fn is_release_blocklisted(
     failed_source_hints: &std::collections::HashSet<String>,
     failed_source_titles: &std::collections::HashSet<String>,
 ) -> bool {
-    if let Some(download_url) = normalize_release_attempt_hint(result.download_url.as_deref())
-        && failed_source_hints.contains(&download_url)
-    {
-        return true;
-    }
-
-    if let Some(link) = normalize_release_attempt_hint(result.link.as_deref())
-        && failed_source_hints.contains(&link)
-    {
+    if result.source_aliases().iter().any(|alias| {
+        normalize_release_attempt_hint(Some(alias.as_str()))
+            .is_some_and(|alias| failed_source_hints.contains(&alias))
+    }) {
         return true;
     }
 

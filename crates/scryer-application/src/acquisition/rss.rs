@@ -1478,9 +1478,8 @@ impl AppUseCase {
                 title_id: title.id.clone(),
                 release_title: decision_candidate.title.clone(),
                 release_url: decision_candidate
-                    .download_url
-                    .clone()
-                    .or_else(|| decision_candidate.link.clone()),
+                    .canonical_download_source()
+                    .map(|(source, _)| source),
                 release_size_bytes: decision_candidate.size_bytes,
                 decision_code: decision_code.as_str().to_string(),
                 candidate_score,
@@ -1512,15 +1511,16 @@ impl AppUseCase {
                 )
                 .map(|delay| delay.effective_delay_minutes)
                 .unwrap_or_default();
+                let canonical_source = candidate.canonical_download_source();
                 self.insert_pending_release(
                     &wanted,
                     title,
                     &candidate.title,
-                    candidate
-                        .download_url
-                        .as_deref()
-                        .or(candidate.link.as_deref()),
-                    candidate.source_kind,
+                    canonical_source.as_ref().map(|(source, _)| source.as_str()),
+                    canonical_source
+                        .as_ref()
+                        .map(|(_, kind)| *kind)
+                        .or(candidate.source_kind),
                     candidate.size_bytes,
                     candidate_score,
                     serialize_decision_explanation(&decision_candidate),
@@ -1553,7 +1553,12 @@ impl AppUseCase {
             .map(|d| d.preference_score)
             .unwrap_or(0);
 
-        let source_hint = best.download_url.clone().or_else(|| best.link.clone());
+        let canonical_source = best.canonical_download_source();
+        let source_hint = canonical_source.as_ref().map(|(source, _)| source.clone());
+        let canonical_source_kind = canonical_source
+            .as_ref()
+            .map(|(_, kind)| *kind)
+            .or(best.source_kind);
         if let Some(url) = source_hint.as_deref()
             && !grabbed_urls.insert(url.to_string())
         {
@@ -1567,7 +1572,7 @@ impl AppUseCase {
         let request_signature = normalize_release_selection_signature(
             source_hint.as_deref(),
             source_title.as_deref(),
-            best.source_kind,
+            canonical_source_kind,
         );
 
         let _ = self
@@ -1675,7 +1680,7 @@ impl AppUseCase {
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
                 resolved_download_artifact: None,
-                source_kind: best.source_kind,
+                source_kind: canonical_source_kind,
                 source_title: source_title.clone(),
                 source_password: source_password.clone(),
                 category: Some(download_cat),

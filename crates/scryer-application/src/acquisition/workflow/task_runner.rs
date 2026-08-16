@@ -705,9 +705,8 @@ async fn process_single_target(
                         // ── End season pack upgrade guard ────────────────────────────
 
                         let pack_url = best_pack
-                            .download_url
-                            .clone()
-                            .or_else(|| best_pack.link.clone());
+                            .canonical_download_source()
+                            .map(|(source, _)| source);
                         let url_str = pack_url.as_deref().unwrap_or("").to_string();
                         let pack_attempt = (pack_route.clone(), url_str.clone());
 
@@ -1286,15 +1285,16 @@ async fn process_single_target(
                     .unwrap_or_default()
                 });
 
+                let canonical_source = candidate.canonical_download_source();
                 app.insert_pending_release(
                     item,
                     &title,
                     &candidate.title,
-                    candidate
-                        .download_url
-                        .as_deref()
-                        .or(candidate.link.as_deref()),
-                    candidate.source_kind,
+                    canonical_source.as_ref().map(|(source, _)| source.as_str()),
+                    canonical_source
+                        .as_ref()
+                        .map(|(_, kind)| *kind)
+                        .or(candidate.source_kind),
                     candidate.size_bytes,
                     candidate_score,
                     scoring_json,
@@ -1339,10 +1339,10 @@ async fn process_single_target(
         }
 
         // Submit to download client
-        let source_hint = candidate
-            .download_url
-            .clone()
-            .or_else(|| candidate.link.clone());
+        let canonical_source = candidate.canonical_download_source();
+        let source_hint = canonical_source
+            .as_ref()
+            .map(|(source, _)| source.clone());
 
         // Successful or ambiguous submissions stay globally deduplicated, but
         // a failed URL is suppressed only within its source/indexer route.
@@ -1372,13 +1372,14 @@ async fn process_single_target(
         }
 
         let source_title = Some(candidate.title.clone());
+        let canonical_source_kind = canonical_source.as_ref().map(|(_, kind)| *kind).or(candidate.source_kind);
         let source_hint_for_attempt = normalize_release_attempt_hint(source_hint.as_deref());
         let source_title_for_attempt = normalize_release_attempt_title(source_title.as_deref());
         let source_password = normalize_release_password(candidate.password_hint.as_deref());
         let request_signature = normalize_release_selection_signature(
             source_hint.as_deref(),
             source_title.as_deref(),
-            candidate.source_kind,
+            canonical_source_kind,
         );
 
         let _ = app
@@ -1435,7 +1436,7 @@ async fn process_single_target(
                 source_hint: source_hint.clone(),
                 staged_nzb: None,
                 resolved_download_artifact: None,
-                source_kind: candidate.source_kind,
+                source_kind: canonical_source_kind,
                 source_title: source_title.clone(),
                 source_password: source_password.clone(),
                 category: Some(download_cat.clone()),
@@ -1652,9 +1653,8 @@ async fn process_single_target(
                         collection_id: item.collection_id.clone(),
                     };
                     let candidate_source_hint = candidate
-                        .download_url
-                        .clone()
-                        .or_else(|| candidate.link.clone())
+                        .canonical_download_source()
+                        .map(|(source, _)| source)
                         .unwrap_or_else(|| candidate.source.clone());
                     let quality = candidate
                         .parsed_release_metadata
