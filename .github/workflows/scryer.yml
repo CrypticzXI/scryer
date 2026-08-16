@@ -22,10 +22,10 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Node
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 25
           cache: npm
@@ -76,7 +76,7 @@ jobs:
       SCCACHE_DIR: /home/runner/.cache/sccache
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
@@ -153,7 +153,7 @@ jobs:
       SCCACHE_DIR: /home/runner/.cache/sccache
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
@@ -189,7 +189,7 @@ jobs:
       - name: Restore sccache directory
         if: ${{ github.event_name == 'pull_request' }}
         id: rust-clippy-sccache-restore
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.cache/sccache
           key: gha-sccache-v3-rust-check-linux-x86_64-musl-${{ steps.rust-clippy-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-rust-clippy-${{ github.run_id }}
@@ -310,7 +310,7 @@ jobs:
 
       - name: Save sccache directory
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.rust-clippy-sccache-restore.outcome == 'success'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.cache/sccache
           key: ${{ steps.rust-clippy-sccache-restore.outputs.cache-primary-key }}
@@ -335,7 +335,7 @@ jobs:
       SCCACHE_DIR: /home/runner/.cache/sccache
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
@@ -370,7 +370,7 @@ jobs:
       - name: Restore sccache directory
         if: ${{ github.event_name == 'pull_request' }}
         id: rust-nextest-sccache-restore
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.cache/sccache
           key: gha-sccache-v3-rust-check-linux-x86_64-musl-${{ steps.rust-nextest-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-rust-nextest-${{ github.run_id }}
@@ -464,7 +464,7 @@ jobs:
 
       - name: Save sccache directory
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.rust-nextest-sccache-restore.outcome == 'success'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.cache/sccache
           key: ${{ steps.rust-nextest-sccache-restore.outputs.cache-primary-key }}
@@ -501,7 +501,7 @@ jobs:
       SCCACHE_DIR: /home/runner/.cache/sccache
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Configure build target
         shell: bash
@@ -545,7 +545,7 @@ jobs:
       - name: Restore sccache directory
         if: ${{ github.event_name == 'pull_request' }}
         id: launcher-sccache-restore
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.cache/sccache
           key: gha-sccache-v3-${{ matrix.sccache_lane }}-release-launcher-${{ steps.launcher-sccache-metadata.outputs.version_line }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-${{ matrix.sccache_writer_id }}-${{ github.run_id }}
@@ -665,7 +665,7 @@ jobs:
 
       - name: Save sccache directory
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.launcher-sccache-restore.outcome == 'success'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.cache/sccache
           key: ${{ steps.launcher-sccache-restore.outputs.cache-primary-key }}
@@ -713,7 +713,7 @@ jobs:
       SCCACHE_DIR: /home/runner/.cache/sccache
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Configure build target
         shell: bash
@@ -744,7 +744,7 @@ jobs:
       - name: Restore sccache directory
         if: ${{ github.event_name == 'pull_request' }}
         id: linux-sccache-restore
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.cache/sccache
           key: gha-sccache-v5-${{ matrix.sccache_lane }}-rc-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-${{ github.run_id }}
@@ -880,7 +880,7 @@ jobs:
 
       - name: Save sccache directory
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.linux-sccache-restore.outcome == 'success'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: /home/runner/.cache/sccache
           key: ${{ steps.linux-sccache-restore.outputs.cache-primary-key }}
@@ -927,7 +927,7 @@ jobs:
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Configure build target
         shell: bash
@@ -946,7 +946,7 @@ jobs:
       - name: Restore sccache directory
         if: ${{ github.event_name == 'pull_request' }}
         id: macos-sccache-restore
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ github.workspace }}/.sccache
           key: gha-sccache-v5-${{ matrix.sccache_lane }}-rc-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-${{ github.run_id }}
@@ -1125,7 +1125,7 @@ jobs:
 
       - name: Save sccache directory
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.macos-sccache-restore.outcome == 'success'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ github.workspace }}/.sccache
           key: ${{ steps.macos-sccache-restore.outputs.cache-primary-key }}
@@ -1174,7 +1174,7 @@ jobs:
       SCCACHE_DIR: ${{ github.workspace }}\.sccache
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Configure build target
         shell: pwsh
@@ -1193,7 +1193,7 @@ jobs:
       - name: Restore sccache directory
         if: ${{ github.event_name == 'pull_request' }}
         id: windows-sccache-restore
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ github.workspace }}\.sccache
           key: gha-sccache-v5-${{ matrix.sccache_lane }}-rc-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Cargo.toml') }}-${{ github.run_id }}
@@ -1521,7 +1521,7 @@ jobs:
 
       - name: Save sccache directory
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.windows-sccache-restore.outcome == 'success'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ github.workspace }}\.sccache
           key: ${{ steps.windows-sccache-restore.outputs.cache-primary-key }}
@@ -1549,7 +1549,7 @@ jobs:
             tar_name: scryer-linux-arm64-image.tar
             local_tag: scryer:test-arm64
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download linux amd64 portable artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1625,7 +1625,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download linux amd64 portable artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1701,7 +1701,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout signed release tag
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
@@ -1745,7 +1745,7 @@ jobs:
       id-token: write
       packages: write
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download linux amd64 portable artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1832,7 +1832,7 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v2.6.5
+          cosign-release: v3.1.3
 
       - name: Keylessly sign immutable OCI index
         shell: bash
@@ -1882,7 +1882,7 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v2.6.5
+          cosign-release: v3.1.3
 
       - name: Install SLSA verifier
         shell: bash
@@ -1950,7 +1950,7 @@ jobs:
           echo "tag_name=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout release notes
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.release_meta.outputs.tag_name }}
           fetch-depth: 1
@@ -2013,7 +2013,7 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v2.6.5
+          cosign-release: v3.1.3
 
       - name: Sign and verify checksum manifest
         working-directory: release-artifacts
@@ -2195,7 +2195,7 @@ jobs:
       contents: read
     if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'scryer-v') }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download WinGet xtask binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -2303,7 +2303,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download generated WinGet manifests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
