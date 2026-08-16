@@ -850,6 +850,18 @@ impl MediaFileRepository for NullMediaFileRepository {
         ))
     }
 
+    async fn set_media_file_roles_for_episode(
+        &self,
+        _title_id: &str,
+        _episode_id: &str,
+        _primary_file_id: &str,
+        _additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        Err(AppError::Repository(
+            "media file repository is not configured".to_string(),
+        ))
+    }
+
     async fn mark_scan_failed(&self, _file_id: &str, _error: &str) -> AppResult<()> {
         Err(AppError::Repository(
             "media file repository is not configured".to_string(),

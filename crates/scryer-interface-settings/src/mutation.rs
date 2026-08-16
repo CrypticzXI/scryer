@@ -16,8 +16,9 @@ use scryer_application::{
 
 use super::{from_ui_settings, ui_settings_update_from_input};
 use scryer_interface_core::{
-    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, mfa_enrollment_actor_from_ctx,
-    mfa_verification_from_ctx, require_config_app_permission, to_gql_error, to_login_gql_error,
+    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, default_persist_session_from_ctx,
+    mfa_enrollment_actor_from_ctx, mfa_verification_from_ctx, persist_session_or_default,
+    require_config_app_permission, to_gql_error, to_login_gql_error,
     to_login_gql_error_after_timing,
 };
 use scryer_interface_media::mappers::{
@@ -150,6 +151,7 @@ fn from_security_settings(
         mfa_require_config_step_up: settings.mfa_require_config_step_up,
         mfa_require_password_login: settings.mfa_require_password_login,
         totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
+        totp_require_emby_login: settings.totp_require_emby_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
         env_override_description: auth_runtime.env_override_description.clone(),
@@ -231,6 +233,12 @@ fn media_server_draft(input: CreateMediaServerConnectionInput) -> MediaServerCon
         api_key: input.api_key,
         admin_username: input.admin_username,
         admin_password: input.admin_password,
+        emby_connection_mode: input.emby_connection_mode.map(emby_connection_mode),
+        emby_local_setup_method: input.emby_local_setup_method.map(emby_local_setup_method),
+        emby_connect_enabled: input.emby_connect_enabled,
+        emby_connect_username_or_email: input.emby_connect_username_or_email,
+        emby_connect_password: input.emby_connect_password,
+        emby_connect_server_id: input.emby_connect_server_id,
         path_mappings: media_server_path_mappings(input.path_mappings),
     }
 }
@@ -259,9 +267,62 @@ fn media_server_patch(input: UpdateMediaServerConnectionInput) -> MediaServerCon
         clear_api_key: input.clear_api_key.unwrap_or(false),
         admin_username: input.admin_username,
         admin_password: input.admin_password,
+        emby_connection_mode: input.emby_connection_mode.map(emby_connection_mode),
+        emby_local_setup_method: input.emby_local_setup_method.map(emby_local_setup_method),
+        emby_connect_enabled: input.emby_connect_enabled,
+        emby_connect_username_or_email: input.emby_connect_username_or_email,
+        emby_connect_password: input.emby_connect_password,
+        emby_connect_server_id: input.emby_connect_server_id,
         path_mappings: input
             .path_mappings
             .map(|mappings| media_server_path_mappings(Some(mappings))),
+    }
+}
+
+fn emby_connection_mode(value: EmbyConnectionModeValue) -> scryer_application::EmbyConnectionMode {
+    match value {
+        EmbyConnectionModeValue::Local => scryer_application::EmbyConnectionMode::Local,
+        EmbyConnectionModeValue::Connect => scryer_application::EmbyConnectionMode::Connect,
+    }
+}
+
+fn emby_local_setup_method(
+    value: EmbyLocalSetupMethodValue,
+) -> scryer_application::EmbyLocalSetupMethod {
+    match value {
+        EmbyLocalSetupMethodValue::ApiKey => scryer_application::EmbyLocalSetupMethod::ApiKey,
+        EmbyLocalSetupMethodValue::AdminCredentials => {
+            scryer_application::EmbyLocalSetupMethod::AdminCredentials
+        }
+    }
+}
+
+fn emby_connect_user_type(
+    value: scryer_application::EmbyConnectUserType,
+) -> EmbyConnectUserTypeValue {
+    match value {
+        scryer_application::EmbyConnectUserType::LinkedUser => EmbyConnectUserTypeValue::LinkedUser,
+        scryer_application::EmbyConnectUserType::Guest => EmbyConnectUserTypeValue::Guest,
+        scryer_application::EmbyConnectUserType::Unknown => EmbyConnectUserTypeValue::Unknown,
+    }
+}
+
+fn emby_connect_address_status(
+    value: scryer_application::EmbyConnectAddressStatus,
+) -> EmbyConnectAddressStatusValue {
+    match value {
+        scryer_application::EmbyConnectAddressStatus::Reachable => {
+            EmbyConnectAddressStatusValue::Reachable
+        }
+        scryer_application::EmbyConnectAddressStatus::Unreachable => {
+            EmbyConnectAddressStatusValue::Unreachable
+        }
+        scryer_application::EmbyConnectAddressStatus::InvalidUrl => {
+            EmbyConnectAddressStatusValue::InvalidUrl
+        }
+        scryer_application::EmbyConnectAddressStatus::ServerIdMismatch => {
+            EmbyConnectAddressStatusValue::ServerIdMismatch
+        }
     }
 }
 
@@ -339,13 +400,19 @@ async fn login_payload_from_user(
     user: scryer_domain::User,
     mfa_verified_until: Option<chrono::DateTime<Utc>>,
     mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+    persist_session: bool,
 ) -> Result<LoginPayload, Error> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_access_token_with_mfa(&user, mfa_verified_until, mfa_step_up_verified_until)
+        .issue_access_token_with_mfa_and_persistence(
+            &user,
+            mfa_verified_until,
+            mfa_step_up_verified_until,
+            persist_session,
+        )
         .await
         .map_err(to_gql_error)?;
     let auth_factor_status = app
@@ -359,19 +426,21 @@ async fn login_payload_from_user(
         expires_at,
         mfa_verified_until,
         mfa_enrollment_required: false,
+        persist_session,
     })
 }
 
 async fn login_mfa_enrollment_payload_from_user(
     app: &scryer_application::AppUseCase,
     user: scryer_domain::User,
+    persist_session: bool,
 ) -> Result<LoginPayload, Error> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_mfa_enrollment_token(&user)
+        .issue_mfa_enrollment_token(&user, persist_session)
         .await
         .map_err(to_gql_error)?;
     let auth_factor_status = app
@@ -385,6 +454,7 @@ async fn login_mfa_enrollment_payload_from_user(
         expires_at,
         mfa_verified_until: None,
         mfa_enrollment_required: true,
+        persist_session,
     })
 }
 
@@ -604,9 +674,13 @@ fn parse_audio_codec_values(
 
 #[Object]
 impl SettingsMutations {
+    /// Replaces the authenticated actor's UI settings, retaining the current date-time format when the input omits or nulls it.
     async fn set_my_ui_settings(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Complete UI settings to save; omitted or null date_time_format keeps its current value."
+        )]
         input: SetMyUiSettingsInput,
     ) -> GqlResult<UiSettingsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -622,9 +696,13 @@ impl SettingsMutations {
         Ok(from_ui_settings(settings))
     }
 
+    /// Saves subtitle preferences after checking the catalog-settings permission.
     async fn update_subtitle_settings(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Subtitle settings to validate and save; language flags default to false when omitted."
+        )]
         input: UpdateSubtitleSettingsInput,
     ) -> GqlResult<SubtitleSettingsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -666,9 +744,13 @@ impl SettingsMutations {
         Ok(from_subtitle_settings(settings))
     }
 
+    /// Saves acquisition thresholds and polling intervals after checking the catalog-settings permission.
     async fn update_acquisition_settings(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Acquisition settings with hour, second, day, count, and score values validated by the application."
+        )]
         input: UpdateAcquisitionSettingsInput,
     ) -> GqlResult<AcquisitionSettingsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -697,9 +779,13 @@ impl SettingsMutations {
         Ok(from_acquisition_settings(settings))
     }
 
+    /// Saves general system settings after checking the system-settings permission.
     async fn update_general_settings(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "General settings including history retention, image-cache size in MB, and plugin CA bundle text."
+        )]
         input: UpdateGeneralSettingsInput,
     ) -> GqlResult<GeneralSettingsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -723,6 +809,7 @@ impl SettingsMutations {
         Ok(from_general_settings(settings))
     }
 
+    /// Requests title-image cache clearing and returns the request timestamp after authorization.
     async fn clear_title_image_cache(
         &self,
         ctx: &Context<'_>,
@@ -739,10 +826,11 @@ impl SettingsMutations {
         })
     }
 
+    /// Saves recycle-bin settings after checking the system-settings permission.
     async fn update_recycle_bin_settings(
         &self,
         ctx: &Context<'_>,
-        input: UpdateRecycleBinSettingsInput,
+        #[graphql(desc = "Recycle-bin settings to save.")] input: UpdateRecycleBinSettingsInput,
     ) -> GqlResult<RecycleBinSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
@@ -762,9 +850,13 @@ impl SettingsMutations {
         Ok(from_recycle_bin_settings(settings))
     }
 
+    /// Saves auto-backup scheduling and key changes after checking the system-settings permission.
     async fn update_auto_backup_settings(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Auto-backup settings; key fields change or clear the stored secret according to their flags."
+        )]
         input: UpdateAutoBackupSettingsInput,
     ) -> GqlResult<AutoBackupSettingsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -788,10 +880,11 @@ impl SettingsMutations {
         Ok(from_auto_backup_settings(settings))
     }
 
+    /// Saves the custom backup path after checking the system-settings permission.
     async fn update_backup_settings(
         &self,
         ctx: &Context<'_>,
-        input: UpdateBackupSettingsInput,
+        #[graphql(desc = "Backup path settings to save.")] input: UpdateBackupSettingsInput,
     ) -> GqlResult<BackupSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
@@ -811,6 +904,7 @@ impl SettingsMutations {
         Ok(from_backup_settings(settings))
     }
 
+    /// Marks the missing auto-backup-key notice as acknowledged and returns refreshed backup status.
     async fn acknowledge_auto_backup_disabled_missing_key_notice(
         &self,
         ctx: &Context<'_>,
@@ -827,9 +921,13 @@ impl SettingsMutations {
         Ok(from_auto_backup_settings(settings))
     }
 
+    /// Saves security and MFA requirements, applies effective login state, and revokes authless OAuth refresh grants when login becomes enabled.
     async fn update_security_settings(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Security settings with password length and MFA requirements validated by the application."
+        )]
         input: UpdateSecuritySettingsInput,
     ) -> GqlResult<SecuritySettingsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -848,6 +946,7 @@ impl SettingsMutations {
                     mfa_require_config_step_up: input.mfa_require_config_step_up,
                     mfa_require_password_login: input.mfa_require_password_login,
                     totp_require_jellyfin_login: input.totp_require_jellyfin_login,
+                    totp_require_emby_login: input.totp_require_emby_login,
                 },
             )
             .await
@@ -866,9 +965,13 @@ impl SettingsMutations {
         Ok(from_security_settings(settings, &snapshot))
     }
 
+    /// Creates a media-server connection with defaults for omitted enablement flags and redacted secret fields in the result.
     async fn create_media_server_connection(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Connection details and optional credentials; omitted enabled defaults true while login and linking default false."
+        )]
         input: CreateMediaServerConnectionInput,
     ) -> GqlResult<MediaServerConnectionPayload> {
         let app = app_from_ctx(ctx)?;
@@ -888,9 +991,13 @@ impl SettingsMutations {
             .map_err(to_gql_error)
     }
 
+    /// Patches a media-server connection by ID, leaving omitted fields unchanged and honoring explicit clear flags for secrets.
     async fn update_media_server_connection(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Connection ID and optional patch fields; omitted fields remain unchanged and clear flags remove stored secrets."
+        )]
         input: UpdateMediaServerConnectionInput,
     ) -> GqlResult<MediaServerConnectionPayload> {
         let app = app_from_ctx(ctx)?;
@@ -910,10 +1017,11 @@ impl SettingsMutations {
             .map_err(to_gql_error)
     }
 
+    /// Deletes the media-server connection identified by `id` after authorization.
     async fn delete_media_server_connection(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "ID of the media-server connection to delete.")] id: ID,
     ) -> GqlResult<DeleteMediaServerConnectionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
@@ -926,9 +1034,13 @@ impl SettingsMutations {
         Ok(DeleteMediaServerConnectionPayload { id: ID::from(id) })
     }
 
+    /// Validates the selected media-server connection without changing its saved configuration.
     async fn test_media_server_connection(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Connection ID and optional Plex token used only for this validation request."
+        )]
         input: TestMediaServerConnectionInput,
     ) -> GqlResult<ProviderValidationPayload> {
         let app = app_from_ctx(ctx)?;
@@ -946,9 +1058,13 @@ impl SettingsMutations {
         })
     }
 
+    /// Discovers Plex servers for the supplied token without saving a connection.
     async fn discover_plex_media_servers(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Plex authentication token used for discovery and not returned by this field."
+        )]
         plex_auth_token: String,
     ) -> GqlResult<Vec<PlexServerDiscoveryPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -966,9 +1082,73 @@ impl SettingsMutations {
             .map_err(to_gql_error)
     }
 
+    /// Discovers Emby Connect servers using credentials without saving a connection.
+    async fn discover_emby_connect_servers(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Emby Connect credentials used only for discovery.")]
+        input: DiscoverEmbyConnectServersInput,
+    ) -> GqlResult<Vec<EmbyConnectServerPayload>> {
+        let app = app_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
+        app.discover_emby_connect_media_servers(&actor, &input.username_or_email, &input.password)
+            .await
+            .map(|servers| {
+                servers
+                    .into_iter()
+                    .map(|server| EmbyConnectServerPayload {
+                        server_id: server.server_id,
+                        name: server.name,
+                        user_type: emby_connect_user_type(server.user_type),
+                        local_address: server.local_address,
+                        remote_address: server.remote_address,
+                        local_api_base_url: server.local_api_base_url,
+                        remote_api_base_url: server.remote_api_base_url,
+                        local_status: emby_connect_address_status(server.local_status),
+                        remote_status: emby_connect_address_status(server.remote_status),
+                        suggested_base_url: server.suggested_base_url,
+                    })
+                    .collect()
+            })
+            .map_err(to_gql_error)
+    }
+
+    /// Validates an Emby Connect configuration without changing saved settings.
+    async fn test_emby_connect(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Connection ID and Emby Connect credentials used only for this validation request."
+        )]
+        input: TestEmbyConnectInput,
+    ) -> GqlResult<MediaServerConnectionTestPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor =
+            require_config_app_permission(ctx, scryer_domain::AppPermission::ManageSystemSettings)
+                .await?;
+        app.test_emby_connect(
+            &actor,
+            input.connection_id.as_ref(),
+            &input.username_or_email,
+            &input.password,
+        )
+        .await
+        .map_err(to_gql_error)?;
+        Ok(MediaServerConnectionTestPayload {
+            status: "ok".into(),
+            message: None,
+        })
+    }
+
+    /// Creates or updates a delay profile after checking the catalog-settings permission.
     async fn upsert_delay_profile(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Delay profile; delay and age values are expressed in minutes and the ID selects create versus update."
+        )]
         input: DelayProfileInput,
     ) -> GqlResult<DelayProfilePayload> {
         let app = app_from_ctx(ctx)?;
@@ -1003,10 +1183,11 @@ impl SettingsMutations {
         Ok(from_delay_profile(profile))
     }
 
+    /// Deletes the delay profile identified by `id` and returns the accepted ID.
     async fn delete_delay_profile(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "ID of the delay profile to delete.")] id: ID,
     ) -> GqlResult<DelayProfileDeletionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
@@ -1020,9 +1201,13 @@ impl SettingsMutations {
         Ok(DelayProfileDeletionPayload { id: ID::from(id) })
     }
 
+    /// Saves media settings for one content scope, with nullable fields passed through as application update semantics.
     async fn update_media_settings(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Content scope and settings update; absent or null optional fields keep their current values, while supplied empty lists are applied as empty."
+        )]
         input: UpdateMediaSettingsInput,
     ) -> GqlResult<MediaSettingsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1080,9 +1265,13 @@ impl SettingsMutations {
         .map_err(to_gql_error)
     }
 
+    /// Replace nonblank default library roots for movie, series, and anime facets.
     async fn update_library_paths(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Default facet root paths; blank movie or series values and a null or blank anime value leave that facet unchanged."
+        )]
         input: UpdateLibraryPathsInput,
     ) -> GqlResult<LibraryPathsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1102,9 +1291,11 @@ impl SettingsMutations {
         .map_err(to_gql_error)
     }
 
+    /// Saves service TLS paths after checking the system-settings permission.
     async fn update_service_settings(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "TLS certificate and key paths to save.")]
         input: UpdateServiceSettingsInput,
     ) -> GqlResult<ServiceSettingsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1123,9 +1314,13 @@ impl SettingsMutations {
         .map_err(to_gql_error)
     }
 
+    /// Saves quality profiles and global or facet selections, using profile IDs to match existing profiles.
     async fn save_quality_profile_settings(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Quality profiles and selections; replace_existing controls replacement while profile IDs match existing records."
+        )]
         input: SaveQualityProfileSettingsInput,
     ) -> GqlResult<QualityProfileSettingsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1188,9 +1383,13 @@ impl SettingsMutations {
         .map_err(to_gql_error)
     }
 
+    /// Replaces download-client routing entries for one content scope after authorization.
     async fn update_download_client_routing(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Content scope and complete routing entry list; an empty list clears entries for that scope."
+        )]
         input: UpdateDownloadClientRoutingInput,
     ) -> GqlResult<Vec<DownloadClientRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -1227,9 +1426,13 @@ impl SettingsMutations {
         .map_err(to_gql_error)
     }
 
+    /// Replaces indexer routing entries for one content scope after authorization.
     async fn update_indexer_routing(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Content scope and complete routing entry list; an empty list clears entries for that scope."
+        )]
         input: UpdateIndexerRoutingInput,
     ) -> GqlResult<Vec<IndexerRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -1261,10 +1464,11 @@ impl SettingsMutations {
         .map_err(to_gql_error)
     }
 
+    /// Deletes the quality profile identified by `id` and returns refreshed quality settings.
     async fn delete_quality_profile(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "ID of the quality profile to delete.")] id: ID,
     ) -> GqlResult<QualityProfileSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
@@ -1277,6 +1481,7 @@ impl SettingsMutations {
             .map_err(to_gql_error)
     }
 
+    /// Starts passkey registration and returns a short-lived challenge without credential material.
     async fn webauthn_register_start(
         &self,
         ctx: &Context<'_>,
@@ -1290,9 +1495,13 @@ impl SettingsMutations {
             .map_err(to_gql_error)
     }
 
+    /// Completes passkey registration using the challenge ID and browser response, then returns a passkey summary.
     async fn webauthn_register_complete(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Challenge ID and WebAuthn response used to complete the pending registration."
+        )]
         input: WebauthnRegisterCompleteInput,
     ) -> GqlResult<PasskeySummaryPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1310,6 +1519,7 @@ impl SettingsMutations {
         .map_err(to_gql_error)
     }
 
+    /// Starts TOTP enrollment for the authenticated session or MFA-enrollment session.
     async fn totp_enrollment_start(
         &self,
         ctx: &Context<'_>,
@@ -1332,9 +1542,11 @@ impl SettingsMutations {
         Ok(from_totp_enrollment_start(start))
     }
 
+    /// Completes TOTP enrollment with the one-time challenge code and returns status plus recovery codes.
     async fn totp_enrollment_complete(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Enrollment challenge ID and current TOTP code.")]
         input: TotpEnrollmentCompleteInput,
     ) -> GqlResult<TotpEnrollmentCompletePayload> {
         let app = app_from_ctx(ctx)?;
@@ -1345,20 +1557,28 @@ impl SettingsMutations {
             .map_err(to_gql_error)
     }
 
+    /// Completes required login MFA enrollment, returns one-time recovery codes, and issues the authenticated login payload.
     async fn complete_login_mfa_enrollment(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "MFA-enrollment challenge ID and current TOTP code.")]
         input: TotpEnrollmentCompleteInput,
     ) -> GqlResult<LoginMfaEnrollmentCompletePayload> {
         let app = app_from_ctx(ctx)?;
+        let mfa = mfa_verification_from_ctx(ctx);
         let actor = mfa_enrollment_actor_from_ctx(ctx)?;
         let complete = app
             .complete_login_mfa_enrollment(&actor, input.challenge_id.as_ref(), &input.code)
             .await
             .map_err(to_gql_error)?;
-        let login =
-            login_payload_from_user(&app, actor, Some(app.mfa_freshness_verified_until()), None)
-                .await?;
+        let login = login_payload_from_user(
+            &app,
+            actor,
+            Some(app.mfa_freshness_verified_until()),
+            None,
+            mfa.persist_session,
+        )
+        .await?;
         Ok(LoginMfaEnrollmentCompletePayload {
             status: from_totp_status(complete.status),
             recovery_codes: complete.recovery_codes,
@@ -1366,9 +1586,11 @@ impl SettingsMutations {
         })
     }
 
+    /// Verifies TOTP for a configuration step-up and issues a session with the resulting freshness window.
     async fn mfa_verify_step_up(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Current TOTP code used for step-up verification.")]
         input: TotpVerifyInput,
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1377,13 +1599,14 @@ impl SettingsMutations {
             .mfa_verify_step_up(&actor, &input.code)
             .await
             .map_err(to_gql_error)?;
-        login_payload_from_user(&app, actor, None, Some(mfa_step_up_verified_until)).await
+        login_payload_from_user(&app, actor, None, Some(mfa_step_up_verified_until), true).await
     }
 
+    /// Disables TOTP after verifying the supplied code and returns updated status.
     async fn totp_disable(
         &self,
         ctx: &Context<'_>,
-        input: TotpVerifyInput,
+        #[graphql(desc = "Current TOTP code required to disable TOTP.")] input: TotpVerifyInput,
     ) -> GqlResult<TotpStatusPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1393,9 +1616,11 @@ impl SettingsMutations {
             .map_err(to_gql_error)
     }
 
+    /// Regenerates recovery codes after verifying TOTP; returned codes are one-time secrets.
     async fn totp_regenerate_recovery_codes(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Current TOTP code required to generate a new recovery-code set.")]
         input: TotpVerifyInput,
     ) -> GqlResult<TotpEnrollmentCompletePayload> {
         let app = app_from_ctx(ctx)?;
@@ -1406,9 +1631,13 @@ impl SettingsMutations {
             .map_err(to_gql_error)
     }
 
+    /// Starts passkey authentication, masking failures when form login is enabled.
     async fn webauthn_authenticate_start(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Optional username to narrow passkey discovery; omit or pass null for usernameless authentication."
+        )]
         username: Option<String>,
     ) -> GqlResult<WebauthnChallengePayload> {
         let app = app_from_ctx(ctx)?;
@@ -1436,9 +1665,13 @@ impl SettingsMutations {
         Ok(from_webauthn_challenge_start(start))
     }
 
+    /// Completes passkey authentication and issues a login payload without exposing the credential response.
     async fn webauthn_authenticate_complete(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Challenge ID and WebAuthn assertion response from the authentication start request."
+        )]
         input: WebauthnCompleteInput,
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1467,13 +1700,18 @@ impl SettingsMutations {
                 .await);
             }
         };
-        login_payload_from_user(&app, user, None, None).await
+        let persist_session = persist_session_or_default(
+            input.persist_session,
+            default_persist_session_from_ctx(ctx),
+        );
+        login_payload_from_user(&app, user, None, None, persist_session).await
     }
 
+    /// Deletes the authenticated actor's passkey identified by `id`.
     async fn delete_my_passkey(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "ID of the authenticated actor's passkey to delete.")] id: ID,
     ) -> GqlResult<DeleteMyPasskeyPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1489,10 +1727,11 @@ impl SettingsMutations {
         Ok(DeleteMyPasskeyPayload { id })
     }
 
+    /// Revokes the authenticated actor's OAuth grant identified by `grant_id`.
     async fn revoke_my_oauth_app(
         &self,
         ctx: &Context<'_>,
-        grant_id: ID,
+        #[graphql(desc = "Grant ID of the OAuth app authorization to revoke.")] grant_id: ID,
     ) -> GqlResult<RevokeMyOauthAppPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1504,7 +1743,13 @@ impl SettingsMutations {
         Ok(RevokeMyOauthAppPayload { grant_id, revoked })
     }
 
-    async fn login(&self, ctx: &Context<'_>, input: LoginInput) -> GqlResult<LoginPayload> {
+    /// Authenticates local credentials, optionally verifies required TOTP, and issues a session or MFA-enrollment token.
+    async fn login(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Username, password, and optional TOTP code for local authentication.")]
+        input: LoginInput,
+    ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let user = match app
             .authenticate_credentials(&input.username, &input.password)
@@ -1524,7 +1769,15 @@ impl SettingsMutations {
                 .mfa_require_password_login;
         let mfa_verified_until = if password_login_mfa_required {
             if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
-                return login_mfa_enrollment_payload_from_user(&app, user).await;
+                return login_mfa_enrollment_payload_from_user(
+                    &app,
+                    user,
+                    persist_session_or_default(
+                        input.persist_session,
+                        default_persist_session_from_ctx(ctx),
+                    ),
+                )
+                .await;
             }
             let code = input.totp_code.as_deref().ok_or_else(|| {
                 to_gql_error(scryer_application::AppError::MfaStepUpRequired(
@@ -1539,7 +1792,11 @@ impl SettingsMutations {
         } else {
             None
         };
-        login_payload_from_user(&app, user, mfa_verified_until, None).await
+        let persist_session = persist_session_or_default(
+            input.persist_session,
+            default_persist_session_from_ctx(ctx),
+        );
+        login_payload_from_user(&app, user, mfa_verified_until, None, persist_session).await
     }
 
     /// Mark the setup wizard as complete.

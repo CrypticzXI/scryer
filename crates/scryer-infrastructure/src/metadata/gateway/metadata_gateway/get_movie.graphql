@@ -9,6 +9,7 @@ query GetMovie($tvdbId: Int!, $language: String!) {
       overview
       poster_url
       language
+      original_language
       runtime_minutes
       sort_title
       imdb_id

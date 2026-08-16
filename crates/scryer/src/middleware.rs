@@ -5,17 +5,19 @@ use aws_lc_rs::hmac;
 use aws_lc_rs::rand::{SecureRandom, SystemRandom};
 use axum::Json;
 use axum::body::Body;
-use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, Path as AxumPath, State, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use scryer_application::{
-    AppError, AppResult, AppUseCase, AuthenticatedTokenClaims, OAuthAuthorizationSource,
+    AppError, AppResult, AppUseCase, AuthenticatedTokenClaims, JwtSessionScope,
+    OAuthAuthorizationSource,
 };
 use scryer_domain::{ActorCapabilityMask, AppPermissionMask, Id};
 use scryer_interface::RequestLoaders;
 use scryer_interface::context::{
     AuthRuntimeStateHandle, ConnectionAuthEpoch, MfaVerification, OAuthActorSession,
+    RequestSessionPersistence,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -1090,6 +1092,9 @@ pub(crate) async fn graphql_handler(
         );
     }
     let batch = body.into_inner();
+    let session_persistence = RequestSessionPersistence {
+        default_persist_session: default_persist_session_for_request(&headers, Some(remote_addr)),
+    };
     let client_ip = request_client_ip(&headers, Some(remote_addr)).unwrap_or(remote_addr.ip());
     let rate_limit_key = RateLimitKey::new(
         client_ip,
@@ -1148,6 +1153,17 @@ pub(crate) async fn graphql_handler(
         batch
     };
 
+    let batch = match batch {
+        async_graphql::BatchRequest::Single(req) => {
+            async_graphql::BatchRequest::Single(req.data(session_persistence))
+        }
+        async_graphql::BatchRequest::Batch(reqs) => async_graphql::BatchRequest::Batch(
+            reqs.into_iter()
+                .map(|req| req.data(session_persistence))
+                .collect(),
+        ),
+    };
+
     let schema = state.schema.clone();
     let rate_limiter = state.rate_limiter.clone();
     let mut batch_response =
@@ -1195,6 +1211,75 @@ pub(crate) async fn graphql_handler(
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))
         .unwrap()
+}
+
+pub(crate) async fn emby_avatar_handler(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    AxumPath((connection_id, user_id, image_tag)): AxumPath<(String, String, String)>,
+) -> Response {
+    let Some(actor) = resolve_actor(&state, &headers, Some(remote_addr)).await else {
+        return Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(Body::empty())
+            .unwrap();
+    };
+    if actor.token_claims.session_scope != JwtSessionScope::Full {
+        return Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(Body::empty())
+            .unwrap();
+    }
+    if connection_id.len() > 256
+        || user_id.len() > 256
+        || image_tag.len() > 256
+        || connection_id.is_empty()
+        || user_id.is_empty()
+        || image_tag.is_empty()
+    {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
+    }
+    let avatar = match state
+        .app
+        .fetch_emby_server_user_avatar(&actor.user, &connection_id, &user_id, &image_tag)
+        .await
+    {
+        Ok(Some(avatar)) => avatar,
+        Err(AppError::Unauthorized(_)) => {
+            return Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .body(Body::empty())
+                .unwrap();
+        }
+        Ok(None) | Err(AppError::NotFound(_)) => {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::empty())
+                .unwrap();
+        }
+        Err(error) => {
+            tracing::warn!(connection_id, operation = "emby_avatar", error = %error, "Emby avatar proxy failed");
+            return Response::builder()
+                .status(StatusCode::BAD_GATEWAY)
+                .body(Body::empty())
+                .unwrap();
+        }
+    };
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, avatar.content_type)
+        .header(header::CACHE_CONTROL, "private, max-age=300");
+    if let Some(etag) = avatar.etag {
+        response = response.header(header::ETAG, etag);
+    }
+    if let Some(last_modified) = avatar.last_modified {
+        response = response.header(header::LAST_MODIFIED, last_modified);
+    }
+    response.body(Body::from(avatar.bytes)).unwrap()
 }
 
 pub(crate) async fn enforce_authless_access_guard(
@@ -1314,6 +1399,7 @@ impl ResolvedActor {
             verified_until: self.token_claims.mfa_verified_until,
             step_up_verified_until: self.token_claims.mfa_step_up_verified_until,
             session_scope: self.token_claims.session_scope,
+            persist_session: self.token_claims.persist_session,
             oauth_authorization_source: self.token_claims.oauth_authorization_source,
         }
     }
@@ -1735,17 +1821,7 @@ fn local_ip_bypass_active(
         return false;
     }
 
-    let Some(peer_ip) = remote_addr.map(|addr| addr.ip()) else {
-        return false;
-    };
-
-    if has_proxy_forwarding_headers(headers) {
-        return is_trusted_proxy_ip(peer_ip)
-            && forwarded_client_ip_chain(headers)
-                .is_ok_and(|client_ips| client_ips.into_iter().all(is_local_network_ip));
-    }
-
-    is_local_network_ip(peer_ip)
+    request_has_trusted_local_provenance(headers, remote_addr)
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -1885,6 +1961,28 @@ fn request_client_ip(headers: &HeaderMap, remote_addr: Option<SocketAddr>) -> Op
         return Some(forwarded_ip);
     }
     Some(peer_ip)
+}
+
+fn default_persist_session_for_request(
+    headers: &HeaderMap,
+    remote_addr: Option<SocketAddr>,
+) -> bool {
+    request_has_trusted_local_provenance(headers, remote_addr)
+}
+
+fn request_has_trusted_local_provenance(
+    headers: &HeaderMap,
+    remote_addr: Option<SocketAddr>,
+) -> bool {
+    let Some(peer_ip) = remote_addr.map(|addr| addr.ip()) else {
+        return false;
+    };
+    if has_proxy_forwarding_headers(headers) {
+        return is_trusted_proxy_ip(peer_ip)
+            && forwarded_client_ip_chain(headers)
+                .is_ok_and(|client_ips| client_ips.into_iter().all(is_local_network_ip));
+    }
+    is_local_network_ip(peer_ip)
 }
 
 fn forwarded_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
@@ -2150,18 +2248,259 @@ pub(crate) fn map_app_error(error: AppError) -> Response {
 }
 
 #[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod integration_test_common;
+
+#[cfg(test)]
 mod tests {
+    use super::integration_test_common as common;
     use super::*;
+
     use axum::Router;
     use axum::body::to_bytes;
     use axum::http::HeaderValue;
     use axum::routing::get;
     use serde_json::Value;
     use std::net::{Ipv4Addr, Ipv6Addr};
-    use std::sync::{LazyLock, Mutex};
+    use std::sync::{
+        LazyLock, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tower::ServiceExt;
 
     static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct AvatarCountingVerifier {
+        fetch_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl scryer_application::ExternalIdentityVerifier for AvatarCountingVerifier {
+        async fn verify_plex(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &str,
+        ) -> AppResult<scryer_application::VerifiedExternalIdentity> {
+            Err(AppError::Repository("not configured".into()))
+        }
+
+        async fn discover_plex_servers(
+            &self,
+            _: &str,
+        ) -> AppResult<Vec<scryer_application::PlexServerDiscovery>> {
+            Ok(Vec::new())
+        }
+
+        async fn verify_jellyfin(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<scryer_application::VerifiedExternalIdentity> {
+            Err(AppError::Repository("not configured".into()))
+        }
+
+        async fn test_jellyfin_connection(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn test_jellyfin_api_key(&self, _: &str, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn exchange_jellyfin_admin_api_key(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<String> {
+            Err(AppError::Repository("not configured".into()))
+        }
+
+        async fn list_jellyfin_users(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> AppResult<Vec<scryer_application::JellyfinServerUser>> {
+            Ok(Vec::new())
+        }
+
+        async fn fetch_emby_user_avatar(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> AppResult<Option<scryer_application::EmbyAvatar>> {
+            self.fetch_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(scryer_application::EmbyAvatar {
+                content_type: "image/png".into(),
+                bytes: vec![1, 2, 3],
+                etag: None,
+                last_modified: None,
+            }))
+        }
+
+        async fn list_plex_users(
+            &self,
+            _: &str,
+            _: Option<&str>,
+        ) -> AppResult<Vec<scryer_application::PlexServerUser>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn emby_avatar_handler_requires_full_scope_and_manage_users_before_upstream() {
+        use scryer_application::MediaServerConnectionRepository as _;
+        use scryer_application::testing::AppUseCaseTestExt as _;
+
+        let context = common::TestContext::new().await;
+        let fetch_calls = Arc::new(AtomicUsize::new(0));
+        let connection_store = Arc::new(scryer_infrastructure::MediaServerConnectionStore::new(
+            context.db.datastore(),
+            context.db.encryption_key_state(),
+        ));
+        let app = context.app.with_test_overrides(|builder| {
+            builder
+                .with_media_server_connection_store(connection_store.clone())
+                .with_external_identity_verifier(Arc::new(AvatarCountingVerifier {
+                    fetch_calls: Arc::clone(&fetch_calls),
+                }))
+        });
+        let now = chrono::Utc::now();
+        connection_store
+            .create(scryer_domain::MediaServerConnection {
+                id: "emby-main".into(),
+                provider: scryer_domain::MediaServerProvider::Emby,
+                display_name: "Emby".into(),
+                base_url: "https://emby.example.test".into(),
+                enabled: true,
+                login_enabled: true,
+                linking_enabled: false,
+                auto_add_enabled: false,
+                default_app_permissions: AppPermissionMask::NONE,
+                default_library_grants: Vec::new(),
+                machine_id: None,
+                api_key: Some("emby-admin-key".into()),
+                emby_server_id: Some("emby-server".into()),
+                emby_connect_enabled: false,
+                path_mappings: Vec::new(),
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .expect("create Emby connection");
+
+        let admin = context
+            .app
+            .find_or_create_default_user()
+            .await
+            .expect("default administrator");
+        let ordinary = context
+            .app
+            .create_user(
+                &admin,
+                "avatar-ordinary".into(),
+                "ordinary-password".into(),
+                AppPermissionMask::NONE,
+                Vec::new(),
+            )
+            .await
+            .expect("create ordinary actor");
+        let manager = context
+            .app
+            .create_user(
+                &admin,
+                "avatar-manager".into(),
+                "manager-password".into(),
+                AppPermissionMask::MANAGE_USERS,
+                Vec::new(),
+            )
+            .await
+            .expect("create ManageUsers actor");
+        let ordinary_token = app
+            .issue_access_token(&ordinary)
+            .await
+            .expect("issue ordinary token");
+        let mfa_enrollment_token = app
+            .issue_mfa_enrollment_token(&ordinary, false)
+            .await
+            .expect("issue MFA enrollment token");
+        let manager_token = app
+            .issue_access_token(&manager)
+            .await
+            .expect("issue ManageUsers token");
+
+        let state = AuthState {
+            app,
+            schema: context.schema.clone(),
+            auth_runtime: AuthRuntimeStateHandle::new(auth_enabled_snapshot()),
+            rate_limiter: ScryerRateLimiter::from_env(),
+            ws_origin_policy: WebSocketOriginPolicy::default(),
+            authless_web_client_proof: AuthlessWebClientProofState::new(),
+        };
+        let router = Router::new()
+            .route(
+                "/api/media-server-avatars/{connection_id}/{user_id}/{image_tag}",
+                get(emby_avatar_handler),
+            )
+            .with_state(state);
+        let request = |token: Option<&str>| {
+            let mut request = Request::builder()
+                .uri("/api/media-server-avatars/emby-main/external-user/avatar-tag")
+                .body(Body::empty())
+                .expect("avatar request");
+            if let Some(token) = token {
+                request.headers_mut().insert(
+                    header::AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {token}")).expect("authorization"),
+                );
+            }
+            request
+                .extensions_mut()
+                .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))));
+            request
+        };
+
+        for token in [
+            None,
+            Some("invalid-token"),
+            Some(mfa_enrollment_token.as_str()),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(request(token))
+                .await
+                .expect("avatar response");
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(fetch_calls.load(Ordering::SeqCst), 0);
+        }
+
+        let response = router
+            .clone()
+            .oneshot(request(Some(&ordinary_token)))
+            .await
+            .expect("avatar response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(fetch_calls.load(Ordering::SeqCst), 0);
+
+        let response = router
+            .oneshot(request(Some(&manager_token)))
+            .await
+            .expect("avatar response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(fetch_calls.load(Ordering::SeqCst), 1);
+        let avatar_bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("avatar bytes");
+        assert_eq!(avatar_bytes.as_ref(), &[1, 2, 3]);
+    }
 
     fn clear_cors_env() {
         // SAFETY: tests serialize access to process env via ENV_LOCK.
@@ -3275,6 +3614,57 @@ mod tests {
             &snapshot,
             &headers,
             Some(SocketAddr::from((Ipv6Addr::LOCALHOST, 3000))),
+        ));
+    }
+
+    #[test]
+    fn default_session_persistence_requires_private_provenance() {
+        let headers = HeaderMap::new();
+        assert!(default_persist_session_for_request(
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))),
+        ));
+        assert!(default_persist_session_for_request(
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(192, 168, 1, 25), 3000))),
+        ));
+        assert!(!default_persist_session_for_request(
+            &headers,
+            Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+        ));
+        assert!(!default_persist_session_for_request(&headers, None));
+    }
+
+    #[test]
+    fn default_session_persistence_requires_an_entirely_private_forwarded_chain() {
+        let peer = Some(SocketAddr::from((Ipv4Addr::new(172, 18, 0, 2), 3000)));
+        let mut private_headers = HeaderMap::new();
+        private_headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("192.168.1.25, 172.18.0.5"),
+        );
+        assert!(default_persist_session_for_request(&private_headers, peer));
+        assert!(!default_persist_session_for_request(
+            &private_headers,
+            Some(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 3000))),
+        ));
+
+        let mut public_headers = HeaderMap::new();
+        public_headers.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
+        assert!(!default_persist_session_for_request(&public_headers, peer));
+
+        let mut malformed_headers = HeaderMap::new();
+        malformed_headers.insert("x-forwarded-for", HeaderValue::from_static("not-an-ip"));
+        assert!(!default_persist_session_for_request(
+            &malformed_headers,
+            peer
+        ));
+
+        let mut missing_chain_headers = HeaderMap::new();
+        missing_chain_headers.insert(X_FORWARDED_PROTO, HeaderValue::from_static("https"));
+        assert!(!default_persist_session_for_request(
+            &missing_chain_headers,
+            peer
         ));
     }
 

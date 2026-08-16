@@ -124,6 +124,38 @@ async fn apply_result_does_not_verify_unresolved_identity_rejection_as_imported(
 }
 
 #[tokio::test]
+async fn apply_result_keeps_ambiguous_obfuscated_episode_blocked_with_actionable_reason() {
+    let app = build_app(vec![], vec![], vec![], vec![]);
+    let release =
+        "[Erai-raws].Hime-sama.Goumon.no.Jikan.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]";
+    let reason = "Automatic import could not choose a season for episode 9: the release name does not include a season and the downloaded filename is obfuscated. Open Manual Import and assign the correct season and episode.";
+    let mut td = build_tracked_download("title-1", "anime", release);
+    let result = ImportResult {
+        import_id: "import-ambiguous-season".to_string(),
+        decision: ImportDecision::Rejected,
+        skip_reason: Some(ImportSkipReason::PolicyMismatch),
+        title_id: Some("title-1".to_string()),
+        source_system: Some("weaver".to_string()),
+        source_ref: Some("dl-1".to_string()),
+        source_title: Some(release.to_string()),
+        source_path: "/downloads/obfuscated".to_string(),
+        dest_path: None,
+        quality: None,
+        episode_ids: vec![],
+        file_size_bytes: None,
+        link_type: None,
+        error_message: Some(reason.to_string()),
+        started_at: Utc::now(),
+        completed_at: Utc::now(),
+    };
+
+    assert!(!apply_import_result(&app, &mut td, result, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+    assert_eq!(td.status, TrackedDownloadStatus::Warning);
+    assert_eq!(td.status_messages, vec![reason.to_string()]);
+}
+
+#[tokio::test]
 async fn apply_result_backs_off_no_video_import_before_blocking() {
     let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");

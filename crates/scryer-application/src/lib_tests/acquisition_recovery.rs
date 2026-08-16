@@ -318,6 +318,160 @@ async fn acquisition_cycle_retries_standby_candidate_after_failed_grab() {
 }
 
 #[tokio::test]
+async fn acquisition_failure_fallback_skips_failed_submission_for_another_episode() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user) = bootstrap_with_acquisition_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+        wanted_items.clone(),
+    );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Scoped Failure Recovery".into(),
+                facet: MediaFacet::Series,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create series title");
+    let current_episode_id = "episode-12";
+    let current_release = "Scoped.Failure.Recovery.S02E12.1080p.WEB-DL";
+    let wanted = AcquisitionScopeState {
+        id: Id::new().0,
+        title_id: title.id.clone(),
+        title_name: Some(title.name.clone()),
+        title_slug: None,
+        title_facet: Some("series".to_string()),
+        library_id: None,
+        library_name: None,
+        library_slug: None,
+        episode_id: Some(current_episode_id.to_string()),
+        collection_id: None,
+        series_movie_link_id: None,
+        season_number: Some("2".to_string()),
+        episode_number: Some("12".to_string()),
+        media_type: "episode".to_string(),
+        last_search_at: Some((Utc::now() - chrono::Duration::minutes(5)).to_rfc3339()),
+        status: AcquisitionScopeStatus::Grabbed,
+        grabbed_release: Some(
+            serde_json::json!({
+                "title": current_release,
+                "score": 100,
+                "grabbed_at": Utc::now().to_rfc3339(),
+            })
+            .to_string(),
+        ),
+        current_score: None,
+        latest_release_decision: None,
+        mismatch_recovery_eligible: false,
+        created_at: Utc::now().to_rfc3339(),
+        updated_at: Utc::now().to_rfc3339(),
+    };
+    wanted_items
+        .upsert_acquisition_scope_state(&wanted)
+        .await
+        .expect("seed grabbed episode");
+
+    for (client_item_id, source_title, episode_id) in [
+        (
+            "old-failed-job",
+            "Scoped.Failure.Recovery.S02E01.1080p.WEB-DL",
+            "episode-1",
+        ),
+        ("current-failed-job", current_release, current_episode_id),
+    ] {
+        download_submissions
+            .record_submission(DownloadSubmission {
+                title_id: title.id.clone(),
+                purpose: crate::DownloadSubmissionPurpose::Standard,
+                facet: "series".to_string(),
+                download_client_id: Some("primary".to_string()),
+                download_client_type: "nzbget".to_string(),
+                download_client_item_id: client_item_id.to_string(),
+                source_hint: None,
+                source_provider_id: None,
+                source_provider_name: None,
+                source_kind: None,
+                source_title: Some(source_title.to_string()),
+                request_signature: None,
+                scope: SubmissionScope::Episode {
+                    episode_id: episode_id.to_string(),
+                },
+            })
+            .await
+            .expect("record episode submission");
+    }
+    let mut old_failure = failed_history_item(
+        "old-failed-job",
+        "Scoped.Failure.Recovery.S02E01.1080p.WEB-DL",
+    );
+    old_failure.facet = Some("series".to_string());
+    let mut current_failure = failed_history_item("current-failed-job", current_release);
+    current_failure.facet = Some("series".to_string());
+    *download_client.history_items.lock().await = vec![old_failure, current_failure];
+
+    let old_outcome = crate::acquisition_workflow::process_download_failure(
+        &app,
+        crate::acquisition_workflow::DownloadFailureContext {
+            wanted_item: None,
+            title_id: Some(title.id.clone()),
+            client_id: "primary".to_string(),
+            client_type: "nzbget".to_string(),
+            client_name: Some("Primary".to_string()),
+            client_item_id: "old-failed-job".to_string(),
+            release_title: "Scoped.Failure.Recovery.S02E01.1080p.WEB-DL".to_string(),
+            reason: "old download failed".to_string(),
+            remove_from_client_if_configured: false,
+            skip_reacquire: true,
+        },
+        None,
+    )
+    .await;
+    assert_eq!(
+        old_outcome,
+        crate::acquisition_workflow::FailureHandlingOutcome::RecordedNoReacquire
+    );
+    wanted_items
+        .upsert_acquisition_scope_state(&wanted)
+        .await
+        .expect("restore current episode as grabbed after seeding old failure history");
+
+    app.run_convergence_cycle_once().await;
+
+    assert_eq!(
+        download_submissions
+            .get_tracked_state(&DownloadSourceIdentity::new(
+                Some("primary"),
+                "nzbget",
+                "current-failed-job",
+            ))
+            .await
+            .expect("load current failure state")
+            .as_deref(),
+        Some("failed")
+    );
+    assert_eq!(
+        download_submissions
+            .get_tracked_state(&DownloadSourceIdentity::new(
+                Some("primary"),
+                "nzbget",
+                "old-failed-job",
+            ))
+            .await
+            .expect("load old failure state")
+            .as_deref(),
+        Some("failed")
+    );
+}
+
+#[tokio::test]
 async fn tracked_download_failure_reuses_standby_recovery_policy() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());

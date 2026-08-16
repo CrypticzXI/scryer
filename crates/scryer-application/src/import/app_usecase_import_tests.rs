@@ -320,6 +320,37 @@ fn build_augmented_episode_import_metadata_prefers_download_title_for_single_obf
 }
 
 #[test]
+fn ambiguous_obfuscated_episode_message_explains_season_assignment() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let completed = test_completed_download(
+        "[Erai-raws].Hime-sama.Goumon.no.Jikan.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]",
+        dir.path(),
+    );
+
+    assert_eq!(
+        ambiguous_obfuscated_episode_message(&file_path, &completed).as_deref(),
+        Some(
+            "Automatic import could not choose a season for episode 9: the release name does not include a season and the downloaded filename is obfuscated. Open Manual Import and assign the correct season and episode."
+        )
+    );
+}
+
+#[test]
+fn ambiguous_obfuscated_episode_message_ignores_release_with_explicit_season() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let completed = test_completed_download(
+        "Hime-sama.Goumon.no.Jikan.Desu.S02E09.1080p.WEB-DL",
+        dir.path(),
+    );
+
+    assert!(ambiguous_obfuscated_episode_message(&file_path, &completed).is_none());
+}
+
+#[test]
 fn build_augmented_episode_import_metadata_uses_immediate_parent_for_obfuscated_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest_dir = dir.path().join("job-123");
@@ -457,6 +488,15 @@ fn is_sample_file_allows_normal_video_file() {
     assert!(!is_sample_file(std::path::Path::new(
         "/nonexistent/Movie.2024.mkv"
     )));
+}
+
+#[test]
+fn is_sample_file_allows_small_double_extension_strm_pointer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pointer = dir.path().join("Show.S01E01.1080p.mkv.strm");
+    std::fs::write(&pointer, b"https://nzbdav.example/stream/episode").expect("write strm");
+
+    assert!(!is_sample_file(&pointer));
 }
 
 // ── pick_largest_file ─────────────────────────────────────────────────────────
@@ -1044,6 +1084,17 @@ fn find_video_files_filters_samples_when_flag_set() {
 }
 
 #[test]
+fn find_video_files_keeps_small_strm_when_filtering_samples() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pointer = dir.path().join("Show.S01E01.1080p.mkv.strm");
+    std::fs::write(&pointer, b"https://nzbdav.example/stream/episode").expect("write strm");
+
+    let files = find_video_files(dir.path(), true).expect("find");
+
+    assert_eq!(files, vec![pointer]);
+}
+
+#[test]
 fn find_video_files_returns_error_for_missing_dir() {
     let result = find_video_files(std::path::Path::new("/nonexistent/dir/abc"), false);
     assert!(result.is_err());
@@ -1198,7 +1249,12 @@ fn scoped_media_file(
             original_file_path: None,
             release_hash: None,
         },
+        title_role: crate::MediaFileRole::Primary,
         episode_ids: episode_ids
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        primary_episode_ids: episode_ids
             .iter()
             .map(|value| (*value).to_string())
             .collect(),
@@ -1292,61 +1348,6 @@ fn manual_import_error_from_skip_reason_maps_policy_mismatch() {
         manual_import_error_from_skip_reason(Some(ImportSkipReason::PolicyMismatch)),
         scryer_domain::ImportErrorCode::PolicyMismatch
     );
-}
-
-#[test]
-fn prefer_broader_coverage_episodes_returns_claimed_pack() {
-    let target = vec![scryer_domain::Episode {
-        id: "ep-1".to_string(),
-        title_id: "title-1".to_string(),
-        collection_id: Some("season-1".to_string()),
-        episode_type: scryer_domain::EpisodeType::Standard,
-        episode_number: Some("1".to_string()),
-        season_number: Some("1".to_string()),
-        episode_label: Some("S01E01".to_string()),
-        title: Some("Episode 1".to_string()),
-        air_date: None,
-        duration_seconds: Some(24 * 60),
-        has_multi_audio: false,
-        has_subtitle: false,
-        is_filler: false,
-        is_recap: false,
-        absolute_number: None,
-        overview: None,
-        tvdb_id: None,
-        image_url: None,
-        monitored: true,
-        created_at: chrono::Utc::now(),
-    }];
-    let mut claimed = target.clone();
-    claimed.push(scryer_domain::Episode {
-        id: "ep-2".to_string(),
-        title_id: "title-1".to_string(),
-        collection_id: Some("season-1".to_string()),
-        episode_type: scryer_domain::EpisodeType::Standard,
-        episode_number: Some("2".to_string()),
-        season_number: Some("1".to_string()),
-        episode_label: Some("S01E02".to_string()),
-        title: Some("Episode 2".to_string()),
-        air_date: None,
-        duration_seconds: Some(24 * 60),
-        has_multi_audio: false,
-        has_subtitle: false,
-        is_filler: false,
-        is_recap: false,
-        absolute_number: None,
-        overview: None,
-        tvdb_id: None,
-        image_url: None,
-        monitored: true,
-        created_at: chrono::Utc::now(),
-    });
-
-    let coverage = prefer_broader_coverage_episodes(&target, claimed);
-
-    assert_eq!(coverage.len(), 2);
-    assert_eq!(coverage[0].id, "ep-1");
-    assert_eq!(coverage[1].id, "ep-2");
 }
 
 #[test]

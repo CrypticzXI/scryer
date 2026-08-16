@@ -425,7 +425,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
               disabled={episodeToggling}
               aria-label={t("title.episodeMonitored")}
               className={cn(
-                "inline-flex size-6 items-center justify-center rounded transition-colors",
+                "inline-flex size-6 translate-x-2 items-center justify-center rounded transition-colors",
                 episodeToggling && "opacity-50",
                 episode.monitored
                   ? "text-[var(--scry-success-text-soft)]"

@@ -5,6 +5,7 @@ import { sanitizeTotpCode } from "@/components/auth/totp-code-form";
 import { SettingsProfileSection } from "@/components/views/settings/settings-profile-section";
 import {
   deleteMyPasskeyMutation,
+  linkEmbyAccountMutation,
   linkJellyfinAccountMutation,
   linkPlexAccountMutation,
   revokeMyOauthAppMutation,
@@ -52,7 +53,10 @@ import type {
 import type { UserAccountKind } from "@/lib/types/users";
 import { PasskeyClientError, registerPasskey } from "@/lib/utils/passkeys";
 import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
-import { canSubmitJellyfinLink } from "@/lib/utils/external-account-link-gate";
+import {
+  canSubmitJellyfinLink,
+  effectiveEmbyLinkMode,
+} from "@/lib/utils/external-account-link-gate";
 
 type Props = {
   userId?: string;
@@ -64,6 +68,7 @@ type LinkAccountDraft = {
   connectionId: string;
   jellyfinUsername: string;
   jellyfinPassword: string;
+  embyMode: "LOCAL" | "CONNECT";
 };
 
 const DEFAULT_EXTERNAL_AUTH_RUNTIME_SETTINGS: ExternalAuthRuntimeSettings = {
@@ -142,6 +147,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     connectionId: "",
     jellyfinUsername: "",
     jellyfinPassword: "",
+    embyMode: "LOCAL",
   });
   const [linkAccountBusy, setLinkAccountBusy] = useState(false);
   const [linkAccountError, setLinkAccountError] = useState<string | null>(null);
@@ -551,6 +557,7 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     return {
       jellyfin: eligibleForProvider("JELLYFIN"),
       plex: eligibleForProvider("PLEX"),
+      emby: eligibleForProvider("EMBY"),
     };
   }, [externalAuthSettings, linkedAccounts]);
 
@@ -759,7 +766,12 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     if (!isVisibleExternalAccountProvider(provider)) {
       return;
     }
-    const connections = provider === "JELLYFIN" ? linkableConnections.jellyfin : linkableConnections.plex;
+    const connections =
+      provider === "JELLYFIN"
+        ? linkableConnections.jellyfin
+        : provider === "EMBY"
+          ? linkableConnections.emby
+          : linkableConnections.plex;
     setLinkingProvider(provider);
     setLinkAccountError(null);
     setLinkAccountDraft({
@@ -767,8 +779,9 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       connectionId: connections[0]?.id ?? "",
       jellyfinUsername: "",
       jellyfinPassword: "",
+      embyMode: "LOCAL",
     });
-  }, [linkableConnections.jellyfin, linkableConnections.plex]);
+  }, [linkableConnections.emby, linkableConnections.jellyfin, linkableConnections.plex]);
 
   const handleCancelLinkAccount = useCallback(() => {
     setLinkingProvider(null);
@@ -780,8 +793,16 @@ export function SettingsProfileContainer({ userId, username }: Props) {
   }, []);
 
   const handleLinkAccountConnectionChange = useCallback((connectionId: string) => {
-    setLinkAccountDraft((current) => ({ ...current, connectionId }));
-  }, []);
+    const connection = linkableConnections.emby.find((candidate) => candidate.id === connectionId);
+    setLinkAccountDraft((current) => ({
+      ...current,
+      connectionId,
+      embyMode:
+        current.provider === "EMBY"
+          ? effectiveEmbyLinkMode(current.embyMode, connection?.embyConnectEnabled === true)
+          : current.embyMode,
+    }));
+  }, [linkableConnections.emby]);
 
   const handleLinkAccountUsernameChange = useCallback((jellyfinUsername: string) => {
     setLinkAccountDraft((current) => ({ ...current, jellyfinUsername }));
@@ -806,7 +827,6 @@ export function SettingsProfileContainer({ userId, username }: Props) {
     ) {
       return;
     }
-
     setLinkAccountBusy(true);
     setLinkAccountError(null);
     try {
@@ -843,6 +863,69 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       setLinkAccountBusy(false);
     }
   }, [client, linkAccountDraft, linkingProvider, loadLinkedAccounts, setGlobalStatus, t]);
+
+  const handleSubmitEmbyLink = useCallback(async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (
+      linkingProvider !== "EMBY" ||
+      !linkAccountDraft.connectionId ||
+      !linkAccountDraft.jellyfinUsername.trim()
+    ) {
+      return;
+    }
+    const selectedConnection = linkableConnections.emby.find(
+      (connection) => connection.id === linkAccountDraft.connectionId,
+    );
+    const embyMode = effectiveEmbyLinkMode(
+      linkAccountDraft.embyMode,
+      selectedConnection?.embyConnectEnabled === true,
+    );
+
+    setLinkAccountBusy(true);
+    setLinkAccountError(null);
+    try {
+      const result = await client
+        .mutation<{ linkEmbyAccount?: LinkedAccount }, {
+          input: {
+            connectionId: string;
+            mode: "LOCAL" | "CONNECT";
+            username: string;
+            password: string;
+          };
+        }>(linkEmbyAccountMutation, {
+          input: {
+            connectionId: linkAccountDraft.connectionId,
+            mode: embyMode,
+            username: linkAccountDraft.jellyfinUsername.trim(),
+            password: linkAccountDraft.jellyfinPassword,
+          },
+        })
+        .toPromise();
+
+      if (result.error || !result.data?.linkEmbyAccount) {
+        throw result.error ?? new Error(t("profile.linkAccountFailed"));
+      }
+      setLinkingProvider(null);
+      await loadLinkedAccounts();
+      notifyExternalAccountInviteSourcesChanged();
+      setGlobalStatus(t("profile.linkAccountLinked"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("profile.linkAccountFailed");
+      setLinkAccountError(message);
+      setGlobalStatus(message);
+    } finally {
+      setLinkAccountDraft((current) => ({ ...current, jellyfinPassword: "" }));
+      setLinkAccountBusy(false);
+    }
+  }, [
+    client,
+    linkAccountDraft,
+    linkableConnections.emby,
+    linkingProvider,
+    loadLinkedAccounts,
+    setGlobalStatus,
+    t,
+  ]);
 
   const handleSubmitPlexLink = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -918,10 +1001,12 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       linkedAccountConnectionLabels={linkedAccountConnectionLabels}
       linkableJellyfinConnections={linkableConnections.jellyfin}
       linkablePlexConnections={linkableConnections.plex}
+      linkableEmbyConnections={linkableConnections.emby}
       linkingProvider={linkingProvider}
       linkAccountConnectionId={linkAccountDraft.connectionId}
       linkAccountUsername={linkAccountDraft.jellyfinUsername}
       linkAccountPassword={linkAccountDraft.jellyfinPassword}
+      linkAccountEmbyMode={linkAccountDraft.embyMode}
       linkAccountBusy={linkAccountBusy}
       linkAccountError={linkAccountError}
       loadingPasskeys={loadingPasskeys}
@@ -948,7 +1033,11 @@ export function SettingsProfileContainer({ userId, username }: Props) {
       onLinkAccountConnectionChange={handleLinkAccountConnectionChange}
       onLinkAccountUsernameChange={handleLinkAccountUsernameChange}
       onLinkAccountPasswordChange={handleLinkAccountPasswordChange}
+      onLinkAccountEmbyModeChange={(embyMode) =>
+        setLinkAccountDraft((current) => ({ ...current, embyMode }))
+      }
       onSubmitJellyfinLink={handleSubmitJellyfinLink}
+      onSubmitEmbyLink={handleSubmitEmbyLink}
       onSubmitPlexLink={handleSubmitPlexLink}
       onUnlinkExternalAccount={handleUnlinkExternalAccount}
     />

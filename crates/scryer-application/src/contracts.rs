@@ -923,6 +923,7 @@ pub struct DownloadClientMarkImportedRequest {
 pub struct IndexerDownloadClientMappingCatalog {
     pub clients: Vec<IndexerDownloadClientMappingClient>,
     pub indexers: Vec<IndexerDownloadClientMappingIndexer>,
+    pub provider_compatibility: Vec<IndexerDownloadClientProviderCompatibility>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -939,6 +940,14 @@ pub struct IndexerDownloadClientMappingIndexer {
     pub id: String,
     pub name: String,
     pub download_client_id: Option<String>,
+    pub protocol_families: Vec<String>,
+    pub supports_mapping: bool,
+    pub compatible_client_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexerDownloadClientProviderCompatibility {
+    pub provider_type: String,
     pub protocol_families: Vec<String>,
     pub supports_mapping: bool,
     pub compatible_client_ids: Vec<String>,

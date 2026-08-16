@@ -1196,6 +1196,139 @@ async fn manual_import_source_uses_retained_tracked_source_when_live_history_is_
 }
 
 #[tokio::test]
+async fn queued_manual_import_rejects_foreign_targets_before_consuming_or_queueing() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) =
+        bootstrap_with_cleanup_tracking(download_client, download_submissions, pending_releases);
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+    let bound_title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Bound Manual Import Title".to_string(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create bound title");
+    let foreign_title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Foreign Manual Import Title".to_string(),
+                facet: MediaFacet::Anime,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create foreign title");
+    let foreign_episode = scryer_domain::Episode {
+        id: Id::new().0,
+        title_id: foreign_title.id.clone(),
+        collection_id: None,
+        episode_type: scryer_domain::EpisodeType::Standard,
+        episode_number: Some("1".to_string()),
+        season_number: Some("1".to_string()),
+        episode_label: Some("S01E01".to_string()),
+        title: Some("Foreign Episode".to_string()),
+        air_date: None,
+        duration_seconds: Some(1440),
+        has_multi_audio: false,
+        has_subtitle: false,
+        is_filler: false,
+        is_recap: false,
+        absolute_number: None,
+        overview: None,
+        tvdb_id: None,
+        image_url: None,
+        monitored: true,
+        created_at: Utc::now(),
+    };
+    app.services
+        .catalog
+        .shows
+        .create_episode(foreign_episode.clone())
+        .await
+        .expect("create foreign episode");
+    let foreign_series_movie = app
+        .services
+        .catalog
+        .shows
+        .upsert_series_movie_link(test_series_movie_link(
+            &foreign_title.id,
+            "Foreign Manual Import Movie",
+            Some(2026),
+            None,
+            None,
+        ))
+        .await
+        .expect("create foreign series-movie link");
+    let selection = crate::ManualImportSelection {
+        id: Id::new().0,
+        actor_user_id: user.id.clone(),
+        title_id: bound_title.id.clone(),
+        source_identity: DownloadSourceIdentity {
+            client_id: Some("qbittorrent-primary".to_string()),
+            client_type: "qbittorrent".to_string(),
+            item_id: "foreign-target-selection".to_string(),
+        },
+        candidates: vec![crate::ManualImportSelectionCandidate {
+            id: "candidate-1".to_string(),
+            canonical_path: "/private/tmp/foreign-target-selection.mkv".to_string(),
+            quality: Some("1080p".to_string()),
+        }],
+    };
+    *import_repo.manual_import_selection.lock().await = Some(selection.clone());
+
+    for mapping in [
+        crate::ManualImportCandidateMapping {
+            candidate_id: "candidate-1".to_string(),
+            episode_id: Some(foreign_episode.id),
+            series_movie_link_id: None,
+        },
+        crate::ManualImportCandidateMapping {
+            candidate_id: "candidate-1".to_string(),
+            episode_id: None,
+            series_movie_link_id: Some(foreign_series_movie.id),
+        },
+    ] {
+        let error = app
+            .queue_manual_import_selection(&user, selection.id.clone(), vec![mapping])
+            .await
+            .expect_err("foreign target should be rejected before queueing");
+        assert!(
+            error.to_string().contains("does not belong to title"),
+            "unexpected validation error: {error}"
+        );
+    }
+
+    assert_eq!(
+        import_repo
+            .manual_import_selection_consume_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "scope validation must happen before consuming the selection"
+    );
+    assert!(import_repo.records.lock().await.is_empty());
+    assert_eq!(
+        import_repo
+            .manual_import_selection
+            .lock()
+            .await
+            .as_ref()
+            .map(|stored| stored.id.as_str()),
+        Some(selection.id.as_str()),
+        "rejected mappings must leave the selection available"
+    );
+}
+
+#[tokio::test]
 async fn queued_manual_import_reports_prior_automatic_import_after_source_cleanup() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
@@ -2102,6 +2235,141 @@ async fn download_queue_poller_retries_imported_cleanup_from_facet_routing_until
     })
     .await
     .expect("tracked imported item should disappear once cleanup succeeds");
+
+    token.cancel();
+    poller
+        .await
+        .expect("download queue poller should stop cleanly");
+}
+
+#[tokio::test]
+async fn external_failed_snapshot_dispatches_failure_worker_without_completed_rows() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client,
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let blocklist_repo = Arc::new(MockBlocklistRepo::default());
+    let app = base_app
+        .with_test_overrides(|services| services.with_blocklist_repo(blocklist_repo.clone()));
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary Weaver", "weaver").await;
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Failed External Snapshot".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie title");
+    let item_id = "weaver-external-failed-1";
+    let release_title = "Failed.External.Snapshot.2026.1080p.WEB-DL";
+    download_submissions
+        .record_submission(DownloadSubmission {
+            title_id: title.id.clone(),
+            purpose: crate::DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some(config.id.clone()),
+            download_client_type: "weaver".to_string(),
+            download_client_item_id: item_id.to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: Some(release_title.to_string()),
+            request_signature: None,
+            scope: SubmissionScope::Title,
+        })
+        .await
+        .expect("record failed download submission");
+
+    let (_command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(8);
+    let ingest = crate::tracked_downloads::TrackedDownloadSnapshotIngestHandle::new(snapshot_tx);
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(
+        crate::integration::start_download_queue_poller_with_options(
+            app.clone(),
+            token.child_token(),
+            tracked_download_rx,
+            snapshot_rx,
+            crate::integration::DownloadQueuePollerOptions {
+                interval: Duration::from_secs(60),
+                excluded_client_types: vec!["weaver".to_string()],
+                ..Default::default()
+            },
+        ),
+    );
+
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Downloading, 40);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = "weaver".to_string();
+    item.title_id = Some(title.id.clone());
+    item.title_name = release_title.to_string();
+    item.facet = Some("movie".to_string());
+    let tracked_id = crate::tracked_downloads::tracked_download_id_for_item(&item);
+    ingest
+        .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+            scope: crate::tracked_downloads::TrackedDownloadSnapshotScope::Delta,
+            items: vec![item.clone()],
+            completed_downloads: Vec::new(),
+            actor_id: None,
+        })
+        .await
+        .expect("publish initial downloading update");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if app
+                .runtime
+                .acquisition
+                .tracked_download_snapshot
+                .read()
+                .await
+                .get(&tracked_id)
+                .is_some_and(|metadata| metadata.state == TrackedDownloadState::Downloading)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("initial external snapshot should be tracked as downloading");
+
+    item.state = DownloadQueueState::Failed;
+    item.progress_percent = 100;
+    item.attention_reason = Some("download verification failed".to_string());
+    ingest
+        .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+            scope: crate::tracked_downloads::TrackedDownloadSnapshotScope::Delta,
+            items: vec![item],
+            completed_downloads: Vec::new(),
+            actor_id: None,
+        })
+        .await
+        .expect("publish failed-only external update");
+
+    let expected_source_title = crate::normalize_release_attempt_title(Some(release_title));
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if blocklist_repo.entries.lock().await.iter().any(|entry| {
+                entry.title_id == title.id && entry.source_title == expected_source_title
+            }) {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("failed-only external snapshot should run the failure worker");
 
     token.cancel();
     poller
@@ -5294,6 +5562,126 @@ async fn path_manual_import_can_target_series_movie_link() {
         .expect("manual import linked media file to series movie");
     assert_eq!(imported.role, MediaFileRole::Primary);
     assert_eq!(imported.episode_id, None);
+}
+
+#[tokio::test]
+async fn path_manual_import_rejects_another_title_folder_before_source_mutation() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) =
+        bootstrap_with_cleanup_tracking(download_client, download_submissions, pending_releases);
+    let media_files = Arc::new(MockMediaFileRepo::default());
+    let app = base_app.with_test_overrides(|services| {
+        services
+            .with_file_importer(Arc::new(CopyingFileImporter))
+            .with_media_files(media_files.clone())
+    });
+    app.services
+        .identity
+        .users
+        .create(user.clone())
+        .await
+        .expect("seed manual import actor");
+
+    let owner = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Fixture Owner".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create owner title");
+    let candidate = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Fixture Candidate".to_string(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create candidate title");
+    let import_paths = crate::import_workflow::resolve_import_paths(&app, &candidate)
+        .await
+        .expect("resolve import paths");
+    let candidate_folder = crate::effective_title_folder_path(
+        &import_paths.media_root,
+        &candidate,
+        &import_paths.folder_template,
+        None,
+    );
+    app.services
+        .catalog
+        .titles
+        .set_folder_path(
+            &owner.id,
+            &crate::stored_paths::path_to_stored_string(&candidate_folder),
+        )
+        .await
+        .expect("assign candidate destination to owner");
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_file = source_dir.path().join("Fixture.Candidate.2026.1080p.mkv");
+    std::fs::File::create(&source_file)
+        .expect("create source video")
+        .set_len(51 * 1024 * 1024)
+        .expect("size source video above sample threshold");
+    let source_size = std::fs::metadata(&source_file)
+        .expect("source metadata")
+        .len();
+
+    let error = crate::import_workflow::execute_manual_import(
+        &app,
+        &user,
+        "manual-import-folder-conflict",
+        &candidate.id,
+        None,
+        vec![ManualImportFileMapping {
+            file_path: source_file.to_string_lossy().into_owned(),
+            episode_id: None,
+            series_movie_link_id: None,
+            quality: Some("1080p".to_string()),
+        }],
+        Some(std::fs::canonicalize(source_dir.path()).expect("canonical source root")),
+    )
+    .await
+    .expect_err("manual import must reject another title's folder");
+
+    assert!(
+        error
+            .to_string()
+            .contains("already owned by title Fixture Owner")
+    );
+    assert_eq!(
+        std::fs::metadata(&source_file)
+            .expect("source remains")
+            .len(),
+        source_size
+    );
+    assert!(!candidate_folder.exists());
+    assert!(
+        media_files
+            .list_media_files_for_title(&candidate.id)
+            .await
+            .expect("list candidate media")
+            .is_empty()
+    );
+    let refreshed_candidate = app
+        .services
+        .catalog
+        .titles
+        .get_by_id(&candidate.id)
+        .await
+        .expect("load candidate title")
+        .expect("candidate title exists");
+    assert_eq!(refreshed_candidate.folder_path, None);
 }
 
 #[tokio::test]

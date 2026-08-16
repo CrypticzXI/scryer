@@ -3,8 +3,8 @@ use chrono::Utc;
 use scryer_domain::{ExternalId, MediaFacet};
 
 use crate::{
-    AnimeMapping, AnimeMovie, AppResult, DiscoveryTitle, EpisodeMetadata, MetadataGateway,
-    MovieMetadata, SeasonMetadata, SeriesMetadata, TitleMetadataUpdate,
+    AnimeMapping, AnimeMovie, AppResult, DiscoveryTitle, EpisodeMetadata, MetadataFieldUpdate,
+    MetadataGateway, MovieMetadata, SeasonMetadata, SeriesMetadata, TitleMetadataUpdate,
 };
 
 /// Result of hydrating a title's metadata from a metadata gateway.
@@ -65,6 +65,12 @@ pub fn rename_facet_settings(facet: &MediaFacet) -> RenameFacetSettings {
 
 fn non_empty(s: String) -> Option<String> {
     if s.trim().is_empty() { None } else { Some(s) }
+}
+
+fn original_language_update(language: Option<&str>) -> MetadataFieldUpdate<String> {
+    language
+        .and_then(crate::normalize_detected_audio_language_code)
+        .map_or(MetadataFieldUpdate::Unchanged, MetadataFieldUpdate::Set)
 }
 
 pub(crate) fn primary_anime_mapping(anime_mappings: &[AnimeMapping]) -> Option<&AnimeMapping> {
@@ -155,7 +161,7 @@ pub fn movie_to_hydration_result(movie: MovieMetadata, language: &str) -> Hydrat
         popularity: movie.popularity.filter(|value| value.is_finite()),
         canonical_tags: movie.canonical_tags,
         content_status: non_empty(movie.content_status),
-        language: non_empty(movie.language),
+        language: original_language_update(movie.original_language.as_deref()),
         first_aired: None,
         network: None,
         studio: non_empty(movie.studio),
@@ -197,7 +203,7 @@ pub fn series_to_hydration_result(series: SeriesMetadata, language: &str) -> Hyd
         },
         canonical_tags: series.canonical_tags,
         content_status: non_empty(series.content_status),
-        language: None,
+        language: original_language_update(series.original_language.as_deref()),
         first_aired: non_empty(series.first_aired),
         network: non_empty(series.network),
         studio: None,
@@ -303,6 +309,7 @@ mod tests {
             runtime_minutes: 24,
             poster_url: String::new(),
             background_url: None,
+            original_language: Some("jpn".to_string()),
             country: String::new(),
             canonical_tags: vec![],
             aliases: vec![],
@@ -374,6 +381,49 @@ mod tests {
                     value: "888008".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn series_hydration_sets_original_language_independently_of_display_locale() {
+        let mut series = test_series(vec![]);
+        series.original_language = Some("JA".to_string());
+
+        let result = series_to_hydration_result(series, "eng");
+
+        assert_eq!(
+            result.metadata_update.language,
+            MetadataFieldUpdate::Set("jpn".to_string())
+        );
+        assert_eq!(
+            result.metadata_update.metadata_language.as_deref(),
+            Some("eng")
+        );
+    }
+
+    #[test]
+    fn series_hydration_preserves_language_when_original_language_is_missing() {
+        let mut series = test_series(vec![]);
+        series.original_language = None;
+
+        let result = series_to_hydration_result(series, "eng");
+
+        assert_eq!(
+            result.metadata_update.language,
+            MetadataFieldUpdate::Unchanged
+        );
+    }
+
+    #[test]
+    fn series_hydration_preserves_language_when_original_language_is_invalid() {
+        let mut series = test_series(vec![]);
+        series.original_language = Some("und".to_string());
+
+        let result = series_to_hydration_result(series, "eng");
+
+        assert_eq!(
+            result.metadata_update.language,
+            MetadataFieldUpdate::Unchanged
         );
     }
 

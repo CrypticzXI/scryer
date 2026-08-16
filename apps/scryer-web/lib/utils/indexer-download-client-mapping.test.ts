@@ -9,7 +9,12 @@ import type {
 } from "../types/index.ts";
 import {
   AUTOMATIC_DOWNLOAD_CLIENT_ID,
+  beginIndexerDownloadClientCatalogRequest,
+  completeIndexerDownloadClientCatalogRequest,
+  failIndexerDownloadClientCatalogRequest,
+  getIndexerDownloadClientDraftMappingViewModel,
   getIndexerDownloadClientMappingViewModel,
+  isLatestIndexerDownloadClientCatalogRequest,
   isManagementOnlyIndexer,
   updateIndexerDownloadClientMapping,
   updatePendingIndexerMappingIds,
@@ -50,6 +55,14 @@ function catalog(
 ): IndexerDownloadClientMappingCatalog {
   return {
     clients,
+    providerCompatibility: [
+      {
+        providerType: "newznab",
+        protocolFamilies: ["usenet"],
+        supportsMapping: true,
+        compatibleClientIds: ["usenet-a", "usenet-disabled"],
+      },
+    ],
     indexers: [
       {
         id: directIndexer.id,
@@ -73,6 +86,74 @@ test("mapping choices include only compatible clients and Automatic first", () =
     "usenet-disabled",
   ]);
   assert.equal(model.options.some((option) => option.id === "torrent-a"), false);
+});
+
+test("create and edit drafts use provider compatibility before an indexer row exists", () => {
+  const automatic = getIndexerDownloadClientDraftMappingViewModel(
+    "newznab",
+    null,
+    catalog(),
+  );
+  assert.equal(automatic.selectedId, AUTOMATIC_DOWNLOAD_CLIENT_ID);
+  assert.deepEqual(
+    automatic.options.map((option) => option.id),
+    ["usenet-a", "usenet-disabled"],
+  );
+
+  const incompatible = getIndexerDownloadClientDraftMappingViewModel(
+    "newznab",
+    "torrent-a",
+    catalog(),
+  );
+  assert.equal(incompatible.invalidReason, "incompatible");
+  assert.equal(incompatible.options[0]?.id, "torrent-a");
+
+  const unsupportedCatalog = catalog();
+  unsupportedCatalog.providerCompatibility.push({
+    providerType: "prowlarr",
+    protocolFamilies: [],
+    supportsMapping: false,
+    compatibleClientIds: [],
+  });
+  assert.equal(
+    getIndexerDownloadClientDraftMappingViewModel(
+      "prowlarr",
+      null,
+      unsupportedCatalog,
+    ).isNotApplicable,
+    true,
+  );
+});
+
+test("a fresh first-visit catalog exposes newly created Weaver in table and form controls", () => {
+  const firstVisitCatalog = catalog();
+  firstVisitCatalog.clients.push({
+    id: "weaver",
+    name: "Weaver",
+    clientType: "weaver",
+    isEnabled: true,
+    healthStatus: "healthy",
+  });
+  firstVisitCatalog.providerCompatibility[0]!.compatibleClientIds.push("weaver");
+  firstVisitCatalog.indexers[0]!.compatibleClientIds.push("weaver");
+
+  const tableModel = getIndexerDownloadClientMappingViewModel(
+    directIndexer,
+    firstVisitCatalog,
+  );
+  const formModel = getIndexerDownloadClientDraftMappingViewModel(
+    "newznab",
+    null,
+    firstVisitCatalog,
+  );
+  assert.equal(
+    tableModel.options.some((option) => option.id === "weaver"),
+    true,
+  );
+  assert.equal(
+    formModel.options.some((option) => option.id === "weaver"),
+    true,
+  );
 });
 
 test("compatible disabled clients remain selectable and are marked disabled", () => {
@@ -150,9 +231,32 @@ test("pending state is row-scoped and mapping updates can roll back", () => {
   assert.equal(updatePendingIndexerMappingIds(pending, directIndexer.id, false).has("other-row"), true);
 });
 
+test("catalog refresh retains successful data and rejects superseded responses", () => {
+  const ready = completeIndexerDownloadClientCatalogRequest(catalog());
+  const refreshing = beginIndexerDownloadClientCatalogRequest(ready);
+  assert.equal(refreshing.status, "refreshing");
+  assert.equal(refreshing.catalog, ready.catalog);
+
+  const failed = failIndexerDownloadClientCatalogRequest(refreshing, "offline");
+  assert.equal(failed.status, "error");
+  assert.equal(failed.catalog, ready.catalog);
+  assert.equal(failed.error, "offline");
+  assert.equal(isLatestIndexerDownloadClientCatalogRequest(2, 3), false);
+  assert.equal(isLatestIndexerDownloadClientCatalogRequest(3, 3), true);
+
+  const cold = beginIndexerDownloadClientCatalogRequest({
+    catalog: null,
+    status: "idle",
+    error: null,
+  });
+  assert.equal(cold.status, "loading");
+  assert.equal(cold.catalog, null);
+});
+
 test("mapping catalog and deletion copy carry the integration contract", () => {
   assert.equal(indexerDownloadClientMappingCatalogQuery.includes("indexerDownloadClientMappingCatalog"), true);
   assert.equal(indexerDownloadClientMappingCatalogQuery.includes("compatibleClientIds"), true);
+  assert.equal(indexerDownloadClientMappingCatalogQuery.includes("providerCompatibility"), true);
   assert.equal(en["settings.downloadClientDeleteConfirmDescription"]?.includes("Automatic"), true);
   assert.equal(en["status.downloadClientDeletedWithMappings"]?.includes("{{count}}"), true);
 });

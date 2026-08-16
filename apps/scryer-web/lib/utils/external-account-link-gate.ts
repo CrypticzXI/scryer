@@ -21,3 +21,10 @@ export function canSubmitJellyfinLink({
 }): boolean {
   return Boolean(connectionId) && username.trim().length > 0 && !busy;
 }
+
+export function effectiveEmbyLinkMode(
+  requestedMode: "LOCAL" | "CONNECT",
+  connectEnabled: boolean,
+): "LOCAL" | "CONNECT" {
+  return requestedMode === "CONNECT" && connectEnabled ? "CONNECT" : "LOCAL";
+}

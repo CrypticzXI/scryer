@@ -15,8 +15,10 @@ export function findSchemaCompatibilityChanges(oldSdl, newSdl) {
       (change) =>
         !(
           change.type === "DIRECTIVE_LOCATION_REMOVED" &&
-          change.description ===
-            "DIRECTIVE_DEFINITION was removed from deprecated."
+          (change.description ===
+            "DIRECTIVE_DEFINITION was removed from deprecated." ||
+            change.description ===
+              "DIRECTIVE_DEFINITION was removed from @deprecated.")
         ),
     ),
     dangerous: findDangerousChanges(oldSchema, newSchema),

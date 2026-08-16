@@ -819,6 +819,12 @@ pub(crate) fn build_title_history_filter_sql(
                             DomainEventType::ReleaseBlocklisted.as_str().into(),
                         ));
                     }
+                    TitleHistoryEventType::Scanned => {
+                        parts.push("event_type = {}".to_string());
+                        args.push(SqlArg::Text(
+                            DomainEventType::MediaFileAnalyzed.as_str().into(),
+                        ));
+                    }
                     TitleHistoryEventType::Imported => {
                         parts.push("event_type = {}".to_string());
                         args.push(SqlArg::Text(
@@ -924,6 +930,7 @@ pub(crate) const TITLE_HISTORY_PAGE_DOMAIN_EVENT_TYPES: &[DomainEventType] = &[
     DomainEventType::DownloadFailed,
     DomainEventType::DownloadIgnored,
     DomainEventType::ReleaseBlocklisted,
+    DomainEventType::MediaFileAnalyzed,
     DomainEventType::MediaFileUpgraded,
     DomainEventType::MediaFileDeleted,
     DomainEventType::MediaFileRenamed,

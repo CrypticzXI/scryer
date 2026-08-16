@@ -961,6 +961,12 @@ const fr: LocaleDictionary = {
     "L'importation manuelle est disponible pour les éléments de file d'attente nécessitant une attention.",
   "queue.releaseTitle": "Version",
   "queue.blockReason": "Raison du blocage",
+  "queue.blockReasonFallbackUnassigned":
+    "L’importation automatique n’a pas pu identifier un titre de la bibliothèque. Attribuez un titre pour continuer.",
+  "queue.blockReasonFallbackEpisodic":
+    "L’importation automatique n’a pas pu déterminer une correspondance unique de saison et d’épisode. Ouvrez l’importation manuelle et attribuez la saison et l’épisode corrects.",
+  "queue.blockReasonFallbackReview":
+    "L’importation automatique nécessite une vérification. Ouvrez l’importation manuelle et confirmez la correspondance du fichier pour continuer.",
   "queue.errorCode": "Code d’erreur",
   "queue.showDetails": "Afficher les détails",
   "queue.hideDetails": "Masquer les détails",

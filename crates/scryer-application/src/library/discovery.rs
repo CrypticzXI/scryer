@@ -5,9 +5,10 @@ use std::time::{Instant, UNIX_EPOCH};
 use super::*;
 #[cfg(test)]
 use crate::library_filename_parser::library_title_walk;
+#[cfg(test)]
+use crate::library_filename_parser::{LibraryQueryEvidence, parse_library_filename};
 pub(crate) use crate::library_filename_parser::{
-    LibraryQueryEvidence, LibraryTitleWalk, normalize_folder_name, parse_library_filename,
-    strip_year_suffix,
+    LibraryTitleWalk, normalize_folder_name, strip_year_suffix,
 };
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use scryer_domain::VIDEO_EXTENSIONS;
@@ -91,18 +92,7 @@ pub(crate) type MovieTopLevelEntryBatchReceiver =
     tokio::sync::mpsc::Receiver<AppResult<Vec<MovieTopLevelEntry>>>;
 
 #[cfg(test)]
-pub(crate) fn extract_library_queries(
-    path: &str,
-    library_root: &str,
-) -> (Vec<String>, Option<u32>) {
-    let evidence = extract_library_query_evidence(path, library_root);
-    (evidence.queries, evidence.year)
-}
-
-pub(crate) fn extract_library_query_evidence(
-    path: &str,
-    library_root: &str,
-) -> LibraryQueryEvidence {
+fn extract_library_query_evidence(path: &str, library_root: &str) -> LibraryQueryEvidence {
     parse_library_filename(
         &crate::library_filename_parser::LibraryFilenameParseInput::title_only(
             &stored_path_to_path_buf(path),
@@ -110,6 +100,15 @@ pub(crate) fn extract_library_query_evidence(
         ),
     )
     .query_evidence
+}
+
+#[cfg(test)]
+pub(crate) fn extract_library_queries(
+    path: &str,
+    library_root: &str,
+) -> (Vec<String>, Option<u32>) {
+    let evidence = extract_library_query_evidence(path, library_root);
+    (evidence.queries, evidence.year)
 }
 
 pub(crate) fn elapsed_ms_u64(started_at: Instant) -> u64 {
@@ -124,11 +123,11 @@ pub(crate) async fn list_child_directories(root: &Path) -> AppResult<Vec<PathBuf
         .collect())
 }
 
-pub(crate) async fn list_series_loose_root_files(root: &Path) -> AppResult<Vec<LibraryFile>> {
+pub(crate) async fn count_series_loose_root_files(root: &Path) -> AppResult<usize> {
     let mut entries = tokio::fs::read_dir(root).await.map_err(|error| {
         AppError::Repository(format!("failed to read {}: {error}", root.display()))
     })?;
-    let mut results = Vec::new();
+    let mut count = 0usize;
 
     while let Some(entry) = entries.next_entry().await.map_err(|error| {
         AppError::Repository(format!("failed to read {}: {error}", root.display()))
@@ -148,21 +147,10 @@ pub(crate) async fn list_series_loose_root_files(root: &Path) -> AppResult<Vec<L
             continue;
         }
 
-        results.push(LibraryFile {
-            path: path_to_stored_string(&path),
-            display_name: path
-                .file_stem()
-                .map(|value| value.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            nfo_path: None,
-            size_bytes: None,
-            source_signature_scheme: None,
-            source_signature_value: None,
-        });
+        count = count.saturating_add(1);
     }
 
-    results.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(results)
+    Ok(count)
 }
 
 pub(crate) async fn stream_child_directories_batched(
@@ -232,6 +220,7 @@ pub(crate) async fn list_movie_top_level_entries(
         AppError::Repository(format!("failed to read {}: {error}", root.display()))
     })?;
     let mut results = Vec::new();
+    let mut skipped_loose_media = 0_usize;
 
     while let Some(entry) = entries.next_entry().await.map_err(|error| {
         AppError::Repository(format!("failed to read {}: {error}", root.display()))
@@ -253,11 +242,16 @@ pub(crate) async fn list_movie_top_level_entries(
                 .is_some_and(is_ignored_media_extra_file_name)
             && is_allowed_video_path(&path)
         {
-            results.push(MovieTopLevelEntry {
-                path,
-                is_dir: false,
-            });
+            skipped_loose_media += 1;
         }
+    }
+
+    if skipped_loose_media > 0 {
+        tracing::warn!(
+            root = %root.display(),
+            files = skipped_loose_media,
+            "skipping loose media files in movie library root"
+        );
     }
 
     results.sort_by(|left, right| left.path.cmp(&right.path));
@@ -283,6 +277,7 @@ pub(crate) async fn stream_movie_top_level_entries_batched(
                 AppError::Repository(format!("failed to read {}: {error}", root.display()))
             })?;
             let mut batch = Vec::with_capacity(batch_size.min(256));
+            let mut skipped_loose_media = 0_usize;
 
             while let Some(entry) = entries.next_entry().await.map_err(|error| {
                 AppError::Repository(format!("failed to read {}: {error}", root.display()))
@@ -301,10 +296,7 @@ pub(crate) async fn stream_movie_top_level_entries_batched(
                         .is_some_and(is_ignored_media_extra_file_name)
                     && is_allowed_video_path(&path)
                 {
-                    batch.push(MovieTopLevelEntry {
-                        path,
-                        is_dir: false,
-                    });
+                    skipped_loose_media += 1;
                 }
 
                 if batch.len() >= batch_size {
@@ -317,6 +309,14 @@ pub(crate) async fn stream_movie_top_level_entries_batched(
 
             if !batch.is_empty() {
                 let _ = sender.send(Ok(batch)).await;
+            }
+
+            if skipped_loose_media > 0 {
+                tracing::warn!(
+                    root = %root.display(),
+                    files = skipped_loose_media,
+                    "skipping loose media files in movie library root"
+                );
             }
 
             Ok::<(), AppError>(())
@@ -874,11 +874,7 @@ mod tests {
                     .to_string_lossy()
                     .to_string())
                 .collect::<Vec<_>>(),
-            vec![
-                "Extras".to_string(),
-                "Movie A".to_string(),
-                "Movie.B.2024.mkv".to_string(),
-            ]
+            vec!["Extras".to_string(), "Movie A".to_string(),]
         );
     }
 
@@ -914,7 +910,7 @@ mod tests {
                     .to_string_lossy()
                     .to_string())
                 .collect::<Vec<_>>(),
-            vec!["Movie A".to_string(), "Movie.B.2024.mkv".to_string()]
+            vec!["Movie A".to_string()]
         );
     }
 

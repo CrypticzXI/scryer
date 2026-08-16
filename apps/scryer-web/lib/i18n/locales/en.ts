@@ -1434,6 +1434,12 @@ const en: LocaleDictionary = {
     "Manual import is available for attention-required queue items.",
   "queue.releaseTitle": "Release",
   "queue.blockReason": "Block Reason",
+  "queue.blockReasonFallbackUnassigned":
+    "Automatic import could not identify a library title. Assign a title to continue.",
+  "queue.blockReasonFallbackEpisodic":
+    "Automatic import could not determine a unique season and episode mapping. Open Manual Import and assign the correct season and episode.",
+  "queue.blockReasonFallbackReview":
+    "Automatic import needs operator review. Open Manual Import and confirm the file mapping to continue.",
   "queue.errorCode": "Error Code",
   "queue.showDetails": "Show details",
   "queue.hideDetails": "Hide details",
@@ -1595,6 +1601,12 @@ const en: LocaleDictionary = {
   "settings.indexerDownloadClient": "Download client",
   "settings.indexerDownloadClientLabel": "Download client for {{name}}",
   "settings.indexerDownloadClientAutomatic": "Automatic",
+  "settings.indexerDownloadClientLoading": "Loading download clients…",
+  "settings.indexerDownloadClientLoadRetry": "Retry loading download clients",
+  "settings.indexerDownloadClientCatalogStale":
+    "Download-client options may be out of date.",
+  "settings.indexerDownloadClientSelectionInvalid":
+    "Choose Automatic or a download client compatible with this indexer.",
   "settings.indexerDownloadClientNotApplicable": "Not applicable",
   "settings.indexerDownloadClientDisabled": "Disabled",
   "settings.indexerDownloadClientDisabledWarning":
@@ -3307,6 +3319,8 @@ const en: LocaleDictionary = {
 
   "history.title": "History",
   "history.empty": "No history events",
+  "history.loadError": "History could not be loaded.",
+  "history.retry": "Retry",
   "history.event": "Event",
   "history.titleColumn": "Title",
   "history.sourceTitle": "Source Title",
@@ -3318,6 +3332,7 @@ const en: LocaleDictionary = {
   "history.grabbed": "Grabbed",
   "history.downloadFailed": "Download Failed",
   "history.blocklisted": "Blocklisted",
+  "history.scanned": "Scanned",
   "history.imported": "Imported",
   "history.importFailed": "Import Failed",
   "history.importSkipped": "Import Skipped",

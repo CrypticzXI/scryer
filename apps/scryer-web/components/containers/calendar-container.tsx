@@ -1,7 +1,7 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useClient } from "urql";
 import { calendarEpisodesQuery, librariesQuery } from "@/lib/graphql/queries";
-import { FACETS_BY_ID } from "@/lib/facets/registry";
+import { facetById } from "@/lib/facets/registry";
 import type { OverviewTitleTarget, ViewId } from "@/components/root/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useGlobalStatus } from "@/lib/context/global-status-context";
@@ -114,7 +114,7 @@ export const CalendarContainer = memo(function CalendarContainer({
 
   const handleCalendarEpisodeClick = useCallback(
     (episode: CalendarEpisodeItem) => {
-      const facet = FACETS_BY_ID.get(episode.titleFacet as import("@/lib/types/titles").Facet);
+      const facet = facetById(episode.titleFacet.toUpperCase());
       if (!facet || !onOpenOverview) return;
       onOpenOverview(
         facet.viewId as ViewId,
@@ -124,7 +124,7 @@ export const CalendarContainer = memo(function CalendarContainer({
           libraryId: episode.libraryId,
           librarySlug: episode.librarySlug ?? null,
         },
-        episode.id,
+        facet.id === "MOVIE" ? undefined : episode.id,
       );
     },
     [onOpenOverview],

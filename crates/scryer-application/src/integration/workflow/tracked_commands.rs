@@ -171,7 +171,6 @@ enum TrackedDownloadSnapshotDispatch {
     Seen {
         completed_lookup: crate::completed_download_handler::CompletedDownloadLookup,
     },
-    None,
 }
 
 async fn publish_download_queue_source_projection(
@@ -846,8 +845,14 @@ async fn process_tracked_download_snapshot(
                             runtime.tracker.find(id).is_some_and(|td| {
                                 td.is_trackable
                                     && !td.state.is_terminal()
-                                    && !td.waiting_for_completed_history
-                                    && completed_lookup.matches_tracked_download(td)
+                                    && match td.state {
+                                        TrackedDownloadState::FailedPending => true,
+                                        TrackedDownloadState::ImportPending => {
+                                            !td.waiting_for_completed_history
+                                                && completed_lookup.matches_tracked_download(td)
+                                        }
+                                        _ => false,
+                                    }
                             })
                         })
                         .cloned()
@@ -855,7 +860,6 @@ async fn process_tracked_download_snapshot(
                     runtime.tracked_work_drain =
                         TrackedDownloadWorkDrain::new(trackable_ids, completed_lookup);
                 }
-                TrackedDownloadSnapshotDispatch::None => {}
             }
         }
 
@@ -966,7 +970,6 @@ async fn process_external_tracked_download_snapshot_update(
         completed_downloads,
         actor_id: _,
     } = update;
-    let has_completed_downloads = !completed_downloads.is_empty();
     let completed_lookup =
         crate::completed_download_handler::CompletedDownloadLookup::from_recent_downloads(
             completed_downloads,
@@ -988,12 +991,8 @@ async fn process_external_tracked_download_snapshot_update(
         &projection,
         TrackedDownloadSnapshotProjection::Publish { .. }
     );
-    let dispatch = if has_completed_downloads {
-        TrackedDownloadSnapshotDispatch::Seen {
-            completed_lookup: completed_lookup.clone(),
-        }
-    } else {
-        TrackedDownloadSnapshotDispatch::None
+    let dispatch = TrackedDownloadSnapshotDispatch::Seen {
+        completed_lookup: completed_lookup.clone(),
     };
 
     process_tracked_download_snapshot(

@@ -34,6 +34,73 @@ pub fn stored_path_to_display_string(stored: &str) -> String {
         .into_owned()
 }
 
+pub fn folder_path_identity_key(path: &str) -> Option<String> {
+    folder_path_identity_key_for_platform(path, cfg!(windows))
+}
+
+pub fn folder_paths_match(left: &str, right: &str) -> bool {
+    match (
+        folder_path_identity_key(left),
+        folder_path_identity_key(right),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+pub(crate) fn stored_path_is_within_folder(folder: &str, path: &str) -> bool {
+    if cfg!(windows) {
+        let Some(folder) = folder_path_identity_key(folder) else {
+            return false;
+        };
+        let Some(path) = folder_path_identity_key(path) else {
+            return false;
+        };
+        return path == folder
+            || path
+                .strip_prefix(&folder)
+                .is_some_and(|suffix| suffix.starts_with('/'));
+    }
+
+    stored_path_to_path_buf(path).starts_with(stored_path_to_path_buf(folder))
+}
+
+fn folder_path_identity_key_for_platform(path: &str, windows: bool) -> Option<String> {
+    let decoded = stored_path_to_path_buf(path);
+    if decoded.as_os_str().is_empty() {
+        return None;
+    }
+
+    if !windows {
+        let normalized = decoded.components().collect::<PathBuf>();
+        return Some(path_to_stored_string(normalized));
+    }
+
+    let display = decoded.to_string_lossy();
+    let mut normalized = String::with_capacity(display.len());
+    let mut previous_was_separator = false;
+    for character in display.chars() {
+        let is_separator = character == '/' || character == '\\';
+        if is_separator {
+            if !previous_was_separator {
+                normalized.push('/');
+            }
+        } else {
+            normalized.push(character);
+        }
+        previous_was_separator = is_separator;
+    }
+
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        if normalized.len() == 3 && normalized.as_bytes().get(1) == Some(&b':') {
+            break;
+        }
+        normalized.pop();
+    }
+
+    Some(normalized.to_lowercase())
+}
+
 #[cfg(unix)]
 fn encode_path(path: &Path) -> String {
     encode_percent_bytes(path.as_os_str().as_bytes(), STORED_PATH_UNIX_PREFIX)
@@ -235,6 +302,59 @@ mod tests {
             stored_path_to_display_string(stored),
             "C:/Media/\u{FFFD}.mkv"
         );
+    }
+
+    #[test]
+    fn folder_identity_normalizes_separators_and_trailing_separators() {
+        assert_eq!(
+            folder_path_identity_key_for_platform("/library//Show/", false),
+            Some("/library/Show".to_string())
+        );
+        assert_eq!(
+            folder_path_identity_key_for_platform(r"C:\\Media\\Show\\", true),
+            Some("c:/media/show".to_string())
+        );
+    }
+
+    #[test]
+    fn folder_identity_preserves_case_except_on_windows() {
+        assert_ne!(
+            folder_path_identity_key_for_platform("/library/Case Split Fixture", false),
+            folder_path_identity_key_for_platform("/library/CASE SPLIT FIXTURE", false)
+        );
+        assert_eq!(
+            folder_path_identity_key_for_platform(r"C:\Media\Case Split Fixture", true),
+            folder_path_identity_key_for_platform(r"c:/media/CASE SPLIT FIXTURE", true)
+        );
+    }
+
+    #[test]
+    fn posix_folder_identity_preserves_backslashes_and_whitespace() {
+        assert_ne!(
+            folder_path_identity_key_for_platform(r"/library/Show\Name", false),
+            folder_path_identity_key_for_platform("/library/Show/Name", false)
+        );
+        assert_ne!(
+            folder_path_identity_key_for_platform("/library/Show ", false),
+            folder_path_identity_key_for_platform("/library/Show", false)
+        );
+    }
+
+    #[test]
+    fn folder_containment_obeys_native_case_rules() {
+        let owned = "/library/CASE SPLIT FIXTURE";
+        assert!(stored_path_is_within_folder(
+            owned,
+            "/library/CASE SPLIT FIXTURE/Season 01/E01.mkv"
+        ));
+        assert_eq!(
+            stored_path_is_within_folder(owned, "/library/Case Split Fixture/Season 01/E01.mkv"),
+            cfg!(windows)
+        );
+        assert!(!stored_path_is_within_folder(
+            owned,
+            "/library/CASE SPLIT FIXTURE 2/E01.mkv"
+        ));
     }
 
     #[cfg(windows)]

@@ -920,6 +920,8 @@ pub struct CalendarEpisode {
     pub season_number: Option<String>,
     pub episode_number: Option<String>,
     pub episode_title: Option<String>,
+    pub overview: Option<String>,
+    pub image_url: Option<String>,
     pub air_date: Option<String>,
     pub monitored: bool,
 }
@@ -1108,6 +1110,7 @@ pub struct NewIndexerConfig {
     pub enable_interactive_search: bool,
     pub enable_auto_search: bool,
     pub indexer_proxy_config_id: Option<String>,
+    pub download_client_id: Option<String>,
     pub config_json: Option<String>,
 }
 
@@ -1890,6 +1893,7 @@ pub enum TitleHistoryEventType {
     DownloadFailed,
     Blocklisted,
     DownloadCompleted,
+    Scanned,
     Imported,
     ImportFailed,
     ImportSkipped,
@@ -1909,6 +1913,7 @@ impl TitleHistoryEventType {
             Self::DownloadFailed => "download_failed",
             Self::Blocklisted => "blocklisted",
             Self::DownloadCompleted => "download_completed",
+            Self::Scanned => "scanned",
             Self::Imported => "imported",
             Self::ImportFailed => "import_failed",
             Self::ImportSkipped => "import_skipped",
@@ -1928,6 +1933,7 @@ impl TitleHistoryEventType {
             "download_failed" => Some(Self::DownloadFailed),
             "blocklisted" => Some(Self::Blocklisted),
             "download_completed" => Some(Self::DownloadCompleted),
+            "scanned" => Some(Self::Scanned),
             "imported" => Some(Self::Imported),
             "import_failed" => Some(Self::ImportFailed),
             "import_skipped" => Some(Self::ImportSkipped),
@@ -1947,9 +1953,12 @@ impl TitleHistoryEventType {
         Self::DownloadFailed,
         Self::Blocklisted,
         Self::DownloadCompleted,
+        Self::Scanned,
         Self::Imported,
         Self::ImportFailed,
         Self::ImportSkipped,
+        Self::FileUpgraded,
+        Self::FileRecycled,
         Self::FileDeleted,
         Self::FileRenamed,
         Self::DownloadIgnored,
@@ -2584,6 +2593,8 @@ pub struct MediaFileDeletedEventData {
 pub struct MediaFileUpgradedEventData {
     pub title: TitleContextSnapshot,
     pub media_updates: Vec<MediaPathUpdate>,
+    #[serde(default)]
+    pub episode_ids: Vec<String>,
     pub previous_file_id: Option<String>,
     pub current_file_id: Option<String>,
     pub old_score: Option<i32>,
@@ -3318,14 +3329,14 @@ impl MediaServerProvider {
     }
 
     pub fn supports_external_auth(&self) -> bool {
-        matches!(self, Self::Jellyfin | Self::Plex)
+        matches!(self, Self::Jellyfin | Self::Plex | Self::Emby)
     }
 
     pub fn external_account_provider(&self) -> Option<ExternalAccountProvider> {
         match self {
             Self::Jellyfin => Some(ExternalAccountProvider::Jellyfin),
             Self::Plex => Some(ExternalAccountProvider::Plex),
-            Self::Emby => None,
+            Self::Emby => Some(ExternalAccountProvider::Emby),
         }
     }
 }
@@ -3343,7 +3354,7 @@ pub struct MediaServerDefaultLibraryGrant {
     pub permissions: LibraryPermissionMask,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MediaServerConnection {
     pub id: String,
     pub provider: MediaServerProvider,
@@ -3356,10 +3367,38 @@ pub struct MediaServerConnection {
     pub default_app_permissions: AppPermissionMask,
     pub default_library_grants: Vec<MediaServerDefaultLibraryGrant>,
     pub machine_id: Option<String>,
+    #[serde(default, skip_serializing)]
     pub api_key: Option<String>,
+    pub emby_server_id: Option<String>,
+    pub emby_connect_enabled: bool,
     pub path_mappings: Vec<MediaServerPathMapping>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for MediaServerConnection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MediaServerConnection")
+            .field("id", &self.id)
+            .field("provider", &self.provider)
+            .field("display_name", &self.display_name)
+            .field("base_url", &self.base_url)
+            .field("enabled", &self.enabled)
+            .field("login_enabled", &self.login_enabled)
+            .field("linking_enabled", &self.linking_enabled)
+            .field("auto_add_enabled", &self.auto_add_enabled)
+            .field("default_app_permissions", &self.default_app_permissions)
+            .field("default_library_grants", &self.default_library_grants)
+            .field("machine_id", &self.machine_id)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("emby_server_id", &self.emby_server_id)
+            .field("emby_connect_enabled", &self.emby_connect_enabled)
+            .field("path_mappings", &self.path_mappings)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
 }
 
 impl MediaServerConnection {
@@ -3375,6 +3414,7 @@ impl MediaServerConnection {
 pub enum ExternalAccountProvider {
     Plex,
     Jellyfin,
+    Emby,
 }
 
 impl ExternalAccountProvider {
@@ -3382,6 +3422,7 @@ impl ExternalAccountProvider {
         match self {
             Self::Plex => "plex",
             Self::Jellyfin => "jellyfin",
+            Self::Emby => "emby",
         }
     }
 
@@ -3389,6 +3430,7 @@ impl ExternalAccountProvider {
         match value.trim().to_ascii_lowercase().as_str() {
             "plex" => Some(Self::Plex),
             "jellyfin" => Some(Self::Jellyfin),
+            "emby" => Some(Self::Emby),
             _ => None,
         }
     }

@@ -70,6 +70,7 @@ async fn import_series_download(
         specials_folder_template,
     } = resolve_import_paths(app, title).await?;
     let full_folder_path = effective_title_folder_path(&media_root, title, &folder_template, None);
+    ensure_import_title_folder_available(app, title, &full_folder_path).await?;
 
     let quality_profile = resolve_import_quality_profile(app, title).await?;
 
@@ -164,7 +165,7 @@ async fn import_series_download(
     }
 
     if imported_count > 0 {
-        persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
+        persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
         write_series_sidecars(app, title, &full_folder_path, nfo_enabled).await;
     }
 
@@ -600,6 +601,31 @@ async fn cleanup_superseded_episode_incumbents(
         }
     }
 }
+fn ambiguous_obfuscated_episode_message(
+    source_video: &Path,
+    completed: &CompletedDownload,
+) -> Option<String> {
+    let file_info = parsed_release_from_file_stem(source_video);
+    if has_usable_release_title_signal(&file_info) {
+        return None;
+    }
+
+    let release_info = normalize_release_title_signal(parse_release_metadata(&completed.name));
+    let episode = release_info.episode.as_ref()?;
+    if episode.season.is_some() {
+        return None;
+    }
+    let episode_number = episode
+        .episode_numbers
+        .first()
+        .copied()
+        .or(episode.absolute_episode)
+        .or_else(|| episode.absolute_episode_numbers.first().copied())?;
+
+    Some(format!(
+        "Automatic import could not choose a season for episode {episode_number}: the release name does not include a season and the downloaded filename is obfuscated. Open Manual Import and assign the correct season and episode."
+    ))
+}
 /// Import a single episode video file: parse, gate, import, and link.
 #[expect(
     clippy::too_many_arguments,
@@ -641,7 +667,11 @@ async fn import_single_episode_file(
                 "skipping file with no parseable episode info"
             );
             return Ok(EpisodeImportOutcome::Skipped {
-                message: "file has no parseable episode info".to_string(),
+                message: ambiguous_obfuscated_episode_message(source_video, completed)
+                    .unwrap_or_else(|| {
+                        "Automatic import could not determine a season and episode from the downloaded file. Open Manual Import and assign the correct season and episode."
+                            .to_string()
+                    }),
                 reason_code: None,
                 skip_reason: Some(ImportSkipReason::UnparseableEpisode),
                 episode_ids: Vec::new(),
@@ -702,7 +732,11 @@ async fn import_single_episode_file(
     {
         return Ok(EpisodeImportOutcome::Rejected {
             rejection: crate::post_download_gate::ImportedFileRejection {
-                message: "file resolves to episode(s) outside the grabbed release".to_string(),
+                message: ambiguous_obfuscated_episode_message(source_video, completed)
+                    .unwrap_or_else(|| {
+                        "Automatic import resolved the downloaded file to episode(s) outside the grabbed release. Open Manual Import and assign the correct season and episode."
+                            .to_string()
+                    }),
                 recycle_reason: "episode_outside_grabbed_release",
                 skip_reason: Some(ImportSkipReason::PolicyMismatch),
                 blocking_rule_codes: vec!["episode_outside_grabbed_release".to_string()],
@@ -1335,16 +1369,6 @@ pub(crate) async fn resolve_target_episodes(
 
     episodes
 }
-fn prefer_broader_coverage_episodes(
-    target_episodes: &[scryer_domain::Episode],
-    claimed_episodes: Vec<scryer_domain::Episode>,
-) -> Vec<scryer_domain::Episode> {
-    if claimed_episodes.len() > target_episodes.len() {
-        claimed_episodes
-    } else {
-        target_episodes.to_vec()
-    }
-}
 async fn write_series_sidecars(
     app: &AppUseCase,
     title: &scryer_domain::Title,
@@ -1494,6 +1518,10 @@ pub(crate) fn is_sample_file(path: &Path) -> bool {
 
     if filename.contains("sample") {
         return true;
+    }
+
+    if scryer_domain::canonical_video_extension(path) == Some("strm") {
+        return false;
     }
 
     // Small files in multi-episode directories are almost certainly samples/promos

@@ -21,9 +21,10 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use scryer_application::{
     AcquisitionScopeStateRepository, AppResult, AppServices, AppUseCase, AuthenticatedTokenClaims,
-    BlocklistRepository, FacetRegistry, HousekeepingRepository, IndexerPluginProvider,
-    JwtAuthConfig, MovieFacetHandler, OAuthAuthorizationSource, PendingReleaseRepository,
-    SeriesFacetHandler, SubtitleDownloadRepository,
+    BlocklistRepository, ExternalIdentityVerifier, FacetRegistry, HousekeepingRepository,
+    IndexerPluginProvider, JwtAuthConfig, MediaFileRepository, MovieFacetHandler,
+    OAuthAuthorizationSource, PendingReleaseRepository, SeriesFacetHandler,
+    SubtitleDownloadRepository,
 };
 use scryer_infrastructure::sqlite::{
     LibraryStore, PluginStore, PostProcessingScriptStore, QualityProfileStore, RuleSetStore,
@@ -631,6 +632,15 @@ pub fn disabled_auth_runtime_handle() -> AuthRuntimeStateHandle {
 
 impl TestContext {
     pub async fn new() -> Self {
+        Self::new_with_external_identity_verifier(Arc::new(
+            scryer_infrastructure::external_identity::HttpExternalIdentityVerifier::new(),
+        ))
+        .await
+    }
+
+    pub async fn new_with_external_identity_verifier(
+        external_identity_verifier: Arc<dyn ExternalIdentityVerifier>,
+    ) -> Self {
         disable_platform_keystore_for_tests();
         initialize_wasm_runtime_for_tests();
 
@@ -794,9 +804,7 @@ impl TestContext {
         .with_libraries(Arc::new(library_store.clone()))
         .with_external_account_store(Arc::new(user_store.clone()))
         .with_user_ui_settings_store(ui_settings)
-        .with_external_identity_verifier(Arc::new(
-            scryer_infrastructure::external_identity::HttpExternalIdentityVerifier::new(),
-        ))
+        .with_external_identity_verifier(external_identity_verifier)
         .with_media_server_connection_store(Arc::new(MediaServerConnectionStore::new(
             datastore.clone(),
             db.encryption_key_state(),
@@ -888,6 +896,20 @@ impl TestContext {
             staged_nzb_store,
             staged_nzb_dir,
         }
+    }
+
+    pub async fn link_primary_file_to_episode(
+        &self,
+        title_id: &str,
+        file_id: &str,
+        episode_id: &str,
+    ) -> AppResult<()> {
+        self.media_files
+            .link_file_to_episode(file_id, episode_id)
+            .await?;
+        self.media_files
+            .set_media_file_roles_for_episode(title_id, episode_id, file_id, &[])
+            .await
     }
 
     /// URL for the GraphQL endpoint.
@@ -1278,6 +1300,7 @@ async fn test_graphql_handler(
             verified_until: claims.mfa_verified_until,
             step_up_verified_until: claims.mfa_step_up_verified_until,
             session_scope: claims.session_scope,
+            persist_session: claims.persist_session,
             oauth_authorization_source: claims.oauth_authorization_source,
         });
         let mut user = app

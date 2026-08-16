@@ -43,14 +43,16 @@ import type {
   IndexerProxyRecord,
   ProviderTypeInfo,
   ConfigFieldDef,
-  IndexerDownloadClientMappingCatalog,
+  IndexerDownloadClientMappingCatalogResource,
 } from "@/lib/types";
 import { selectorId } from "@/lib/utils/dom-ids";
 import { cn } from "@/lib/utils";
 import type { BoxedActionButtonTone } from "@/lib/utils/action-button-styles";
 import {
   AUTOMATIC_DOWNLOAD_CLIENT_ID,
+  getIndexerDownloadClientDraftMappingViewModel,
   getIndexerDownloadClientMappingViewModel,
+  type IndexerDownloadClientMappingViewModel,
 } from "@/lib/utils/indexer-download-client-mapping";
 
 type SettingsIndexersSectionProps = {
@@ -65,7 +67,8 @@ type SettingsIndexersSectionProps = {
   settingsIndexerFilter: string;
   setSettingsIndexerFilter: (value: string) => void;
   settingsIndexers: IndexerRecord[];
-  indexerDownloadClientMappingCatalog: IndexerDownloadClientMappingCatalog;
+  indexerDownloadClientMappingCatalogResource: IndexerDownloadClientMappingCatalogResource;
+  refreshIndexerDownloadClientMappingCatalog: () => Promise<void> | void;
   mutatingIndexerMappingIds: ReadonlySet<string>;
   setIndexerDownloadClientMapping: (
     indexerId: string,
@@ -358,20 +361,28 @@ function DynamicConfigField({
   );
 }
 
-function IndexerDownloadClientCell({
-  indexer,
-  catalog,
+function IndexerDownloadClientSelect({
+  model,
+  selectId,
+  label,
   isPending,
+  disabled = false,
+  showLabel = false,
+  catalogError = null,
+  onRetry,
   onChange,
 }: {
-  indexer: IndexerRecord;
-  catalog: IndexerDownloadClientMappingCatalog;
+  model: IndexerDownloadClientMappingViewModel;
+  selectId: string;
+  label: string;
   isPending: boolean;
+  disabled?: boolean;
+  showLabel?: boolean;
+  catalogError?: string | null;
+  onRetry?: () => Promise<void> | void;
   onChange: (downloadClientId: string | null) => Promise<void> | void;
 }) {
   const t = useTranslate();
-  const model = getIndexerDownloadClientMappingViewModel(indexer, catalog);
-  const selectId = selectorId("settings-indexer-download-client", indexer.id);
   const statusId = `${selectId}-status`;
   const selectedOption = model.options.find(
     (option) => option.id === model.selectedId,
@@ -384,9 +395,15 @@ function IndexerDownloadClientCell({
 
   if (model.isNotApplicable) {
     return (
-      <span className="text-muted-foreground" data-testid={`${selectId}-not-applicable`}>
-        {t("settings.indexerDownloadClientNotApplicable")}
-      </span>
+      <div className="space-y-1.5">
+        {showLabel ? <Label className="block">{label}</Label> : null}
+        <span
+          className="text-muted-foreground"
+          data-testid={`${selectId}-not-applicable`}
+        >
+          {t("settings.indexerDownloadClientNotApplicable")}
+        </span>
+      </div>
     );
   }
 
@@ -398,8 +415,8 @@ function IndexerDownloadClientCell({
 
   return (
     <div className="min-w-[210px] space-y-1.5">
-      <Label className="sr-only" htmlFor={selectId}>
-        {t("settings.indexerDownloadClientLabel", { name: indexer.name })}
+      <Label className={showLabel ? "block" : "sr-only"} htmlFor={selectId}>
+        {label}
       </Label>
       <Select
         value={model.selectedId}
@@ -411,7 +428,7 @@ function IndexerDownloadClientCell({
           id={selectId}
           data-testid={selectId}
           className="w-full"
-          disabled={isPending}
+          disabled={isPending || disabled}
           aria-describedby={model.isInvalid || model.isDisabled ? statusId : undefined}
           aria-busy={isPending}
         >
@@ -452,7 +469,7 @@ function IndexerDownloadClientCell({
             size="sm"
             className="h-auto px-1 py-0 text-xs"
             onClick={() => void onChange(null)}
-            disabled={isPending}
+            disabled={isPending || disabled}
           >
             {t("settings.indexerDownloadClientChooseAutomatic")}
           </Button>
@@ -467,12 +484,110 @@ function IndexerDownloadClientCell({
             name: model.currentClient?.name ?? selectedLabel,
           })}
         </p>
+      ) : catalogError ? (
+        <div className="flex flex-wrap items-center gap-1 text-xs text-[var(--scry-warning-text)]">
+          <span>{t("settings.indexerDownloadClientCatalogStale")}</span>
+          {onRetry ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-auto px-1 py-0 text-xs"
+              onClick={() => void onRetry()}
+            >
+              {t("label.retry")}
+            </Button>
+          ) : null}
+        </div>
       ) : isPending ? (
         <p id={statusId} role="status" className="text-xs text-muted-foreground">
           {t("status.indexerDownloadClientMappingSaving")}
         </p>
       ) : null}
     </div>
+  );
+}
+
+function IndexerDownloadClientCatalogPlaceholder({
+  resource,
+  selectId,
+  label,
+  showLabel = false,
+  onRetry,
+}: {
+  resource: IndexerDownloadClientMappingCatalogResource;
+  selectId: string;
+  label: string;
+  showLabel?: boolean;
+  onRetry: () => Promise<void> | void;
+}) {
+  const t = useTranslate();
+  const isLoading = resource.status === "idle" || resource.status === "loading";
+  return (
+    <div className="min-w-[210px] space-y-1.5">
+      <Label className={showLabel ? "block" : "sr-only"} htmlFor={selectId}>
+        {label}
+      </Label>
+      <Button
+        id={selectId}
+        type="button"
+        variant="outline"
+        className="w-full justify-start font-normal"
+        disabled={isLoading}
+        onClick={() => void onRetry()}
+      >
+        {isLoading
+          ? t("settings.indexerDownloadClientLoading")
+          : t("settings.indexerDownloadClientLoadRetry")}
+      </Button>
+      {!isLoading && resource.error ? (
+        <p role="alert" className="text-xs text-[var(--scry-danger-text-soft)]">
+          {resource.error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function IndexerDownloadClientCell({
+  indexer,
+  resource,
+  isPending,
+  disabled,
+  onRetry,
+  onChange,
+}: {
+  indexer: IndexerRecord;
+  resource: IndexerDownloadClientMappingCatalogResource;
+  isPending: boolean;
+  disabled: boolean;
+  onRetry: () => Promise<void> | void;
+  onChange: (downloadClientId: string | null) => Promise<void> | void;
+}) {
+  const t = useTranslate();
+  const selectId = selectorId("settings-indexer-download-client", indexer.id);
+  const label = t("settings.indexerDownloadClientLabel", { name: indexer.name });
+  if (!resource.catalog) {
+    return (
+      <IndexerDownloadClientCatalogPlaceholder
+        resource={resource}
+        selectId={selectId}
+        label={label}
+        onRetry={onRetry}
+      />
+    );
+  }
+  return (
+    <IndexerDownloadClientSelect
+      model={getIndexerDownloadClientMappingViewModel(indexer, resource.catalog)}
+      selectId={selectId}
+      label={label}
+      isPending={isPending}
+      disabled={disabled}
+      catalogError={resource.status === "error" ? resource.error : null}
+      onRetry={onRetry}
+      onChange={onChange}
+    />
   );
 }
 
@@ -486,7 +601,8 @@ export function SettingsIndexersSection({
   settingsIndexerFilter,
   setSettingsIndexerFilter,
   settingsIndexers,
-  indexerDownloadClientMappingCatalog,
+  indexerDownloadClientMappingCatalogResource,
+  refreshIndexerDownloadClientMappingCatalog,
   mutatingIndexerMappingIds,
   setIndexerDownloadClientMapping,
   indexerProxyConfigs,
@@ -609,6 +725,10 @@ export function SettingsIndexersSection({
       const nextProvider = providerTypes.find(
         (providerType) => providerType.providerType === nextProviderType,
       );
+      const nextMappingCompatibility =
+        indexerDownloadClientMappingCatalogResource.catalog?.providerCompatibility.find(
+          (provider) => provider.providerType === nextProviderType,
+        );
       setIndexerDraft((prev: IndexerDraft) => {
         const previousProvider = providerTypes.find(
           (providerType) => providerType.providerType === prev.providerType,
@@ -628,12 +748,20 @@ export function SettingsIndexersSection({
           ...prev,
           providerType: nextProviderType,
           name: shouldAutofillName ? (nextProvider?.name ?? prev.name) : prev.name,
+          downloadClientId:
+            nextMappingCompatibility?.supportsMapping === false
+              ? null
+              : prev.downloadClientId,
           storedSecretKeys: [],
           configValues: nextConfigValues,
         };
       });
     },
-    [providerTypes, setIndexerDraft],
+    [
+      indexerDownloadClientMappingCatalogResource.catalog,
+      providerTypes,
+      setIndexerDraft,
+    ],
   );
 
   return (
@@ -984,8 +1112,10 @@ export function SettingsIndexersSection({
                   <TableCell>
                     <IndexerDownloadClientCell
                       indexer={indexer}
-                      catalog={indexerDownloadClientMappingCatalog}
+                      resource={indexerDownloadClientMappingCatalogResource}
                       isPending={mutatingIndexerMappingIds.has(indexer.id)}
+                      disabled={editingIndexerId === indexer.id && isEditorOpen}
+                      onRetry={refreshIndexerDownloadClientMappingCatalog}
                       onChange={(downloadClientId) =>
                         setIndexerDownloadClientMapping(indexer.id, downloadClientId)
                       }
@@ -1184,6 +1314,7 @@ export function SettingsIndexersSection({
               </label>
             </div>
 
+            <div className="grid gap-3 md:grid-cols-2">
             <div className="space-y-2">
               <Label className="block" htmlFor="settings-indexer-proxy-select">
                 Indexer proxy
@@ -1224,6 +1355,40 @@ export function SettingsIndexersSection({
                   Assigned proxy is disabled.
                 </p>
               ) : null}
+            </div>
+            {indexerDownloadClientMappingCatalogResource.catalog ? (
+              <IndexerDownloadClientSelect
+                model={getIndexerDownloadClientDraftMappingViewModel(
+                  normalizedProviderType,
+                  indexerDraft.downloadClientId,
+                  indexerDownloadClientMappingCatalogResource.catalog,
+                )}
+                selectId="settings-indexer-download-client-form"
+                label={t("settings.indexerDownloadClient")}
+                isPending={mutatingIndexerId !== null}
+                showLabel
+                catalogError={
+                  indexerDownloadClientMappingCatalogResource.status === "error"
+                    ? indexerDownloadClientMappingCatalogResource.error
+                    : null
+                }
+                onRetry={refreshIndexerDownloadClientMappingCatalog}
+                onChange={(downloadClientId) =>
+                  setIndexerDraft((previous) => ({
+                    ...previous,
+                    downloadClientId,
+                  }))
+                }
+              />
+            ) : (
+              <IndexerDownloadClientCatalogPlaceholder
+                resource={indexerDownloadClientMappingCatalogResource}
+                selectId="settings-indexer-download-client-form"
+                label={t("settings.indexerDownloadClient")}
+                showLabel
+                onRetry={refreshIndexerDownloadClientMappingCatalog}
+              />
+            )}
             </div>
 
             {selectedProviderFields.length > 0 ? (

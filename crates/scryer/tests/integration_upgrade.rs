@@ -274,6 +274,23 @@ impl MediaFileRepository for FailingPathUpdateMediaFileRepo {
             .await
     }
 
+    async fn set_media_file_roles_for_episode(
+        &self,
+        title_id: &str,
+        episode_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        self.inner
+            .set_media_file_roles_for_episode(
+                title_id,
+                episode_id,
+                primary_file_id,
+                additional_file_ids,
+            )
+            .await
+    }
+
     async fn replace_media_file_for_upgrade(
         &self,
         old_file_id: &str,

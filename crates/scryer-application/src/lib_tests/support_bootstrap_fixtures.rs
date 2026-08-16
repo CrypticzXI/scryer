@@ -453,6 +453,7 @@ pub(super) fn make_movie_metadata(tvdb_id: i64, name: &str) -> MovieMetadata {
         poster_url: format!("https://example.com/{tvdb_id}.jpg"),
         background_url: None,
         language: "eng".to_string(),
+        original_language: Some("eng".to_string()),
         runtime_minutes: 100,
         sort_title: name.to_string(),
         imdb_id: format!("tt{tvdb_id:07}"),

@@ -1,5 +1,6 @@
 use super::*;
 use scryer_application::{JobKey, JobRunStatus};
+use std::sync::Arc;
 use tokio::time::{Duration, timeout};
 
 async fn wait_for_interactive_job(
@@ -27,6 +28,84 @@ async fn wait_for_interactive_job(
     })
     .await
     .expect("interactive job should complete")
+}
+
+struct PlexPersistenceVerifier;
+
+#[async_trait::async_trait]
+impl scryer_application::ExternalIdentityVerifier for PlexPersistenceVerifier {
+    async fn verify_plex(
+        &self,
+        connection_id: &str,
+        _: Option<&str>,
+        _: &str,
+    ) -> scryer_application::AppResult<scryer_application::VerifiedExternalIdentity> {
+        Ok(scryer_application::VerifiedExternalIdentity {
+            provider: scryer_domain::ExternalAccountProvider::Plex,
+            connection_id: connection_id.to_string(),
+            external_user_id: "plex-persistence-user".to_string(),
+            username: "plex-persistence".to_string(),
+            display_name: Some("Plex persistence".to_string()),
+            avatar_url: None,
+            remote_password_configured: None,
+        })
+    }
+
+    async fn discover_plex_servers(
+        &self,
+        _: &str,
+    ) -> scryer_application::AppResult<Vec<scryer_application::PlexServerDiscovery>> {
+        Ok(Vec::new())
+    }
+
+    async fn verify_jellyfin(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> scryer_application::AppResult<scryer_application::VerifiedExternalIdentity> {
+        Err(scryer_application::AppError::Repository(
+            "not configured".into(),
+        ))
+    }
+
+    async fn test_jellyfin_connection(&self, _: &str) -> scryer_application::AppResult<()> {
+        Ok(())
+    }
+
+    async fn test_jellyfin_api_key(&self, _: &str, _: &str) -> scryer_application::AppResult<()> {
+        Ok(())
+    }
+
+    async fn exchange_jellyfin_admin_api_key(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> scryer_application::AppResult<String> {
+        Err(scryer_application::AppError::Repository(
+            "not configured".into(),
+        ))
+    }
+
+    async fn list_jellyfin_users(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+    ) -> scryer_application::AppResult<Vec<scryer_application::JellyfinServerUser>> {
+        Ok(Vec::new())
+    }
+
+    async fn list_plex_users(
+        &self,
+        _: &str,
+        _: Option<&str>,
+    ) -> scryer_application::AppResult<Vec<scryer_application::PlexServerUser>> {
+        Ok(Vec::new())
+    }
 }
 
 #[tokio::test]
@@ -233,6 +312,7 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: false
           }) {
             effectiveFormLoginEnabled
           }
@@ -249,7 +329,7 @@ async fn graphql_enrollment_scoped_token_cannot_access_normal_apis() {
 
     let token = ctx
         .app
-        .issue_mfa_enrollment_token(&admin)
+        .issue_mfa_enrollment_token(&admin, false)
         .await
         .expect("issue enrollment token");
 
@@ -1625,6 +1705,8 @@ async fn graphql_external_account_invites_expose_last_login() {
             default_library_grants: Vec::new(),
             machine_id: None,
             api_key: Some("jellyfin-api-key".to_string()),
+            emby_server_id: None,
+            emby_connect_enabled: false,
             path_mappings: Vec::new(),
             created_at: now,
             updated_at: now,
@@ -1756,7 +1838,23 @@ async fn login_with_valid_credentials_returns_token() {
 
     let body = schema_exec(
         &ctx,
-        r#"mutation { login(input: { username: "logintest", password: "s3cr3t!!" }) { token expiresAt user { username appPermissions } } }"#,
+        r#"
+        mutation {
+          omitted: login(input: { username: "logintest", password: "s3cr3t!!" }) {
+            token persistSession expiresAt user { username appPermissions }
+          }
+          explicitPersistent: login(input: {
+            username: "logintest"
+            password: "s3cr3t!!"
+            persistSession: true
+          }) { token persistSession }
+          explicitTab: login(input: {
+            username: "logintest"
+            password: "s3cr3t!!"
+            persistSession: false
+          }) { token persistSession }
+        }
+        "#,
         None,
     )
     .await;
@@ -1765,13 +1863,30 @@ async fn login_with_valid_credentials_returns_token() {
         body["errors"].is_null(),
         "login should not return errors: {body}"
     );
-    let token = body["data"]["login"]["token"].as_str().unwrap();
+    let token = body["data"]["omitted"]["token"].as_str().unwrap();
     assert!(!token.is_empty(), "JWT token should not be empty");
-    assert_eq!(body["data"]["login"]["user"]["username"], "logintest");
+    assert_eq!(body["data"]["omitted"]["persistSession"], false);
+    assert_eq!(body["data"]["explicitPersistent"]["persistSession"], true);
+    assert_eq!(body["data"]["explicitTab"]["persistSession"], false);
+    assert_eq!(body["data"]["omitted"]["user"]["username"], "logintest");
     assert_eq!(
-        body["data"]["login"]["user"]["appPermissions"],
+        body["data"]["omitted"]["user"]["appPermissions"],
         json!(["MANAGE_USERS"])
     );
+
+    for (field, expected) in [
+        ("omitted", false),
+        ("explicitPersistent", true),
+        ("explicitTab", false),
+    ] {
+        let token = body["data"][field]["token"].as_str().expect("login token");
+        let (_user, claims) = ctx
+            .app
+            .authenticate_token_with_claims(token)
+            .await
+            .expect("authenticate login token");
+        assert_eq!(claims.persist_session, expected, "{field} token claim");
+    }
 }
 
 #[tokio::test]
@@ -2562,6 +2677,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: true
             totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: false
           }) {
             effectiveFormLoginEnabled
             mfaRequirePasswordLogin
@@ -2585,10 +2701,11 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
         &ctx,
         r#"
         mutation {
-          login(input: { username: "localmfa", password: "s3cr3t!!" }) {
+          login(input: { username: "localmfa", password: "s3cr3t!!", persistSession: true }) {
             token
             mfaEnrollmentRequired
             mfaVerifiedUntil
+            persistSession
             user { username }
           }
         }
@@ -2599,6 +2716,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
     assert_no_errors(&login_body);
     let payload = &login_body["data"]["login"];
     assert_eq!(payload["mfaEnrollmentRequired"], true);
+    assert_eq!(payload["persistSession"], true);
     assert!(payload["mfaVerifiedUntil"].is_null());
     assert_eq!(payload["user"]["username"], "localmfa");
 
@@ -2609,6 +2727,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
         .await
         .expect("authenticate enrollment token");
     assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
+    assert!(claims.persist_session);
 
     let enrollment_start = gql_with_token(
         &ctx,
@@ -2636,6 +2755,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
               token
               mfaEnrollmentRequired
               mfaVerifiedUntil
+              persistSession
               user { username }
             }
           }
@@ -2660,6 +2780,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
     );
     let login_payload = &complete_payload["login"];
     assert_eq!(login_payload["mfaEnrollmentRequired"], false);
+    assert_eq!(login_payload["persistSession"], true);
     assert!(login_payload["mfaVerifiedUntil"].as_str().is_some());
     assert_eq!(login_payload["user"]["username"], "localmfa");
     let full_token = login_payload["token"].as_str().expect("full token");
@@ -2669,6 +2790,7 @@ async fn graphql_local_password_login_requires_mfa_enrollment_when_enabled() {
         .await
         .expect("authenticate full token");
     assert_eq!(full_claims.session_scope, JwtSessionScope::Full);
+    assert!(full_claims.persist_session);
     assert!(full_claims.mfa_verified_until.is_some());
 }
 
@@ -2701,6 +2823,8 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
             default_library_grants: Vec::new(),
             machine_id: None,
             api_key: Some("jellyfin-api-key".to_string()),
+            emby_server_id: None,
+            emby_connect_enabled: false,
             path_mappings: Vec::new(),
             created_at: now,
             updated_at: now,
@@ -2731,6 +2855,7 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: true
+            totpRequireEmbyLogin: false
           }) {
             effectiveFormLoginEnabled
             totpRequireJellyfinLogin
@@ -2754,14 +2879,31 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
         &ctx,
         r#"
         mutation LoginWithJellyfin($connectionId: ID!, $username: String!, $password: String!) {
-          loginWithJellyfin(input: {
+          omitted: loginWithJellyfin(input: {
             connectionId: $connectionId
             username: $username
             password: $password
           }) {
+            token mfaEnrollmentRequired mfaVerifiedUntil persistSession user { username }
+          }
+          explicitPersistent: loginWithJellyfin(input: {
+            connectionId: $connectionId
+            username: $username
+            password: $password
+            persistSession: true
+          }) {
+            token mfaEnrollmentRequired persistSession
+          }
+          explicitTab: loginWithJellyfin(input: {
+            connectionId: $connectionId
+            username: $username
+            password: $password
+            persistSession: false
+          }) {
             token
             mfaEnrollmentRequired
             mfaVerifiedUntil
+            persistSession
             user { username }
           }
         }
@@ -2774,7 +2916,13 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
     )
     .await;
     assert_no_errors(&login_body);
-    let payload = &login_body["data"]["loginWithJellyfin"];
+    let payload = &login_body["data"]["explicitTab"];
+    assert_eq!(login_body["data"]["omitted"]["persistSession"], false);
+    assert_eq!(
+        login_body["data"]["explicitPersistent"]["persistSession"],
+        true
+    );
+    assert_eq!(payload["persistSession"], false);
     assert_eq!(payload["mfaEnrollmentRequired"], true);
     assert!(payload["mfaVerifiedUntil"].is_null());
     assert_eq!(payload["user"]["username"], "jellyfin-mfa");
@@ -2786,6 +2934,16 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
         .await
         .expect("authenticate enrollment token");
     assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
+    assert!(!claims.persist_session);
+    let persistent_token = login_body["data"]["explicitPersistent"]["token"]
+        .as_str()
+        .expect("persistent enrollment token");
+    let (_user, persistent_claims) = ctx
+        .app
+        .authenticate_token_with_claims(persistent_token)
+        .await
+        .expect("authenticate persistent enrollment token");
+    assert!(persistent_claims.persist_session);
 
     let enrollment_start = gql_with_token(
         &ctx,
@@ -2813,6 +2971,7 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
               token
               mfaEnrollmentRequired
               mfaVerifiedUntil
+              persistSession
               user { username }
             }
           }
@@ -2837,6 +2996,7 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
     );
     let login_payload = &complete_payload["login"];
     assert_eq!(login_payload["mfaEnrollmentRequired"], false);
+    assert_eq!(login_payload["persistSession"], false);
     assert!(login_payload["mfaVerifiedUntil"].as_str().is_some());
     assert_eq!(login_payload["user"]["username"], "jellyfin-mfa");
     let full_token = login_payload["token"].as_str().expect("full token");
@@ -2847,6 +3007,177 @@ async fn graphql_jellyfin_login_requires_mfa_enrollment_when_enabled() {
         .expect("authenticate full token");
     assert_eq!(full_claims.session_scope, JwtSessionScope::Full);
     assert!(full_claims.mfa_verified_until.is_some());
+}
+
+#[tokio::test]
+async fn graphql_plex_login_omitted_and_explicit_session_persistence() {
+    let ctx =
+        TestContext::new_with_external_identity_verifier(Arc::new(PlexPersistenceVerifier)).await;
+    let now = Utc::now();
+    let media_servers =
+        MediaServerConnectionStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    MediaServerConnectionRepository::create(
+        &media_servers,
+        MediaServerConnection {
+            id: "plex-persistence".to_string(),
+            provider: MediaServerProvider::Plex,
+            display_name: "Plex persistence".to_string(),
+            base_url: "https://plex.invalid".to_string(),
+            enabled: true,
+            login_enabled: true,
+            linking_enabled: false,
+            auto_add_enabled: true,
+            default_app_permissions: AppPermissionMask::NONE,
+            default_library_grants: Vec::new(),
+            machine_id: Some("plex-machine-id".to_string()),
+            api_key: None,
+            emby_server_id: None,
+            emby_connect_enabled: false,
+            path_mappings: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("seed Plex media server connection");
+
+    let body = gql(
+        &ctx,
+        r#"
+        mutation {
+          omitted: loginWithPlex(input: {
+            connectionId: "plex-persistence" plexAuthToken: "plex-token"
+          }) { token persistSession }
+          explicitPersistent: loginWithPlex(input: {
+            connectionId: "plex-persistence" plexAuthToken: "plex-token" persistSession: true
+          }) { token persistSession }
+          explicitTab: loginWithPlex(input: {
+            connectionId: "plex-persistence" plexAuthToken: "plex-token" persistSession: false
+          }) { token persistSession }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+    for (field, expected) in [
+        ("omitted", false),
+        ("explicitPersistent", true),
+        ("explicitTab", false),
+    ] {
+        assert_eq!(body["data"][field]["persistSession"], expected);
+        let token = body["data"][field]["token"].as_str().expect("login token");
+        let (_user, claims) = ctx
+            .app
+            .authenticate_token_with_claims(token)
+            .await
+            .expect("authenticate login token");
+        assert_eq!(claims.persist_session, expected, "{field} token claim");
+    }
+}
+
+#[tokio::test]
+async fn graphql_emby_login_omitted_and_explicit_session_persistence() {
+    let ctx = TestContext::new().await;
+    let now = Utc::now();
+    let media_servers =
+        MediaServerConnectionStore::new(ctx.db.datastore(), ctx.db.encryption_key_state());
+    MediaServerConnectionRepository::create(
+        &media_servers,
+        MediaServerConnection {
+            id: "emby-persistence".to_string(),
+            provider: MediaServerProvider::Emby,
+            display_name: "Emby persistence".to_string(),
+            base_url: ctx.smg_server.uri(),
+            enabled: true,
+            login_enabled: true,
+            linking_enabled: false,
+            auto_add_enabled: true,
+            default_app_permissions: AppPermissionMask::NONE,
+            default_library_grants: Vec::new(),
+            machine_id: None,
+            api_key: Some("emby-api-key".to_string()),
+            emby_server_id: Some("emby-server-1".to_string()),
+            emby_connect_enabled: false,
+            path_mappings: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .expect("seed Emby media server connection");
+
+    Mock::given(method("GET"))
+        .and(path("/System/Info/Public"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Id": "emby-server-1", "ServerName": "Test Emby", "Version": "4.9.5.0"
+        })))
+        .mount(&ctx.smg_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/Users/AuthenticateByName"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "User": {"Id": "emby-user-1", "Name": "Emby persistence", "Policy": {"IsDisabled": false}},
+            "AccessToken": "emby-temporary-token", "ServerId": "emby-server-1"
+        })))
+        .mount(&ctx.smg_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/System/Info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Id": "emby-server-1", "ServerName": "Test Emby", "Version": "4.9.5.0"
+        })))
+        .mount(&ctx.smg_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/Users/emby-user-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Id": "emby-user-1", "Name": "Emby persistence", "HasPassword": true,
+            "Policy": {"IsDisabled": false}
+        })))
+        .mount(&ctx.smg_server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/Sessions/Logout"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&ctx.smg_server)
+        .await;
+
+    let body = gql(
+        &ctx,
+        r#"
+        mutation {
+          omitted: loginWithEmby(input: {
+            connectionId: "emby-persistence" mode: LOCAL username: "emby" password: "password"
+          }) { token persistSession }
+          explicitPersistent: loginWithEmby(input: {
+            connectionId: "emby-persistence" mode: LOCAL username: "emby" password: "password"
+            persistSession: true
+          }) { token persistSession }
+          explicitTab: loginWithEmby(input: {
+            connectionId: "emby-persistence" mode: LOCAL username: "emby" password: "password"
+            persistSession: false
+          }) { token persistSession }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&body);
+    for (field, expected) in [
+        ("omitted", false),
+        ("explicitPersistent", true),
+        ("explicitTab", false),
+    ] {
+        assert_eq!(body["data"][field]["persistSession"], expected);
+        let token = body["data"][field]["token"].as_str().expect("login token");
+        let (_user, claims) = ctx
+            .app
+            .authenticate_token_with_claims(token)
+            .await
+            .expect("authenticate login token");
+        assert_eq!(claims.persist_session, expected, "{field} token claim");
+    }
 }
 
 #[tokio::test]
@@ -2889,6 +3220,8 @@ async fn graphql_jellyfin_pending_invite_for_existing_user_starts_mfa_enrollment
             default_library_grants: Vec::new(),
             machine_id: None,
             api_key: Some("jellyfin-api-key".to_string()),
+            emby_server_id: None,
+            emby_connect_enabled: false,
             path_mappings: Vec::new(),
             created_at: now,
             updated_at: now,
@@ -2950,6 +3283,7 @@ async fn graphql_jellyfin_pending_invite_for_existing_user_starts_mfa_enrollment
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: true
+            totpRequireEmbyLogin: false
           }) {
             totpRequireJellyfinLogin
           }
@@ -3069,6 +3403,7 @@ async fn graphql_local_password_login_with_existing_totp_requires_and_accepts_co
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: true
             totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: false
           }) {
             effectiveFormLoginEnabled
             mfaRequirePasswordLogin

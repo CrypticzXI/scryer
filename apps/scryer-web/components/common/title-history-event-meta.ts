@@ -17,6 +17,7 @@ export const TITLE_HISTORY_FILTERS = [
   "grabbed",
   "download_failed",
   "blocklisted",
+  "scanned",
   "imported",
   "import_failed",
   "import_skipped",
@@ -61,6 +62,12 @@ const eventMeta: Record<string, EventMeta> = {
     iconClassName: "text-[var(--scry-warning-text)]",
     labelKey: "history.blocklisted",
     badgeClassName: "border-[var(--scry-warning-border)] bg-[var(--scry-warning-bg)] text-[var(--scry-warning-text)]",
+  },
+  scanned: {
+    icon: HardDrive,
+    iconClassName: "text-[var(--scry-info-text-soft)]",
+    labelKey: "history.scanned",
+    badgeClassName: "border-[var(--scry-info-border)] bg-[var(--scry-info-bg)] text-[var(--scry-info-text)]",
   },
   imported: {
     icon: HardDrive,

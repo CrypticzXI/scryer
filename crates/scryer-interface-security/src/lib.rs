@@ -6,14 +6,22 @@ use scryer_application::{AppError, LoginFailureTimingClass};
 use scryer_domain::AppPermission;
 
 use scryer_interface_core::{
-    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, require_config_app_permission,
-    to_gql_error, to_login_gql_error_after_timing,
+    actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, default_persist_session_from_ctx,
+    persist_session_or_default, require_config_app_permission, to_gql_error,
+    to_login_gql_error_after_timing,
 };
 use scryer_interface_media::mappers::{from_linked_account, from_user_with_auth_factor_status};
 use scryer_interface_media::types::*;
 
 #[derive(Default)]
 pub struct UserMutations;
+
+fn emby_connection_mode(value: EmbyConnectionModeValue) -> scryer_application::EmbyConnectionMode {
+    match value {
+        EmbyConnectionModeValue::Local => scryer_application::EmbyConnectionMode::Local,
+        EmbyConnectionModeValue::Connect => scryer_application::EmbyConnectionMode::Connect,
+    }
+}
 
 async fn user_payload_from_user(
     app: &scryer_application::AppUseCase,
@@ -31,13 +39,19 @@ async fn login_payload_from_user(
     user: scryer_domain::User,
     mfa_verified_until: Option<chrono::DateTime<Utc>>,
     mfa_step_up_verified_until: Option<chrono::DateTime<Utc>>,
+    persist_session: bool,
 ) -> GqlResult<LoginPayload> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_access_token_with_mfa(&user, mfa_verified_until, mfa_step_up_verified_until)
+        .issue_access_token_with_mfa_and_persistence(
+            &user,
+            mfa_verified_until,
+            mfa_step_up_verified_until,
+            persist_session,
+        )
         .await
         .map_err(to_gql_error)?;
     let expires_at = Utc::now() + chrono::Duration::seconds(app.token_lifetime());
@@ -47,19 +61,21 @@ async fn login_payload_from_user(
         expires_at,
         mfa_verified_until,
         mfa_enrollment_required: false,
+        persist_session,
     })
 }
 
 async fn login_mfa_enrollment_payload_from_user(
     app: &scryer_application::AppUseCase,
     user: scryer_domain::User,
+    persist_session: bool,
 ) -> GqlResult<LoginPayload> {
     let user = app
         .load_user_for_auth_payload(&user)
         .await
         .map_err(to_gql_error)?;
     let token = app
-        .issue_mfa_enrollment_token(&user)
+        .issue_mfa_enrollment_token(&user, persist_session)
         .await
         .map_err(to_gql_error)?;
     let expires_at = Utc::now() + chrono::Duration::seconds(app.mfa_enrollment_token_lifetime());
@@ -69,14 +85,19 @@ async fn login_mfa_enrollment_payload_from_user(
         expires_at,
         mfa_verified_until: None,
         mfa_enrollment_required: true,
+        persist_session,
     })
 }
 
 #[Object]
 impl UserMutations {
+    /// Creates a user with normalized app and library permissions after checking the manage-users permission.
     async fn create_user(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Username, password, and initial app and library permissions for the new user."
+        )]
         input: CreateUserInput,
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
@@ -122,9 +143,13 @@ impl UserMutations {
         user_payload_from_user(&app, user).await
     }
 
+    /// Sets another user's password or changes the authenticated actor's password after validating the target and credentials.
     async fn set_user_password(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Target user ID, new password, and optional current password for a self-service change."
+        )]
         input: SetUserPasswordInput,
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
@@ -157,9 +182,13 @@ impl UserMutations {
         user_payload_from_user(&app, user).await
     }
 
+    /// Replaces a user's app permissions after checking the manage-permissions permission.
     async fn set_user_app_permissions(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Target user ID and complete app-permission set; an empty set removes app permissions."
+        )]
         input: SetUserAppPermissionsInput,
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
@@ -182,9 +211,13 @@ impl UserMutations {
         user_payload_from_user(&app, user).await
     }
 
+    /// Replaces a user's library grants after checking the manage-permissions permission.
     async fn set_user_library_permissions(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Target user ID and complete library-grant set; an empty set removes library grants."
+        )]
         input: SetUserLibraryPermissionsInput,
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
@@ -219,9 +252,11 @@ impl UserMutations {
         user_payload_from_user(&app, user).await
     }
 
+    /// Enables or disables login for the user identified in the input and invalidates active connections.
     async fn set_user_login_enabled(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Target user ID and desired login-enabled state.")]
         input: SetUserLoginEnabledInput,
     ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
@@ -240,7 +275,12 @@ impl UserMutations {
         user_payload_from_user(&app, user).await
     }
 
-    async fn delete_user(&self, ctx: &Context<'_>, id: ID) -> GqlResult<DeleteUserPayload> {
+    /// Deletes the user identified by `id` after checking the manage-users permission.
+    async fn delete_user(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "ID of the user to delete.")] id: ID,
+    ) -> GqlResult<DeleteUserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageUsers).await?;
         let id_string = id.to_string();
@@ -250,7 +290,12 @@ impl UserMutations {
         Ok(DeleteUserPayload { id })
     }
 
-    async fn reset_user_mfa(&self, ctx: &Context<'_>, id: ID) -> GqlResult<UserPayload> {
+    /// Resets MFA enrollment for the user identified by `id` after checking the manage-users permission.
+    async fn reset_user_mfa(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "ID of the user whose MFA enrollment should be reset.")] id: ID,
+    ) -> GqlResult<UserPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageUsers).await?;
         let id = id.to_string();
@@ -265,9 +310,13 @@ impl UserMutations {
         user_payload_from_user(&app, user).await
     }
 
+    /// Creates an external-account invite for a target user and connection without returning provider credentials.
     async fn create_external_account_invite(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Target user, media-server connection, provider, and provider account identifiers for the invite."
+        )]
         input: CreateExternalAccountInviteInput,
     ) -> GqlResult<LinkedAccountPayload> {
         let app = app_from_ctx(ctx)?;
@@ -287,9 +336,11 @@ impl UserMutations {
         .map_err(to_gql_error)
     }
 
+    /// Links the authenticated actor to Plex using a connection ID and token.
     async fn link_plex_account(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Plex connection ID and authentication token used for linking.")]
         input: LinkPlexAccountInput,
     ) -> GqlResult<LinkedAccountPayload> {
         let app = app_from_ctx(ctx)?;
@@ -304,9 +355,11 @@ impl UserMutations {
         .map_err(to_gql_error)
     }
 
+    /// Links the authenticated actor to Jellyfin using a connection ID and credentials.
     async fn link_jellyfin_account(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Jellyfin connection ID, username, and password used for linking.")]
         input: LinkJellyfinAccountInput,
     ) -> GqlResult<LinkedAccountPayload> {
         let app = app_from_ctx(ctx)?;
@@ -322,10 +375,34 @@ impl UserMutations {
         .map_err(to_gql_error)
     }
 
+    /// Links the authenticated actor to Emby using the selected connection mode and credentials.
+    async fn link_emby_account(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Emby connection ID, local or Connect mode, and credentials used for linking."
+        )]
+        input: LinkEmbyAccountInput,
+    ) -> GqlResult<LinkedAccountPayload> {
+        let app = app_from_ctx(ctx)?;
+        let actor = actor_from_ctx(ctx)?;
+        app.link_emby_account(
+            &actor,
+            input.connection_id.to_string(),
+            emby_connection_mode(input.mode),
+            input.username,
+            input.password,
+        )
+        .await
+        .map(from_linked_account)
+        .map_err(to_gql_error)
+    }
+
+    /// Unlinks the external account identified by `linked_account_id`.
     async fn unlink_external_account(
         &self,
         ctx: &Context<'_>,
-        linked_account_id: ID,
+        #[graphql(desc = "ID of the linked external account to remove.")] linked_account_id: ID,
     ) -> GqlResult<UnlinkExternalAccountPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -336,13 +413,21 @@ impl UserMutations {
         Ok(UnlinkExternalAccountPayload { linked_account_id })
     }
 
+    /// Authenticates through Plex and issues a session token.
     async fn login_with_plex(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Plex connection ID, authentication token, and optional session-persistence preference."
+        )]
         input: LoginWithPlexInput,
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let started_at = Instant::now();
+        let persist_session = persist_session_or_default(
+            input.persist_session,
+            default_persist_session_from_ctx(ctx),
+        );
         let user = match app
             .federated_login_with_plex(input.connection_id.to_string(), input.plex_auth_token)
             .await
@@ -358,16 +443,24 @@ impl UserMutations {
                 .await);
             }
         };
-        login_payload_from_user(&app, user, None, None).await
+        login_payload_from_user(&app, user, None, None, persist_session).await
     }
 
+    /// Authenticates through Jellyfin, applies configured TOTP requirements, and issues a session or MFA-enrollment token.
     async fn login_with_jellyfin(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Jellyfin connection ID, credentials, optional TOTP code, and optional session-persistence preference."
+        )]
         input: LoginWithJellyfinInput,
     ) -> GqlResult<LoginPayload> {
         let app = app_from_ctx(ctx)?;
         let started_at = Instant::now();
+        let persist_session = persist_session_or_default(
+            input.persist_session,
+            default_persist_session_from_ctx(ctx),
+        );
         let user = match app
             .federated_login_with_jellyfin(
                 input.connection_id.to_string(),
@@ -398,7 +491,7 @@ impl UserMutations {
                 .totp_require_jellyfin_login;
         let mfa_verified_until = if jellyfin_mfa_required {
             if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
-                return login_mfa_enrollment_payload_from_user(&app, user).await;
+                return login_mfa_enrollment_payload_from_user(&app, user, persist_session).await;
             }
             let code = input.totp_code.as_deref().ok_or_else(|| {
                 to_gql_error(AppError::MfaStepUpRequired(
@@ -413,6 +506,69 @@ impl UserMutations {
         } else {
             None
         };
-        login_payload_from_user(&app, user, mfa_verified_until, None).await
+        login_payload_from_user(&app, user, mfa_verified_until, None, persist_session).await
+    }
+
+    /// Authenticates through Emby, applies configured TOTP requirements, and issues a session or MFA-enrollment token.
+    async fn login_with_emby(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Emby connection ID, mode, credentials, optional TOTP code, and optional session-persistence preference."
+        )]
+        input: LoginWithEmbyInput,
+    ) -> GqlResult<LoginPayload> {
+        let app = app_from_ctx(ctx)?;
+        let started_at = Instant::now();
+        let persist_session = persist_session_or_default(
+            input.persist_session,
+            default_persist_session_from_ctx(ctx),
+        );
+        let user = match app
+            .federated_login_with_emby(
+                input.connection_id.to_string(),
+                emby_connection_mode(input.mode),
+                input.username,
+                input.password,
+            )
+            .await
+        {
+            Ok(user) => user,
+            Err(err) => {
+                return Err(to_login_gql_error_after_timing(
+                    "emby",
+                    LoginFailureTimingClass::FastMasked,
+                    started_at,
+                    err,
+                )
+                .await);
+            }
+        };
+        let emby_mfa_required = auth_runtime_from_ctx(ctx)
+            .snapshot()
+            .effective_form_login_enabled
+            && app
+                .security_settings()
+                .await
+                .map_err(to_gql_error)?
+                .totp_require_emby_login;
+        let mfa_verified_until = if emby_mfa_required {
+            if !app.totp_status(&user).await.map_err(to_gql_error)?.enabled {
+                return login_mfa_enrollment_payload_from_user(&app, user, persist_session).await;
+            }
+            let code = input.totp_code.as_deref().ok_or_else(|| {
+                to_gql_error(AppError::MfaStepUpRequired(
+                    "TOTP code is required for Emby login".into(),
+                ))
+            })?;
+            Some(
+                app.verify_totp_for_user(&user, code)
+                    .await
+                    .map_err(to_gql_error)?,
+            )
+        } else {
+            None
+        };
+        login_payload_from_user(&app, user, mfa_verified_until, None, persist_session).await
     }
 }

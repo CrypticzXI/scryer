@@ -769,6 +769,8 @@ export const MEDIA_SERVER_CONNECTION_FIELDS = `
     }
     machineIdPresent
     apiKeyPresent
+    embyServerIdPresent
+    embyConnectEnabled
     pathMappings {
       sourcePath
       destinationPath
@@ -2497,6 +2499,7 @@ export const securitySettingsQuery = `query SecuritySettings {
     mfaRequireConfigStepUp
     mfaRequirePasswordLogin
     totpRequireJellyfinLogin
+    totpRequireEmbyLogin
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
@@ -2513,6 +2516,7 @@ export const externalAuthRuntimeSettingsQuery = `query ExternalAuthRuntimeSettin
       displayName
       loginEnabled
       linkingEnabled
+      embyConnectEnabled
     }
   }
 }`;
@@ -2658,6 +2662,7 @@ export const authRuntimeStateQuery = `query AuthRuntimeState {
     effectiveFormLoginEnabled
     skipLoginForLocalIps
     passkeyEnabled
+    defaultPersistSession
     envOverrideActive
     mfaRequirePasswordLogin
     mfaRequireConfigStepUp
@@ -2910,6 +2915,18 @@ export const serviceLogsQuery = `query ServiceLogs($limit: Int) {
 
 export const serviceLogLinesSubscription = `subscription ServiceLogLines {
   serviceLogLines
+}`;
+
+export const wantedNavigationCountsQuery = `query WantedNavigationCounts($libraryIds: [ID!], $titleSearch: String, $cutoffFacet: MediaFacetValue) {
+  wantedItems(wantedKind: MISSING, facet: null, libraryIds: $libraryIds, titleSearch: $titleSearch, limit: 1, offset: 0) {
+    totalCount
+  }
+  cutoffUnmetTitlesPage(facet: $cutoffFacet, libraryIds: $libraryIds, limit: 1, offset: 0) {
+    totalCount
+  }
+  pendingReleases(filter: null, limit: 1, offset: 0) {
+    totalCount
+  }
 }`;
 
 export const wantedItemsQuery = `query WantedItems($wantedKind: WantedKindValue!, $facet: MediaFacetValue, $libraryIds: [ID!], $titleSearch: String, $limit: Int, $offset: Int) {
@@ -3342,8 +3359,14 @@ export const calendarEpisodesQuery = `query CalendarEpisodes($startDate: Date!, 
     seasonNumber
     episodeNumber
     episodeTitle
+    overview
+    imageUrl
     airDate
     monitored
+    mediaAvailability {
+      state
+      primaryQualityLabel
+    }
   }
 }`;
 
@@ -3539,6 +3562,12 @@ export const indexerDownloadClientMappingCatalogQuery = `query IndexerDownloadCl
       id
       name
       downloadClientId
+      protocolFamilies
+      supportsMapping
+      compatibleClientIds
+    }
+    providerCompatibility {
+      providerType
       protocolFamilies
       supportsMapping
       compatibleClientIds

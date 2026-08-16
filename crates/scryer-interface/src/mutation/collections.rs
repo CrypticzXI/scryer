@@ -8,9 +8,11 @@ pub(crate) struct CollectionMutations;
 
 #[Object]
 impl CollectionMutations {
+    /// Set collection monitoring and return the affected collection episodes.
     async fn set_collection_monitored(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Collection identity and desired monitored state.")]
         input: SetCollectionMonitoredInput,
     ) -> GqlResult<SetCollectionMonitoredPayload> {
         let app = app_from_ctx(ctx)?;
@@ -34,9 +36,11 @@ impl CollectionMutations {
         })
     }
 
+    /// Set episode monitoring and return the updated episode.
     async fn set_episode_monitored(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Episode identity and desired monitored state.")]
         input: SetEpisodeMonitoredInput,
     ) -> GqlResult<EpisodePayload> {
         let app = app_from_ctx(ctx)?;
@@ -49,9 +53,11 @@ impl CollectionMutations {
         Ok(from_episode(&app, episode))
     }
 
+    /// Set monitoring for a series-movie link and return the updated link.
     async fn set_series_movie_monitored(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Series-movie link identity and desired monitored state.")]
         input: SetSeriesMovieMonitoredInput,
     ) -> GqlResult<SeriesMovieLinkPayload> {
         let app = app_from_ctx(ctx)?;

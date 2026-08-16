@@ -820,6 +820,68 @@ file = "postgres/migrations/0154_indexer_download_client_mapping.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 155
+description = "first class Emby identity and Connect settings"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0155_emby_first_class.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0155_emby_first_class.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 156
+description = "rehydrate authoritative original languages"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0156_rehydrate_original_languages.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0156_rehydrate_original_languages.sql"
+engine = "postgres"
+scope = "all"
+
+[[migration]]
+version = 157
+description = "single title folder ownership"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "rust"
+hook_id = "migrate_title_folder_ownership"
+engine = "all"
+scope = "all"
+
+[[migration]]
+version = 158
+description = "episode scoped media file roles"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0158_episode_scoped_media_file_roles.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0158_episode_scoped_media_file_roles.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

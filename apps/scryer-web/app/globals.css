@@ -1447,14 +1447,14 @@ body {
 }
 
 .pride .fc-scryer {
-  --fc-border-color: rgba(255, 255, 255, 0.1);
-  --fc-neutral-bg-color: rgba(255, 255, 255, 0.04);
-  --fc-today-bg-color: rgba(255, 76, 168, 0.12);
-  --fc-button-bg-color: rgba(255, 255, 255, 0.08);
-  --fc-button-border-color: rgba(255, 255, 255, 0.12);
-  --fc-button-hover-bg-color: rgba(255, 255, 255, 0.14);
-  --fc-button-active-bg-color: var(--primary);
-  --fc-button-active-border-color: var(--primary);
+  --fc-classic-border: rgba(255, 255, 255, 0.1);
+  --fc-classic-muted: rgba(255, 255, 255, 0.04);
+  --fc-classic-today: rgba(255, 76, 168, 0.12);
+  --fc-classic-button: rgba(255, 255, 255, 0.08);
+  --fc-classic-button-border: rgba(255, 255, 255, 0.12);
+  --fc-classic-button-strong: rgba(255, 255, 255, 0.14);
+  --fc-classic-button-strong-border: var(--primary);
+  --fc-classic-primary: var(--primary);
   --fc-scryer-grid-line: rgba(255, 255, 255, 0.14);
   --fc-scryer-cell-bg: rgba(12, 8, 24, 0.18);
   --fc-scryer-cell-bg-active: rgba(18, 10, 34, 0.28);
@@ -1551,63 +1551,90 @@ h6 {
 
 /* FullCalendar dark theme overrides */
 .fc-scryer {
-  --fc-border-color: color-mix(in srgb, var(--border-color) 88%, transparent);
-  --fc-page-bg-color: transparent;
-  --fc-neutral-bg-color: color-mix(in srgb, var(--muted) 92%, transparent);
-  --fc-today-bg-color: color-mix(in srgb, var(--primary) 10%, transparent);
-  --fc-event-border-color: transparent;
-  --fc-button-bg-color: var(--secondary);
-  --fc-button-border-color: color-mix(in srgb, var(--border-color) 88%, transparent);
-  --fc-button-text-color: var(--foreground);
-  --fc-button-hover-bg-color: var(--accent);
-  --fc-button-hover-border-color: color-mix(in srgb, var(--border-color) 96%, transparent);
-  --fc-button-active-bg-color: var(--primary);
-  --fc-button-active-border-color: var(--primary);
+  --fc-classic-background: transparent;
+  --fc-classic-border: color-mix(in srgb, var(--border-color) 88%, transparent);
+  --fc-classic-button: var(--secondary);
+  --fc-classic-button-border: color-mix(in srgb, var(--border-color) 88%, transparent);
+  --fc-classic-button-foreground: var(--foreground);
+  --fc-classic-button-strong: var(--accent);
+  --fc-classic-button-strong-border: color-mix(in srgb, var(--border-color) 96%, transparent);
+  --fc-classic-faint: color-mix(in srgb, var(--muted) 50%, transparent);
+  --fc-classic-foreground: var(--foreground);
+  --fc-classic-muted: color-mix(in srgb, var(--muted) 92%, transparent);
+  --fc-classic-primary: var(--primary);
+  --fc-classic-primary-foreground: var(--primary-foreground);
+  --fc-classic-strong: color-mix(in srgb, var(--secondary) 94%, transparent);
+  --fc-classic-today: color-mix(in srgb, var(--primary) 10%, transparent);
   --fc-scryer-grid-line: color-mix(in srgb, var(--border-color) 94%, transparent);
   --fc-scryer-cell-bg: color-mix(in srgb, var(--card) 88%, transparent);
   --fc-scryer-cell-bg-active: color-mix(in srgb, var(--card) 94%, var(--primary) 6%);
   --fc-scryer-cell-bg-other: color-mix(in srgb, var(--muted) 50%, transparent);
 }
-.fc-scryer .fc-header-toolbar {
+.fc-scryer .fc-scryer-header-toolbar {
   align-items: center;
+  display: grid;
   gap: 1rem;
-  margin-bottom: 1.25rem;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  margin-bottom: 0.75rem;
 }
-.fc-scryer .fc-toolbar-chunk {
+.fc-scryer .fc-scryer-toolbar-section {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0.5rem;
 }
-.fc-scryer .fc-button {
+.fc-scryer .fc-scryer-toolbar-section:first-child {
+  justify-content: flex-start;
+}
+.fc-scryer .fc-scryer-toolbar-section:last-child {
+  justify-content: flex-end;
+}
+.fc-scryer-calendar-filters {
+  min-width: 0;
+}
+.fc-scryer .fc-scryer-button {
   border-radius: 0.625rem;
   box-shadow: none;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 600;
+  height: 2rem;
+  padding-block: 0;
   text-transform: none;
 }
-.fc-scryer .fc-button-primary:not(:disabled).fc-button-active {
+.fc-scryer .fc-scryer-button-group {
+  display: inline-flex;
+}
+.fc-scryer .fc-scryer-button-group .fc-scryer-button {
+  border-radius: 0;
+}
+.fc-scryer .fc-scryer-button-group .fc-scryer-button:first-child {
+  border-bottom-left-radius: 0.625rem;
+  border-top-left-radius: 0.625rem;
+}
+.fc-scryer .fc-scryer-button-group .fc-scryer-button:last-child {
+  border-bottom-right-radius: 0.625rem;
+  border-top-right-radius: 0.625rem;
+}
+.fc-scryer .fc-scryer-button-group .fc-scryer-button:not(:first-child) {
+  margin-inline-start: -1px;
+}
+.fc-scryer .fc-scryer-button:not(:disabled).is-selected {
   background: linear-gradient(135deg, var(--scry-accent), var(--scry-accent2));
   border-color: transparent;
   box-shadow: 0 10px 25px color-mix(in srgb, var(--primary) 24%, transparent);
 }
-.fc-scryer .fc-scrollgrid,
-.fc-scryer .fc-theme-standard td,
-.fc-scryer .fc-theme-standard th {
-  border-color: var(--fc-scryer-grid-line);
-}
-.fc-scryer .fc-scrollgrid {
+.fc-scryer .fc-scryer-daygrid {
   border: 1px solid var(--fc-scryer-grid-line);
   border-radius: 1rem;
   background: color-mix(in srgb, var(--card) 68%, transparent);
   overflow: hidden;
 }
-.fc-scryer .fc-col-header-cell {
+.fc-scryer .fc-scryer-day-header {
   background: color-mix(in srgb, var(--card) 82%, transparent);
   color: var(--muted-foreground);
   font-weight: 500;
 }
-.fc-scryer .fc-col-header-cell-cushion {
+.fc-scryer .fc-scryer-day-header-inner {
   display: inline-flex;
   font-size: 0.76rem;
   font-weight: 700;
@@ -1615,32 +1642,26 @@ h6 {
   padding: 0.45rem 0;
   text-transform: uppercase;
 }
-.fc-scryer .fc-daygrid-day-number {
+.fc-scryer .fc-scryer-day-cell-top-inner {
   color: var(--foreground);
 }
-.fc-scryer .fc-toolbar-title {
+.fc-scryer .fc-scryer-toolbar-title {
   color: #fff;
   font-family: var(--font-space-grotesk), "Space Grotesk", sans-serif;
-  font-size: 1.5rem;
+  font-size: 1.75rem;
   font-weight: 700;
   letter-spacing: -0.01em;
 }
-.fc-scryer .fc-daygrid-body {
+.fc-scryer .fc-scryer-daygrid-body {
   width: 100% !important;
 }
-.fc-scryer .fc-daygrid-body-balanced .fc-daygrid-day-events,
-.fc-scryer .fc-daygrid-body-natural .fc-daygrid-day-events {
-  margin: 0 0.4rem 0.5rem;
-}
-.fc-scryer .fc-daygrid-day {
-  background: var(--fc-scryer-cell-bg);
-}
-.fc-scryer .fc-daygrid-day-frame {
+.fc-scryer .fc-scryer-day-cell-inner {
   min-height: 148px;
   padding: 0.5rem 0.5rem 0.55rem;
+  margin: 0 0.4rem 0.5rem;
 }
-.fc-scryer .fc-scryer-day-cell .fc-daygrid-day-frame {
-  background: transparent;
+.fc-scryer .fc-scryer-day-cell {
+  background: var(--fc-scryer-cell-bg);
 }
 .fc-scryer .fc-scryer-day-cell.has-events {
   background: var(--fc-scryer-cell-bg-active);
@@ -1652,10 +1673,7 @@ h6 {
   background: var(--fc-scryer-cell-bg-other);
   opacity: 0.72;
 }
-.fc-scryer .fc-daygrid-day.fc-day-today {
-  background: transparent;
-}
-.fc-scryer .fc-daygrid-day-top {
+.fc-scryer .fc-scryer-day-cell-top {
   align-items: center;
   justify-content: flex-end;
   margin-bottom: 0.35rem;
@@ -1691,18 +1709,12 @@ h6 {
   border-color: var(--primary);
   color: var(--primary-foreground);
 }
-.fc-scryer .fc-daygrid-event-harness {
-  margin-top: 0.26rem;
-}
-.fc-scryer .fc-event {
-  cursor: pointer;
-  margin: 0;
-}
 .fc-scryer .fc-scryer-event {
   position: relative;
+  cursor: pointer;
+  margin-top: 0.26rem;
   background: var(--scryer-event-gradient, var(--scryer-event-color, #3b82f6));
   border: none;
-  --fc-event-text-color: #fff;
   border-radius: 9px;
   box-shadow: 0 6px 18px color-mix(in srgb, var(--scryer-event-color, #3b82f6) 30%, transparent);
   color: #fff;
@@ -1727,8 +1739,31 @@ h6 {
   min-width: 0;
   padding: 7px 9px 7px 14px;
 }
+.fc-scryer .fc-scryer-event-title-row {
+  align-items: flex-start;
+  display: flex;
+  gap: 5px;
+  margin-bottom: 5px;
+  min-width: 0;
+}
+.fc-scryer .fc-scryer-event-monitoring-icon {
+  display: inline-flex;
+  flex: none;
+  margin-top: 1px;
+}
+.fc-scryer .fc-scryer-event-monitoring-icon svg {
+  height: 12px;
+  width: 12px;
+}
+.fc-scryer .fc-scryer-event-monitoring-icon.is-monitored {
+  color: var(--scry-success-text);
+}
+.fc-scryer .fc-scryer-event-monitoring-icon.is-unmonitored {
+  color: var(--scry-danger-text);
+}
 .fc-scryer .fc-scryer-event-title {
   color: #fff;
+  flex: 1 1 auto;
   font-size: 12.5px;
   font-weight: 700;
   line-height: 1.25;
@@ -1736,7 +1771,7 @@ h6 {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  margin-bottom: 5px;
+  min-width: 0;
   text-shadow: 0 1px 1px rgb(0 0 0 / 0.18);
 }
 .fc-scryer .fc-scryer-event-meta {
@@ -1775,45 +1810,172 @@ h6 {
   margin-top: 0.35rem;
   padding: 0.28rem 0.5rem;
 }
+.fc-scryer-popover {
+  --fc-classic-background: var(--background);
+  --fc-classic-foreground: var(--popover-foreground);
+  background-color: var(--background);
+  background-image: linear-gradient(var(--popover), var(--popover));
+  border-color: var(--border-color);
+  border-radius: 0.75rem;
+  box-shadow: 0 24px 64px rgb(0 0 0 / 0.55);
+  color: var(--popover-foreground);
+  overflow: hidden;
+}
+.fc-scryer-hover-card {
+  animation: fc-scryer-hover-card-in 120ms ease-out;
+  background-color: var(--background);
+  background-image: linear-gradient(var(--popover), var(--popover));
+  border: 1px solid color-mix(in srgb, var(--border-color) 88%, var(--primary) 12%);
+  border-radius: 0.875rem;
+  box-shadow: 0 28px 72px rgb(0 0 0 / 0.58);
+  color: var(--popover-foreground);
+  max-height: calc(100vh - 1.5rem);
+  overflow: hidden;
+  pointer-events: none;
+  position: fixed;
+  z-index: 80;
+}
+.fc-scryer-hover-card.is-movie {
+  display: flex;
+  min-height: 210px;
+}
+.fc-scryer-hover-card-image-wrap {
+  background:
+    radial-gradient(circle at 20% 10%, color-mix(in srgb, var(--primary) 22%, transparent), transparent 60%),
+    var(--muted);
+  flex: none;
+  overflow: hidden;
+}
+.fc-scryer-hover-card.is-movie .fc-scryer-hover-card-image-wrap {
+  align-self: stretch;
+  width: 112px;
+}
+.fc-scryer-hover-card.is-episode .fc-scryer-hover-card-image-wrap {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+}
+.fc-scryer-hover-card-image {
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+.fc-scryer-hover-card-copy {
+  min-width: 0;
+  padding: 0.9rem 1rem 1rem;
+}
+.fc-scryer-hover-card-badges {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.55rem;
+}
+.fc-scryer-hover-card-meta-badge {
+  background: color-mix(in srgb, var(--secondary) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-color) 86%, transparent);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: 0.64rem;
+  font-weight: 750;
+  letter-spacing: 0.045em;
+  line-height: 1;
+  padding: 0.28rem 0.45rem;
+  text-transform: uppercase;
+}
+.fc-scryer-hover-card-title {
+  color: var(--popover-foreground);
+  font-family: var(--font-space-grotesk), var(--font-inter), sans-serif;
+  font-size: 1.05rem;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+}
+.fc-scryer-hover-card-episode-title {
+  color: color-mix(in srgb, var(--popover-foreground) 78%, var(--muted-foreground));
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.35;
+  margin-top: 0.28rem;
+}
+.fc-scryer-hover-card-overview {
+  color: var(--muted-foreground);
+  display: -webkit-box;
+  font-size: 0.75rem;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-height: 1.45;
+  margin-top: 0.7rem;
+  overflow: hidden;
+}
+.fc-scryer-hover-card-footer {
+  align-items: center;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 72%, transparent);
+  color: var(--muted-foreground);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.68rem;
+  gap: 0.45rem 0.75rem;
+  margin-top: 0.8rem;
+  padding-top: 0.65rem;
+}
+.fc-scryer-hover-card-footer span {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.32rem;
+}
+.fc-scryer-hover-card-footer svg {
+  height: 0.78rem;
+  width: 0.78rem;
+}
+@keyframes fc-scryer-hover-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
 @media (max-width: 768px) {
-  .fc-scryer .fc-header-toolbar {
+  .fc-scryer .fc-scryer-header-toolbar {
     align-items: center;
     display: grid;
     gap: 0.5rem;
     grid-template-columns: auto minmax(0, 1fr) auto;
     margin-bottom: 0.9rem;
   }
-  .fc-scryer .fc-toolbar-chunk {
+  .fc-scryer .fc-scryer-toolbar-section {
     justify-content: center;
   }
-  .fc-scryer .fc-toolbar-chunk:first-child {
+  .fc-scryer .fc-scryer-toolbar-section:first-child {
     justify-content: flex-start;
   }
-  .fc-scryer .fc-toolbar-chunk:last-child {
+  .fc-scryer .fc-scryer-toolbar-section:last-child {
     justify-content: flex-end;
   }
-  .fc-scryer .fc-button {
+  .fc-scryer .fc-scryer-button {
     font-size: 0.72rem;
     padding: 0.42rem 0.58rem;
   }
-  .fc-scryer .fc-toolbar-title {
+  .fc-scryer .fc-scryer-toolbar-title {
     font-size: clamp(1.05rem, 5vw, 1.25rem);
     text-align: center;
     white-space: nowrap;
   }
-  .fc-scryer .fc-scrollgrid {
+  .fc-scryer .fc-scryer-daygrid {
     border-radius: 0.75rem;
   }
-  .fc-scryer .fc-col-header-cell-cushion {
+  .fc-scryer .fc-scryer-day-header-inner {
     font-size: 0.61rem;
     letter-spacing: 0.04em;
     padding: 0.4rem 0;
   }
-  .fc-scryer .fc-daygrid-day-frame {
+  .fc-scryer .fc-scryer-day-cell-inner {
     min-height: 82px;
     padding: 0.32rem 0.18rem 0.38rem;
   }
-  .fc-scryer .fc-daygrid-day-top {
+  .fc-scryer .fc-scryer-day-cell-top {
     margin-bottom: 0.18rem;
   }
   .fc-scryer .fc-scryer-day-pill {
@@ -1823,11 +1985,10 @@ h6 {
     min-width: 1.45rem;
     padding: 0 0.25rem;
   }
-  .fc-scryer .fc-daygrid-body-balanced .fc-daygrid-day-events,
-  .fc-scryer .fc-daygrid-body-natural .fc-daygrid-day-events {
+  .fc-scryer .fc-scryer-day-cell-inner {
     margin: 0 0.14rem 0.28rem;
   }
-  .fc-scryer .fc-daygrid-event-harness {
+  .fc-scryer .fc-scryer-event {
     margin-top: 0.15rem;
   }
   .fc-scryer .fc-scryer-event::before {
@@ -1835,6 +1996,17 @@ h6 {
   }
   .fc-scryer .fc-scryer-event-card {
     padding: 0.28rem 0.24rem 0.3rem 0.38rem;
+  }
+  .fc-scryer .fc-scryer-event-title-row {
+    gap: 0.2rem;
+    margin-bottom: 0;
+  }
+  .fc-scryer .fc-scryer-event-monitoring-icon {
+    margin-top: 0;
+  }
+  .fc-scryer .fc-scryer-event-monitoring-icon svg {
+    height: 0.58rem;
+    width: 0.58rem;
   }
   .fc-scryer .fc-scryer-event-title {
     display: block;

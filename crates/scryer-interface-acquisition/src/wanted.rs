@@ -20,12 +20,11 @@ pub(crate) fn wanted_search_payload(outcome: WantedSearchOutcome) -> WantedSearc
 
 #[Object]
 impl WantedMutations {
-    /// Re-open the title's title-mismatch scopes for search after a rematch
-    ///. Retained: a rematch changes the scope fingerprint, so the
-    /// re-open prunes coverage and the cursor re-converges.
+    /// Reopen title-mismatch scopes after a rematch so acquisition coverage can converge again.
     async fn trigger_title_mismatch_recovery_search(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Title identity whose changed match scopes should be searched again.")]
         title_id: ID,
     ) -> GqlResult<TriggerTitleMismatchRecoverySearchPayload> {
         let app = app_from_ctx(ctx)?;
@@ -42,11 +41,11 @@ impl WantedMutations {
     }
 
     /// Pause acquisition for a scope. `id` is a state-row id or a convergence scope
-    /// key — a scope key with no row yet materializes one.
+    /// key; a scope key with no row yet materializes one.
     async fn pause_wanted_item(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Wanted-state row id or convergence scope key to pause.")] id: ID,
     ) -> GqlResult<PauseWantedItemPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -62,7 +61,7 @@ impl WantedMutations {
     async fn resume_wanted_item(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Wanted-state row id or convergence scope key to resume.")] id: ID,
     ) -> GqlResult<ResumeWantedItemPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -73,10 +72,11 @@ impl WantedMutations {
         Ok(ResumeWantedItemPayload { id: ID::from(id) })
     }
 
+    /// Force a pending release to be grabbed and report whether the grab was accepted.
     async fn force_grab_pending_release(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Pending-release identity to grab.")] id: ID,
     ) -> GqlResult<ForceGrabPendingReleasePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -91,10 +91,11 @@ impl WantedMutations {
         })
     }
 
+    /// Dismiss a pending release so it is not considered for the current pending state.
     async fn dismiss_pending_release(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Pending-release identity to dismiss.")] id: ID,
     ) -> GqlResult<DismissPendingReleasePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -105,13 +106,13 @@ impl WantedMutations {
         Ok(DismissPendingReleasePayload { id: ID::from(id) })
     }
 
-    /// Start an interactive acquisition-search job over the selected wanted/upgrade
-    /// scopes. Replaces the retired per-item trigger
-    /// mutations: one server job (progress/cancel survive refresh) runs the
-    /// interactive best-release search+grab for every requested scope.
+    /// Start a background acquisition search for the selected wanted or upgrade scopes.
     async fn trigger_acquisition_search(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Optional wanted-kind, facet, library, title, season, and item filters; an empty library list includes all permitted libraries."
+        )]
         input: TriggerAcquisitionSearchInput,
     ) -> GqlResult<AcquisitionSearchJobPayload> {
         let app = app_from_ctx(ctx)?;
@@ -151,11 +152,11 @@ impl WantedMutations {
         })
     }
 
-    /// Cancel a running interactive acquisition-search job.
+    /// Request cancellation of an acquisition-search job and report whether its state changed.
     async fn cancel_acquisition_search(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Acquisition-search job identity to cancel.")] id: ID,
     ) -> GqlResult<CancelAcquisitionSearchPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;

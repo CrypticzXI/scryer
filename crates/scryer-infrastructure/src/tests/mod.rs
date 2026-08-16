@@ -7,10 +7,11 @@ use scryer_application::{
     DownloadSubmission, DownloadSubmissionIdentity, DownloadSubmissionRepository, EpisodeUpdate,
     HousekeepingRepository, ImportRepository, InsertMediaFileInput, LibraryScanUnmatchedItem,
     LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileRepository,
-    MediaFileRole, NotificationChannelRepository, NotificationSubscriptionRepository,
-    OAuthRepository, PendingImportStatus, PendingReleaseRepository, PluginInstallationRepository,
-    ReleaseAttemptRepository, ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId,
-    SettingsRepository, ShowRepository, SortDirection, SubmissionScope, SubtitleDownloadRepository,
+    MediaFileRole, MetadataFieldUpdate, NotificationChannelRepository,
+    NotificationSubscriptionRepository, OAuthRepository, PendingImportStatus,
+    PendingReleaseRepository, PluginInstallationRepository, ReleaseAttemptRepository,
+    ReleaseDecision, ReleaseDownloadAttemptOutcome, ScopedExternalId, SettingsRepository,
+    ShowRepository, SortDirection, SubmissionScope, SubtitleDownloadRepository,
     SubtitleProviderConfigRepository, SubtitleProviderConfigUpdate, TitleArtworkUrlUpdate,
     TitleCatalogFilter, TitleCatalogSort, TitleCatalogSortKey, TitleExternalIdLookup,
     TitleExternalRating, TitleImageBlob, TitleImageKind, TitleImageRepository,
@@ -31,6 +32,7 @@ use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
 mod discovery_pending_context_changes;
+mod emby_media_servers;
 mod external_import_setup_secret_drafts;
 mod imports_download_submissions;
 mod library_scan_unmatched;

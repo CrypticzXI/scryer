@@ -255,34 +255,36 @@ impl DownloadClientSnapshot {
         {
             Ok(history) => {
                 for item in &history {
-                if item.state == DownloadQueueState::Completed {
-                    completed_client_ids.insert(download_client_item_identity(
-                        Some(item.client_id.as_str()),
-                        &item.download_client_item_id,
-                    ));
-                    *completed_raw_item_id_counts
-                        .entry(item.download_client_item_id.clone())
-                        .or_insert(0) += 1;
-                } else if item.state == DownloadQueueState::Failed {
-                    let reason = item
-                        .attention_reason
-                        .as_deref()
-                        .unwrap_or("unknown")
-                        .to_ascii_uppercase();
-                    failed_by_download_id.insert(
-                        download_client_item_identity(
+                    if item.state == DownloadQueueState::Completed {
+                        completed_client_ids.insert(download_client_item_identity(
                             Some(item.client_id.as_str()),
                             &item.download_client_item_id,
-                        ),
-                        FailedDownloadSnapshot {
-                            reason,
-                            download_client_item_id: item.download_client_item_id.clone(),
-                            client_id: item.client_id.clone(),
-                            client_name: normalized_non_empty_owned(Some(item.client_name.clone())),
-                        },
-                    );
+                        ));
+                        *completed_raw_item_id_counts
+                            .entry(item.download_client_item_id.clone())
+                            .or_insert(0) += 1;
+                    } else if item.state == DownloadQueueState::Failed {
+                        let reason = item
+                            .attention_reason
+                            .as_deref()
+                            .unwrap_or("unknown")
+                            .to_ascii_uppercase();
+                        failed_by_download_id.insert(
+                            download_client_item_identity(
+                                Some(item.client_id.as_str()),
+                                &item.download_client_item_id,
+                            ),
+                            FailedDownloadSnapshot {
+                                reason,
+                                download_client_item_id: item.download_client_item_id.clone(),
+                                client_id: item.client_id.clone(),
+                                client_name: normalized_non_empty_owned(Some(
+                                    item.client_name.clone(),
+                                )),
+                            },
+                        );
+                    }
                 }
-            }
                 if !failed_by_download_id.is_empty() {
                     debug!(
                         failed_count = failed_by_download_id.len(),
@@ -427,6 +429,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
     );
 
     let mut submissions_by_title = HashMap::new();
+    let mut episodes_by_title = HashMap::new();
     let mut processed_failed_submissions = HashSet::new();
 
     for item in &grabbed_items {
@@ -476,16 +479,67 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
                 .expect("title submissions cache entry should exist")
         };
 
-        let failed = submissions.iter().find_map(|sub| {
-            dl_snapshot
-                .failed_item(
-                    sub.download_client_id.as_deref(),
-                    &sub.download_client_item_id,
-                )
-                .map(|f| (f, sub))
+        let episode_collection_id = if item.episode_id.is_some()
+            && submissions
+                .iter()
+                .any(|submission| matches!(&submission.scope, SubmissionScope::Collection { .. }))
+        {
+            let episodes = if let Some(cached) = episodes_by_title.get(&item.title_id) {
+                cached
+            } else {
+                let fetched = match app
+                    .services
+                    .catalog
+                    .shows
+                    .list_episodes_for_title(&item.title_id)
+                    .await
+                {
+                    Ok(episodes) => episodes,
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            title_id = item.title_id.as_str(),
+                            "failed to list episodes while matching failed download submissions"
+                        );
+                        Vec::new()
+                    }
+                };
+                episodes_by_title.insert(item.title_id.clone(), fetched);
+                episodes_by_title
+                    .get(&item.title_id)
+                    .expect("title episodes cache entry should exist")
+            };
+            item.episode_id.as_ref().and_then(|episode_id| {
+                episodes
+                    .iter()
+                    .find(|episode| &episode.id == episode_id)
+                    .and_then(|episode| episode.collection_id.as_deref())
+            })
+        } else {
+            None
+        };
+        let preferred_release = normalize_release_attempt_title(Some(release_title.as_str()));
+        let mut failed = submissions
+            .iter()
+            .filter(|submission| {
+                submission_blocks_wanted_item(submission, item, episode_collection_id)
+            })
+            .filter_map(|submission| {
+                dl_snapshot
+                    .failed_item(
+                        submission.download_client_id.as_deref(),
+                        &submission.download_client_item_id,
+                    )
+                    .map(|failed_item| (failed_item, submission))
+            })
+            .collect::<Vec<_>>();
+        failed.sort_by_key(|(_, submission)| {
+            preferred_release.is_none()
+                || normalize_release_attempt_title(submission.source_title.as_deref())
+                    != preferred_release
         });
 
-        if let Some((failed_item, submission)) = failed {
+        for (failed_item, submission) in failed {
             let failure_key = format!(
                 "{}:{}:{}",
                 submission.download_client_id.as_deref().unwrap_or(""),
@@ -512,7 +566,7 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
                 "grabbed release failed in download client"
             );
 
-            let _ = process_download_failure(
+            let outcome = process_download_failure(
                 app,
                 DownloadFailureContext {
                     wanted_item: Some(item.clone()),
@@ -529,6 +583,9 @@ async fn check_grabbed_for_failures(app: &AppUseCase, dl_snapshot: &DownloadClie
                 Some(dl_snapshot),
             )
             .await;
+            if outcome != FailureHandlingOutcome::AlreadyHandled {
+                break;
+            }
         }
     }
 }
@@ -593,11 +650,13 @@ async fn resolve_failed_collection_episode_wanted_items(
     Ok(wanted_items
         .into_iter()
         .filter(|item| {
-            matches!(item.status, AcquisitionScopeStatus::Wanted | AcquisitionScopeStatus::Grabbed)
-                && item
-                    .episode_id
-                    .as_ref()
-                    .is_some_and(|episode_id| episode_ids.contains(episode_id))
+            matches!(
+                item.status,
+                AcquisitionScopeStatus::Wanted | AcquisitionScopeStatus::Grabbed
+            ) && item
+                .episode_id
+                .as_ref()
+                .is_some_and(|episode_id| episode_ids.contains(episode_id))
         })
         .collect())
 }
@@ -1198,11 +1257,7 @@ async fn recover_from_standby_candidates(
                     .services
                     .workflow
                     .pending_releases
-                    .update_pending_release_status(
-                        &standby.id,
-                        PendingReleaseStatus::Standby,
-                        None,
-                    )
+                    .update_pending_release_status(&standby.id, PendingReleaseStatus::Standby, None)
                     .await;
                 return StandbyRecoveryOutcome::Deferred;
             }
@@ -1345,7 +1400,10 @@ async fn persist_standby_candidates(
 mod client_snapshot_tests {
     use super::*;
 
-    fn snapshot(queue_listing_failed: bool, history_listing_failed: bool) -> DownloadClientSnapshot {
+    fn snapshot(
+        queue_listing_failed: bool,
+        history_listing_failed: bool,
+    ) -> DownloadClientSnapshot {
         DownloadClientSnapshot {
             active_titles: std::collections::HashSet::new(),
             active_client_ids: std::collections::HashSet::new(),

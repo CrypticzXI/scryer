@@ -3,7 +3,8 @@ mod mutation;
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use chrono::{DateTime, Utc};
 use scryer_interface_core::{
-    AuthRuntimeStateSnapshot, actor_from_ctx, app_from_ctx, auth_runtime_from_ctx, to_gql_error,
+    AuthRuntimeStateSnapshot, actor_from_ctx, app_from_ctx, auth_runtime_from_ctx,
+    default_persist_session_from_ctx, to_gql_error,
 };
 use scryer_interface_media::mappers::{
     from_download_client_config_with_fields, from_download_client_routing_entry,
@@ -93,6 +94,7 @@ mod tests {
                         display_name: "Main Jellyfin".to_string(),
                         login_enabled: true,
                         linking_enabled: false,
+                        emby_connect_enabled: false,
                     },
                     scryer_application::ExternalAuthRuntimeConnection {
                         id: "plex-main".to_string(),
@@ -100,6 +102,7 @@ mod tests {
                         display_name: "Main Plex".to_string(),
                         login_enabled: false,
                         linking_enabled: true,
+                        emby_connect_enabled: false,
                     },
                 ],
             },
@@ -137,6 +140,7 @@ mod tests {
                     display_name: "Main Jellyfin".to_string(),
                     login_enabled: true,
                     linking_enabled: true,
+                    emby_connect_enabled: false,
                 }],
             },
             false,
@@ -221,6 +225,7 @@ fn from_security_settings(
         mfa_require_config_step_up: settings.mfa_require_config_step_up,
         mfa_require_password_login: settings.mfa_require_password_login,
         totp_require_jellyfin_login: settings.totp_require_jellyfin_login,
+        totp_require_emby_login: settings.totp_require_emby_login,
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         env_override_active: auth_runtime.env_override_active,
         env_override_description: auth_runtime.env_override_description.clone(),
@@ -437,6 +442,7 @@ fn from_external_auth_runtime_settings(
                 display_name: connection.display_name,
                 login_enabled: effective_form_login_enabled && connection.login_enabled,
                 linking_enabled: connection.linking_enabled,
+                emby_connect_enabled: connection.emby_connect_enabled,
             })
             .collect(),
     }
@@ -445,11 +451,13 @@ fn from_external_auth_runtime_settings(
 fn from_auth_runtime_state(
     auth_runtime: &AuthRuntimeStateSnapshot,
     security_settings: scryer_application::SecuritySettings,
+    default_persist_session: bool,
 ) -> AuthRuntimeStatePayload {
     AuthRuntimeStatePayload {
         effective_form_login_enabled: auth_runtime.effective_form_login_enabled,
         skip_login_for_local_ips: auth_runtime.skip_login_for_local_ips,
         passkey_enabled: auth_runtime.passkey_enabled,
+        default_persist_session,
         env_override_active: auth_runtime.env_override_active,
         mfa_require_password_login: auth_runtime.effective_form_login_enabled
             && security_settings.mfa_require_password_login,
@@ -457,6 +465,8 @@ fn from_auth_runtime_state(
             && security_settings.mfa_require_config_step_up,
         totp_require_jellyfin_login: auth_runtime.effective_form_login_enabled
             && security_settings.totp_require_jellyfin_login,
+        totp_require_emby_login: auth_runtime.effective_form_login_enabled
+            && security_settings.totp_require_emby_login,
     }
 }
 
@@ -503,6 +513,7 @@ fn from_delay_profile(profile: scryer_application::DelayProfile) -> DelayProfile
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl SettingsQueries {
+    /// Returns the current subtitle settings available to the authenticated actor.
     async fn subtitle_settings(&self, ctx: &Context<'_>) -> GqlResult<SubtitleSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -513,6 +524,7 @@ impl SettingsQueries {
         Ok(from_subtitle_settings(settings))
     }
 
+    /// Returns acquisition thresholds and polling settings for the authenticated actor.
     async fn acquisition_settings(
         &self,
         ctx: &Context<'_>,
@@ -526,6 +538,7 @@ impl SettingsQueries {
         Ok(from_acquisition_settings(settings))
     }
 
+    /// Returns system settings, effective image-cache limits, and trusted plugin certificates.
     async fn general_settings(&self, ctx: &Context<'_>) -> GqlResult<GeneralSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -536,6 +549,7 @@ impl SettingsQueries {
         Ok(from_general_settings(settings))
     }
 
+    /// Returns whether the recycle bin is enabled for the authenticated actor.
     async fn recycle_bin_settings(
         &self,
         ctx: &Context<'_>,
@@ -549,6 +563,7 @@ impl SettingsQueries {
         Ok(from_recycle_bin_settings(settings))
     }
 
+    /// Returns auto-backup scheduling metadata without exposing the backup key.
     async fn auto_backup_settings(
         &self,
         ctx: &Context<'_>,
@@ -562,6 +577,7 @@ impl SettingsQueries {
         Ok(from_auto_backup_settings(settings))
     }
 
+    /// Returns configured, default, and effective backup paths.
     async fn backup_settings(&self, ctx: &Context<'_>) -> GqlResult<BackupSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -572,6 +588,7 @@ impl SettingsQueries {
         Ok(from_backup_settings(settings))
     }
 
+    /// Returns the current UI settings for the authenticated actor.
     async fn my_ui_settings(&self, ctx: &Context<'_>) -> GqlResult<UiSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -579,6 +596,7 @@ impl SettingsQueries {
         Ok(from_ui_settings(settings))
     }
 
+    /// Returns saved security settings together with effective and environment-overridden login state.
     async fn security_settings(&self, ctx: &Context<'_>) -> GqlResult<SecuritySettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -591,6 +609,7 @@ impl SettingsQueries {
         Ok(from_security_settings(settings, &auth_runtime.snapshot()))
     }
 
+    /// Returns effective external-auth providers and connections, hiding login capability when form login is disabled.
     async fn external_auth_runtime_settings(
         &self,
         ctx: &Context<'_>,
@@ -607,9 +626,11 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Lists media-server connections, optionally restricted to one provider.
     async fn media_server_connections(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Optional provider filter; omit or pass null to list every connection.")]
         provider: Option<MediaServerProviderValue>,
     ) -> GqlResult<Vec<MediaServerConnectionPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -628,10 +649,12 @@ impl SettingsQueries {
         .map_err(to_gql_error)
     }
 
+    /// Lists users from the media-server connection identified by `connection_id`.
     async fn jellyfin_server_users(
         &self,
         ctx: &Context<'_>,
-        connection_id: ID,
+        #[graphql(desc = "ID of the Jellyfin media-server connection to query.")] connection_id: ID,
+        #[graphql(desc = "Optional user-name search; omit or pass null for no text filter.")]
         search: Option<String>,
     ) -> GqlResult<Vec<JellyfinServerUserPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -642,9 +665,11 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Lists grouped media-server users, optionally filtered by search text.
     async fn media_server_users(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Optional user search; omit or pass null to return all groups.")]
         search: Option<String>,
     ) -> GqlResult<Vec<MediaServerUserGroupPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -660,6 +685,7 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Returns effective authentication and MFA requirements after runtime overrides are applied.
     async fn auth_runtime_state(&self, ctx: &Context<'_>) -> GqlResult<AuthRuntimeStatePayload> {
         let app = app_from_ctx(ctx)?;
         let auth_runtime = auth_runtime_from_ctx(ctx);
@@ -667,9 +693,11 @@ impl SettingsQueries {
         Ok(from_auth_runtime_state(
             &auth_runtime.snapshot(),
             security_settings,
+            default_persist_session_from_ctx(ctx),
         ))
     }
 
+    /// Lists the authenticated actor's passkey summaries without credential material.
     async fn my_passkeys(&self, ctx: &Context<'_>) -> GqlResult<Vec<PasskeySummaryPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -680,6 +708,7 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Returns TOTP status and recovery-code count without exposing the shared secret or codes.
     async fn my_totp(&self, ctx: &Context<'_>) -> GqlResult<TotpStatusPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -689,6 +718,7 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Lists OAuth grants authorized by the authenticated actor without client secrets.
     async fn my_oauth_apps(&self, ctx: &Context<'_>) -> GqlResult<Vec<OAuthConnectedAppPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -698,6 +728,7 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Lists delay profiles with minute-based delays and their media-facet assignments.
     async fn delay_profiles(&self, ctx: &Context<'_>) -> GqlResult<Vec<DelayProfilePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -705,9 +736,11 @@ impl SettingsQueries {
         Ok(profiles.into_iter().map(from_delay_profile).collect())
     }
 
+    /// Returns media settings for the requested content scope.
     async fn media_settings(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Content scope whose media settings should be returned.")]
         scope: ContentScopeValue,
     ) -> GqlResult<MediaSettingsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -718,6 +751,7 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Returns the configured movie, series, and anime library paths.
     async fn library_paths(&self, ctx: &Context<'_>) -> GqlResult<LibraryPathsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -727,6 +761,7 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Returns service TLS configuration and related settings.
     async fn service_settings(&self, ctx: &Context<'_>) -> GqlResult<ServiceSettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -736,6 +771,7 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Returns quality profiles and the current global and facet selections.
     async fn quality_profile_settings(
         &self,
         ctx: &Context<'_>,
@@ -748,9 +784,11 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Returns download-client routing entries for a content scope.
     async fn download_client_routing(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Content scope whose download-client routing should be returned.")]
         scope: ContentScopeValue,
     ) -> GqlResult<Vec<DownloadClientRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -766,9 +804,11 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Returns indexer routing entries for a content scope.
     async fn indexer_routing(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Content scope whose indexer routing should be returned.")]
         scope: ContentScopeValue,
     ) -> GqlResult<Vec<IndexerRoutingEntryPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -784,9 +824,13 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Lists indexer configurations and current query statistics, optionally filtered by provider type.
     async fn indexers(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Optional provider-type filter; omit or pass null to list every indexer."
+        )]
         provider_type: Option<String>,
     ) -> GqlResult<Vec<IndexerConfigPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -815,6 +859,7 @@ impl SettingsQueries {
         Ok(payloads)
     }
 
+    /// Returns compatible download clients and indexers for routing configuration.
     async fn indexer_download_client_mapping_catalog(
         &self,
         ctx: &Context<'_>,
@@ -853,9 +898,26 @@ impl SettingsQueries {
                         .collect(),
                 })
                 .collect(),
+            provider_compatibility: catalog
+                .provider_compatibility
+                .into_iter()
+                .map(
+                    |provider| IndexerDownloadClientProviderCompatibilityPayload {
+                        provider_type: provider.provider_type,
+                        protocol_families: provider.protocol_families,
+                        supports_mapping: provider.supports_mapping,
+                        compatible_client_ids: provider
+                            .compatible_client_ids
+                            .into_iter()
+                            .map(Into::into)
+                            .collect(),
+                    },
+                )
+                .collect(),
         })
     }
 
+    /// Lists configured indexer proxy settings.
     async fn indexer_proxy_configs(
         &self,
         ctx: &Context<'_>,
@@ -868,9 +930,11 @@ impl SettingsQueries {
             .map_err(to_gql_error)
     }
 
+    /// Lists root folders for a media facet.
     async fn root_folders(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Media facet whose root folders should be returned.")]
         facet: MediaFacetValue,
     ) -> GqlResult<Vec<RootFolderPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -888,6 +952,7 @@ impl SettingsQueries {
             .collect())
     }
 
+    /// Lists download-client configurations with provider field metadata and redacted secrets.
     async fn download_client_configs(
         &self,
         ctx: &Context<'_>,
@@ -915,9 +980,13 @@ impl SettingsQueries {
             .collect())
     }
 
+    /// Lists subtitle-provider configurations, optionally filtered by provider type.
     async fn subtitle_provider_configs(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Optional provider-type filter; matching is case-insensitive and null returns all providers."
+        )]
         provider_type: Option<String>,
     ) -> GqlResult<Vec<SubtitleProviderConfigPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -940,6 +1009,7 @@ impl SettingsQueries {
             .collect())
     }
 
+    /// Lists users with authorization and authentication-factor status, excluding secret values.
     async fn users(&self, ctx: &Context<'_>) -> GqlResult<Vec<UserPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;

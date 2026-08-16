@@ -14,6 +14,8 @@ mod backups;
 mod dataloader_enrichment;
 #[path = "integration_graphql/downloads_housekeeping_system.rs"]
 mod downloads_housekeeping_system;
+#[path = "integration_graphql/emby_contract.rs"]
+mod emby_contract;
 #[path = "integration_graphql/external_import_secret_drafts.rs"]
 mod external_import_secret_drafts;
 #[path = "integration_graphql/library_scan.rs"]
@@ -63,9 +65,9 @@ use scryer_domain::{
     AppPermissionMask, Collection, CollectionType, DomainEventActorKind, DomainEventPayload,
     DomainEventStream, DomainExternalIds, DownloadFailedEventData, Episode, EpisodeType,
     ExternalId, Id, ImportCompletedEventData, Library, LibraryPermission, LibraryPermissionMask,
-    MediaFacet, MediaPathUpdate, MediaServerConnection, MediaServerProvider, MediaUpdateType,
-    NewDomainEvent, ReleaseBlocklistedEventData, Title, TitleContextSnapshot, User,
-    UserAuthorization,
+    MediaFacet, MediaFileAnalyzedEventData, MediaPathUpdate, MediaServerConnection,
+    MediaServerProvider, MediaUpdateType, NewDomainEvent, ReleaseBlocklistedEventData, Title,
+    TitleContextSnapshot, User, UserAuthorization,
 };
 use scryer_infrastructure::{
     DownloadSubmissionStore, FileSystemLibraryRenamer, MediaFileStore, MediaServerConnectionStore,
@@ -538,6 +540,23 @@ impl MediaFileRepository for FailingMediaFileRepo {
             .await
     }
 
+    async fn set_media_file_roles_for_episode(
+        &self,
+        title_id: &str,
+        episode_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        self.inner
+            .set_media_file_roles_for_episode(
+                title_id,
+                episode_id,
+                primary_file_id,
+                additional_file_ids,
+            )
+            .await
+    }
+
     async fn mark_scan_failed(&self, file_id: &str, error: &str) -> AppResult<()> {
         self.inner.mark_scan_failed(file_id, error).await
     }
@@ -707,6 +726,23 @@ impl MediaFileRepository for CountingMediaFileRepo {
     ) -> AppResult<()> {
         self.inner
             .set_media_file_roles_for_title(title_id, primary_file_id, additional_file_ids)
+            .await
+    }
+
+    async fn set_media_file_roles_for_episode(
+        &self,
+        title_id: &str,
+        episode_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()> {
+        self.inner
+            .set_media_file_roles_for_episode(
+                title_id,
+                episode_id,
+                primary_file_id,
+                additional_file_ids,
+            )
             .await
     }
 
@@ -1203,6 +1239,15 @@ async fn seed_typed_settings_definitions(ctx: &TestContext) {
                 category: "security".into(),
                 scope: "system".into(),
                 key_name: "auth.totp.require_jellyfin_login".into(),
+                data_type: "boolean".into(),
+                default_value_json: "false".into(),
+                is_sensitive: false,
+                validation_json: None,
+            },
+            SettingDefinitionSeed {
+                category: "security".into(),
+                scope: "system".into(),
+                key_name: "auth.totp.require_emby_login".into(),
                 data_type: "boolean".into(),
                 default_value_json: "false".into(),
                 is_sensitive: false,

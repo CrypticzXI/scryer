@@ -3,6 +3,8 @@ import type { Facet } from "@/lib/types/titles";
 import type { ViewCategoryId } from "@/lib/types/quality-profiles";
 import type { MetadataCatalogMonitorType } from "@/lib/hooks/use-global-search";
 
+export type MetadataFacetKey = "movie" | "series" | "anime";
+
 export type FacetDefinition = {
   /** Domain enum value: "MOVIE" | "SERIES" | "ANIME" */
   id: Facet;
@@ -11,7 +13,7 @@ export type FacetDefinition = {
   /** Settings/quality-profile scope: "movie" | "series" | "anime" */
   scopeId: ViewCategoryId;
   /** Key in MetadataSearchResults from SMG: "movie" | "series" | "anime" */
-  metadataKey: string;
+  metadataKey: MetadataFacetKey;
 
   icon: LucideIcon;
   navLabelKey: string;
@@ -115,6 +117,8 @@ export function facetByScope(scopeId: string): FacetDefinition | undefined {
   return FACETS_BY_SCOPE.get(scopeId as ViewCategoryId);
 }
 
-export function facetByMetadataKey(metadataKey: string): FacetDefinition | undefined {
+export function facetByMetadataKey(
+  metadataKey: MetadataFacetKey,
+): FacetDefinition | undefined {
   return FACETS_BY_METADATA_KEY.get(metadataKey);
 }

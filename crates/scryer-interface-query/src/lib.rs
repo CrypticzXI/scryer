@@ -512,6 +512,7 @@ struct UtilityQueries;
 struct AccountQueries;
 
 #[derive(MergedObject, Default)]
+/// Read-only GraphQL query root for authenticated HTTP requests.
 pub struct QueryRoot(
     CatalogQueries,
     ActivityQueries,
@@ -598,6 +599,7 @@ fn external_import_setup_secret_status_payload_query(
 
 #[Object]
 impl ExternalImportQueries {
+    /// Read the caller-visible external import setup secret draft; requires system-settings management permission.
     async fn external_import_setup_secret_draft(
         &self,
         ctx: &Context<'_>,
@@ -610,6 +612,7 @@ impl ExternalImportQueries {
             .map_err(to_gql_error)
     }
 
+    /// Report whether an external import setup secret draft exists and whether the caller owns it.
     async fn external_import_setup_secret_draft_status(
         &self,
         ctx: &Context<'_>,
@@ -625,9 +628,13 @@ impl ExternalImportQueries {
 
 #[Object]
 impl AccountQueries {
+    /// List linked external accounts visible to the caller, optionally restricted to a user ID.
     async fn linked_accounts(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "User ID filter; omitted lists accounts visible to the caller."
+        )]
         user_id: Option<ID>,
     ) -> GqlResult<Vec<LinkedAccountPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -639,6 +646,7 @@ impl AccountQueries {
             .map_err(to_gql_error)
     }
 
+    /// List external account invitations visible to the caller.
     async fn external_account_invites(
         &self,
         ctx: &Context<'_>,
@@ -655,15 +663,31 @@ impl AccountQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl CatalogQueries {
+    /// List a permission-filtered title catalog page with optional facet, filter, search, sort, and pagination controls.
     async fn titles(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Restrict results to one media facet; omitted includes all facets visible to the caller."
+        )]
         facet: Option<MediaFacetValue>,
+        #[graphql(
+            desc = "Restrict results to these library IDs; omitted or empty uses all libraries visible to the caller."
+        )]
         library_ids: Option<Vec<ID>>,
+        #[graphql(desc = "Optional title search text; omitted applies no text filter.")]
         query: Option<String>,
+        #[graphql(
+            desc = "Optional catalog filters for monitoring, content status, roots, tags, year, and rating."
+        )]
         filter: Option<TitleCatalogFilterInput>,
+        #[graphql(desc = "Optional sort key and direction; omitted uses the application default.")]
         sort: Option<TitleCatalogSortInput>,
+        #[graphql(desc = "Requested page size; defaults to 300 and is clamped to 1 through 300.")]
         limit: Option<i32>,
+        #[graphql(
+            desc = "Zero-based page offset; defaults to 0 and negative values are treated as 0."
+        )]
         offset: Option<i32>,
     ) -> GqlResult<TitleCatalogPayload> {
         let app = app_from_ctx(ctx)?;
@@ -715,11 +739,21 @@ impl CatalogQueries {
         })
     }
 
+    /// Return available catalog filter values for the requested facet and library scope.
     async fn title_catalog_filter_options(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Restrict options to one media facet; omitted includes all facets visible to the caller."
+        )]
         facet: Option<MediaFacetValue>,
+        #[graphql(
+            desc = "Restrict options to these library IDs; omitted or empty uses all libraries visible to the caller."
+        )]
         library_ids: Option<Vec<ID>>,
+        #[graphql(
+            desc = "Restrict options to these root-folder IDs; omitted or empty uses all roots, and blank or duplicate values are ignored."
+        )]
         root_folder_ids: Option<Vec<ID>>,
     ) -> GqlResult<TitleCatalogFilterOptionsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -756,10 +790,13 @@ impl CatalogQueries {
         })
     }
 
+    /// List libraries visible to the caller that grant at least the requested permission.
     async fn libraries(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Restrict results to one media facet; omitted includes all facets.")]
         facet: Option<MediaFacetValue>,
+        #[graphql(desc = "Minimum library permission required; defaults to View.")]
         permission: Option<LibraryPermissionValue>,
     ) -> GqlResult<Vec<LibraryPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -777,11 +814,17 @@ impl CatalogQueries {
         Ok(libraries.into_iter().map(from_library).collect())
     }
 
+    /// List media requests visible to the caller, optionally filtered by facet, libraries, and status.
     async fn media_requests(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Restrict requests to one media facet; omitted includes all facets.")]
         facet: Option<MediaFacetValue>,
+        #[graphql(
+            desc = "Restrict requests to these library IDs; omitted uses all permitted libraries and an empty list returns no rows."
+        )]
         library_ids: Option<Vec<ID>>,
+        #[graphql(desc = "Restrict requests to one status; omitted includes all statuses.")]
         status: Option<MediaRequestStatusValue>,
     ) -> GqlResult<Vec<MediaRequestPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -803,11 +846,17 @@ impl CatalogQueries {
             .collect())
     }
 
+    /// List only the caller's media requests, optionally filtered by facet, libraries, and status.
     async fn my_media_requests(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Restrict requests to one media facet; omitted includes all facets.")]
         facet: Option<MediaFacetValue>,
+        #[graphql(
+            desc = "Restrict requests to these library IDs; omitted uses all permitted libraries and an empty list returns no rows."
+        )]
         library_ids: Option<Vec<ID>>,
+        #[graphql(desc = "Restrict requests to one status; omitted includes all statuses.")]
         status: Option<MediaRequestStatusValue>,
     ) -> GqlResult<Vec<MediaRequestPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -829,10 +878,11 @@ impl CatalogQueries {
             .collect())
     }
 
+    /// Read settings for a library by ID, subject to the caller's library-settings permission.
     async fn library_settings(
         &self,
         ctx: &Context<'_>,
-        library_id: ID,
+        #[graphql(desc = "Library ID whose settings are returned.")] library_id: ID,
     ) -> GqlResult<LibrarySettingsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -844,10 +894,13 @@ impl CatalogQueries {
         Ok(from_library_settings(settings))
     }
 
+    /// Find visible titles by external IDs from a named metadata source.
     async fn titles_by_external_ids(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Metadata-provider namespace used to interpret the external IDs.")]
         source: String,
+        #[graphql(desc = "External ID values to match; an empty list returns no titles.")]
         values: Vec<String>,
     ) -> GqlResult<Vec<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
@@ -863,7 +916,12 @@ impl CatalogQueries {
             .collect())
     }
 
-    async fn title(&self, ctx: &Context<'_>, id: ID) -> GqlResult<Option<TitlePayload>> {
+    /// Fetch a visible title by ID, returning null when it does not exist or is not accessible.
+    async fn title(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Title ID to fetch.")] id: ID,
+    ) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let selection = TitlePayloadSelection::from_ctx(ctx);
@@ -877,11 +935,13 @@ impl CatalogQueries {
         Ok(title.map(|title| from_title(&app, title)))
     }
 
+    /// Fetch an episode by ID while verifying that it belongs to the supplied parent title.
     async fn episode(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Parent title ID used to verify the episode belongs to that title.")]
         title_id: ID,
-        episode_id: ID,
+        #[graphql(desc = "Episode ID to fetch and verify against title_id.")] episode_id: ID,
     ) -> GqlResult<Option<EpisodePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -894,9 +954,12 @@ impl CatalogQueries {
             .map(|episode| from_episode(&app, episode)))
     }
 
-    /// Fetch an episode by its globally unique id — targeted-refetch primitive;
-    /// unlike `episode`, no parent title id is required.
-    async fn episode_by_id(&self, ctx: &Context<'_>, id: ID) -> GqlResult<Option<EpisodePayload>> {
+    /// Fetch an episode by globally unique ID without requiring a parent title ID.
+    async fn episode_by_id(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Episode ID to fetch.")] id: ID,
+    ) -> GqlResult<Option<EpisodePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let episode = app
@@ -906,11 +969,11 @@ impl CatalogQueries {
         Ok(episode.map(|episode| from_episode(&app, episode)))
     }
 
-    /// Fetch a collection by its globally unique id — targeted-refetch primitive.
+    /// Fetch a collection by globally unique ID, returning null when it is absent or inaccessible.
     async fn collection_by_id(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Collection ID to fetch.")] id: ID,
     ) -> GqlResult<Option<CollectionPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -921,11 +984,14 @@ impl CatalogQueries {
         Ok(collection.map(from_collection))
     }
 
+    /// Fetch a visible title by facet, optional library slug, and title slug.
     async fn title_by_slug(
         &self,
         ctx: &Context<'_>,
-        facet: MediaFacetValue,
+        #[graphql(desc = "Media facet used to scope the slug lookup.")] facet: MediaFacetValue,
+        #[graphql(desc = "Optional library slug used to disambiguate the title.")]
         library_slug: Option<String>,
+        #[graphql(desc = "Title slug to look up within the facet and optional library.")]
         slug: String,
     ) -> GqlResult<Option<TitlePayload>> {
         let app = app_from_ctx(ctx)?;
@@ -940,9 +1006,11 @@ impl CatalogQueries {
         Ok(Some(from_title(&app, title)))
     }
 
+    /// Preview the rename plan for a title or an entire facet without changing files.
     async fn media_rename_preview(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Title or facet whose rename plan is returned; no files are changed.")]
         input: MediaRenamePreviewInput,
     ) -> GqlResult<MediaRenamePlanPayload> {
         let app = app_from_ctx(ctx)?;
@@ -963,10 +1031,11 @@ impl CatalogQueries {
         Ok(from_media_rename_plan(plan))
     }
 
+    /// Preview deleting all media files for one title without changing files.
     async fn delete_title_preview(
         &self,
         ctx: &Context<'_>,
-        title_id: ID,
+        #[graphql(desc = "Title ID whose associated media files would be deleted.")] title_id: ID,
     ) -> GqlResult<DeletePreviewPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -978,9 +1047,13 @@ impl CatalogQueries {
         Ok(from_delete_preview(preview))
     }
 
+    /// Preview deleting media files for the supplied title IDs without changing files.
     async fn delete_titles_preview(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Title IDs whose associated media files would be deleted; no files are changed."
+        )]
         input: DeleteTitlesPreviewInput,
     ) -> GqlResult<DeleteTitlesPreviewPayload> {
         let app = app_from_ctx(ctx)?;
@@ -997,10 +1070,11 @@ impl CatalogQueries {
         Ok(from_delete_titles_preview(preview))
     }
 
+    /// Preview deleting one media file without changing files.
     async fn delete_media_file_preview(
         &self,
         ctx: &Context<'_>,
-        file_id: ID,
+        #[graphql(desc = "Media-file ID whose deletion would be previewed.")] file_id: ID,
     ) -> GqlResult<DeletePreviewPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1012,9 +1086,11 @@ impl CatalogQueries {
         Ok(from_delete_preview(preview))
     }
 
+    /// Preview deleting one external subtitle file without changing files.
     async fn delete_external_subtitle_preview(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "External-subtitle ID whose deletion would be previewed.")]
         external_subtitle_id: ID,
     ) -> GqlResult<DeletePreviewPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1027,7 +1103,12 @@ impl CatalogQueries {
         Ok(from_delete_preview(preview))
     }
 
-    async fn wanted_item(&self, ctx: &Context<'_>, id: ID) -> GqlResult<Option<WantedItemPayload>> {
+    /// Fetch one wanted item by ID, returning null when it is absent or inaccessible.
+    async fn wanted_item(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Wanted-item ID to fetch.")] id: ID,
+    ) -> GqlResult<Option<WantedItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
         let item = app
@@ -1040,9 +1121,13 @@ impl CatalogQueries {
         Ok(item)
     }
 
+    /// Search indexers for a title, series movie link, or episode and return at most 200 results.
     async fn search_releases(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Search target and optional season, episode, and result limit; season and episode must be supplied together."
+        )]
         input: SearchReleasesInput,
     ) -> GqlResult<Vec<IndexerSearchResultPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -1109,13 +1194,11 @@ impl CatalogQueries {
             .collect())
     }
 
-    /// Poll an interactive release-search job started by
-    /// `startInteractiveReleaseSearch`. `null` for an unknown, evicted, or
-    /// another user's job.
+    /// Poll an interactive release-search job; null means no visible snapshot exists.
     async fn interactive_release_search(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Interactive release-search job ID to poll.")] id: ID,
     ) -> GqlResult<Option<InteractiveReleaseSearchPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1126,9 +1209,13 @@ impl CatalogQueries {
         Ok(snapshot.map(from_interactive_release_search_snapshot))
     }
 
+    /// List title history events with optional identity, event, grouping, and offset filters.
     async fn title_history(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Event, title, library, text, grouping, and pagination filters."
+        )]
         filter: TitleHistoryFilterInput,
     ) -> GqlResult<TitleHistoryPagePayload> {
         let app = app_from_ctx(ctx)?;
@@ -1160,10 +1247,14 @@ impl CatalogQueries {
         Ok(from_title_history_page(page, offset).map_err(to_gql_error)?)
     }
 
+    /// List blocklisted releases for one title; the limit defaults to 100 and values below 1 become 1.
     async fn title_release_blocklist(
         &self,
         ctx: &Context<'_>,
-        title_id: ID,
+        #[graphql(desc = "Title ID whose blocked releases are returned.")] title_id: ID,
+        #[graphql(
+            desc = "Maximum entries to return; defaults to 100 and values below 1 become 1."
+        )]
         limit: Option<i32>,
     ) -> GqlResult<Vec<TitleReleaseBlocklistEntryPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -1186,11 +1277,12 @@ impl CatalogQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl ActivityQueries {
+    /// List recent activity events with zero-based offset pagination.
     async fn activity_events(
         &self,
         ctx: &Context<'_>,
-        limit: Option<i32>,
-        offset: Option<i32>,
+        #[graphql(desc = "Maximum events to return; defaults to 100.")] limit: Option<i32>,
+        #[graphql(desc = "Number of events to skip; defaults to 0.")] offset: Option<i32>,
     ) -> GqlResult<Vec<ActivityEventPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1205,14 +1297,21 @@ impl ActivityQueries {
         Ok(events.into_iter().map(from_activity_event).collect())
     }
 
+    /// List audit events visible to the caller, filtered by event type, title, facet, sequence, and limit.
     async fn audit_log(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Optional event types to include; omitted includes all visible types.")]
         event_types: Option<Vec<DomainEventTypeValue>>,
-        title_id: Option<ID>,
-        facet: Option<MediaFacetValue>,
+        #[graphql(desc = "Include only events for this title ID.")] title_id: Option<ID>,
+        #[graphql(desc = "Include only events for this media facet.")] facet: Option<
+            MediaFacetValue,
+        >,
+        #[graphql(desc = "Return events after this exclusive sequence number.")]
         after_sequence: Option<Long>,
+        #[graphql(desc = "Return events before this exclusive sequence number.")]
         before_sequence: Option<Long>,
+        #[graphql(desc = "Maximum events to return; defaults to 100 and values below 1 become 1.")]
         limit: Option<i32>,
     ) -> GqlResult<Vec<DomainEventEnvelopePayload>> {
         let app = app_from_ctx(ctx)?;
@@ -1234,6 +1333,7 @@ impl ActivityQueries {
         Ok(events.into_iter().map(from_domain_event).collect())
     }
 
+    /// List active library scan sessions visible to the caller.
     async fn active_library_scans(
         &self,
         ctx: &Context<'_>,
@@ -1250,11 +1350,12 @@ impl ActivityQueries {
             .collect())
     }
 
+    /// Poll deprecated external movie or series source warmup status for one session.
     #[graphql(deprecation = "use externalImportWarmupStatus")]
     async fn external_import_arr_source_warmup_status(
         &self,
         ctx: &Context<'_>,
-        session_id: ID,
+        #[graphql(desc = "External movie or series source warmup session ID to poll.")] session_id: ID,
     ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1269,12 +1370,11 @@ impl ActivityQueries {
         Ok(from_external_import_monitor_warmup_progress(snapshot))
     }
 
-    /// Kind-neutral warmup status lookup — covers Arr source and Prowlarr
-    /// discovery sessions alike.
+    /// Poll warmup status for one external movie, series, or indexer discovery session.
     async fn external_import_warmup_status(
         &self,
         ctx: &Context<'_>,
-        session_id: ID,
+        #[graphql(desc = "Warmup session ID to poll.")] session_id: ID,
     ) -> GqlResult<ExternalImportMonitorWarmupProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1289,9 +1389,13 @@ impl ActivityQueries {
         Ok(from_external_import_monitor_warmup_progress(snapshot))
     }
 
+    /// Aggregate Arr-source warmup progress; an empty list returns completed status with zero totals.
     async fn external_import_aggregate_warmup_progress(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "External movie or series source warmup session IDs to aggregate; an empty list returns COMPLETED with zero totals."
+        )]
         input: ExternalImportAggregateWarmupProgressInput,
     ) -> GqlResult<ExternalImportAggregateWarmupProgressPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1371,6 +1475,7 @@ impl ActivityQueries {
         })
     }
 
+    /// Return pending-import counts visible to the caller.
     async fn pending_import_counts(
         &self,
         ctx: &Context<'_>,
@@ -1384,6 +1489,7 @@ impl ActivityQueries {
         Ok(from_pending_import_counts(counts))
     }
 
+    /// Return navigation counts while omitting categories the caller is not authorized to view.
     async fn navigation_badge_counts(
         &self,
         ctx: &Context<'_>,
@@ -1449,14 +1555,23 @@ impl ActivityQueries {
         })
     }
 
+    /// List pending imports by facet, library scope, status, and offset pagination.
     async fn pending_imports(
         &self,
         ctx: &Context<'_>,
-        facet: MediaFacetValue,
+        #[graphql(desc = "Media facet whose pending imports are returned.")] facet: MediaFacetValue,
+        #[graphql(
+            desc = "Library IDs to restrict the result; omitted or empty includes all permitted libraries."
+        )]
         library_ids: Option<Vec<ID>>,
-        status: PendingImportStatusValue,
-        #[graphql(default = 50)] limit: i64,
-        #[graphql(default = 0)] offset: i64,
+        #[graphql(desc = "Pending-import status to include.")] status: PendingImportStatusValue,
+        #[graphql(
+            default = 50,
+            desc = "Maximum items to return; defaults to 50 and is clamped to 0 through 500."
+        )]
+        limit: i64,
+        #[graphql(default = 0, desc = "Number of matching items to skip; defaults to 0.")]
+        offset: i64,
     ) -> GqlResult<PendingImportConnectionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1474,14 +1589,20 @@ impl ActivityQueries {
         Ok(from_pending_import_connection(connection, offset))
     }
 
+    /// Search metadata candidates for one pending import.
     async fn pending_import_title_search(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Pending-import ID whose title candidates are searched.")]
         pending_import_id: ID,
-        query: String,
-        #[graphql(default = 8)] limit: i32,
-        #[graphql(default_with = "\"eng\".to_string()")] language: String,
-        year: Option<i32>,
+        #[graphql(desc = "Text used to search metadata candidates.")] query: String,
+        #[graphql(default = 8, desc = "Maximum candidates to return; defaults to 8.")] limit: i32,
+        #[graphql(
+            default_with = "\"eng\".to_string()",
+            desc = "Metadata language code; defaults to \"eng\"."
+        )]
+        language: String,
+        #[graphql(desc = "Release year filter, when supplied.")] year: Option<i32>,
     ) -> GqlResult<Vec<MetadataSearchItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1496,10 +1617,11 @@ impl ActivityQueries {
             .collect())
     }
 
+    /// Preview the title binding for one pending import without applying it.
     async fn pending_import_binding_preview(
         &self,
         ctx: &Context<'_>,
-        pending_import_id: ID,
+        #[graphql(desc = "Pending-import ID whose title binding is previewed.")] pending_import_id: ID,
     ) -> GqlResult<PendingImportBindingPreviewPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1546,6 +1668,7 @@ impl ActivityQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl JobAndDownloadQueries {
+    /// List job definitions visible to the caller.
     async fn jobs(&self, ctx: &Context<'_>) -> GqlResult<Vec<JobDefinitionPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1553,6 +1676,7 @@ impl JobAndDownloadQueries {
         Ok(jobs.into_iter().map(from_job_definition).collect())
     }
 
+    /// List currently active job runs visible to the caller.
     async fn active_job_runs(&self, ctx: &Context<'_>) -> GqlResult<Vec<JobRunPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1560,10 +1684,12 @@ impl JobAndDownloadQueries {
         Ok(runs.into_iter().map(from_job_run).collect())
     }
 
+    /// List recent runs for one job key; the limit defaults to 10 and values below 1 become 1.
     async fn job_runs(
         &self,
         ctx: &Context<'_>,
-        job_key: JobKeyValue,
+        #[graphql(desc = "Job key whose runs should be listed.")] job_key: JobKeyValue,
+        #[graphql(desc = "Maximum runs to return; defaults to 10 and values below 1 become 1.")]
         limit: Option<i32>,
     ) -> GqlResult<Vec<JobRunPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -1579,9 +1705,11 @@ impl JobAndDownloadQueries {
         Ok(runs.into_iter().map(from_job_run).collect())
     }
 
+    /// List recent job runs; the limit defaults to 50 and values below 1 become 1.
     async fn recent_job_runs(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Maximum runs to return; defaults to 50 and values below 1 become 1.")]
         limit: Option<i32>,
     ) -> GqlResult<Vec<JobRunPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -1593,9 +1721,11 @@ impl JobAndDownloadQueries {
         Ok(runs.into_iter().map(from_job_run).collect())
     }
 
+    /// Return discovery home results using optional facet, filter, and pagination input.
     async fn discovery_home(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Facet, filters, and pagination; omitted uses service defaults.")]
         input: Option<DiscoveryHomeInput>,
     ) -> GqlResult<DiscoveryHomePayload> {
         let app = app_from_ctx(ctx)?;
@@ -1608,9 +1738,11 @@ impl JobAndDownloadQueries {
         Ok(from_discovery_home(&app, result))
     }
 
+    /// Return discovery home cards using optional facet, filter, and pagination input.
     async fn discovery_home_cards(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Facet, filters, and pagination; omitted uses service defaults.")]
         input: Option<DiscoveryHomeInput>,
     ) -> GqlResult<DiscoveryHomeCardsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1623,9 +1755,13 @@ impl JobAndDownloadQueries {
         from_discovery_home_cards(&app, result).map_err(to_gql_error)
     }
 
+    /// Return discovery home filter options for an optional facet and library scope.
     async fn discovery_home_filter_options(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Facet and library scope for filter options; omitted uses service defaults."
+        )]
         input: Option<DiscoveryHomeFilterOptionsInput>,
     ) -> GqlResult<DiscoveryHomeFilterOptionsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1640,9 +1776,13 @@ impl JobAndDownloadQueries {
         Ok(from_discovery_home_filter_options(options))
     }
 
+    /// List discovery items using optional filters, sorting, and pagination.
     async fn discovery_items(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Discovery filters, sorting, and pagination; omitted uses service defaults."
+        )]
         input: Option<DiscoveryItemsInput>,
     ) -> GqlResult<DiscoveryItemsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1654,9 +1794,11 @@ impl JobAndDownloadQueries {
         Ok(from_discovery_items_result(&app, result))
     }
 
+    /// Fetch one discovery item by identity and scope, returning null when unavailable.
     async fn discovery_item_detail(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Discovery item identity and scope used for the lookup.")]
         input: DiscoveryItemDetailInput,
     ) -> GqlResult<Option<DiscoveryItemPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -1668,9 +1810,11 @@ impl JobAndDownloadQueries {
         Ok(item.map(|item| from_discovery_item(&app, item)))
     }
 
+    /// Return catalog discovery results for the requested target and filters.
     async fn catalog_discovery(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Catalog target, filters, sorting, and pagination.")]
         input: CatalogDiscoveryInput,
     ) -> GqlResult<CatalogDiscoveryPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1682,18 +1826,44 @@ impl JobAndDownloadQueries {
         Ok(from_catalog_discovery(&app, result))
     }
 
+    /// Return a bounded download queue page with readiness, revision, staleness, filters, and stable sorting metadata.
     async fn download_queue_page(
         &self,
         ctx: &Context<'_>,
-        #[graphql(default = 50)] limit: i32,
-        #[graphql(default = 0)] offset: i32,
+        #[graphql(
+            default = 50,
+            desc = "Number of queue items to return; defaults to 50 and is clamped to 1 through 200."
+        )]
+        limit: i32,
+        #[graphql(
+            default = 0,
+            desc = "Number of matching queue items to skip; defaults to 0 and negative values become 0."
+        )]
+        offset: i32,
+        #[graphql(
+            desc = "Activity states to include; omitted includes all states and an empty list returns no rows."
+        )]
         filters: Option<Vec<DownloadActivityFilterValue>>,
+        #[graphql(
+            desc = "Download-client IDs to include; omitted includes all clients and an empty list returns no rows."
+        )]
         client_ids: Option<Vec<ID>>,
-        #[graphql(default = true)] scryer_submitted_only: bool,
-        title_id: Option<ID>,
-        #[graphql(default_with = "DownloadQueueSortKeyValue::Status")]
+        #[graphql(
+            default = true,
+            desc = "When true, include only downloads submitted by Scryer; defaults to true."
+        )]
+        scryer_submitted_only: bool,
+        #[graphql(desc = "Include only queue items for this title ID.")] title_id: Option<ID>,
+        #[graphql(
+            default_with = "DownloadQueueSortKeyValue::Status",
+            desc = "Queue sort key; defaults to Status."
+        )]
         sort_key: DownloadQueueSortKeyValue,
-        #[graphql(default_with = "SortDirectionValue::Asc")] sort_direction: SortDirectionValue,
+        #[graphql(
+            default_with = "SortDirectionValue::Asc",
+            desc = "Queue sort direction; defaults to Asc."
+        )]
+        sort_direction: SortDirectionValue,
     ) -> GqlResult<DownloadQueuePagePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1721,15 +1891,23 @@ impl JobAndDownloadQueries {
         Ok(from_download_queue_page(page))
     }
 
+    /// Deprecated download activity listing without pagination or queue readiness metadata.
     #[graphql(deprecation = "use downloadQueuePage")]
     async fn download_queue(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Include all activity types instead of the default active subset; defaults to false."
+        )]
         include_all_activity: Option<bool>,
+        #[graphql(desc = "Include history-only activity; defaults to false.")]
         include_history_only: Option<bool>,
+        #[graphql(desc = "Include import activity; defaults to false.")]
         include_import_activity: Option<bool>,
-        title_id: Option<ID>,
-        activity_filter: Option<DownloadActivityFilterValue>,
+        #[graphql(desc = "Include only activity for this title ID.")] title_id: Option<ID>,
+        #[graphql(desc = "Activity state filter; defaults to All.")] activity_filter: Option<
+            DownloadActivityFilterValue,
+        >,
     ) -> GqlResult<Vec<DownloadQueueItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1764,12 +1942,21 @@ impl JobAndDownloadQueries {
         Ok(items.into_iter().map(from_download_queue_item).collect())
     }
 
+    /// List a bounded page of download-import activity; the limit defaults to 50 and is clamped to 1 through 100.
     async fn download_import(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Number of import records to return; defaults to 50 and is clamped to 1 through 100."
+        )]
         limit: Option<i32>,
+        #[graphql(
+            desc = "Number of matching import records to skip; defaults to 0 and negative values become 0."
+        )]
         offset: Option<i32>,
-        filter: Option<DownloadImportFilterValue>,
+        #[graphql(desc = "Import activity filter; defaults to All.")] filter: Option<
+            DownloadImportFilterValue,
+        >,
     ) -> GqlResult<DownloadImportPagePayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1789,15 +1976,34 @@ impl JobAndDownloadQueries {
         Ok(from_download_import_page(page))
     }
 
+    /// List a bounded page of download history with optional client, activity, and sort filters.
     async fn download_history(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Number of history records to return; defaults to 50 and is clamped to 1 through 50."
+        )]
         limit: Option<i32>,
+        #[graphql(
+            desc = "Number of matching history records to skip; defaults to 0 and negative values become 0."
+        )]
         offset: Option<i32>,
+        #[graphql(
+            desc = "History activity filters; omitted includes all states and an empty list returns no rows."
+        )]
         filters: Option<Vec<DownloadHistoryFilterValue>>,
+        #[graphql(
+            desc = "Download-client IDs to include; omitted includes all clients and an empty list returns no rows."
+        )]
         client_ids: Option<Vec<ID>>,
+        #[graphql(
+            desc = "When true, include only downloads submitted by Scryer; defaults to false."
+        )]
         scryer_submitted_only: Option<bool>,
-        sort_key: Option<DownloadHistorySortKeyValue>,
+        #[graphql(desc = "History sort key; omitted uses the service default.")] sort_key: Option<
+            DownloadHistorySortKeyValue,
+        >,
+        #[graphql(desc = "Sort direction when a sort key is supplied; defaults to Asc.")]
         sort_direction: Option<SortDirectionValue>,
     ) -> GqlResult<DownloadHistoryPagePayload> {
         let app = app_from_ctx(ctx)?;
@@ -1834,6 +2040,7 @@ impl JobAndDownloadQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl SystemQueries {
+    /// Return the path style supported by the running service.
     async fn runtime_info(&self, ctx: &Context<'_>) -> GqlResult<RuntimeInfoPayload> {
         let _actor = actor_from_ctx(ctx)?;
         Ok(RuntimeInfoPayload {
@@ -1841,6 +2048,7 @@ impl SystemQueries {
         })
     }
 
+    /// Return system health details visible to the authenticated caller.
     async fn system_health(&self, ctx: &Context<'_>) -> GqlResult<SystemHealthPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -1848,11 +2056,13 @@ impl SystemQueries {
         Ok(from_system_health(health))
     }
 
+    /// Return the running Scryer version.
     async fn scryer_version(&self, ctx: &Context<'_>) -> GqlResult<String> {
         let _actor = actor_from_ctx(ctx)?;
         Ok(SCRYER_VERSION.to_string())
     }
 
+    /// Return an SMG compatibility notice when the connected SMG version requires attention.
     async fn smg_version_compatibility_notice(
         &self,
         ctx: &Context<'_>,
@@ -1866,6 +2076,7 @@ impl SystemQueries {
         Ok(notice.map(from_smg_version_compatibility_notice))
     }
 
+    /// Return an available Scryer update notice from SMG, if one exists.
     async fn smg_scryer_update_notice(
         &self,
         ctx: &Context<'_>,
@@ -1876,11 +2087,23 @@ impl SystemQueries {
         Ok(notice.map(from_smg_scryer_update_notice))
     }
 
+    /// List recycled media items in a bounded page, optionally restricted to library IDs.
     async fn recycled_items(
         &self,
         ctx: &Context<'_>,
-        #[graphql(default = 500)] limit: i32,
-        #[graphql(default = 0)] offset: i32,
+        #[graphql(
+            default = 500,
+            desc = "Number of recycled items to return; defaults to 500 and is clamped to 1 through 500."
+        )]
+        limit: i32,
+        #[graphql(
+            default = 0,
+            desc = "Number of matching recycled items to skip; defaults to 0 and negative values become 0."
+        )]
+        offset: i32,
+        #[graphql(
+            desc = "Library IDs to include; omitted or empty includes all permitted libraries."
+        )]
         library_ids: Option<Vec<ID>>,
     ) -> GqlResult<RecycledItemsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1920,9 +2143,13 @@ impl SystemQueries {
         Ok(RecycledItemsPayload { items, total_count })
     }
 
+    /// Preview restoring recycled items by ID without changing their files.
     async fn preview_restore_recycled_items(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Recycled-item IDs whose restore destinations are previewed; an empty list returns an empty preview."
+        )]
         ids: Vec<ID>,
     ) -> GqlResult<RecycleRestorePreviewPayload> {
         let app = app_from_ctx(ctx)?;
@@ -1948,6 +2175,7 @@ impl SystemQueries {
         })
     }
 
+    /// List available backups; requires system-settings management permission.
     async fn backups(&self, ctx: &Context<'_>) -> GqlResult<Vec<BackupInfoPayload>> {
         require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let app = app_from_ctx(ctx)?;
@@ -1960,12 +2188,24 @@ impl SystemQueries {
             .map_err(|error| to_gql_error(AppError::Validation(error)))
     }
 
+    /// List a bounded page of pending releases with optional title, wanted-item, and status filters.
     async fn pending_releases(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Optional title, wanted-item, and release-status filters; omitted applies no filters."
+        )]
         filter: Option<PendingReleaseFilterInput>,
-        #[graphql(default = 50)] limit: i32,
-        #[graphql(default = 0)] offset: i32,
+        #[graphql(
+            default = 50,
+            desc = "Number of pending releases to return; defaults to 50 and is clamped to 1 through 500."
+        )]
+        limit: i32,
+        #[graphql(
+            default = 0,
+            desc = "Number of matching pending releases to skip; defaults to 0 and negative values become 0."
+        )]
+        offset: i32,
     ) -> GqlResult<PendingReleasesPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -2007,9 +2247,13 @@ impl SystemQueries {
         })
     }
 
+    /// List recent import records; the limit defaults to 50 and is capped at 500.
     async fn import_history(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Number of import records to return; defaults to 50 and is clamped to 1 through 500."
+        )]
         limit: Option<i32>,
     ) -> GqlResult<Vec<ImportRecordPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -2025,6 +2269,7 @@ impl SystemQueries {
             .collect())
     }
 
+    /// Return the authenticated user payload, or null for an anonymous session; MFA enrollment sessions are rejected.
     async fn me(&self, ctx: &Context<'_>) -> GqlResult<Option<UserPayload>> {
         let auth_context = mfa_verification_from_ctx(ctx);
         if auth_context.session_scope == JwtSessionScope::MfaEnrollment {
@@ -2062,21 +2307,24 @@ impl SystemQueries {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl AcquisitionQueries {
-    /// The derived Missing / Upgrades view. `wantedKind` selects the
-    /// target set (`MISSING` derived from fileless monitored scopes, `CUTOFF_UPGRADE`
-    /// from below-cutoff files). Results are the derived targets joined to the
-    /// activity-state row (when one exists) and enriched with per-scope convergence
-    /// progress. The retired state-row status / decision-code filters are dropped —
-    /// they only distinguished state rows, which are no longer the target source.
+    /// Return Missing or Cutoff Upgrade targets with activity state and per-scope convergence progress.
     async fn wanted_items(
         &self,
         ctx: &Context<'_>,
-        #[graphql(default)] wanted_kind: WantedKindValue,
-        facet: Option<MediaFacetValue>,
+        #[graphql(default, desc = "Wanted target set to list; defaults to Missing.")]
+        wanted_kind: WantedKindValue,
+        #[graphql(desc = "Media facet filter, when supplied.")] facet: Option<MediaFacetValue>,
+        #[graphql(
+            desc = "Library IDs to include; omitted or empty includes all permitted libraries."
+        )]
         library_ids: Option<Vec<ID>>,
-        title_search: Option<String>,
-        #[graphql(default = 50)] limit: i64,
-        #[graphql(default = 0)] offset: i64,
+        #[graphql(desc = "Title search text, when supplied.")] title_search: Option<String>,
+        #[graphql(default = 50, desc = "Number of targets to return; defaults to 50.")] limit: i64,
+        #[graphql(
+            default = 0,
+            desc = "Number of matching targets to skip; defaults to 0."
+        )]
+        offset: i64,
     ) -> GqlResult<WantedItemsListPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -2105,16 +2353,17 @@ impl AcquisitionQueries {
         })
     }
 
-    /// Bounded view: a single page of cutoff-unmet (Upgrades) targets plus
-    /// the full unmet count and per-item convergence progress, so the UI paginates
-    /// instead of loading the whole set. The unpaged `cutoffUnmetTitles` query was
-    /// removed in this release: the full-array browser load is retired.
+    /// Return one page of cutoff-unmet targets with the full match count and per-item convergence progress.
     async fn cutoff_unmet_titles_page(
         &self,
         ctx: &Context<'_>,
-        facet: Option<MediaFacetValue>,
+        #[graphql(desc = "Media facet filter, when supplied.")] facet: Option<MediaFacetValue>,
+        #[graphql(
+            desc = "Library IDs to include; omitted or empty includes all permitted libraries."
+        )]
         library_ids: Option<Vec<ID>>,
-        limit: i32,
+        #[graphql(desc = "Number of targets to return; negative values become 0.")] limit: i32,
+        #[graphql(desc = "Number of matching targets to skip; negative values become 0.")]
         offset: i32,
     ) -> GqlResult<CutoffUnmetTitlesPagePayload> {
         let app = app_from_ctx(ctx)?;
@@ -2141,10 +2390,11 @@ impl AcquisitionQueries {
         })
     }
 
+    /// Return acquisition diagnostics for one title ID.
     async fn title_acquisition_diagnostics(
         &self,
         ctx: &Context<'_>,
-        title_id: ID,
+        #[graphql(desc = "Title ID whose acquisition diagnostics are returned.")] title_id: ID,
     ) -> GqlResult<TitleAcquisitionDiagnosticsPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -2155,12 +2405,11 @@ impl AcquisitionQueries {
         Ok(from_title_acquisition_diagnostics(diagnostics).map_err(to_gql_error)?)
     }
 
-    /// Progress of an interactive acquisition-search job, polled by
-    /// the UI alongside the `jobRunEvents` push. `None` when no such job exists.
+    /// Return progress for an interactive acquisition-search job, or null when no such job exists.
     async fn acquisition_search_job(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Acquisition-search job ID to poll.")] id: ID,
     ) -> GqlResult<Option<AcquisitionSearchJobPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -2175,6 +2424,7 @@ impl AcquisitionQueries {
 
     // ── Rule Sets ──────────────────────────────────────────────────────
 
+    /// List rule sets visible to the caller.
     async fn rule_sets(&self, ctx: &Context<'_>) -> GqlResult<Vec<RuleSetPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -2188,6 +2438,7 @@ impl AcquisitionQueries {
 
     // ── Post-Processing Scripts ──────────────────────────────────────────
 
+    /// List post-processing scripts visible to the caller.
     async fn post_processing_scripts(
         &self,
         ctx: &Context<'_>,
@@ -2205,10 +2456,14 @@ impl AcquisitionQueries {
             .collect())
     }
 
+    /// List runs for one post-processing script; the limit defaults to 50 and is clamped to 1 through 500.
     async fn post_processing_script_runs(
         &self,
         ctx: &Context<'_>,
-        script_id: ID,
+        #[graphql(desc = "Post-processing script ID whose runs are returned.")] script_id: ID,
+        #[graphql(
+            desc = "Maximum runs to return; defaults to 50 and is clamped to 1 through 500."
+        )]
         limit: Option<i32>,
     ) -> GqlResult<Vec<PostProcessingScriptRunPayload>> {
         let app = app_from_ctx(ctx)?;
@@ -2228,6 +2483,7 @@ impl AcquisitionQueries {
 
     // ── Plugins ──────────────────────────────────────────────────────────
 
+    /// List available registry plugins visible to the caller.
     async fn plugins(&self, ctx: &Context<'_>) -> GqlResult<Vec<RegistryPluginPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -2241,6 +2497,7 @@ impl AcquisitionQueries {
             .collect())
     }
 
+    /// Return plugin catalog readiness and update status visible to the caller.
     async fn plugin_catalog_status(
         &self,
         ctx: &Context<'_>,
@@ -2277,11 +2534,11 @@ impl AcquisitionQueries {
             .collect())
     }
 
-    /// Fetch templates from a community rule pack by its registry ID.
+    /// Fetch templates from a community rule pack by registry ID.
     async fn rule_pack_templates(
         &self,
         ctx: &Context<'_>,
-        pack_id: String,
+        #[graphql(desc = "Registry ID of the community rule pack.")] pack_id: String,
     ) -> GqlResult<Vec<RulePackTemplatePayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -2302,8 +2559,7 @@ impl AcquisitionQueries {
             .collect())
     }
 
-    /// Returns all available indexer provider types from loaded plugins,
-    /// with their config field schemas for dynamic form rendering.
+    /// Return available indexer provider types and their configuration fields; requires system-settings permission.
     async fn indexer_provider_types(
         &self,
         ctx: &Context<'_>,
@@ -2328,6 +2584,7 @@ impl AcquisitionQueries {
             .collect())
     }
 
+    /// Return available download-client provider types and their configuration fields; requires system-settings permission.
     async fn download_client_provider_types(
         &self,
         ctx: &Context<'_>,
@@ -2352,6 +2609,7 @@ impl AcquisitionQueries {
             .collect())
     }
 
+    /// Return available subtitle-provider types, host bindings, and recommended facets; requires catalog-settings permission.
     async fn subtitle_provider_types(
         &self,
         ctx: &Context<'_>,
@@ -2394,6 +2652,7 @@ impl AcquisitionQueries {
 impl UtilityQueries {
     // ── Notifications ────────────────────────────────────────────────────
 
+    /// List notification channels visible to the caller, including provider configuration metadata.
     async fn notification_channels(
         &self,
         ctx: &Context<'_>,
@@ -2413,6 +2672,7 @@ impl UtilityQueries {
             .collect())
     }
 
+    /// List notification targets visible to the caller.
     async fn notification_targets(
         &self,
         ctx: &Context<'_>,
@@ -2429,6 +2689,7 @@ impl UtilityQueries {
             .collect())
     }
 
+    /// List notification subscriptions visible to the caller.
     async fn notification_subscriptions(
         &self,
         ctx: &Context<'_>,
@@ -2445,6 +2706,7 @@ impl UtilityQueries {
             .collect())
     }
 
+    /// Return available notification provider types and their configuration fields; requires system-settings permission.
     async fn notification_provider_types(
         &self,
         ctx: &Context<'_>,
@@ -2479,6 +2741,7 @@ impl UtilityQueries {
             .collect())
     }
 
+    /// Return notification event types that can be subscribed to; requires system-settings permission.
     async fn notification_event_types(&self, ctx: &Context<'_>) -> GqlResult<Vec<String>> {
         let app = app_from_ctx(ctx)?;
         require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -2491,6 +2754,7 @@ impl UtilityQueries {
 
     // ── Service Logs ────────────────────────────────────────────────────
 
+    /// Return whether setup is complete and whether download clients and indexers are configured.
     async fn setup_status(&self, ctx: &Context<'_>) -> GqlResult<SetupStatusPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -2515,13 +2779,18 @@ impl UtilityQueries {
         })
     }
 
-    /// Browses local paths after the caller passes the library-settings read permission check.
-    ///
-    /// Directories are returned by default; set `includeFiles` to `true` to include regular files.
+    /// List non-hidden entries under an absolute directory path; requires library-settings read permission.
     async fn browse_path(
         &self,
         ctx: &Context<'_>,
-        #[graphql(default_with = "String::from(\"/\")")] path: String,
+        #[graphql(
+            default_with = "String::from(\"/\")",
+            desc = "Absolute directory path to list; defaults to \"/\"."
+        )]
+        path: String,
+        #[graphql(
+            desc = "Include regular files as well as directories; defaults to false; hidden names are excluded."
+        )]
         include_files: Option<bool>,
     ) -> GqlResult<Vec<DirectoryEntryPayload>> {
         require_library_settings_permission(ctx).await?;
@@ -2551,10 +2820,15 @@ impl UtilityQueries {
         Ok(entries)
     }
 
+    /// Return the most recent buffered service log lines; requires system-settings permission.
     async fn service_logs(
         &self,
         ctx: &Context<'_>,
-        #[graphql(default = 250)] limit: i32,
+        #[graphql(
+            default = 250,
+            desc = "Maximum log lines; defaults to 250 and is clamped to 1 through 2000."
+        )]
+        limit: i32,
     ) -> GqlResult<ServiceLogsPayload> {
         require_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
         let safe_limit = (limit.clamp(1, 2000)) as usize;
@@ -2570,11 +2844,11 @@ impl UtilityQueries {
         })
     }
 
-    /// List external subtitles for a title.
+    /// List external subtitles associated with a title ID.
     async fn external_subtitles(
         &self,
         ctx: &Context<'_>,
-        title_id: ID,
+        #[graphql(desc = "Title ID whose external subtitles are returned.")] title_id: ID,
     ) -> GqlResult<Vec<ExternalSubtitlePayload>> {
         let actor = actor_from_ctx(ctx)?;
         let app = app_from_ctx(ctx)?;
@@ -2616,10 +2890,11 @@ impl UtilityQueries {
             .collect::<GqlResult<Vec<_>>>()
     }
 
-    /// List external subtitle blocklist entries for a specific media file.
+    /// List external subtitle blocklist entries for one media file ID.
     async fn external_subtitle_blocklist_entries(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Media-file ID whose subtitle blocklist entries are returned.")]
         media_file_id: ID,
     ) -> GqlResult<Vec<ExternalSubtitleBlocklistEntryPayload>> {
         let actor = actor_from_ctx(ctx)?;

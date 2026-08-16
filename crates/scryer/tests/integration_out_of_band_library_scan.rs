@@ -458,7 +458,7 @@ async fn known_title_pending_import_row_is_cleared_when_file_is_removed() {
 }
 
 #[tokio::test]
-async fn loose_root_series_file_imports_into_existing_title_without_rewriting_folder_path() {
+async fn loose_root_series_file_is_skipped_without_claiming_library_root() {
     let ctx = TestContext::new().await;
     seed_media_path_settings(&ctx).await;
 
@@ -481,7 +481,7 @@ async fn loose_root_series_file_imports_into_existing_title_without_rewriting_fo
     )
     .await;
     let season = seed_collection(&ctx, &title, 1).await;
-    let first_episode = seed_episode(&ctx, &title, &season, 1).await;
+    let _first_episode = seed_episode(&ctx, &title, &season, 1).await;
 
     let loose_file = media_root.path().join("Loose.Show.S01E01.mkv");
     write_fake_media_file(&loose_file);
@@ -500,12 +500,8 @@ async fn loose_root_series_file_imports_into_existing_title_without_rewriting_fo
         .list_media_files_for_title(&title.id)
         .await
         .expect("list title media files");
-    assert_eq!(media_files.len(), 1);
-    assert_eq!(
-        media_files[0].episode_id.as_deref(),
-        Some(first_episode.id.as_str())
-    );
-    assert_eq!(PathBuf::from(&media_files[0].file_path), loose_file);
+    assert!(media_files.is_empty());
+    assert!(loose_file.exists());
 
     let refreshed_title = ctx
         .titles

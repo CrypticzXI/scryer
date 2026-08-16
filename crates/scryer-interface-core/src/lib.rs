@@ -143,6 +143,7 @@ pub struct MfaVerification {
     pub verified_until: Option<i64>,
     pub step_up_verified_until: Option<i64>,
     pub session_scope: JwtSessionScope,
+    pub persist_session: bool,
     pub oauth_authorization_source: OAuthAuthorizationSource,
 }
 
@@ -151,6 +152,39 @@ pub struct ApiContext {
     pub app: AppUseCase,
     pub auth_runtime: AuthRuntimeStateHandle,
     pub restore: Option<RestoreContext>,
+}
+
+/// Per-HTTP-request session persistence policy. This is intentionally absent
+/// from schema-level contexts, where callers must fail closed.
+#[derive(Clone, Copy)]
+pub struct RequestSessionPersistence {
+    pub default_persist_session: bool,
+}
+
+pub fn default_persist_session_from_ctx(ctx: &Context<'_>) -> bool {
+    ctx.data_opt::<RequestSessionPersistence>()
+        .is_some_and(|policy| policy.default_persist_session)
+}
+
+pub fn persist_session_or_default(requested: Option<bool>, default: bool) -> bool {
+    requested.unwrap_or(default)
+}
+
+#[cfg(test)]
+mod request_session_persistence_tests {
+    use super::persist_session_or_default;
+
+    #[test]
+    fn explicit_preference_overrides_the_request_default() {
+        assert!(persist_session_or_default(Some(true), false));
+        assert!(!persist_session_or_default(Some(false), true));
+    }
+
+    #[test]
+    fn omitted_preference_uses_the_request_default() {
+        assert!(persist_session_or_default(None, true));
+        assert!(!persist_session_or_default(None, false));
+    }
 }
 
 #[derive(Clone)]

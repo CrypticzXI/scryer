@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use async_graphql::{Context, ID, Object, Result as GqlResult};
 use scryer_application::{AppError, AppUseCase, ImageProxyKind};
 use scryer_interface_core::{actor_from_ctx, app_from_ctx, to_gql_error};
@@ -44,14 +46,27 @@ fn parse_metadata_date(value: String, field: &str) -> GqlResult<Date> {
 #[allow(clippy::too_many_arguments)]
 #[Object]
 impl MetadataQueries {
+    /// Search provider metadata for one facet, returning at most 100 results.
     async fn search_metadata(
         &self,
         ctx: &Context<'_>,
-        query: String,
-        #[graphql(name = "type")] type_hint: MediaFacetValue,
-        #[graphql(default = 25)] limit: i32,
-        #[graphql(default_with = "\"eng\".to_string()")] language: String,
-        year: Option<i32>,
+        #[graphql(desc = "Provider search text.")] query: String,
+        #[graphql(
+            name = "type",
+            desc = "Facet to search, exposed as the GraphQL `type` argument."
+        )]
+        type_hint: MediaFacetValue,
+        #[graphql(
+            default = 25,
+            desc = "Result count, defaulting to 25 and clamped to the range 1 through 100."
+        )]
+        limit: i32,
+        #[graphql(
+            default_with = "\"eng\".to_string()",
+            desc = "Metadata language, defaulting to `eng`."
+        )]
+        language: String,
+        #[graphql(desc = "Optional release-year hint passed to the provider.")] year: Option<i32>,
     ) -> GqlResult<Vec<MetadataSearchItemPayload>> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -73,12 +88,21 @@ impl MetadataQueries {
             .collect())
     }
 
+    /// Search provider metadata across movie, series, and anime facets.
     async fn search_metadata_multi(
         &self,
         ctx: &Context<'_>,
-        query: String,
-        #[graphql(default = 25)] limit: i32,
-        #[graphql(default_with = "\"eng\".to_string()")] language: String,
+        #[graphql(desc = "Provider search text.")] query: String,
+        #[graphql(
+            default = 25,
+            desc = "Result count, defaulting to 25 and clamped to the range 1 through 100."
+        )]
+        limit: i32,
+        #[graphql(
+            default_with = "\"eng\".to_string()",
+            desc = "Metadata language, defaulting to `eng`."
+        )]
+        language: String,
     ) -> GqlResult<MetadataSearchMultiPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -106,9 +130,11 @@ impl MetadataQueries {
         })
     }
 
+    /// Fetch one movie metadata record by TVDB identity and language.
     async fn metadata_movie(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "TVDB identity and optional metadata language, which defaults to `eng`.")]
         input: MetadataMovieInput,
     ) -> GqlResult<MetadataMoviePayload> {
         let app = app_from_ctx(ctx)?;
@@ -149,9 +175,13 @@ impl MetadataQueries {
         })
     }
 
+    /// Fetch one series metadata record, optionally including its episode list.
     async fn metadata_series(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "TVDB identity, language, and whether episode metadata should be included, defaulting to true."
+        )]
         input: MetadataSeriesInput,
     ) -> GqlResult<MetadataSeriesPayload> {
         let app = app_from_ctx(ctx)?;
@@ -234,11 +264,15 @@ impl MetadataQueries {
         })
     }
 
+    /// List calendar episodes between two dates, optionally restricted to libraries.
     async fn calendar_episodes(
         &self,
         ctx: &Context<'_>,
-        start_date: Date,
-        end_date: Date,
+        #[graphql(desc = "Start date of the calendar range.")] start_date: Date,
+        #[graphql(desc = "End date of the calendar range.")] end_date: Date,
+        #[graphql(
+            desc = "Optional library IDs; omitted, null, or an empty list includes all accessible libraries."
+        )]
         library_ids: Option<Vec<ID>>,
     ) -> GqlResult<Vec<CalendarEpisodePayload>> {
         let app = app_from_ctx(ctx)?;
@@ -251,6 +285,30 @@ impl MetadataQueries {
             .list_calendar_episodes(&actor, &start_date, &end_date, library_ids)
             .await
             .map_err(to_gql_error)?;
-        Ok(episodes.into_iter().map(from_calendar_episode).collect())
+        if episodes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut title_ids = episodes
+            .iter()
+            .map(|episode| episode.title_id.clone())
+            .collect::<Vec<_>>();
+        title_ids.sort_unstable();
+        title_ids.dedup();
+        let mut availability_by_episode = app
+            .list_episode_media_availability(&actor, &title_ids)
+            .await
+            .map_err(to_gql_error)?
+            .into_iter()
+            .map(|availability| (availability.episode_id.clone(), availability))
+            .collect::<HashMap<_, _>>();
+
+        Ok(episodes
+            .into_iter()
+            .map(|episode| {
+                let availability = availability_by_episode.remove(&episode.id);
+                from_calendar_episode(&app, episode, availability)
+            })
+            .collect())
     }
 }

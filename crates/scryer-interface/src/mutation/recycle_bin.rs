@@ -17,7 +17,7 @@ impl RecycleBinMutations {
     async fn restore_recycled_item(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Recycled-item identity to restore to its original path.")] id: ID,
     ) -> GqlResult<RestoreRecycledItemPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -35,6 +35,9 @@ impl RecycleBinMutations {
     async fn restore_recycled_items(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Recycled-item identities, conflict policy, and preview fingerprint for the restore job."
+        )]
         input: RestoreRecycledItemsInput,
     ) -> GqlResult<RestoreRecycledItemsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -62,11 +65,11 @@ impl RecycleBinMutations {
         })
     }
 
-    /// Permanently delete a single recycled item.
+    /// Permanently delete a single recycled item and its retained file when applicable.
     async fn delete_recycled_item(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Recycled-item identity to permanently delete.")] id: ID,
     ) -> GqlResult<DeleteRecycledItemPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;
@@ -81,6 +84,7 @@ impl RecycleBinMutations {
     async fn delete_recycled_items(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Recycled-item identities to permanently delete.")]
         input: DeleteRecycledItemsInput,
     ) -> GqlResult<DeleteRecycledItemsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -102,6 +106,9 @@ impl RecycleBinMutations {
     async fn empty_recycle_bin(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Optional library identities to purge; null targets all accessible recycle bins."
+        )]
         library_ids: Option<Vec<ID>>,
     ) -> GqlResult<EmptyRecycleBinPayload> {
         let app = app_from_ctx(ctx)?;

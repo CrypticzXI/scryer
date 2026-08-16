@@ -163,6 +163,12 @@ impl AppUseCase {
             &mappings,
             &selection_title.facet,
         )?;
+        crate::import_workflow::validate_manual_import_candidate_mapping_scope(
+            self,
+            &selection.title_id,
+            &mappings,
+        )
+        .await?;
         let source_identity = selection.source_identity.clone();
         let client_id = source_identity
             .client_id
@@ -170,7 +176,9 @@ impl AppUseCase {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| {
-                AppError::Validation("download is no longer available for manual import".to_string())
+                AppError::Validation(
+                    "download is no longer available for manual import".to_string(),
+                )
             })?;
         let completed = crate::import_workflow::resolve_current_manual_import_source(
             self,
@@ -237,9 +245,11 @@ impl AppUseCase {
         let files = mappings
             .into_iter()
             .map(|mapping| {
-                let candidate = candidates.get(mapping.candidate_id.as_str()).ok_or_else(|| {
-                    AppError::Validation("manual import candidate is unavailable".to_string())
-                })?;
+                let candidate = candidates
+                    .get(mapping.candidate_id.as_str())
+                    .ok_or_else(|| {
+                        AppError::Validation("manual import candidate is unavailable".to_string())
+                    })?;
                 Ok(crate::ManualImportFileMapping {
                     file_path: candidate.canonical_path.clone(),
                     episode_id: mapping.episode_id,
@@ -286,7 +296,6 @@ impl AppUseCase {
         .await;
         Ok(import_id)
     }
-
 }
 impl AppUseCase {
     pub async fn trigger_manual_import(

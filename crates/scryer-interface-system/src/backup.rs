@@ -33,32 +33,50 @@ const RESTORE_UPLOAD_TTL_SECONDS: u64 = 24 * 60 * 60;
 const STAGED_BUNDLE_FILENAME: &str = "bundle.upload";
 
 #[derive(Clone, SimpleObject)]
+/// Summarizes the contents and source compatibility metadata of a backup bundle.
 struct RestoreSummaryPayload {
+    /// Backup bundle format version.
     format_version: String,
+    /// UTC timestamp when the backup bundle was created.
     created_at: DateTime<Utc>,
+    /// Scryer version that created the backup.
     source_scryer_version: String,
+    /// Datastore engine used by the source instance.
     source_engine: String,
+    /// Source database migration key; null when the bundle does not provide one.
     source_migration_key: Option<String>,
+    /// Whether the backup contents are encrypted.
     encrypted: bool,
+    /// Row counts grouped by backed-up entity.
     row_counts: Vec<BackupRowCountPayload>,
+    /// Total rows contained in the backup.
     total_rows: Long,
 }
 
 #[derive(Clone, SimpleObject)]
+/// Identifies a staged restore upload and its inspected contents.
 struct RestoreInspectPayload {
+    /// Temporary restore upload ID used by the apply operation.
     upload_id: ID,
+    /// Inspected backup contents and source metadata.
     summary: RestoreSummaryPayload,
 }
 
 #[derive(Clone, SimpleObject)]
+/// Reports the backup contents staged for restoration on restart.
 struct RestoreApplyPayload {
+    /// Backup contents and source metadata accepted for restoration.
     summary: RestoreSummaryPayload,
 }
 
 #[derive(Clone, SimpleObject)]
+/// Provides a temporary authorization token and route for downloading one backup.
 struct BackupDownloadUrlPayload {
+    /// HTTP path from which the selected backup can be downloaded.
     download_url: String,
+    /// Short-lived token authorizing the backup download.
     download_authorization_token: String,
+    /// UTC timestamp after which the download token is invalid.
     expires_at: DateTime<Utc>,
 }
 
@@ -67,9 +85,11 @@ pub struct BackupMutations;
 
 #[Object]
 impl BackupMutations {
+    /// Create a password-protected backup and return its stored backup metadata.
     async fn create_backup(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Password used to encrypt the new backup bundle.")]
         input: CreateBackupInput,
     ) -> GqlResult<BackupInfoPayload> {
         let app = app_from_ctx(ctx)?;
@@ -81,9 +101,11 @@ impl BackupMutations {
         from_backup_info(info).map_err(|error| to_gql_error(AppError::Validation(error)))
     }
 
+    /// Create a short-lived authorization token for downloading an existing backup.
     async fn prepare_backup_download(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Stored backup filename to authorize for download.")]
         input: PrepareBackupDownloadInput,
     ) -> GqlResult<BackupDownloadUrlPayload> {
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -102,10 +124,11 @@ impl BackupMutations {
         })
     }
 
+    /// Delete a stored backup by filename and report whether it existed.
     async fn delete_backup(
         &self,
         ctx: &Context<'_>,
-        input: DeleteBackupInput,
+        #[graphql(desc = "Stored backup filename to delete.")] input: DeleteBackupInput,
     ) -> GqlResult<DeleteBackupPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -117,10 +140,14 @@ impl BackupMutations {
         Ok(DeleteBackupPayload { filename, deleted })
     }
 
+    /// Inspect and stage an uploaded restore bundle while setup mode is active.
+    /// The returned upload ID remains temporary and must be supplied to the apply operation.
     async fn inspect_restore_bundle(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Backup bundle supplied through GraphQL multipart upload.")]
         bundle_upload: Upload,
+        #[graphql(desc = "Bundle password; null or blank selects an unencrypted bundle.")]
         password: Option<String>,
     ) -> GqlResult<RestoreInspectPayload> {
         require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -183,10 +210,12 @@ impl BackupMutations {
         })
     }
 
+    /// Stage an inspected restore bundle for application on restart and schedule that restart.
     async fn apply_restore_bundle(
         &self,
         ctx: &Context<'_>,
-        upload_id: ID,
+        #[graphql(desc = "Temporary upload ID returned by inspectRestoreBundle.")] upload_id: ID,
+        #[graphql(desc = "Bundle password; null or blank selects an unencrypted bundle.")]
         password: Option<String>,
     ) -> GqlResult<RestoreApplyPayload> {
         require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;

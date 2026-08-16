@@ -60,9 +60,13 @@ pub(crate) struct NotificationMutations;
 
 #[Object]
 impl NotificationMutations {
+    /// Create an enabled notification channel with provider configuration.
     async fn create_notification_channel(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Channel name, provider type, configuration values, optional media-server identity, and enabled state."
+        )]
         input: CreateNotificationChannelInput,
     ) -> GqlResult<NotificationChannelPayload> {
         let app = app_from_ctx(ctx)?;
@@ -83,9 +87,13 @@ impl NotificationMutations {
         Ok(from_notification_channel_with_fields(channel, &fields))
     }
 
+    /// Patch a notification channel while preserving omitted fields and provider secrets.
     async fn update_notification_channel(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Channel identity and optional replacement fields; omitted provider secrets remain stored and null clears the media-server link."
+        )]
         input: UpdateNotificationChannelInput,
     ) -> GqlResult<NotificationChannelPayload> {
         let app = app_from_ctx(ctx)?;
@@ -130,10 +138,11 @@ impl NotificationMutations {
         Ok(from_notification_channel_with_fields(channel, &fields))
     }
 
+    /// Delete a notification channel.
     async fn delete_notification_channel(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Notification-channel identity to delete.")] id: ID,
     ) -> GqlResult<DeleteNotificationChannelPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -144,10 +153,11 @@ impl NotificationMutations {
         Ok(DeleteNotificationChannelPayload { id: ID::from(id) })
     }
 
+    /// Test a notification channel and return the delivery result.
     async fn test_notification_channel(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Notification-channel identity to test.")] id: ID,
     ) -> GqlResult<NotificationChannelTestPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -163,9 +173,13 @@ impl NotificationMutations {
         })
     }
 
+    /// Create an enabled notification subscription for a target and event.
     async fn create_notification_subscription(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Optional channel and target identities, event type, scope, and enabled state."
+        )]
         input: CreateNotificationSubscriptionInput,
     ) -> GqlResult<NotificationSubscriptionPayload> {
         let app = app_from_ctx(ctx)?;
@@ -188,9 +202,13 @@ impl NotificationMutations {
         Ok(from_notification_subscription(sub))
     }
 
+    /// Patch a notification subscription while preserving omitted fields.
     async fn update_notification_subscription(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Subscription identity and optional target, event, scope, or enabled-state replacements."
+        )]
         input: UpdateNotificationSubscriptionInput,
     ) -> GqlResult<NotificationSubscriptionPayload> {
         let app = app_from_ctx(ctx)?;
@@ -216,10 +234,11 @@ impl NotificationMutations {
         Ok(from_notification_subscription(sub))
     }
 
+    /// Delete a notification subscription.
     async fn delete_notification_subscription(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Notification-subscription identity to delete.")] id: ID,
     ) -> GqlResult<DeleteNotificationSubscriptionPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;

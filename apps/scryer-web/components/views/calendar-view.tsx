@@ -1,21 +1,39 @@
-import { useMemo, useCallback, useState } from "react";
+import { useEffect, useMemo, useCallback, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslate } from "@/lib/context/translate-context";
 import FullCalendar from "@fullcalendar/react";
-import dayGridPlugin from "@fullcalendar/daygrid";
+import dayGridPlugin from "@fullcalendar/react/daygrid";
+import classicThemePlugin from "@fullcalendar/react/themes/classic";
+import "@fullcalendar/react/skeleton.css";
+import "@fullcalendar/react/themes/classic/theme.css";
+import "@fullcalendar/react/themes/classic/palette.css";
 import type {
-  DatesSetArg,
-  DayCellContentArg,
-  DayHeaderContentArg,
-  EventClickArg,
-  EventContentArg,
-  EventMountArg,
-  MoreLinkContentArg,
-} from "@fullcalendar/core";
+  DatesSetInfo,
+  DayCellInfo,
+  DayHeaderInfo,
+  EventClickInfo,
+  EventDisplayInfo,
+  EventHoveringInfo,
+  MoreLinkInfo,
+  MountInfo,
+} from "@fullcalendar/react";
 import { LibraryMultiSelect } from "@/components/common/library-multi-select";
-import { CalendarClock } from "lucide-react";
+import { CalendarClock, Eye, EyeOff } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useIsMobile } from "@/lib/hooks/use-mobile";
 import type { LibraryRecord } from "@/lib/types";
+import { artworkFallbackStyle } from "@/lib/utils/artwork-fallback";
+import { buildCalendarEventHref } from "@/lib/utils/calendar-event-href";
+import {
+  readStoredCalendarViewMode,
+  writeStoredCalendarViewMode,
+} from "@/lib/utils/calendar-view-mode";
+import {
+  episodeAvailabilityPill,
+  type EpisodeMediaAvailability,
+} from "@/lib/utils/episode-media-availability";
 
 export type CalendarEpisodeItem = {
   id: string;
@@ -29,9 +47,69 @@ export type CalendarEpisodeItem = {
   seasonNumber: string | null;
   episodeNumber: string | null;
   episodeTitle: string | null;
+  overview: string | null;
+  imageUrl: string | null;
   airDate: string | null;
   monitored: boolean;
+  mediaAvailability: EpisodeMediaAvailability;
 };
+
+type CalendarMonitoringStatus = "monitored" | "unmonitored";
+
+function CalendarMonitoringFilterControl({
+  visibleStatuses,
+  counts,
+  onValueChange,
+  className = "",
+}: {
+  visibleStatuses: CalendarMonitoringStatus[];
+  counts: Record<CalendarMonitoringStatus, number>;
+  onValueChange: (statuses: CalendarMonitoringStatus[]) => void;
+  className?: string;
+}) {
+  return (
+    <ToggleGroup
+      type="multiple"
+      variant="outline"
+      size="sm"
+      value={visibleStatuses}
+      onValueChange={(values) => {
+        const statuses = values.filter(
+          (value): value is CalendarMonitoringStatus =>
+            value === "monitored" || value === "unmonitored",
+        );
+        if (statuses.length > 0) onValueChange(statuses);
+      }}
+      aria-label="Calendar monitoring filter"
+      className={`shrink-0 ${className}`}
+    >
+      <ToggleGroupItem
+        value="monitored"
+        variant="outline"
+        size="sm"
+        className="gap-1.5"
+      >
+        <Eye aria-hidden="true" className="h-3.5 w-3.5 text-[var(--scry-success-text)]" />
+        <span>Monitored</span>
+        <Badge tone="neutral" className="h-4 min-w-5 rounded-full px-1 py-0 text-[10px]">
+          {counts.monitored}
+        </Badge>
+      </ToggleGroupItem>
+      <ToggleGroupItem
+        value="unmonitored"
+        variant="outline"
+        size="sm"
+        className="gap-1.5"
+      >
+        <EyeOff aria-hidden="true" className="h-3.5 w-3.5 text-[var(--scry-danger-text)]" />
+        <span>Unmonitored</span>
+        <Badge tone="neutral" className="h-4 min-w-5 rounded-full px-1 py-0 text-[10px]">
+          {counts.unmonitored}
+        </Badge>
+      </ToggleGroupItem>
+    </ToggleGroup>
+  );
+}
 
 type CalendarViewProps = {
   episodes: CalendarEpisodeItem[];
@@ -76,6 +154,69 @@ const FACET_LABELS: Record<string, string> = {
   movie: "Movie",
   series: "Series",
 };
+
+function CalendarLibraryFacetFilters({
+  libraries,
+  librariesLoading,
+  selectedLibraryIds,
+  onSelectedLibraryIdsChange,
+  facetFilter,
+  onFacetFilterChange,
+}: {
+  libraries: LibraryRecord[];
+  librariesLoading: boolean;
+  selectedLibraryIds: string[];
+  onSelectedLibraryIdsChange: (value: string[]) => void;
+  facetFilter: string[];
+  onFacetFilterChange: (value: string[]) => void;
+}) {
+  return (
+    <div className="fc-scryer-calendar-filters flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+      <LibraryMultiSelect
+        libraries={libraries}
+        selectedLibraryIds={selectedLibraryIds}
+        onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+        disabled={librariesLoading || libraries.length === 0}
+        triggerClassName="h-8 w-full rounded-[10px] text-[12.5px] sm:w-[150px]"
+      />
+      <ToggleGroup
+        type="multiple"
+        variant="outline"
+        size="sm"
+        value={facetFilter}
+        onValueChange={(values) => {
+          if (values.length > 0) onFacetFilterChange(values);
+        }}
+        aria-label="Calendar media types"
+        className="w-full sm:w-auto"
+      >
+        {FACET_ORDER.map((facet) => {
+          const active = facetFilter.includes(facet);
+          const color = FACET_COLORS[facet];
+          return (
+            <ToggleGroupItem
+              key={facet}
+              value={facet}
+              variant="outline"
+              size="sm"
+              className="flex-1 gap-1.5 sm:flex-none"
+            >
+              <span
+                className="h-[9px] w-[9px] rounded-full"
+                style={{
+                  background: color,
+                  opacity: active ? 1 : 0.35,
+                  boxShadow: active ? `0 0 7px ${FACET_GLOWS[facet]}` : "none",
+                }}
+              />
+              {FACET_LABELS[facet]}
+            </ToggleGroupItem>
+          );
+        })}
+      </ToggleGroup>
+    </div>
+  );
+}
 
 function formatEpisodeLabel(ep: CalendarEpisodeItem): string {
   const parts: string[] = [ep.titleName];
@@ -133,6 +274,119 @@ function formatTooltip(ep: CalendarEpisodeItem): string {
   return lines.join("\n");
 }
 
+type CalendarHoverPreview = {
+  episode: CalendarEpisodeItem;
+  anchor: {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+  };
+};
+
+function formatAirDateLabel(airDate: string | null): string | null {
+  if (!airDate) return null;
+  const [year, month, day] = airDate.slice(0, 10).split("-").map(Number);
+  if (!year || !month || !day) return airDate;
+  const dateLabel = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(year, month - 1, day));
+  const time = formatAirTime(airDate);
+  return time ? `${dateLabel} at ${time}` : dateLabel;
+}
+
+function CalendarEventHoverCard({ preview }: { preview: CalendarHoverPreview }) {
+  const t = useTranslate();
+  const { episode, anchor } = preview;
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
+
+  if (typeof document === "undefined") return null;
+
+  const isMovie = episode.titleFacet === "movie";
+  const fallbackTone = isMovie
+    ? "MOVIE"
+    : episode.titleFacet === "anime"
+      ? "ANIME"
+      : "SERIES";
+  const gap = 12;
+  const viewportPadding = 12;
+  const width = Math.min(isMovie ? 360 : 380, window.innerWidth - viewportPadding * 2);
+  const estimatedHeight = isMovie ? 220 : 370;
+  const fitsOnRight = anchor.right + gap + width <= window.innerWidth - viewportPadding;
+  const unclampedLeft = fitsOnRight ? anchor.right + gap : anchor.left - gap - width;
+  const left = Math.max(
+    viewportPadding,
+    Math.min(unclampedLeft, window.innerWidth - width - viewportPadding),
+  );
+  const top = Math.max(
+    viewportPadding,
+    Math.min(
+      anchor.top + (anchor.bottom - anchor.top - estimatedHeight) / 2,
+      window.innerHeight - estimatedHeight - viewportPadding,
+    ),
+  );
+  const badge = formatEpisodeBadge(episode);
+  const availabilityPill = episodeAvailabilityPill(episode.mediaAvailability, t);
+  const airDate = formatAirDateLabel(episode.airDate);
+
+  return createPortal(
+    <aside
+      role="tooltip"
+      className={`fc-scryer-hover-card${isMovie ? " is-movie" : " is-episode"}`}
+      style={{ left, top, width }}
+    >
+      <div
+        className="fc-scryer-hover-card-image-wrap"
+        style={artworkFallbackStyle(episode.id || episode.titleId, fallbackTone)}
+      >
+        {episode.imageUrl && failedImageUrl !== episode.imageUrl ? (
+          <img
+            src={episode.imageUrl}
+            alt=""
+            className="fc-scryer-hover-card-image"
+            onError={() => setFailedImageUrl(episode.imageUrl)}
+          />
+        ) : null}
+      </div>
+      <div className="fc-scryer-hover-card-copy">
+        <div className="fc-scryer-hover-card-badges">
+          <span className="fc-scryer-hover-card-meta-badge">
+            {FACET_LABELS[episode.titleFacet] ?? episode.titleFacet}
+          </span>
+          {badge ? <span className="fc-scryer-hover-card-meta-badge">{badge}</span> : null}
+          {availabilityPill ? (
+            <span className="fc-scryer-hover-card-meta-badge">
+              {availabilityPill.label}
+            </span>
+          ) : null}
+          {!episode.monitored ? (
+            <span className="fc-scryer-hover-card-meta-badge">Unmonitored</span>
+          ) : null}
+        </div>
+        <h3 className="fc-scryer-hover-card-title">{episode.titleName}</h3>
+        {!isMovie && episode.episodeTitle ? (
+          <p className="fc-scryer-hover-card-episode-title">{episode.episodeTitle}</p>
+        ) : null}
+        {episode.overview ? (
+          <p className="fc-scryer-hover-card-overview">{episode.overview}</p>
+        ) : null}
+        <div className="fc-scryer-hover-card-footer">
+          {airDate ? (
+            <span>
+              <CalendarClock aria-hidden="true" />
+              {airDate}
+            </span>
+          ) : null}
+          <span>{episode.libraryName ?? episode.libraryId}</span>
+        </div>
+      </div>
+    </aside>,
+    document.body,
+  );
+}
+
 export function CalendarView({
   episodes,
   loading,
@@ -145,11 +399,54 @@ export function CalendarView({
 }: CalendarViewProps) {
   const t = useTranslate();
   const isMobile = useIsMobile();
+  const [initialCalendarView] = useState(readStoredCalendarViewMode);
   const [facetFilter, setFacetFilter] = useState<string[]>(["anime", "movie", "series"]);
+  const [visibleMonitoringStatuses, setVisibleMonitoringStatuses] = useState<
+    CalendarMonitoringStatus[]
+  >(["monitored", "unmonitored"]);
+  const [hoverPreview, setHoverPreview] = useState<CalendarHoverPreview | null>(null);
+  const hoverTimerRef = useRef<number | null>(null);
+
+  const clearHoverTimer = useCallback(() => {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearHoverTimer(), [clearHoverTimer]);
+
+  useEffect(() => {
+    if (!hoverPreview) return;
+    const closePreview = () => setHoverPreview(null);
+    window.addEventListener("resize", closePreview);
+    window.addEventListener("scroll", closePreview, true);
+    return () => {
+      window.removeEventListener("resize", closePreview);
+      window.removeEventListener("scroll", closePreview, true);
+    };
+  }, [hoverPreview]);
+
+  const monitoringCounts = useMemo(() => {
+    const counts: Record<CalendarMonitoringStatus, number> = {
+      monitored: 0,
+      unmonitored: 0,
+    };
+    for (const episode of episodes) {
+      if (!facetFilter.includes(episode.titleFacet)) continue;
+      counts[episode.monitored ? "monitored" : "unmonitored"] += 1;
+    }
+    return counts;
+  }, [episodes, facetFilter]);
 
   const filteredEpisodes = useMemo(
-    () => episodes.filter((ep) => facetFilter.includes(ep.titleFacet)),
-    [episodes, facetFilter],
+    () =>
+      episodes.filter(
+        (ep) =>
+          facetFilter.includes(ep.titleFacet) &&
+          visibleMonitoringStatuses.includes(ep.monitored ? "monitored" : "unmonitored"),
+      ),
+    [episodes, facetFilter, visibleMonitoringStatuses],
   );
 
   const dayEventCounts = useMemo(() => {
@@ -169,61 +466,119 @@ export function CalendarView({
           id: ep.id,
           title: formatEpisodeLabel(ep),
           date: ep.airDate!,
+          url: buildCalendarEventHref(ep) ?? undefined,
           extendedProps: ep,
         })),
     [filteredEpisodes],
   );
 
-  const handleDatesSet = (arg: DatesSetArg) => {
+  const handleDatesSet = (arg: DatesSetInfo) => {
+    if (arg.view.type === "dayGridMonth" || arg.view.type === "dayGridWeek") {
+      writeStoredCalendarViewMode(arg.view.type);
+    }
     const start = arg.startStr.slice(0, 10);
     const end = arg.endStr.slice(0, 10);
     onDateRangeChange(start, end);
   };
 
   const handleEventClick = useCallback(
-    (arg: EventClickArg) => {
+    (arg: EventClickInfo) => {
+      if (
+        !onEpisodeClick ||
+        arg.jsEvent.button !== 0 ||
+        arg.jsEvent.metaKey ||
+        arg.jsEvent.ctrlKey ||
+        arg.jsEvent.shiftKey ||
+        arg.jsEvent.altKey
+      ) {
+        return;
+      }
+      arg.jsEvent.preventDefault();
       const ep = arg.event.extendedProps as CalendarEpisodeItem;
-      onEpisodeClick?.(ep);
+      onEpisodeClick(ep);
     },
     [onEpisodeClick],
   );
 
-  const handleEventDidMount = useCallback((arg: EventMountArg) => {
+  const handleEventMouseEnter = useCallback(
+    (arg: EventHoveringInfo) => {
+      if (isMobile) return;
+      clearHoverTimer();
+      const episode = arg.event.extendedProps as CalendarEpisodeItem;
+      const rect = arg.el.getBoundingClientRect();
+      hoverTimerRef.current = window.setTimeout(() => {
+        setHoverPreview({
+          episode,
+          anchor: {
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            left: rect.left,
+          },
+        });
+        hoverTimerRef.current = null;
+      }, 180);
+    },
+    [clearHoverTimer, isMobile],
+  );
+
+  const handleEventMouseLeave = useCallback(() => {
+    clearHoverTimer();
+    setHoverPreview(null);
+  }, [clearHoverTimer]);
+
+  const handleEventDidMount = useCallback((arg: MountInfo<EventDisplayInfo>) => {
     const ep = arg.event.extendedProps as CalendarEpisodeItem;
     const facetColor = FACET_COLORS[ep.titleFacet] ?? "#6b7280";
     const facetGradient = FACET_GRADIENTS[ep.titleFacet] ?? facetColor;
     const facetRgb = FACET_RGB[ep.titleFacet] ?? "107, 114, 128";
-    arg.el.setAttribute("title", formatTooltip(ep));
+    arg.el.setAttribute("aria-label", formatTooltip(ep));
     arg.el.style.setProperty("--scryer-event-color", facetColor);
     arg.el.style.setProperty("--scryer-event-accent", facetColor);
     arg.el.style.setProperty("--scryer-event-gradient", facetGradient);
     arg.el.style.setProperty("--scryer-event-rgb", facetRgb);
-    arg.el.style.setProperty("--fc-event-text-color", "#f8fbff");
   }, []);
 
-  const renderEventContent = useCallback((arg: EventContentArg) => {
+  const renderEventContent = useCallback((arg: EventDisplayInfo) => {
     const ep = arg.event.extendedProps as CalendarEpisodeItem;
     const badge = formatEpisodeBadge(ep);
+    const availabilityPill = episodeAvailabilityPill(ep.mediaAvailability, t);
     const time = formatAirTime(ep.airDate);
 
     return (
       <div className="fc-scryer-event-card">
-        <div className="fc-scryer-event-title">{ep.titleName}</div>
-        {badge || time ? (
+        <div className="fc-scryer-event-title-row">
+          <span
+            role="img"
+            aria-label={ep.monitored ? "Monitored" : "Unmonitored"}
+            className={`fc-scryer-event-monitoring-icon${
+              ep.monitored ? " is-monitored" : " is-unmonitored"
+            }`}
+          >
+            {ep.monitored ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+          </span>
+          <div className="fc-scryer-event-title">{ep.titleName}</div>
+        </div>
+        {badge || availabilityPill || time ? (
           <div className="fc-scryer-event-meta">
             {badge ? <span className="fc-scryer-event-badge">{badge}</span> : null}
+            {availabilityPill ? (
+              <span className="fc-scryer-event-badge">
+                {availabilityPill.label}
+              </span>
+            ) : null}
             {time ? <span className="fc-scryer-event-time">{time}</span> : null}
           </div>
         ) : null}
       </div>
     );
-  }, []);
+  }, [t]);
 
-  const renderDayHeaderContent = useCallback((arg: DayHeaderContentArg) => (
+  const renderDayHeaderContent = useCallback((arg: DayHeaderInfo) => (
     <span className="fc-scryer-header-label">{arg.text}</span>
   ), []);
 
-  const renderDayCellContent = useCallback((arg: DayCellContentArg) => {
+  const renderDayCellContent = useCallback((arg: DayCellInfo) => {
     if (arg.view.type !== "dayGridMonth") {
       return (
         <div className="fc-scryer-day-chip">
@@ -239,7 +594,7 @@ export function CalendarView({
     );
   }, []);
 
-  const renderMoreLinkContent = useCallback((arg: MoreLinkContentArg) => (
+  const renderMoreLinkContent = useCallback((arg: MoreLinkInfo) => (
     <span className="fc-scryer-more-link-text">+{arg.num} more</span>
   ), []);
 
@@ -248,88 +603,63 @@ export function CalendarView({
   }, []);
 
   return (
-    <Card className="flex min-h-0 flex-1 flex-col rounded-none border-0 bg-transparent shadow-none">
-      <CardContent className="flex min-h-0 flex-1 flex-col p-0">
-        <div className="mb-4 flex flex-wrap items-center gap-3 max-sm:gap-2">
-          <LibraryMultiSelect
-            libraries={libraries}
-            selectedLibraryIds={selectedLibraryIds}
-            onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
-            disabled={librariesLoading || libraries.length === 0}
-            triggerClassName="h-10 w-full rounded-[11px] text-[13px] sm:w-[188px]"
-          />
-          <div className="grid w-full grid-cols-3 items-center gap-2 sm:flex sm:w-auto">
-            {FACET_ORDER.map((facet) => {
-              const active = facetFilter.includes(facet);
-              const color = FACET_COLORS[facet];
-              return (
-                <button
-                  key={facet}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() =>
-                    handleFacetChange(
-                      active
-                        ? facetFilter.filter((f) => f !== facet)
-                        : [...facetFilter, facet],
-                    )
-                  }
-                  className="flex h-9 items-center justify-center gap-2 rounded-[10px] border px-2.5 text-[12.5px] font-semibold transition sm:px-3.5"
-                  style={{
-                    borderColor: active ? color : "var(--scry-border2)",
-                    background: active ? "rgba(255,255,255,0.04)" : "transparent",
-                    color: active ? "var(--scry-ink2)" : "var(--scry-faint)",
-                  }}
-                >
-                  <span
-                    className="h-[9px] w-[9px] rounded-full"
-                    style={{
-                      background: color,
-                      opacity: active ? 1 : 0.35,
-                      boxShadow: active ? `0 0 7px ${FACET_GLOWS[facet]}` : "none",
-                    }}
-                  />
-                  {FACET_LABELS[facet]}
-                </button>
-              );
-            })}
-          </div>
-          <div className="ml-auto flex w-full items-center justify-end gap-2 text-[12.5px] text-[var(--scry-muted3)] sm:w-auto">
-            <CalendarClock className="h-[15px] w-[15px] text-[var(--scry-faint)]" />
-            <span className="font-semibold text-[var(--scry-text4)]">
-              {filteredEpisodes.length}
-            </span>
-            airings this month
-          </div>
-        </div>
-        <p
-          aria-live="polite"
-          className="mb-2 min-h-5 text-sm text-muted-foreground"
-        >
-          {loading ? t("label.loading") : "\u00a0"}
-        </p>
+    <>
+      <Card className="flex min-h-0 flex-1 flex-col rounded-none border-0 bg-transparent shadow-none">
+        <CardContent className="flex min-h-0 flex-1 flex-col p-0">
+          {isMobile ? (
+            <div className="mb-3 flex w-full flex-col gap-2">
+              <CalendarLibraryFacetFilters
+                libraries={libraries}
+                librariesLoading={librariesLoading}
+                selectedLibraryIds={selectedLibraryIds}
+                onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+                facetFilter={facetFilter}
+                onFacetFilterChange={handleFacetChange}
+              />
+              <CalendarMonitoringFilterControl
+                visibleStatuses={visibleMonitoringStatuses}
+                counts={monitoringCounts}
+                onValueChange={setVisibleMonitoringStatuses}
+                className="w-full"
+              />
+            </div>
+          ) : null}
         <div className="fc-scryer min-h-0 flex-1">
           <FullCalendar
             key={isMobile ? "calendar-mobile" : "calendar-desktop"}
-            plugins={[dayGridPlugin]}
-            initialView="dayGridMonth"
+            plugins={[dayGridPlugin, classicThemePlugin]}
+            initialView={initialCalendarView}
+            headerToolbarClass="fc-scryer-header-toolbar"
+            toolbarSectionClass="fc-scryer-toolbar-section"
+            toolbarTitleClass="fc-scryer-toolbar-title"
+            buttonClass={(arg) =>
+              `fc-scryer-button${arg.isSelected ? " is-selected" : ""}`
+            }
             events={events}
             eventClick={handleEventClick}
+            eventMouseEnter={handleEventMouseEnter}
+            eventMouseLeave={handleEventMouseLeave}
             eventDidMount={handleEventDidMount}
             datesSet={handleDatesSet}
             eventContent={renderEventContent}
-            eventClassNames={(arg) => {
+            eventClass={(arg) => {
               const ep = arg.event.extendedProps as CalendarEpisodeItem;
               const classes = [
                 "fc-scryer-event",
                 `fc-scryer-facet-${ep.titleFacet}`,
               ];
               classes.push(ep.monitored ? "is-monitored" : "is-unmonitored");
-              return classes;
+              return classes.join(" ");
             }}
+            dayHeaderClass="fc-scryer-day-header"
+            dayHeaderInnerClass="fc-scryer-day-header-inner"
             dayHeaderContent={renderDayHeaderContent}
-            dayCellContent={renderDayCellContent}
-            dayCellClassNames={(arg) => {
+            dayCellTopContent={renderDayCellContent}
+            dayCellTopClass="fc-scryer-day-cell-top"
+            dayCellTopInnerClass="fc-scryer-day-cell-top-inner"
+            dayCellInnerClass="fc-scryer-day-cell-inner"
+            dayCellBottomClass="fc-scryer-day-cell-bottom"
+            dayCellClass={(arg) => {
               const classes = ["fc-scryer-day-cell"];
               if (arg.isToday) classes.push("is-today");
               if (arg.isOther) classes.push("is-other");
@@ -337,16 +667,35 @@ export function CalendarView({
                 classes.push("has-events");
               }
               if (arg.view.type === "dayGridMonth") classes.push("is-month");
-              return classes;
+              return classes.join(" ");
             }}
-            moreLinkClassNames={() => ["fc-scryer-more-link"]}
+            popoverClass="fc-scryer-popover"
+            moreLinkClass="fc-scryer-more-link"
             moreLinkContent={renderMoreLinkContent}
-            buttonText={{
-              today: "Today",
-              month: "Month",
-              week: "Week",
-              dayGridMonth: "Month",
-              dayGridWeek: "Week",
+            buttonGroupClass="fc-scryer-button-group"
+            buttons={{
+              today: { text: "Today" },
+              dayGridMonth: { text: "Month" },
+              dayGridWeek: { text: "Week" },
+            }}
+            toolbarElements={{
+              calendarLibraryFacetFilters: () => (
+                <CalendarLibraryFacetFilters
+                  libraries={libraries}
+                  librariesLoading={librariesLoading}
+                  selectedLibraryIds={selectedLibraryIds}
+                  onSelectedLibraryIdsChange={onSelectedLibraryIdsChange}
+                  facetFilter={facetFilter}
+                  onFacetFilterChange={handleFacetChange}
+                />
+              ),
+              calendarMonitoringFilter: () => (
+                <CalendarMonitoringFilterControl
+                  visibleStatuses={visibleMonitoringStatuses}
+                  counts={monitoringCounts}
+                  onValueChange={setVisibleMonitoringStatuses}
+                />
+              ),
             }}
             headerToolbar={
               isMobile
@@ -356,12 +705,16 @@ export function CalendarView({
                     right: "today",
                   }
                 : {
-                    left: "prev,next today",
+                    left: "calendarLibraryFacetFilters calendarMonitoringFilter",
                     center: "title",
-                    right: "dayGridMonth,dayGridWeek",
+                    right: "today dayGridMonth,dayGridWeek prev,next",
                   }
             }
             views={{
+              dayGrid: {
+                className: "fc-scryer-daygrid",
+                tableBodyClass: "fc-scryer-daygrid-body",
+              },
               dayGridMonth: {
                 fixedWeekCount: !isMobile,
                 showNonCurrentDates: true,
@@ -378,7 +731,14 @@ export function CalendarView({
             displayEventTime={false}
           />
         </div>
-      </CardContent>
-    </Card>
+          {loading ? (
+            <p aria-live="polite" className="mt-2 text-[12.5px] text-[var(--scry-muted3)]">
+              {t("label.loading")}
+            </p>
+          ) : null}
+        </CardContent>
+      </Card>
+      {!isMobile && hoverPreview ? <CalendarEventHoverCard preview={hoverPreview} /> : null}
+    </>
   );
 }

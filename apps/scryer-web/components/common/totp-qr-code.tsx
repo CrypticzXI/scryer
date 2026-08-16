@@ -1,7 +1,7 @@
 import { QRCode } from "react-qr-code";
 import { cn } from "@/lib/utils";
 
-const TOTP_QR_CODE_SIZE = 240;
+const TOTP_QR_CODE_SIZE = 256;
 
 type TotpQrCodeProps = {
   value: string;
@@ -26,7 +26,8 @@ export function TotpQrCode({
         bgColor="#FFFFFF"
         className="block h-auto max-w-full"
         fgColor="#000000"
-        level="M"
+        level="L"
+        shapeRendering="crispEdges"
         size={TOTP_QR_CODE_SIZE}
         value={value}
       />

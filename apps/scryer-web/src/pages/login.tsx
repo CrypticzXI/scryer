@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Fingerprint, KeyRound, Loader2 } from "lucide-react";
 import { TotpQrCode } from "@/components/common/totp-qr-code";
@@ -13,6 +13,7 @@ import { backendClient, mfaEnrollmentClient } from "@/lib/graphql/urql-client";
 import { externalAuthRuntimeSettingsQuery } from "@/lib/graphql/queries";
 import {
   completeLoginMfaEnrollmentMutation,
+  loginWithEmbyMutation,
   loginWithJellyfinMutation,
   loginWithPlexMutation,
   totpEnrollmentStartMutation,
@@ -26,13 +27,14 @@ import { authenticateWithPasskey, PasskeyClientError } from "@/lib/utils/passkey
 import { authenticateWithPlexPin } from "@/lib/utils/plex-oauth";
 import { selectorId } from "@/lib/utils/dom-ids";
 
-type LoginMethod = "password" | "jellyfin" | null;
+type LoginMethod = "password" | "jellyfin" | "emby" | null;
 
 type LoginPayload = {
   token: string;
   user: AuthUser | null;
   mfaEnrollmentRequired: boolean;
   mfaVerifiedUntil: string | null;
+  persistSession: boolean;
 };
 
 function resolveRedirectTarget(value: string | null): string {
@@ -110,6 +112,7 @@ export default function LoginPage() {
     loading: authLoading,
     effectiveFormLoginEnabled,
     passkeyEnabled,
+    defaultPersistSession,
   } = useAuth();
   // Default to the Scryer password method so its form is in the DOM and visible
   // at first paint. Password managers detect credential fields on load; a form
@@ -119,15 +122,24 @@ export default function LoginPage() {
   const [activeMethod, setActiveMethod] = useState<LoginMethod>("password");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [persistSession, setPersistSession] = useState(false);
+  const persistSessionInitialized = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [localTotpCode, setLocalTotpCode] = useState("");
   const [localTotpPrompted, setLocalTotpPrompted] = useState(false);
   const [passkeySubmitting, setPasskeySubmitting] = useState(false);
   const [jellyfinSubmitting, setJellyfinSubmitting] = useState(false);
+  const [embySubmitting, setEmbySubmitting] = useState(false);
   const [externalAuthSettings, setExternalAuthSettings] =
     useState<ExternalAuthRuntimeSettings | null>(null);
   const [jellyfinConnectionId, setJellyfinConnectionId] = useState("");
+  const [embyConnectionId, setEmbyConnectionId] = useState("");
+  const [embyMode, setEmbyMode] = useState<"LOCAL" | "CONNECT">("LOCAL");
+  const [embyUsername, setEmbyUsername] = useState("");
+  const [embyPassword, setEmbyPassword] = useState("");
+  const [embyTotpCode, setEmbyTotpCode] = useState("");
+  const [embyTotpPrompted, setEmbyTotpPrompted] = useState(false);
   const [plexConnectionId, setPlexConnectionId] = useState("");
   const [jellyfinUsername, setJellyfinUsername] = useState("");
   const [jellyfinPassword, setJellyfinPassword] = useState("");
@@ -141,10 +153,23 @@ export default function LoginPage() {
   const [jellyfinMfaBusy, setJellyfinMfaBusy] = useState(false);
   const [plexSubmitting, setPlexSubmitting] = useState(false);
   const redirectTarget = resolveRedirectTarget(searchParams.get("redirect"));
+
+  useEffect(() => {
+    if (!authLoading && !persistSessionInitialized.current) {
+      setPersistSession(defaultPersistSession);
+      persistSessionInitialized.current = true;
+    }
+  }, [authLoading, defaultPersistSession]);
   const jellyfinConnections =
     externalAuthSettings?.loginProviders.includes("JELLYFIN")
       ? externalAuthSettings.connections.filter(
           (connection) => connection.provider === "JELLYFIN" && connection.loginEnabled,
+        )
+      : [];
+  const embyConnections =
+    externalAuthSettings?.loginProviders.includes("EMBY")
+      ? externalAuthSettings.connections.filter(
+          (connection) => connection.provider === "EMBY" && connection.loginEnabled,
         )
       : [];
   const plexConnections =
@@ -157,10 +182,12 @@ export default function LoginPage() {
   const plexLoginAvailable = plexConnections.length > 0;
   const localPasswordAvailable = effectiveFormLoginEnabled !== false;
   const jellyfinLoginAvailable = jellyfinConnections.length > 0;
+  const embyLoginAvailable = embyConnections.length > 0;
   const loginMethodCount = [
     localPasswordAvailable,
     passkeyEnabled,
     jellyfinLoginAvailable,
+    embyLoginAvailable,
     plexLoginAvailable,
   ].filter(Boolean).length;
   const showLoginMethodChooser = loginMethodCount > 1;
@@ -170,17 +197,29 @@ export default function LoginPage() {
   const jellyfinFormVisible =
     activeMethod === "jellyfin" ||
     (!showLoginMethodChooser && jellyfinLoginAvailable);
+  const embyFormVisible =
+    activeMethod === "emby" || (!showLoginMethodChooser && embyLoginAvailable);
+  const selectedEmbyConnection = embyConnections.find(
+    (connection) => connection.id === embyConnectionId,
+  );
   const showJellyfinTotpCode = jellyfinTotpPrompted;
   const anySubmitting =
     submitting ||
     passkeySubmitting ||
     jellyfinSubmitting ||
+    embySubmitting ||
     jellyfinMfaBusy ||
     plexSubmitting;
 
   const resetJellyfinTotpChallenge = useCallback(() => {
     setJellyfinTotpPrompted(false);
     setJellyfinTotpCode("");
+    setError(null);
+  }, []);
+
+  const resetEmbyTotpChallenge = useCallback(() => {
+    setEmbyTotpPrompted(false);
+    setEmbyTotpCode("");
     setError(null);
   }, []);
 
@@ -229,6 +268,13 @@ export default function LoginPage() {
             current || firstJellyfinConnectionId,
           );
         }
+        const firstEmbyConnectionId =
+          settings?.connections.find(
+            (connection) => connection.provider === "EMBY" && connection.loginEnabled,
+          )?.id ?? "";
+        if (firstEmbyConnectionId) {
+          setEmbyConnectionId((current) => current || firstEmbyConnectionId);
+        }
         if (isVisibleExternalAccountProvider("PLEX")) {
           const firstPlexConnectionId =
             settings?.connections.find(
@@ -254,8 +300,8 @@ export default function LoginPage() {
       setError(null);
       setPasskeySubmitting(true);
       try {
-        const result = await authenticateWithPasskey();
-        adoptSession(result.token, result.user);
+        const result = await authenticateWithPasskey(undefined, persistSession);
+        adoptSession(result.token, result.user, result.persistSession);
         navigate(redirectTarget, { replace: true });
       } catch (err) {
         if (err instanceof PasskeyClientError) {
@@ -274,7 +320,7 @@ export default function LoginPage() {
         setPasskeySubmitting(false);
       }
     },
-    [adoptSession, navigate, redirectTarget, t],
+    [adoptSession, navigate, persistSession, redirectTarget, t],
   );
 
   const startJellyfinMfaEnrollment = useCallback(async () => {
@@ -307,10 +353,11 @@ export default function LoginPage() {
       try {
         const result = await login(username, password, {
           totpCode: localTotpPrompted ? localTotpCode || null : null,
+          persistSession,
         });
         if (result.mfaEnrollmentRequired) {
           setJellyfinMfaSetupActive(true);
-          adoptSession(result.token, result.user ?? null);
+          adoptSession(result.token, result.user ?? null, result.persistSession);
           await startJellyfinMfaEnrollment();
           return;
         }
@@ -334,6 +381,7 @@ export default function LoginPage() {
       login,
       navigate,
       password,
+      persistSession,
       redirectTarget,
       startJellyfinMfaEnrollment,
       t,
@@ -371,6 +419,7 @@ export default function LoginPage() {
       adoptSession(
         data.completeLoginMfaEnrollment.login.token,
         data.completeLoginMfaEnrollment.login.user ?? null,
+        data.completeLoginMfaEnrollment.login.persistSession,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : t("auth.mfaSetupCompleteFailed"));
@@ -412,7 +461,7 @@ export default function LoginPage() {
               username: jellyfinUsername,
               password: jellyfinPassword,
               totpCode: jellyfinTotpPrompted ? jellyfinTotpCode || null : null,
-              persistSession: true,
+              persistSession,
             },
           })
           .toPromise();
@@ -422,11 +471,19 @@ export default function LoginPage() {
         const loginPayload = data.loginWithJellyfin;
         if (loginPayload.mfaEnrollmentRequired) {
           setJellyfinMfaSetupActive(true);
-          adoptSession(loginPayload.token, loginPayload.user ?? null);
+          adoptSession(
+            loginPayload.token,
+            loginPayload.user ?? null,
+            loginPayload.persistSession,
+          );
           await startJellyfinMfaEnrollment();
           return;
         }
-        adoptSession(loginPayload.token, loginPayload.user ?? null);
+        adoptSession(
+          loginPayload.token,
+          loginPayload.user ?? null,
+          loginPayload.persistSession,
+        );
         navigate(redirectTarget, { replace: true });
       } catch (err) {
         if (graphQlErrorCode(err) === "MFA_STEP_UP_REQUIRED") {
@@ -448,11 +505,75 @@ export default function LoginPage() {
       jellyfinTotpPrompted,
       jellyfinUsername,
       navigate,
+      persistSession,
       redirectTarget,
       startJellyfinMfaEnrollment,
       t,
     ],
   );
+
+  const handleEmbySignIn = useCallback(async () => {
+    if (!embyConnectionId || !embyUsername || !embyPassword) return;
+
+    setError(null);
+    setEmbySubmitting(true);
+    try {
+      const { data, error } = await backendClient
+        .mutation(loginWithEmbyMutation, {
+          input: {
+            connectionId: embyConnectionId,
+            mode: embyMode,
+            username: embyUsername,
+            password: embyPassword,
+            totpCode: embyTotpPrompted ? embyTotpCode || null : null,
+            persistSession,
+          },
+        })
+        .toPromise();
+      if (error || !data?.loginWithEmby) {
+        throw error ?? new Error("Emby sign-in failed");
+      }
+      const loginPayload = data.loginWithEmby;
+      if (loginPayload.mfaEnrollmentRequired) {
+        setJellyfinMfaSetupActive(true);
+        adoptSession(
+          loginPayload.token,
+          loginPayload.user ?? null,
+          loginPayload.persistSession,
+        );
+        await startJellyfinMfaEnrollment();
+        return;
+      }
+      adoptSession(
+        loginPayload.token,
+        loginPayload.user ?? null,
+        loginPayload.persistSession,
+      );
+      navigate(redirectTarget, { replace: true });
+    } catch (err) {
+      if (graphQlErrorCode(err) === "MFA_STEP_UP_REQUIRED") {
+        setEmbyTotpPrompted(true);
+        setEmbyTotpCode("");
+        setError(null);
+      } else {
+        setError("Emby sign-in failed");
+      }
+    } finally {
+      setEmbySubmitting(false);
+    }
+  }, [
+    adoptSession,
+    embyConnectionId,
+    embyMode,
+    embyPassword,
+    embyTotpCode,
+    embyTotpPrompted,
+    embyUsername,
+    navigate,
+    persistSession,
+    redirectTarget,
+    startJellyfinMfaEnrollment,
+  ]);
 
   const handlePlexSignIn = useCallback(
     async () => {
@@ -467,14 +588,18 @@ export default function LoginPage() {
             input: {
               connectionId: plexConnectionId,
               plexAuthToken,
-              persistSession: true,
+              persistSession,
             },
           })
           .toPromise();
         if (error || !data?.loginWithPlex) {
           throw error ?? new Error(t("auth.plexFailed"));
         }
-        adoptSession(data.loginWithPlex.token, data.loginWithPlex.user ?? null);
+        adoptSession(
+          data.loginWithPlex.token,
+          data.loginWithPlex.user ?? null,
+          data.loginWithPlex.persistSession,
+        );
         navigate(redirectTarget, { replace: true });
       } catch (err) {
         setError(primaryLoginFailureMessage(t, err));
@@ -482,7 +607,7 @@ export default function LoginPage() {
         setPlexSubmitting(false);
       }
     },
-    [adoptSession, navigate, plexConnectionId, redirectTarget, t],
+    [adoptSession, navigate, persistSession, plexConnectionId, redirectTarget, t],
   );
 
   if (serviceRestarting) {
@@ -624,6 +749,20 @@ export default function LoginPage() {
             {error}
           </div>
         )}
+
+        <label className="flex items-center gap-2 text-sm text-[var(--scry-muted)]">
+          <input
+            id="persist-session"
+            type="checkbox"
+            checked={persistSession}
+            onChange={(event) => {
+              persistSessionInitialized.current = true;
+              setPersistSession(event.target.checked);
+            }}
+            disabled={anySubmitting}
+          />
+          Keep me signed in
+        </label>
 
         <div className="space-y-3">
           {localPasswordAvailable ? (
@@ -868,6 +1007,142 @@ export default function LoginPage() {
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : null}
                     {jellyfinSubmitting ? t("auth.signingIn") : t("auth.signIn")}
+                  </button>
+                </form>
+              ) : null}
+            </>
+          ) : null}
+
+          {embyLoginAvailable ? (
+            <>
+              {showLoginMethodChooser ? (
+                <button
+                  id="login-emby-method"
+                  type="button"
+                  onClick={() =>
+                    setActiveMethod((current) => (current === "emby" ? null : "emby"))
+                  }
+                  disabled={anySubmitting}
+                  aria-controls="emby-login-form"
+                  aria-expanded={activeMethod === "emby"}
+                  className={AUTH_SECONDARY_BUTTON_CLASS}
+                >
+                  <img
+                    src="/auth-providers/emby.svg"
+                    alt=""
+                    aria-hidden="true"
+                    className="h-4 w-4"
+                  />
+                  Sign in with Emby
+                </button>
+              ) : null}
+
+              {embyFormVisible && embyTotpPrompted ? (
+                <TotpCodeForm
+                  id="emby-login-form"
+                  inputId="emby-totp-code"
+                  submitId="login-emby-submit"
+                  code={embyTotpCode}
+                  title={t("auth.totpCode")}
+                  description={t("auth.totpCodeRequired")}
+                  submitLabel={t("auth.signIn")}
+                  busyLabel={t("auth.signingIn")}
+                  cancelLabel={t("label.back")}
+                  busy={embySubmitting}
+                  disabled={anySubmitting && !embySubmitting}
+                  onCodeChange={setEmbyTotpCode}
+                  onSubmit={handleEmbySignIn}
+                  onCancel={resetEmbyTotpChallenge}
+                />
+              ) : embyFormVisible ? (
+                <form
+                  id="emby-login-form"
+                  className="space-y-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void handleEmbySignIn();
+                  }}
+                >
+                  <select
+                    id="login-emby-connection"
+                    className={AUTH_SELECT_CLASS}
+                    value={embyConnectionId}
+                    onChange={(event) => {
+                      const nextId = event.target.value;
+                      const nextConnection = embyConnections.find(
+                        (connection) => connection.id === nextId,
+                      );
+                      setEmbyConnectionId(nextId);
+                      if (!nextConnection?.embyConnectEnabled) setEmbyMode("LOCAL");
+                      resetEmbyTotpChallenge();
+                    }}
+                  >
+                    {embyConnections.map((connection) => (
+                      <option
+                        id={selectorId("login-emby-connection-option", connection.id)}
+                        key={connection.id}
+                        value={connection.id}
+                      >
+                        {connectionOptionLabel(connection)}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedEmbyConnection?.embyConnectEnabled ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        id="login-emby-mode-local"
+                        type="button"
+                        aria-pressed={embyMode === "LOCAL"}
+                        onClick={() => setEmbyMode("LOCAL")}
+                        className={AUTH_SECONDARY_BUTTON_CLASS}
+                      >
+                        Local
+                      </button>
+                      <button
+                        id="login-emby-mode-connect"
+                        type="button"
+                        aria-pressed={embyMode === "CONNECT"}
+                        onClick={() => setEmbyMode("CONNECT")}
+                        className={AUTH_SECONDARY_BUTTON_CLASS}
+                      >
+                        Connect
+                      </button>
+                    </div>
+                  ) : null}
+                  <Input
+                    id="login-emby-username"
+                    type="text"
+                    ignorePasswordManagers
+                    value={embyUsername}
+                    onChange={(event) => {
+                      setEmbyUsername(event.target.value);
+                      resetEmbyTotpChallenge();
+                    }}
+                    placeholder={
+                      embyMode === "CONNECT" ? "Emby Connect username or email" : t("auth.username")
+                    }
+                    className={AUTH_INPUT_CLASS}
+                  />
+                  <Input
+                    id="login-emby-password"
+                    type="password"
+                    ignorePasswordManagers
+                    value={embyPassword}
+                    onChange={(event) => {
+                      setEmbyPassword(event.target.value);
+                      resetEmbyTotpChallenge();
+                    }}
+                    placeholder={t("auth.password")}
+                    className={AUTH_INPUT_CLASS}
+                  />
+                  <button
+                    id="login-emby-submit"
+                    type="submit"
+                    disabled={anySubmitting || !embyConnectionId || !embyUsername || !embyPassword}
+                    className={AUTH_PRIMARY_BUTTON_CLASS}
+                  >
+                    {embySubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {embySubmitting ? t("auth.signingIn") : t("auth.signIn")}
                   </button>
                 </form>
               ) : null}

@@ -199,12 +199,20 @@ pub(crate) async fn execute_upgrade(
             dest_path_string: &replacement.final_path_string,
             old_score,
             final_score,
+            episode_ids: target_episode_ids,
         },
     )
     .await?;
 
     if recycle_entry_committed {
-        append_upgrade_recycle_event(app, audit_actor.clone(), title, existing_file).await;
+        append_upgrade_recycle_event(
+            app,
+            audit_actor.clone(),
+            title,
+            existing_file,
+            target_episode_ids,
+        )
+        .await;
     }
 
     if import_mode == ImportMode::Move {
@@ -1832,6 +1840,7 @@ struct UpgradeEventDetails<'a> {
     dest_path_string: &'a str,
     old_score: i32,
     final_score: i32,
+    episode_ids: &'a [String],
 }
 
 async fn append_upgrade_event(
@@ -1849,12 +1858,21 @@ async fn append_upgrade_event(
             created_media_update(details.dest_path_string.to_string()),
         ]
     };
+    let mut episode_ids = details.episode_ids.to_vec();
+    if episode_ids.is_empty()
+        && let Some(episode_id) = existing_file.episode_id.clone()
+    {
+        episode_ids.push(episode_id);
+    }
+    episode_ids.sort();
+    episode_ids.dedup();
     app.append_domain_event(new_title_domain_event(
         actor,
         title,
         DomainEventPayload::MediaFileUpgraded(MediaFileUpgradedEventData {
             title: title_context_snapshot(title),
             media_updates,
+            episode_ids,
             previous_file_id: Some(existing_file.id.clone()),
             current_file_id: Some(details.new_file_id.to_string()),
             old_score: Some(details.old_score),
@@ -1870,7 +1888,16 @@ async fn append_upgrade_recycle_event(
     actor: DomainEventActor,
     title: &Title,
     existing_file: &TitleMediaFile,
+    target_episode_ids: &[String],
 ) {
+    let mut episode_ids = target_episode_ids.to_vec();
+    if episode_ids.is_empty()
+        && let Some(episode_id) = existing_file.episode_id.clone()
+    {
+        episode_ids.push(episode_id);
+    }
+    episode_ids.sort();
+    episode_ids.dedup();
     let _ = app
         .append_domain_event(new_title_domain_event(
             actor,
@@ -1880,7 +1907,7 @@ async fn append_upgrade_recycle_event(
                 media_updates: vec![deleted_media_update(existing_file.file_path.clone())],
                 file_id: Some(existing_file.id.clone()),
                 reason: MediaFileDeletedReason::UpgradeCleanup,
-                episode_ids: Vec::new(),
+                episode_ids,
             }),
         ))
         .await

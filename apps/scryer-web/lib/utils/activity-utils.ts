@@ -132,8 +132,17 @@ export function deriveQueueRowPresentation(
   const stateKey = normalizeQueueState(queueItem.state);
   const trackedStateKey = normalizeQueueState(queueItem.trackedState);
   const trackedMatchTypeKey = normalizeQueueState(queueItem.trackedMatchType);
-  const failureReason = buildQueueStatusDetail(queueItem);
   const displayStateKey = queueItem.displayState;
+  const reportedFailureReason = buildQueueStatusDetail(queueItem);
+  const facetKey = normalizeQueueState(queueItem.facet);
+  const failureReason =
+    reportedFailureReason || displayStateKey !== "IMPORT_BLOCKED"
+      ? reportedFailureReason
+      : !queueItem.titleId
+        ? t("queue.blockReasonFallbackUnassigned")
+        : facetKey === "series" || facetKey === "anime"
+          ? t("queue.blockReasonFallbackEpisodic")
+          : t("queue.blockReasonFallbackReview");
   const transferBytes = parseByteCount(queueItem.importTransferBytes);
   const transferTotalBytes = parseByteCount(queueItem.importTransferTotalBytes);
   const hasTransferProgress =

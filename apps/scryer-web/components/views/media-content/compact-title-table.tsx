@@ -129,17 +129,17 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
   view,
   titles,
   titleLoading,
-  catalogHasMoreTitles = false,
-  catalogLoadingMoreTitles = false,
-  catalogPagingEnabled = true,
+  catalogHasMoreTitles: catalogHasMoreTitlesProp,
+  catalogLoadingMoreTitles: catalogLoadingMoreTitlesProp,
+  catalogPagingEnabled: catalogPagingEnabledProp,
   onCatalogEndReached,
   sortKey,
   sortDirection,
   onSortChange,
-  visibleColumns = DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS,
+  visibleColumns: visibleColumnsProp,
   onOpenOverview,
   selectedTitleId,
-  selectedDrawerMode = false,
+  selectedDrawerMode: selectedDrawerModeProp,
   contextPanelId,
   onSelectTitle,
   onDelete,
@@ -153,17 +153,29 @@ export const CompactTitleTable = React.memo(function CompactTitleTable({
   selectedTitleIds,
   onToggleSelected,
   onToggleSelectAll,
-  selectionMode = false,
+  selectionMode: selectionModeProp,
   bulkActionBusy,
-  showScanLibraryAction = false,
-  showConfigureRootsAction = false,
-  configureRootsReason = "missing",
+  showScanLibraryAction: showScanLibraryActionProp,
+  showConfigureRootsAction: showConfigureRootsActionProp,
+  configureRootsReason: configureRootsReasonProp,
   configureRootsHref,
   onScanLibrary,
-  scanLibraryLoading = false,
-  scanLibraryDisabled = false,
+  scanLibraryLoading: scanLibraryLoadingProp,
+  scanLibraryDisabled: scanLibraryDisabledProp,
   scanLibraryNotice,
 }: CompactTitleTableProps) {
+  const catalogHasMoreTitles = catalogHasMoreTitlesProp ?? false;
+  const catalogLoadingMoreTitles = catalogLoadingMoreTitlesProp ?? false;
+  const catalogPagingEnabled = catalogPagingEnabledProp ?? true;
+  const visibleColumns =
+    visibleColumnsProp ?? DEFAULT_TITLE_TABLE_VISIBLE_COLUMNS;
+  const selectedDrawerMode = selectedDrawerModeProp ?? false;
+  const selectionMode = selectionModeProp ?? false;
+  const showScanLibraryAction = showScanLibraryActionProp ?? false;
+  const showConfigureRootsAction = showConfigureRootsActionProp ?? false;
+  const configureRootsReason = configureRootsReasonProp ?? "missing";
+  const scanLibraryLoading = scanLibraryLoadingProp ?? false;
+  const scanLibraryDisabled = scanLibraryDisabledProp ?? false;
   const location = useLocation();
   const t = useTranslate();
   const dateTimeFormat = useUiDateTimeFormat();

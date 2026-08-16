@@ -1,4 +1,5 @@
 import type { TitleHistoryEvent } from "@/lib/types";
+import { LazyCodeEditor } from "@/components/common/lazy-code-editor";
 import { formatSanitizedHistoryValue } from "@/lib/utils/history-redaction";
 import { cn } from "@/lib/utils";
 
@@ -55,6 +56,26 @@ function formatKey(key: string): string {
 function formatValue(value: unknown, key?: string): string {
   return formatSanitizedHistoryValue(value, key);
 }
+
+function formatJsonCode(value: unknown, key?: string): string {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return formatValue(value, key);
+    }
+  }
+
+  const sanitized = formatSanitizedHistoryValue(parsed, key);
+  try {
+    return JSON.stringify(JSON.parse(sanitized), null, 2);
+  } catch {
+    return sanitized;
+  }
+}
+
+const ignoreReadOnlyCodeChange = (_value: string) => undefined;
 
 function parseDataJson(raw: unknown): Record<string, unknown> | null {
   if (!raw) return null;
@@ -131,12 +152,26 @@ export function HistoryEventDetailContent({ event }: { event: TitleHistoryEvent 
           </span>
         </div>
       ))}
-      {rawDetails.map(([key, value]) => (
-        <div key={key} className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
-          <span className="whitespace-nowrap text-muted-foreground">{formatKey(key)}</span>
-          <span className="break-all text-foreground">{formatValue(value, key)}</span>
-        </div>
-      ))}
+      {rawDetails.map(([key, value]) =>
+        key === "data" ? (
+          <div key={key} className="space-y-1.5 text-xs">
+            <div className="text-muted-foreground">{formatKey(key)}</div>
+            <LazyCodeEditor
+              id={`history-event-data-${event.id}`}
+              value={formatJsonCode(value, key)}
+              onChange={ignoreReadOnlyCodeChange}
+              readOnly
+              language="javascript"
+              height="240px"
+            />
+          </div>
+        ) : (
+          <div key={key} className="grid grid-cols-[auto_1fr] gap-x-3 text-xs">
+            <span className="whitespace-nowrap text-muted-foreground">{formatKey(key)}</span>
+            <span className="break-all text-foreground">{formatValue(value, key)}</span>
+          </div>
+        ),
+      )}
     </div>
   );
 }

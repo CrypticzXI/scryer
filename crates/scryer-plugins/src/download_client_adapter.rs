@@ -337,11 +337,29 @@ fn map_queue_item(
     }
 }
 
+fn retain_queue_item(item: &PluginDownloadItem) -> bool {
+    !matches!(
+        item.state,
+        DownloadItemState::Completed | DownloadItemState::Seeding
+    )
+}
+
 fn map_completed_download(
     item: PluginCompletedDownload,
     client_id: &str,
     client_type: &str,
 ) -> CompletedDownload {
+    let dest_dir = {
+        let mut content_paths = item
+            .content_paths
+            .iter()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty());
+        match (content_paths.next(), content_paths.next()) {
+            (Some(content_path), None) => content_path.to_string(),
+            _ => item.dest_dir.clone(),
+        }
+    };
     let info_hash = normalized_plugin_info_hash(item.info_hash.as_deref())
         .or_else(|| normalized_plugin_info_hash(Some(item.client_item_id.as_str())));
     let observed_identity = scryer_application::observed_download_identity(
@@ -357,7 +375,7 @@ fn map_completed_download(
         download_client_item_id: item.client_item_id,
         download_id: observed_identity.download_id,
         name: item.name,
-        dest_dir: item.dest_dir,
+        dest_dir,
         category: item.category,
         size_bytes: item.size_bytes,
         completed_at: parse_timestamp(item.completed_at),
@@ -956,15 +974,7 @@ impl DownloadClient for WasmDownloadClient {
             let items = decode_command_result(result, "download list_queue")?;
             return Ok(items
                 .into_iter()
-                .filter(|item| {
-                    !matches!(
-                        item.state,
-                        DownloadItemState::Completed
-                            | DownloadItemState::Seeding
-                            | DownloadItemState::Failed
-                            | DownloadItemState::Error
-                    )
-                })
+                .filter(retain_queue_item)
                 .map(|item| {
                     map_queue_item(
                         item,
@@ -995,15 +1005,7 @@ impl DownloadClient for WasmDownloadClient {
 
         Ok(items
             .into_iter()
-            .filter(|item| {
-                !matches!(
-                    item.state,
-                    DownloadItemState::Completed
-                        | DownloadItemState::Seeding
-                        | DownloadItemState::Failed
-                        | DownloadItemState::Error
-                )
-            })
+            .filter(retain_queue_item)
             .map(|item| {
                 map_queue_item(
                     item,
@@ -1561,6 +1563,48 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use scryer_plugin_sdk::PluginTorrentItem;
+
+    fn queue_filter_item(state: DownloadItemState) -> PluginDownloadItem {
+        PluginDownloadItem {
+            client_item_id: format!("{state:?}"),
+            download_id: None,
+            info_hash: None,
+            title: format!("{state:?}"),
+            state,
+            message: None,
+            category: None,
+            remote_output_path: None,
+            torrent: None,
+            total_size_bytes: None,
+            remaining_size_bytes: None,
+            eta_seconds: None,
+            progress_percent: None,
+            can_move_files: None,
+            can_remove: None,
+            removed: None,
+            raw_state: None,
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn queue_filter_retains_failed_and_error_items_only_as_terminal_observations() {
+        assert!(retain_queue_item(&queue_filter_item(
+            DownloadItemState::Failed
+        )));
+        assert!(retain_queue_item(&queue_filter_item(
+            DownloadItemState::Error
+        )));
+        assert!(retain_queue_item(&queue_filter_item(
+            DownloadItemState::Downloading
+        )));
+        assert!(!retain_queue_item(&queue_filter_item(
+            DownloadItemState::Completed
+        )));
+        assert!(!retain_queue_item(&queue_filter_item(
+            DownloadItemState::Seeding
+        )));
+    }
     use tokio::io::AsyncWriteExt;
 
     #[tokio::test]
@@ -2026,10 +2070,75 @@ mod tests {
 
         assert_eq!(completed.download_client_item_id, "native-id-2");
         assert_eq!(completed.download_id.as_deref(), Some(info_hash));
-        assert_eq!(completed.dest_dir, "/downloads/movies");
+        assert_eq!(
+            completed.dest_dir,
+            "/downloads/movies/Decypharr.Completed.mkv"
+        );
         assert_eq!(
             completed.parameters,
             vec![("source".to_string(), "decypharr".to_string())]
         );
+    }
+
+    #[test]
+    fn completed_download_uses_single_directory_content_path_for_series_pack() {
+        for content_paths in [
+            vec!["/downloads/series/Show Season 1".to_string()],
+            vec![
+                "   ".to_string(),
+                "/downloads/series/Show Season 1".to_string(),
+            ],
+        ] {
+            let completed = map_completed_download(
+                PluginCompletedDownload {
+                    client_item_id: "series-pack-id".to_string(),
+                    download_id: None,
+                    info_hash: None,
+                    name: "Show Season 1".to_string(),
+                    dest_dir: "/downloads/series".to_string(),
+                    category: Some("series".to_string()),
+                    output_kind: None,
+                    content_paths,
+                    size_bytes: None,
+                    completed_at: None,
+                    parameters: Vec::new(),
+                },
+                "client-1",
+                "plugin-client",
+            );
+
+            assert_eq!(completed.dest_dir, "/downloads/series/Show Season 1");
+        }
+    }
+
+    #[test]
+    fn completed_download_keeps_reported_root_for_zero_or_multiple_content_paths() {
+        for content_paths in [
+            Vec::new(),
+            vec![
+                "/downloads/series/Show.S01E01.mkv".to_string(),
+                "/downloads/series/Show.S01E02.mkv".to_string(),
+            ],
+        ] {
+            let completed = map_completed_download(
+                PluginCompletedDownload {
+                    client_item_id: "native-id-3".to_string(),
+                    download_id: None,
+                    info_hash: None,
+                    name: "Show Season 1".to_string(),
+                    dest_dir: "/downloads/series/Show Season 1".to_string(),
+                    category: Some("series".to_string()),
+                    output_kind: None,
+                    content_paths,
+                    size_bytes: None,
+                    completed_at: None,
+                    parameters: Vec::new(),
+                },
+                "client-1",
+                "plugin-client",
+            );
+
+            assert_eq!(completed.dest_dir, "/downloads/series/Show Season 1");
+        }
     }
 }

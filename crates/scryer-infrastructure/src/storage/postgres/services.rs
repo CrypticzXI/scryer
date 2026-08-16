@@ -112,10 +112,10 @@ mod tests {
     use scryer_application::{
         InsertMediaFileInput, LibraryRepository, LibraryScanUnmatchedItem,
         LibraryScanUnmatchedItemRepository, LibraryScanUnmatchedSearchAttempt, MediaFileAnalysis,
-        MediaFileRepository, PendingImportStatus, QualityProfileRepository, SettingsRepository,
-        ShowRepository, SystemInfoProvider, TitleImageKind, TitleImageRepository,
-        TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate, TitleRepository,
-        UserRepository, builtin_4k_profile,
+        MediaFileRepository, MetadataFieldUpdate, PendingImportStatus, QualityProfileRepository,
+        SettingsRepository, ShowRepository, SystemInfoProvider, TitleImageKind,
+        TitleImageRepository, TitleImageSourceResult, TitleImageVariantRecord, TitleMetadataUpdate,
+        TitleRepository, UserRepository, builtin_4k_profile,
     };
     use scryer_domain::{
         Collection, CollectionType, Id, Library, LibraryGrant, LibraryPermission,
@@ -253,7 +253,7 @@ mod tests {
                         popularity: None,
                         canonical_tags: vec![],
                         content_status: Some("released".to_string()),
-                        language: Some("eng".to_string()),
+                        language: MetadataFieldUpdate::Set("eng".to_string()),
                         first_aired: Some("2024-01-01".to_string()),
                         network: Some("Example Network".to_string()),
                         studio: Some("Example Studio".to_string()),

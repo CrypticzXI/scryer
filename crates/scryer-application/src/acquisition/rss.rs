@@ -1645,6 +1645,23 @@ impl AppUseCase {
             submission_scope,
             SubmissionScope::EpisodeSet { .. } | SubmissionScope::Collection { .. }
         );
+        let mut grabbed_episode_ids = match &submission_scope {
+            SubmissionScope::Episode { episode_id } => vec![episode_id.clone()],
+            SubmissionScope::EpisodeSet { episode_ids } => episode_ids.clone(),
+            SubmissionScope::Collection { collection_id } => self
+                .services
+                .catalog
+                .shows
+                .list_episodes_for_collection(collection_id)
+                .await
+                .map(|episodes| episodes.into_iter().map(|episode| episode.id).collect())
+                .unwrap_or_default(),
+            SubmissionScope::Title
+            | SubmissionScope::SeriesMovie { .. }
+            | SubmissionScope::Orphan => Vec::new(),
+        };
+        grabbed_episode_ids.sort();
+        grabbed_episode_ids.dedup();
 
         let grab_result = self
             .services
@@ -1792,7 +1809,7 @@ impl AppUseCase {
                             source_hint: Some(best.source.clone()),
                             source_provider: Some(best.source.clone()),
                             download_id: None,
-                            episode_ids: Vec::new(),
+                            episode_ids: grabbed_episode_ids,
                         }),
                     ))
                     .await;

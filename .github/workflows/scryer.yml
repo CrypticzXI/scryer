@@ -15,7 +15,6 @@ permissions:
 
 env:
   CARGO_BUILD_WARNINGS: deny
-  SCRYER_SCCACHE_PUBLISH_SHARED: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/scryer-v') && 'true' || 'false' }}
 
 jobs:
   web:
@@ -66,9 +65,16 @@ jobs:
     name: winget-xtask-build
     runs-on: ubuntu-26.04
     timeout-minutes: 20
+    needs: [release-trust]
     permissions:
       contents: read
-    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'scryer-v') }}
+    if: ${{ always() && github.ref_type == 'tag' && startsWith(github.ref_name, 'scryer-v') && needs.release-trust.result == 'success' }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
+      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_DIR: /home/runner/.cache/sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -76,8 +82,39 @@ jobs:
         with:
           toolchain: "1.97.1"
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.17.0
+
+      - name: Configure trusted tag sccache
+        uses: ./.github/actions/configure-sccache-r2
+        with:
+          endpoint: ${{ secrets.SCCACHE_ENDPOINT }}
+          access-key-id: ${{ secrets.SCCACHE_S3_ACCESS_ID }}
+          secret-access-key: ${{ secrets.SCCACHE_S3_SECRET }}
+          key-prefix: scryer/trusted-release/v1/rust-1.97.1/x86_64-unknown-linux-gnu/
+
+      - name: Prime sccache server
+        shell: bash
+        run: |
+          set -euo pipefail
+          sccache --start-server || true
+          sccache --zero-stats || true
+
       - name: Build WinGet xtask binary
         run: cargo build --locked -p xtask-release
+
+      - name: Show sccache stats
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats | tee winget-xtask-sccache-stats.txt
+          else
+            echo "sccache not installed; skipping stats" | tee winget-xtask-sccache-stats.txt
+          fi
 
       - name: Upload WinGet xtask binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -87,11 +124,21 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Upload WinGet sccache stats
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: winget-xtask-sccache-stats-${{ github.run_id }}
+          path: winget-xtask-sccache-stats.txt
+          if-no-files-found: warn
+          retention-days: 14
+
   rust-clippy:
     name: rust-clippy
     runs-on: ubuntu-26.04
     timeout-minutes: 50
-    needs: [web]
+    needs: [web, release-trust]
+    if: ${{ always() && needs.web.result == 'success' && (github.event_name == 'pull_request' || needs.release-trust.result == 'success') }}
     env:
       CARGO_HOME: /home/runner/.cargo
       CARGO_INCREMENTAL: "0"
@@ -120,6 +167,7 @@ jobs:
         run: rustup target add x86_64-unknown-linux-musl wasm32-unknown-unknown
 
       - name: Resolve sccache lane metadata
+        if: ${{ github.event_name == 'pull_request' }}
         id: rust-clippy-sccache-metadata
         shell: bash
         run: |
@@ -139,6 +187,7 @@ jobs:
           echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
 
       - name: Restore sccache directory
+        if: ${{ github.event_name == 'pull_request' }}
         id: rust-clippy-sccache-restore
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -151,6 +200,17 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.17.0
+
+      - name: Configure trusted tag sccache
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/scryer-v') }}
+        uses: ./.github/actions/configure-sccache-r2
+        with:
+          endpoint: ${{ secrets.SCCACHE_ENDPOINT }}
+          access-key-id: ${{ secrets.SCCACHE_S3_ACCESS_ID }}
+          secret-access-key: ${{ secrets.SCCACHE_S3_SECRET }}
+          key-prefix: scryer/trusted-release/v1/rust-1.97.1/x86_64-unknown-linux-musl/
 
       - name: Download embedded web artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -249,7 +309,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && (env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && steps.rust-clippy-sccache-restore.outcome == 'success'
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.rust-clippy-sccache-restore.outcome == 'success'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /home/runner/.cache/sccache
@@ -259,7 +319,8 @@ jobs:
     name: rust-nextest
     runs-on: ubuntu-26.04
     timeout-minutes: 50
-    needs: [web]
+    needs: [web, release-trust]
+    if: ${{ always() && needs.web.result == 'success' && (github.event_name == 'pull_request' || needs.release-trust.result == 'success') }}
     env:
       CARGO_HOME: /home/runner/.cargo
       CARGO_INCREMENTAL: "0"
@@ -287,6 +348,7 @@ jobs:
         run: rustup target add x86_64-unknown-linux-musl
 
       - name: Resolve sccache lane metadata
+        if: ${{ github.event_name == 'pull_request' }}
         id: rust-nextest-sccache-metadata
         shell: bash
         run: |
@@ -306,6 +368,7 @@ jobs:
           echo "version_line=${version_line}" >> "$GITHUB_OUTPUT"
 
       - name: Restore sccache directory
+        if: ${{ github.event_name == 'pull_request' }}
         id: rust-nextest-sccache-restore
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -318,6 +381,17 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.17.0
+
+      - name: Configure trusted tag sccache
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/scryer-v') }}
+        uses: ./.github/actions/configure-sccache-r2
+        with:
+          endpoint: ${{ secrets.SCCACHE_ENDPOINT }}
+          access-key-id: ${{ secrets.SCCACHE_S3_ACCESS_ID }}
+          secret-access-key: ${{ secrets.SCCACHE_S3_SECRET }}
+          key-prefix: scryer/trusted-release/v1/rust-1.97.1/x86_64-unknown-linux-musl/
 
       - uses: taiki-e/install-action@cb33e69fad06166ca28a42b2575e4dadabf62ee8 # v2
         with:
@@ -389,7 +463,7 @@ jobs:
           retention-days: 14
 
       - name: Save sccache directory
-        if: always() && (env.SCRYER_SCCACHE_PUBLISH_SHARED == 'true' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && steps.rust-nextest-sccache-restore.outcome == 'success'
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.rust-nextest-sccache-restore.outcome == 'success'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: /home/runner/.cache/sccache
@@ -399,6 +473,8 @@ jobs:
     name: launcher-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
+    needs: [release-trust]
+    if: ${{ always() && (github.event_name == 'pull_request' || needs.release-trust.result == 'success') }}
     strategy:
       fail-fast: false
       matrix:
@@ -420,6 +496,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
       COLD_TARGET_NAME: scryer-launcher-${{ matrix.arch }}
+      SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
+      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_DIR: /home/runner/.cache/sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -475,8 +555,9 @@ jobs:
             gha-sccache-v3-${{ matrix.sccache_lane }}-release-launcher-
 
       - name: Install sccache
-        if: ${{ github.event_name == 'pull_request' }}
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.17.0
 
       - name: Configure sccache
         if: ${{ github.event_name == 'pull_request' }}
@@ -484,14 +565,19 @@ jobs:
         run: |
           {
             echo "RUSTC_WRAPPER=sccache"
-            echo "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}"
-            echo "SCCACHE_CACHE_SIZE=10G"
-            echo "SCCACHE_DIR=/home/runner/.cache/sccache"
-            echo "SCCACHE_IDLE_TIMEOUT=0"
+            echo "SCRYER_SCCACHE_ENABLED=true"
           } >> "$GITHUB_ENV"
 
+      - name: Configure trusted tag sccache
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/scryer-v') }}
+        uses: ./.github/actions/configure-sccache-r2
+        with:
+          endpoint: ${{ secrets.SCCACHE_ENDPOINT }}
+          access-key-id: ${{ secrets.SCCACHE_S3_ACCESS_ID }}
+          secret-access-key: ${{ secrets.SCCACHE_S3_SECRET }}
+          key-prefix: scryer/trusted-release/v1/rust-1.97.1/${{ matrix.target }}/
+
       - name: Prime sccache server
-        if: ${{ github.event_name == 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -551,7 +637,7 @@ jobs:
         run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C "$CARGO_TARGET_DIR/${{ matrix.target }}/release-launcher" scryer-launcher
 
       - name: Show sccache stats
-        if: ${{ always() && github.event_name == 'pull_request' }}
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
@@ -588,7 +674,8 @@ jobs:
     name: linux-${{ matrix.arch }}-${{ matrix.variant }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
-    needs: [web]
+    needs: [web, release-trust]
+    if: ${{ always() && needs.web.result == 'success' && (github.event_name == 'pull_request' || needs.release-trust.result == 'success') }}
     strategy:
       fail-fast: false
       matrix:
@@ -621,6 +708,10 @@ jobs:
       CARGO_TERM_COLOR: always
       COLD_TARGET_NAME: scryer-linux-${{ matrix.arch }}-${{ matrix.variant }}
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
+      SCCACHE_BASEDIRS: /home/runner/work/scryer/scryer
+      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_DIR: /home/runner/.cache/sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -662,8 +753,9 @@ jobs:
             gha-sccache-v5-${{ matrix.sccache_lane }}-rc-
 
       - name: Install sccache
-        if: ${{ github.event_name == 'pull_request' }}
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.17.0
 
       - name: Configure sccache
         if: ${{ github.event_name == 'pull_request' }}
@@ -671,11 +763,17 @@ jobs:
         run: |
           {
             echo "RUSTC_WRAPPER=sccache"
-            echo "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}"
-            echo "SCCACHE_CACHE_SIZE=10G"
-            echo "SCCACHE_DIR=/home/runner/.cache/sccache"
-            echo "SCCACHE_IDLE_TIMEOUT=0"
+            echo "SCRYER_SCCACHE_ENABLED=true"
           } >> "$GITHUB_ENV"
+
+      - name: Configure trusted tag sccache
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/scryer-v') }}
+        uses: ./.github/actions/configure-sccache-r2
+        with:
+          endpoint: ${{ secrets.SCCACHE_ENDPOINT }}
+          access-key-id: ${{ secrets.SCCACHE_S3_ACCESS_ID }}
+          secret-access-key: ${{ secrets.SCCACHE_S3_SECRET }}
+          key-prefix: scryer/trusted-release/v1/rust-1.97.1/${{ matrix.target }}/
 
       - name: Download embedded web artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -684,7 +782,6 @@ jobs:
           path: scryer-web-out
 
       - name: Prime sccache server
-        if: ${{ github.event_name == 'pull_request' }}
         run: |
           sccache --start-server || true
           sccache --zero-stats || true
@@ -713,7 +810,7 @@ jobs:
           export SCRYER_SMG_REGISTRATION_SECRET="${{ secrets.SMG_REGISTRATION_SECRET }}"
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
           target_cc_var="CC_$(printf '%s' "${{ matrix.target }}" | tr '-' '_')"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+          if [ "${SCRYER_SCCACHE_ENABLED:-false}" = "true" ]; then
             export "${target_cc_var}=sccache musl-gcc"
           else
             export "${target_cc_var}=musl-gcc"
@@ -748,7 +845,7 @@ jobs:
         run: tar -czf ${{ matrix.archive_name }} -C "$CARGO_TARGET_DIR/${{ matrix.target }}/$SCRYER_CARGO_PROFILE" scryer
 
       - name: Show sccache stats
-        if: ${{ always() && github.event_name == 'pull_request' }}
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
@@ -792,7 +889,8 @@ jobs:
     name: macos-${{ matrix.arch }}-${{ matrix.variant }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    needs: [web]
+    needs: [web, release-trust]
+    if: ${{ always() && needs.web.result == 'success' && (github.event_name == 'pull_request' || needs.release-trust.result == 'success') }}
     strategy:
       fail-fast: false
       matrix:
@@ -824,6 +922,10 @@ jobs:
       CARGO_TERM_COLOR: always
       COLD_TARGET_NAME: scryer-macos-${{ matrix.arch }}
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
+      SCCACHE_BASEDIRS: ${{ github.workspace }}
+      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -853,8 +955,9 @@ jobs:
             gha-sccache-v5-${{ matrix.sccache_lane }}-rc-
 
       - name: Install sccache
-        if: ${{ github.event_name == 'pull_request' }}
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.17.0
 
       - name: Configure sccache
         if: ${{ github.event_name == 'pull_request' }}
@@ -862,11 +965,17 @@ jobs:
         run: |
           {
             echo "RUSTC_WRAPPER=sccache"
-            echo "SCCACHE_BASEDIRS=${GITHUB_WORKSPACE}"
-            echo "SCCACHE_CACHE_SIZE=10G"
-            echo "SCCACHE_DIR=${GITHUB_WORKSPACE}/.sccache"
-            echo "SCCACHE_IDLE_TIMEOUT=0"
+            echo "SCRYER_SCCACHE_ENABLED=true"
           } >> "$GITHUB_ENV"
+
+      - name: Configure trusted tag sccache
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/scryer-v') }}
+        uses: ./.github/actions/configure-sccache-r2
+        with:
+          endpoint: ${{ secrets.SCCACHE_ENDPOINT }}
+          access-key-id: ${{ secrets.SCCACHE_S3_ACCESS_ID }}
+          secret-access-key: ${{ secrets.SCCACHE_S3_SECRET }}
+          key-prefix: scryer/trusted-release/v1/rust-1.97.1/${{ matrix.target }}/
 
       - name: Download embedded web artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -887,7 +996,6 @@ jobs:
           fi
 
       - name: Prime sccache server
-        if: ${{ github.event_name == 'pull_request' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -919,7 +1027,7 @@ jobs:
           export SCRYER_SMG_GRAPHQL_URL="https://smg.scryer.media/graphql"
           export CMAKE_C_COMPILER="clang"
           export CMAKE_CXX_COMPILER="clang++"
-          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+          if [ "${SCRYER_SCCACHE_ENABLED:-false}" = "true" ]; then
             export CC="sccache clang"
             export CXX="sccache clang++"
             export CMAKE_C_COMPILER_LAUNCHER="sccache"
@@ -982,7 +1090,7 @@ jobs:
         run: tar -czf ${{ matrix.artifact_name }}.tar.gz -C "$CARGO_TARGET_DIR/${{ matrix.target }}/${SCRYER_CARGO_PROFILE}" scryer
 
       - name: Show sccache stats
-        if: ${{ always() && github.event_name == 'pull_request' }}
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
@@ -1026,7 +1134,8 @@ jobs:
     name: windows-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    needs: [web]
+    needs: [web, release-trust]
+    if: ${{ always() && needs.web.result == 'success' && (github.event_name == 'pull_request' || needs.release-trust.result == 'success') }}
     strategy:
       fail-fast: false
       matrix:
@@ -1060,6 +1169,10 @@ jobs:
       CARGO_TERM_COLOR: always
       COLD_TARGET_NAME: scryer-windows-${{ matrix.arch }}
       SCRYER_CARGO_PROFILE: ${{ github.event_name == 'pull_request' && 'rc' || matrix.release_profile }}
+      SCCACHE_BASEDIRS: ${{ github.workspace }}
+      SCCACHE_CACHE_SIZE: 10G
+      SCCACHE_DIR: ${{ github.workspace }}\.sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -1089,18 +1202,25 @@ jobs:
             gha-sccache-v5-${{ matrix.sccache_lane }}-rc-
 
       - name: Install sccache
-        if: ${{ github.event_name == 'pull_request' }}
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.17.0
 
       - name: Configure sccache
         if: ${{ github.event_name == 'pull_request' }}
         shell: pwsh
         run: |
           "RUSTC_WRAPPER=sccache" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          "SCCACHE_BASEDIRS=$env:GITHUB_WORKSPACE" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          "SCCACHE_CACHE_SIZE=10G" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          "SCCACHE_DIR=$env:GITHUB_WORKSPACE\.sccache" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          "SCCACHE_IDLE_TIMEOUT=0" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "SCRYER_SCCACHE_ENABLED=true" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Configure trusted tag sccache
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/scryer-v') }}
+        uses: ./.github/actions/configure-sccache-r2
+        with:
+          endpoint: ${{ secrets.SCCACHE_ENDPOINT }}
+          access-key-id: ${{ secrets.SCCACHE_S3_ACCESS_ID }}
+          secret-access-key: ${{ secrets.SCCACHE_S3_SECRET }}
+          key-prefix: scryer/trusted-release/v1/rust-1.97.1/${{ matrix.target }}/
 
       - name: Download embedded web artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1131,7 +1251,6 @@ jobs:
           Add-MpPreference -ExclusionPath $env:CARGO_TARGET_DIR
 
       - name: Prime sccache server
-        if: ${{ github.event_name == 'pull_request' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -1179,8 +1298,14 @@ jobs:
           $env:SCRYER_SMG_GRAPHQL_URL = "https://smg.scryer.media/graphql"
           $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=. -C target-feature=+crt-static -W linker-messages"
           if ($env:USE_CLANG_CL -eq "true") {
-            $env:CC = "clang-cl"
-            $env:CXX = "clang-cl"
+            $compiler = "clang-cl"
+            if ($env:SCRYER_SCCACHE_ENABLED -eq "true") {
+              $env:CC = "sccache $compiler"
+              $env:CXX = "sccache $compiler"
+            } else {
+              $env:CC = $compiler
+              $env:CXX = $compiler
+            }
           }
           if ($env:USE_LLD_LINK -eq "true") {
             $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
@@ -1345,7 +1470,7 @@ jobs:
             -BuiltTrayPath "$env:CARGO_TARGET_DIR\${{ matrix.target }}\$env:SCRYER_CARGO_PROFILE\scryer-tray.exe"
 
       - name: Show sccache stats
-        if: ${{ always() && github.event_name == 'pull_request' }}
+        if: always()
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -1403,7 +1528,7 @@ jobs:
 
   docker-export:
     name: docker-export-${{ matrix.platform_id }}
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ always() && github.event_name == 'pull_request' && needs.rust-clippy.result == 'success' && needs.rust-nextest.result == 'success' && needs.launcher-build.result == 'success' && needs.linux-build.result == 'success' }}
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 20
     needs: [rust-clippy, rust-nextest, launcher-build, linux-build]
@@ -1492,7 +1617,7 @@ jobs:
 
   docker-publish-pr-rc:
     name: docker-publish-pr-rc
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.rust-clippy.result == 'success' && needs.rust-nextest.result == 'success' && needs.launcher-build.result == 'success' && needs.linux-build.result == 'success' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     needs: [rust-clippy, rust-nextest, launcher-build, linux-build]

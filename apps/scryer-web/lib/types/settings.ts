@@ -96,12 +96,13 @@ export type SecuritySettings = {
   mfaRequireConfigStepUp: boolean;
   mfaRequirePasswordLogin: boolean;
   totpRequireJellyfinLogin: boolean;
+  totpRequireEmbyLogin: boolean;
   effectiveFormLoginEnabled: boolean;
   envOverrideActive: boolean;
   envOverrideDescription: string | null;
 };
 
-export type ExternalAccountProvider = "PLEX" | "JELLYFIN";
+export type ExternalAccountProvider = "PLEX" | "JELLYFIN" | "EMBY";
 export type ExternalAccountStatus = "PENDING_CLAIM" | "ACTIVE" | "DISABLED";
 export type MediaServerProvider = "JELLYFIN" | "PLEX" | "EMBY";
 
@@ -128,6 +129,8 @@ export type MediaServerConnection = {
   defaultLibraryGrants: MediaServerDefaultLibraryGrant[];
   machineIdPresent: boolean;
   apiKeyPresent: boolean;
+  embyServerIdPresent: boolean;
+  embyConnectEnabled: boolean;
   pathMappings: MediaServerPathMapping[];
   createdAt: string;
   updatedAt: string;
@@ -136,6 +139,24 @@ export type MediaServerConnection = {
 export type PlexServerDiscovery = {
   id: string;
   name: string;
+};
+
+export type EmbyConnectAddressStatus =
+  | "REACHABLE"
+  | "UNREACHABLE"
+  | "INVALID_URL"
+  | "SERVER_ID_MISMATCH";
+export type EmbyConnectServer = {
+  serverId: string;
+  name: string;
+  userType: "LINKED_USER" | "GUEST" | "UNKNOWN";
+  localAddress: string | null;
+  remoteAddress: string | null;
+  localApiBaseUrl: string | null;
+  remoteApiBaseUrl: string | null;
+  localStatus: EmbyConnectAddressStatus;
+  remoteStatus: EmbyConnectAddressStatus;
+  suggestedBaseUrl: string | null;
 };
 
 export type MediaServerUserGroupStatus =
@@ -174,6 +195,13 @@ export type MediaServerConnectionDraft = {
   apiKey: string;
   clearApiKey: boolean;
   jellyfinCredentialMode: "apiKey" | "adminLogin";
+  embyConnectionMode: "LOCAL" | "CONNECT";
+  embyLocalSetupMethod: "API_KEY" | "ADMIN_CREDENTIALS";
+  embyConnectEnabled: boolean;
+  embyConnectUsernameOrEmail: string;
+  embyConnectPassword: string;
+  embyConnectServerId: string;
+  embyDiscoveredServers: EmbyConnectServer[];
   adminUsername: string;
   adminPassword: string;
   pathMappingsText: string;
@@ -185,6 +213,7 @@ export type ExternalAuthRuntimeConnection = {
   displayName: string;
   loginEnabled: boolean;
   linkingEnabled: boolean;
+  embyConnectEnabled: boolean;
 };
 
 export type ExternalAuthRuntimeSettings = {
@@ -227,6 +256,7 @@ export type AuthRuntimeState = {
   effectiveFormLoginEnabled: boolean;
   skipLoginForLocalIps: boolean;
   passkeyEnabled: boolean;
+  defaultPersistSession: boolean;
   envOverrideActive: boolean;
   mfaRequirePasswordLogin: boolean;
   mfaRequireConfigStepUp: boolean;

@@ -2,9 +2,40 @@ import type { IndexerRecord } from "../types/indexers.ts";
 import type {
   IndexerDownloadClientMappingCatalog,
   IndexerDownloadClientMappingClient,
+  IndexerDownloadClientMappingCatalogResource,
 } from "../types/indexer-download-client-mappings.ts";
 
 export const AUTOMATIC_DOWNLOAD_CLIENT_ID = "__automatic__";
+
+export function beginIndexerDownloadClientCatalogRequest(
+  resource: IndexerDownloadClientMappingCatalogResource,
+): IndexerDownloadClientMappingCatalogResource {
+  return {
+    ...resource,
+    status: resource.catalog ? "refreshing" : "loading",
+    error: null,
+  };
+}
+
+export function completeIndexerDownloadClientCatalogRequest(
+  catalog: IndexerDownloadClientMappingCatalog,
+): IndexerDownloadClientMappingCatalogResource {
+  return { catalog, status: "ready", error: null };
+}
+
+export function failIndexerDownloadClientCatalogRequest(
+  resource: IndexerDownloadClientMappingCatalogResource,
+  error: string,
+): IndexerDownloadClientMappingCatalogResource {
+  return { ...resource, status: "error", error };
+}
+
+export function isLatestIndexerDownloadClientCatalogRequest(
+  requestSequence: number,
+  latestRequestSequence: number,
+): boolean {
+  return requestSequence === latestRequestSequence;
+}
 
 const UNAVAILABLE_CLIENT_STATUSES = new Set([
   "ERROR",
@@ -88,20 +119,15 @@ function toOption(
   };
 }
 
-export function getIndexerDownloadClientMappingViewModel(
-  indexer: Pick<IndexerRecord, "id" | "isManaged" | "supportsManagedChildrenSync"> & {
-    downloadClientId?: string | null;
-  },
+function buildIndexerDownloadClientMappingViewModel(
+  indexerId: string,
+  currentDownloadClientId: string | null,
+  compatibleClientIds: readonly string[],
+  isNotApplicable: boolean,
   catalog: IndexerDownloadClientMappingCatalog,
 ): IndexerDownloadClientMappingViewModel {
-  const mapping = catalog.indexers.find((entry) => entry.id === indexer.id);
-  const isNotApplicable =
-    isManagementOnlyIndexer(indexer) || mapping?.supportsMapping === false;
-  const currentDownloadClientId = mapping
-    ? mapping.downloadClientId
-    : indexer.downloadClientId ?? null;
   const clientsById = new Map(catalog.clients.map((client) => [client.id, client]));
-  const compatibleIds = new Set(mapping?.compatibleClientIds ?? []);
+  const compatibleIds = new Set(compatibleClientIds);
   const compatibleClients = catalog.clients
     .filter((client) => compatibleIds.has(client.id))
     .map((client) => toOption(client, currentDownloadClientId, compatibleIds));
@@ -129,7 +155,7 @@ export function getIndexerDownloadClientMappingViewModel(
     : compatibleClients;
 
   return {
-    indexerId: indexer.id,
+    indexerId,
     selectedId: currentDownloadClientId ?? AUTOMATIC_DOWNLOAD_CLIENT_ID,
     isNotApplicable,
     currentDownloadClientId,
@@ -142,16 +168,51 @@ export function getIndexerDownloadClientMappingViewModel(
   };
 }
 
+export function getIndexerDownloadClientMappingViewModel(
+  indexer: Pick<IndexerRecord, "id" | "isManaged" | "supportsManagedChildrenSync"> & {
+    downloadClientId?: string | null;
+  },
+  catalog: IndexerDownloadClientMappingCatalog,
+): IndexerDownloadClientMappingViewModel {
+  const mapping = catalog.indexers.find((entry) => entry.id === indexer.id);
+  return buildIndexerDownloadClientMappingViewModel(
+    indexer.id,
+    mapping ? mapping.downloadClientId : indexer.downloadClientId ?? null,
+    mapping?.compatibleClientIds ?? [],
+    isManagementOnlyIndexer(indexer) || mapping?.supportsMapping === false,
+    catalog,
+  );
+}
+
+export function getIndexerDownloadClientDraftMappingViewModel(
+  providerType: string,
+  downloadClientId: string | null,
+  catalog: IndexerDownloadClientMappingCatalog,
+): IndexerDownloadClientMappingViewModel {
+  const normalizedProviderType = providerType.trim().toLowerCase();
+  const compatibility = catalog.providerCompatibility.find(
+    (entry) => entry.providerType.trim().toLowerCase() === normalizedProviderType,
+  );
+  return buildIndexerDownloadClientMappingViewModel(
+    "draft",
+    downloadClientId,
+    compatibility?.compatibleClientIds ?? [],
+    compatibility?.supportsMapping === false,
+    catalog,
+  );
+}
+
 export function normalizeIndexerDownloadClientMappingCatalog(
   rawCatalog: unknown,
 ): IndexerDownloadClientMappingCatalog {
   if (!rawCatalog || typeof rawCatalog !== "object") {
-    return { clients: [], indexers: [] };
+    return { clients: [], indexers: [], providerCompatibility: [] };
   }
 
   const catalog = rawCatalog as {
     clients?: unknown;
     indexers?: unknown;
+    providerCompatibility?: unknown;
   };
   const clients = Array.isArray(catalog.clients)
     ? catalog.clients
@@ -198,7 +259,29 @@ export function normalizeIndexerDownloadClientMappingCatalog(
         }))
     : [];
 
-  return { clients, indexers };
+  const providerCompatibility = Array.isArray(catalog.providerCompatibility)
+    ? catalog.providerCompatibility
+        .filter((provider): provider is Record<string, unknown> => {
+          if (!provider || typeof provider !== "object") return false;
+          return typeof provider.providerType === "string";
+        })
+        .map((provider) => ({
+          providerType: provider.providerType as string,
+          protocolFamilies: Array.isArray(provider.protocolFamilies)
+            ? provider.protocolFamilies.filter(
+                (value): value is string => typeof value === "string",
+              )
+            : [],
+          supportsMapping: provider.supportsMapping !== false,
+          compatibleClientIds: Array.isArray(provider.compatibleClientIds)
+            ? provider.compatibleClientIds.filter(
+                (value): value is string => typeof value === "string",
+              )
+            : [],
+        }))
+    : [];
+
+  return { clients, indexers, providerCompatibility };
 }
 
 export function updateIndexerDownloadClientMapping(

@@ -30,6 +30,7 @@ fragment MovieFields on TvdbMovie {
   overview
   poster_url
   language
+  original_language
   runtime_minutes
   sort_title
   imdb_id
@@ -75,6 +76,7 @@ fragment SeriesFields on TvdbSeries {
   network
   runtime_minutes
   poster_url
+  original_language
   country
   canonical_tags {
     key

@@ -1373,6 +1373,7 @@ mod tests {
                     enable_interactive_search: true,
                     enable_auto_search: true,
                     indexer_proxy_config_id: None,
+                    download_client_id: None,
                     config_json: Some(
                         r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#.to_string(),
                     ),
@@ -1415,6 +1416,7 @@ mod tests {
                 enable_interactive_search: true,
                 enable_auto_search: true,
                 indexer_proxy_config_id: None,
+                download_client_id: None,
                 config_json: Some(
                     r#"{"feed_url":"https://ipt.beelyrics.net/t.rss?u=2203846"}"#.to_string(),
                 ),
@@ -1460,6 +1462,7 @@ mod tests {
                     enable_interactive_search: true,
                     enable_auto_search: true,
                     indexer_proxy_config_id: None,
+                    download_client_id: None,
                     config_json: Some(
                         r#"{"base_url":"https://api.nzbgeek.info/","api_key":"bad-key"}"#
                             .to_string(),
@@ -1879,6 +1882,7 @@ mod tests {
                     enable_interactive_search: true,
                     enable_auto_search: true,
                     indexer_proxy_config_id: None,
+                    download_client_id: None,
                     config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 },
             )
@@ -2341,6 +2345,7 @@ mod tests {
                     enable_interactive_search: true,
                     enable_auto_search: true,
                     indexer_proxy_config_id: None,
+                    download_client_id: None,
                     config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 },
             )
@@ -2386,6 +2391,7 @@ mod tests {
                     enable_interactive_search: true,
                     enable_auto_search: true,
                     indexer_proxy_config_id: None,
+                    download_client_id: None,
                     config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 },
             )
@@ -2422,6 +2428,7 @@ mod tests {
                     enable_interactive_search: true,
                     enable_auto_search: true,
                     indexer_proxy_config_id: None,
+                    download_client_id: None,
                     config_json: Some(r#"{"base_url":"https://manager.example"}"#.to_string()),
                 },
             )

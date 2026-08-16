@@ -131,6 +131,7 @@ async fn existing_short_password_remains_valid_after_minimum_is_raised() {
             mfa_require_config_step_up: false,
             mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
+            totp_require_emby_login: Some(false),
         },
     )
     .await
@@ -193,6 +194,49 @@ async fn security_settings_read_legacy_totp_mfa_keys_when_new_keys_are_unset() {
             .await
             .as_deref(),
         Some("true")
+    );
+}
+
+#[tokio::test]
+async fn emby_totp_requirement_round_trips_through_settings_values() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let settings_handle = settings.clone();
+    let (app, admin) = bootstrap_with_settings_repo_and_profiles(
+        settings,
+        Arc::new(MockQualityProfileRepo),
+        Arc::new(MockIndexerClient),
+    );
+
+    app.update_security_settings(
+        &admin,
+        UpdateSecuritySettings {
+            form_login_enabled: false,
+            password_min_length: 8,
+            skip_login_for_local_ips: false,
+            mfa_require_config_step_up: false,
+            mfa_require_password_login: false,
+            totp_require_jellyfin_login: false,
+            totp_require_emby_login: Some(true),
+        },
+    )
+    .await
+    .expect("save Emby TOTP setting");
+
+    assert_eq!(
+        settings_handle
+            .get_value(
+                SETTINGS_SCOPE_SYSTEM,
+                settings::keys::TOTP_REQUIRE_EMBY_LOGIN_KEY,
+            )
+            .await
+            .as_deref(),
+        Some("true")
+    );
+    assert!(
+        app.security_settings()
+            .await
+            .expect("reload security settings")
+            .totp_require_emby_login
     );
 }
 
@@ -293,6 +337,7 @@ async fn existing_short_v1_password_rehashes_after_minimum_is_raised() {
             mfa_require_config_step_up: false,
             mfa_require_password_login: false,
             totp_require_jellyfin_login: false,
+            totp_require_emby_login: Some(false),
         },
     )
     .await
@@ -516,6 +561,7 @@ async fn token_signed_without_auth_session_version_authenticates() {
         oauth_grant_id: None,
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
+        persist_session: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -547,7 +593,7 @@ async fn issue_mfa_enrollment_token_sets_enrollment_scope() {
         .unwrap();
 
     let token = app
-        .issue_mfa_enrollment_token(&user)
+        .issue_mfa_enrollment_token(&user, false)
         .await
         .expect("issue enrollment token");
     let (decoded, claims) = app
@@ -559,6 +605,17 @@ async fn issue_mfa_enrollment_token_sets_enrollment_scope() {
     assert_eq!(claims.session_scope, JwtSessionScope::MfaEnrollment);
     assert_eq!(claims.mfa_verified_until, None);
     assert_eq!(claims.mfa_step_up_verified_until, None);
+    assert!(!claims.persist_session);
+
+    let persistent_token = app
+        .issue_mfa_enrollment_token(&user, true)
+        .await
+        .expect("issue persistent enrollment token");
+    let (_, persistent_claims) = app
+        .authenticate_token_with_claims(&persistent_token)
+        .await
+        .expect("authenticate persistent enrollment token");
+    assert!(persistent_claims.persist_session);
 }
 
 #[tokio::test]
@@ -873,6 +930,7 @@ async fn oauth_token_with_app_permissions_is_rejected_during_authentication() {
         oauth_grant_id: Some("grant-with-app-permission".to_string()),
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
+        persist_session: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -926,6 +984,7 @@ async fn oauth_token_with_actor_capabilities_is_rejected_during_authentication()
         oauth_grant_id: Some("grant-with-actor-capability".to_string()),
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
+        persist_session: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -1568,6 +1627,7 @@ async fn expired_token_returns_unauthorized() {
         oauth_grant_id: None,
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
+        persist_session: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -1608,6 +1668,7 @@ async fn wrong_issuer_token_returns_unauthorized() {
         oauth_grant_id: None,
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
+        persist_session: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);
@@ -1905,6 +1966,7 @@ async fn token_permission_claims_do_not_override_database_authorization() {
         oauth_grant_id: None,
         oauth_authorization_source: crate::types::OAuthAuthorizationSource::Authenticated,
         auth_scope: JwtSessionScope::Full,
+        persist_session: false,
     };
     let header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
     let signing_key = test_derive_jwt_key(&app.auth.jwt_signing_salt, TEST_PASSWORD_HASH, &[]);

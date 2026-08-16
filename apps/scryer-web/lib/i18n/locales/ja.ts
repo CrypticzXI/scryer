@@ -925,6 +925,12 @@ const ja: LocaleDictionary = {
     "手動インポートは対応が必要なキューアイテムで利用できます。",
   "queue.releaseTitle": "リリース",
   "queue.blockReason": "ブロック理由",
+  "queue.blockReasonFallbackUnassigned":
+    "自動インポートでライブラリのタイトルを特定できませんでした。続行するにはタイトルを割り当ててください。",
+  "queue.blockReasonFallbackEpisodic":
+    "自動インポートでシーズンとエピソードを一意に特定できませんでした。手動インポートを開き、正しいシーズンとエピソードを割り当ててください。",
+  "queue.blockReasonFallbackReview":
+    "自動インポートにはオペレーターの確認が必要です。手動インポートを開き、ファイルの割り当てを確認してください。",
   "queue.errorCode": "エラーコード",
   "queue.showDetails": "詳細を表示",
   "queue.hideDetails": "詳細を隠す",

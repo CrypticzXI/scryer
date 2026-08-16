@@ -31,6 +31,14 @@ pub struct TitleRatingSummary {
     pub external_ratings: Vec<TitleExternalRating>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum MetadataFieldUpdate<T> {
+    #[default]
+    Unchanged,
+    Set(T),
+    Clear,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TitleMetadataUpdate {
     pub name: Option<String>,
@@ -45,7 +53,8 @@ pub struct TitleMetadataUpdate {
     pub popularity: Option<f64>,
     pub canonical_tags: Vec<CanonicalMediaTag>,
     pub content_status: Option<String>,
-    pub language: Option<String>,
+    /// Authoritative original-language update from the metadata provider.
+    pub language: MetadataFieldUpdate<String>,
     pub first_aired: Option<String>,
     pub network: Option<String>,
     pub studio: Option<String>,
@@ -664,7 +673,9 @@ pub struct TitleMediaFile {
 #[derive(Clone, Debug)]
 pub struct EpisodeScopedMediaFile {
     pub media_file: TitleMediaFile,
+    pub title_role: crate::MediaFileRole,
     pub episode_ids: Vec<String>,
+    pub primary_episode_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1699,6 +1710,7 @@ pub struct AuthenticatedTokenClaims {
     pub mfa_verified_until: Option<i64>,
     pub mfa_step_up_verified_until: Option<i64>,
     pub session_scope: JwtSessionScope,
+    pub persist_session: bool,
     pub oauth_client_id: Option<String>,
     pub oauth_grant_id: Option<String>,
     pub oauth_authorization_source: OAuthAuthorizationSource,
@@ -1825,6 +1837,8 @@ pub(crate) struct JwtClaims {
     pub mfa_step_up_verified_until: Option<i64>,
     #[serde(default, rename = "authScope")]
     pub auth_scope: JwtSessionScope,
+    #[serde(default, rename = "persistSession")]
+    pub persist_session: bool,
     #[serde(default, rename = "oauthClientId")]
     pub oauth_client_id: Option<String>,
     #[serde(default, rename = "oauthGrantId")]

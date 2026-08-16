@@ -1185,6 +1185,18 @@ struct SizeRatioThresholds {
     very_small: f64,
 }
 
+impl SizeRatioThresholds {
+    fn with_upper_multiplier(mut self, multiplier: f64) -> Self {
+        self.implausible *= multiplier;
+        self.excessive *= multiplier;
+        self.massive *= multiplier;
+        self.very_large *= multiplier;
+        self.large *= multiplier;
+        self.expected *= multiplier;
+        self
+    }
+}
+
 fn size_ratio_thresholds(media_category: MediaSizeCategory) -> SizeRatioThresholds {
     match media_category {
         MediaSizeCategory::Movie | MediaSizeCategory::Series => SizeRatioThresholds {
@@ -1209,6 +1221,20 @@ fn size_ratio_thresholds(media_category: MediaSizeCategory) -> SizeRatioThreshol
             small: 0.5,
             very_small: 0.3,
         },
+    }
+}
+
+fn size_ratio_thresholds_for_codec(
+    media_category: MediaSizeCategory,
+    codec: Option<&VideoCodec>,
+) -> SizeRatioThresholds {
+    let thresholds = size_ratio_thresholds(media_category);
+    if matches!(codec, Some(VideoCodec::Av1)) {
+        // Preserve AV1's compact expected-size and low-side classifications, while giving
+        // legitimate high-bitrate encodes more headroom before size penalties or blocking.
+        thresholds.with_upper_multiplier(1.5)
+    } else {
+        thresholds
     }
 }
 
@@ -1261,7 +1287,7 @@ pub fn apply_size_scoring_for_category(
     let expected_gib = bitrate * codec_factor * source_factor * (runtime_min * 60.0) / 8.0 / 1024.0;
 
     let ratio = size_gib / expected_gib.max(0.5);
-    let thresholds = size_ratio_thresholds(media_category);
+    let thresholds = size_ratio_thresholds_for_codec(media_category, release.video_codec.as_ref());
 
     let (code, delta) = match ratio {
         r if r >= thresholds.implausible => ("size_implausible_for_quality", BLOCK_SCORE),
@@ -1714,6 +1740,105 @@ mod tests {
 
         assert!(large.preference_score > small.preference_score);
         assert!(large.preference_score - small.preference_score >= 900);
+    }
+
+    #[test]
+    fn av1_tiny_e2e_fixture_keeps_its_low_size_decision() {
+        let release = parse_release_metadata("Paperman.2012.720p.WEB-DL.AV1.AAC2.0-NTb");
+        let weights = balanced_weights();
+        let mut decision = QualityProfileDecision::new();
+
+        apply_size_scoring_for_category(
+            &mut decision,
+            &release,
+            Some(77_514_027),
+            Some("movie"),
+            Some(7),
+            &weights,
+        );
+
+        assert!(decision.allowed);
+        assert_eq!(
+            decision.scoring_log.last().map(|entry| entry.code.as_str()),
+            Some("size_tiny_for_quality")
+        );
+    }
+
+    #[test]
+    fn av1_upper_size_curve_allows_larger_encodes_before_blocking() {
+        let release = parse_release_metadata("Anime.S01E01.1080p.WEB-DL.AV1.AAC2.0-NTb");
+        let weights = balanced_weights();
+        let decision_for_size = |size_bytes| {
+            let mut decision = QualityProfileDecision::new();
+            apply_size_scoring_for_category(
+                &mut decision,
+                &release,
+                Some(size_bytes),
+                Some("anime"),
+                Some(24),
+                &weights,
+            );
+            decision
+        };
+
+        let formerly_excessive = decision_for_size(2 * 1024 * 1024 * 1024);
+        assert_eq!(
+            formerly_excessive
+                .scoring_log
+                .last()
+                .map(|entry| entry.code.as_str()),
+            Some("size_massive_for_quality")
+        );
+
+        let formerly_implausible = decision_for_size(4 * 1024 * 1024 * 1024);
+        assert!(formerly_implausible.allowed);
+        assert_eq!(
+            formerly_implausible
+                .scoring_log
+                .last()
+                .map(|entry| entry.code.as_str()),
+            Some("size_excessive_for_quality")
+        );
+
+        let still_implausible = decision_for_size(6 * 1024 * 1024 * 1024);
+        assert!(!still_implausible.allowed);
+        assert_eq!(
+            still_implausible
+                .scoring_log
+                .last()
+                .map(|entry| entry.code.as_str()),
+            Some("size_implausible_for_quality")
+        );
+    }
+
+    #[test]
+    fn non_av1_size_classifications_stay_unchanged() {
+        let weights = balanced_weights();
+        let decision_for_release = |release_name: &str| {
+            let release = parse_release_metadata(release_name);
+            let mut decision = QualityProfileDecision::new();
+            apply_size_scoring_for_category(
+                &mut decision,
+                &release,
+                Some(2 * 1024 * 1024 * 1024),
+                Some("anime"),
+                Some(24),
+                &weights,
+            );
+            decision
+        };
+
+        let h265 = decision_for_release("Anime.S01E01.1080p.WEB-DL.H.265.AAC2.0-NTb");
+        assert_eq!(
+            h265.scoring_log.last().map(|entry| entry.code.as_str()),
+            Some("size_massive_for_quality")
+        );
+
+        let h264 = decision_for_release("Anime.S01E01.1080p.WEB-DL.H.264.AAC2.0-NTb");
+        assert_eq!(
+            h264.scoring_log.last().map(|entry| entry.code.as_str()),
+            Some("size_large_for_quality")
+        );
     }
 
     #[test]

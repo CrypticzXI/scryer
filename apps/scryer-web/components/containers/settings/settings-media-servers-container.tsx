@@ -4,7 +4,9 @@ import { SettingsMediaServersSection } from "@/components/views/settings/setting
 import {
   createMediaServerConnectionMutation,
   deleteMediaServerConnectionMutation,
+  discoverEmbyConnectServersMutation,
   discoverPlexMediaServersMutation,
+  testEmbyConnectMutation,
   testMediaServerConnectionMutation,
   updateMediaServerConnectionMutation,
 } from "@/lib/graphql/mutations";
@@ -24,6 +26,7 @@ import { notifyExternalAccountInviteSourcesChanged } from "@/components/containe
 import { isVisibleMediaServerProvider } from "@/lib/constants/integration-providers";
 import type {
   LibraryRecord,
+  EmbyConnectServer,
   MediaServerConnection,
   MediaServerConnectionDraft,
   MediaServerPathMapping,
@@ -36,6 +39,7 @@ import {
   localPathStyleFromRuntimeValue,
   type LocalPathStyle,
 } from "@/lib/utils/local-path-style";
+import { nonEmptySecret } from "@/lib/utils/secret-input";
 
 type SettingsMediaServersSectionProps = ComponentProps<typeof SettingsMediaServersSection>;
 
@@ -60,6 +64,13 @@ const DEFAULT_MEDIA_SERVER_DRAFT: MediaServerConnectionDraft = {
   apiKey: "",
   clearApiKey: false,
   jellyfinCredentialMode: "adminLogin",
+  embyConnectionMode: "LOCAL",
+  embyLocalSetupMethod: "ADMIN_CREDENTIALS",
+  embyConnectEnabled: false,
+  embyConnectUsernameOrEmail: "",
+  embyConnectPassword: "",
+  embyConnectServerId: "",
+  embyDiscoveredServers: [],
   adminUsername: "",
   adminPassword: "",
   pathMappingsText: "",
@@ -69,6 +80,7 @@ function cloneDraft(draft: MediaServerConnectionDraft): MediaServerConnectionDra
   return {
     ...draft,
     defaultAppPermissions: [...draft.defaultAppPermissions],
+    embyDiscoveredServers: [...draft.embyDiscoveredServers],
     defaultLibraryGrants: draft.defaultLibraryGrants.map((grant) => ({
       libraryId: grant.libraryId,
       permissions: [...grant.permissions],
@@ -153,6 +165,13 @@ function draftFromConnection(connection: MediaServerConnection): MediaServerConn
     apiKey: "",
     clearApiKey: false,
     jellyfinCredentialMode: "apiKey",
+    embyConnectionMode: "LOCAL",
+    embyLocalSetupMethod: "API_KEY",
+    embyConnectEnabled: connection.embyConnectEnabled,
+    embyConnectUsernameOrEmail: "",
+    embyConnectPassword: "",
+    embyConnectServerId: "",
+    embyDiscoveredServers: [],
     adminUsername: "",
     adminPassword: "",
     pathMappingsText: serializePathMappings(connection.pathMappings),
@@ -164,7 +183,8 @@ function buildCreateInput(
   plexAuthToken: string | null,
   effectiveFormLoginEnabled: boolean,
 ) {
-  const supportsAuth = draft.provider === "JELLYFIN" || draft.provider === "PLEX";
+  const supportsAuth =
+    draft.provider === "JELLYFIN" || draft.provider === "PLEX" || draft.provider === "EMBY";
   const input: Record<string, unknown> = {
     provider: draft.provider,
     displayName: draft.displayName.trim(),
@@ -182,12 +202,30 @@ function buildCreateInput(
 
   const apiKey = normalizeOptional(draft.apiKey);
   const adminUsername = normalizeOptional(draft.adminUsername);
-  const adminPassword = normalizeOptional(draft.adminPassword);
+  const adminPassword = nonEmptySecret(draft.adminPassword);
   if (draft.provider === "PLEX" && draft.plexServerId && plexAuthToken) {
     input.plexServerId = draft.plexServerId;
     input.plexAuthToken = plexAuthToken;
   }
-  if (draft.provider === "EMBY" && apiKey) input.apiKey = apiKey;
+  if (draft.provider === "EMBY") {
+    input.embyConnectionMode = draft.embyConnectionMode;
+    input.embyConnectEnabled = draft.embyConnectEnabled;
+    if (draft.embyConnectionMode === "LOCAL") {
+      input.embyLocalSetupMethod = draft.embyLocalSetupMethod;
+      if (draft.embyLocalSetupMethod === "API_KEY" && apiKey) input.apiKey = apiKey;
+      if (draft.embyLocalSetupMethod === "ADMIN_CREDENTIALS") {
+        if (adminUsername) input.adminUsername = adminUsername;
+        if (adminPassword) input.adminPassword = adminPassword;
+      }
+    } else {
+      const connectUsername = normalizeOptional(draft.embyConnectUsernameOrEmail);
+      const connectPassword = nonEmptySecret(draft.embyConnectPassword);
+      const connectServerId = normalizeOptional(draft.embyConnectServerId);
+      if (connectUsername) input.embyConnectUsernameOrEmail = connectUsername;
+      if (connectPassword) input.embyConnectPassword = connectPassword;
+      if (connectServerId) input.embyConnectServerId = connectServerId;
+    }
+  }
   if (draft.provider === "JELLYFIN" && draft.jellyfinCredentialMode === "apiKey" && apiKey) {
     input.apiKey = apiKey;
   }
@@ -210,6 +248,25 @@ function buildUpdateInput(
   if (!effectiveFormLoginEnabled) delete input.loginEnabled;
   if (!apiKey) delete input.apiKey;
   if (draft.clearApiKey) input.clearApiKey = true;
+  if (draft.provider === "EMBY") {
+    const hasRotationCredentials =
+      (draft.embyConnectionMode === "LOCAL" &&
+        ((draft.embyLocalSetupMethod === "API_KEY" && Boolean(apiKey)) ||
+          (draft.embyLocalSetupMethod === "ADMIN_CREDENTIALS" &&
+            Boolean(normalizeOptional(draft.adminUsername)) &&
+            Boolean(nonEmptySecret(draft.adminPassword))))) ||
+      (draft.embyConnectionMode === "CONNECT" &&
+        Boolean(normalizeOptional(draft.embyConnectUsernameOrEmail)) &&
+        Boolean(nonEmptySecret(draft.embyConnectPassword)) &&
+        Boolean(normalizeOptional(draft.embyConnectServerId)));
+    if (!hasRotationCredentials) {
+      delete input.embyConnectionMode;
+      delete input.embyLocalSetupMethod;
+      delete input.embyConnectUsernameOrEmail;
+      delete input.embyConnectPassword;
+      delete input.embyConnectServerId;
+    }
+  }
   return input;
 }
 
@@ -238,6 +295,7 @@ export function SettingsMediaServersContainer() {
   const [plexDiscoveryToken, setPlexDiscoveryToken] = useState<string | null>(null);
   const [plexServerOptions, setPlexServerOptions] = useState<PlexServerDiscovery[]>([]);
   const [plexDiscoveryBusy, setPlexDiscoveryBusy] = useState(false);
+  const [embyConnectBusy, setEmbyConnectBusy] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [localPathStyle, setLocalPathStyle] =
     useState<LocalPathStyle | undefined>(undefined);
@@ -404,6 +462,70 @@ export function SettingsMediaServersContainer() {
       setPlexDiscoveryBusy(false);
     }
   }, [client, setGlobalStatus, t]);
+
+  const discoverEmbyConnectServers = useCallback(async () => {
+    setEmbyConnectBusy(true);
+    try {
+      const { data, error } = await client
+        .mutation<{ discoverEmbyConnectServers?: EmbyConnectServer[] }>(
+          discoverEmbyConnectServersMutation,
+          {
+            input: {
+              usernameOrEmail: draft.embyConnectUsernameOrEmail,
+              password: draft.embyConnectPassword,
+            },
+          },
+        )
+        .toPromise();
+      if (error) throw error;
+      const servers = data?.discoverEmbyConnectServers ?? [];
+      setDraft((previous) => {
+        const selected =
+          servers.find((server) => server.serverId === previous.embyConnectServerId) ??
+          (servers.length === 1 ? servers[0] : null);
+        return {
+          ...previous,
+          embyDiscoveredServers: servers,
+          embyConnectServerId: selected?.serverId ?? previous.embyConnectServerId,
+          baseUrl: selected?.suggestedBaseUrl ?? previous.baseUrl,
+        };
+      });
+      setGlobalStatus(
+        servers.length > 0
+          ? `Discovered ${servers.length} Emby Connect server${servers.length === 1 ? "" : "s"}`
+          : "No Emby Connect servers were found",
+      );
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : t("status.failedToUpdate"));
+    } finally {
+      setEmbyConnectBusy(false);
+    }
+  }, [client, draft.embyConnectPassword, draft.embyConnectUsernameOrEmail, setGlobalStatus, t]);
+
+  const testSavedEmbyConnect = useCallback(async () => {
+    if (!editingConnectionId) return;
+    setEmbyConnectBusy(true);
+    try {
+      const { data, error } = await client
+        .mutation(testEmbyConnectMutation, {
+          input: {
+            connectionId: editingConnectionId,
+            usernameOrEmail: draft.embyConnectUsernameOrEmail,
+            password: draft.embyConnectPassword,
+          },
+        })
+        .toPromise();
+      if (error) throw error;
+      if (data?.testEmbyConnect?.status !== "ok") {
+        throw new Error(data?.testEmbyConnect?.message ?? "Emby Connect test failed");
+      }
+      setGlobalStatus("Emby Connect test passed");
+    } catch (error) {
+      setGlobalStatus(error instanceof Error ? error.message : "Emby Connect test failed");
+    } finally {
+      setEmbyConnectBusy(false);
+    }
+  }, [client, draft.embyConnectPassword, draft.embyConnectUsernameOrEmail, editingConnectionId, setGlobalStatus]);
 
   const submitConnection = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -601,6 +723,9 @@ export function SettingsMediaServersContainer() {
         plexServerOptions={plexServerOptions}
         plexDiscoveryBusy={plexDiscoveryBusy}
         discoverPlexServers={discoverPlexServers}
+        embyConnectBusy={embyConnectBusy}
+        discoverEmbyConnectServers={discoverEmbyConnectServers}
+        testSavedEmbyConnect={testSavedEmbyConnect}
         editorError={editorError}
       />
       <ConfirmDialog

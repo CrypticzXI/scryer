@@ -500,6 +500,158 @@ async fn migrations_apply_then_validate_is_idempotent() {
 }
 
 #[tokio::test]
+async fn migration_0155_allows_emby_external_accounts_and_preserves_legacy_rows() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("create SQLite migration fixture");
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .expect("enable foreign keys");
+    sqlx::raw_sql(
+        "CREATE TABLE users (id TEXT PRIMARY KEY);
+         CREATE TABLE media_server_connections (id TEXT PRIMARY KEY);
+         CREATE TABLE emby_media_server_details (
+             connection_id TEXT PRIMARY KEY,
+             api_key_encrypted TEXT NOT NULL
+         );
+         CREATE TABLE user_external_accounts (
+             id TEXT PRIMARY KEY,
+             user_id TEXT NOT NULL,
+             provider TEXT NOT NULL,
+             connection_id TEXT NOT NULL,
+             external_user_id TEXT,
+             username TEXT NOT NULL,
+             display_name TEXT,
+             avatar_url TEXT,
+             status TEXT NOT NULL,
+             verified_at TEXT,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL,
+             last_login_at TEXT,
+             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+             FOREIGN KEY (connection_id) REFERENCES media_server_connections(id),
+             CHECK (provider IN ('plex', 'jellyfin')),
+             CHECK (status IN ('pending_claim', 'active', 'disabled'))
+         );
+         CREATE UNIQUE INDEX idx_user_external_accounts_pending_username
+             ON user_external_accounts (provider, connection_id, LOWER(username))
+             WHERE status = 'pending_claim' AND external_user_id IS NULL;
+         CREATE UNIQUE INDEX idx_user_external_accounts_provider_identity
+             ON user_external_accounts (provider, connection_id, external_user_id);
+         CREATE UNIQUE INDEX idx_user_external_accounts_user_provider_connection
+             ON user_external_accounts (user_id, provider, connection_id);
+         CREATE INDEX idx_user_external_accounts_user_status
+             ON user_external_accounts (user_id, status);
+         INSERT INTO users (id) VALUES ('plex-user'), ('jellyfin-user'), ('emby-user');
+         INSERT INTO media_server_connections (id)
+             VALUES ('plex-main'), ('jellyfin-main'), ('emby-main');
+         INSERT INTO emby_media_server_details (connection_id, api_key_encrypted)
+             VALUES ('emby-main', 'encrypted-key');
+         INSERT INTO user_external_accounts (
+             id, user_id, provider, connection_id, external_user_id, username,
+             display_name, avatar_url, status, verified_at, created_at, updated_at,
+             last_login_at
+         ) VALUES
+             ('plex-account', 'plex-user', 'plex', 'plex-main', 'plex-id', 'Plex User',
+              'Plex Display', '/plex-avatar', 'active', '2026-01-01T00:00:00Z',
+              '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', '2026-01-03T00:00:00Z'),
+             ('jellyfin-invite', 'jellyfin-user', 'jellyfin', 'jellyfin-main',
+              'jellyfin-id', 'Jellyfin User', NULL, NULL, 'pending_claim', NULL,
+              '2026-02-01T00:00:00Z', '2026-02-02T00:00:00Z', NULL);",
+    )
+    .execute(&pool)
+    .await
+    .expect("initialize pre-0155 schema");
+
+    run_embedded_migration(
+        &pool,
+        include_str!("../../../scryer/src/db/migrations/0155_emby_first_class.sql"),
+    )
+    .await;
+
+    let legacy: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, provider, status, last_login_at
+           FROM user_external_accounts
+          ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read preserved legacy accounts");
+    assert_eq!(
+        legacy,
+        vec![
+            (
+                "jellyfin-invite".into(),
+                "jellyfin".into(),
+                "pending_claim".into(),
+                None,
+            ),
+            (
+                "plex-account".into(),
+                "plex".into(),
+                "active".into(),
+                Some("2026-01-03T00:00:00Z".into()),
+            ),
+        ]
+    );
+
+    sqlx::query(
+        "INSERT INTO user_external_accounts (
+             id, user_id, provider, connection_id, external_user_id, username,
+             status, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind("emby-invite")
+    .bind("emby-user")
+    .bind("emby")
+    .bind("emby-main")
+    .bind("emby-local-user-id")
+    .bind("Emby User")
+    .bind("pending_claim")
+    .bind("2026-03-01T00:00:00Z")
+    .bind("2026-03-01T00:00:00Z")
+    .execute(&pool)
+    .await
+    .expect("0155 must allow Emby invite rows");
+    let emby_provider: String =
+        sqlx::query_scalar("SELECT provider FROM user_external_accounts WHERE id = 'emby-invite'")
+            .fetch_one(&pool)
+            .await
+            .expect("round-trip Emby invite provider");
+    assert_eq!(emby_provider, "emby");
+
+    let indexes: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master
+          WHERE type = 'index' AND name LIKE 'idx_user_external_accounts_%'
+          ORDER BY name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("list restored external account indexes");
+    assert_eq!(
+        indexes.len(),
+        4,
+        "all external account indexes must survive"
+    );
+
+    let invalid_provider = sqlx::query(
+        "INSERT INTO user_external_accounts (
+             id, user_id, provider, connection_id, username, status, created_at, updated_at
+         ) VALUES ('invalid', 'emby-user', 'unknown', 'emby-main', 'Invalid',
+                   'pending_claim', '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z')",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        invalid_provider.is_err(),
+        "unknown providers remain rejected"
+    );
+}
+
+#[tokio::test]
 async fn migration_0140_rollup_creates_scheduler_tables_and_rss_gap_columns() {
     let db = std::env::temp_dir().join(format!(
         "scryer_migration_0140_scheduler_{}.db",
@@ -1156,13 +1308,17 @@ async fn migration_0140_upgrades_v0_16_8_title_metadata_and_media_in_place() {
         .expect("migrations through the 0.16.8 head should apply");
 
     let library_id = scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Movie);
-    let root_folder_id: String = sqlx::query_scalar(
-        "SELECT id FROM library_roots WHERE library_id = ? ORDER BY is_default DESC, path LIMIT 1",
+    let (root_folder_id, root_path): (String, String) = sqlx::query_as(
+        "SELECT id, path FROM library_roots WHERE library_id = ? ORDER BY is_default DESC, path LIMIT 1",
     )
     .bind(&library_id)
     .fetch_one(&pool)
     .await
     .expect("0.16.8 default movie root should exist");
+    let media_path = format!(
+        "{}/Sasaki and Miyano Graduation/movie.mkv",
+        root_path.trim_end_matches('/')
+    );
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
@@ -1221,7 +1377,7 @@ async fn migration_0140_upgrades_v0_16_8_title_metadata_and_media_in_place() {
     )
     .bind("file-v0-16-8")
     .bind("title-v0-16-8")
-    .bind("/data/movies2/Sasaki and Miyano Graduation/movie.mkv")
+    .bind(&media_path)
     .bind(1234i64)
     .bind(&now)
     .execute(&pool)
@@ -1342,10 +1498,7 @@ async fn migration_0140_upgrades_v0_16_8_title_metadata_and_media_in_place() {
             .await
             .expect("upgraded media file should remain attached to its title");
     assert_eq!(media.0, "title-v0-16-8");
-    assert_eq!(
-        media.1,
-        "/data/movies2/Sasaki and Miyano Graduation/movie.mkv"
-    );
+    assert_eq!(media.1, media_path);
 
     let image_blob_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM title_image_blobs")
         .fetch_one(&services.pool)
@@ -2332,4 +2485,77 @@ async fn migration_0136_rejects_duplicate_existing_root_paths_before_rekey() {
             .contains("duplicate root paths must be merged before migration"),
         "unexpected migration error: {err}"
     );
+}
+
+#[tokio::test]
+async fn migration_0156_queues_tvdb_titles_without_clearing_last_fetch() {
+    let db = std::env::temp_dir().join(format!(
+        "scryer_original_language_rehydration_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let services = SqliteServices::new(db.to_string_lossy())
+        .await
+        .expect("db should initialize");
+    let catalog = title_store(&services);
+
+    let mut tvdb_title = make_test_title("title-tvdb-original-language", None);
+    tvdb_title.external_ids = vec![ExternalId {
+        source: "tvdb".to_string(),
+        value: "12345".to_string(),
+    }];
+    TitleRepository::create(&catalog, tvdb_title.clone())
+        .await
+        .expect("TVDB title should insert");
+    let local_title = make_test_title("title-local-original-language", None);
+    TitleRepository::create(&catalog, local_title.clone())
+        .await
+        .expect("local title should insert");
+
+    sqlx::query(
+        "UPDATE titles
+            SET metadata_fetched_at = '2026-01-01T00:00:00Z',
+                metadata_hydration_next_attempt_at = NULL,
+                metadata_hydration_attempt_count = 7
+          WHERE id IN (?, ?)",
+    )
+    .bind(&tvdb_title.id)
+    .bind(&local_title.id)
+    .execute(&services.pool)
+    .await
+    .expect("hydration state should seed");
+
+    run_embedded_migration(
+        &services.pool,
+        include_str!("../../../scryer/src/db/migrations/0156_rehydrate_original_languages.sql"),
+    )
+    .await;
+
+    let tvdb_state: (Option<String>, Option<String>, i64) = sqlx::query_as(
+        "SELECT metadata_fetched_at, metadata_hydration_next_attempt_at,
+                metadata_hydration_attempt_count
+           FROM titles WHERE id = ?",
+    )
+    .bind(&tvdb_title.id)
+    .fetch_one(&services.pool)
+    .await
+    .expect("TVDB hydration state should load");
+    assert_eq!(tvdb_state.0.as_deref(), Some("2026-01-01T00:00:00Z"));
+    assert!(tvdb_state.1.is_some());
+    assert_eq!(tvdb_state.2, 0);
+
+    let local_state: (Option<String>, Option<String>, i64) = sqlx::query_as(
+        "SELECT metadata_fetched_at, metadata_hydration_next_attempt_at,
+                metadata_hydration_attempt_count
+           FROM titles WHERE id = ?",
+    )
+    .bind(&local_title.id)
+    .fetch_one(&services.pool)
+    .await
+    .expect("local hydration state should load");
+    assert_eq!(local_state.0.as_deref(), Some("2026-01-01T00:00:00Z"));
+    assert_eq!(local_state.1, None);
+    assert_eq!(local_state.2, 7);
+
+    drop(services);
+    let _ = std::fs::remove_file(db);
 }

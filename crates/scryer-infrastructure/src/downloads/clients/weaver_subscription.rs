@@ -26,7 +26,9 @@ use tokio_tungstenite::tungstenite::{ClientRequestBuilder, Message};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use super::weaver::{WeaverDownloadClient, WeaverQueueItem, weaver_item_to_queue_item};
+use super::weaver::{
+    WeaverDownloadClient, WeaverQueueItem, WeaverQueueState, weaver_item_to_queue_item,
+};
 
 const QUEUE_SNAPSHOTS_QUERY: &str = r#"
     subscription {
@@ -639,10 +641,13 @@ where
                         let parsed: QueueEventsPayload = serde_json::from_value(payload)
                             .map_err(|e| format!("invalid queueEvents payload: {e}"))?;
                         *state.last_cursor = Some(parsed.queue_events.cursor.clone());
-                        if parsed.queue_events.kind == "ITEM_COMPLETED"
-                            && let Some(item) = parsed.queue_events.item.as_ref()
+                        if let Some(item) = parsed.queue_events.item.as_ref()
+                            && should_publish_weaver_terminal_delta(
+                                parsed.queue_events.kind.as_str(),
+                                item,
+                            )
                         {
-                            publish_weaver_completed_delta(bridge_client, ingest, item).await;
+                            publish_weaver_terminal_delta(bridge_client, ingest, item).await;
                         }
                     }
                     _ => {
@@ -670,6 +675,11 @@ where
     }
 
     Ok(())
+}
+
+fn should_publish_weaver_terminal_delta(kind: &str, item: &WeaverQueueItem) -> bool {
+    kind == "ITEM_COMPLETED"
+        || (kind == "ITEM_STATE_CHANGED" && item.state == WeaverQueueState::Failed)
 }
 
 fn map_weaver_items(
@@ -701,7 +711,7 @@ async fn publish_authoritative_weaver_snapshot(
     }
 }
 
-async fn publish_weaver_completed_delta(
+async fn publish_weaver_terminal_delta(
     bridge_client: &WeaverSubscriptionBridgeClient,
     ingest: &TrackedDownloadSnapshotIngestHandle,
     item: &WeaverQueueItem,
@@ -716,7 +726,7 @@ async fn publish_weaver_completed_delta(
         actor_id: None,
     };
     if let Err(error) = ingest.publish(update).await {
-        warn!(error = %error, "weaver: failed to publish completed delta");
+        warn!(error = %error, "weaver: failed to publish terminal delta");
     }
 }
 
@@ -853,6 +863,44 @@ mod tests {
         assert!(update.completed_downloads.is_empty());
     }
 
+    #[test]
+    fn failed_item_state_change_is_a_terminal_delta() {
+        assert!(should_publish_weaver_terminal_delta(
+            "ITEM_STATE_CHANGED",
+            &queue_item(42, WeaverQueueState::Failed),
+        ));
+        assert!(!should_publish_weaver_terminal_delta(
+            "ITEM_STATE_CHANGED",
+            &queue_item(42, WeaverQueueState::Downloading),
+        ));
+        assert!(should_publish_weaver_terminal_delta(
+            "ITEM_COMPLETED",
+            &queue_item(42, WeaverQueueState::Completed),
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_delta_publishes_without_completed_history_lookup() {
+        let bridge = WeaverSubscriptionBridgeClient::from_config(&test_config())
+            .expect("bridge client should parse");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let ingest = TrackedDownloadSnapshotIngestHandle::new(tx);
+        let mut failed = queue_item(42, WeaverQueueState::Failed);
+        failed.error = Some("verification failed".to_string());
+
+        publish_weaver_terminal_delta(&bridge, &ingest, &failed).await;
+
+        let update = rx.recv().await.expect("failed delta should be sent");
+        assert!(matches!(update.scope, TrackedDownloadSnapshotScope::Delta));
+        assert_eq!(update.items.len(), 1);
+        assert_eq!(update.items[0].state, DownloadQueueState::Failed);
+        assert_eq!(
+            update.items[0].attention_reason.as_deref(),
+            Some("verification failed")
+        );
+        assert!(update.completed_downloads.is_empty());
+    }
+
     #[tokio::test]
     async fn completed_delta_publishes_empty_completed_rows_when_history_is_not_ready() {
         let server = MockServer::start().await;
@@ -874,7 +922,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let ingest = TrackedDownloadSnapshotIngestHandle::new(tx);
 
-        publish_weaver_completed_delta(
+        publish_weaver_terminal_delta(
             &bridge,
             &ingest,
             &queue_item(42, WeaverQueueState::Completed),
@@ -923,7 +971,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let ingest = TrackedDownloadSnapshotIngestHandle::new(tx);
 
-        publish_weaver_completed_delta(
+        publish_weaver_terminal_delta(
             &bridge,
             &ingest,
             &queue_item(42, WeaverQueueState::Completed),

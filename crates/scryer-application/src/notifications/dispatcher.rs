@@ -1761,6 +1761,7 @@ mod tests {
                         path: "/library/Upgraded Movie/Upgraded Movie.mkv".to_string(),
                         update_type: MediaUpdateType::Modified,
                     }],
+                    episode_ids: Vec::new(),
                     previous_file_id: Some("file-old".to_string()),
                     current_file_id: Some("file-new".to_string()),
                     old_score: Some(10),

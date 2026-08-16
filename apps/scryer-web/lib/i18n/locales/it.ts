@@ -949,6 +949,12 @@ const it: LocaleDictionary = {
     "L'importazione manuale è disponibile per gli elementi in coda che richiedono attenzione.",
   "queue.releaseTitle": "Release",
   "queue.blockReason": "Motivo del blocco",
+  "queue.blockReasonFallbackUnassigned":
+    "L’importazione automatica non ha identificato un titolo della libreria. Assegna un titolo per continuare.",
+  "queue.blockReasonFallbackEpisodic":
+    "L’importazione automatica non ha determinato un’associazione univoca di stagione ed episodio. Apri Importazione manuale e assegna la stagione e l’episodio corretti.",
+  "queue.blockReasonFallbackReview":
+    "L’importazione automatica richiede una verifica. Apri Importazione manuale e conferma l’associazione del file per continuare.",
   "queue.errorCode": "Codice errore",
   "queue.showDetails": "Mostra dettagli",
   "queue.hideDetails": "Nascondi dettagli",

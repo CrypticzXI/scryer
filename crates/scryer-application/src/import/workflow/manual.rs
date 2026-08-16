@@ -212,21 +212,6 @@ async fn maybe_remove_completed_manual_import_download(
     )
     .await;
 }
-async fn resolve_manual_import_coverage_episodes(
-    app: &AppUseCase,
-    title: &scryer_domain::Title,
-    parsed: &crate::ParsedReleaseMetadata,
-    fallback_season: u32,
-    target_episodes: &[scryer_domain::Episode],
-) -> Vec<scryer_domain::Episode> {
-    let Some(ep_meta) = parsed.episode.as_ref() else {
-        return target_episodes.to_vec();
-    };
-
-    let claimed_episodes =
-        resolve_target_episodes(app, title, ep_meta, &fallback_season.to_string()).await;
-    prefer_broader_coverage_episodes(target_episodes, claimed_episodes)
-}
 // ---------------------------------------------------------------------------
 // Manual import: preview & execute
 // ---------------------------------------------------------------------------
@@ -871,6 +856,71 @@ pub(crate) fn validate_manual_import_candidate_mapping_targets(
     Ok(())
 }
 
+pub(crate) async fn validate_manual_import_candidate_mapping_scope(
+    app: &AppUseCase,
+    title_id: &str,
+    files: &[ManualImportCandidateMapping],
+) -> AppResult<()> {
+    for mapping in files {
+        validate_manual_import_target_scope(
+            app,
+            title_id,
+            mapping.episode_id.as_deref(),
+            mapping.series_movie_link_id.as_deref(),
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn validate_manual_import_target_scope(
+    app: &AppUseCase,
+    title_id: &str,
+    episode_id: Option<&str>,
+    series_movie_link_id: Option<&str>,
+) -> AppResult<()> {
+    if let Some(episode_id) = normalize_manual_import_target(episode_id) {
+        let episode = app
+            .services
+            .catalog
+            .shows
+            .get_episode_by_id(episode_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "manual import episode target is unavailable: {episode_id}"
+                ))
+            })?;
+        if episode.title_id != title_id {
+            return Err(AppError::Validation(format!(
+                "manual import episode target {episode_id} does not belong to title {title_id}"
+            )));
+        }
+    }
+
+    if let Some(series_movie_link_id) = normalize_manual_import_target(series_movie_link_id) {
+        let link = app
+            .services
+            .catalog
+            .shows
+            .get_series_movie_link_by_id(series_movie_link_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "manual import series movie target is unavailable: {series_movie_link_id}"
+                ))
+            })?;
+        if link.series_title_id != title_id {
+            return Err(AppError::Validation(format!(
+                "manual import series movie target {series_movie_link_id} does not belong to title {title_id}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Per-file result of a manual import execution.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ManualImportFileResult {
@@ -1226,6 +1276,7 @@ async fn execute_manual_series_movie_import(
         0,
     )
     .join(rendered_filename);
+    persist_title_folder_path_if_missing(app, title, full_folder_path).await?;
     if let Some(parent) = dest_path.parent()
         && let Err(error) = tokio::fs::create_dir_all(parent).await
     {
@@ -1268,8 +1319,6 @@ async fn execute_manual_series_movie_import(
             ));
         }
     };
-    persist_title_folder_path_if_missing(app, title, full_folder_path).await;
-
     let quality_label = mapping.quality.clone().or_else(|| parsed.quality.clone());
     let started_at = Utc::now();
     let imported_media_file_id = match app
@@ -1320,6 +1369,16 @@ async fn execute_manual_series_movie_import(
             .library
             .media_files
             .link_file_to_episode(&imported_media_file_id, linked_episode_id)
+            .await?;
+        app.services
+            .library
+            .media_files
+            .set_media_file_roles_for_episode(
+                &title.id,
+                linked_episode_id,
+                &imported_media_file_id,
+                &[],
+            )
             .await?;
     }
 
@@ -1448,6 +1507,15 @@ pub async fn execute_manual_import(
         scryer_domain::LibraryPermission::ResolveImports,
     )
     .await?;
+    for mapping in &files {
+        validate_manual_import_target_scope(
+            app,
+            &title.id,
+            mapping.episode_id.as_deref(),
+            mapping.series_movie_link_id.as_deref(),
+        )
+        .await?;
+    }
     let trusted_source_root = trusted_source_root
         .as_deref()
         .ok_or_else(|| AppError::Validation("manual import source root is required".to_string()))?;
@@ -1467,10 +1535,10 @@ pub async fn execute_manual_import(
         specials_folder_template,
     } = resolve_import_paths(app, &title).await?;
     let full_folder_path = effective_title_folder_path(&media_root, &title, &folder_template, None);
+    ensure_import_title_folder_available(app, &title, &full_folder_path).await?;
     let quality_profile = resolve_import_quality_profile(app, &title).await?;
 
     let mut results = Vec::new();
-    let mut imported_any = false;
 
     for mapping in &files {
         let source = stored_path_to_path_buf(&mapping.file_path);
@@ -1553,7 +1621,6 @@ pub async fn execute_manual_import(
                     Ok(import_result) => {
                         let success = import_result.dest_path.is_some()
                             && import_result.error_message.is_none();
-                        imported_any |= success;
                         manual_import_file_result(
                             mapping,
                             success,
@@ -1592,7 +1659,6 @@ pub async fn execute_manual_import(
                     rename_enabled,
                 )
                 .await?;
-                imported_any |= result.success;
                 results.push(result);
                 continue;
             }
@@ -1628,6 +1694,19 @@ pub async fn execute_manual_import(
                 continue;
             }
         };
+        if episode.title_id != title.id {
+            results.push(manual_import_file_result(
+                mapping,
+                false,
+                None,
+                Some(ImportErrorCode::EpisodeNotFound),
+                Some(format!(
+                    "episode {episode_id} does not belong to title {}",
+                    title.id
+                )),
+            ));
+            continue;
+        }
 
         // Parse release metadata for quality/codec tokens
         let parsed = completed
@@ -1642,14 +1721,6 @@ pub async fn execute_manual_import(
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
         let ep_num_str = episode.episode_number.clone().unwrap_or_default();
-        let coverage_episodes = resolve_manual_import_coverage_episodes(
-            app,
-            &title,
-            &parsed,
-            season_num,
-            std::slice::from_ref(&episode),
-        )
-        .await;
         match execute_resolved_episode_import(
             app,
             actor,
@@ -1663,7 +1734,7 @@ pub async fn execute_manual_import(
             &source,
             &parsed,
             std::slice::from_ref(&episode),
-            &coverage_episodes,
+            std::slice::from_ref(&episode),
             season_num,
             &ep_num_str,
             episode.absolute_number.as_deref(),
@@ -1676,7 +1747,6 @@ pub async fn execute_manual_import(
         .await
         {
             Ok(EpisodeImportOutcome::Imported { dest_path, .. }) => {
-                imported_any = true;
                 results.push(manual_import_file_result(
                     mapping,
                     true,
@@ -1720,10 +1790,6 @@ pub async fn execute_manual_import(
                 ));
             }
         }
-    }
-
-    if imported_any {
-        persist_title_folder_path_if_missing(app, &title, &full_folder_path).await;
     }
 
     let imported_updates: Vec<NotificationMediaUpdate> = results

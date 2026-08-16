@@ -2159,6 +2159,15 @@ pub trait MediaServerConnectionRepository: Send + Sync {
         &self,
         connection: scryer_domain::MediaServerConnection,
     ) -> AppResult<scryer_domain::MediaServerConnection>;
+    async fn compare_and_set_emby_base_url(
+        &self,
+        _connection_id: &str,
+        _expected_base_url: &str,
+        _expected_server_id: &str,
+        _new_base_url: &str,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
     async fn delete(&self, id: &str) -> AppResult<()>;
     async fn has_external_accounts(&self, id: &str) -> AppResult<bool>;
     async fn has_notification_channels(&self, id: &str) -> AppResult<bool>;
@@ -2170,6 +2179,140 @@ pub struct JellyfinServerUser {
     pub username: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbyServerIdentity {
+    pub api_base_url: String,
+    pub server_id: String,
+    pub server_name: String,
+    pub version: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct EmbyApiKeyExchange {
+    pub api_key: String,
+    pub server_identity: EmbyServerIdentity,
+    pub created_new_key: bool,
+    pub cleanup: Option<EmbyApiKeyExchangeCleanup>,
+}
+
+impl std::fmt::Debug for EmbyApiKeyExchange {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EmbyApiKeyExchange")
+            .field("api_key", &"[REDACTED]")
+            .field("server_identity", &self.server_identity)
+            .field("created_new_key", &self.created_new_key)
+            .field("cleanup", &self.cleanup.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct EmbyApiKeyExchangeCleanup {
+    api_base_url: String,
+    local_user_id: String,
+    session_access_token: String,
+    created_api_key: Option<String>,
+}
+
+impl EmbyApiKeyExchangeCleanup {
+    pub fn new(
+        api_base_url: String,
+        local_user_id: String,
+        session_access_token: String,
+        created_api_key: Option<String>,
+    ) -> Self {
+        Self {
+            api_base_url,
+            local_user_id,
+            session_access_token,
+            created_api_key,
+        }
+    }
+
+    pub fn api_base_url(&self) -> &str {
+        &self.api_base_url
+    }
+
+    pub fn local_user_id(&self) -> &str {
+        &self.local_user_id
+    }
+
+    pub fn session_access_token(&self) -> &str {
+        &self.session_access_token
+    }
+
+    pub fn created_api_key(&self) -> Option<&str> {
+        self.created_api_key.as_deref()
+    }
+}
+
+impl std::fmt::Debug for EmbyApiKeyExchangeCleanup {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EmbyApiKeyExchangeCleanup")
+            .field("api_base_url", &self.api_base_url)
+            .field("local_user_id", &"[REDACTED]")
+            .field("session_access_token", &"[REDACTED]")
+            .field(
+                "created_api_key",
+                &self.created_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbyConnectIdentityVerification {
+    pub identity: VerifiedExternalIdentity,
+    pub resolved_api_base_url: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbyConnectAddressStatus {
+    Reachable,
+    Unreachable,
+    InvalidUrl,
+    ServerIdMismatch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbyConnectUserType {
+    LinkedUser,
+    Guest,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbyConnectServer {
+    pub server_id: String,
+    pub name: String,
+    pub user_type: EmbyConnectUserType,
+    pub local_address: Option<String>,
+    pub remote_address: Option<String>,
+    pub local_api_base_url: Option<String>,
+    pub remote_api_base_url: Option<String>,
+    pub local_status: EmbyConnectAddressStatus,
+    pub remote_status: EmbyConnectAddressStatus,
+    pub suggested_base_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbyServerUser {
+    pub id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbyAvatar {
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2201,6 +2344,17 @@ impl From<JellyfinServerUser> for MediaServerUser {
 
 impl From<PlexServerUser> for MediaServerUser {
     fn from(user: PlexServerUser) -> Self {
+        Self {
+            id: user.id,
+            username: user.username,
+            display_name: user.display_name,
+            avatar_url: user.avatar_url,
+        }
+    }
+}
+
+impl From<EmbyServerUser> for MediaServerUser {
+    fn from(user: EmbyServerUser) -> Self {
         Self {
             id: user.id,
             username: user.username,
@@ -2264,6 +2418,124 @@ pub trait ExternalIdentityVerifier: Send + Sync {
         api_key: &str,
         search: Option<&str>,
     ) -> AppResult<Vec<JellyfinServerUser>>;
+    async fn resolve_emby_api_base(
+        &self,
+        _connection_id: &str,
+        _base_url: &str,
+    ) -> AppResult<EmbyServerIdentity> {
+        Err(AppError::Repository(
+            "Emby integration is not configured".into(),
+        ))
+    }
+    async fn test_emby_api_key(
+        &self,
+        _connection_id: &str,
+        _base_url: &str,
+        _api_key: &str,
+        _expected_server_id: Option<&str>,
+    ) -> AppResult<EmbyServerIdentity> {
+        Err(AppError::Repository(
+            "Emby integration is not configured".into(),
+        ))
+    }
+    async fn exchange_emby_local_admin_api_key(
+        &self,
+        _connection_id: &str,
+        _base_url: &str,
+        _username: &str,
+        _password: &str,
+    ) -> AppResult<EmbyApiKeyExchange> {
+        Err(AppError::Repository(
+            "Emby integration is not configured".into(),
+        ))
+    }
+    async fn discover_emby_connect_servers(
+        &self,
+        _username_or_email: &str,
+        _password: &str,
+    ) -> AppResult<Vec<EmbyConnectServer>> {
+        Err(AppError::Repository(
+            "Emby integration is not configured".into(),
+        ))
+    }
+    async fn exchange_emby_connect_admin_api_key(
+        &self,
+        _connection_id: &str,
+        _base_url: &str,
+        _server_id: &str,
+        _username_or_email: &str,
+        _password: &str,
+    ) -> AppResult<EmbyApiKeyExchange> {
+        Err(AppError::Repository(
+            "Emby integration is not configured".into(),
+        ))
+    }
+    async fn finish_emby_api_key_exchange(
+        &self,
+        _connection_id: &str,
+        _cleanup: EmbyApiKeyExchangeCleanup,
+        _compensate_created_key: bool,
+    ) {
+    }
+    async fn verify_emby_local_identity(
+        &self,
+        _connection_id: &str,
+        _base_url: &str,
+        _expected_server_id: &str,
+        _username: &str,
+        _password: &str,
+    ) -> AppResult<VerifiedExternalIdentity> {
+        Err(AppError::Repository(
+            "Emby integration is not configured".into(),
+        ))
+    }
+    async fn verify_emby_connect_identity(
+        &self,
+        _connection_id: &str,
+        _base_url: &str,
+        _expected_server_id: &str,
+        _username_or_email: &str,
+        _password: &str,
+    ) -> AppResult<EmbyConnectIdentityVerification> {
+        Err(AppError::Repository(
+            "Emby integration is not configured".into(),
+        ))
+    }
+    async fn test_emby_connect_identity(
+        &self,
+        _connection_id: &str,
+        _base_url: &str,
+        _expected_server_id: &str,
+        _username_or_email: &str,
+        _password: &str,
+    ) -> AppResult<EmbyConnectIdentityVerification> {
+        Err(AppError::Repository(
+            "Emby integration is not configured".into(),
+        ))
+    }
+    async fn list_emby_users(
+        &self,
+        _connection_id: &str,
+        _base_url: &str,
+        _api_key: &str,
+        _search: Option<&str>,
+    ) -> AppResult<Vec<EmbyServerUser>> {
+        Err(AppError::Repository(
+            "Emby integration is not configured".into(),
+        ))
+    }
+    async fn fetch_emby_user_avatar(
+        &self,
+        _connection_id: &str,
+        _base_url: &str,
+        _api_key: &str,
+        _user_id: &str,
+        _image_tag: &str,
+    ) -> AppResult<Option<EmbyAvatar>> {
+        Err(AppError::Repository(
+            "Emby integration is not configured".into(),
+        ))
+    }
     async fn list_plex_users(
         &self,
         plex_auth_token: &str,
@@ -2927,6 +3199,14 @@ pub trait DownloadSubmissionRepository: Send + Sync {
         Ok(None)
     }
 
+    async fn get_identity_tracked_state_detail(
+        &self,
+        _identity: &DownloadSubmissionIdentity,
+        _source_identity: Option<&DownloadSourceIdentity>,
+    ) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
     async fn list_identity_tracked_states_for_client_items(
         &self,
         _client_items: &[DownloadSourceIdentity],
@@ -3570,6 +3850,14 @@ pub trait MediaFileRepository: Send + Sync {
     async fn set_media_file_roles_for_title(
         &self,
         title_id: &str,
+        primary_file_id: &str,
+        additional_file_ids: &[String],
+    ) -> AppResult<()>;
+
+    async fn set_media_file_roles_for_episode(
+        &self,
+        title_id: &str,
+        episode_id: &str,
         primary_file_id: &str,
         additional_file_ids: &[String],
     ) -> AppResult<()>;

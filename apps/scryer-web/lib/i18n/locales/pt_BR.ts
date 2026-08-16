@@ -951,6 +951,12 @@ const pt_BR: LocaleDictionary = {
     "A importação manual está disponível para itens da fila que precisam de atenção.",
   "queue.releaseTitle": "Lançamento",
   "queue.blockReason": "Motivo do bloqueio",
+  "queue.blockReasonFallbackUnassigned":
+    "A importação automática não conseguiu identificar um título da biblioteca. Atribua um título para continuar.",
+  "queue.blockReasonFallbackEpisodic":
+    "A importação automática não conseguiu determinar um mapeamento único de temporada e episódio. Abra a Importação manual e atribua a temporada e o episódio corretos.",
+  "queue.blockReasonFallbackReview":
+    "A importação automática precisa de revisão. Abra a Importação manual e confirme o mapeamento do arquivo para continuar.",
   "queue.errorCode": "Código do erro",
   "queue.showDetails": "Mostrar detalhes",
   "queue.hideDetails": "Ocultar detalhes",

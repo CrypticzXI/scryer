@@ -639,7 +639,7 @@ function SearchResultRow({
             ) : null}
           </div>
         </td>
-        <td className="border border-border border-x-0 px-4 py-2 text-center align-middle">
+        <td className="border border-border border-x-0 px-2 py-2 text-center align-middle">
           {decision ? (
             hasLog ? (
               <button
@@ -665,11 +665,11 @@ function SearchResultRow({
             </span>
           )}
         </td>
-        <td className="border border-border border-x-0 px-4 py-2 text-center font-[var(--font-code)] text-xl font-semibold text-foreground align-middle">
+        <td className="whitespace-nowrap border border-border border-x-0 px-2 py-2 text-center align-middle font-[var(--font-code)] text-base font-semibold text-foreground">
           {bytesToWholeReadable(result.sizeBytes)}
         </td>
-        <td className="rounded-r-lg border border-border border-l-0 px-4 py-2 text-center align-middle">
-          <div className="flex flex-col items-stretch gap-2">
+        <td className="rounded-r-lg border border-border border-l-0 px-3 py-2 text-center align-middle">
+          <div className="flex flex-col items-stretch gap-1.5">
             <Button
               id={queueButtonId}
               data-ui="release-search-result-queue"
@@ -678,10 +678,10 @@ function SearchResultRow({
               disabled={queueDisabled}
               className={
                 queueButtonMuted
-                  ? "h-10"
+                  ? "h-9 text-sm"
                   : queueRequested
-                    ? "h-10 border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-bg-strong)] text-[var(--scry-success-text)]"
-                    : "h-10 border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-solid)] text-[var(--scry-success-on-solid)] hover:bg-[var(--scry-success-solid-hover)] focus-visible:ring-[var(--scry-success-border-strong)]"
+                    ? "h-9 border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-bg-strong)] text-sm text-[var(--scry-success-text)]"
+                    : "h-9 border border-[var(--scry-success-border-strong)] bg-[var(--scry-success-solid)] text-sm text-[var(--scry-success-on-solid)] hover:bg-[var(--scry-success-solid-hover)] focus-visible:ring-[var(--scry-success-border-strong)]"
               }
               variant={queueButtonMuted ? "ghost" : "default"}
             >
@@ -704,7 +704,7 @@ function SearchResultRow({
                 onClick={handleQueueAdditionalClick}
                 disabled={additionalQueueDisabled}
                 className={cn(
-                  "h-9 border-[rgba(var(--scry-accent-rgb),0.30)] bg-[rgba(var(--scry-accent-rgb),0.08)] text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.13)] hover:text-[var(--scry-accent-text)] focus-visible:ring-[rgba(var(--scry-accent-rgb),0.25)]",
+                  "h-8 border-[rgba(var(--scry-accent-rgb),0.30)] bg-[rgba(var(--scry-accent-rgb),0.08)] text-xs text-[var(--scry-accent-text)] shadow-none hover:bg-[rgba(var(--scry-accent-rgb),0.13)] hover:text-[var(--scry-accent-text)] focus-visible:ring-[rgba(var(--scry-accent-rgb),0.25)]",
                   additionalQueueRequested &&
                     "border-[var(--scry-success-border)] bg-[var(--scry-success-bg)] text-[var(--scry-success-text)] hover:border-[var(--scry-success-border-strong)] hover:bg-[var(--scry-success-bg-strong)] hover:text-[var(--scry-success-text)]",
                 )}
@@ -901,12 +901,18 @@ export function SearchResultBuckets({
             )}
           >
             <table className="w-full table-fixed text-left">
+              <colgroup>
+                <col />
+                <col className="w-20" />
+                <col className="w-[6.5rem]" />
+                <col className="w-56" />
+              </colgroup>
               <thead className="bg-card/80">
                 <tr>
-                  <th className="w-[62%] px-4 py-3 text-base font-bold text-foreground">
+                  <th className="px-4 py-3 text-base font-bold text-foreground">
                     Release
                   </th>
-                  <th className="w-[8%] px-4 py-3 text-center text-base font-bold text-foreground">
+                  <th className="px-2 py-3 text-center text-base font-bold text-foreground">
                     <button
                       type="button"
                       className="inline-flex w-full items-center justify-center gap-1"
@@ -915,7 +921,7 @@ export function SearchResultBuckets({
                       {t("nzb.score")} {renderSortIcon("score")}
                     </button>
                   </th>
-                  <th className="w-[10%] px-4 py-3 text-center text-base font-bold text-foreground">
+                  <th className="px-2 py-3 text-center text-base font-bold text-foreground">
                     <button
                       type="button"
                       className="inline-flex w-full items-center justify-center gap-1"
@@ -924,7 +930,7 @@ export function SearchResultBuckets({
                       {t("nzb.size")} {renderSortIcon("size")}
                     </button>
                   </th>
-                  <th className="w-[20%] px-4 py-3 text-center text-base font-bold text-foreground">
+                  <th className="px-3 py-3 text-center text-base font-bold text-foreground">
                     Actions
                   </th>
                 </tr>

@@ -147,36 +147,64 @@ fn catalog_release_is_sdk_compatible(plugin_id: &str, release: &CatalogV3PluginR
     sdk_req.matches(current_sdk_version())
 }
 fn catalog_release_is_scryer_compatible(plugin_id: &str, release: &CatalogV3PluginRelease) -> bool {
-    let Some(min_scryer_version) = release
-        .min_scryer_version
-        .as_deref()
-        .map(str::trim)
-        .filter(|version| !version.is_empty())
-    else {
-        return true;
+    let parse_bound = |field: &'static str, raw: Option<&str>| {
+        let Some(raw) = raw.map(str::trim).filter(|version| !version.is_empty()) else {
+            return Some(None);
+        };
+        match semver::Version::parse(raw) {
+            Ok(version) => Some(Some(version)),
+            Err(_) => {
+                warn!(
+                    plugin_id,
+                    version = release.version.as_str(),
+                    bound = raw,
+                    field,
+                    "skipping plugin release with invalid Scryer version bound"
+                );
+                None
+            }
+        }
     };
-    let Ok(min_scryer_version) = semver::Version::parse(min_scryer_version) else {
-        warn!(
-            plugin_id,
-            version = release.version.as_str(),
-            min_scryer_version,
-            "skipping plugin release with invalid min_scryer_version"
-        );
+    let Some(min_scryer_version) =
+        parse_bound("min_scryer_version", release.min_scryer_version.as_deref())
+    else {
         return false;
     };
-    current_scryer_version() >= &min_scryer_version
+    let Some(max_scryer_version) =
+        parse_bound("max_scryer_version", release.max_scryer_version.as_deref())
+    else {
+        return false;
+    };
+    min_scryer_version
+        .as_ref()
+        .is_none_or(|min| current_scryer_version() >= min)
+        && max_scryer_version
+            .as_ref()
+            .is_none_or(|max| current_scryer_version() <= max)
 }
 fn catalog_release_is_host_compatible(plugin_id: &str, release: &CatalogV3PluginRelease) -> bool {
     catalog_release_is_sdk_compatible(plugin_id, release)
         && catalog_release_is_scryer_compatible(plugin_id, release)
 }
 fn catalog_release_scryer_constraint(release: &CatalogV3PluginRelease) -> Option<String> {
-    release
+    let mut bounds = Vec::new();
+    if let Some(min) = release
         .min_scryer_version
         .as_deref()
         .map(str::trim)
         .filter(|version| !version.is_empty())
-        .map(|version| format!(">={version}"))
+    {
+        bounds.push(format!(">={min}"));
+    }
+    if let Some(max) = release
+        .max_scryer_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+    {
+        bounds.push(format!("<={max}"));
+    }
+    (!bounds.is_empty()).then(|| bounds.join(", "))
 }
 #[cfg(test)]
 fn latest_compatible_child_release(child: &ChildCatalog) -> Option<ChildCatalogRelease> {
@@ -1066,7 +1094,10 @@ impl AppUseCase {
 impl AppUseCase {
     async fn fetch_verified_catalog_v3(&self) -> AppResult<(CatalogV3, String, u64)> {
         let (redirect, redirect_url) = self.fetch_verified_catalog_redirect().await?;
-        let artifact = redirect.artifacts.first().cloned().ok_or_else(|| {
+        // Catalog-v3 redirects put the legacy projection first for pre-0.18.12 clients and the
+        // extended projection last. Older clients keep selecting the first artifact; clients that
+        // understand release ceilings select the last artifact.
+        let artifact = redirect.artifacts.last().cloned().ok_or_else(|| {
             AppError::Validation(
                 "plugin catalog redirect did not contain any artifacts".to_string(),
             )

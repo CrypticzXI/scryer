@@ -9,13 +9,14 @@ pub(crate) struct InteractiveSearchMutations;
 
 #[Object]
 impl InteractiveSearchMutations {
-    /// Start a server-side interactive release-search job for the same scopes
-    /// as `searchReleases`. Results stream into the job snapshot as each
-    /// indexer completes; poll it with `interactiveReleaseSearch`. Starting a
-    /// new search for a scope cancels the caller's running job for that scope.
+    /// Start a background interactive release-search job for the requested scopes.
+    /// Results accumulate as indexers complete, and a new search cancels the caller's running job for the same scope.
     async fn start_interactive_release_search(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Title, optional series-movie link, season, episode, and result limit for the search."
+        )]
         input: SearchReleasesInput,
     ) -> GqlResult<InteractiveReleaseSearchPayload> {
         let app = app_from_ctx(ctx)?;
@@ -45,7 +46,7 @@ impl InteractiveSearchMutations {
     async fn cancel_interactive_release_search(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Interactive release-search job identity to cancel.")] id: ID,
     ) -> GqlResult<CancelInteractiveReleaseSearchPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;

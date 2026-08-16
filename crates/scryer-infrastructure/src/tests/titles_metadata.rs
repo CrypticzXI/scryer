@@ -64,6 +64,54 @@ async fn title_quality_profile_reference_count_matches_resolver_normalization() 
 }
 
 #[tokio::test]
+async fn hydrated_original_language_can_be_set_cleared_or_left_unchanged() {
+    let (services, db) = temp_services("scryer_title_original_language_update").await;
+    let catalog = title_store(&services);
+    let title = make_test_title("title-original-language-update", None);
+    TitleRepository::create(&catalog, title.clone())
+        .await
+        .expect("title should insert");
+
+    let set = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            language: MetadataFieldUpdate::Set("jpn".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("original language should set");
+    assert_eq!(set.language.as_deref(), Some("jpn"));
+
+    let unchanged = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            overview: Some("partial update".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("partial metadata should update");
+    assert_eq!(unchanged.language.as_deref(), Some("jpn"));
+
+    let cleared = TitleRepository::update_title_hydrated_metadata(
+        &catalog,
+        &title.id,
+        TitleMetadataUpdate {
+            language: MetadataFieldUpdate::Clear,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("missing authoritative language should clear stale metadata");
+    assert_eq!(cleared.language, None);
+
+    let _ = std::fs::remove_file(db);
+}
+
+#[tokio::test]
 async fn title_create_requires_an_existing_library_for_the_title_facet() {
     let (services, db) = temp_services("scryer_title_library_ownership_validation").await;
     let catalog = title_store(&services);
@@ -546,7 +594,7 @@ async fn title_writes_generate_and_refresh_catalog_sort_key_sqlite() {
             popularity: None,
             canonical_tags: vec![],
             content_status: None,
-            language: None,
+            language: MetadataFieldUpdate::Unchanged,
             first_aired: None,
             network: None,
             studio: None,
@@ -1327,7 +1375,8 @@ async fn list_titles_due_for_hydration_excludes_active_facets_in_due_order() {
 
     sqlx::query(
         "UPDATE titles
-         SET metadata_hydration_next_attempt_at = ?,
+         SET metadata_fetched_at = '2025-12-31T00:00:00Z',
+             metadata_hydration_next_attempt_at = ?,
              metadata_hydration_attempt_count = 0
          WHERE id IN (?, ?, ?)",
     )
@@ -1352,6 +1401,16 @@ async fn list_titles_due_for_hydration_excludes_active_facets_in_due_order() {
         due_ids,
         vec!["anime-due".to_string(), "movie-due".to_string()]
     );
+
+    TitleRepository::clear_title_metadata_hydration_retry_state(&catalog, "anime-due")
+        .await
+        .expect("successful hydration should clear the retry schedule");
+    let remaining =
+        TitleRepository::list_titles_due_for_hydration(&catalog, 10, &[MediaFacet::Series])
+            .await
+            .expect("load due titles after clearing successful hydration");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].title.id, "movie-due");
 
     let _ = std::fs::remove_file(db);
 }
@@ -2152,6 +2211,15 @@ async fn media_file_aggregates_ignore_additional_files_but_listing_includes_them
         .link_file_to_episode(&episode_one_primary_id, &episode_one.id)
         .await
         .expect("primary file should link to episode one");
+    media_files
+        .set_media_file_roles_for_episode(
+            &series_title.id,
+            &episode_one.id,
+            &episode_one_primary_id,
+            &[],
+        )
+        .await
+        .expect("episode one primary role should set");
 
     for (file_path, episode_id) in [
         (

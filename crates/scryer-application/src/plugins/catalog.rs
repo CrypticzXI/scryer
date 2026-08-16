@@ -175,6 +175,8 @@ pub struct CatalogV3PluginRelease {
     pub sdk_constraint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_scryer_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_scryer_version: Option<String>,
     pub artifacts: Vec<CatalogV3PluginArtifact>,
 }
 
@@ -850,13 +852,40 @@ fn validate_plugin_release_set(plugin: &CatalogV3PluginEntry) -> AppResult<()> {
                 release.sdk_constraint, plugin.id
             ))
         })?;
-        if let Some(min_scryer_version) = release.min_scryer_version.as_deref() {
-            Version::parse(min_scryer_version.trim()).map_err(|error| {
+        let min_scryer_version = release
+            .min_scryer_version
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(Version::parse)
+            .transpose()
+            .map_err(|error| {
                 AppError::Validation(format!(
-                    "plugin '{}' release '{}' has invalid min_scryer_version '{}': {error}",
-                    plugin.id, release.version, min_scryer_version
+                    "plugin '{}' release '{}' has invalid min_scryer_version: {error}",
+                    plugin.id, release.version
                 ))
             })?;
+        let max_scryer_version = release
+            .max_scryer_version
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(Version::parse)
+            .transpose()
+            .map_err(|error| {
+                AppError::Validation(format!(
+                    "plugin '{}' release '{}' has invalid max_scryer_version: {error}",
+                    plugin.id, release.version
+                ))
+            })?;
+        if min_scryer_version
+            .zip(max_scryer_version)
+            .is_some_and(|(min, max)| min > max)
+        {
+            return Err(AppError::Validation(format!(
+                "plugin '{}' release '{}' has min_scryer_version greater than max_scryer_version",
+                plugin.id, release.version
+            )));
         }
         if !versions.insert(release.version.clone()) {
             return Err(AppError::Validation(format!(
@@ -1703,6 +1732,19 @@ mod tests {
 
         assert!(
             err.to_string().contains("invalid min_scryer_version"),
+            "unexpected error: {err}"
+        );
+
+        let inverted_range = String::from_utf8(raw.to_vec())
+            .expect("fixture is utf-8")
+            .replace(
+                "\"min_scryer_version\": \"not-semver\"",
+                "\"min_scryer_version\": \"0.18.12\", \"max_scryer_version\": \"0.18.11\"",
+            );
+        let err = parse_and_validate_catalog_v3(inverted_range.as_bytes()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("min_scryer_version greater than max_scryer_version"),
             "unexpected error: {err}"
         );
     }

@@ -28,7 +28,8 @@ const LOGIN_PAYLOAD_FIELDS = `
     }
     expiresAt
     mfaVerifiedUntil
-    mfaEnrollmentRequired`;
+    mfaEnrollmentRequired
+    persistSession`;
 
 export const loginMutation = `mutation Login($input: LoginInput!) {
   login(input: $input) {
@@ -279,6 +280,7 @@ export const createIndexerMutation = `mutation CreateIndexer($input: CreateIndex
     providerType
     baseUrl
     indexerProxyConfigId
+    downloadClientId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -307,6 +309,7 @@ export const updateIndexerMutation = `mutation UpdateIndexer($input: UpdateIndex
     providerType
     baseUrl
     indexerProxyConfigId
+    downloadClientId
     hasApiKey
     storedSecretKeys
     rateLimitSeconds
@@ -835,6 +838,7 @@ export const updateSecuritySettingsMutation = `mutation UpdateSecuritySettings($
     mfaRequireConfigStepUp
     mfaRequirePasswordLogin
     totpRequireJellyfinLogin
+    totpRequireEmbyLogin
     effectiveFormLoginEnabled
     envOverrideActive
     envOverrideDescription
@@ -887,6 +891,28 @@ export const discoverPlexMediaServersMutation = `mutation DiscoverPlexMediaServe
   }
 }`;
 
+export const discoverEmbyConnectServersMutation = `mutation DiscoverEmbyConnectServers($input: DiscoverEmbyConnectServersInput!) {
+  discoverEmbyConnectServers(input: $input) {
+    serverId
+    name
+    userType
+    localAddress
+    remoteAddress
+    localApiBaseUrl
+    remoteApiBaseUrl
+    localStatus
+    remoteStatus
+    suggestedBaseUrl
+  }
+}`;
+
+export const testEmbyConnectMutation = `mutation TestEmbyConnect($input: TestEmbyConnectInput!) {
+  testEmbyConnect(input: $input) {
+    status
+    message
+  }
+}`;
+
 export const createExternalAccountInviteMutation = `mutation CreateExternalAccountInvite($input: CreateExternalAccountInviteInput!) {
   createExternalAccountInvite(input: $input) {${LINKED_ACCOUNT_FIELDS}
   }
@@ -899,6 +925,11 @@ export const linkPlexAccountMutation = `mutation LinkPlexAccount($input: LinkPle
 
 export const linkJellyfinAccountMutation = `mutation LinkJellyfinAccount($input: LinkJellyfinAccountInput!) {
   linkJellyfinAccount(input: $input) {${LINKED_ACCOUNT_FIELDS}
+  }
+}`;
+
+export const linkEmbyAccountMutation = `mutation LinkEmbyAccount($input: LinkEmbyAccountInput!) {
+  linkEmbyAccount(input: $input) {${LINKED_ACCOUNT_FIELDS}
   }
 }`;
 
@@ -916,6 +947,12 @@ ${LOGIN_PAYLOAD_FIELDS}
 
 export const loginWithJellyfinMutation = `mutation LoginWithJellyfin($input: LoginWithJellyfinInput!) {
   loginWithJellyfin(input: $input) {
+${LOGIN_PAYLOAD_FIELDS}
+  }
+}`;
+
+export const loginWithEmbyMutation = `mutation LoginWithEmby($input: LoginWithEmbyInput!) {
+  loginWithEmby(input: $input) {
 ${LOGIN_PAYLOAD_FIELDS}
   }
 }`;

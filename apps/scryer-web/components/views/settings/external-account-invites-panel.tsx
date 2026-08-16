@@ -43,6 +43,7 @@ import type {
   UiDateTimeFormat,
 } from "@/lib/types/settings";
 import { cn } from "@/lib/utils";
+import { AuthenticatedAvatar } from "@/components/common/authenticated-avatar";
 import { formatUiDateTime } from "@/lib/utils/date-format";
 import { selectorId } from "@/lib/utils/dom-ids";
 
@@ -103,6 +104,8 @@ function providerLabel(provider: ExternalAccountProvider): string {
       return "Plex";
     case "JELLYFIN":
       return "Jellyfin";
+    case "EMBY":
+      return "Emby";
     default:
       return provider;
   }
@@ -157,20 +160,13 @@ function ProviderAvatar({
   avatarUrl: string | null | undefined;
   label: string;
 }) {
-  return avatarUrl ? (
-    <img
-      src={avatarUrl}
-      alt=""
-      className="h-7 w-7 shrink-0 rounded-full border border-border object-cover"
-      loading="lazy"
+  return (
+    <AuthenticatedAvatar
+      avatarUrl={avatarUrl}
+      label={label}
+      imageClassName="h-7 w-7 shrink-0 rounded-full border border-border object-cover"
+      fallbackClassName="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-xs font-medium text-muted-foreground"
     />
-  ) : (
-    <span
-      aria-hidden="true"
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-xs font-medium text-muted-foreground"
-    >
-      {label.trim().slice(0, 1).toUpperCase() || "?"}
-    </span>
   );
 }
 

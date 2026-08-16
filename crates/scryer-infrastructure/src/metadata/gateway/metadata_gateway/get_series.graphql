@@ -12,6 +12,7 @@ query GetSeries($id: String!, $includeEpisodes: Boolean!, $language: String!) {
       network
       runtime_minutes
       poster_url
+      original_language
       country
       canonical_tags {
         key

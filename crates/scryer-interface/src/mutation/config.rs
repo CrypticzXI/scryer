@@ -129,9 +129,13 @@ pub(crate) struct ConfigMutations;
 
 #[Object]
 impl ConfigMutations {
+    /// Create an indexer configuration with provider, routing, and search defaults.
     async fn create_indexer_config(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Indexer provider configuration, optional proxy and download-client identities, and search defaults."
+        )]
         input: CreateIndexerConfigInput,
     ) -> GqlResult<IndexerConfigPayload> {
         let app = app_from_ctx(ctx)?;
@@ -153,6 +157,7 @@ impl ConfigMutations {
                     enable_interactive_search: input.enable_interactive_search.unwrap_or(true),
                     enable_auto_search: input.enable_auto_search.unwrap_or(true),
                     indexer_proxy_config_id: input.indexer_proxy_config_id.map(|id| id.to_string()),
+                    download_client_id: input.download_client_id.map(|id| id.to_string()),
                     config_json,
                 },
             )
@@ -165,9 +170,13 @@ impl ConfigMutations {
         Ok(from_indexer_config_with_fields(config, &config_fields))
     }
 
+    /// Patch an indexer configuration while preserving omitted fields and stored secrets.
     async fn update_indexer_config(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Indexer configuration identity and optional replacement fields; omitted provider secrets remain stored."
+        )]
         input: UpdateIndexerConfigInput,
     ) -> GqlResult<IndexerConfigPayload> {
         let app = app_from_ctx(ctx)?;
@@ -191,7 +200,7 @@ impl ConfigMutations {
                     enable_interactive_search: input.enable_interactive_search,
                     enable_auto_search: input.enable_auto_search,
                     indexer_proxy_config_id: optional_id_input(input.indexer_proxy_config_id),
-                    download_client_id: None,
+                    download_client_id: optional_id_input(input.download_client_id),
                     managed_parent_config_id: None,
                     managed_child_key: None,
                     managed_metadata_json: None,
@@ -207,9 +216,13 @@ impl ConfigMutations {
         Ok(from_indexer_config_with_fields(config, &config_fields))
     }
 
+    /// Set or clear the download client associated with an indexer.
     async fn set_indexer_download_client_mapping(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Indexer identity and optional download-client identity; null clears the mapping."
+        )]
         input: SetIndexerDownloadClientMappingInput,
     ) -> GqlResult<IndexerConfigPayload> {
         let app = app_from_ctx(ctx)?;
@@ -229,9 +242,11 @@ impl ConfigMutations {
         Ok(from_indexer_config_with_fields(config, &config_fields))
     }
 
+    /// Create an indexer proxy configuration.
     async fn create_indexer_proxy_config(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Proxy provider, base URL, timeout, and enabled state.")]
         input: CreateIndexerProxyConfigInput,
     ) -> GqlResult<IndexerProxyConfigPayload> {
         let app = app_from_ctx(ctx)?;
@@ -269,9 +284,11 @@ impl ConfigMutations {
         Ok(from_indexer_proxy_config(config))
     }
 
+    /// Patch an indexer proxy configuration while preserving omitted fields.
     async fn update_indexer_proxy_config(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Proxy configuration identity and optional replacement fields.")]
         input: UpdateIndexerProxyConfigInput,
     ) -> GqlResult<IndexerProxyConfigPayload> {
         let app = app_from_ctx(ctx)?;
@@ -302,10 +319,11 @@ impl ConfigMutations {
         Ok(from_indexer_proxy_config(config))
     }
 
+    /// Delete an indexer proxy configuration.
     async fn delete_indexer_proxy_config(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Indexer proxy configuration identity to delete.")] id: ID,
     ) -> GqlResult<DeleteIndexerProxyConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -315,10 +333,11 @@ impl ConfigMutations {
         Ok(DeleteIndexerProxyConfigPayload { id })
     }
 
+    /// Test an indexer proxy connection and return provider validation details.
     async fn test_indexer_proxy_config(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Indexer proxy configuration identity to test.")] id: ID,
     ) -> GqlResult<IndexerProxyTestResultPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -329,10 +348,11 @@ impl ConfigMutations {
         Ok(from_indexer_proxy_test_result(result))
     }
 
+    /// Delete an indexer configuration.
     async fn delete_indexer_config(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Indexer configuration identity to delete.")] id: ID,
     ) -> GqlResult<DeleteIndexerConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -343,9 +363,11 @@ impl ConfigMutations {
         Ok(DeleteIndexerConfigPayload { id: ID::from(id) })
     }
 
+    /// Create a download-client configuration and seed supported routing defaults.
     async fn create_download_client_config(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Download-client provider, configuration values, and enabled state.")]
         input: CreateDownloadClientConfigInput,
     ) -> GqlResult<DownloadClientConfigPayload> {
         let app = app_from_ctx(ctx)?;
@@ -380,9 +402,13 @@ impl ConfigMutations {
         ))
     }
 
+    /// Patch a download-client configuration while preserving omitted provider secrets.
     async fn update_download_client_config(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Download-client identity and optional replacement fields; omitted provider secrets remain stored."
+        )]
         input: UpdateDownloadClientConfigInput,
     ) -> GqlResult<DownloadClientConfigPayload> {
         let app = app_from_ctx(ctx)?;
@@ -456,10 +482,11 @@ impl ConfigMutations {
         ))
     }
 
+    /// Delete a download-client configuration and clear dependent indexer mappings.
     async fn delete_download_client_config(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Download-client configuration identity to delete.")] id: ID,
     ) -> GqlResult<DeleteDownloadClientConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -475,9 +502,11 @@ impl ConfigMutations {
         })
     }
 
+    /// Persist the ordering of download-client configurations.
     async fn reorder_download_client_configs(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Download-client identities in their desired order.")]
         input: ReorderDownloadClientConfigsInput,
     ) -> GqlResult<ReorderDownloadClientConfigsPayload> {
         let app = app_from_ctx(ctx)?;
@@ -490,9 +519,13 @@ impl ConfigMutations {
         Ok(ReorderDownloadClientConfigsPayload { ids })
     }
 
+    /// Test a download-client connection using stored or supplied configuration values.
     async fn test_download_client_connection(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Optional stored client identity, provider type, and connection values to test."
+        )]
         input: TestDownloadClientConnectionInput,
     ) -> GqlResult<ProviderValidationPayload> {
         let app = app_from_ctx(ctx)?;
@@ -529,9 +562,13 @@ impl ConfigMutations {
         })
     }
 
+    /// Create a subtitle-provider configuration.
     async fn create_subtitle_provider_config(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Subtitle provider, configuration values, enabled facets, and enabled state."
+        )]
         input: CreateSubtitleProviderConfigInput,
     ) -> GqlResult<SubtitleProviderConfigPayload> {
         let app = app_from_ctx(ctx)?;
@@ -557,9 +594,13 @@ impl ConfigMutations {
         Ok(from_subtitle_provider_config(config, &config_fields))
     }
 
+    /// Patch a subtitle-provider configuration while preserving omitted fields and secrets.
     async fn update_subtitle_provider_config(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Subtitle-provider identity and optional replacement fields; omitted secrets remain stored."
+        )]
         input: UpdateSubtitleProviderConfigInput,
     ) -> GqlResult<SubtitleProviderConfigPayload> {
         let app = app_from_ctx(ctx)?;
@@ -597,10 +638,11 @@ impl ConfigMutations {
         Ok(from_subtitle_provider_config(config, &config_fields))
     }
 
+    /// Delete a subtitle-provider configuration.
     async fn delete_subtitle_provider_config(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Subtitle-provider configuration identity to delete.")] id: ID,
     ) -> GqlResult<DeleteSubtitleProviderConfigPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -611,9 +653,13 @@ impl ConfigMutations {
         Ok(DeleteSubtitleProviderConfigPayload { id: ID::from(id) })
     }
 
+    /// Test a subtitle-provider connection and return provider validation details.
     async fn test_subtitle_provider_connection(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Optional stored provider identity, provider type, and connection values to test."
+        )]
         input: TestSubtitleProviderConnectionInput,
     ) -> GqlResult<ProviderValidationPayload> {
         let app = app_from_ctx(ctx)?;
@@ -634,9 +680,13 @@ impl ConfigMutations {
         })
     }
 
+    /// Test an indexer connection and return provider validation details.
     async fn test_indexer_connection(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Provider type, optional values, optional indexer identity, and tri-state proxy identity."
+        )]
         input: TestIndexerConnectionInput,
     ) -> GqlResult<ProviderValidationPayload> {
         let app = app_from_ctx(ctx)?;
@@ -667,10 +717,11 @@ impl ConfigMutations {
         })
     }
 
+    /// Synchronize an indexer configuration with its provider and return the sync result.
     async fn sync_indexer_config(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Indexer configuration identity to synchronize.")] id: ID,
     ) -> GqlResult<IndexerConfigSyncPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -682,6 +733,7 @@ impl ConfigMutations {
         Ok(from_indexer_config_sync_result(result))
     }
 
+    /// Run RSS synchronization for accessible indexers and return its report.
     async fn trigger_rss_sync(&self, ctx: &Context<'_>) -> GqlResult<RssSyncReportPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = actor_from_ctx(ctx)?;

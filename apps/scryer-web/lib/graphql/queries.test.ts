@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildTitlesQuery,
   buildReactiveRefreshQuery,
+  calendarEpisodesQuery,
   downloadQueuePageQuery,
   downloadQueueSyncSubscription,
   episodeSidePanelDetailQuery,
@@ -12,7 +13,33 @@ import {
   movieSidePanelOverviewQuery,
   seriesSidePanelOverviewQuery,
   titleMoreLikeThisQuery,
+  wantedNavigationCountsQuery,
 } from "./queries.ts";
+
+test("calendar hover query includes its artwork and synopsis fields", () => {
+  assert.equal(calendarEpisodesQuery.includes("overview"), true);
+  assert.equal(calendarEpisodesQuery.includes("imageUrl"), true);
+});
+
+test("calendar uses compact episode availability instead of querying media files", () => {
+  assert.equal(calendarEpisodesQuery.includes("mediaAvailability"), true);
+  assert.equal(calendarEpisodesQuery.includes("primaryQualityLabel"), true);
+  assert.equal(calendarEpisodesQuery.includes("mediaFiles"), false);
+});
+
+test("wanted navigation loads every badge total without table rows", () => {
+  assert.equal(wantedNavigationCountsQuery.includes("wantedItems("), true);
+  assert.equal(
+    wantedNavigationCountsQuery.includes("cutoffUnmetTitlesPage("),
+    true,
+  );
+  assert.equal(wantedNavigationCountsQuery.includes("pendingReleases("), true);
+  assert.equal(
+    wantedNavigationCountsQuery.match(/\btotalCount\b/g)?.length,
+    3,
+  );
+  assert.equal(wantedNavigationCountsQuery.includes("items {"), false);
+});
 
 test("activity queue uses paged cache reads and revision-only sync", () => {
   assert.equal(downloadQueuePageQuery.includes("downloadQueuePage("), true);

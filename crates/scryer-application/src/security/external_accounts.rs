@@ -7,6 +7,7 @@ pub struct ExternalAuthRuntimeConnection {
     pub display_name: String,
     pub login_enabled: bool,
     pub linking_enabled: bool,
+    pub emby_connect_enabled: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -58,7 +59,12 @@ impl AppUseCase {
                     }
                     scryer_domain::ExternalAccountProvider::Plex
                 }
-                scryer_domain::MediaServerProvider::Emby => continue,
+                scryer_domain::MediaServerProvider::Emby => {
+                    if connection.emby_server_id.is_none() {
+                        continue;
+                    }
+                    scryer_domain::ExternalAccountProvider::Emby
+                }
             };
             if connection.login_enabled && !login_providers.contains(&provider) {
                 login_providers.push(provider.clone());
@@ -72,6 +78,7 @@ impl AppUseCase {
                 display_name: connection.display_name,
                 login_enabled: connection.login_enabled,
                 linking_enabled: connection.linking_enabled,
+                emby_connect_enabled: connection.emby_connect_enabled,
             });
         }
 
@@ -107,6 +114,9 @@ impl AppUseCase {
             }
             scryer_domain::ExternalAccountProvider::Plex => {
                 scryer_domain::MediaServerProvider::Plex
+            }
+            scryer_domain::ExternalAccountProvider::Emby => {
+                scryer_domain::MediaServerProvider::Emby
             }
         };
         if connection.provider != expected_provider {
@@ -424,6 +434,56 @@ impl AppUseCase {
                     user.avatar_url,
                 )
             }
+            scryer_domain::ExternalAccountProvider::Emby => {
+                let emby_user_id = provider_user_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "Emby invites require selecting an Emby user from the picker".into(),
+                        )
+                    })?;
+                let api_key = connection.api_key.as_deref().ok_or_else(|| {
+                    AppError::Validation("Emby invites require a saved integration API key".into())
+                })?;
+                let user = self
+                    .services
+                    .integrations
+                    .external_identity_verifier
+                    .list_emby_users(
+                        &connection.id,
+                        &connection.base_url,
+                        api_key,
+                        Some(emby_user_id),
+                    )
+                    .await?
+                    .into_iter()
+                    .find(|user| user.id.eq_ignore_ascii_case(emby_user_id))
+                    .ok_or_else(|| {
+                        AppError::Validation(
+                            "selected Emby user was not found on the configured server".into(),
+                        )
+                    })?;
+                if self
+                    .services
+                    .identity
+                    .external_accounts
+                    .get_by_provider_identity(provider.clone(), &connection_id, &user.id)
+                    .await?
+                    .is_some()
+                {
+                    return Err(AppError::Validation(
+                        "Emby account is already linked or invited".into(),
+                    ));
+                }
+                (
+                    Some(user.id),
+                    user.username,
+                    user.display_name,
+                    user.avatar_url,
+                )
+            }
         };
 
         let mut account = scryer_domain::UserExternalAccount::pending_claim(
@@ -491,6 +551,116 @@ impl AppUseCase {
             .await?;
         self.ensure_verified_identity_matches_request(&provider, &connection_id, &verified)?;
         self.link_verified_external_account(actor, verified).await
+    }
+
+    pub async fn link_emby_account(
+        &self,
+        actor: &User,
+        connection_id: String,
+        mode: EmbyConnectionMode,
+        username: String,
+        password: String,
+    ) -> AppResult<scryer_domain::UserExternalAccount> {
+        self.require_actor_capability(actor, scryer_domain::ActorCapability::ManageOwnAccount)
+            .await?;
+        let provider = scryer_domain::ExternalAccountProvider::Emby;
+        let connection_id = normalize_connection_id(connection_id);
+        let connection = self
+            .auth_connection_for_use(provider.clone(), &connection_id, ExternalAuthUse::Linking)
+            .await?;
+        let (verified, refreshed_base_url) = self
+            .verify_emby_identity(&connection, mode, &username, &password)
+            .await
+            .map_err(|_| AppError::Unauthorized("Emby sign-in failed".into()))?;
+        if password.is_empty() && verified.remote_password_configured != Some(false) {
+            return Err(AppError::Unauthorized("Emby sign-in failed".into()));
+        }
+        self.refresh_emby_base_url_if_needed(&connection, refreshed_base_url.as_deref())
+            .await;
+        self.ensure_verified_identity_matches_request(&provider, &connection_id, &verified)?;
+        self.link_verified_external_account(actor, verified).await
+    }
+
+    async fn verify_emby_identity(
+        &self,
+        connection: &scryer_domain::MediaServerConnection,
+        mode: EmbyConnectionMode,
+        username: &str,
+        password: &str,
+    ) -> AppResult<(VerifiedExternalIdentity, Option<String>)> {
+        let server_id = connection.emby_server_id.as_deref().ok_or_else(|| {
+            AppError::Validation("Emby connection has no verified server identity".into())
+        })?;
+        match mode {
+            EmbyConnectionMode::Local => self
+                .services
+                .integrations
+                .external_identity_verifier
+                .verify_emby_local_identity(
+                    &connection.id,
+                    &connection.base_url,
+                    server_id,
+                    username,
+                    password,
+                )
+                .await
+                .map(|identity| (identity, None)),
+            EmbyConnectionMode::Connect => {
+                if !connection.emby_connect_enabled {
+                    return Err(AppError::Validation(
+                        "Emby Connect sign-in is disabled for this connection".into(),
+                    ));
+                }
+                self.services
+                    .integrations
+                    .external_identity_verifier
+                    .verify_emby_connect_identity(
+                        &connection.id,
+                        &connection.base_url,
+                        server_id,
+                        username,
+                        password,
+                    )
+                    .await
+                    .map(|verification| {
+                        let refreshed = (verification.resolved_api_base_url != connection.base_url)
+                            .then_some(verification.resolved_api_base_url);
+                        (verification.identity, refreshed)
+                    })
+            }
+        }
+    }
+
+    async fn refresh_emby_base_url_if_needed(
+        &self,
+        connection: &scryer_domain::MediaServerConnection,
+        refreshed_base_url: Option<&str>,
+    ) {
+        let Some(refreshed_base_url) = refreshed_base_url else {
+            return;
+        };
+        let Some(server_id) = connection.emby_server_id.as_deref() else {
+            return;
+        };
+        if let Err(error) = self
+            .services
+            .integrations
+            .media_server_connections
+            .compare_and_set_emby_base_url(
+                &connection.id,
+                &connection.base_url,
+                server_id,
+                refreshed_base_url,
+            )
+            .await
+        {
+            tracing::warn!(
+                connection_id = connection.id,
+                operation = "emby_connect_address_refresh",
+                error_class = %error,
+                "Emby Connect address refresh failed after successful authentication"
+            );
+        }
     }
 
     async fn link_verified_external_account(
@@ -627,6 +797,35 @@ impl AppUseCase {
                 "invalid Jellyfin credentials".into(),
             ));
         }
+        self.ensure_verified_identity_matches_request(&provider, &connection_id, &verified)?;
+        self.login_verified_external_account(verified, connection)
+            .await
+    }
+
+    pub async fn federated_login_with_emby(
+        &self,
+        connection_id: String,
+        mode: EmbyConnectionMode,
+        username: String,
+        password: String,
+    ) -> AppResult<User> {
+        if password.is_empty() {
+            return Err(AppError::Unauthorized("Emby sign-in failed".into()));
+        }
+        let provider = scryer_domain::ExternalAccountProvider::Emby;
+        let connection_id = normalize_connection_id(connection_id);
+        let connection = self
+            .auth_connection_for_use(provider.clone(), &connection_id, ExternalAuthUse::Login)
+            .await?;
+        let (verified, refreshed_base_url) = self
+            .verify_emby_identity(&connection, mode, &username, &password)
+            .await
+            .map_err(|_| AppError::Unauthorized("Emby sign-in failed".into()))?;
+        if mode == EmbyConnectionMode::Local && verified.remote_password_configured == Some(false) {
+            return Err(AppError::Unauthorized("Emby sign-in failed".into()));
+        }
+        self.refresh_emby_base_url_if_needed(&connection, refreshed_base_url.as_deref())
+            .await;
         self.ensure_verified_identity_matches_request(&provider, &connection_id, &verified)?;
         self.login_verified_external_account(verified, connection)
             .await
@@ -922,8 +1121,11 @@ mod tests {
     struct TestExternalIdentityVerifier {
         jellyfin_users: Vec<JellyfinServerUser>,
         plex_users: Vec<PlexServerUser>,
+        emby_users: Vec<crate::EmbyServerUser>,
         /// Usernames the fake Jellyfin server reports as having no password.
         passwordless_jellyfin_usernames: Vec<String>,
+        /// Usernames the fake Emby server reports as having no password.
+        passwordless_emby_usernames: Vec<String>,
     }
 
     impl TestExternalAccountRepository {
@@ -947,7 +1149,9 @@ mod tests {
             Self {
                 jellyfin_users,
                 plex_users: Vec::new(),
+                emby_users: Vec::new(),
                 passwordless_jellyfin_usernames: Vec::new(),
+                passwordless_emby_usernames: Vec::new(),
             }
         }
 
@@ -958,7 +1162,9 @@ mod tests {
             Self {
                 jellyfin_users,
                 plex_users,
+                emby_users: Vec::new(),
                 passwordless_jellyfin_usernames: Vec::new(),
+                passwordless_emby_usernames: Vec::new(),
             }
         }
 
@@ -969,7 +1175,22 @@ mod tests {
             Self {
                 jellyfin_users,
                 plex_users: Vec::new(),
+                emby_users: Vec::new(),
                 passwordless_jellyfin_usernames,
+                passwordless_emby_usernames: Vec::new(),
+            }
+        }
+
+        fn with_emby_users(
+            emby_users: Vec<crate::EmbyServerUser>,
+            passwordless_emby_usernames: Vec<String>,
+        ) -> Self {
+            Self {
+                jellyfin_users: Vec::new(),
+                plex_users: Vec::new(),
+                emby_users,
+                passwordless_jellyfin_usernames: Vec::new(),
+                passwordless_emby_usernames,
             }
         }
     }
@@ -1171,6 +1392,87 @@ mod tests {
             let search = search.to_ascii_lowercase();
             Ok(self
                 .jellyfin_users
+                .iter()
+                .filter(|user| {
+                    user.id.to_ascii_lowercase().contains(&search)
+                        || user.username.to_ascii_lowercase().contains(&search)
+                })
+                .cloned()
+                .collect())
+        }
+
+        async fn verify_emby_local_identity(
+            &self,
+            connection_id: &str,
+            _: &str,
+            _: &str,
+            username: &str,
+            _: &str,
+        ) -> AppResult<VerifiedExternalIdentity> {
+            let user = self
+                .emby_users
+                .iter()
+                .find(|user| user.username.eq_ignore_ascii_case(username))
+                .ok_or_else(|| {
+                    AppError::Repository(
+                        "upstream Emby detail containing request-secret must stay private".into(),
+                    )
+                })?;
+            Ok(VerifiedExternalIdentity {
+                provider: ExternalAccountProvider::Emby,
+                connection_id: connection_id.to_string(),
+                external_user_id: user.id.clone(),
+                username: user.username.clone(),
+                display_name: user.display_name.clone(),
+                avatar_url: user.avatar_url.clone(),
+                remote_password_configured: Some(
+                    !self
+                        .passwordless_emby_usernames
+                        .iter()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(username)),
+                ),
+            })
+        }
+
+        async fn verify_emby_connect_identity(
+            &self,
+            connection_id: &str,
+            base_url: &str,
+            expected_server_id: &str,
+            username_or_email: &str,
+            password: &str,
+        ) -> AppResult<crate::EmbyConnectIdentityVerification> {
+            let identity = self
+                .verify_emby_local_identity(
+                    connection_id,
+                    base_url,
+                    expected_server_id,
+                    username_or_email,
+                    password,
+                )
+                .await?;
+            Ok(crate::EmbyConnectIdentityVerification {
+                identity,
+                resolved_api_base_url: base_url.to_string(),
+            })
+        }
+
+        async fn list_emby_users(
+            &self,
+            _: &str,
+            _: &str,
+            api_key: &str,
+            search: Option<&str>,
+        ) -> AppResult<Vec<crate::EmbyServerUser>> {
+            if api_key == "fail" {
+                return Err(AppError::Repository("Emby listing failed".into()));
+            }
+            let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) else {
+                return Ok(self.emby_users.clone());
+            };
+            let search = search.to_ascii_lowercase();
+            Ok(self
+                .emby_users
                 .iter()
                 .filter(|user| {
                     user.id.to_ascii_lowercase().contains(&search)
@@ -1593,6 +1895,9 @@ mod tests {
                 | scryer_domain::MediaServerProvider::Emby => None,
             },
             api_key: None,
+            emby_server_id: (provider == scryer_domain::MediaServerProvider::Emby)
+                .then(|| "emby-server".to_string()),
+            emby_connect_enabled: provider == scryer_domain::MediaServerProvider::Emby,
             path_mappings: Vec::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -2148,14 +2453,16 @@ mod tests {
             settings.login_providers,
             vec![
                 ExternalAccountProvider::Jellyfin,
-                ExternalAccountProvider::Plex
+                ExternalAccountProvider::Plex,
+                ExternalAccountProvider::Emby,
             ]
         );
         assert_eq!(
             settings.linking_providers,
             vec![
                 ExternalAccountProvider::Jellyfin,
-                ExternalAccountProvider::Plex
+                ExternalAccountProvider::Plex,
+                ExternalAccountProvider::Emby,
             ]
         );
         assert_eq!(
@@ -2164,7 +2471,7 @@ mod tests {
                 .iter()
                 .map(|connection| connection.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["jellyfin-login", "jellyfin-link", "plex-main"]
+            vec!["jellyfin-login", "jellyfin-link", "plex-main", "emby-main"]
         );
         assert_eq!(settings.connections[0].display_name, "Jellyfin Login");
         assert!(settings.connections[0].login_enabled);
@@ -2175,6 +2482,11 @@ mod tests {
             settings.connections[2].provider,
             ExternalAccountProvider::Plex
         );
+        assert_eq!(
+            settings.connections[3].provider,
+            ExternalAccountProvider::Emby
+        );
+        assert!(settings.connections[3].emby_connect_enabled);
     }
 
     #[tokio::test]
@@ -2695,6 +3007,329 @@ mod tests {
 
         assert!(
             matches!(result, Err(AppError::Validation(message)) if message.contains("provider"))
+        );
+    }
+
+    #[tokio::test]
+    async fn emby_local_and_connect_login_converge_on_the_local_user_id() {
+        let user = regular_user("scryer-user");
+        let now = Utc::now();
+        let account = UserExternalAccount {
+            id: "emby-account".to_string(),
+            user_id: user.id.clone(),
+            provider: ExternalAccountProvider::Emby,
+            connection_id: "emby-main".to_string(),
+            external_user_id: Some("local-emby-user-id".to_string()),
+            username: "EmbyUser".to_string(),
+            display_name: None,
+            avatar_url: None,
+            status: ExternalAccountStatus::Active,
+            verified_at: Some(now),
+            last_login_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let external_accounts = Arc::new(TestExternalAccountRepository::new(vec![account]));
+        let app = test_app_with_identity_media_servers_and_verifier(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![user.clone()])),
+            external_accounts.clone(),
+            vec![test_media_server_connection(
+                scryer_domain::MediaServerProvider::Emby,
+                "emby-main",
+            )],
+            Arc::new(TestExternalIdentityVerifier::with_emby_users(
+                vec![crate::EmbyServerUser {
+                    id: "local-emby-user-id".to_string(),
+                    username: "EmbyUser".to_string(),
+                    display_name: Some("Emby User".to_string()),
+                    avatar_url: Some("/api/media-servers/emby-main/users/local/avatar".to_string()),
+                }],
+                Vec::new(),
+            )),
+        );
+
+        let local = app
+            .federated_login_with_emby(
+                "emby-main".to_string(),
+                EmbyConnectionMode::Local,
+                "EmbyUser".to_string(),
+                "   ".to_string(),
+            )
+            .await
+            .expect("whitespace-only local Emby password is still non-empty");
+        let connect = app
+            .federated_login_with_emby(
+                "emby-main".to_string(),
+                EmbyConnectionMode::Connect,
+                "EmbyUser".to_string(),
+                "\t ".to_string(),
+            )
+            .await
+            .expect("whitespace-only Connect password is still non-empty");
+        let empty = app
+            .federated_login_with_emby(
+                "emby-main".to_string(),
+                EmbyConnectionMode::Local,
+                "EmbyUser".to_string(),
+                String::new(),
+            )
+            .await;
+
+        assert_eq!(local.id, user.id);
+        assert_eq!(connect.id, user.id);
+        assert!(
+            matches!(empty, Err(AppError::Unauthorized(message)) if message == "Emby sign-in failed")
+        );
+        let linked = external_accounts
+            .list_by_user_id(&user.id)
+            .await
+            .expect("list linked Emby identities");
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].provider, ExternalAccountProvider::Emby);
+        assert_eq!(
+            linked[0].external_user_id.as_deref(),
+            Some("local-emby-user-id")
+        );
+    }
+
+    #[tokio::test]
+    async fn disabling_emby_connect_does_not_disable_local_login() {
+        let user = regular_user("local-only-user");
+        let now = Utc::now();
+        let account = UserExternalAccount {
+            id: "local-only-emby-account".to_string(),
+            user_id: user.id.clone(),
+            provider: ExternalAccountProvider::Emby,
+            connection_id: "emby-main".to_string(),
+            external_user_id: Some("local-only-id".to_string()),
+            username: "LocalOnly".to_string(),
+            display_name: None,
+            avatar_url: None,
+            status: ExternalAccountStatus::Active,
+            verified_at: Some(now),
+            last_login_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut connection =
+            test_media_server_connection(scryer_domain::MediaServerProvider::Emby, "emby-main");
+        connection.emby_connect_enabled = false;
+        let app = test_app_with_identity_media_servers_and_verifier(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![user.clone()])),
+            Arc::new(TestExternalAccountRepository::new(vec![account])),
+            vec![connection],
+            Arc::new(TestExternalIdentityVerifier::with_emby_users(
+                vec![crate::EmbyServerUser {
+                    id: "local-only-id".to_string(),
+                    username: "LocalOnly".to_string(),
+                    display_name: None,
+                    avatar_url: None,
+                }],
+                Vec::new(),
+            )),
+        );
+
+        let local = app
+            .federated_login_with_emby(
+                "emby-main".to_string(),
+                EmbyConnectionMode::Local,
+                "LocalOnly".to_string(),
+                "password".to_string(),
+            )
+            .await
+            .expect("local authentication remains enabled");
+        assert_eq!(local.id, user.id);
+
+        let connect = app
+            .federated_login_with_emby(
+                "emby-main".to_string(),
+                EmbyConnectionMode::Connect,
+                "LocalOnly".to_string(),
+                "password".to_string(),
+            )
+            .await;
+        assert!(
+            matches!(connect, Err(AppError::Unauthorized(message)) if message == "Emby sign-in failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn emby_passwordless_account_can_link_but_cannot_login() {
+        let actor = admin_user();
+        let verifier = Arc::new(TestExternalIdentityVerifier::with_emby_users(
+            vec![crate::EmbyServerUser {
+                id: "passwordless-id".to_string(),
+                username: "Passwordless".to_string(),
+                display_name: None,
+                avatar_url: None,
+            }],
+            vec!["Passwordless".to_string()],
+        ));
+        let app = test_app_with_identity_media_servers_and_verifier(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![actor.clone()])),
+            Arc::new(TestExternalAccountRepository::default()),
+            vec![test_media_server_connection(
+                scryer_domain::MediaServerProvider::Emby,
+                "emby-main",
+            )],
+            verifier,
+        );
+
+        let linked = app
+            .link_emby_account(
+                &actor,
+                "emby-main".to_string(),
+                EmbyConnectionMode::Local,
+                "Passwordless".to_string(),
+                String::new(),
+            )
+            .await
+            .expect("Emby confirms the empty password belongs to a passwordless user");
+        assert_eq!(linked.external_user_id.as_deref(), Some("passwordless-id"));
+
+        let login = app
+            .federated_login_with_emby(
+                "emby-main".to_string(),
+                EmbyConnectionMode::Local,
+                "Passwordless".to_string(),
+                "not-a-secret".to_string(),
+            )
+            .await;
+        assert!(
+            matches!(login, Err(AppError::Unauthorized(message)) if message == "Emby sign-in failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn emby_link_flattens_upstream_failures_without_echoing_details() {
+        let actor = admin_user();
+        let app = test_app_with_identity_media_servers_and_verifier(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![actor.clone()])),
+            Arc::new(TestExternalAccountRepository::default()),
+            vec![test_media_server_connection(
+                scryer_domain::MediaServerProvider::Emby,
+                "emby-main",
+            )],
+            Arc::new(TestExternalIdentityVerifier::default()),
+        );
+
+        for mode in [EmbyConnectionMode::Local, EmbyConnectionMode::Connect] {
+            let error = app
+                .link_emby_account(
+                    &actor,
+                    "emby-main".to_string(),
+                    mode,
+                    "missing-user".to_string(),
+                    "request-secret".to_string(),
+                )
+                .await
+                .expect_err("fake upstream failure");
+            assert!(
+                matches!(&error, AppError::Unauthorized(message) if message == "Emby sign-in failed")
+            );
+            assert!(!error.to_string().contains("request-secret"));
+            assert!(!error.to_string().contains("upstream Emby detail"));
+        }
+    }
+
+    #[tokio::test]
+    async fn emby_invite_uses_selected_local_user_id_and_metadata() {
+        let admin = admin_user();
+        let target = regular_user("invite-target");
+        let mut connection =
+            test_media_server_connection(scryer_domain::MediaServerProvider::Emby, "emby-main");
+        connection.api_key = Some("emby-api-key".to_string());
+        let app = test_app_with_identity_media_servers_and_verifier(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![target.clone()])),
+            Arc::new(TestExternalAccountRepository::default()),
+            vec![connection],
+            Arc::new(TestExternalIdentityVerifier::with_emby_users(
+                vec![crate::EmbyServerUser {
+                    id: "selected-local-id".to_string(),
+                    username: "Invitee".to_string(),
+                    display_name: Some("Emby Invitee".to_string()),
+                    avatar_url: Some(
+                        "/api/media-servers/emby-main/users/selected/avatar".to_string(),
+                    ),
+                }],
+                Vec::new(),
+            )),
+        );
+
+        let account = app
+            .create_external_account_invite(
+                &admin,
+                &target.id,
+                ExternalAccountProvider::Emby,
+                "emby-main".to_string(),
+                "ignored picker label".to_string(),
+                Some("selected-local-id".to_string()),
+            )
+            .await
+            .expect("create Emby invite");
+        assert_eq!(
+            account.external_user_id.as_deref(),
+            Some("selected-local-id")
+        );
+        assert_eq!(account.username, "Invitee");
+        assert_eq!(account.display_name.as_deref(), Some("Emby Invitee"));
+        assert_eq!(account.status, ExternalAccountStatus::PendingClaim);
+    }
+
+    #[tokio::test]
+    async fn emby_auto_add_resolves_scryer_username_collision() {
+        let existing = User {
+            username: "EmbyUser".to_string(),
+            ..regular_user("existing-user")
+        };
+        let mut connection =
+            test_media_server_connection(scryer_domain::MediaServerProvider::Emby, "emby-main");
+        connection.auto_add_enabled = true;
+        let external_accounts = Arc::new(TestExternalAccountRepository::default());
+        let app = test_app_with_identity_media_servers_and_verifier(
+            Arc::new(TestSettingsRepository::default()),
+            Arc::new(TestUserRepository::new(vec![existing])),
+            external_accounts.clone(),
+            vec![connection],
+            Arc::new(TestExternalIdentityVerifier::with_emby_users(
+                vec![crate::EmbyServerUser {
+                    id: "auto-add-local-id".to_string(),
+                    username: "EmbyUser".to_string(),
+                    display_name: Some("Auto Add".to_string()),
+                    avatar_url: None,
+                }],
+                Vec::new(),
+            )),
+        );
+
+        let added = app
+            .federated_login_with_emby(
+                "emby-main".to_string(),
+                EmbyConnectionMode::Local,
+                "EmbyUser".to_string(),
+                "password".to_string(),
+            )
+            .await
+            .expect("auto-add Emby account");
+        assert_eq!(added.username, "EmbyUser-2");
+        assert_eq!(
+            added.account_kind,
+            scryer_domain::UserAccountKind::ExternalAutoProvisioned
+        );
+        let accounts = external_accounts
+            .list_by_user_id(&added.id)
+            .await
+            .expect("list auto-added account");
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].provider, ExternalAccountProvider::Emby);
+        assert_eq!(
+            accounts[0].external_user_id.as_deref(),
+            Some("auto-add-local-id")
         );
     }
 }

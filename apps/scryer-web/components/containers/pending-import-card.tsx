@@ -93,6 +93,9 @@ export const PendingImportCard = React.memo(function PendingImportCard({
   onClearActiveItem,
 }: PendingImportCardProps) {
   const t = useTranslate();
+  const isOwnershipConflict = item.reason === "title_already_owns_another_folder";
+  const canSearchOrBind =
+    !isOwnershipConflict && !(item.titleId && item.facet === "MOVIE");
 
   return (
     <Card className="border-border/80 bg-card/60">
@@ -104,7 +107,7 @@ export const PendingImportCard = React.memo(function PendingImportCard({
             <p className="text-xs text-muted-foreground">{t("pendingImports.library")} {libraryLabel}</p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
-            {item.titleId && item.facet === "MOVIE" ? null : (
+            {canSearchOrBind ? (
               <Button
                 type="button"
                 size="sm"
@@ -115,7 +118,7 @@ export const PendingImportCard = React.memo(function PendingImportCard({
                 {item.titleId ? null : <Search className="mr-2 h-4 w-4" />}
                 {item.titleId ? t("pendingImports.bindEpisodes") : t("pendingImports.searchAction")}
               </Button>
-            )}
+            ) : null}
             {item.status === "PENDING" ? (
               <Button
                 type="button"
@@ -150,7 +153,7 @@ export const PendingImportCard = React.memo(function PendingImportCard({
             )}
           </div>
         ) : null}
-        {isActive ? (
+        {isActive && canSearchOrBind ? (
           <div className="space-y-3 rounded-lg border border-border/80 bg-background/60 p-3">
             {item.titleId ? (
               <>

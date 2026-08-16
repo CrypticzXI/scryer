@@ -16,9 +16,13 @@ pub(crate) struct RulesMutations;
 
 #[Object]
 impl RulesMutations {
+    /// Create a catalog rule set with optional facet scope, priority, and enabled state.
     async fn create_rule_set(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Rule name, source, optional description and facet scope, priority, and enabled state."
+        )]
         input: CreateRuleSetInput,
     ) -> GqlResult<RuleSetPayload> {
         let app = app_from_ctx(ctx)?;
@@ -41,9 +45,13 @@ impl RulesMutations {
         Ok(crate::mappers::from_rule_set(rule_set))
     }
 
+    /// Patch a rule set while preserving omitted fields.
     async fn update_rule_set(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Rule-set identity and optional replacement source, metadata, facet scope, priority, or managed tag filter."
+        )]
         input: UpdateRuleSetInput,
     ) -> GqlResult<RuleSetPayload> {
         let app = app_from_ctx(ctx)?;
@@ -67,7 +75,12 @@ impl RulesMutations {
         Ok(crate::mappers::from_rule_set(rule_set))
     }
 
-    async fn delete_rule_set(&self, ctx: &Context<'_>, id: ID) -> GqlResult<DeleteRuleSetPayload> {
+    /// Delete a rule set.
+    async fn delete_rule_set(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "Rule-set identity to delete.")] id: ID,
+    ) -> GqlResult<DeleteRuleSetPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
             require_config_app_permission(ctx, AppPermission::ManageCatalogSettings).await?;
@@ -80,10 +93,11 @@ impl RulesMutations {
         Ok(DeleteRuleSetPayload { id: ID::from(id) })
     }
 
+    /// Set whether a rule set is enabled.
     async fn toggle_rule_set(
         &self,
         ctx: &Context<'_>,
-        input: ToggleRuleSetInput,
+        #[graphql(desc = "Rule-set identity and desired enabled state.")] input: ToggleRuleSetInput,
     ) -> GqlResult<RuleSetPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
@@ -97,9 +111,11 @@ impl RulesMutations {
         Ok(crate::mappers::from_rule_set(rule_set))
     }
 
+    /// Replace required audio languages for one title and facet.
     async fn set_title_required_audio(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Title identity, facet, and required audio-language codes.")]
         input: SetTitleRequiredAudioInput,
     ) -> GqlResult<SetTitleRequiredAudioPayload> {
         let app = app_from_ctx(ctx)?;
@@ -119,9 +135,11 @@ impl RulesMutations {
         })
     }
 
+    /// Validate rule source without saving it, using a supplied or temporary rule identity.
     async fn validate_rule_set(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Rule source and optional rule-set identity used for validation.")]
         input: ValidateRuleSetInput,
     ) -> GqlResult<RuleValidationResultPayload> {
         let app = app_from_ctx(ctx)?;

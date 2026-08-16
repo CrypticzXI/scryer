@@ -15,6 +15,7 @@ async fn graphql_typed_security_settings_defaults() {
             passwordMinLength
             skipLoginForLocalIps
             mfaRequirePasswordLogin
+            totpRequireEmbyLogin
             effectiveFormLoginEnabled
             envOverrideActive
             envOverrideDescription
@@ -37,11 +38,104 @@ async fn graphql_typed_security_settings_defaults() {
         false
     );
     assert_eq!(
+        body["data"]["securitySettings"]["totpRequireEmbyLogin"],
+        false
+    );
+    assert_eq!(
         body["data"]["securitySettings"]["effectiveFormLoginEnabled"],
         false
     );
     assert_eq!(body["data"]["securitySettings"]["envOverrideActive"], false);
     assert!(body["data"]["securitySettings"]["envOverrideDescription"].is_null());
+}
+
+#[tokio::test]
+async fn graphql_security_settings_omitted_emby_requirement_preserves_saved_value() {
+    let ctx = TestContext::new().await;
+    seed_typed_settings_definitions(&ctx).await;
+    let admin = ctx.app.find_or_create_default_user().await.unwrap();
+
+    let enable = schema_exec(
+        &ctx,
+        r#"
+        mutation EnableEmbyTotp {
+          updateSecuritySettings(input: {
+            formLoginEnabled: false
+            passwordMinLength: 8
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: true
+          }) {
+            totpRequireEmbyLogin
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&enable);
+    assert_eq!(
+        enable["data"]["updateSecuritySettings"]["totpRequireEmbyLogin"],
+        true
+    );
+
+    let omitted = schema_exec(
+        &ctx,
+        r#"
+        mutation PreserveEmbyTotp {
+          updateSecuritySettings(input: {
+            formLoginEnabled: false
+            passwordMinLength: 9
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: false
+          }) {
+            passwordMinLength
+            totpRequireEmbyLogin
+          }
+        }
+        "#,
+        Some(admin.clone()),
+    )
+    .await;
+    assert_no_errors(&omitted);
+    assert_eq!(
+        omitted["data"]["updateSecuritySettings"]["passwordMinLength"],
+        9
+    );
+    assert_eq!(
+        omitted["data"]["updateSecuritySettings"]["totpRequireEmbyLogin"],
+        true
+    );
+
+    let disable = schema_exec(
+        &ctx,
+        r#"
+        mutation DisableEmbyTotp {
+          updateSecuritySettings(input: {
+            formLoginEnabled: false
+            passwordMinLength: 9
+            skipLoginForLocalIps: false
+            mfaRequireConfigStepUp: false
+            mfaRequirePasswordLogin: false
+            totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: false
+          }) {
+            totpRequireEmbyLogin
+          }
+        }
+        "#,
+        Some(admin),
+    )
+    .await;
+    assert_no_errors(&disable);
+    assert_eq!(
+        disable["data"]["updateSecuritySettings"]["totpRequireEmbyLogin"],
+        false
+    );
 }
 
 #[tokio::test]
@@ -61,11 +155,13 @@ async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: true
             totpRequireJellyfinLogin: true
+            totpRequireEmbyLogin: true
           }) {
             formLoginEnabled
             mfaRequireConfigStepUp
             mfaRequirePasswordLogin
             totpRequireJellyfinLogin
+            totpRequireEmbyLogin
             effectiveFormLoginEnabled
           }
         }
@@ -77,6 +173,10 @@ async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled
     assert_no_errors(&update);
     assert_eq!(
         update["data"]["updateSecuritySettings"]["totpRequireJellyfinLogin"],
+        true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["totpRequireEmbyLogin"],
         true
     );
     assert_eq!(
@@ -104,6 +204,7 @@ async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled
             mfaRequirePasswordLogin
             mfaRequireConfigStepUp
             totpRequireJellyfinLogin
+            totpRequireEmbyLogin
           }
         }
         "#,
@@ -118,6 +219,10 @@ async fn graphql_auth_runtime_suppresses_mfa_requirements_when_login_is_disabled
     );
     assert_eq!(
         runtime["data"]["authRuntimeState"]["totpRequireJellyfinLogin"],
+        false
+    );
+    assert_eq!(
+        runtime["data"]["authRuntimeState"]["totpRequireEmbyLogin"],
         false
     );
     assert_eq!(
@@ -152,10 +257,12 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: true
           }) {
             formLoginEnabled
             passwordMinLength
             skipLoginForLocalIps
+            totpRequireEmbyLogin
             effectiveFormLoginEnabled
             envOverrideActive
           }
@@ -176,6 +283,10 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
     );
     assert_eq!(
         update["data"]["updateSecuritySettings"]["skipLoginForLocalIps"],
+        true
+    );
+    assert_eq!(
+        update["data"]["updateSecuritySettings"]["totpRequireEmbyLogin"],
         true
     );
     assert_eq!(
@@ -224,6 +335,7 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
           securitySettings {
             formLoginEnabled
             passwordMinLength
+            totpRequireEmbyLogin
             effectiveFormLoginEnabled
           }
         }
@@ -234,6 +346,10 @@ async fn graphql_typed_security_settings_round_trip_updates_runtime() {
     assert_no_errors(&read);
     assert_eq!(read["data"]["securitySettings"]["formLoginEnabled"], true);
     assert_eq!(read["data"]["securitySettings"]["passwordMinLength"], 12);
+    assert_eq!(
+        read["data"]["securitySettings"]["totpRequireEmbyLogin"],
+        true
+    );
     assert_eq!(
         read["data"]["securitySettings"]["effectiveFormLoginEnabled"],
         true
@@ -283,6 +399,7 @@ async fn graphql_security_settings_form_login_enable_revokes_authless_oauth_gran
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: false
           }) {
             formLoginEnabled
             effectiveFormLoginEnabled
@@ -327,6 +444,7 @@ async fn graphql_typed_security_settings_reject_short_password_minimum() {
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: false
           }) {
             formLoginEnabled
           }
@@ -363,6 +481,7 @@ async fn graphql_typed_security_settings_rejects_enable_without_usable_admin_log
             mfaRequireConfigStepUp: false
             mfaRequirePasswordLogin: false
             totpRequireJellyfinLogin: false
+            totpRequireEmbyLogin: false
           }) {
             formLoginEnabled
           }

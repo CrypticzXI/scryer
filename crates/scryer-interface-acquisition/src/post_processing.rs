@@ -48,9 +48,13 @@ fn validate_file_script_content(script_content: &str) -> GqlResult<()> {
 
 #[Object]
 impl PostProcessingMutations {
+    /// Create an enabled post-processing script after validating its type and content.
     async fn create_post_processing_script(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Script definition, execution settings, and required acknowledgement for inline shell code."
+        )]
         input: CreatePostProcessingScriptInput,
     ) -> GqlResult<PostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
@@ -91,9 +95,13 @@ impl PostProcessingMutations {
         Ok(mappers::from_pp_script(created))
     }
 
+    /// Update selected fields of a post-processing script and revalidate changed executable content.
     async fn update_post_processing_script(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Script identity and optional fields to replace; omitted fields retain their values."
+        )]
         input: UpdatePostProcessingScriptInput,
     ) -> GqlResult<PostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
@@ -170,10 +178,11 @@ impl PostProcessingMutations {
         Ok(mappers::from_pp_script(updated))
     }
 
+    /// Delete a post-processing script; this requires catalog-settings permission.
     async fn delete_post_processing_script(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Script identity to delete.")] id: ID,
     ) -> GqlResult<DeletePostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;
         let actor =
@@ -187,10 +196,12 @@ impl PostProcessingMutations {
         Ok(DeletePostProcessingScriptPayload { id })
     }
 
+    /// Enable or disable a post-processing script, requiring acknowledgement when enabling inline shell code.
     async fn toggle_post_processing_script(
         &self,
         ctx: &Context<'_>,
-        id: ID,
+        #[graphql(desc = "Script identity to toggle.")] id: ID,
+        #[graphql(desc = "Must be true when enabling an inline shell script; ignored otherwise.")]
         inline_shell_acknowledged: Option<bool>,
     ) -> GqlResult<PostProcessingScriptPayload> {
         let app = app_from_ctx(ctx)?;

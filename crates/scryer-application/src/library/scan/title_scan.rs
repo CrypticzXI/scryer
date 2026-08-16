@@ -525,33 +525,40 @@ async fn normalize_movie_file_roles_after_scan(
     }
 }
 
-fn episodic_media_file_coverage_key(file: &crate::EpisodeScopedMediaFile) -> Vec<String> {
-    let mut episode_ids = file.episode_ids.clone();
-    episode_ids.sort();
-    episode_ids.dedup();
-    episode_ids
-}
-
 fn select_primary_episodic_media_file(
     files: &[&crate::EpisodeScopedMediaFile],
+    episode_id: &str,
     allow_existing_additional_role_promotion: bool,
 ) -> Option<String> {
-    let primary_files = files
+    let association_primary_files = files
         .iter()
         .copied()
-        .filter(|file| file.media_file.role.is_primary())
+        .filter(|file| {
+            file.primary_episode_ids
+                .iter()
+                .any(|primary_episode_id| primary_episode_id == episode_id)
+        })
         .collect::<Vec<_>>();
-    if let [file] = primary_files.as_slice() {
+    if let [file] = association_primary_files.as_slice() {
         return Some(file.media_file.id.clone());
     }
 
-    let mut ranked = if primary_files.is_empty() {
-        if !allow_existing_additional_role_promotion {
-            return None;
+    let mut ranked = if association_primary_files.is_empty() {
+        let title_primary_files = files
+            .iter()
+            .copied()
+            .filter(|file| file.title_role.is_primary())
+            .collect::<Vec<_>>();
+        if title_primary_files.is_empty() {
+            if !allow_existing_additional_role_promotion {
+                return None;
+            }
+            files.to_vec()
+        } else {
+            title_primary_files
         }
-        files.to_vec()
     } else {
-        primary_files
+        association_primary_files
     };
     ranked.sort_by(|left, right| {
         right
@@ -600,7 +607,6 @@ async fn normalize_episodic_file_roles_after_scan(
         return false;
     }
 
-    let mut normalized_coverages = HashSet::new();
     let mut title_updated = false;
     for episode_id in episode_ids {
         let candidates = scoped_files
@@ -611,24 +617,9 @@ async fn normalize_episodic_file_roles_after_scan(
             continue;
         }
 
-        let coverage_key = episodic_media_file_coverage_key(candidates[0]);
-        if candidates
-            .iter()
-            .any(|file| episodic_media_file_coverage_key(file) != coverage_key)
-        {
-            debug!(
-                title_id = %title.id,
-                episode_id = %episode_id,
-                "skipping episodic media file role normalization for mixed episode coverage"
-            );
-            continue;
-        }
-        if !normalized_coverages.insert(coverage_key) {
-            continue;
-        }
-
         let Some(selected_primary_id) = select_primary_episodic_media_file(
             &candidates,
+            &episode_id,
             allow_existing_additional_role_promotion,
         ) else {
             continue;
@@ -639,10 +630,14 @@ async fn normalize_episodic_file_roles_after_scan(
             .map(|file| file.media_file.id.clone())
             .collect::<Vec<_>>();
         let needs_update = candidates.iter().any(|file| {
+            let is_primary_for_episode = file
+                .primary_episode_ids
+                .iter()
+                .any(|primary_episode_id| primary_episode_id == &episode_id);
             if file.media_file.id == selected_primary_id {
-                !file.media_file.role.is_primary()
+                !is_primary_for_episode
             } else {
-                !file.media_file.role.is_additional()
+                is_primary_for_episode
             }
         });
         if !needs_update {
@@ -653,7 +648,12 @@ async fn normalize_episodic_file_roles_after_scan(
             .services
             .library
             .media_files
-            .set_media_file_roles_for_title(&title.id, &selected_primary_id, &additional_file_ids)
+            .set_media_file_roles_for_episode(
+                &title.id,
+                &episode_id,
+                &selected_primary_id,
+                &additional_file_ids,
+            )
             .await
         {
             Ok(()) => title_updated = true,

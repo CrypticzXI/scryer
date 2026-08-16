@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Loader2, X } from "lucide-react";
+import { AlertTriangle, Loader2, X } from "lucide-react";
 import { useClient } from "urql";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { titleHistoryQuery } from "@/lib/graphql/queries";
+import { userFacingGraphQlErrorMessage } from "@/lib/graphql/error-message";
 import type { TitleHistoryEvent, TitleHistoryPage } from "@/lib/types";
 import { useTranslate } from "@/lib/context/translate-context";
 import { HistoryEventTable } from "./history-event-table";
@@ -45,6 +46,7 @@ export function TitleHistoryModal({
   const [events, setEvents] = React.useState<TitleHistoryEvent[]>([]);
   const [totalCount, setTotalCount] = React.useState(0);
   const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
   const [activeFilters, setActiveFilters] = React.useState<string[]>([]);
   const [offset, setOffset] = React.useState(0);
   const [scopedEpisodeDismissed, setScopedEpisodeDismissed] =
@@ -61,6 +63,7 @@ export function TitleHistoryModal({
       episodeId?: string | null,
     ) => {
       setLoading(true);
+      setError(null);
       try {
         const result = await client
           .query<{ titleHistory: TitleHistoryPage }>(titleHistoryQuery, {
@@ -78,18 +81,36 @@ export function TitleHistoryModal({
           })
           .toPromise();
 
+        if (result.error) {
+          setError(
+            userFacingGraphQlErrorMessage(
+              result.error,
+              t("history.loadError"),
+            ),
+          );
+          return;
+        }
         if (result.data?.titleHistory) {
           const page = result.data.titleHistory;
           setEvents((prev) =>
             append ? [...prev, ...page.items] : page.items,
           );
           setTotalCount(page.totalCount);
+        } else {
+          setError(t("history.loadError"));
         }
+      } catch (requestError) {
+        setError(
+          userFacingGraphQlErrorMessage(
+            requestError,
+            t("history.loadError"),
+          ),
+        );
       } finally {
         setLoading(false);
       }
     },
-    [client, titleId],
+    [client, t, titleId],
   );
 
   React.useEffect(() => {
@@ -119,6 +140,16 @@ export function TitleHistoryModal({
       activeScopedEpisode?.episodeId ?? null,
     );
   }, [offset, activeFilters, activeScopedEpisode?.episodeId, fetchHistory]);
+
+  const retryHistory = React.useCallback(() => {
+    setOffset(0);
+    void fetchHistory(
+      activeFilters,
+      0,
+      false,
+      activeScopedEpisode?.episodeId ?? null,
+    );
+  }, [activeFilters, activeScopedEpisode?.episodeId, fetchHistory]);
 
   const toggleFilter = React.useCallback((eventType: string) => {
     setActiveFilters((prev) =>
@@ -198,15 +229,33 @@ export function TitleHistoryModal({
         </div>
 
         <div className="flex-1 overflow-y-auto min-h-0">
+          {error ? (
+            <div
+              role="alert"
+              className="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-[var(--scry-danger-border)] bg-[var(--scry-danger-bg)] p-3 text-sm text-[var(--scry-danger-text)]"
+            >
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span className="min-w-0 flex-1">{error}</span>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                disabled={loading}
+                onClick={retryHistory}
+              >
+                {t("history.retry")}
+              </Button>
+            </div>
+          ) : null}
           {loading && events.length === 0 ? (
             <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>{t("label.loading")}</span>
             </div>
-          ) : (
+          ) : error && events.length === 0 ? null : (
             <>
               <HistoryEventTable events={events} showActor emptyMessage={t("history.empty")} />
-              {hasMore ? (
+              {!error && hasMore ? (
                 <div className="mt-4 flex justify-center pb-2">
                   <Button
                     type="button"

@@ -12,6 +12,7 @@ fn hydration_test_movie(tvdb_id: i64, name: &str) -> MovieMetadata {
         poster_url: format!("https://example.invalid/{tvdb_id}.jpg"),
         background_url: None,
         language: "eng".to_string(),
+        original_language: Some("eng".to_string()),
         runtime_minutes: 90,
         sort_title: name.to_string(),
         imdb_id: format!("tt{tvdb_id:07}"),
@@ -109,6 +110,8 @@ async fn prompt_title_hydration_worker_processes_pending_title_after_wake() {
     let hydrated = wait_for_title_metadata(&app, &user, &outcome.title.id).await;
     assert_eq!(hydrated.name, "Wake Movie");
     assert_eq!(hydrated.year, Some(2026));
+    assert_eq!(hydrated.language.as_deref(), Some("eng"));
+    assert_eq!(hydrated.metadata_language.as_deref(), Some("eng"));
 
     stop_title_hydration_worker(token, handle).await;
 }

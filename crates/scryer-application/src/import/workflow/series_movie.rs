@@ -55,6 +55,7 @@ async fn archive_extraction_destination_for_title(
         ..
     } = resolve_import_paths(app, title).await?;
     let staging_parent = effective_title_folder_path(&media_root, title, &folder_template, None);
+    persist_title_folder_path_if_missing(app, title, &staging_parent).await?;
     Ok(
         crate::archive_extractor::ArchiveExtractionDestination::new(staging_parent, import_id)
             .with_stale_cleanup_parent(media_root),
@@ -72,12 +73,10 @@ enum TitlelessArchiveRelocation {
 }
 
 async fn relocate_titleless_archive_workspace_for_title(
-    app: &AppUseCase,
-    import_id: &str,
     title: &scryer_domain::Title,
+    destination: crate::archive_extractor::ArchiveExtractionDestination,
     extracted_dir: PathBuf,
 ) -> AppResult<TitlelessArchiveRelocation> {
-    let destination = archive_extraction_destination_for_title(app, import_id, title).await?;
     let target_parent = destination.staging_parent().to_path_buf();
     if extracted_dir.parent() == Some(target_parent.as_path()) {
         return Ok(TitlelessArchiveRelocation::Ready(extracted_dir));
@@ -245,10 +244,17 @@ async fn try_match_titleless_archive_from_inner_video(
         if let Some(title) =
             resolve_title_from_release_candidate(&titles, &candidate, Some(facet.as_str()))
         {
+            let destination =
+                match archive_extraction_destination_for_title(app, import_id, &title).await {
+                    Ok(destination) => destination,
+                    Err(error) => {
+                        crate::archive_extractor::cleanup_extracted_dir(&extracted_dir).await;
+                        return Err(error);
+                    }
+                };
             let relocation = relocate_titleless_archive_workspace_for_title(
-                app,
-                import_id,
                 &title,
+                destination,
                 extracted_dir,
             )
             .await?;
@@ -426,9 +432,14 @@ async fn resolve_completed_import_target(
     // 3. FIND VIDEO FILES (extract archives first if needed)
     let is_series = matches!(title.facet, MediaFacet::Series | MediaFacet::Anime);
     if extracted_dir.is_none() {
+        let extraction_destination = if archive_extraction_would_be_needed_best_effort(dest_dir) {
+            Some(archive_extraction_destination_for_title(app, import_id, &title).await?)
+        } else {
+            None
+        };
         extracted_dir = crate::archive_extractor::extract_archives_if_needed(
             dest_dir,
-            Some(archive_extraction_destination_for_title(app, import_id, &title).await?),
+            extraction_destination,
             archive_password,
             app.services
                 .integrations
@@ -668,6 +679,9 @@ async fn import_additional_movie_download(
     existing_files: &[crate::TitleMediaFile],
     started_at: chrono::DateTime<Utc>,
 ) -> AppResult<ImportResult> {
+    let full_folder_path =
+        effective_title_folder_path(media_root, title, folder_template, parsed.year);
+    ensure_import_title_folder_available(app, title, &full_folder_path).await?;
     let canonical_dest_path = if let Some(canonical_dest_path) = canonical_dest_path {
         canonical_dest_path.to_path_buf()
     } else {
@@ -680,8 +694,6 @@ async fn import_additional_movie_download(
         } else {
             preserved_import_filename(source_video)
         };
-        let full_folder_path =
-            effective_title_folder_path(media_root, title, folder_template, parsed.year);
         full_folder_path.join(&rendered_filename)
     };
     let dest_path = additional_import_dest_path(&canonical_dest_path, parsed);
@@ -751,6 +763,7 @@ async fn import_additional_movie_download(
     let import_mode = app
         .resolve_import_mode(Some(&title.library_id), &title.facet)
         .await?;
+    persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
     let file_result = import_file_with_record_progress(
         app,
         import_id,
@@ -1069,6 +1082,7 @@ async fn import_movie_download(
 
     let full_folder_path =
         effective_title_folder_path(&media_root, title, &folder_template, prepared.parsed.year);
+    ensure_import_title_folder_available(app, title, &full_folder_path).await?;
 
     let dest_path = full_folder_path.join(&rendered_filename);
     let check_ctx = crate::import_checks::ImportCheckContext {
@@ -1188,6 +1202,7 @@ async fn import_movie_download(
             let old_file_recycle_context =
                 crate::upgrade::resolve_old_file_recycle_context(app, title, existing_file).await?;
 
+            persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
             match crate::upgrade::execute_upgrade(
                 app,
                 actor,
@@ -1247,7 +1262,6 @@ async fn import_movie_download(
                         new_score = outcome.new_score,
                         "movie file upgraded"
                     );
-                    persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
                     mark_wanted_completed(app, &title.id, None, Some(outcome.new_score)).await;
                     let result_json = serde_json::to_string(&result).ok();
                     app.update_import_status_and_notify(
@@ -1313,6 +1327,7 @@ async fn import_movie_download(
         }
     }
 
+    persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
     let file_result = import_file_with_record_progress(
         app,
         import_id,
@@ -1324,7 +1339,6 @@ async fn import_movie_download(
         Some(&prepared.source_snapshot),
     )
     .await?;
-    persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
 
     let nfo_enabled = app
         .resolve_nfo_write_on_import(Some(&title.library_id), &title.facet)
@@ -1655,6 +1669,7 @@ async fn import_series_movie_download(
     };
 
     let full_folder_path = effective_title_folder_path(&media_root, title, &folder_template, None);
+    ensure_import_title_folder_available(app, title, &full_folder_path).await?;
     let dest_path = episodic_import_parent_path(
         title,
         &full_folder_path,
@@ -1865,6 +1880,7 @@ async fn import_series_movie_download(
             let old_file_recycle_context =
                 crate::upgrade::resolve_old_file_recycle_context(app, title, existing_file).await?;
 
+            persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
             match crate::upgrade::execute_upgrade(
                 app,
                 actor,
@@ -1906,7 +1922,6 @@ async fn import_series_movie_download(
                         new_score = outcome.new_score,
                         "series movie file upgraded"
                     );
-                    persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
                     if let Err(error) = app
                         .services
                         .library
@@ -1921,21 +1936,41 @@ async fn import_series_movie_download(
                             "failed to link upgraded file to series movie"
                         );
                     }
-                    if let Some(linked_episode_id) = link.linked_episode_id.as_deref()
-                        && let Err(error) = app
+                    if let Some(linked_episode_id) = link.linked_episode_id.as_deref() {
+                        let link_result = app
                             .services
                             .library
                             .media_files
                             .link_file_to_episode(&outcome.new_file_id, linked_episode_id)
+                            .await;
+                        if let Err(error) = link_result {
+                            tracing::warn!(
+                                error = %error,
+                                file_id = %outcome.new_file_id,
+                                episode_id = %linked_episode_id,
+                                series_movie_link_id = %series_movie_link_id,
+                                "failed to link upgraded series movie file to linked episode"
+                            );
+                        } else if let Err(error) = app
+                            .services
+                            .library
+                            .media_files
+                            .set_media_file_roles_for_episode(
+                                &title.id,
+                                linked_episode_id,
+                                &outcome.new_file_id,
+                                &[],
+                            )
                             .await
-                    {
-                        tracing::warn!(
-                            error = %error,
-                            file_id = %outcome.new_file_id,
-                            episode_id = %linked_episode_id,
-                            series_movie_link_id = %series_movie_link_id,
-                            "failed to link upgraded series movie file to linked episode"
-                        );
+                        {
+                            tracing::warn!(
+                                error = %error,
+                                file_id = %outcome.new_file_id,
+                                episode_id = %linked_episode_id,
+                                series_movie_link_id = %series_movie_link_id,
+                                "failed to promote upgraded series movie file for linked episode"
+                            );
+                        }
                     }
                     mark_wanted_completed_for_series_movie_link(
                         app,
@@ -2066,6 +2101,7 @@ async fn import_series_movie_download(
         }
     }
 
+    persist_title_folder_path_if_missing(app, title, &full_folder_path).await?;
     // Ensure the configured episodic destination directory exists.
     if let Some(parent) = dest_path.parent()
         && let Err(err) = tokio::fs::create_dir_all(parent).await
@@ -2085,7 +2121,6 @@ async fn import_series_movie_download(
         Some(&prepared.source_snapshot),
     )
     .await?;
-    persist_title_folder_path_if_missing(app, title, &full_folder_path).await;
 
     let post_download_score =
         crate::post_download_gate::compute_post_download_acquisition_decision(
@@ -2209,20 +2244,36 @@ async fn import_series_movie_download(
     }
     if let Some(file_id) = imported_media_file_id.as_deref()
         && let Some(linked_episode_id) = link.linked_episode_id.as_deref()
-        && let Err(err) = app
+    {
+        let link_result = app
             .services
             .library
             .media_files
             .link_file_to_episode(file_id, linked_episode_id)
+            .await;
+        if let Err(err) = link_result {
+            tracing::warn!(
+                error = %err,
+                file_id = %file_id,
+                episode_id = %linked_episode_id,
+                series_movie_link_id = %series_movie_link_id,
+                "failed to link imported series movie file to linked episode"
+            );
+        } else if let Err(err) = app
+            .services
+            .library
+            .media_files
+            .set_media_file_roles_for_episode(&title.id, linked_episode_id, file_id, &[])
             .await
-    {
-        tracing::warn!(
-            error = %err,
-            file_id = %file_id,
-            episode_id = %linked_episode_id,
-            series_movie_link_id = %series_movie_link_id,
-            "failed to link imported series movie file to linked episode"
-        );
+        {
+            tracing::warn!(
+                error = %err,
+                file_id = %file_id,
+                episode_id = %linked_episode_id,
+                series_movie_link_id = %series_movie_link_id,
+                "failed to promote imported series movie file for linked episode"
+            );
+        }
     }
 
     // Write Jellyfin-compatible NFO with airsbefore_season

@@ -13,6 +13,7 @@ pub struct PluginMutations;
 
 #[Object]
 impl PluginMutations {
+    /// Refresh the configured plugin registry catalogs and return the available plugins.
     async fn refresh_plugin_catalog(
         &self,
         ctx: &Context<'_>,
@@ -26,10 +27,11 @@ impl PluginMutations {
         Ok(plugins.into_iter().map(from_registry_plugin).collect())
     }
 
+    /// Start background installation of a catalog plugin and return the initial progress snapshot.
     async fn begin_install_plugin(
         &self,
         ctx: &Context<'_>,
-        plugin_id: ID,
+        #[graphql(desc = "Catalog plugin ID to install.")] plugin_id: ID,
     ) -> GqlResult<PluginInstallProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -41,10 +43,11 @@ impl PluginMutations {
         Ok(from_plugin_install_progress(snapshot))
     }
 
+    /// Uninstall a plugin and remove its installation record.
     async fn uninstall_plugin(
         &self,
         ctx: &Context<'_>,
-        plugin_id: ID,
+        #[graphql(desc = "Installed plugin ID to remove.")] plugin_id: ID,
     ) -> GqlResult<UninstallPluginPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -57,9 +60,11 @@ impl PluginMutations {
         })
     }
 
+    /// Enable or disable an installed plugin.
     async fn toggle_plugin(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "Installed plugin ID and desired enabled state.")]
         input: TogglePluginInput,
     ) -> GqlResult<PluginInstallationPayload> {
         let app = app_from_ctx(ctx)?;
@@ -71,10 +76,11 @@ impl PluginMutations {
         Ok(from_plugin_installation(installation))
     }
 
+    /// Start background upgrade of an installed catalog plugin and return the initial progress snapshot.
     async fn begin_upgrade_plugin(
         &self,
         ctx: &Context<'_>,
-        plugin_id: ID,
+        #[graphql(desc = "Installed plugin ID to upgrade.")] plugin_id: ID,
     ) -> GqlResult<PluginInstallProgressPayload> {
         let app = app_from_ctx(ctx)?;
         let actor = require_config_app_permission(ctx, AppPermission::ManageSystemSettings).await?;
@@ -86,9 +92,11 @@ impl PluginMutations {
         Ok(from_plugin_install_progress(snapshot))
     }
 
+    /// Inspect a GitHub plugin repository without installing its artifact.
     async fn inspect_manual_plugin_repo(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "GitHub repository URL containing the plugin manifest and artifact.")]
         input: ManualPluginRepoInput,
     ) -> GqlResult<ManualPluginPreviewPayload> {
         let app = app_from_ctx(ctx)?;
@@ -100,9 +108,11 @@ impl PluginMutations {
         Ok(from_manual_plugin_preview(preview))
     }
 
+    /// Install a plugin directly from an inspected GitHub repository.
     async fn install_manual_plugin(
         &self,
         ctx: &Context<'_>,
+        #[graphql(desc = "GitHub repository URL containing the plugin manifest and artifact.")]
         input: ManualPluginRepoInput,
     ) -> GqlResult<PluginInstallationPayload> {
         let app = app_from_ctx(ctx)?;
@@ -114,9 +124,13 @@ impl PluginMutations {
         Ok(from_plugin_installation(installation))
     }
 
+    /// Install a base64-encoded WebAssembly plugin after explicit risk acknowledgement.
     async fn install_uploaded_plugin(
         &self,
         ctx: &Context<'_>,
+        #[graphql(
+            desc = "Plugin filename, base64-encoded WebAssembly bytes, and required risk acknowledgement."
+        )]
         input: ManualPluginUploadInput,
     ) -> GqlResult<PluginInstallationPayload> {
         let app = app_from_ctx(ctx)?;
