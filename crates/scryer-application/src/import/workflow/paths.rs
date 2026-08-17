@@ -411,7 +411,10 @@ async fn matched_completed_download_submission(
 }
 
 pub(crate) enum ResolvedCompletedDownloadOriginForImport {
-    Ready(Box<CompletedDownload>),
+    Ready {
+        completed: Box<CompletedDownload>,
+        release_evidence: ReleaseEvidence,
+    },
     NoScryerOrigin,
 }
 
@@ -421,10 +424,14 @@ pub(crate) async fn resolve_completed_download_origin_for_import(
     item: Option<&DownloadQueueItem>,
 ) -> AppResult<ResolvedCompletedDownloadOriginForImport> {
     let submission_resolution = resolve_completed_download_submission(app, completed, item).await?;
+    let release_evidence = release_evidence_for_resolution(completed, &submission_resolution)?;
     Ok(
         match resolve_completed_download_origin(completed, &submission_resolution) {
             CompletedDownloadOriginResolution::Ready(completed) => {
-                ResolvedCompletedDownloadOriginForImport::Ready(completed)
+                ResolvedCompletedDownloadOriginForImport::Ready {
+                    completed,
+                    release_evidence,
+                }
             }
             CompletedDownloadOriginResolution::NoScryerOrigin => {
                 ResolvedCompletedDownloadOriginForImport::NoScryerOrigin

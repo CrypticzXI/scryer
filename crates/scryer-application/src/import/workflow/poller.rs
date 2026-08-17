@@ -15,6 +15,24 @@ pub async fn import_completed_download(
     .await
 }
 
+pub(crate) async fn import_completed_download_with_release_evidence(
+    app: &AppUseCase,
+    actor: &User,
+    completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
+) -> AppResult<ImportResult> {
+    let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
+    import_completed_download_with_identity_policy(
+        app,
+        actor,
+        completed,
+        CompletedImportIdentityPolicy::RequireSubmission,
+        None,
+        Some(release_evidence),
+    )
+    .await
+}
+
 pub async fn import_completed_download_for_manual_review(
     app: &AppUseCase,
     actor: &User,

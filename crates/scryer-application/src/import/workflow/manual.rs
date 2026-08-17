@@ -380,9 +380,9 @@ async fn authorize_manual_import_source(
         .workflow
         .download_submissions
         .find_by_client_item_id(&source_identity)
-        .await?
-        .ok_or_else(manual_import_source_unavailable)?;
-    if !matches!(&submission.scope, crate::SubmissionScope::Orphan)
+        .await?;
+    if let Some(submission) = submission
+        && !matches!(&submission.scope, crate::SubmissionScope::Orphan)
         && (submission.title_id.trim().is_empty() || submission.title_id != title.id)
     {
         return Err(manual_import_source_unavailable());
@@ -401,7 +401,10 @@ async fn resolve_authorized_manual_import_source(
     if let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref() {
         match handle.completed_source(identity.clone()).await {
             Ok(Some(completed)) if completed_download_matches_source(&completed, identity) => {
-                return Ok(completed);
+                if retained_manual_import_source_is_admitted(app, identity, &completed).await? {
+                    return Ok(completed);
+                }
+                return Err(manual_import_source_unavailable());
             }
             Ok(_) => {}
             Err(error) => {
@@ -417,6 +420,35 @@ async fn resolve_authorized_manual_import_source(
     }
 
     resolve_live_manual_import_source(app, identity).await
+}
+
+async fn retained_manual_import_source_is_admitted(
+    app: &AppUseCase,
+    identity: &DownloadSourceIdentity,
+    completed: &CompletedDownload,
+) -> AppResult<bool> {
+    let has_scryer_submission = app
+        .services
+        .workflow
+        .download_submissions
+        .find_by_client_item_id(identity)
+        .await?
+        .as_ref()
+        .is_some_and(crate::import_parameters::submission_has_scryer_origin);
+    if completed
+        .parameters
+        .iter()
+        .any(|(key, _)| key.trim().eq_ignore_ascii_case("drone"))
+        && !has_scryer_submission
+    {
+        return Ok(false);
+    }
+    let category_admission = app.download_client_category_admission_snapshot().await;
+    Ok(crate::services::download_observation_is_admitted(
+        has_scryer_submission,
+        completed.category.as_deref(),
+        category_admission.as_deref(),
+    ))
 }
 
 async fn resolve_live_manual_import_source(
@@ -2265,49 +2297,19 @@ async fn execute_queued_manual_import_with_outcome(
         (!payload.files.is_empty()).then_some(payload.files.len());
 
     if payload.files.is_empty() {
-        let result = import_completed_download_for_manual_review_with_title_override(
-            app,
-            &actor,
-            &completed,
-            title_id,
-            true,
-            Some(&release_evidence),
-        )
-        .await?;
-        let imported = matches!(result.decision, ImportDecision::Imported);
-
-        let (status, error_code, error_message) =
-            if imported || matches!(result.skip_reason, Some(ImportSkipReason::AlreadyImported)) {
-                (ImportStatus::Completed, None, None)
-            } else {
-                (
-                    ImportStatus::Failed,
-                    Some(manual_import_error_from_skip_reason(
-                        result.skip_reason.clone(),
-                    )),
-                    result.error_message.clone(),
-                )
-            };
-
-        let result_json = if status == ImportStatus::Completed && error_code.is_none() {
-            serde_json::to_string(&result).ok()
-        } else {
-            manual_import_result_json(
+        return Ok(QueuedManualImportOutcome {
+            status: ImportStatus::Failed,
+            result_json: manual_import_result_json(
                 import_id,
                 payload,
-                status,
-                error_code,
-                error_message,
+                ImportStatus::Failed,
+                Some(ImportErrorCode::Unknown),
+                Some("manual import requires at least one queued file mapping".to_string()),
                 Vec::new(),
-            )
-        };
-
-        return Ok(QueuedManualImportOutcome {
-            status,
-            result_json,
-            files_imported_this_pass: usize::from(imported),
+            ),
+            files_imported_this_pass: 0,
             completed: Some(completed),
-            title_id: result.title_id.or_else(|| Some(title_id.to_string())),
+            title_id: Some(title_id.to_string()),
             expected_mapping_count,
             prior_import_proven: false,
         });

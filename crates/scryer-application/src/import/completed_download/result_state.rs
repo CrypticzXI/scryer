@@ -1,4 +1,4 @@
-use super::verification::verify_import_inner;
+use super::verification::verify_import_inner_with_release_evidence;
 use super::*;
 
 async fn apply_no_video_import_backoff(
@@ -125,7 +125,7 @@ pub(super) async fn apply_import_result(
     result: ImportResult,
     files_imported_this_pass: usize,
 ) -> bool {
-    apply_import_result_with_completed(app, td, result, files_imported_this_pass, None).await
+    apply_import_result_with_completed(app, td, result, files_imported_this_pass, None, None).await
 }
 
 pub(super) async fn apply_import_result_with_completed(
@@ -134,12 +134,21 @@ pub(super) async fn apply_import_result_with_completed(
     result: ImportResult,
     files_imported_this_pass: usize,
     completed: Option<&CompletedDownload>,
+    release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
 ) -> bool {
     let already_imported = result.decision == ImportDecision::Skipped
         && result.skip_reason == Some(ImportSkipReason::AlreadyImported);
     if result.decision == ImportDecision::Imported || already_imported {
         td.clear_no_video_import_retry();
-        if verify_import_inner(app, td, files_imported_this_pass, completed).await {
+        if verify_import_inner_with_release_evidence(
+            app,
+            td,
+            files_imported_this_pass,
+            completed,
+            release_evidence,
+        )
+        .await
+        {
             td.state = TrackedDownloadState::Imported;
             td.status = TrackedDownloadStatus::Ok;
             td.status_messages.clear();

@@ -535,7 +535,7 @@ pub(super) async fn maybe_resolve_title_from_completed_download(
 ) {
     if !matches!(
         td.match_type,
-        TitleMatchType::Unmatched | TitleMatchType::IdOnly
+        TitleMatchType::Unmatched | TitleMatchType::IdOnly | TitleMatchType::TitleParse
     ) {
         return;
     }

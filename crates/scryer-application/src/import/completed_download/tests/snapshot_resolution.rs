@@ -56,6 +56,73 @@ async fn completed_download_reresolution_enriches_matching_id_only_title() {
 }
 
 #[tokio::test]
+async fn completed_download_reresolution_replaces_title_parse_from_canonical_nzb_name() {
+    let original_title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
+    let completed_title = build_title("title-2", "The Other Movie", MediaFacet::Movie);
+    let app = build_app(
+        vec![original_title.clone(), completed_title.clone()],
+        vec![],
+        vec![],
+        vec![],
+    );
+    let mut td = build_tracked_download(&original_title.id, "movie", "Paper.Lantern.2012.1080p");
+    td.match_type = TitleMatchType::TitleParse;
+    let mut completed = build_completed_download(
+        "downloader display label",
+        "/tmp/does-not-matter",
+        Some("movie"),
+    );
+    completed.nzb_name = Some("The.Other.Movie.2020.1080p.WEB-DL".to_string());
+
+    maybe_resolve_title_from_completed_download(&app, &mut td, &completed).await;
+
+    assert_eq!(td.title_id.as_deref(), Some(completed_title.id.as_str()));
+    assert_eq!(td.match_type, TitleMatchType::TitleParse);
+    assert_eq!(
+        td.source_title.as_deref(),
+        Some("The.Other.Movie.2020.1080p.WEB-DL")
+    );
+}
+
+#[test]
+fn submission_match_without_scryer_origin_does_not_bypass_category_admission() {
+    let mut td = build_tracked_download("title-1", "movie", "Paper.Lantern.2012.1080p");
+    td.match_type = TitleMatchType::Submission;
+    td.client_item.is_scryer_origin = false;
+
+    assert!(!tracked_download_has_scryer_submission(&td));
+}
+
+#[tokio::test]
+async fn completed_download_proof_uses_media_basename_when_nzb_name_is_absent() {
+    let title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
+    let app = build_app(vec![title.clone()], vec![], vec![], vec![]);
+    let completed_dir = tempfile::tempdir().expect("create completed directory");
+    std::fs::write(
+        completed_dir
+            .path()
+            .join("Paper.Lantern.2012.1080p.WEB-DL.mkv"),
+        b"video",
+    )
+    .expect("write completed video");
+    let mut completed = build_completed_download(
+        "downloader display label",
+        completed_dir.path().to_string_lossy().as_ref(),
+        Some("movie"),
+    );
+    completed.nzb_name = None;
+    let mut td = build_tracked_download(&title.id, "movie", "Paper.Lantern.2012.1080p");
+    td.match_type = TitleMatchType::TitleParse;
+    td.source_title = None;
+    td.client_item.is_scryer_origin = false;
+
+    assert_eq!(
+        completed_download_proves_assigned_title(&app, &td, &completed).await,
+        AssignedTitleProof::Proven
+    );
+}
+
+#[tokio::test]
 async fn check_with_lookup_uses_snapshot_without_fetching_client_history() {
     let completed = build_completed_download(
         "Paper.Lantern.2012.1080p",

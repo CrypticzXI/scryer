@@ -17,7 +17,8 @@ use crate::domain_events::{
 };
 use crate::import_workflow::{
     ResolvedCompletedDownloadOriginForImport, completed_import_result_is_retryable,
-    import_completed_download, resolve_completed_download_origin_for_import,
+    import_completed_download, import_completed_download_with_release_evidence,
+    resolve_completed_download_origin_for_import,
 };
 use crate::stored_paths::path_to_stored_string;
 use crate::tracked_downloads::{NoVideoImportSourceSignature, TrackedDownload};

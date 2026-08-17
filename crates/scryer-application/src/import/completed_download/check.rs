@@ -255,8 +255,8 @@ pub(crate) async fn check_with_lookup(
     td.status_messages.clear();
 }
 
-fn tracked_download_has_scryer_submission(td: &TrackedDownload) -> bool {
-    td.client_item.is_scryer_origin || td.match_type == TitleMatchType::Submission
+pub(super) fn tracked_download_has_scryer_submission(td: &TrackedDownload) -> bool {
+    td.client_item.is_scryer_origin
 }
 
 fn observed_download_category<'a>(
@@ -364,7 +364,7 @@ fn durable_global_download_id(identity: &crate::DownloadSubmissionIdentity) -> b
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AssignedTitleProof {
+pub(super) enum AssignedTitleProof {
     /// A raw name proved the assigned title; import may proceed.
     Proven,
     /// Every raw name failed the proof — block for manual review.
@@ -375,14 +375,17 @@ enum AssignedTitleProof {
     Unknown,
 }
 
-async fn completed_download_proves_assigned_title(
+pub(super) async fn completed_download_proves_assigned_title(
     app: &AppUseCase,
     td: &TrackedDownload,
     completed: &CompletedDownload,
 ) -> AssignedTitleProof {
+    // TitleParse is an observation and must be re-proven from completion-time
+    // canonical evidence. Unmatched and IdOnly downloads have their own
+    // existing manual-review gates below this identity check.
     if !matches!(
         td.match_type,
-        TitleMatchType::Submission | TitleMatchType::ClientParameter
+        TitleMatchType::TitleParse | TitleMatchType::Submission | TitleMatchType::ClientParameter
     ) && !td.client_item.is_scryer_origin
     {
         return AssignedTitleProof::Proven;
@@ -525,12 +528,27 @@ async fn completed_download_proves_assigned_title(
         })
     };
 
-    let mut completion_sources = Vec::<&str>::new();
+    let mut completion_sources = Vec::<String>::new();
     for raw_title in [completed.nzb_name.as_deref()].into_iter().flatten() {
         let raw_title = raw_title.trim();
-        if !raw_title.is_empty() && !completion_sources.contains(&raw_title) {
-            completion_sources.push(raw_title);
+        if !raw_title.is_empty() && !completion_sources.iter().any(|source| source == raw_title) {
+            completion_sources.push(raw_title.to_string());
         }
+    }
+    // A downloader observation without a canonical NZB name may use the
+    // actual media filename as its release claim. Never use a display label or
+    // destination folder as a substitute.
+    if completion_sources.is_empty()
+        && let Ok(video_files) =
+            crate::import_workflow::find_video_files(Path::new(&completed.dest_dir), false)
+    {
+        completion_sources.extend(video_files.into_iter().filter_map(|file| {
+            file.file_stem()
+                .and_then(|name| name.to_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        }));
     }
 
     // What actually finished on disk outranks every other signal: a completion
@@ -555,12 +573,12 @@ async fn completed_download_proves_assigned_title(
         return AssignedTitleProof::Disproven;
     }
 
-    // A Submission or ClientParameter match is Scryer's own durable grab-time
-    // identity: the submission row / embedded client parameters were written
-    // when the grab passed the full disambiguator discipline, with strictly
-    // more evidence (indexer ids, year, uniqueness) than a filename can carry.
-    // Re-deriving identity from the release name can only lose information, so
-    // with no contradiction on disk the linkage stands as proof.
+    // A Submission or ClientParameter match is an explicit trusted title
+    // assignment. A non-orphan Scryer submission or embedded client parameter
+    // was captured at grab time; an operator assignment deliberately shares
+    // the Submission label. With no contradiction on disk, that assignment
+    // stands as proof. An orphan observation does not gain provenance from the
+    // label alone: category and failure handling use the enriched origin flag.
     if matches!(
         td.match_type,
         TitleMatchType::Submission | TitleMatchType::ClientParameter
@@ -578,12 +596,15 @@ async fn completed_download_proves_assigned_title(
     // completed name and folder mid-flight; a Scryer-origin grab must not lose
     // its identity to that. Junk cannot ride in on it — the matcher rejects a
     // non-proving source_title exactly like any other raw name.
-    if let Some(source_title) = td
-        .source_title
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        && !completion_sources.contains(&source_title)
+    if td.client_item.is_scryer_origin
+        && let Some(source_title) = td
+            .source_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        && !completion_sources
+            .iter()
+            .any(|source| source == source_title)
         && proves_assigned_title(source_title)
     {
         return AssignedTitleProof::Proven;

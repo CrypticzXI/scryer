@@ -44,12 +44,15 @@ async fn import_inner(
     mark_importing(td);
     crate::tracked_downloads::publish_runtime_tracked_download_snapshot(app, td).await;
 
-    let completed =
+    let (completed, release_evidence) =
         match resolve_completed_download_origin_for_import(app, &completed, Some(&td.client_item))
             .await
         {
-            Ok(ResolvedCompletedDownloadOriginForImport::Ready(completed)) => *completed,
-            Ok(ResolvedCompletedDownloadOriginForImport::NoScryerOrigin) => completed,
+            Ok(ResolvedCompletedDownloadOriginForImport::Ready {
+                completed,
+                release_evidence,
+            }) => (*completed, Some(release_evidence)),
+            Ok(ResolvedCompletedDownloadOriginForImport::NoScryerOrigin) => (completed, None),
             Err(error) => {
                 tracing::warn!(
                     id = %td.id,
@@ -96,7 +99,19 @@ async fn import_inner(
     td.import_attempted = true;
 
     let import_actor = actor_for_tracked_download_import(app, actor, td).await;
-    match import_completed_download(app, &import_actor, &completed).await {
+    let import = match release_evidence.as_ref() {
+        Some(release_evidence) => {
+            import_completed_download_with_release_evidence(
+                app,
+                &import_actor,
+                &completed,
+                release_evidence,
+            )
+            .await
+        }
+        None => import_completed_download(app, &import_actor, &completed).await,
+    };
+    match import {
         Ok(result) => {
             let success_after = total_successful_artifacts(app, td).await;
             let files_imported_this_pass = success_after.saturating_sub(success_before) as usize;
@@ -114,6 +129,7 @@ async fn import_inner(
                 result,
                 files_imported_this_pass,
                 Some(&completed),
+                release_evidence.as_ref(),
             )
             .await
         }

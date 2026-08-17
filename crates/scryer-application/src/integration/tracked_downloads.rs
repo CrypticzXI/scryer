@@ -596,6 +596,40 @@ impl TrackedDownloadService {
             }
         }
 
+        // Persist an observation row before accepting a provisional parse match.
+        // It carries durable tracked state without claiming Scryer provenance.
+        let category_admission = app.download_client_category_admission_snapshot().await;
+        if existing_submission.is_none()
+            && crate::services::download_observation_is_admitted(
+                false,
+                td.client_item.category.as_deref(),
+                category_admission.as_deref(),
+            )
+            && let Err(error) = app
+                .services
+                .workflow
+                .download_submissions
+                .record_submission(DownloadSubmission {
+                    title_id: String::new(),
+                    purpose: crate::DownloadSubmissionPurpose::Standard,
+                    facet: td.facet.clone().unwrap_or_default(),
+                    download_client_id: Some(td.client_id.clone())
+                        .filter(|value| !value.is_empty()),
+                    download_client_type: td.client_type.clone(),
+                    download_client_item_id: td.client_item.download_client_item_id.clone(),
+                    source_hint: None,
+                    source_provider_id: None,
+                    source_provider_name: None,
+                    source_kind: None,
+                    source_title: None,
+                    request_signature: None,
+                    scope: SubmissionScope::Orphan,
+                })
+                .await
+        {
+            tracing::warn!(error = %error, id = %td.id, "failed to record tracked download stub submission");
+        }
+
         // 3. Parse-based monitored title resolution for downloader observations.
         let release_title = td
             .source_title
@@ -620,40 +654,11 @@ impl TrackedDownloadService {
                     td.source_title = Some(release_title.to_string());
                 }
                 td.match_type = resolved.match_type;
-                return;
             }
         }
 
         // 4. No trustworthy title match found — completed handler will block
         // auto-import until the user assigns the title manually.
-        //
-        // Insert a stub download_submissions row for observations so they
-        // get a tracked_state column for restart reconstruction.
-        if existing_submission.is_none()
-            && let Err(error) = app
-                .services
-                .workflow
-                .download_submissions
-                .record_submission(DownloadSubmission {
-                    title_id: String::new(),
-                    purpose: crate::DownloadSubmissionPurpose::Standard,
-                    facet: td.facet.clone().unwrap_or_default(),
-                    download_client_id: Some(td.client_id.clone())
-                        .filter(|value| !value.is_empty()),
-                    download_client_type: td.client_type.clone(),
-                    download_client_item_id: td.client_item.download_client_item_id.clone(),
-                    source_hint: None,
-                    source_provider_id: None,
-                    source_provider_name: None,
-                    source_kind: None,
-                    source_title: Some(td.client_item.title_name.clone()),
-                    request_signature: None,
-                    scope: SubmissionScope::Orphan,
-                })
-                .await
-        {
-            tracing::warn!(error = %error, id = %td.id, "failed to record tracked download stub submission");
-        }
     }
 
     /// Reconstruct state from persistent storage after restart.
@@ -3561,6 +3566,7 @@ mod tests {
         initial.download_client_item_id = "job-unmatched-repeat".to_string();
         initial.title_name = "Paper Lantern".to_string();
         initial.facet = Some("movie".to_string());
+        initial.category = Some("movie".to_string());
         initial.is_scryer_origin = false;
 
         tracker.track(&app, initial.clone()).await;

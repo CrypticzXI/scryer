@@ -507,6 +507,15 @@ mod tests {
             completed_import_status_for_result(&result, ImportStatus::Failed),
             ImportStatus::Pending
         );
+
+        result.error_message = Some(
+            "failed to remove source: The process cannot access the file because it is being used by another process. (os error 32)"
+                .to_string(),
+        );
+        assert_eq!(
+            completed_import_status_for_result(&result, ImportStatus::Failed),
+            ImportStatus::Pending
+        );
     }
 
     #[test]

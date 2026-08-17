@@ -1580,6 +1580,8 @@ async fn assign_tracked_download_title_serializes_submission_and_runtime_assignm
         submissions[0].download_client_item_id,
         fixture.submission.download_client_item_id
     );
+    assert_eq!(submissions[0].scope, SubmissionScope::Orphan);
+    assert!(submissions[0].source_title.is_none());
     drop(submissions);
     let tracked = fixture
         .tracker

@@ -146,22 +146,6 @@ impl AppUseCase {
             return Ok(None);
         }
 
-        let Some(completed) = self
-            .services
-            .integrations
-            .download_client
-            .get_completed_download_for_source(client_id, client_type, download_client_item_id)
-            .await?
-        else {
-            return Ok(None);
-        };
-        if completed
-            .parameters
-            .iter()
-            .any(|(key, _)| key.trim().eq_ignore_ascii_case("drone"))
-        {
-            return Ok(None);
-        }
         let identity = DownloadSourceIdentity::new(
             Some(client_id),
             client_type,
@@ -175,6 +159,24 @@ impl AppUseCase {
             .await?
             .as_ref()
             .is_some_and(crate::import_parameters::submission_has_scryer_origin);
+
+        let Some(completed) = self
+            .services
+            .integrations
+            .download_client
+            .get_completed_download_for_source(client_id, client_type, download_client_item_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if completed
+            .parameters
+            .iter()
+            .any(|(key, _)| key.trim().eq_ignore_ascii_case("drone"))
+            && !has_scryer_submission
+        {
+            return Ok(None);
+        }
         let category_admission = self.download_client_category_admission_snapshot().await;
         Ok(crate::services::download_observation_is_admitted(
             has_scryer_submission,

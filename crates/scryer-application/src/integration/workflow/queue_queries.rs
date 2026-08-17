@@ -371,20 +371,22 @@ fn push_submission_lookup_key(
     }
 }
 fn apply_submission_to_queue_item(item: &mut DownloadQueueItem, submission: &DownloadSubmission) {
-    item.is_scryer_origin = true;
+    if crate::import_parameters::submission_has_scryer_origin(submission) {
+        item.is_scryer_origin = true;
+    }
     if item.source_provider.is_none() {
         item.source_provider = source_provider_label(
             submission.source_provider_name.as_deref(),
             submission.source_hint.as_deref(),
         );
     }
-    if item.title_id.is_none() {
+    if item.title_id.is_none() && !submission.title_id.trim().is_empty() {
         item.title_id = Some(submission.title_id.clone());
     }
     if item.episode_id.is_none() {
         item.episode_id = submission.scope.episode_id().map(ToString::to_string);
     }
-    if item.facet.is_none() {
+    if item.facet.is_none() && !submission.facet.trim().is_empty() {
         item.facet = Some(submission.facet.clone());
     }
 }
@@ -1673,4 +1675,82 @@ fn is_history_download_state(state: &DownloadQueueState) -> bool {
             | DownloadQueueState::ImportPending
             | DownloadQueueState::Failed
     )
+}
+
+#[cfg(test)]
+mod queue_query_unit_tests {
+    use super::*;
+    use crate::{DownloadSubmission, DownloadSubmissionPurpose, SubmissionScope};
+
+    fn queue_item() -> DownloadQueueItem {
+        DownloadQueueItem {
+            id: "item-1".to_string(),
+            title_id: None,
+            episode_id: None,
+            title_name: "Observed.Release.2026".to_string(),
+            facet: None,
+            category: None,
+            client_id: "client-1".to_string(),
+            client_name: "Client".to_string(),
+            client_type: "weaver".to_string(),
+            state: DownloadQueueState::Completed,
+            progress_percent: 100,
+            import_transfer_phase: None,
+            import_transfer_bytes: None,
+            import_transfer_total_bytes: None,
+            import_transfer_started_at: None,
+            import_transfer_updated_at: None,
+            size_bytes: None,
+            remaining_seconds: None,
+            queued_at: None,
+            last_updated_at: None,
+            attention_required: false,
+            attention_reason: None,
+            download_client_item_id: "item-1".to_string(),
+            download_id: None,
+            import_status: None,
+            import_error_code: None,
+            import_error_message: None,
+            imported_at: None,
+            delete_status: None,
+            delete_error_message: None,
+            is_scryer_origin: false,
+            source_provider: None,
+            tracked_state: None,
+            tracked_status: None,
+            tracked_status_messages: Vec::new(),
+            tracked_match_type: None,
+        }
+    }
+
+    fn submission(scope: SubmissionScope) -> DownloadSubmission {
+        DownloadSubmission {
+            title_id: "title-1".to_string(),
+            purpose: DownloadSubmissionPurpose::Standard,
+            facet: "movie".to_string(),
+            download_client_id: Some("client-1".to_string()),
+            download_client_type: "weaver".to_string(),
+            download_client_item_id: "item-1".to_string(),
+            source_hint: None,
+            source_provider_id: None,
+            source_provider_name: None,
+            source_kind: None,
+            source_title: None,
+            request_signature: None,
+            scope,
+        }
+    }
+
+    #[test]
+    fn orphan_submission_enriches_metadata_without_claiming_scryer_origin() {
+        let mut item = queue_item();
+        apply_submission_to_queue_item(&mut item, &submission(SubmissionScope::Orphan));
+
+        assert_eq!(item.title_id.as_deref(), Some("title-1"));
+        assert_eq!(item.facet.as_deref(), Some("movie"));
+        assert!(!item.is_scryer_origin);
+
+        apply_submission_to_queue_item(&mut item, &submission(SubmissionScope::Title));
+        assert!(item.is_scryer_origin);
+    }
 }

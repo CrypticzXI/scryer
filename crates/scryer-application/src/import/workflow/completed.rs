@@ -396,6 +396,8 @@ fn completed_import_error_message_is_retryable(message: &str) -> bool {
         "still_unpacking",
         "source changed",
         "locked",
+        "being used by another process",
+        "os error 32",
         "temporarily",
         "not found or inaccessible",
     ]

@@ -641,7 +641,7 @@ impl AppUseCase {
         client_type: &str,
         download_client_item_id: &str,
         title_id: &str,
-        scope: SubmissionScope,
+        _scope: SubmissionScope,
     ) -> AppResult<()> {
         let title = self
             .services
@@ -667,9 +667,9 @@ impl AppUseCase {
             source_provider_id: None,
             source_provider_name: None,
             source_kind: None,
-            source_title: Some(title.name.clone()),
+            source_title: None,
             request_signature: None,
-            scope,
+            scope: SubmissionScope::Orphan,
         };
         let actor_snapshot = crate::domain_events::DomainEventActor::from(actor)
             .into_download_submission_actor_snapshot();
@@ -1240,7 +1240,7 @@ pub(crate) async fn assign_tracked_download_title_command(
     tracked_work_in_flight: &HashSet<String>,
     requested_id: String,
     title: scryer_domain::Title,
-    submission: DownloadSubmission,
+    mut submission: DownloadSubmission,
     actor_snapshot: crate::DownloadSubmissionActorSnapshot,
 ) -> AppResult<()> {
     let id = resolve_tracked_command_id(tracker, &requested_id);
@@ -1255,6 +1255,8 @@ pub(crate) async fn assign_tracked_download_title_command(
         )));
     }
 
+    submission.source_title = None;
+    submission.scope = SubmissionScope::Orphan;
     let source_identity = DownloadSourceIdentity::from_submission(&submission);
     app.services
         .workflow

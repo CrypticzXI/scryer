@@ -1,5 +1,6 @@
 use super::lookup::find_completed_download;
 use super::*;
+use crate::SubmissionScope;
 
 pub(super) enum ExpectedEpisodeResolution {
     NotApplicable,
@@ -53,6 +54,7 @@ pub async fn verify_manual_import(
         td,
         files_imported_this_pass,
         None,
+        None,
         ImportVerificationMode::Manual {
             expected_mapping_count,
         },
@@ -66,11 +68,23 @@ pub(super) async fn verify_import_inner(
     files_imported_this_pass: usize,
     completed: Option<&CompletedDownload>,
 ) -> bool {
+    verify_import_inner_with_release_evidence(app, td, files_imported_this_pass, completed, None)
+        .await
+}
+
+pub(super) async fn verify_import_inner_with_release_evidence(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    files_imported_this_pass: usize,
+    completed: Option<&CompletedDownload>,
+    release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
+) -> bool {
     verify_import_with_mode(
         app,
         td,
         files_imported_this_pass,
         completed,
+        release_evidence,
         ImportVerificationMode::Automatic,
     )
     .await
@@ -81,6 +95,7 @@ async fn verify_import_with_mode(
     td: &TrackedDownload,
     files_imported_this_pass: usize,
     completed: Option<&CompletedDownload>,
+    release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
     mode: ImportVerificationMode,
 ) -> bool {
     let source_identity = DownloadSourceIdentity::new(
@@ -153,7 +168,7 @@ async fn verify_import_with_mode(
         return false;
     }
 
-    match expected_episode_units(app, td).await {
+    match expected_episode_units_with_release_evidence(app, td, release_evidence).await {
         ExpectedEpisodeResolution::Resolved(expected_episode_units) => {
             if expected_episode_units.is_empty() {
                 return false;
@@ -237,9 +252,18 @@ fn successful_units_cover_visible_files(
     current_visible_files > 0 && successful_unit_count >= current_visible_files
 }
 
+#[cfg(test)]
 pub(super) async fn expected_episode_units(
     app: &AppUseCase,
     td: &TrackedDownload,
+) -> ExpectedEpisodeResolution {
+    expected_episode_units_with_release_evidence(app, td, None).await
+}
+
+async fn expected_episode_units_with_release_evidence(
+    app: &AppUseCase,
+    td: &TrackedDownload,
+    release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
 ) -> ExpectedEpisodeResolution {
     let Some(title_id) = td.title_id.as_deref() else {
         return ExpectedEpisodeResolution::Unresolved;
@@ -255,6 +279,52 @@ pub(super) async fn expected_episode_units(
     else {
         return ExpectedEpisodeResolution::Unresolved;
     };
+
+    if let Some(scope) = release_evidence.and_then(crate::import_workflow::ReleaseEvidence::scope) {
+        match scope {
+            SubmissionScope::Episode { episode_id } => {
+                return ExpectedEpisodeResolution::Resolved(HashSet::from([episode_id.clone()]));
+            }
+            SubmissionScope::EpisodeSet { episode_ids } => {
+                return ExpectedEpisodeResolution::Resolved(episode_ids.iter().cloned().collect());
+            }
+            SubmissionScope::Collection { collection_id } => {
+                let episodes = match app
+                    .services
+                    .catalog
+                    .shows
+                    .list_episodes_for_collection(collection_id)
+                    .await
+                {
+                    Ok(episodes) => episodes,
+                    Err(_) => return ExpectedEpisodeResolution::Unresolved,
+                };
+                let all_ids = episodes
+                    .iter()
+                    .filter(|episode| episode.title_id == title.id)
+                    .map(|episode| episode.id.clone())
+                    .collect::<HashSet<_>>();
+                let monitored_ids = episodes
+                    .into_iter()
+                    .filter(|episode| episode.title_id == title.id && episode.monitored)
+                    .map(|episode| episode.id)
+                    .collect::<HashSet<_>>();
+                let expected = if monitored_ids.is_empty() {
+                    all_ids
+                } else {
+                    monitored_ids
+                };
+                return if expected.is_empty() {
+                    ExpectedEpisodeResolution::Unresolved
+                } else {
+                    ExpectedEpisodeResolution::Resolved(expected)
+                };
+            }
+            SubmissionScope::Title
+            | SubmissionScope::SeriesMovie { .. }
+            | SubmissionScope::Orphan => {}
+        }
+    }
 
     let release_title = td
         .source_title
