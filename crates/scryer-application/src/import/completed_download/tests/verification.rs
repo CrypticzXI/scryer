@@ -60,6 +60,26 @@ async fn verify_manual_import_keeps_partial_unresolved_series_blocked() {
 }
 
 #[tokio::test]
+async fn verify_manual_import_terminalizes_after_successful_retry_for_any_client_type() {
+    for client_type in ["nzbget", "qbittorrent"] {
+        let title = build_title("title-1", "Upgrade Show", MediaFacet::Series);
+        let mut rejected =
+            build_artifact_with_result("dl-1", Some("ep-1"), "Upgrade.Show.S01E01.mkv", "rejected");
+        rejected.source_system = client_type.to_string();
+        let mut td = build_tracked_download("title-1", "series", "Upgrade.Show.S01E01");
+        td.client_type = client_type.to_string();
+        let rejected_only = build_app(vec![title.clone()], vec![], vec![], vec![rejected.clone()]);
+        assert!(!verify_import(&rejected_only, &td, 1).await);
+
+        let mut imported = build_artifact("dl-1", "ep-1", "Upgrade.Show.S01E01.mkv");
+        imported.source_system = client_type.to_string();
+        let app = build_app(vec![title], vec![], vec![], vec![rejected, imported]);
+
+        assert!(verify_manual_import(&app, &td, 1, Some(1)).await);
+    }
+}
+
+#[tokio::test]
 async fn verify_manual_import_terminalizes_complete_series_movie_source() {
     let title = build_title("title-1", "DuckTales", MediaFacet::Series);
     let artifacts = vec![build_artifact(

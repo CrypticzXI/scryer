@@ -19,7 +19,7 @@ use scryer_application::{
 use scryer_domain::{DownloadClientConfig, DownloadQueueItem, IndexerProxyConfig, MediaFacet};
 use scryer_outbound_http::{
     AsyncOutboundHttpError, OutboundHttpClient, RateLimitRegistry, generic_reqwest_client,
-    prepare_plugin_http_target, prepare_plugin_http_target_from_url,
+    indexer_proxy_reqwest_client, prepare_plugin_http_target, prepare_plugin_http_target_from_url,
     send_reqwest_request_with_cooldown_budget,
 };
 use serde::{Deserialize, Serialize};
@@ -1162,27 +1162,42 @@ impl PrioritizedDownloadClientRouter {
         }
 
         let endpoint = solver::solver_solve_endpoint(&proxy_config.base_url);
-        let response = generic_reqwest_client()
-            .post(endpoint)
-            .timeout(Duration::from_secs(
-                proxy_config.request_timeout_seconds as u64 + 5,
-            ))
-            .json(&solver::solver_solve_request(
-                provider,
-                download_url,
-                proxy_config.request_timeout_seconds,
-            ))
-            .send()
-            .await
-            .map_err(|error| {
-                let message = if error.is_timeout() {
-                    solver::solver_error_message(provider, solver::SolverErrorKind::Timeout)
-                } else {
-                    solver::solver_error_message(provider, solver::SolverErrorKind::Unreachable)
-                };
-                solver::SolverHealthLedger::shared().record_failure(&proxy_config.id, message);
-                AppError::DownloadSubmitUnavailable(message.into())
-            })?;
+        let solver_timeout = Duration::from_secs(proxy_config.request_timeout_seconds as u64 + 5);
+        let solver_deadline = tokio::time::Instant::now() + solver_timeout;
+        let response = tokio::time::timeout_at(
+            solver_deadline,
+            send_reqwest_request_with_cooldown_budget(
+                indexer_proxy_reqwest_client()
+                    .post(endpoint)
+                    .timeout(solver_timeout)
+                    .json(&solver::solver_solve_request(
+                        provider,
+                        download_url,
+                        proxy_config.request_timeout_seconds,
+                    )),
+                Some(Duration::ZERO),
+            ),
+        )
+        .await
+        .map_err(|_| {
+            let message = solver::solver_error_message(provider, solver::SolverErrorKind::Timeout);
+            solver::SolverHealthLedger::shared().record_failure(&proxy_config.id, message);
+            AppError::DownloadSubmitUnavailable(message.into())
+        })?
+        .map_err(|error| {
+            let kind = match error {
+                AsyncOutboundHttpError::Request(error) if error.is_timeout() => {
+                    solver::SolverErrorKind::Timeout
+                }
+                AsyncOutboundHttpError::Request(_) => solver::SolverErrorKind::Unreachable,
+                AsyncOutboundHttpError::CooldownBudgetExceeded { .. } => {
+                    solver::SolverErrorKind::Unavailable
+                }
+            };
+            let message = solver::solver_error_message(provider, kind);
+            solver::SolverHealthLedger::shared().record_failure(&proxy_config.id, message);
+            AppError::DownloadSubmitUnavailable(message.into())
+        })?;
         let solver_status = response.status();
         if solver_status == reqwest::StatusCode::TOO_MANY_REQUESTS
             || solver_status.is_server_error()
@@ -1192,9 +1207,20 @@ impl PrioritizedDownloadClientRouter {
             solver::SolverHealthLedger::shared().record_failure(&proxy_config.id, message);
             return Err(AppError::DownloadSubmitUnavailable(message.into()));
         }
-        let body = match read_response_body_bounded(response, SOLVER_RESPONSE_MAX_BYTES).await {
-            Ok(body) => body,
-            Err(BoundedResponseBodyError::Read(error)) => {
+        let body = match tokio::time::timeout_at(
+            solver_deadline,
+            read_response_body_bounded(response, SOLVER_RESPONSE_MAX_BYTES),
+        )
+        .await
+        {
+            Err(_) => {
+                let message =
+                    solver::solver_error_message(provider, solver::SolverErrorKind::Timeout);
+                solver::SolverHealthLedger::shared().record_failure(&proxy_config.id, message);
+                return Err(AppError::DownloadSubmitUnavailable(message.into()));
+            }
+            Ok(Ok(body)) => body,
+            Ok(Err(BoundedResponseBodyError::Read(error))) => {
                 debug!(
                     proxy_config_id = proxy_config.id.as_str(),
                     is_timeout = error.is_timeout(),
@@ -1207,7 +1233,7 @@ impl PrioritizedDownloadClientRouter {
                 solver::SolverHealthLedger::shared().record_failure(&proxy_config.id, message);
                 return Err(AppError::DownloadSubmitUnavailable(message.into()));
             }
-            Err(BoundedResponseBodyError::TooLarge) => {
+            Ok(Err(BoundedResponseBodyError::TooLarge)) => {
                 let message = format!(
                     "{provider_name} returned a response larger than Scryer's download artifact limit."
                 );
@@ -4180,6 +4206,18 @@ mod tests {
             artifact,
             ResolvedDownloadArtifact::Nzb { bytes, .. } if bytes == b"<nzb></nzb>"
         ));
+        let requests = server.received_requests().await.expect("recorded requests");
+        let solver_request = requests
+            .iter()
+            .find(|request| request.url.path() == "/v1")
+            .expect("solver request");
+        assert_eq!(
+            solver_request
+                .headers
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok()),
+            Some(scryer_outbound_http::INDEXER_PROXY_USER_AGENT)
+        );
     }
 
     #[tokio::test]
@@ -4907,6 +4945,7 @@ mod tests {
                 download_client_item_id: "qbit-1".to_string(),
                 download_id: None,
                 name: "Qbit Complete".to_string(),
+                nzb_name: None,
                 dest_dir: "/downloads/qbit".to_string(),
                 category: None,
                 size_bytes: None,
@@ -7211,6 +7250,7 @@ mod tests {
                 download_client_item_id: "a-1".to_string(),
                 download_id: None,
                 name: "A 1".to_string(),
+                nzb_name: None,
                 dest_dir: "/downloads/a-1".to_string(),
                 category: None,
                 size_bytes: None,
@@ -7223,6 +7263,7 @@ mod tests {
                 download_client_item_id: "a-2".to_string(),
                 download_id: None,
                 name: "A 2".to_string(),
+                nzb_name: None,
                 dest_dir: "/downloads/a-2".to_string(),
                 category: None,
                 size_bytes: None,
@@ -7237,6 +7278,7 @@ mod tests {
                 download_client_item_id: "b-1".to_string(),
                 download_id: None,
                 name: "B 1".to_string(),
+                nzb_name: None,
                 dest_dir: "/downloads/b-1".to_string(),
                 category: None,
                 size_bytes: None,
@@ -7249,6 +7291,7 @@ mod tests {
                 download_client_item_id: "b-2".to_string(),
                 download_id: None,
                 name: "B 2".to_string(),
+                nzb_name: None,
                 dest_dir: "/downloads/b-2".to_string(),
                 category: None,
                 size_bytes: None,
@@ -7304,6 +7347,7 @@ mod tests {
                 download_client_item_id: "qbit-1".to_string(),
                 download_id: None,
                 name: "Qbit Complete".to_string(),
+                nzb_name: None,
                 dest_dir: "/downloads/qbit".to_string(),
                 category: None,
                 size_bytes: None,
@@ -7363,6 +7407,7 @@ mod tests {
                 download_client_item_id: "qbit-1".to_string(),
                 download_id: None,
                 name: "Qbit Complete".to_string(),
+                nzb_name: None,
                 dest_dir: "/downloads/qbit".to_string(),
                 category: None,
                 size_bytes: None,
@@ -7454,6 +7499,7 @@ mod tests {
                 download_client_item_id: "archive-1".to_string(),
                 download_id: None,
                 name: release_name.to_string(),
+                nzb_name: None,
                 dest_dir: root.path().to_string_lossy().into_owned(),
                 category: None,
                 size_bytes: None,
@@ -7482,6 +7528,7 @@ mod tests {
                 download_client_item_id: "archive-1".to_string(),
                 download_id: None,
                 name: name.to_string(),
+                nzb_name: None,
                 dest_dir: root.path().to_string_lossy().into_owned(),
                 category: None,
                 size_bytes: None,
@@ -7513,6 +7560,7 @@ mod tests {
                 download_client_item_id: "archive-1".to_string(),
                 download_id: None,
                 name: release_name.to_string(),
+                nzb_name: None,
                 dest_dir: root.path().to_string_lossy().into_owned(),
                 category: None,
                 size_bytes: None,
@@ -7552,6 +7600,7 @@ mod tests {
                 download_client_item_id: "remote-1".to_string(),
                 download_id: None,
                 name: "Remote Download".to_string(),
+                nzb_name: None,
                 dest_dir: "D:\\Data\\Completed\\Remote Download".to_string(),
                 category: None,
                 size_bytes: None,

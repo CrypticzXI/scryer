@@ -5,7 +5,6 @@ use super::lookup::{
 };
 use super::path_state::{CompletedDownloadPathState, evaluate_completed_download_path};
 use super::*;
-use crate::tracked_downloads::{ImportHold, UnmanagedDownloadReason};
 
 pub async fn check(app: &AppUseCase, td: &mut TrackedDownload) {
     check_with_lookup(app, td, None).await;
@@ -55,15 +54,6 @@ pub(crate) async fn check_with_lookup(
         return;
     }
 
-    if matches!(
-        td.import_hold,
-        Some(ImportHold::Unmanaged(
-            UnmanagedDownloadReason::ExternalManager
-        ))
-    ) {
-        return;
-    }
-
     let queue_identity = observed_queue_item_identity(&td.client_item);
     let queue_source_identity = queue_item_source_identity(&td.client_item);
     if let Some(state) =
@@ -97,6 +87,31 @@ pub(crate) async fn check_with_lookup(
     td.waiting_for_completed_history = false;
     td.completed_source = Some(completed.clone());
 
+    if !tracked_download_has_scryer_submission(td) {
+        if completed
+            .parameters
+            .iter()
+            .any(|(key, _)| key.trim().eq_ignore_ascii_case("drone"))
+        {
+            td.import_hold = Some(crate::tracked_downloads::ImportHold::ExternalManager);
+            return;
+        }
+        if matches!(
+            td.import_hold,
+            Some(crate::tracked_downloads::ImportHold::ExternalManager)
+        ) {
+            td.import_hold = None;
+        }
+        let snapshot = app.download_client_category_admission_snapshot().await;
+        if !crate::services::download_observation_is_admitted(
+            false,
+            observed_download_category(td, &completed),
+            snapshot.as_deref(),
+        ) {
+            return;
+        }
+    }
+
     let completed_identity = observed_completed_download_identity(&completed);
     let completed_source_identity = completed_download_source_identity(&completed);
     if let Some(state) =
@@ -123,11 +138,6 @@ pub(crate) async fn check_with_lookup(
             set_state_to_import_blocked(app, td).await;
             return;
         }
-    }
-
-    if let Some(reason) = classify_unmanaged_download(app, td, &completed).await {
-        hide_unmanaged_download(td, reason);
-        return;
     }
 
     maybe_resolve_title_from_completed_download(app, td, &completed).await;
@@ -192,11 +202,7 @@ pub(crate) async fn check_with_lookup(
             return;
         }
         TitleMatchType::IdOnly => {
-            // Match Sonarr/Radarr's conservative handling for risky ID-only
-            // matches: interactive/Scryer-origin grabs may continue, but
-            // foreign downloads that only resolved through embedded IDs still
-            // need manual confirmation before import.
-            if !td.client_item.is_scryer_origin || has_id_only_conflict(td) {
+            if has_id_only_conflict(td) {
                 if !td.status_messages.iter().any(|m| {
                     m.contains("matched by ID only") || m.contains(ID_ONLY_CONFLICT_MESSAGE)
                 }) {
@@ -229,7 +235,9 @@ pub(crate) async fn check_with_lookup(
 
     if !completed_download_allows_automatic_import(app, td, &completed).await {
         td.status_messages.clear();
-        td.warn(UNMANAGED_CATEGORY_BLOCKED_MESSAGE);
+        td.warn(
+            "Download category is known to Scryer but does not match this title's active route. Confirm the mapping with Manual Import.",
+        );
         set_state_to_import_blocked(app, td).await;
         return;
     }
@@ -247,150 +255,63 @@ pub(crate) async fn check_with_lookup(
     td.status_messages.clear();
 }
 
-async fn classify_unmanaged_download(
+fn tracked_download_has_scryer_submission(td: &TrackedDownload) -> bool {
+    td.client_item.is_scryer_origin || td.match_type == TitleMatchType::Submission
+}
+
+fn observed_download_category<'a>(
+    td: &'a TrackedDownload,
+    completed: &'a CompletedDownload,
+) -> Option<&'a str> {
+    completed
+        .category
+        .as_deref()
+        .or(td.client_item.category.as_deref())
+        .map(str::trim)
+        .filter(|category| !category.is_empty())
+}
+
+async fn completed_download_allows_automatic_import(
     app: &AppUseCase,
-    td: &mut TrackedDownload,
+    td: &TrackedDownload,
     completed: &CompletedDownload,
-) -> Option<ImportHold> {
-    // Category ownership is configuration-derived, so a previous category
-    // classification must be reconsidered whenever this completed item is
-    // checked again.
-    if matches!(
-        td.import_hold,
-        Some(
-            ImportHold::Unmanaged(UnmanagedDownloadReason::UnknownCategory)
-                | ImportHold::NoImportableVideo
-        )
-    ) {
-        td.import_hold = None;
+) -> bool {
+    if tracked_download_has_scryer_submission(td) {
+        return true;
     }
-
-    // A download Scryer submitted is definitionally not another app's, so none
-    // of the foreign signals below may be applied to it.
-    //
-    // Without this guard the category branch runs for Scryer's own grabs: if the
-    // observed category does not survive the owned-categories round-trip the item
-    // is classified ForeignCategory, short-circuited before title resolution, and
-    // silently never imported — no import row, no identity row, no status
-    // message. That is how a whole class of auto-grabbed series imports
-    // disappeared while their releases logged `decision="eligible"`.
-    //
-    // The trusted set mirrors completed_download_allows_automatic_import so the
-    // two gates cannot disagree about what counts as Scryer's own work.
-    if td.client_item.is_scryer_origin
-        || matches!(
-            td.match_type,
-            TitleMatchType::Submission | TitleMatchType::ClientParameter
-        )
+    let Some(category) = observed_download_category(td, completed) else {
+        return false;
+    };
+    let Some(title_id) = td.title_id.as_deref() else {
+        return false;
+    };
+    let title = match app.services.catalog.titles.get_by_id(title_id).await {
+        Ok(Some(title)) => title,
+        Ok(None) => return false,
+        Err(error) => {
+            tracing::warn!(title_id, error = %error, "could not load title for category admission");
+            return false;
+        }
+    };
+    match app
+        .effective_download_client_category_for_title(&title, &td.client_id)
+        .await
     {
-        return None;
-    }
-
-    if completed
-        .parameters
-        .iter()
-        .any(|(key, _)| key.trim().eq_ignore_ascii_case("drone"))
-    {
-        return Some(ImportHold::Unmanaged(
-            UnmanagedDownloadReason::ExternalManager,
-        ));
-    }
-
-    if let Some(observed_category) = normalized_download_category(
-        completed
-            .category
-            .as_deref()
-            .or(td.client_item.category.as_deref()),
-    ) && !td.client_id.trim().is_empty()
-    {
-        // Only a category Scryer has never configured ANYWHERE marks a download
-        // as someone else's. A category that merely fails to match this
-        // particular client — the user moved the download, or two clients share
-        // a category set — is still Scryer's own work, and hiding it from
-        // activity because of a per-client mismatch made the user's download
-        // disappear with no trace. A blank category never reaches here at all
-        // (`normalized_download_category` filters it), so blank stays eligible
-        // too.
-        if app
-            .owned_download_client_categories_snapshot()
-            .await
-            .is_some_and(|snapshot| !snapshot.knows_category(observed_category))
-        {
-            return Some(ImportHold::Unmanaged(
-                UnmanagedDownloadReason::UnknownCategory,
-            ));
+        Ok(Some(expected)) => {
+            crate::services::normalize_download_client_category(category)
+                == crate::services::normalize_download_client_category(&expected)
+        }
+        Ok(None) => false,
+        Err(error) => {
+            tracing::warn!(
+                title_id,
+                client_id = td.client_id,
+                error = %error,
+                "could not resolve effective category for automatic import"
+            );
+            false
         }
     }
-
-    if !td.client_item.is_scryer_origin {
-        let path = std::path::Path::new(&completed.dest_dir);
-        match crate::import_workflow::find_video_files(path, false) {
-            Ok(video_files) if video_files.is_empty() => {
-                // Do not extract here. The import workflow needs the resolved
-                // title to stage extraction safely; this shared planner only
-                // decides whether the source remains an archive candidate.
-                let archive_candidate =
-                    match crate::archive_extractor::archive_extraction_would_be_needed(path) {
-                        Ok(needed) => needed,
-                        Err(_) => return None,
-                    };
-                if !archive_candidate && matches!(contains_archive_file(path), Ok(false)) {
-                    return Some(ImportHold::NoImportableVideo);
-                }
-            }
-            Ok(_) | Err(_) => {}
-        }
-    }
-
-    None
-}
-
-fn contains_archive_file(path: &std::path::Path) -> std::io::Result<bool> {
-    if path.is_file() {
-        return Ok(scryer_domain::is_archive_file(path));
-    }
-
-    let mut directories = vec![path.to_path_buf()];
-    while let Some(directory) = directories.pop() {
-        for entry in std::fs::read_dir(directory)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            let entry_path = entry.path();
-            if file_type.is_dir() {
-                directories.push(entry_path);
-            } else if file_type.is_file() && scryer_domain::is_archive_file(&entry_path) {
-                return Ok(true);
-            }
-        }
-    }
-
-    Ok(false)
-}
-
-fn hide_unmanaged_download(td: &mut TrackedDownload, hold: ImportHold) {
-    // The hold is runtime-only: nothing is persisted, no status
-    // message is set, and the row vanishes from every user-facing surface. That
-    // makes a misclassification observable ONLY as an absence, which is
-    // effectively undiagnosable in the field and cost a full triage cycle here.
-    // This line is the single breadcrumb that distinguishes "hidden on purpose"
-    // from "silently lost".
-    tracing::info!(
-        id = %td.id,
-        hold = ?hold,
-        client_id = %td.client_id,
-        client_type = %td.client_type,
-        category = ?td.client_item.category,
-        is_scryer_origin = td.client_item.is_scryer_origin,
-        match_type = ?td.match_type,
-        "download held from import; hidden from user-facing download activity"
-    );
-    td.import_hold = Some(hold);
-    td.state = TrackedDownloadState::Downloading;
-    td.waiting_for_completed_history = false;
-    td.status = TrackedDownloadStatus::Ok;
-    td.status_messages.clear();
-    td.path_missing_since = None;
-    td.no_video_import_retry = None;
 }
 
 fn mark_waiting_for_completed_history(
@@ -442,77 +363,6 @@ fn durable_global_download_id(identity: &crate::DownloadSubmissionIdentity) -> b
             && download_id.chars().all(|ch| ch.is_ascii_hexdigit()))
 }
 
-async fn completed_download_allows_automatic_import(
-    app: &AppUseCase,
-    td: &TrackedDownload,
-    completed: &CompletedDownload,
-) -> bool {
-    if matches!(
-        td.match_type,
-        TitleMatchType::Submission | TitleMatchType::ClientParameter
-    ) || td.client_item.is_scryer_origin
-    {
-        return true;
-    }
-
-    let Some(observed_category) = normalized_download_category(
-        completed
-            .category
-            .as_deref()
-            .or(td.client_item.category.as_deref()),
-    ) else {
-        return true;
-    };
-
-    let Some(title_id) = td
-        .title_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return false;
-    };
-
-    let title = match app.services.catalog.titles.get_by_id(title_id).await {
-        Ok(Some(title)) => title,
-        Ok(None) => return false,
-        Err(error) => {
-            tracing::warn!(
-                title_id,
-                error = %error,
-                "completed download category gate could not load title"
-            );
-            return false;
-        }
-    };
-
-    match app
-        .effective_download_client_category_for_title(&title, &td.client_id)
-        .await
-    {
-        // Case-insensitive for the same reason as the ownership snapshot: a
-        // download client canonicalizes category names to ITS spelling and
-        // echoes that back, so `movies` configured here comes back as NZBGet's
-        // `Movies`. This gate and `knows_category` are documented as having to
-        // agree about what counts as Scryer's own work, so they must normalize
-        // identically — fixing only one would silently split them.
-        Ok(Some(expected_category)) => {
-            crate::services::normalize_owned_download_category(observed_category)
-                == crate::services::normalize_owned_download_category(&expected_category)
-        }
-        Ok(None) => false,
-        Err(error) => {
-            tracing::warn!(
-                title_id,
-                client_id = td.client_id.as_str(),
-                error = %error,
-                "completed download category gate could not resolve effective category"
-            );
-            false
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AssignedTitleProof {
     /// A raw name proved the assigned title; import may proceed.
@@ -558,6 +408,15 @@ async fn completed_download_proves_assigned_title(
             return AssignedTitleProof::Unknown;
         }
     };
+    // A Scryer submission is a durable grab-time identity. The downloader's
+    // current display label and raw artifact name cannot disprove it.
+    if matches!(
+        td.match_type,
+        TitleMatchType::Submission | TitleMatchType::ClientParameter
+    ) || td.client_item.is_scryer_origin
+    {
+        return AssignedTitleProof::Proven;
+    }
     let matcher = match app.monitored_title_matcher().await {
         Ok(matcher) => matcher,
         Err(error) => {
@@ -666,14 +525,8 @@ async fn completed_download_proves_assigned_title(
         })
     };
 
-    let folder_name = std::path::Path::new(&completed.dest_dir)
-        .file_name()
-        .and_then(|value| value.to_str());
     let mut completion_sources = Vec::<&str>::new();
-    for raw_title in [Some(completed.name.as_str()), folder_name]
-        .into_iter()
-        .flatten()
-    {
+    for raw_title in [completed.nzb_name.as_deref()].into_iter().flatten() {
         let raw_title = raw_title.trim();
         if !raw_title.is_empty() && !completion_sources.contains(&raw_title) {
             completion_sources.push(raw_title);
@@ -737,10 +590,6 @@ async fn completed_download_proves_assigned_title(
     }
 
     AssignedTitleProof::Disproven
-}
-
-fn normalized_download_category(category: Option<&str>) -> Option<&str> {
-    category.map(str::trim).filter(|value| !value.is_empty())
 }
 
 pub(super) fn has_id_only_conflict(td: &TrackedDownload) -> bool {

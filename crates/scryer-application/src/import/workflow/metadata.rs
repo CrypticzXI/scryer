@@ -8,9 +8,3 @@ fn parsed_with_quality_override(
     }
     effective
 }
-fn clear_unusable_release_title_signal(parsed: &mut ParsedReleaseMetadata) {
-    if !has_usable_release_title_signal(parsed) {
-        parsed.normalized_title.clear();
-        parsed.normalized_title_variants.clear();
-    }
-}

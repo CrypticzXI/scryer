@@ -44,38 +44,23 @@ async fn import_inner(
     mark_importing(td);
     crate::tracked_downloads::publish_runtime_tracked_download_snapshot(app, td).await;
 
-    let completed = match resolve_completed_download_origin_for_import(
-        app,
-        &completed,
-        Some(&td.client_item),
-    )
-    .await
-    {
-        Ok(ResolvedCompletedDownloadOriginForImport::Ready(completed)) => completed,
-        Ok(ResolvedCompletedDownloadOriginForImport::NoScryerOrigin) => completed,
-        Ok(ResolvedCompletedDownloadOriginForImport::Conflict { reason, detail }) => {
-            block_completed_download_origin_conflict_for_manual_review(
-                app, &completed, reason, &detail,
-            )
-            .await;
-            td.state = TrackedDownloadState::ImportBlocked;
-            td.status = TrackedDownloadStatus::Warning;
-            td.status_messages = vec![format!(
-                "Download origin scope conflicts with the matched submission ({reason}). Manual confirmation required before import."
-            )];
-            return false;
-        }
-        Err(error) => {
-            tracing::warn!(
-                id = %td.id,
-                item_id = %td.client_item.download_client_item_id,
-                error = %error,
-                "import: completed download origin resolution failed, will retry"
-            );
-            td.state = TrackedDownloadState::ImportPending;
-            return false;
-        }
-    };
+    let completed =
+        match resolve_completed_download_origin_for_import(app, &completed, Some(&td.client_item))
+            .await
+        {
+            Ok(ResolvedCompletedDownloadOriginForImport::Ready(completed)) => *completed,
+            Ok(ResolvedCompletedDownloadOriginForImport::NoScryerOrigin) => completed,
+            Err(error) => {
+                tracing::warn!(
+                    id = %td.id,
+                    item_id = %td.client_item.download_client_item_id,
+                    error = %error,
+                    "import: completed download origin resolution failed, will retry"
+                );
+                td.state = TrackedDownloadState::ImportPending;
+                return false;
+            }
+        };
 
     match crate::import_workflow::recent_download_submission_persistence_is_pending(app, &completed)
         .await
@@ -254,7 +239,7 @@ pub(super) async fn resolve_completed_download_for_import(
     };
 
     if let Some(completed) = manual_completed {
-        let completed = prepare_completed_download_for_tracked_import(app, td, completed).await;
+        let completed = prepare_completed_download_for_tracked_import(app, td, *completed).await;
         td.completed_source = Some(completed.clone());
         return Some(completed);
     }

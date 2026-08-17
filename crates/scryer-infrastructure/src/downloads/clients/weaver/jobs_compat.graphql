@@ -2,6 +2,7 @@ query JobsCompat($status: [JobStatusGql!], $limit: Int, $offset: Int) {
   jobs(status: $status, limit: $limit, offset: $offset) {
     id
     name
+    originalTitle
     status
     error
     progressPercent: progress

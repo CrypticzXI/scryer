@@ -1,9 +1,11 @@
 use crate::helpers::parse_usable_release_title;
+#[cfg(test)]
+use crate::import_title_resolution::normalize_imdb_id;
 use crate::stored_paths::{path_to_stored_string, stored_path_to_path_buf};
 use crate::{
     AcquisitionScopeCompleteTransition, AcquisitionScopeStatesQuery, AppError, AppResult,
     AppUseCase, DownloadSourceIdentity, DownloadSubmission, DownloadSubmissionIdentity,
-    ImportArtifact, ParsedEpisodeMetadata, ParsedReleaseMetadata, SubmissionScope,
+    ImportArtifact, ParsedReleaseMetadata, SubmissionScope,
     activity::NotificationMediaUpdate,
     app_usecase_post_processing::{PostProcessingContext, spawn_post_processing},
     apply_remote_path_mappings_to_completed_download,
@@ -12,8 +14,7 @@ use crate::{
     },
     effective_title_folder_path,
     helpers::{has_usable_release_title_signal, normalize_release_title_signal},
-    import_parameters::{extract_parameter, has_scryer_origin, submission_has_scryer_origin},
-    import_title_resolution::normalize_imdb_id,
+    import_parameters::{extract_parameter, submission_has_scryer_origin},
     nfo::{render_episode_nfo, render_movie_nfo, render_plexmatch, render_tvshow_nfo},
     parse_download_client_remote_path_mappings, parse_release_metadata,
     polling_worker::PollingWorker,

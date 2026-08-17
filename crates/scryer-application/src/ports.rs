@@ -3415,6 +3415,11 @@ pub trait ImportRepository: Send + Sync {
         identities: &[DownloadSourceIdentity],
     ) -> AppResult<Vec<ImportRecord>>;
 
+    /// Returns recent completed manual imports for bounded tracked-download recovery.
+    async fn list_completed_manual_imports(&self, _limit: usize) -> AppResult<Vec<ImportRecord>> {
+        Ok(Vec::new())
+    }
+
     async fn is_already_imported(&self, identity: &DownloadSourceIdentity) -> AppResult<bool>;
 
     async fn is_already_imported_by_download_id(

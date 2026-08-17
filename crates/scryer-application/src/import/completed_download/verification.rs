@@ -19,7 +19,7 @@ enum SourceVideoEpisodeResolution {
 enum ImportVerificationMode {
     Automatic,
     Manual {
-        expected_source_video_files: Option<usize>,
+        expected_mapping_count: Option<usize>,
     },
 }
 
@@ -46,7 +46,7 @@ pub async fn verify_manual_import(
     app: &AppUseCase,
     td: &TrackedDownload,
     files_imported_this_pass: usize,
-    expected_source_video_files: Option<usize>,
+    expected_mapping_count: Option<usize>,
 ) -> bool {
     verify_import_with_mode(
         app,
@@ -54,7 +54,7 @@ pub async fn verify_manual_import(
         files_imported_this_pass,
         None,
         ImportVerificationMode::Manual {
-            expected_source_video_files,
+            expected_mapping_count,
         },
     )
     .await
@@ -106,7 +106,7 @@ async fn verify_import_with_mode(
 
     let current_visible_files = match mode {
         ImportVerificationMode::Manual {
-            expected_source_video_files: Some(count),
+            expected_mapping_count: Some(count),
         } => count,
         _ => current_visible_video_file_count(app, td, completed).await,
     };
@@ -145,8 +145,8 @@ async fn verify_import_with_mode(
     let manual_source_coverage = match mode {
         ImportVerificationMode::Automatic => None,
         ImportVerificationMode::Manual {
-            expected_source_video_files,
-        } => expected_source_video_files
+            expected_mapping_count,
+        } => expected_mapping_count
             .map(|expected| expected > 0 && successful_source_files.len() >= expected),
     };
     if manual_source_coverage == Some(false) {

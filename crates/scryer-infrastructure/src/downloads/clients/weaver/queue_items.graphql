@@ -2,6 +2,7 @@ query QueueItems($filter: QueueFilterInput) {
   queueItems(filter: $filter) {
     id
     name
+    originalTitle
     state
     error
     progressPercent

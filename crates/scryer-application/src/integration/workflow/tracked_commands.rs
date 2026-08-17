@@ -1302,7 +1302,7 @@ async fn handle_tracked_download_command(
         TrackedDownloadCommand::ReconcileManualImport {
             id,
             files_imported_this_pass,
-            expected_source_video_files,
+            expected_mapping_count,
             reply,
         } => {
             let requested_id = id;
@@ -1322,7 +1322,7 @@ async fn handle_tracked_download_command(
                     app,
                     &tracked,
                     files_imported_this_pass,
-                    expected_source_video_files,
+                    expected_mapping_count,
                 )
                 .await
                 {
@@ -1377,6 +1377,55 @@ async fn handle_tracked_download_command(
                 )))
             };
             if result.is_ok() {
+                publish_runtime_tracked_download_and_activity_item(app, tracker, activity_item)
+                    .await;
+            }
+            let _ = reply.send(result);
+        }
+        TrackedDownloadCommand::MarkImportedIfNonterminal {
+            source_identity,
+            reply,
+        } => {
+            let Some(id) = tracker.cached_id_for_source_identity(&source_identity) else {
+                let _ = reply.send(Ok(false));
+                return;
+            };
+            if tracked_work_in_flight.contains(&id) {
+                let _ = reply.send(Err(AppError::Validation(format!(
+                    "tracked download {} is busy processing",
+                    source_identity.item_id
+                ))));
+                return;
+            }
+            let Some(tracked) = tracker.find(&id) else {
+                let _ = reply.send(Ok(false));
+                return;
+            };
+            if tracked.state == TrackedDownloadState::Imported {
+                let _ = reply.send(Ok(true));
+                return;
+            }
+            if tracked.state.is_terminal() {
+                let _ = reply.send(Ok(false));
+                return;
+            }
+
+            let mut activity_item = None;
+            let result = if let Some(tracked) = tracker.find_mut(&id) {
+                tracked.state = TrackedDownloadState::Imported;
+                tracked.status = TrackedDownloadStatus::Ok;
+                tracked.status_messages.clear();
+                activity_item = Some(tracked_download_activity_queue_item(tracked));
+                tracker
+                    .persist_terminal_state(app, &id, TrackedDownloadState::Imported)
+                    .await;
+                finalize_tracked_terminal_state(app, tracker, &id, TrackedDownloadState::Imported)
+                    .await;
+                Ok(true)
+            } else {
+                Ok(false)
+            };
+            if matches!(result, Ok(true)) {
                 publish_runtime_tracked_download_and_activity_item(app, tracker, activity_item)
                     .await;
             }

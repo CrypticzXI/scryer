@@ -84,25 +84,27 @@ fn parse_indexer_config_json(
 }
 fn indexer_connection_url_field(
     fields: &[scryer_domain::ConfigFieldDef],
-) -> AppResult<&scryer_domain::ConfigFieldDef> {
+) -> AppResult<Option<&scryer_domain::ConfigFieldDef>> {
     let mut connection_fields = fields
         .iter()
         .filter(|field| field.role == Some(scryer_domain::ConfigFieldRole::ConnectionUrl));
-    let field = connection_fields.next().ok_or_else(|| {
-        AppError::Validation("indexer provider is missing connection_url config field".into())
-    })?;
+    let Some(field) = connection_fields.next() else {
+        return Ok(None);
+    };
     if connection_fields.next().is_some() {
         return Err(AppError::Validation(
             "indexer provider declares multiple connection_url config fields".into(),
         ));
     }
-    Ok(field)
+    Ok(Some(field))
 }
 pub(crate) fn derive_indexer_base_url_from_config_fields(
     fields: &[scryer_domain::ConfigFieldDef],
     config_json: Option<&str>,
 ) -> AppResult<String> {
-    let field = indexer_connection_url_field(fields)?;
+    let Some(field) = indexer_connection_url_field(fields)? else {
+        return Ok(String::new());
+    };
     let object = parse_indexer_config_json(config_json)?;
     let raw = object
         .get(&field.key)

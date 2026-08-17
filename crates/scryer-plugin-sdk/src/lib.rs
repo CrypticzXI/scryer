@@ -1983,6 +1983,11 @@ pub struct PluginCompletedDownload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub info_hash: Option<String>,
     pub name: String,
+    /// Canonical original NZB/release name, distinct from the download
+    /// client's mutable display name. Optional for compatibility with older
+    /// download-client plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nzb_name: Option<String>,
     pub dest_dir: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,

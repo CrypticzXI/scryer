@@ -9,6 +9,8 @@ pub async fn import_completed_download(
         actor,
         completed,
         CompletedImportIdentityPolicy::RequireSubmission,
+        None,
+        None,
     )
     .await
 }
@@ -32,8 +34,34 @@ pub(crate) async fn import_completed_download_for_manual_review_with_permit(
         actor,
         completed,
         CompletedImportIdentityPolicy::AllowUnresolved,
+        None,
+        None,
     )
     .await
+}
+
+pub(crate) async fn import_completed_download_for_manual_review_with_title_override(
+    app: &AppUseCase,
+    actor: &User,
+    completed: &CompletedDownload,
+    title_id: &str,
+    import_permit_held: bool,
+    release_evidence: Option<&ReleaseEvidence>,
+) -> AppResult<ImportResult> {
+    let import = import_completed_download_with_identity_policy(
+        app,
+        actor,
+        completed,
+        CompletedImportIdentityPolicy::AllowUnresolved,
+        Some(title_id),
+        release_evidence,
+    );
+    if import_permit_held {
+        import.await
+    } else {
+        let _import_permit = app.runtime.imports.execution_coordinator.acquire().await;
+        import.await
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,8 +75,18 @@ async fn import_completed_download_with_identity_policy(
     actor: &User,
     completed: &CompletedDownload,
     identity_policy: CompletedImportIdentityPolicy,
+    manual_title_id: Option<&str>,
+    release_evidence: Option<&ReleaseEvidence>,
 ) -> AppResult<ImportResult> {
-    let request = match prepare_completed_import_request(app, completed, identity_policy).await? {
+    let request = match prepare_completed_import_request(
+        app,
+        completed,
+        identity_policy,
+        manual_title_id,
+        release_evidence,
+    )
+    .await?
+    {
         CompletedImportProgress::Ready(request) => request,
         CompletedImportProgress::Finished(result) => return Ok(result),
     };
@@ -62,8 +100,25 @@ async fn import_completed_download_with_identity_policy(
 
 struct CompletedImportRequest {
     completed: CompletedDownload,
+    release_evidence: ReleaseEvidence,
+    manual_title_id: Option<String>,
     import_id: String,
     started_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct CompletedImportRequestPayload {
+    completed: CompletedDownload,
+    release_evidence: ReleaseEvidence,
+    #[serde(default)]
+    manual_title_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum StoredCompletedImportRequestPayload {
+    Current(CompletedImportRequestPayload),
+    Legacy(CompletedDownload),
 }
 
 enum CompletedImportProgress {
@@ -74,69 +129,59 @@ enum CompletedImportProgress {
 async fn prepare_completed_import_request(
     app: &AppUseCase,
     completed: &CompletedDownload,
-    identity_policy: CompletedImportIdentityPolicy,
+    _identity_policy: CompletedImportIdentityPolicy,
+    manual_title_id: Option<&str>,
+    release_evidence_override: Option<&ReleaseEvidence>,
 ) -> AppResult<CompletedImportProgress> {
     let mut completed = completed.clone();
     remap_completed_download_for_client(app, &mut completed).await;
     let started_at = Utc::now();
     let source_identity = completed_download_identity(&completed);
+    let persisted_request = app
+        .services
+        .workflow
+        .imports
+        .list_imports_for_identities(std::slice::from_ref(&source_identity))
+        .await?
+        .into_iter()
+        .find_map(|record| {
+            serde_json::from_str::<StoredCompletedImportRequestPayload>(&record.payload_json)
+                .ok()
+                .and_then(|payload| match payload {
+                    StoredCompletedImportRequestPayload::Current(payload) => Some(payload),
+                    StoredCompletedImportRequestPayload::Legacy(completed) => {
+                        let _ = completed;
+                        None
+                    }
+                })
+        });
     let mut submission_resolution =
         resolve_completed_download_submission(app, &completed, None).await?;
 
-    if identity_policy == CompletedImportIdentityPolicy::AllowUnresolved
-        && matches!(
-            submission_resolution,
-            CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
-                | CompletedDownloadSubmissionResolution::MissingDownloadId { .. }
-        )
-    {
-        submission_resolution = CompletedDownloadSubmissionResolution::Foreign;
+    // A completion that cannot resolve a durable Scryer submission is an
+    // observation, not another application's property. It remains eligible
+    // for the normal import flow using canonical NZB evidence.
+    if matches!(
+        submission_resolution,
+        CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
+            | CompletedDownloadSubmissionResolution::MissingDownloadId { .. }
+    ) {
+        submission_resolution = CompletedDownloadSubmissionResolution::DownloaderObservation;
     }
-
-    if let CompletedDownloadSubmissionResolution::AmbiguousDownloadId {
-        download_id,
-        matches,
-    } = &submission_resolution
+    let release_evidence = release_evidence_override
+        .cloned()
+        .or_else(|| {
+            persisted_request
+                .as_ref()
+                .map(|request| request.release_evidence.clone())
+        })
+        .map(Ok)
+        .unwrap_or_else(|| release_evidence_for_resolution(&completed, &submission_resolution))?;
+    if let Some(request) = persisted_request.as_ref()
+        && matches!(release_evidence, ReleaseEvidence::ScryerSubmission { .. })
     {
-        block_completed_download_identity_for_manual_review(
-            app,
-            &completed,
-            "ambiguous_download_id",
-            &format!("download id matched {matches} submissions: {download_id}"),
-        )
-        .await;
-        let result = ImportResult {
-            decision: ImportDecision::Rejected,
-            skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
-            error_message: Some(format!(
-                "DownloadId matched {matches} submissions; manual review is required: {download_id}"
-            )),
-            ..base_completed_import_result("", &completed, started_at)
-        };
-        return Ok(CompletedImportProgress::Finished(result));
+        completed.parameters = request.completed.parameters.clone();
     }
-    if let CompletedDownloadSubmissionResolution::MissingDownloadId { identity } =
-        &submission_resolution
-    {
-        block_completed_download_identity_for_manual_review(
-            app,
-            &completed,
-            "missing_download_id",
-            &format!("download_id={:?}", identity.download_id),
-        )
-        .await;
-        let result = ImportResult {
-            decision: ImportDecision::Rejected,
-            skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
-            error_message: Some(format!(
-                "Download has a DownloadId but no matching Scryer submission; manual review is required: download_id={:?}",
-                identity.download_id
-            )),
-            ..base_completed_import_result("", &completed, started_at)
-        };
-        return Ok(CompletedImportProgress::Finished(result));
-    }
-
     // 1. DEDUP CHECK
     if completed_download_already_imported_for_current_attempt(app, &completed, &submission_resolution)
         .await?
@@ -144,7 +189,7 @@ async fn prepare_completed_import_request(
         let result = ImportResult {
             decision: ImportDecision::Skipped,
             skip_reason: Some(ImportSkipReason::AlreadyImported),
-            ..base_completed_import_result("", &completed, started_at)
+            ..base_completed_import_result("", &completed, &release_evidence, started_at)
         };
         return Ok(CompletedImportProgress::Finished(result));
     }
@@ -162,6 +207,13 @@ async fn prepare_completed_import_request(
             ImportType::MovieDownload
         }
     };
+    let resolved_manual_title_id = manual_title_id
+        .map(str::to_string)
+        .or_else(|| {
+            persisted_request
+                .as_ref()
+                .and_then(|request| request.manual_title_id.clone())
+        });
     let import_id = app
         .services
         .workflow
@@ -169,13 +221,20 @@ async fn prepare_completed_import_request(
         .queue_import_request_with_identity(
             source_identity,
             import_type.as_str().to_string(),
-            serde_json::to_string(&completed).unwrap_or_default(),
+            serde_json::to_string(&CompletedImportRequestPayload {
+                completed: completed.clone(),
+                release_evidence: release_evidence.clone(),
+                manual_title_id: resolved_manual_title_id.clone(),
+            })
+            .unwrap_or_default(),
             completed_download_import_identity_for_resolution(&completed, &submission_resolution),
         )
         .await?;
 
     Ok(CompletedImportProgress::Ready(CompletedImportRequest {
         completed,
+        release_evidence,
+        manual_title_id: resolved_manual_title_id,
         import_id,
         started_at,
     }))
@@ -202,6 +261,7 @@ async fn validate_completed_import_source_and_mark_processing(
             ..base_completed_import_result(
                 &request.import_id,
                 &request.completed,
+                &request.release_evidence,
                 request.started_at,
             )
         };
@@ -231,6 +291,8 @@ async fn execute_completed_import(
         actor,
         &request.import_id,
         &request.completed,
+        &request.release_evidence,
+        request.manual_title_id.as_deref(),
         request.started_at,
         None,
     ))
@@ -255,7 +317,12 @@ async fn finalize_completed_import_error(
         decision: ImportDecision::Failed,
         skip_reason,
         error_message: Some(error.to_string()),
-        ..base_completed_import_result(&request.import_id, &request.completed, request.started_at)
+        ..base_completed_import_result(
+            &request.import_id,
+            &request.completed,
+            &request.release_evidence,
+            request.started_at,
+        )
     };
     let result_json = serde_json::to_string(&result).ok();
     let _ = app

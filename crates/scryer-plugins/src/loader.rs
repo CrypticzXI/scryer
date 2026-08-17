@@ -1761,16 +1761,8 @@ fn validate_indexer_config_contract(descriptor: &PluginDescriptor) -> bool {
         .filter(|field| field.role == Some(ConfigFieldRole::ConnectionUrl))
         .count();
 
-    let has_connection_url = match connection_url_count {
-        1 => true,
-        0 => {
-            warn!(
-                plugin = descriptor.id.as_str(),
-                provider_type = descriptor.provider_type(),
-                "indexer descriptor rejected: missing connection_url config field role"
-            );
-            false
-        }
+    let has_valid_connection_url_count = match connection_url_count {
+        0 | 1 => true,
         _ => {
             warn!(
                 plugin = descriptor.id.as_str(),
@@ -1780,7 +1772,7 @@ fn validate_indexer_config_contract(descriptor: &PluginDescriptor) -> bool {
             false
         }
     };
-    if !has_connection_url {
+    if !has_valid_connection_url_count {
         return false;
     }
 
@@ -4148,7 +4140,7 @@ mod tests {
     }
 
     #[test]
-    fn indexers_without_connection_field_are_rejected() {
+    fn indexers_without_connection_fields_are_accepted() {
         let mut descriptor = descriptor("usenet_indexer");
 
         let ProviderDescriptor::Indexer(indexer) = &mut descriptor.provider else {
@@ -4156,7 +4148,7 @@ mod tests {
         };
         indexer.config_fields.clear();
 
-        assert!(!validate_indexer_descriptor(
+        assert!(validate_indexer_descriptor(
             &descriptor,
             PluginLoadSource::External { first_party: false }
         ));

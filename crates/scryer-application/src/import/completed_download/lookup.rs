@@ -546,26 +546,36 @@ pub(super) async fn maybe_resolve_title_from_completed_download(
         return;
     };
 
-    let folder_name = Path::new(&completed.dest_dir)
-        .file_name()
-        .and_then(|value| value.to_str());
-    let release_candidates = [Some(completed.name.as_str()), folder_name];
+    let mut release_candidates = completed
+        .nzb_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .into_iter()
+        .collect::<Vec<_>>();
+    // A downloader observation without a canonical NZB name may use the
+    // actual media filename as its release claim. Never use a display label or
+    // destination folder as a substitute.
+    if release_candidates.is_empty()
+        && let Ok(video_files) =
+            crate::import_workflow::find_video_files(Path::new(&completed.dest_dir), false)
+    {
+        release_candidates.extend(video_files.into_iter().filter_map(|file| {
+            file.file_stem()
+                .and_then(|name| name.to_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        }));
+    }
 
-    for release_title in release_candidates.into_iter().flatten() {
-        let release_title = release_title.trim();
-        if release_title.is_empty() {
-            continue;
-        }
-
-        let parsed = crate::parse_release_metadata(release_title);
+    for release_title in release_candidates {
+        let parsed = crate::parse_release_metadata(&release_title);
         let resolved = if parsed.episode.is_some() {
             matcher.resolve_episode(
                 &parsed,
-                td.client_item
-                    .facet
-                    .as_deref()
-                    .or(td.facet.as_deref())
-                    .or(completed.category.as_deref()),
+                td.client_item.facet.as_deref().or(td.facet.as_deref()),
             )
         } else {
             matcher.resolve_movie(&parsed)
@@ -587,7 +597,7 @@ pub(super) async fn maybe_resolve_title_from_completed_download(
 
             td.title_id = Some(resolved.title.id.clone());
             td.facet = Some(resolved.title.facet.as_str().to_string());
-            td.source_title = Some(release_title.to_string());
+            td.source_title = Some(release_title);
             if td.match_type != TitleMatchType::IdOnly {
                 td.match_type = resolved.match_type;
             }

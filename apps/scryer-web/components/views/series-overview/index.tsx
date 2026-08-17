@@ -445,8 +445,10 @@ export function SeriesOverviewView({
       const episodeId = episode.id;
 
       if (!hasDownloadClients) {
+        episodeSearchAbortByIdRef.current[episodeId]?.abort();
+        delete episodeSearchAbortByIdRef.current[episodeId];
         setSearchBlockedByEpisode((prev) => ({ ...prev, [episodeId]: true }));
-        dispatchEpisodePanel({ type: "SET_SEARCH_RESULTS", episodeId, results: [] });
+        dispatchEpisodePanel({ type: "RESET_SEARCH", episodeId });
         dispatchEpisodePanel({ type: "SET_SEARCH_LOADING", episodeId, loading: false });
         return;
       }
@@ -457,6 +459,10 @@ export function SeriesOverviewView({
         delete next[episodeId];
         return next;
       });
+      episodeSearchAbortByIdRef.current[episodeId]?.abort();
+      const abortController = new AbortController();
+      episodeSearchAbortByIdRef.current[episodeId] = abortController;
+      dispatchEpisodePanel({ type: "RESET_SEARCH", episodeId });
       dispatchEpisodePanel({ type: "SET_SEARCH_LOADING", episodeId, loading: true });
 
       const collection = collections.find((c) => c.id === episode.collectionId);
@@ -465,9 +471,6 @@ export function SeriesOverviewView({
         || "1";
       const episodeNum = episode.episodeNumber?.trim().replace(/\D+/g, "") || "1";
 
-      episodeSearchAbortByIdRef.current[episodeId]?.abort();
-      const abortController = new AbortController();
-      episodeSearchAbortByIdRef.current[episodeId] = abortController;
       runIterativeReleaseSearch(client, {
         titleId: title.id,
         season: seasonNum,
@@ -477,23 +480,16 @@ export function SeriesOverviewView({
         onUpdate: (snapshot) => {
           if (abortController.signal.aborted) return;
           dispatchEpisodePanel({
-            type: "SET_SEARCH_RESULTS",
+            type: "SET_SEARCH_SNAPSHOT",
             episodeId,
             results: snapshot.releases,
+            indexers: snapshot.indexers,
           });
         },
       })
-        .then((results) => {
-          if (abortController.signal.aborted) return;
-          dispatchEpisodePanel({
-            type: "SET_SEARCH_RESULTS",
-            episodeId,
-            results,
-          });
-        })
         .catch((error) => {
           if (isAbortError(error) || abortController.signal.aborted) return;
-          dispatchEpisodePanel({ type: "SET_SEARCH_RESULTS", episodeId, results: [] });
+          dispatchEpisodePanel({ type: "RESET_SEARCH", episodeId });
         })
         .finally(() => {
           if (episodeSearchAbortByIdRef.current[episodeId] === abortController) {
@@ -594,7 +590,7 @@ export function SeriesOverviewView({
     (episode: CollectionEpisode) => {
       if (!hasDownloadClients) {
         const episodeId = episode.id;
-        dispatchEpisodePanel({ type: "SET_SEARCH_RESULTS", episodeId, results: [] });
+        dispatchEpisodePanel({ type: "RESET_SEARCH", episodeId });
         setSearchBlockedByEpisode((prev) => ({ ...prev, [episodeId]: true }));
         return;
       }
@@ -1120,6 +1116,7 @@ export function SeriesOverviewView({
                       canManageTitle ? onClearReleaseBlocklistEntry : undefined
                     }
                     searchResultsByEpisode={episodePanel.searchResultsByEpisode}
+                    searchIndexerProgressByEpisode={episodePanel.searchIndexerProgressByEpisode}
                     searchLoadingByEpisode={episodePanel.searchLoadingByEpisode}
                     searchBlockedByEpisode={searchBlockedByEpisode}
                     autoSearchLoadingByEpisode={episodePanel.autoSearchLoadingByEpisode}

@@ -5,7 +5,8 @@ mod tests {
         apply_manual_import_record_to_queue_item, apply_tracked_download_queue_metadata,
         canonicalize_download_queue_item_clients, classify_download_queue_item,
         collect_download_client_filter_options, dedupe_download_queue_items,
-        derive_download_queue_display_state, download_queue_client_filter_key,
+        derive_download_queue_display_state, derive_indexer_base_url_from_config_fields,
+        download_queue_client_filter_key,
         prepare_next_tracked_download_background_work_dispatch,
         prepare_tracked_download_background_work_dispatch,
         reconcile_duplicate_terminal_source_states, source_provider_label,
@@ -18,6 +19,15 @@ mod tests {
         ImportRecord, ImportStatus, ImportTransferPhase, ImportType, TitleMatchType,
         TrackedDownloadState, TrackedDownloadStatus,
     };
+
+    #[test]
+    fn fixed_endpoint_indexer_without_config_fields_has_no_derived_base_url() {
+        assert_eq!(
+            derive_indexer_base_url_from_config_fields(&[], Some("{}"))
+                .expect("configless indexer is valid"),
+            ""
+        );
+    }
 
     fn item(id: &str, state: DownloadQueueState) -> DownloadQueueItem {
         DownloadQueueItem {

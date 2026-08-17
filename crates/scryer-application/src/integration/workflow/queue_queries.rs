@@ -22,7 +22,7 @@ struct TrackedDownloadBackgroundWorkResult {
 #[derive(Clone, Debug)]
 pub(crate) enum ManualImportSourceResolution {
     Eligible {
-        completed: Option<CompletedDownload>,
+        completed: Option<Box<CompletedDownload>>,
     },
     NotEligible {
         message: String,
@@ -773,7 +773,7 @@ impl AppUseCase {
     }
 }
 impl AppUseCase {
-    async fn filter_unmanaged_download_queue_items(
+    async fn filter_ineligible_download_queue_items(
         &self,
         items: Vec<DownloadQueueItem>,
     ) -> Vec<DownloadQueueItem> {
@@ -792,45 +792,25 @@ impl AppUseCase {
             Err(_) => HashMap::new(),
         };
 
-        let category_ownership = self.owned_download_client_categories_snapshot().await;
-
+        let category_admission = self.download_client_category_admission_snapshot().await;
         items
             .into_iter()
             .filter(|item| {
                 let tracked_id = tracked_download_id_for_item(item);
-                match classifications.get(&tracked_id) {
+                if matches!(
+                    classifications.get(&tracked_id),
                     Some(
-                        crate::tracked_downloads::ImportHold::Unmanaged(
-                            crate::tracked_downloads::UnmanagedDownloadReason::ExternalManager,
-                        )
-                        | crate::tracked_downloads::ImportHold::NoImportableVideo,
-                    ) => return false,
-                    // UnknownCategory is re-evaluated below against the current
-                    // ownership snapshot rather than trusted from the cache,
-                    // because category ownership is configuration-derived and
-                    // can change without the download changing.
-                    Some(crate::tracked_downloads::ImportHold::Unmanaged(
-                        crate::tracked_downloads::UnmanagedDownloadReason::UnknownCategory,
-                    ))
-                    | None => {}
+                        crate::tracked_downloads::ImportHold::NoImportableVideo
+                            | crate::tracked_downloads::ImportHold::ExternalManager
+                    )
+                ) {
+                    return false;
                 }
-
-                let Some(category) = item
-                    .category
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|category| !category.is_empty())
-                else {
-                    return true;
-                };
-                let client_id = item.client_id.trim();
-                if client_id.is_empty() {
-                    return true;
-                }
-
-                category_ownership
-                    .as_ref()
-                    .is_none_or(|ownership| ownership.owns_category(client_id, category))
+                crate::services::download_observation_is_admitted(
+                    item.is_scryer_origin,
+                    item.category.as_deref(),
+                    category_admission.as_deref(),
+                )
             })
             .collect()
     }
@@ -879,7 +859,7 @@ impl AppUseCase {
         let items = self
             .enrich_download_queue_items(&enabled_clients, items, use_tracked_runtime_snapshot)
             .await;
-        Ok(self.filter_unmanaged_download_queue_items(items).await)
+        Ok(self.filter_ineligible_download_queue_items(items).await)
     }
 }
 impl AppUseCase {

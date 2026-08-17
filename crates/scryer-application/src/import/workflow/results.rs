@@ -21,13 +21,29 @@ pub async fn retry_failed_import(
         )));
     }
 
-    let mut completed: CompletedDownload = serde_json::from_str(&record.payload_json)
+    let payload: StoredCompletedImportRequestPayload = serde_json::from_str(&record.payload_json)
         .map_err(|e| AppError::Repository(format!("failed to deserialize import payload: {e}")))?;
+    let (mut completed, persisted_release_evidence, manual_title_id) = match payload {
+        StoredCompletedImportRequestPayload::Current(payload) => (
+            payload.completed,
+            Some(payload.release_evidence),
+            payload.manual_title_id,
+        ),
+        StoredCompletedImportRequestPayload::Legacy(completed) => (completed, None, None),
+    };
     remap_completed_download_for_client(app, &mut completed).await;
 
-    if let Some(title_id) = extract_parameter(&completed.parameters, "*scryer_title_id")
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    let authorization_title_id = persisted_release_evidence
+        .as_ref()
+        .and_then(ReleaseEvidence::title_id)
+        .map(str::to_string)
+        .or_else(|| manual_title_id.clone())
+        .or_else(|| {
+            extract_parameter(&completed.parameters, "*scryer_title_id")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        });
+    if let Some(title_id) = authorization_title_id
     {
         let title = app
             .services
@@ -60,7 +76,33 @@ pub async fn retry_failed_import(
         .await?;
 
     let started_at = Utc::now();
-    match run_import(app, actor, import_id, &completed, started_at, password).await {
+    let release_evidence = match persisted_release_evidence {
+        Some(release_evidence) => release_evidence,
+        None => {
+            let mut submission_resolution =
+                resolve_completed_download_submission(app, &completed, None).await?;
+            if matches!(
+                submission_resolution,
+                CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
+                    | CompletedDownloadSubmissionResolution::MissingDownloadId { .. }
+            ) {
+                submission_resolution = CompletedDownloadSubmissionResolution::DownloaderObservation;
+            }
+            release_evidence_for_resolution(&completed, &submission_resolution)?
+        }
+    };
+    match run_import(
+        app,
+        actor,
+        import_id,
+        &completed,
+        &release_evidence,
+        manual_title_id.as_deref(),
+        started_at,
+        password,
+    )
+    .await
+    {
         Ok(result) => Ok(result),
         Err(error) => {
             let skip_reason = if crate::archive_extractor::is_password_required_error(&error) {
@@ -72,7 +114,12 @@ pub async fn retry_failed_import(
                 decision: ImportDecision::Failed,
                 skip_reason,
                 error_message: Some(error.to_string()),
-                ..base_completed_import_result(import_id, &completed, started_at)
+                ..base_completed_import_result(
+                    import_id,
+                    &completed,
+                    &release_evidence,
+                    started_at,
+                )
             };
             let result_json = serde_json::to_string(&result).ok();
             app.update_import_status_and_notify(import_id, ImportStatus::Failed, result_json)

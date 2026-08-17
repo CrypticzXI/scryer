@@ -1273,6 +1273,7 @@ export const beginManualImportSelectionMutation = `mutation BeginManualImportSel
       parsedEpisodes
       suggestedEpisodeId
       suggestedEpisodeLabel
+      suggestedSeriesMovieLinkId
     }
     availableEpisodes {
       id

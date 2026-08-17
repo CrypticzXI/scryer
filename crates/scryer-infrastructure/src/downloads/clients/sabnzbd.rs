@@ -1960,6 +1960,16 @@ fn extract_sabnzbd_category(slot: &serde_json::Map<String, Value>) -> Option<Str
         .map(str::to_string)
 }
 
+fn extract_sabnzbd_nzb_name(slot: &serde_json::Map<String, Value>) -> Option<String> {
+    slot.get("nzb_name")
+        .or_else(|| slot.get("nzbName"))
+        .or_else(|| slot.get("nzbname"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 fn completed_downloads_from_sab_slots(
     slots: &[Value],
     cutoff_ts: Option<i64>,
@@ -2012,6 +2022,7 @@ fn completed_downloads_from_sab_slots(
                 download_client_item_id: nzo_id.clone(),
                 download_id: Some(nzo_id),
                 name,
+                nzb_name: extract_sabnzbd_nzb_name(slot),
                 dest_dir,
                 category,
                 size_bytes,

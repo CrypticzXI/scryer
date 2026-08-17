@@ -110,6 +110,8 @@ pub(crate) enum WeaverQueueState {
 pub(crate) struct WeaverQueueItem {
     pub id: u64,
     pub name: String,
+    #[serde(default)]
+    pub original_title: Option<String>,
     pub state: WeaverQueueState,
     pub error: Option<String>,
     pub progress_percent: f64,
@@ -173,6 +175,8 @@ struct PublishedJobsPayload {
 struct PublishedWeaverJob {
     id: u64,
     name: String,
+    #[serde(default)]
+    original_title: Option<String>,
     status: WeaverQueueState,
     error: Option<String>,
     progress_percent: f64,
@@ -1007,6 +1011,7 @@ fn weaver_item_to_completed_download(job: &WeaverQueueItem) -> Option<CompletedD
         download_client_item_id: job.id.to_string(),
         download_id: observed_identity.download_id,
         name: job.name.clone(),
+        nzb_name: job.original_title.clone(),
         dest_dir: output_dir,
         category: job.category.clone(),
         size_bytes: Some(job.total_bytes as i64),
@@ -1019,6 +1024,7 @@ fn compat_job_to_queue_item(job: PublishedWeaverJob) -> WeaverQueueItem {
     WeaverQueueItem {
         id: job.id,
         name: job.name,
+        original_title: job.original_title,
         state: job.status,
         error: job.error,
         progress_percent: job.progress_percent,

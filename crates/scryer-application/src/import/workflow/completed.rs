@@ -77,26 +77,6 @@ fn completed_download_identity(completed: &CompletedDownload) -> DownloadSourceI
         &completed.download_client_item_id,
     )
 }
-async fn completed_import_purpose(
-    app: &AppUseCase,
-    completed: &CompletedDownload,
-) -> crate::DownloadSubmissionPurpose {
-    let identity = completed_download_identity(completed);
-    if let Ok(Some(submission)) = app
-        .services
-        .workflow
-        .download_submissions
-        .find_by_client_item_id(&identity)
-        .await
-    {
-        return submission.purpose;
-    }
-
-    extract_parameter(&completed.parameters, "*scryer_import_purpose")
-        .as_deref()
-        .map(crate::DownloadSubmissionPurpose::from_label)
-        .unwrap_or_default()
-}
 fn additional_import_dest_path(
     canonical_dest_path: &Path,
     parsed: &ParsedReleaseMetadata,
@@ -151,15 +131,10 @@ const SCRYER_TITLE_ID_PARAM: &str = "*scryer_title_id";
 const SCRYER_FACET_PARAM: &str = "*scryer_facet";
 const SCRYER_COLLECTION_ID_PARAM: &str = "*scryer_collection_id";
 const SCRYER_SERIES_MOVIE_LINK_ID_PARAM: &str = "*scryer_series_movie_link_id";
-const COMPLETED_ORIGIN_SCOPE_CONFLICT: &str = "origin_scope_conflict";
 
 #[derive(Clone, Debug)]
 enum CompletedDownloadOriginResolution {
-    Ready(CompletedDownload),
-    Conflict {
-        reason: &'static str,
-        detail: String,
-    },
+    Ready(Box<CompletedDownload>),
     NoScryerOrigin,
 }
 
@@ -171,154 +146,64 @@ fn resolve_completed_download_origin(
         CompletedDownloadSubmissionResolution::Matched(matched)
             if submission_has_scryer_origin(&matched.submission) =>
         {
-            match reconciled_scryer_origin_parameters(
+            let mut resolved = completed.clone();
+            resolved.parameters = authoritative_scryer_origin_parameters(
                 &completed.parameters,
                 &matched.submission,
-            ) {
-                Ok(parameters) => {
-                    let mut resolved = completed.clone();
-                    resolved.parameters = parameters;
-                    CompletedDownloadOriginResolution::Ready(resolved)
-                }
-                Err(detail) => CompletedDownloadOriginResolution::Conflict {
-                    reason: COMPLETED_ORIGIN_SCOPE_CONFLICT,
-                    detail,
-                },
-            }
-        }
-        _ if has_scryer_origin(&completed.parameters) => {
-            CompletedDownloadOriginResolution::Ready(completed.clone())
+            );
+            resolved.nzb_name = matched.submission.source_title.clone();
+            CompletedDownloadOriginResolution::Ready(Box::new(resolved))
         }
         _ => CompletedDownloadOriginResolution::NoScryerOrigin,
     }
 }
 
-fn reconciled_scryer_origin_parameters(
+fn authoritative_scryer_origin_parameters(
     parameters: &[(String, String)],
     submission: &DownloadSubmission,
-) -> Result<Vec<(String, String)>, String> {
-    let mut reconciled = parameters.to_vec();
-    fill_missing_or_compatible_parameter(
-        &mut reconciled,
-        SCRYER_TITLE_ID_PARAM,
-        &submission.title_id,
-        "title id",
-    )?;
-    fill_missing_or_compatible_parameter(
-        &mut reconciled,
-        SCRYER_FACET_PARAM,
-        &submission.facet,
-        "facet",
-    )?;
-    reconcile_submission_scope_parameters(&mut reconciled, &submission.scope)?;
-    Ok(reconciled)
-}
-
-fn reconcile_submission_scope_parameters(
-    parameters: &mut Vec<(String, String)>,
-    scope: &SubmissionScope,
-) -> Result<(), String> {
-    match scope {
-        SubmissionScope::Collection { collection_id } => {
-            reject_existing_scope_parameter(
-                parameters,
-                SCRYER_SERIES_MOVIE_LINK_ID_PARAM,
-                "series movie link id",
-                "collection",
-            )?;
-            fill_missing_or_compatible_parameter(
-                parameters,
-                SCRYER_COLLECTION_ID_PARAM,
-                collection_id,
-                "collection id",
+) -> Vec<(String, String)> {
+    let mut resolved = parameters
+        .iter()
+        .filter(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                SCRYER_TITLE_ID_PARAM
+                    | SCRYER_FACET_PARAM
+                    | SCRYER_COLLECTION_ID_PARAM
+                    | SCRYER_SERIES_MOVIE_LINK_ID_PARAM
             )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if !submission.title_id.trim().is_empty() {
+        resolved.push((
+            SCRYER_TITLE_ID_PARAM.to_string(),
+            submission.title_id.clone(),
+        ));
+    }
+    if !submission.facet.trim().is_empty() {
+        resolved.push((SCRYER_FACET_PARAM.to_string(), submission.facet.clone()));
+    }
+    match &submission.scope {
+        SubmissionScope::Collection { collection_id } => {
+            resolved.push((
+                SCRYER_COLLECTION_ID_PARAM.to_string(),
+                collection_id.clone(),
+            ));
         }
-        SubmissionScope::SeriesMovie {
-            series_movie_link_id,
-        } => fill_missing_or_compatible_parameter(
-            parameters,
-            SCRYER_SERIES_MOVIE_LINK_ID_PARAM,
-            series_movie_link_id,
-            "series movie link id",
-        ),
+        SubmissionScope::SeriesMovie { series_movie_link_id } => {
+            resolved.push((
+                SCRYER_SERIES_MOVIE_LINK_ID_PARAM.to_string(),
+                series_movie_link_id.clone(),
+            ));
+        }
         SubmissionScope::Episode { .. }
         | SubmissionScope::EpisodeSet { .. }
         | SubmissionScope::Title
-        | SubmissionScope::Orphan => {
-            reject_existing_scope_parameter(
-                parameters,
-                SCRYER_COLLECTION_ID_PARAM,
-                "collection id",
-                "non-collection",
-            )?;
-            reject_existing_scope_parameter(
-                parameters,
-                SCRYER_SERIES_MOVIE_LINK_ID_PARAM,
-                "series movie link id",
-                "non-series-movie",
-            )
-        }
+        | SubmissionScope::Orphan => {}
     }
-}
-
-fn fill_missing_or_compatible_parameter(
-    parameters: &mut Vec<(String, String)>,
-    key: &str,
-    expected: &str,
-    label: &str,
-) -> Result<(), String> {
-    let expected = expected.trim();
-    if expected.is_empty() {
-        return Ok(());
-    }
-
-    if let Some(existing) = non_empty_parameter_value(parameters, key)
-        && existing != expected
-    {
-        return Err(format!(
-            "completed download carried {label} {existing:?}, but matched submission expected {expected:?}"
-        ));
-    }
-
-    insert_missing_or_empty_parameter(parameters, key, expected.to_string());
-    Ok(())
-}
-
-fn reject_existing_scope_parameter(
-    parameters: &[(String, String)],
-    key: &str,
-    label: &str,
-    expected_scope: &str,
-) -> Result<(), String> {
-    if let Some(existing) = non_empty_parameter_value(parameters, key) {
-        return Err(format!(
-            "completed download carried {label} {existing:?}, but matched submission expected {expected_scope} scope"
-        ));
-    }
-    Ok(())
-}
-
-fn non_empty_parameter_value(parameters: &[(String, String)], key: &str) -> Option<String> {
-    parameters
-        .iter()
-        .find(|(candidate_key, _)| candidate_key == key)
-        .map(|(_, value)| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn insert_missing_or_empty_parameter(
-    parameters: &mut Vec<(String, String)>,
-    key: &str,
-    value: String,
-) {
-    if let Some((_, existing_value)) = parameters.iter_mut().find(|(name, _)| name == key) {
-        if existing_value.trim().is_empty() {
-            *existing_value = value;
-        }
-    } else {
-        parameters.push((key.to_string(), value));
-    }
+    resolved
 }
 async fn persist_completed_download_tracked_state(
     app: &AppUseCase,

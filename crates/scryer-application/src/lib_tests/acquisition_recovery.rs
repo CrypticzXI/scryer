@@ -1368,7 +1368,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
 }
 
 #[tokio::test]
-async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
+async fn parse_matched_observed_failed_download_does_not_blocklist_or_requeue() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -1384,7 +1384,7 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
         .add_title(
             &user,
             NewTitle {
-                name: "Foreign Failure Safety".into(),
+                name: "Observed Failure Safety".into(),
                 facet: MediaFacet::Movie,
                 monitored: true,
                 tags: vec![],
@@ -1433,12 +1433,12 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
         .expect("seed wanted item");
 
     let mut client_item = failed_history_item(
-        "foreign-failed-job",
-        "Foreign.Failure.Safety.2024.1080p.WEB-DL",
+        "observed-failed-job",
+        "Observed.Failure.Safety.2024.1080p.WEB-DL",
     );
     client_item.is_scryer_origin = false;
     let mut tracked_download = crate::tracked_downloads::TrackedDownload {
-        id: "nzbget:foreign-failed-job".to_string(),
+        id: "nzbget:observed-failed-job".to_string(),
         client_id: "primary".to_string(),
         client_type: "nzbget".to_string(),
         client_item,
@@ -1448,7 +1448,7 @@ async fn parse_matched_foreign_failed_download_does_not_blocklist_or_requeue() {
         status_messages: Vec::new(),
         title_id: Some(title.id.clone()),
         facet: Some("movie".to_string()),
-        source_title: Some("Foreign.Failure.Safety.2024.1080p.WEB-DL".to_string()),
+        source_title: Some("Observed.Failure.Safety.2024.1080p.WEB-DL".to_string()),
         indexer: None,
         added_at: None,
         notified_manual_interaction: false,

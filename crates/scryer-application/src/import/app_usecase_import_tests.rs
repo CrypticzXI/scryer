@@ -92,6 +92,7 @@ fn test_completed_download(name: &str, dest_dir: &std::path::Path) -> CompletedD
         download_client_item_id: "job-1".to_string(),
         download_id: None,
         name: name.to_string(),
+        nzb_name: None,
         dest_dir: dest_dir.to_string_lossy().to_string(),
         category: None,
         size_bytes: None,
@@ -100,27 +101,10 @@ fn test_completed_download(name: &str, dest_dir: &std::path::Path) -> CompletedD
     }
 }
 
-// ── has_scryer_origin ─────────────────────────────────────────────────────────
-
-#[test]
-fn has_scryer_origin_with_title_id() {
-    let params = vec![
-        ("*scryer_title_id".to_string(), "abc-123".to_string()),
-        ("category".to_string(), "movie".to_string()),
-    ];
-    assert!(has_scryer_origin(&params));
-}
-
-#[test]
-fn has_scryer_origin_without_title_id() {
-    let params = vec![("category".to_string(), "movie".to_string())];
-    assert!(!has_scryer_origin(&params));
-}
-
-#[test]
-fn has_scryer_origin_empty_params() {
-    let params: Vec<(String, String)> = vec![];
-    assert!(!has_scryer_origin(&params));
+fn observation_evidence(completed: &CompletedDownload) -> ReleaseEvidence {
+    ReleaseEvidence::DownloaderObservation {
+        nzb_name: completed.nzb_name.clone(),
+    }
 }
 
 // ── extract_parameter ─────────────────────────────────────────────────────────
@@ -266,9 +250,10 @@ fn build_augmented_movie_import_metadata_prefers_download_title_for_obfuscated_f
     std::fs::create_dir_all(&dest_dir).expect("create dest dir");
     let file_path = dest_dir.join("4f8e2c7a91b6d3e0.mkv");
     std::fs::write(&file_path, b"movie").expect("write file");
-    let completed = test_completed_download("Paper.Lantern.2012.1080p.BluRay.x264-GRP", &dest_dir);
+    let mut completed = test_completed_download("downloader display label", &dest_dir);
+    completed.nzb_name = Some("Paper.Lantern.2012.1080p.BluRay.x264-GRP".to_string());
 
-    let parsed = build_augmented_movie_import_metadata(&file_path, &completed);
+    let parsed = build_augmented_movie_import_metadata(&file_path, &observation_evidence(&completed));
 
     assert_eq!(parsed.year, Some(2012));
     assert_eq!(parsed.quality.as_deref(), Some("1080p"));
@@ -279,7 +264,7 @@ fn build_augmented_movie_import_metadata_prefers_download_title_for_obfuscated_f
 }
 
 #[test]
-fn build_augmented_movie_import_metadata_uses_immediate_parent_for_obfuscated_file() {
+fn build_augmented_movie_import_metadata_does_not_use_parent_for_obfuscated_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest_dir = dir.path().join("job-123");
     let release_dir = dest_dir.join("Paper.Lantern.2012.1080p.BluRay.x264-GRP");
@@ -288,15 +273,12 @@ fn build_augmented_movie_import_metadata_uses_immediate_parent_for_obfuscated_fi
     std::fs::write(&file_path, b"movie").expect("write file");
     let completed = test_completed_download("job-123", &dest_dir);
 
-    let parsed = build_augmented_movie_import_metadata(&file_path, &completed);
+    let parsed = build_augmented_movie_import_metadata(&file_path, &observation_evidence(&completed));
 
-    assert_eq!(parsed.normalized_title, "PAPER LANTERN");
-    assert_eq!(parsed.year, Some(2012));
-    assert_eq!(parsed.quality.as_deref(), Some("1080p"));
-    assert_eq!(
-        parsed.source.as_ref().map(|source| source.as_str()),
-        Some("BluRay")
-    );
+    assert_ne!(parsed.normalized_title, "PAPER LANTERN");
+    assert_eq!(parsed.year, None);
+    assert_eq!(parsed.quality, None);
+    assert_eq!(parsed.source, None);
 }
 
 #[test]
@@ -308,10 +290,11 @@ fn build_augmented_episode_import_metadata_prefers_download_title_for_single_obf
     std::fs::create_dir_all(&dest_dir).expect("create dest dir");
     let file_path = dest_dir.join("4f8e2c7a91b6d3e0.mkv");
     std::fs::write(&file_path, b"episode").expect("write file");
-    let completed =
-        test_completed_download("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb", &dest_dir);
+    let mut completed = test_completed_download("downloader display label", &dest_dir);
+    completed.nzb_name = Some("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string());
 
-    let parsed = build_augmented_episode_import_metadata(&file_path, &completed, false);
+    let parsed =
+        build_augmented_episode_import_metadata(&file_path, &observation_evidence(&completed));
     let episode = parsed.episode.expect("episode metadata");
 
     assert_eq!(episode.season, Some(1));
@@ -324,13 +307,15 @@ fn ambiguous_obfuscated_episode_message_explains_season_assignment() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
     std::fs::write(&file_path, b"episode").expect("write file");
-    let completed = test_completed_download(
-        "[Erai-raws].Hime-sama.Goumon.no.Jikan.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]",
-        dir.path(),
+    let mut completed = test_completed_download("downloader display label", dir.path());
+    completed.nzb_name = Some(
+        "[Erai-raws].Hime-sama.Goumon.no.Jikan.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]"
+            .to_string(),
     );
 
     assert_eq!(
-        ambiguous_obfuscated_episode_message(&file_path, &completed).as_deref(),
+        ambiguous_obfuscated_episode_message(&file_path, &observation_evidence(&completed))
+            .as_deref(),
         Some(
             "Automatic import could not choose a season for episode 9: the release name does not include a season and the downloaded filename is obfuscated. Open Manual Import and assign the correct season and episode."
         )
@@ -347,11 +332,14 @@ fn ambiguous_obfuscated_episode_message_ignores_release_with_explicit_season() {
         dir.path(),
     );
 
-    assert!(ambiguous_obfuscated_episode_message(&file_path, &completed).is_none());
+    assert!(
+        ambiguous_obfuscated_episode_message(&file_path, &observation_evidence(&completed))
+            .is_none()
+    );
 }
 
 #[test]
-fn build_augmented_episode_import_metadata_uses_immediate_parent_for_obfuscated_file() {
+fn build_augmented_episode_import_metadata_does_not_use_parent_for_obfuscated_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest_dir = dir.path().join("job-123");
     let release_dir = dest_dir.join("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
@@ -360,13 +348,11 @@ fn build_augmented_episode_import_metadata_uses_immediate_parent_for_obfuscated_
     std::fs::write(&file_path, b"episode").expect("write file");
     let completed = test_completed_download("job-123", &dest_dir);
 
-    let parsed = build_augmented_episode_import_metadata(&file_path, &completed, false);
-    let episode = parsed.episode.expect("episode metadata");
-
-    assert_eq!(episode.season, Some(1));
-    assert_eq!(episode.episode_numbers, vec![1]);
-    assert_eq!(parsed.normalized_title, "HARBOR PALS");
-    assert_eq!(parsed.quality.as_deref(), Some("720p"));
+    let parsed =
+        build_augmented_episode_import_metadata(&file_path, &observation_evidence(&completed));
+    assert!(parsed.episode.is_none());
+    assert_ne!(parsed.normalized_title, "HARBOR PALS");
+    assert_eq!(parsed.quality, None);
 }
 
 #[test]
@@ -378,7 +364,8 @@ fn build_augmented_episode_import_metadata_keeps_file_episode_when_other_files_e
     std::fs::write(&file_path, b"episode").expect("write file");
     let completed = test_completed_download("Harbor.Pals.S01.Complete.720p.WEB-DL.AV1", &dest_dir);
 
-    let parsed = build_augmented_episode_import_metadata(&file_path, &completed, true);
+    let parsed =
+        build_augmented_episode_import_metadata(&file_path, &observation_evidence(&completed));
     let episode = parsed.episode.expect("episode metadata");
 
     assert_eq!(episode.season, Some(1));
@@ -395,7 +382,8 @@ fn build_augmented_episode_import_metadata_treats_dotted_hyphen_split_episode_as
     let completed =
         test_completed_download("[SubsPlease] Harbor Pals S3.-.01 (1080p)", &dest_dir);
 
-    let parsed = build_augmented_episode_import_metadata(&file_path, &completed, false);
+    let parsed =
+        build_augmented_episode_import_metadata(&file_path, &observation_evidence(&completed));
     let episode = parsed.episode.expect("episode metadata");
 
     assert_eq!(episode.season, Some(3));
@@ -408,7 +396,7 @@ fn build_augmented_episode_import_metadata_treats_dotted_hyphen_split_episode_as
 }
 
 #[test]
-fn build_augmented_episode_import_metadata_does_not_infer_episode_from_download_title_when_other_files_exist()
+fn build_augmented_episode_import_metadata_does_not_score_downloader_display_title_when_other_files_exist()
  {
     let dir = tempfile::tempdir().expect("tempdir");
     let dest_dir = dir
@@ -420,10 +408,11 @@ fn build_augmented_episode_import_metadata_does_not_infer_episode_from_download_
     let completed =
         test_completed_download("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb", &dest_dir);
 
-    let parsed = build_augmented_episode_import_metadata(&file_path, &completed, true);
+    let parsed =
+        build_augmented_episode_import_metadata(&file_path, &observation_evidence(&completed));
 
     assert!(parsed.episode.is_none());
-    assert_eq!(parsed.quality.as_deref(), Some("720p"));
+    assert_eq!(parsed.quality, None);
 }
 
 #[test]

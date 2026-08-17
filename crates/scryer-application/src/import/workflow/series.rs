@@ -1,6 +1,7 @@
 fn base_completed_import_result(
     import_id: &str,
     completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
     started_at: DateTime<Utc>,
 ) -> ImportResult {
     ImportResult {
@@ -10,7 +11,7 @@ fn base_completed_import_result(
         title_id: None,
         source_system: Some(completed.client_type.clone()),
         source_ref: Some(completed.download_client_item_id.clone()),
-        source_title: Some(completed.name.clone()),
+        source_title: release_evidence.release_title(None),
         source_path: completed.dest_dir.clone(),
         dest_path: None,
         quality: None,
@@ -52,12 +53,17 @@ fn facet_from_tracked_label(value: Option<&str>) -> Option<MediaFacet> {
 // Series import: process ALL video files, link each to its episode
 // ---------------------------------------------------------------------------
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "series import keeps operational completion and release evidence as separate inputs"
+)]
 async fn import_series_download(
     app: &AppUseCase,
     actor: &User,
     title: &scryer_domain::Title,
     import_id: &str,
     completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
     video_files: &[PathBuf],
     started_at: chrono::DateTime<Utc>,
 ) -> AppResult<ImportResult> {
@@ -94,7 +100,7 @@ async fn import_series_download(
     let mut attributed_episode_ids: Vec<String> = Vec::new();
     let mut imported_link_type: Option<scryer_domain::ImportStrategy> = None;
     let expected_episode_ids =
-        expected_episode_ids_for_completed_download(app, title, completed).await;
+        expected_episode_ids_for_completed_download(app, title, release_evidence).await;
 
     for source_video in video_files {
         match import_single_episode_file(
@@ -108,8 +114,8 @@ async fn import_series_download(
             &specials_folder_template,
             &full_folder_path,
             completed,
+            release_evidence,
             source_video,
-            video_files.len() > 1,
             &quality_profile,
             nfo_enabled,
             expected_episode_ids.as_ref(),
@@ -218,7 +224,7 @@ async fn import_series_download(
         title_id: Some(title.id.clone()),
         source_system: Some(completed.client_type.clone()),
         source_ref: Some(completed.download_client_item_id.clone()),
-        source_title: Some(completed.name.clone()),
+        source_title: release_evidence.release_title(None),
         source_path: completed.dest_dir.clone(),
         dest_path: None,
         quality: None,
@@ -248,7 +254,7 @@ async fn import_series_download(
                 import_id: Some(import_id.to_string()),
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
-                source_title: Some(completed.name.clone()),
+                source_title: release_evidence.release_title(None),
                 source_path: Some(completed.dest_dir.clone()),
                 dest_path: None,
                 quality: None,
@@ -297,32 +303,16 @@ struct EpisodeUpgradePlan {
 async fn expected_episode_ids_for_completed_download(
     app: &AppUseCase,
     title: &scryer_domain::Title,
-    completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
 ) -> Option<HashSet<String>> {
-    let identity = completed_download_identity(completed);
-    let submission = app
-        .services
-        .workflow
-        .download_submissions
-        .find_by_client_item_id(&identity)
-        .await
-        .ok()
-        .flatten();
-
-    if let Some(submission) = submission.as_ref()
-        && let Some(ids) =
-            expected_episode_ids_from_submission_scope(app, title, &submission.scope).await
+    if let Some(scope) = release_evidence.scope()
+        && let Some(ids) = expected_episode_ids_from_submission_scope(app, title, scope).await
         && !ids.is_empty()
     {
         return Some(ids);
     }
-
-    let release_title = submission
-        .as_ref()
-        .and_then(|submission| submission.source_title.as_deref())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(completed.name.as_str());
-    expected_episode_ids_from_release_title(app, title, release_title).await
+    let release_title = release_evidence.release_title(None)?;
+    expected_episode_ids_from_release_title(app, title, &release_title).await
 }
 async fn expected_episode_ids_from_submission_scope(
     app: &AppUseCase,
@@ -603,14 +593,15 @@ async fn cleanup_superseded_episode_incumbents(
 }
 fn ambiguous_obfuscated_episode_message(
     source_video: &Path,
-    completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
 ) -> Option<String> {
     let file_info = parsed_release_from_file_stem(source_video);
     if has_usable_release_title_signal(&file_info) {
         return None;
     }
 
-    let release_info = normalize_release_title_signal(parse_release_metadata(&completed.name));
+    let release_title = release_evidence.release_title(Some(source_video))?;
+    let release_info = normalize_release_title_signal(parse_release_metadata(&release_title));
     let episode = release_info.episode.as_ref()?;
     if episode.season.is_some() {
         return None;
@@ -642,14 +633,13 @@ async fn import_single_episode_file(
     specials_folder_template: &str,
     title_folder_path: &Path,
     completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
     source_video: &Path,
-    other_video_files: bool,
     quality_profile: &crate::QualityProfile,
     nfo_enabled: bool,
     expected_episode_ids: Option<&HashSet<String>>,
 ) -> AppResult<EpisodeImportOutcome> {
-    let parsed =
-        build_augmented_episode_import_metadata(source_video, completed, other_video_files);
+    let parsed = build_augmented_episode_import_metadata(source_video, release_evidence);
 
     // Must have episode info to proceed
     let ep_meta = match parsed.episode.as_ref() {
@@ -667,7 +657,7 @@ async fn import_single_episode_file(
                 "skipping file with no parseable episode info"
             );
             return Ok(EpisodeImportOutcome::Skipped {
-                message: ambiguous_obfuscated_episode_message(source_video, completed)
+                message: ambiguous_obfuscated_episode_message(source_video, release_evidence)
                     .unwrap_or_else(|| {
                         "Automatic import could not determine a season and episode from the downloaded file. Open Manual Import and assign the correct season and episode."
                             .to_string()
@@ -732,7 +722,7 @@ async fn import_single_episode_file(
     {
         return Ok(EpisodeImportOutcome::Rejected {
             rejection: crate::post_download_gate::ImportedFileRejection {
-                message: ambiguous_obfuscated_episode_message(source_video, completed)
+                message: ambiguous_obfuscated_episode_message(source_video, release_evidence)
                     .unwrap_or_else(|| {
                         "Automatic import resolved the downloaded file to episode(s) outside the grabbed release. Open Manual Import and assign the correct season and episode."
                             .to_string()
@@ -757,7 +747,7 @@ async fn import_single_episode_file(
             .and_then(|ep| ep.absolute_number.clone())
     });
     let episode_title = target_episodes.first().and_then(|ep| ep.title.as_deref());
-    let import_purpose = completed_import_purpose(app, completed).await;
+    let import_purpose = release_evidence.purpose();
     let additional_import = import_purpose.is_additional_file();
     let runtime_sample_mode = if import_purpose.is_manual_replacement() {
         crate::post_download_gate::RuntimeSampleValidationMode::BypassRuntimeSampleCheck
@@ -887,11 +877,14 @@ async fn import_single_episode_file(
             ..
         } => {
             if *finalize_before_import {
+                let source_title = release_evidence
+                    .release_title(Some(source_video))
+                    .unwrap_or_default();
                 crate::post_download_gate::reject_source_file_before_import(
                     app,
                     crate::domain_events::DomainEventActor::from(actor),
                     title,
-                    &completed.name,
+                    &source_title,
                     source_video,
                     &target_episode_ids,
                     rejection,
@@ -1546,141 +1539,19 @@ fn resolve_title_from_release_candidate(
         .map(|resolved| resolved.title.clone())
     }
 }
-fn fill_missing_release_metadata(
-    target: &mut ParsedReleaseMetadata,
-    fallback: &ParsedReleaseMetadata,
-    prefer_episode: bool,
-) {
-    if prefer_episode
-        && target.episode.as_ref().is_none_or(|file_episode| {
-            fallback.episode.as_ref().is_some_and(|other_episode| {
-                prefer_other_episode_info(Some(file_episode), other_episode)
-            })
-        })
-    {
-        if fallback.episode.is_some() {
-            target.episode = fallback.episode.clone();
-        }
-    } else if target.episode.is_none() && fallback.episode.is_some() {
-        target.episode = fallback.episode.clone();
-    }
-
-    if target.imdb_id.is_none() {
-        target.imdb_id = fallback.imdb_id.clone();
-    }
-    if target.tmdb_id.is_none() {
-        target.tmdb_id = fallback.tmdb_id.clone();
-    }
-    if target.year.is_none() {
-        target.year = fallback.year;
-    }
-    if target.quality.is_none() {
-        target.quality = fallback.quality.clone();
-    }
-    if target.source.is_none() {
-        target.source = fallback.source;
-    }
-    if target.video_codec.is_none() {
-        target.video_codec = fallback.video_codec;
-    }
-    if target.video_encoding.is_none() {
-        target.video_encoding = fallback.video_encoding.clone();
-    }
-    if target.audio.is_none() {
-        target.audio = fallback.audio;
-    }
-    if target.audio_channels.is_none() {
-        target.audio_channels = fallback.audio_channels.clone();
-    }
-    if target.release_group.is_none() {
-        target.release_group = fallback.release_group.clone();
-    }
-    if target.streaming_service.is_none() {
-        target.streaming_service = fallback.streaming_service;
-    }
-    if target.edition.is_none() {
-        target.edition = fallback.edition.clone();
-    }
-    if target.normalized_title.trim().is_empty() && !fallback.normalized_title.trim().is_empty() {
-        target.normalized_title = fallback.normalized_title.clone();
-    }
-    if target.normalized_title_variants.is_empty() && !fallback.normalized_title_variants.is_empty()
-    {
-        target.normalized_title_variants = fallback.normalized_title_variants.clone();
-    }
-}
-fn prefer_other_episode_info(
-    file_episode_info: Option<&ParsedEpisodeMetadata>,
-    other_episode_info: &ParsedEpisodeMetadata,
-) -> bool {
-    let Some(file_episode_info) = file_episode_info else {
-        return true;
-    };
-
-    if file_episode_info.absolute_episode.is_none() && other_episode_info.absolute_episode.is_some()
-    {
-        return false;
-    }
-
-    true
-}
 fn build_augmented_episode_import_metadata(
     source_video: &Path,
-    completed: &CompletedDownload,
-    other_video_files: bool,
+    release_evidence: &ReleaseEvidence,
 ) -> ParsedReleaseMetadata {
-    let mut parsed = parsed_release_from_file_stem(source_video);
-    let file_episode = parsed.episode.clone();
-    let file_has_usable_title_signal = has_usable_release_title_signal(&parsed);
-    if !file_has_usable_title_signal {
-        clear_unusable_release_title_signal(&mut parsed);
-    }
-    let source_parent_info = if file_has_usable_title_signal {
-        None
-    } else {
-        parsed_usable_release_from_parent_folder(source_video)
+    let Some(release_title) = release_evidence.release_title(Some(source_video)) else {
+        return ParsedReleaseMetadata::default();
     };
-    let download_client_info =
-        normalize_release_title_signal(parse_release_metadata(&completed.name));
-    let folder_info = parsed_release_from_folder_name(Path::new(&completed.dest_dir));
 
-    if !other_video_files {
-        if let Some(source_parent_info) = source_parent_info.as_ref()
-            && let Some(other_episode_info) = source_parent_info.episode.as_ref()
-            && !other_episode_info.full_season
-            && prefer_other_episode_info(parsed.episode.as_ref(), other_episode_info)
-        {
-            fill_missing_release_metadata(&mut parsed, source_parent_info, true);
-            return parsed;
-        }
-
-        if let Some(other_episode_info) = download_client_info.episode.as_ref()
-            && !other_episode_info.full_season
-            && prefer_other_episode_info(parsed.episode.as_ref(), other_episode_info)
-        {
-            fill_missing_release_metadata(&mut parsed, &download_client_info, true);
-            return parsed;
-        }
-
-        if let Some(folder_info) = folder_info.as_ref()
-            && let Some(other_episode_info) = folder_info.episode.as_ref()
-            && !other_episode_info.full_season
-            && prefer_other_episode_info(parsed.episode.as_ref(), other_episode_info)
-        {
-            fill_missing_release_metadata(&mut parsed, folder_info, true);
-            return parsed;
-        }
-    }
-
-    if let Some(source_parent_info) = source_parent_info.as_ref() {
-        fill_missing_release_metadata(&mut parsed, source_parent_info, false);
-    }
-    fill_missing_release_metadata(&mut parsed, &download_client_info, false);
-    if let Some(folder_info) = folder_info.as_ref() {
-        fill_missing_release_metadata(&mut parsed, folder_info, false);
-    }
-    if other_video_files {
-        parsed.episode = file_episode;
+    let mut parsed = normalize_release_title_signal(parse_release_metadata(&release_title));
+    // With canonical release evidence, the file name may locate an episode but
+    // cannot supplement score-bearing release metadata.
+    if parsed.episode.is_none() {
+        parsed.episode = parsed_release_from_file_stem(source_video).episode;
     }
     parsed
 }

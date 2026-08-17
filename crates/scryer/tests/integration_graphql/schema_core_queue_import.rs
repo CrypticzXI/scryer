@@ -2302,6 +2302,7 @@ async fn graphql_download_import_exposes_background_import_blocked_state_from_ca
         download_client_item_id: item_id.to_string(),
         download_id: Some(download_id.to_string()),
         name: item.title_name.clone(),
+        nzb_name: None,
         dest_dir: source_dir.path().to_string_lossy().into_owned(),
         category: None,
         size_bytes: item.size_bytes,

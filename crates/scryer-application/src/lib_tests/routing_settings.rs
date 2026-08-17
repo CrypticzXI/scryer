@@ -94,6 +94,63 @@ async fn library_cleanup_routing_override_beats_facet_cleanup_flags() {
 }
 
 #[tokio::test]
+async fn category_admission_snapshot_keeps_current_legacy_shadowed_and_moved_routes() {
+    let settings = Arc::new(StoredSettingsRepo::default());
+    let movie_library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Movie);
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            "movie",
+            &serde_json::json!({
+                "active-client": { "enabled": true, "category": " Current RSS " },
+                "shadowed-client": { "enabled": false, "category": "Shadowed RSS" }
+            })
+            .to_string(),
+        )
+        .await;
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            LEGACY_NZBGET_CLIENT_ROUTING_SETTINGS_KEY,
+            "movie",
+            &serde_json::json!({
+                "legacy-client": { "enabled": true, "category": "Legacy RSS" }
+            })
+            .to_string(),
+        )
+        .await;
+    settings
+        .set_scoped_value(
+            SETTINGS_SCOPE_SYSTEM,
+            DOWNLOAD_CLIENT_ROUTING_SETTINGS_KEY,
+            &movie_library_id,
+            &serde_json::json!({
+                "removed-client": { "enabled": false, "category": "Moved RSS" }
+            })
+            .to_string(),
+        )
+        .await;
+
+    let (app, _) =
+        bootstrap_with_search_settings_and_indexer(settings, Arc::new(MockIndexerClient));
+    app.refresh_download_client_category_admission()
+        .await
+        .expect("load category admission snapshot");
+    let snapshot = app
+        .download_client_category_admission_snapshot()
+        .await
+        .expect("category admission snapshot");
+
+    for category in ["current rss", "LEGACY RSS", " shadowed rss ", "moved rss"] {
+        assert!(
+            snapshot.knows_category(category),
+            "missing category {category}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn library_settings_download_client_routing_override_normalizes_current_clients_and_hydrates_new_ones()
  {
     let settings = Arc::new(StoredSettingsRepo::default());

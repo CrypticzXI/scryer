@@ -44,7 +44,7 @@ struct CompletedDownloadSubmissionMatch {
 #[derive(Clone, Debug)]
 enum CompletedDownloadSubmissionResolution {
     Matched(Box<CompletedDownloadSubmissionMatch>),
-    Foreign,
+    DownloaderObservation,
     MissingDownloadId {
         identity: DownloadSubmissionIdentity,
     },
@@ -52,6 +52,132 @@ enum CompletedDownloadSubmissionResolution {
         download_id: String,
         matches: usize,
     },
+}
+
+/// The only release-name evidence that may enter import matching or scoring.
+/// Downloader display labels, categories, parameters, and destination folders
+/// intentionally have no representation here.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum ReleaseEvidence {
+    ScryerSubmission {
+        title_id: String,
+        facet: String,
+        source_title: String,
+        purpose: crate::DownloadSubmissionPurpose,
+        scope: SubmissionScope,
+    },
+    DownloaderObservation {
+        #[serde(default)]
+        nzb_name: Option<String>,
+    },
+}
+
+impl ReleaseEvidence {
+    fn from_submission(submission: &DownloadSubmission) -> AppResult<Self> {
+        let source_title = submission
+            .source_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                AppError::Validation(
+                    "Scryer-submitted download is missing its durable source title".to_string(),
+                )
+            })?;
+        Ok(Self::ScryerSubmission {
+            title_id: submission.title_id.clone(),
+            facet: submission.facet.clone(),
+            source_title,
+            purpose: submission.purpose,
+            scope: submission.scope.clone(),
+        })
+    }
+
+    fn from_completed_observation(completed: &CompletedDownload) -> Self {
+        Self::DownloaderObservation {
+            nzb_name: completed
+                .nzb_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        }
+    }
+
+    pub(crate) fn title_id(&self) -> Option<&str> {
+        match self {
+            Self::ScryerSubmission { title_id, .. } => Some(title_id),
+            Self::DownloaderObservation { .. } => None,
+        }
+    }
+
+    pub(crate) fn facet(&self) -> Option<&str> {
+        match self {
+            Self::ScryerSubmission { facet, .. } => Some(facet),
+            Self::DownloaderObservation { .. } => None,
+        }
+    }
+
+    pub(crate) fn scope(&self) -> Option<&SubmissionScope> {
+        match self {
+            Self::ScryerSubmission { scope, .. } => Some(scope),
+            Self::DownloaderObservation { .. } => None,
+        }
+    }
+
+    pub(crate) fn purpose(&self) -> crate::DownloadSubmissionPurpose {
+        match self {
+            Self::ScryerSubmission { purpose, .. } => *purpose,
+            Self::DownloaderObservation { .. } => crate::DownloadSubmissionPurpose::Standard,
+        }
+    }
+
+    pub(crate) fn release_title<'a>(&'a self, source_video: Option<&'a Path>) -> Option<String> {
+        match self {
+            Self::ScryerSubmission { source_title, .. } => Some(source_title.clone()),
+            Self::DownloaderObservation { nzb_name } => nzb_name.clone().or_else(|| {
+                source_video.and_then(|path| {
+                    path.file_stem()
+                        .and_then(|name| name.to_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                })
+            }),
+        }
+    }
+
+}
+
+fn release_evidence_for_resolution(
+    completed: &CompletedDownload,
+    resolution: &CompletedDownloadSubmissionResolution,
+) -> AppResult<ReleaseEvidence> {
+    match resolution {
+        CompletedDownloadSubmissionResolution::Matched(matched)
+            if submission_has_scryer_origin(&matched.submission) =>
+        {
+            ReleaseEvidence::from_submission(&matched.submission)
+        }
+        CompletedDownloadSubmissionResolution::Matched(_) => {
+            Ok(ReleaseEvidence::from_completed_observation(completed))
+        }
+        CompletedDownloadSubmissionResolution::DownloaderObservation
+        | CompletedDownloadSubmissionResolution::MissingDownloadId { .. }
+        | CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. } => {
+            Ok(ReleaseEvidence::from_completed_observation(completed))
+        }
+    }
+}
+
+pub(crate) async fn resolve_release_evidence_for_completed_download(
+    app: &AppUseCase,
+    completed: &CompletedDownload,
+    item: Option<&DownloadQueueItem>,
+) -> AppResult<ReleaseEvidence> {
+    let resolution = resolve_completed_download_submission(app, completed, item).await?;
+    release_evidence_for_resolution(completed, &resolution)
 }
 
 const DOWNLOAD_SUBMISSION_VISIBILITY_GRACE_SECONDS: i64 = 15;
@@ -236,7 +362,7 @@ async fn resolve_completed_download_submission(
         }
     }
 
-    Ok(CompletedDownloadSubmissionResolution::Foreign)
+    Ok(CompletedDownloadSubmissionResolution::DownloaderObservation)
 }
 
 pub(crate) async fn recent_download_submission_persistence_is_pending(
@@ -285,11 +411,7 @@ async fn matched_completed_download_submission(
 }
 
 pub(crate) enum ResolvedCompletedDownloadOriginForImport {
-    Ready(CompletedDownload),
-    Conflict {
-        reason: &'static str,
-        detail: String,
-    },
+    Ready(Box<CompletedDownload>),
     NoScryerOrigin,
 }
 
@@ -304,23 +426,11 @@ pub(crate) async fn resolve_completed_download_origin_for_import(
             CompletedDownloadOriginResolution::Ready(completed) => {
                 ResolvedCompletedDownloadOriginForImport::Ready(completed)
             }
-            CompletedDownloadOriginResolution::Conflict { reason, detail } => {
-                ResolvedCompletedDownloadOriginForImport::Conflict { reason, detail }
-            }
             CompletedDownloadOriginResolution::NoScryerOrigin => {
                 ResolvedCompletedDownloadOriginForImport::NoScryerOrigin
             }
         },
     )
-}
-
-pub(crate) async fn block_completed_download_origin_conflict_for_manual_review(
-    app: &AppUseCase,
-    completed: &CompletedDownload,
-    reason: &str,
-    detail: &str,
-) {
-    block_completed_download_identity_for_manual_review(app, completed, reason, detail).await;
 }
 
 async fn completed_download_already_imported_for_current_attempt(
@@ -357,7 +467,9 @@ async fn completed_download_already_imported_for_current_attempt(
             }
             source_identity
         }
-        CompletedDownloadSubmissionResolution::Foreign => completed_download_identity(completed),
+        CompletedDownloadSubmissionResolution::DownloaderObservation => {
+            completed_download_identity(completed)
+        }
         CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
         | CompletedDownloadSubmissionResolution::MissingDownloadId { .. } => unreachable!(),
     };
@@ -422,68 +534,6 @@ fn completed_download_import_identity_for_resolution(
     match resolution {
         CompletedDownloadSubmissionResolution::Matched(matched) => matched.identity.clone(),
         _ => None,
-    }
-}
-
-async fn block_completed_download_identity_for_manual_review(
-    app: &AppUseCase,
-    completed: &CompletedDownload,
-    reason: &str,
-    detail: &str,
-) {
-    tracing::warn!(
-        client_id = completed.client_id.as_str(),
-        client_type = completed.client_type.as_str(),
-        download_client_item_id = completed.download_client_item_id.as_str(),
-        reason,
-        detail,
-        "import: download identity is unresolved; blocking import for manual review"
-    );
-    let observed_identity = completed_download_observed_identity(completed);
-    if !download_submission_identity_is_empty(&observed_identity) {
-        if let Err(error) = app
-            .services
-            .workflow
-            .download_submissions
-            .record_identity_tracked_state(
-                &observed_identity,
-                Some(&completed_download_identity(completed)),
-                TrackedDownloadState::ImportBlocked.as_str(),
-                Some(reason),
-                Some(detail),
-            )
-            .await
-        {
-            tracing::warn!(
-                error = %error,
-                client_id = completed.client_id.as_str(),
-                client_type = completed.client_type.as_str(),
-                download_client_item_id = completed.download_client_item_id.as_str(),
-                reason,
-                "failed to persist durable download identity manual-review state"
-            );
-        }
-        return;
-    }
-
-    if let Err(error) = app
-        .services
-        .workflow
-        .download_submissions
-        .update_tracked_state(
-            &completed_download_identity(completed),
-            TrackedDownloadState::ImportBlocked.as_str(),
-        )
-        .await
-    {
-        tracing::warn!(
-            error = %error,
-            client_id = completed.client_id.as_str(),
-            client_type = completed.client_type.as_str(),
-            download_client_item_id = completed.download_client_item_id.as_str(),
-            reason,
-            "failed to persist download identity manual-review state"
-        );
     }
 }
 
@@ -701,10 +751,7 @@ async fn try_import_completed_downloads_with_policy(
             }
         };
 
-        // Only auto-import downloads that originated from scryer.
-        // NZBGet embeds *scryer_title_id via PPParameters. SABnzbd has no
-        // equivalent, so we fall back to the download_submissions table which
-        // records the (title_id, facet) at grab time.
+        // Resolve durable submission provenance before considering category.
         let submission_resolution =
             match resolve_completed_download_submission(app, &completed, Some(item)).await {
                 Ok(resolution) => resolution,
@@ -718,6 +765,55 @@ async fn try_import_completed_downloads_with_policy(
                     continue;
                 }
             };
+        let has_scryer_submission = matches!(
+            &submission_resolution,
+            CompletedDownloadSubmissionResolution::Matched(matched)
+                if submission_has_scryer_origin(&matched.submission)
+        );
+        if !has_scryer_submission {
+            if completed
+                .parameters
+                .iter()
+                .any(|(key, _)| key.trim().eq_ignore_ascii_case("drone"))
+            {
+                continue;
+            }
+            let category_admission = app.download_client_category_admission_snapshot().await;
+            if !crate::services::download_observation_is_admitted(
+                false,
+                completed.category.as_deref().or(item.category.as_deref()),
+                category_admission.as_deref(),
+            ) {
+                continue;
+            }
+            let Some(title_id) = item
+                .title_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|title_id| !title_id.is_empty())
+            else {
+                continue;
+            };
+            let Ok(Some(title)) = app.services.catalog.titles.get_by_id(title_id).await else {
+                continue;
+            };
+            let Ok(Some(expected_category)) = app
+                .effective_download_client_category_for_title(&title, &completed.client_id)
+                .await
+            else {
+                continue;
+            };
+            let observed_category = completed
+                .category
+                .as_deref()
+                .or(item.category.as_deref())
+                .unwrap_or_default();
+            if crate::services::normalize_download_client_category(observed_category)
+                != crate::services::normalize_download_client_category(&expected_category)
+            {
+                continue;
+            }
+        }
 
         if let Ok(Some(state)) =
             completed_download_terminal_state_for_resolution(app, &completed, &submission_resolution)
@@ -745,15 +841,6 @@ async fn try_import_completed_downloads_with_policy(
                         processed_ids.insert(source_ref.clone());
                     }
                 }
-                CompletedDownloadOriginResolution::Conflict { reason, detail } => {
-                    block_completed_download_identity_for_manual_review(
-                        app,
-                        &completed,
-                        reason,
-                        &detail,
-                    )
-                    .await;
-                }
                 CompletedDownloadOriginResolution::NoScryerOrigin => {
                     tracing::debug!(
                         source_ref = %source_ref,
@@ -772,14 +859,12 @@ async fn try_import_completed_downloads_with_policy(
             matches,
         } = &submission_resolution
         {
-            block_completed_download_identity_for_manual_review(
-                app,
-                &completed,
-                "ambiguous_download_id",
-                &format!("download id matched {matches} submissions: {download_id}"),
-            )
-            .await;
-            continue;
+            tracing::warn!(
+                source_ref = %source_ref,
+                download_id,
+                matches,
+                "import: ambiguous submission identity; treating completed download as a downloader observation"
+            );
         }
         if let CompletedDownloadSubmissionResolution::MissingDownloadId { identity } =
             &submission_resolution
@@ -797,14 +882,11 @@ async fn try_import_completed_downloads_with_policy(
                 );
                 continue;
             }
-            block_completed_download_identity_for_manual_review(
-                app,
-                &completed,
-                "missing_download_id",
-                &format!("download_id={:?}", identity.download_id),
-            )
-            .await;
-            continue;
+            tracing::warn!(
+                source_ref = %source_ref,
+                download_id = ?identity.download_id,
+                "import: submission identity did not become durable; treating completed download as a downloader observation"
+            );
         }
 
         let already_imported = match completed_download_already_imported_for_current_attempt(
@@ -839,15 +921,6 @@ async fn try_import_completed_downloads_with_policy(
                         processed_ids.insert(source_ref.clone());
                     }
                 }
-                CompletedDownloadOriginResolution::Conflict { reason, detail } => {
-                    block_completed_download_identity_for_manual_review(
-                        app,
-                        &completed,
-                        reason,
-                        &detail,
-                    )
-                    .await;
-                }
                 CompletedDownloadOriginResolution::NoScryerOrigin => {
                     tracing::debug!(
                         source_ref = %source_ref,
@@ -863,35 +936,15 @@ async fn try_import_completed_downloads_with_policy(
 
         let completed = match resolve_completed_download_origin(&completed, &submission_resolution)
         {
-            CompletedDownloadOriginResolution::Ready(completed) => completed,
-            CompletedDownloadOriginResolution::Conflict { reason, detail } => {
-                block_completed_download_identity_for_manual_review(
-                    app, &completed, reason, &detail,
-                )
-                .await;
-                continue;
-            }
+            CompletedDownloadOriginResolution::Ready(completed) => *completed,
             CompletedDownloadOriginResolution::NoScryerOrigin => {
-                if matches!(
-                    &submission_resolution,
-                    CompletedDownloadSubmissionResolution::Matched(_)
-                ) {
-                    tracing::debug!(
-                        source_ref = %source_ref,
-                        title = %item.title_name,
-                        client_type = %completed.client_type,
-                        "import: ignoring stub download_submissions row without scryer origin metadata"
-                    );
-                } else {
-                    tracing::debug!(
-                        source_ref = %source_ref,
-                        title = %item.title_name,
-                        client_type = %completed.client_type,
-                        "import: no scryer origin — not in parameters or download_submissions table"
-                    );
-                }
-                processed_ids.insert(source_ref.clone());
-                continue;
+                tracing::debug!(
+                    source_ref = %source_ref,
+                    title = %item.title_name,
+                    client_type = %completed.client_type,
+                    "import: no durable Scryer submission; importing as a downloader observation"
+                );
+                completed.clone()
             }
         };
 

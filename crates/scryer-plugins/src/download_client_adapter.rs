@@ -333,6 +333,7 @@ fn map_completed_download(
         download_client_item_id: item.client_item_id,
         download_id: observed_identity.download_id,
         name: item.name,
+        nzb_name: item.nzb_name,
         dest_dir,
         category: item.category,
         size_bytes: item.size_bytes,
@@ -1721,6 +1722,7 @@ mod tests {
                 download_id: None,
                 info_hash: Some("abcdef0123456789abcdef0123456789abcdef01".to_string()),
                 name: "Example Release".to_string(),
+                nzb_name: None,
                 dest_dir: "/downloads/series".to_string(),
                 category: Some("series".to_string()),
                 output_kind: None,
@@ -1744,6 +1746,21 @@ mod tests {
         assert_eq!(queue_item.category.as_deref(), Some("series"));
         assert_eq!(queue_item.progress_percent, 100);
         assert_eq!(queue_item.remaining_seconds, Some(0));
+    }
+
+    #[test]
+    fn legacy_plugin_completion_without_nzb_name_remains_readable() {
+        let legacy: PluginCompletedDownload = serde_json::from_value(serde_json::json!({
+            "client_item_id": "legacy-qbit-item",
+            "info_hash": "abcdef0123456789abcdef0123456789abcdef01",
+            "name": "Mutable qBit Display Label",
+            "dest_dir": "/downloads/legacy-qbit-item"
+        }))
+        .expect("deserialize pre-nzb_name plugin payload");
+
+        let completed = map_completed_download(legacy, "client-1", "qbittorrent");
+        assert_eq!(completed.name, "Mutable qBit Display Label");
+        assert_eq!(completed.nzb_name, None);
     }
 
     #[test]
@@ -1832,6 +1849,7 @@ mod tests {
                 download_id: None,
                 info_hash: Some(info_hash.to_string()),
                 name: "Decypharr Completed".to_string(),
+                nzb_name: None,
                 dest_dir: "/downloads/movies".to_string(),
                 category: Some("movies".to_string()),
                 output_kind: None,
@@ -1871,6 +1889,7 @@ mod tests {
                     download_id: None,
                     info_hash: None,
                     name: "Show Season 1".to_string(),
+                    nzb_name: None,
                     dest_dir: "/downloads/series".to_string(),
                     category: Some("series".to_string()),
                     output_kind: None,
@@ -1902,6 +1921,7 @@ mod tests {
                     download_id: None,
                     info_hash: None,
                     name: "Show Season 1".to_string(),
+                    nzb_name: None,
                     dest_dir: "/downloads/series/Show Season 1".to_string(),
                     category: Some("series".to_string()),
                     output_kind: None,

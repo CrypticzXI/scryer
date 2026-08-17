@@ -820,6 +820,7 @@ mod tests {
         WeaverQueueItem {
             id,
             name: format!("Weaver Job {id}"),
+            original_title: None,
             state,
             error: None,
             progress_percent: 0.0,

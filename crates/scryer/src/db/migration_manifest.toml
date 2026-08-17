@@ -882,6 +882,23 @@ file = "postgres/migrations/0158_episode_scoped_media_file_roles.sql"
 engine = "postgres"
 scope = "all"
 
+[[migration]]
+version = 159
+description = "persist manual import release evidence"
+checksum_algo = "blake3"
+
+[[migration.steps]]
+kind = "sql"
+file = "migrations/0159_manual_import_release_evidence.sql"
+engine = "sqlite"
+scope = "all"
+
+[[migration.steps]]
+kind = "sql"
+file = "postgres/migrations/0159_manual_import_release_evidence.sql"
+engine = "postgres"
+scope = "all"
+
 [[baseline]]
 through_version = 140
 file = "baselines/0140_baseline.sql"

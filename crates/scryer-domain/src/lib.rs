@@ -1501,7 +1501,15 @@ pub struct CompletedDownload {
     pub download_client_item_id: String,
     #[serde(default)]
     pub download_id: Option<String>,
+    /// Downloader-provided display/group label. This is non-semantic: import
+    /// identity and scoring must use durable submission provenance or
+    /// `nzb_name`, never this value.
     pub name: String,
+    /// Canonical original NZB/release name when the downloader exposes one.
+    /// Unlike `name`, this is artifact provenance and may seed release parsing
+    /// for an observed (non-Scryer-submitted) download.
+    #[serde(default)]
+    pub nzb_name: Option<String>,
     pub dest_dir: String,
     pub category: Option<String>,
     pub size_bytes: Option<i64>,

@@ -1480,6 +1480,7 @@ fn completed_download_from_nzbget_history_entry(
         download_client_item_id: nzb_id.to_string(),
         download_id: observed_identity.download_id,
         name,
+        nzb_name: history_entry_nzb_name(entry),
         dest_dir,
         category,
         size_bytes: size_to_bytes(size_mb),
@@ -1823,7 +1824,7 @@ fn map_history_state(
     }
 }
 
-/// Extracts the Name field from a history entry.
+/// Extracts the downloader display Name field from a history entry.
 fn history_entry_name(entry: &serde_json::Map<String, Value>) -> String {
     entry
         .get("Name")
@@ -1831,6 +1832,20 @@ fn history_entry_name(entry: &serde_json::Map<String, Value>) -> String {
         .and_then(Value::as_str)
         .unwrap_or("Unnamed download")
         .to_string()
+}
+
+/// Extracts the canonical original NZB name without falling back to the
+/// downloader's display/group name.
+fn history_entry_nzb_name(entry: &serde_json::Map<String, Value>) -> Option<String> {
+    entry
+        .get("NZBName")
+        .or_else(|| entry.get("NzbName"))
+        .or_else(|| entry.get("nzbName"))
+        .or_else(|| entry.get("nzb_name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// Reads a string field from an NZBGet history entry, trying PascalCase then camelCase.

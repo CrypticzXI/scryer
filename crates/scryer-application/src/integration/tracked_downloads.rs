@@ -81,54 +81,11 @@ pub struct TrackedDownload {
     pub snapshot_missing_since: Option<DateTime<Utc>>,
 }
 
-/// Why a completed download is held out of automatic import and hidden from
-/// user-facing download activity.
-///
-/// TWO INDEPENDENT AXES, deliberately kept apart. The predecessor type
-/// (`ForeignDownloadClassification`) put both in one flat enum, so a payload
-/// with no video was reported through a field whose name asserted whose
-/// download it was. Readers — several, repeatedly — took `NoImportableVideo`
-/// to mean "another application owns this" and reasoned about ownership from
-/// it. Nesting makes the misreading unrepresentable: you cannot reach a
-/// provenance verdict without going through `Unmanaged`.
+/// Content-only reason a completed download is temporarily held from import.
+/// This is never an ownership or provenance classification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImportHold {
-    /// PROVENANCE. Scryer did not submit this download.
-    ///
-    /// Says nothing about whether the payload is importable.
-    Unmanaged(UnmanagedDownloadReason),
-    /// CONTENT. The payload holds nothing importable.
-    ///
-    /// Says nothing about who submitted it — Scryer's own grabs land here too.
     NoImportableVideo,
-}
-
-/// Why Scryer believes it did not submit a download.
-///
-/// "Unmanaged" rather than "foreign" because these downloads are usually ones
-/// Scryer SHOULD adopt once a user resolves them — a user-uploaded NZB, or one
-/// the download client's own RSS grabbed, is not another application's
-/// property; it simply was not submitted by Scryer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UnmanagedDownloadReason {
-    /// The category is not one Scryer configured for any client.
-    ///
-    /// Weak evidence, and an ABSENCE of a signal rather than a positive one: it
-    /// cannot distinguish a user upload from the download client's own RSS
-    /// grab, because no client payload is read for a source/feed marker today
-    /// (NZBGet exposes `URL`/`Kind` but Scryer does not read them; SABnzbd has
-    /// no submitter channel; qBittorrent has none). Those two origins are
-    /// indistinguishable and both land here.
-    ///
-    /// Because it is configuration-derived, this verdict is re-evaluated on
-    /// later passes rather than trusted from cache.
-    UnknownCategory,
-    /// Another download manager submitted it.
-    ///
-    /// A POSITIVE identification, unlike `UnknownCategory` — but only of one
-    /// specific marker: the `drone` parameter Sonarr/Radarr stamp on the item.
-    /// A manager that does not stamp it will not be detected here, so treat
-    /// this as "a known external manager" rather than "any external manager".
     ExternalManager,
 }
 
@@ -391,6 +348,20 @@ impl TrackedDownloadService {
             .and_then(|tracked| tracked.completed_source.clone())
     }
 
+    pub fn cached_id_for_source_identity(
+        &self,
+        identity: &DownloadSourceIdentity,
+    ) -> Option<String> {
+        self.cache.iter().find_map(|(id, tracked)| {
+            (DownloadSourceIdentity::new(
+                Some(tracked.client_id.as_str()),
+                tracked.client_type.as_str(),
+                tracked.client_item.download_client_item_id.as_str(),
+            ) == *identity)
+                .then(|| id.clone())
+        })
+    }
+
     pub fn get_trackable(&self) -> Vec<&TrackedDownload> {
         self.cache
             .values()
@@ -625,7 +596,7 @@ impl TrackedDownloadService {
             }
         }
 
-        // 3. Parse-based monitored title resolution for foreign downloads.
+        // 3. Parse-based monitored title resolution for downloader observations.
         let release_title = td
             .source_title
             .as_deref()
@@ -656,7 +627,7 @@ impl TrackedDownloadService {
         // 4. No trustworthy title match found — completed handler will block
         // auto-import until the user assigns the title manually.
         //
-        // Insert a stub download_submissions row for foreign downloads so they
+        // Insert a stub download_submissions row for observations so they
         // get a tracked_state column for restart reconstruction.
         if existing_submission.is_none()
             && let Err(error) = app
@@ -1035,12 +1006,16 @@ pub enum TrackedDownloadCommand {
     ReconcileManualImport {
         id: String,
         files_imported_this_pass: usize,
-        expected_source_video_files: Option<usize>,
+        expected_mapping_count: Option<usize>,
         reply: oneshot::Sender<AppResult<bool>>,
     },
     MarkImported {
         id: String,
         reply: oneshot::Sender<AppResult<()>>,
+    },
+    MarkImportedIfNonterminal {
+        source_identity: DownloadSourceIdentity,
+        reply: oneshot::Sender<AppResult<bool>>,
     },
     Ignore {
         id: String,
@@ -1213,18 +1188,37 @@ impl TrackedDownloadHandle {
         })?
     }
 
+    pub async fn mark_imported_if_nonterminal(
+        &self,
+        source_identity: DownloadSourceIdentity,
+    ) -> AppResult<bool> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(TrackedDownloadCommand::MarkImportedIfNonterminal {
+                source_identity,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| {
+                crate::AppError::Repository("tracked download service unavailable".into())
+            })?;
+        reply_rx.await.map_err(|_| {
+            crate::AppError::Repository("tracked download service dropped reply".into())
+        })?
+    }
+
     pub async fn reconcile_manual_import(
         &self,
         id: String,
         files_imported_this_pass: usize,
-        expected_source_video_files: Option<usize>,
+        expected_mapping_count: Option<usize>,
     ) -> AppResult<bool> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(TrackedDownloadCommand::ReconcileManualImport {
                 id,
                 files_imported_this_pass,
-                expected_source_video_files,
+                expected_mapping_count,
                 reply: reply_tx,
             })
             .await
@@ -2964,6 +2958,7 @@ mod tests {
             download_client_item_id: item_id.to_string(),
             download_id: None,
             name: name.to_string(),
+            nzb_name: None,
             dest_dir: dest_dir.to_string(),
             category: category.map(str::to_string),
             size_bytes: None,
@@ -3407,7 +3402,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assigning_title_to_completed_blocked_download_keeps_manual_import_actionable() {
+    async fn assigning_title_to_completed_observation_keeps_manual_import_actionable() {
         let title = build_title("Paper Lantern", MediaFacet::Movie, &[]);
         let title_repo = Arc::new(TestTitleRepo {
             titles: vec![title.clone()],
@@ -3450,22 +3445,22 @@ mod tests {
             .find_mut("client-1:job-manual-movie")
             .expect("tracked download mut");
         crate::completed_download_handler::check(&app, tracked).await;
-        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
-        assert!(tracked.title_id.is_none());
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
+        assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
 
         let tracked = tracker
             .find_mut("client-1:job-manual-movie")
             .expect("tracked download mut");
         assign_title_to_tracked_download(&app, tracked, &title).await;
 
-        // Movie assignment records the operator's target but remains blocked
-        // until the operator explicitly queues the manual import.
-        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+        // Movie assignment records the operator's target while keeping the
+        // observation actionable for an explicit manual import.
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
         assert_eq!(tracked.title_id.as_deref(), Some(title.id.as_str()));
         assert_eq!(tracked.match_type, TitleMatchType::Submission);
 
         crate::completed_download_handler::check(&app, tracked).await;
-        assert_eq!(tracked.state, TrackedDownloadState::ImportBlocked);
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
     }
 
     #[tokio::test]
@@ -3826,6 +3821,27 @@ mod tests {
     }
 
     #[test]
+    fn cached_id_for_source_identity_keeps_client_type_distinct() {
+        let mut tracker = TrackedDownloadService::new();
+        let mut nzbget = build_tracked_download("nzbget-entry");
+        nzbget.client_item.download_client_item_id = "same-item".to_string();
+        let mut qbittorrent = build_tracked_download("qbittorrent-entry");
+        qbittorrent.client_type = "qbittorrent".to_string();
+        qbittorrent.client_item.client_type = "qbittorrent".to_string();
+        qbittorrent.client_item.download_client_item_id = "same-item".to_string();
+
+        tracker.insert_for_tests(nzbget);
+        tracker.insert_for_tests(qbittorrent);
+
+        let qbittorrent_identity =
+            DownloadSourceIdentity::new(Some("client-1"), "qbittorrent", "same-item");
+        assert_eq!(
+            tracker.cached_id_for_source_identity(&qbittorrent_identity),
+            Some("qbittorrent-entry".to_string())
+        );
+    }
+
+    #[test]
     fn scoped_snapshot_pruning_preserves_import_blocked_sources_after_grace() {
         let mut tracker = TrackedDownloadService::new();
         let mut blocked = build_tracked_download("blocked");
@@ -4081,13 +4097,13 @@ mod tests {
     }
 
     #[test]
-    fn failed_download_check_skips_parse_matched_foreign_download() {
+    fn failed_download_check_skips_parse_matched_downloader_observation() {
         let mut client_item = build_client_item();
         client_item.state = DownloadQueueState::Failed;
         client_item.attention_reason = Some("health below critical".to_string());
         client_item.is_scryer_origin = false;
         let mut tracked = TrackedDownload {
-            id: "client-1:failed-foreign".to_string(),
+            id: "client-1:failed-observation".to_string(),
             client_id: "client-1".to_string(),
             client_type: "nzbget".to_string(),
             client_item,
@@ -4097,7 +4113,7 @@ mod tests {
             status_messages: Vec::new(),
             title_id: Some("title-1".to_string()),
             facet: Some("series".to_string()),
-            source_title: Some("Foreign.Show.S01E01.1080p.WEB-DL".to_string()),
+            source_title: Some("Observed.Show.S01E01.1080p.WEB-DL".to_string()),
             indexer: None,
             added_at: None,
             notified_manual_interaction: false,
@@ -4134,6 +4150,7 @@ mod tests {
             client_type: "weaver".to_string(),
             files: Vec::new(),
             selection_id: None,
+            release_evidence: None,
             requested_at: Utc::now().to_rfc3339(),
         };
         let imports = Arc::new(TestImportRepo {
@@ -4215,6 +4232,7 @@ mod tests {
             client_type: "weaver".to_string(),
             files: Vec::new(),
             selection_id: None,
+            release_evidence: None,
             requested_at: Utc::now().to_rfc3339(),
         };
         let payload_match = crate::ManualImportRequestPayload {
@@ -4310,6 +4328,7 @@ mod tests {
             client_type: "weaver".to_string(),
             files: Vec::new(),
             selection_id: None,
+            release_evidence: None,
             requested_at: Utc::now().to_rfc3339(),
         };
         let payload_match = crate::ManualImportRequestPayload {

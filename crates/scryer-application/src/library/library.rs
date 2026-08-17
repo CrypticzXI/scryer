@@ -813,10 +813,9 @@ impl AppUseCase {
             .delete_library(&library.id)
             .await?;
         if deleted {
-            self.refresh_owned_download_client_categories_best_effort()
+            self.refresh_download_client_category_admission_best_effort()
                 .await;
         }
-
         Ok(deleted)
     }
 

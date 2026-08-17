@@ -1,8 +1,14 @@
+#[expect(
+    clippy::too_many_arguments,
+    reason = "completed import orchestration carries durable evidence and retry context explicitly"
+)]
 async fn run_import(
     app: &AppUseCase,
     actor: &User,
     import_id: &str,
     completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
+    manual_title_id: Option<&str>,
     started_at: chrono::DateTime<Utc>,
     archive_password: Option<&str>,
 ) -> AppResult<ImportResult> {
@@ -10,6 +16,8 @@ async fn run_import(
         app,
         import_id,
         completed,
+        release_evidence,
+        manual_title_id,
         started_at,
         archive_password,
     ))
@@ -19,9 +27,16 @@ async fn run_import(
         CompletedImportTargetResolution::Finished(result) => return Ok(*result),
     };
 
-    let result =
-        dispatch_completed_import_target(app, actor, import_id, completed, started_at, &target)
-            .await;
+    let result = dispatch_completed_import_target(
+        app,
+        actor,
+        import_id,
+        completed,
+        release_evidence,
+        started_at,
+        &target,
+    )
+    .await;
 
     // Clean up extracted archive directory if we created one
     if let Some(ref dir) = target.extracted_dir {
@@ -291,6 +306,8 @@ async fn resolve_completed_import_target(
     app: &AppUseCase,
     import_id: &str,
     completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
+    manual_title_id: Option<&str>,
     started_at: chrono::DateTime<Utc>,
     archive_password: Option<&str>,
 ) -> AppResult<CompletedImportTargetResolution> {
@@ -298,48 +315,17 @@ async fn resolve_completed_import_target(
     let mut title = None;
     let dest_dir = Path::new(&completed.dest_dir);
     let mut extracted_dir: Option<PathBuf> = None;
-    let parsed_completed_name =
-        normalize_release_title_signal(parse_release_metadata(&completed.name));
-    let parsed_completed_folder = parsed_release_from_folder_name(dest_dir);
-    if let Some(title_id) = extract_parameter(&completed.parameters, "*scryer_title_id") {
-        let title_id = title_id.trim();
-        if !title_id.is_empty() {
-            title = app.services.catalog.titles.get_by_id(title_id).await?;
+    if let Some(manual_title_id) = manual_title_id.map(str::trim).filter(|id| !id.is_empty()) {
+        if let Some(submission_title_id) = release_evidence.title_id()
+            && submission_title_id != manual_title_id
+        {
+            return Err(AppError::Validation(format!(
+                "manual title {manual_title_id:?} is outside the durable Scryer submission title {submission_title_id:?}"
+            )));
         }
-    }
-
-    // fallback to IMDb ID if needed
-    if title.is_none() {
-        let imdb_id = extract_parameter(&completed.parameters, "*scryer_imdb_id")
-            .and_then(|value| normalize_imdb_id(&value));
-
-        title = match imdb_id {
-            Some(target_imdb_id) => {
-                let titles = app
-                    .services
-                    .catalog
-                    .titles
-                    .list_for_matching(None, None)
-                    .await?;
-                let mut matches = titles
-                    .into_iter()
-                    .filter(|title| {
-                        title.external_ids.iter().any(|external_id| {
-                            external_id.source.eq_ignore_ascii_case("imdb")
-                                && normalize_imdb_id(&external_id.value).as_deref()
-                                    == Some(target_imdb_id.as_str())
-                        })
-                    })
-                    .collect::<Vec<_>>();
-
-                if matches.len() == 1 {
-                    matches.pop()
-                } else {
-                    None
-                }
-            }
-            None => None,
-        };
+        title = app.services.catalog.titles.get_by_id(manual_title_id).await?;
+    } else if let Some(title_id) = release_evidence.title_id() {
+        title = app.services.catalog.titles.get_by_id(title_id).await?;
     }
 
     if title.is_none() {
@@ -349,22 +335,18 @@ async fn resolve_completed_import_target(
             .titles
             .list_for_matching(None, None)
             .await?;
-        let facet_hint = extract_parameter(&completed.parameters, "*scryer_facet")
-            .or_else(|| completed.category.clone());
-
-        title = resolve_title_from_release_candidate(
-            &titles,
-            &parsed_completed_name,
-            facet_hint.as_deref(),
-        );
-
-        if title.is_none()
-            && let Some(parsed_completed_folder) = parsed_completed_folder.as_ref()
-        {
+        let release_title = release_evidence.release_title(None).or_else(|| {
+            find_video_files(dest_dir, false)
+                .ok()
+                .and_then(|files| files.into_iter().next())
+                .and_then(|file| release_evidence.release_title(Some(&file)))
+        });
+        if let Some(release_title) = release_title {
+            let parsed_release_title = normalize_release_title_signal(parse_release_metadata(&release_title));
             title = resolve_title_from_release_candidate(
                 &titles,
-                parsed_completed_folder,
-                facet_hint.as_deref(),
+                &parsed_release_title,
+                release_evidence.facet(),
             );
         }
     }
@@ -396,9 +378,12 @@ async fn resolve_completed_import_target(
                 skip_reason: Some(ImportSkipReason::UnresolvedIdentity),
                 error_message: Some(format!(
                     "could not match download '{}' to any monitored title{}",
-                    completed.name, archive_message
+                    release_evidence
+                        .release_title(None)
+                        .unwrap_or_else(|| "unnamed download".to_string()),
+                    archive_message
                 )),
-                ..base_completed_import_result(import_id, completed, started_at)
+                ..base_completed_import_result(import_id, completed, release_evidence, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
             app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
@@ -421,7 +406,7 @@ async fn resolve_completed_import_target(
                 "title '{}' has unsupported facet '{:?}', skipping import",
                 title.name, title.facet
             )),
-            ..base_completed_import_result(import_id, completed, started_at)
+            ..base_completed_import_result(import_id, completed, release_evidence, started_at)
         };
         let result_json = serde_json::to_string(&result).ok();
         app.update_import_status_and_notify(import_id, ImportStatus::Skipped, result_json)
@@ -473,7 +458,7 @@ async fn resolve_completed_import_target(
             skip_reason: Some(ImportSkipReason::NoVideoFiles),
             title_id: Some(title.id.clone()),
             error_message: Some(format!("no video files found in {}", completed.dest_dir)),
-            ..base_completed_import_result(import_id, completed, started_at)
+            ..base_completed_import_result(import_id, completed, release_evidence, started_at)
         };
         let result_json = serde_json::to_string(&result).ok();
         let status = completed_import_status_for_result(&result, ImportStatus::Skipped);
@@ -482,33 +467,31 @@ async fn resolve_completed_import_target(
         return Ok(CompletedImportTargetResolution::Finished(Box::new(result)));
     }
 
-    let series_movie_link_id = if let Some(series_movie_link_id) =
-        extract_parameter(&completed.parameters, "*scryer_series_movie_link_id")
-    {
-        Some(series_movie_link_id)
-    } else if let Some(legacy_collection_id) =
-        extract_parameter(&completed.parameters, "*scryer_collection_id")
-    {
-        match app
-            .services
-            .catalog
-            .shows
-            .find_series_movie_link_by_legacy_collection_id(&legacy_collection_id)
-            .await
-        {
-            Ok(Some(link)) => Some(link.id),
-            Ok(None) => None,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    legacy_collection_id = %legacy_collection_id,
-                    "failed to resolve legacy series movie collection id"
-                );
-                None
+    let series_movie_link_id = match release_evidence.scope() {
+        Some(SubmissionScope::SeriesMovie {
+            series_movie_link_id,
+        }) => Some(series_movie_link_id.clone()),
+        Some(SubmissionScope::Collection { collection_id }) => {
+            match app
+                .services
+                .catalog
+                .shows
+                .find_series_movie_link_by_legacy_collection_id(collection_id)
+                .await
+            {
+                Ok(Some(link)) => Some(link.id),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        collection_id,
+                        "failed to resolve legacy series movie collection id"
+                    );
+                    None
+                }
             }
         }
-    } else {
-        None
+        _ => None,
     };
 
     Ok(CompletedImportTargetResolution::Ready(Box::new(
@@ -527,6 +510,7 @@ async fn dispatch_completed_import_target(
     actor: &User,
     import_id: &str,
     completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
     started_at: chrono::DateTime<Utc>,
     target: &CompletedImportTarget,
 ) -> AppResult<ImportResult> {
@@ -538,6 +522,7 @@ async fn dispatch_completed_import_target(
             &target.title,
             import_id,
             completed,
+            release_evidence,
             &target.video_files,
             started_at,
             series_movie_link_id,
@@ -550,6 +535,7 @@ async fn dispatch_completed_import_target(
             &target.title,
             import_id,
             completed,
+            release_evidence,
             &target.video_files,
             started_at,
         ))
@@ -561,6 +547,7 @@ async fn dispatch_completed_import_target(
             &target.title,
             import_id,
             completed,
+            release_evidence,
             &target.video_files,
             started_at,
         ))
@@ -606,6 +593,7 @@ async fn hold_replacement_for_manual_resolution(
     title: &scryer_domain::Title,
     import_id: &str,
     completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
     source_video: &Path,
     source_size: i64,
     quality: Option<String>,
@@ -639,7 +627,7 @@ async fn hold_replacement_for_manual_resolution(
         title_id: Some(title.id.clone()),
         source_system: Some(completed.client_type.clone()),
         source_ref: Some(completed.download_client_item_id.clone()),
-        source_title: Some(completed.name.clone()),
+        source_title: release_evidence.release_title(Some(source_video)),
         source_path: path_to_stored_string(source_video),
         dest_path: None,
         quality,
@@ -667,6 +655,7 @@ async fn import_additional_movie_download(
     title: &scryer_domain::Title,
     import_id: &str,
     completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
     source_video: &Path,
     source_size: i64,
     parsed: &ParsedReleaseMetadata,
@@ -679,6 +668,7 @@ async fn import_additional_movie_download(
     existing_files: &[crate::TitleMediaFile],
     started_at: chrono::DateTime<Utc>,
 ) -> AppResult<ImportResult> {
+    let source_title = release_evidence.release_title(Some(source_video));
     let full_folder_path =
         effective_title_folder_path(media_root, title, folder_template, parsed.year);
     ensure_import_title_folder_available(app, title, &full_folder_path).await?;
@@ -742,7 +732,7 @@ async fn import_additional_movie_download(
             title_id: Some(title.id.clone()),
             source_system: Some(completed.client_type.clone()),
             source_ref: Some(completed.download_client_item_id.clone()),
-            source_title: Some(completed.name.clone()),
+            source_title: release_evidence.release_title(Some(source_video)),
             source_path: path_to_stored_string(source_video),
             dest_path: Some(path_to_stored_string(&dest_path)),
             quality: parsed.quality.clone(),
@@ -790,7 +780,7 @@ async fn import_additional_movie_download(
         audio_codec_parsed: parsed.audio.as_ref().map(ToString::to_string),
         audio_channels_parsed: parsed.audio_channels.clone(),
         original_file_path: Some(path_to_stored_string(source_video)),
-        grabbed_release_title: Some(completed.name.clone()),
+        grabbed_release_title: source_title.clone(),
         grabbed_at: Some(started_at.to_rfc3339()),
         edition: parsed.edition.clone(),
         ..Default::default()
@@ -877,7 +867,7 @@ async fn import_additional_movie_download(
         title_id: Some(title.id.clone()),
         source_system: Some(completed.client_type.clone()),
         source_ref: Some(completed.download_client_item_id.clone()),
-        source_title: Some(completed.name.clone()),
+        source_title: source_title.clone(),
         source_path: path_to_stored_string(source_video),
         dest_path: Some(path_to_stored_string(&dest_path)),
         quality: parsed.quality.clone(),
@@ -903,7 +893,7 @@ async fn import_additional_movie_download(
                 import_id: Some(import_id.to_string()),
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
-                source_title: Some(completed.name.clone()),
+                source_title,
                 source_path: Some(path_to_stored_string(source_video)),
                 dest_path: Some(path_to_stored_string(&dest_path)),
                 quality: parsed.quality.clone(),
@@ -915,16 +905,22 @@ async fn import_additional_movie_download(
     Ok(result)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "movie import keeps operational completion and release evidence as separate inputs"
+)]
 async fn import_movie_download(
     app: &AppUseCase,
     actor: &User,
     title: &scryer_domain::Title,
     import_id: &str,
     completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
     video_files: &[PathBuf],
     started_at: chrono::DateTime<Utc>,
 ) -> AppResult<ImportResult> {
     let source_video = pick_largest_file(video_files)?;
+    let source_title = release_evidence.release_title(Some(&source_video));
     let source_size = std::fs::metadata(&source_video)
         .map(|m| m.len() as i64)
         .unwrap_or(0);
@@ -937,7 +933,7 @@ async fn import_movie_download(
         ..
     } = resolve_import_paths(app, title).await?;
 
-    let parsed = build_augmented_movie_import_metadata(&source_video, completed);
+    let parsed = build_augmented_movie_import_metadata(&source_video, release_evidence);
     let existing_files = app
         .services
         .library
@@ -948,7 +944,7 @@ async fn import_movie_download(
         .into_iter()
         .filter(|file| file.role.is_primary())
         .collect::<Vec<_>>();
-    let import_purpose = completed_import_purpose(app, completed).await;
+    let import_purpose = release_evidence.purpose();
     if import_purpose.is_additional_file() {
         return import_additional_movie_download(
             app,
@@ -956,6 +952,7 @@ async fn import_movie_download(
             title,
             import_id,
             completed,
+            release_evidence,
             &source_video,
             source_size,
             &parsed,
@@ -1012,6 +1009,7 @@ async fn import_movie_download(
                     title,
                     import_id,
                     completed,
+                    release_evidence,
                     &source_video,
                     source_size,
                     parsed.quality.clone(),
@@ -1025,7 +1023,7 @@ async fn import_movie_download(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
-                &completed.name,
+                source_title.as_deref().unwrap_or(""),
                 &source_video,
                 &[],
                 &rejection,
@@ -1051,7 +1049,7 @@ async fn import_movie_download(
                 title_id: Some(title.id.clone()),
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
-                source_title: Some(completed.name.clone()),
+                source_title: source_title.clone(),
                 source_path: path_to_stored_string(&source_video),
                 dest_path: None,
                 quality: parsed.quality.clone(),
@@ -1122,7 +1120,7 @@ async fn import_movie_download(
             title_id: Some(title.id.clone()),
             source_system: Some(completed.client_type.clone()),
             source_ref: Some(completed.download_client_item_id.clone()),
-            source_title: Some(completed.name.clone()),
+            source_title: source_title.clone(),
             source_path: path_to_stored_string(&source_video),
             dest_path: Some(path_to_stored_string(&dest_path)),
             quality: prepared.parsed.quality.clone(),
@@ -1158,6 +1156,7 @@ async fn import_movie_download(
             title,
             import_id,
             completed,
+            release_evidence,
             &source_video,
             source_size,
             prepared.parsed.quality.clone(),
@@ -1244,7 +1243,7 @@ async fn import_movie_download(
                         title_id: Some(title.id.clone()),
                         source_system: Some(completed.client_type.clone()),
                         source_ref: Some(completed.download_client_item_id.clone()),
-                        source_title: Some(completed.name.clone()),
+                        source_title: source_title.clone(),
                         source_path: path_to_stored_string(&source_video),
                         dest_path: Some(path_to_stored_string(&dest_path)),
                         quality: prepared.parsed.quality.clone(),
@@ -1293,7 +1292,7 @@ async fn import_movie_download(
                         title_id: Some(title.id.clone()),
                         source_system: Some(completed.client_type.clone()),
                         source_ref: Some(completed.download_client_item_id.clone()),
-                        source_title: Some(completed.name.clone()),
+                        source_title: source_title.clone(),
                         source_path: path_to_stored_string(&source_video),
                         dest_path: Some(path_to_stored_string(&dest_path)),
                         quality: prepared.parsed.quality.clone(),
@@ -1392,6 +1391,8 @@ async fn import_movie_download(
             .map(ToString::to_string),
         audio_channels_parsed: post_download_score.parsed.audio_channels.clone(),
         original_file_path: Some(path_to_stored_string(source_video.clone())),
+        grabbed_release_title: source_title.clone(),
+        grabbed_at: Some(started_at.to_rfc3339()),
         acquisition_score: Some(acq_score),
         scoring_log: post_download_score.scoring_log.clone(),
         ..Default::default()
@@ -1518,7 +1519,7 @@ async fn import_movie_download(
         title_id: Some(title.id.clone()),
         source_system: Some(completed.client_type.clone()),
         source_ref: Some(completed.download_client_item_id.clone()),
-        source_title: Some(completed.name.clone()),
+        source_title: source_title.clone(),
         source_path: path_to_stored_string(&source_video),
         dest_path: Some(path_to_stored_string(&dest_path)),
         quality: prepared.parsed.quality.clone(),
@@ -1544,7 +1545,7 @@ async fn import_movie_download(
                 import_id: Some(import_id.to_string()),
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
-                source_title: Some(completed.name.clone()),
+                source_title,
                 source_path: Some(path_to_stored_string(&source_video)),
                 dest_path: Some(path_to_stored_string(&dest_path)),
                 quality: prepared.parsed.quality.clone(),
@@ -1569,6 +1570,7 @@ async fn import_series_movie_download(
     title: &scryer_domain::Title,
     import_id: &str,
     completed: &CompletedDownload,
+    release_evidence: &ReleaseEvidence,
     video_files: &[PathBuf],
     started_at: chrono::DateTime<Utc>,
     series_movie_link_id: &str,
@@ -1590,7 +1592,7 @@ async fn import_series_movie_download(
                     "series movie link {series_movie_link_id} does not belong to title {}",
                     title.id
                 )),
-                ..base_completed_import_result(import_id, completed, started_at)
+                ..base_completed_import_result(import_id, completed, release_evidence, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
             let status = completed_import_status_for_result(&result, ImportStatus::Skipped);
@@ -1606,7 +1608,7 @@ async fn import_series_movie_download(
                 error_message: Some(format!(
                     "series movie link {series_movie_link_id} not found"
                 )),
-                ..base_completed_import_result(import_id, completed, started_at)
+                ..base_completed_import_result(import_id, completed, release_evidence, started_at)
             };
             let result_json = serde_json::to_string(&result).ok();
             let status = completed_import_status_for_result(&result, ImportStatus::Skipped);
@@ -1618,6 +1620,7 @@ async fn import_series_movie_download(
     let movie = &link.movie;
 
     let source_video = pick_largest_file(video_files)?;
+    let source_title = release_evidence.release_title(Some(&source_video));
     let source_size = std::fs::metadata(&source_video)
         .map(|m| m.len() as i64)
         .unwrap_or(0);
@@ -1631,7 +1634,7 @@ async fn import_series_movie_download(
         specials_folder_template,
     } = resolve_import_paths(app, title).await?;
 
-    let parsed = build_augmented_movie_import_metadata(&source_video, completed);
+    let parsed = build_augmented_movie_import_metadata(&source_video, release_evidence);
 
     let ext = scryer_domain::canonical_video_extension(&source_video)
         .unwrap_or("mkv")
@@ -1692,7 +1695,7 @@ async fn import_series_movie_download(
         .filter(|file| file.file_path == path_to_stored_string(&dest_path))
         .cloned()
         .collect();
-    let import_purpose = completed_import_purpose(app, completed).await;
+    let import_purpose = release_evidence.purpose();
     if import_purpose.is_additional_file() {
         return import_additional_movie_download(
             app,
@@ -1700,6 +1703,7 @@ async fn import_series_movie_download(
             title,
             import_id,
             completed,
+            release_evidence,
             &source_video,
             source_size,
             &parsed,
@@ -1760,6 +1764,7 @@ async fn import_series_movie_download(
                     title,
                     import_id,
                     completed,
+                    release_evidence,
                     &source_video,
                     source_size,
                     parsed.quality.clone(),
@@ -1773,7 +1778,7 @@ async fn import_series_movie_download(
                 app,
                 crate::domain_events::DomainEventActor::from(actor),
                 title,
-                &completed.name,
+                source_title.as_deref().unwrap_or(""),
                 &source_video,
                 &[],
                 &rejection,
@@ -1799,7 +1804,7 @@ async fn import_series_movie_download(
                 title_id: Some(title.id.clone()),
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
-                source_title: Some(completed.name.clone()),
+                source_title: source_title.clone(),
                 source_path: path_to_stored_string(&source_video),
                 dest_path: Some(path_to_stored_string(&dest_path)),
                 quality: parsed.quality.clone(),
@@ -1835,6 +1840,7 @@ async fn import_series_movie_download(
             title,
             import_id,
             completed,
+            release_evidence,
             &source_video,
             source_size,
             prepared.parsed.quality.clone(),
@@ -1986,7 +1992,7 @@ async fn import_series_movie_download(
                         title_id: Some(title.id.clone()),
                         source_system: Some(completed.client_type.clone()),
                         source_ref: Some(completed.download_client_item_id.clone()),
-                        source_title: Some(completed.name.clone()),
+                        source_title: source_title.clone(),
                         source_path: path_to_stored_string(&source_video),
                         dest_path: Some(path_to_stored_string(&dest_path)),
                         quality: prepared.parsed.quality.clone(),
@@ -2028,7 +2034,7 @@ async fn import_series_movie_download(
                         title_id: Some(title.id.clone()),
                         source_system: Some(completed.client_type.clone()),
                         source_ref: Some(completed.download_client_item_id.clone()),
-                        source_title: Some(completed.name.clone()),
+                        source_title: source_title.clone(),
                         source_path: path_to_stored_string(&source_video),
                         dest_path: Some(path_to_stored_string(&dest_path)),
                         quality: prepared.parsed.quality.clone(),
@@ -2081,7 +2087,7 @@ async fn import_series_movie_download(
                 title_id: Some(title.id.clone()),
                 source_system: Some(completed.client_type.clone()),
                 source_ref: Some(completed.download_client_item_id.clone()),
-                source_title: Some(completed.name.clone()),
+                source_title: source_title.clone(),
                 source_path: path_to_stored_string(&source_video),
                 dest_path: Some(path_to_stored_string(&dest_path)),
                 quality: prepared.parsed.quality.clone(),
@@ -2165,6 +2171,8 @@ async fn import_series_movie_download(
                 .map(ToString::to_string),
             audio_channels_parsed: post_download_score.parsed.audio_channels.clone(),
             original_file_path: Some(path_to_stored_string(&source_video)),
+            grabbed_release_title: source_title.clone(),
+            grabbed_at: Some(started_at.to_rfc3339()),
             acquisition_score: Some(acq_score),
             scoring_log: post_download_score.scoring_log.clone(),
             ..Default::default()
@@ -2332,7 +2340,7 @@ async fn import_series_movie_download(
         title_id: Some(title.id.clone()),
         source_system: Some(completed.client_type.clone()),
         source_ref: Some(completed.download_client_item_id.clone()),
-        source_title: Some(completed.name.clone()),
+        source_title: source_title.clone(),
         source_path: path_to_stored_string(&source_video),
         dest_path: Some(path_to_stored_string(&dest_path)),
         quality: prepared.parsed.quality.clone(),
@@ -2357,7 +2365,7 @@ async fn import_series_movie_download(
             import_id: Some(import_id.to_string()),
             source_system: Some(completed.client_type.clone()),
             source_ref: Some(completed.download_client_item_id.clone()),
-            source_title: Some(completed.name.clone()),
+            source_title,
             source_path: Some(path_to_stored_string(&source_video)),
             dest_path: Some(path_to_stored_string(&dest_path)),
             quality: prepared.parsed.quality.clone(),

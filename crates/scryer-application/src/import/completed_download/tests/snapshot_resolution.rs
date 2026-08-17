@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn completed_download_reresolution_keeps_conflicting_id_only_match() {
+async fn completed_download_reresolution_ignores_conflicting_display_label() {
     let existing_title = build_title("title-1", "Paper Lantern", MediaFacet::Movie);
     let parsed_title = build_title("title-2", "The Other Movie", MediaFacet::Movie);
     let app = build_app(
@@ -13,21 +13,19 @@ async fn completed_download_reresolution_keeps_conflicting_id_only_match() {
     let mut td = build_tracked_download(&existing_title.id, "movie", "Paper.Lantern.2012.1080p");
     td.match_type = TitleMatchType::IdOnly;
     td.source_title = None;
-    let completed = build_completed_download(
+    let mut completed = build_completed_download(
         "The.Other.Movie.2020.1080p.WEB-DL",
         "/tmp/does-not-matter",
         Some("movie"),
     );
+    completed.nzb_name = Some("Paper.Lantern.2012.1080p.WEB-DL".to_string());
 
     maybe_resolve_title_from_completed_download(&app, &mut td, &completed).await;
 
     assert_eq!(td.title_id.as_deref(), Some(existing_title.id.as_str()));
     assert_eq!(td.match_type, TitleMatchType::IdOnly);
-    assert!(has_id_only_conflict(&td));
-    assert_eq!(
-        td.status_messages,
-        vec![ID_ONLY_CONFLICT_MESSAGE.to_string()]
-    );
+    assert!(!has_id_only_conflict(&td));
+    assert!(td.status_messages.is_empty());
 }
 
 #[tokio::test]
@@ -38,11 +36,12 @@ async fn completed_download_reresolution_enriches_matching_id_only_title() {
     td.match_type = TitleMatchType::IdOnly;
     td.source_title = None;
     td.facet = None;
-    let completed = build_completed_download(
-        "Paper.Lantern.2012.1080p.WEB-DL",
+    let mut completed = build_completed_download(
+        "downloader display label",
         "/tmp/does-not-matter",
         Some("movie"),
     );
+    completed.nzb_name = Some("Paper.Lantern.2012.1080p.WEB-DL".to_string());
 
     maybe_resolve_title_from_completed_download(&app, &mut td, &completed).await;
 

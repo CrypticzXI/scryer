@@ -130,10 +130,11 @@ async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
     let completed_dir = std::env::temp_dir().join(format!("scryer-qbit-completed-{}", Id::new().0));
     std::fs::create_dir_all(&completed_dir).expect("create completed dir");
     let mut completed = build_completed_download(
-        release_title,
+        "qBit display label",
         completed_dir.to_string_lossy().as_ref(),
         Some("movie"),
     );
+    completed.nzb_name = Some("downloader-provided-name".to_string());
     completed.client_type = "qbittorrent".to_string();
     completed.client_id = "client-1".to_string();
     completed.download_client_item_id = info_hash.to_string();
@@ -164,6 +165,14 @@ async fn check_with_lookup_matches_qbit_torrent_hash_download_id() {
 
     assert_eq!(td.state, TrackedDownloadState::ImportPending);
     assert!(td.status_messages.is_empty());
+    let evidence = crate::import_workflow::resolve_release_evidence_for_completed_download(
+        &app,
+        td.completed_source.as_ref().expect("completed source"),
+        None,
+    )
+    .await
+    .expect("resolve persisted qBit submission evidence");
+    assert_eq!(evidence.release_title(None).as_deref(), Some(release_title));
 
     std::fs::remove_dir_all(&completed_dir).expect("remove completed dir");
 }

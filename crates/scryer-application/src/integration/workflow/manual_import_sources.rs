@@ -192,6 +192,27 @@ impl AppUseCase {
         .map_err(|_| {
             AppError::Validation("download is no longer available for manual import".to_string())
         })?;
+        let release_evidence = match selection.release_evidence_json.as_deref() {
+            Some(snapshot) => serde_json::from_str(snapshot).map_err(|error| {
+                AppError::Repository(format!(
+                    "manual import release-evidence snapshot is invalid: {error}"
+                ))
+            })?,
+            None => crate::import_workflow::resolve_release_evidence_for_completed_download(
+                self,
+                &completed,
+                None,
+            )
+            .await?,
+        };
+        if let Some(submission_title_id) = release_evidence.title_id()
+            && submission_title_id != selection.title_id
+        {
+            return Err(AppError::Validation(
+                "manual import title does not match the Scryer submission that grabbed this download"
+                    .to_string(),
+            ));
+        }
         let trusted_root = std::fs::canonicalize(&completed.dest_dir).map_err(|_| {
             AppError::Validation("download is no longer available for manual import".to_string())
         })?;
@@ -254,7 +275,6 @@ impl AppUseCase {
                     file_path: candidate.canonical_path.clone(),
                     episode_id: mapping.episode_id,
                     series_movie_link_id: mapping.series_movie_link_id,
-                    quality: candidate.quality.clone(),
                 })
             })
             .collect::<AppResult<Vec<_>>>()?;
@@ -268,6 +288,7 @@ impl AppUseCase {
             files,
             requested_at: Utc::now().to_rfc3339(),
             selection_id: Some(selection.id),
+            release_evidence: Some(release_evidence),
         })
         .map_err(|error| AppError::Repository(error.to_string()))?;
         let import_id = self
@@ -308,16 +329,6 @@ impl AppUseCase {
             .await
     }
 
-    pub(crate) async fn trigger_manual_import_with_permit(
-        &self,
-        actor: &User,
-        completed: &CompletedDownload,
-        override_title_id: Option<&str>,
-    ) -> AppResult<scryer_domain::ImportResult> {
-        self.trigger_manual_import_inner(actor, completed, override_title_id, true)
-            .await
-    }
-
     async fn trigger_manual_import_inner(
         &self,
         actor: &User,
@@ -344,7 +355,17 @@ impl AppUseCase {
         )
         .await?;
 
-        if import_permit_held {
+        if let Some(title_id) = override_title_id {
+            crate::import_workflow::import_completed_download_for_manual_review_with_title_override(
+                self,
+                actor,
+                &completed,
+                title_id,
+                import_permit_held,
+                None,
+            )
+            .await
+        } else if import_permit_held {
             crate::import_workflow::import_completed_download_for_manual_review_with_permit(
                 self, actor, &completed,
             )

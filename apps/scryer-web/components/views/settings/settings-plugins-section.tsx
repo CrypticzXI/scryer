@@ -689,16 +689,14 @@ export function SettingsPluginsSection({
         leadingIcon={<ArrowUpCircle className={`h-4 w-4 ${upgradingAll ? "animate-spin" : ""}`} />}
       >
         {upgradingAll ? t("settings.pluginsUpdatingAll") : t("settings.pluginsUpdateAll")}
-        <Badge
-          tone="info"
-          aria-hidden={upgradeCount === 0}
-          className={cn(
-            "ml-2 h-5 min-w-5 rounded-full px-1.5 text-[11px]",
-            upgradeCount === 0 && "invisible",
-          )}
-        >
-          {upgradeCount || 0}
-        </Badge>
+        {upgradeCount > 0 ? (
+          <Badge
+            tone="info"
+            className="ml-2 h-5 min-w-5 rounded-full px-1.5 text-[11px]"
+          >
+            {upgradeCount}
+          </Badge>
+        ) : null}
       </TextActionButton>
       <Button
         id="settings-plugins-manual-toggle"

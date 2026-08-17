@@ -2807,7 +2807,6 @@ impl UiSettings {
 pub struct ManualImportSelectionCandidate {
     pub id: String,
     pub canonical_path: String,
-    pub quality: Option<String>,
 }
 
 /// A durable selection of files rooted in a tracked completed download.
@@ -2817,6 +2816,7 @@ pub struct ManualImportSelection {
     pub actor_user_id: String,
     pub title_id: String,
     pub source_identity: crate::DownloadSourceIdentity,
+    pub release_evidence_json: Option<String>,
     pub candidates: Vec<ManualImportSelectionCandidate>,
 }
 

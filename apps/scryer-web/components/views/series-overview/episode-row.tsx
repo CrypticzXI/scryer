@@ -19,6 +19,7 @@ import {
 import { EpisodeQueueIndicator } from "@/components/common/download-queue-overview";
 import { useTranslate } from "@/lib/context/translate-context";
 import { useUiDateTimeFormat } from "@/lib/context/ui-settings-context";
+import type { InteractiveSearchIndexerProgress } from "@/lib/graphql/release-search";
 import type { Release } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
@@ -119,6 +120,7 @@ export type EpisodeRowProps = {
   clearingReleaseBlocklistEntryId?: string | null;
   episode: CollectionEpisode;
   episodeFiles: EpisodeMediaFile[];
+  episodeIndexerProgress: InteractiveSearchIndexerProgress[];
   episodeResults: Release[];
   facet: string;
   hasSearchResults: boolean;
@@ -149,6 +151,7 @@ export const EpisodeRow = React.memo(function EpisodeRow({
   clearingReleaseBlocklistEntryId,
   episode,
   episodeFiles,
+  episodeIndexerProgress,
   episodeResults,
   facet,
   hasSearchResults,
@@ -176,13 +179,22 @@ export const EpisodeRow = React.memo(function EpisodeRow({
   const [isPanelOpen, setIsPanelOpen] = React.useState(initiallyOpen);
   const [activeTab, setActiveTab] = React.useState<EpisodePanelTab>("details");
   const [episodeToggling, setEpisodeToggling] = React.useState(false);
+  const initializedDeepLinkEpisodeIdRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
-    if (initiallyOpen) {
-      setIsPanelOpen(true);
-      setActiveTab("details");
-      void onLoadEpisodeDetail?.(episode.id);
+    if (!initiallyOpen) {
+      initializedDeepLinkEpisodeIdRef.current = null;
+      return;
     }
+
+    if (initializedDeepLinkEpisodeIdRef.current === episode.id) {
+      return;
+    }
+
+    initializedDeepLinkEpisodeIdRef.current = episode.id;
+    setIsPanelOpen(true);
+    setActiveTab("details");
+    void onLoadEpisodeDetail?.(episode.id);
   }, [episode.id, initiallyOpen, onLoadEpisodeDetail]);
 
   const dateTimeFormat = useUiDateTimeFormat();
@@ -266,9 +278,11 @@ export const EpisodeRow = React.memo(function EpisodeRow({
       clearingReleaseBlocklistEntryId={clearingReleaseBlocklistEntryId}
       episode={episode}
       episodeFiles={episodeFiles}
+      episodeIndexerProgress={episodeIndexerProgress}
       episodeLoading={searchLoading}
       episodeResults={episodeResults}
       facet={facet}
+      hasSearchResults={hasSearchResults}
       onClearReleaseBlocklistEntry={onClearReleaseBlocklistEntry}
       onDeleteFile={onDeleteFile}
       onMakePrimaryFile={onMakePrimaryFile}
