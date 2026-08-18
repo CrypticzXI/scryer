@@ -260,20 +260,18 @@ resources {
 }
 ```
 
-### Health Checks (Liveness vs. Readiness)
+### Health Checks
 
-Scryer exposes two probe endpoints (both honor `SCRYER_BASE_PATH`, e.g. `/scryer/health`):
+Use `GET /health` for every orchestrator health check — liveness, readiness, startup, reverse-proxy upstream checks, uptime monitors. It honors `SCRYER_BASE_PATH` (e.g. `/scryer/health`), answers `GET` and `HEAD` with a small JSON body, and needs no special headers, so `curl -f`, `wget --spider`, Kubernetes `httpGet`, Docker `HEALTHCHECK`, Unraid, autoheal, Swarm, Traefik/Caddy/nginx/HAProxy checks, and Uptime Kuma all work as-is.
 
-| Endpoint | Purpose | Booting / migrating | Serving | Bootstrap failed |
-|---|---|---|---|---|
-| `GET /health` | **Liveness** — "is the process alive and making progress?" | `200` `{"status":"migrating","ready":false}` | `200` `{"status":"ok","ready":true}` | `500` `{"status":"error",...}` |
-| `GET /health/ready` | **Readiness** — "can it serve the app right now?" | `503` `{"status":"migrating","ready":false}` | `200` `{"status":"ok","ready":true}` | `500` `{"status":"error",...}` |
+| Endpoint | Booting / migrating | Serving | Bootstrap failed |
+|---|---|---|---|
+| `GET /health` | `200` `{"status":"migrating","ready":false}` | `200` `{"status":"ok","ready":true}` | `500` `{"status":"error",...}` |
+| `GET /health/ready` | `503` `{"status":"migrating","ready":false}` | `200` `{"status":"ok","ready":true}` | `500` `{"status":"error",...}` |
 
-Both answer `GET` and `HEAD` with a small JSON body, so `curl -f`, `wget --spider`, Kubernetes `httpGet`, and any HTTP-status-based checker work without special headers.
+Database migrations run at startup and can take a while on large libraries. `/health` stays `200` for the entire migration, so nothing recycles Scryer part-way through one — and there is no reason to hold traffic back either: while migrating, Scryer serves a "Upgrading database…" page on every route that refreshes into the app by itself the moment migrations finish. So send users through as normal; a Kubernetes `readinessProbe` on `/health` is correct, not a shortcut. `/health` only goes non-2xx (`500`) when bootstrap has failed and a restart is actually the right call. Process supervisors that don't probe HTTP at all (`brew services`, `systemd`, NSSM / the Windows service, launchd) are unaffected either way — they restart on exit.
 
-**Point restart-on-unhealthy checks at `/health`.** Database migrations run at startup and can take a while on large libraries; `/health` stays `200` for the entire migration so Docker `HEALTHCHECK`s, Unraid, autoheal, Swarm, Kubernetes `livenessProbe`s, and reverse-proxy health checks never recycle Scryer part-way through one. It only goes non-2xx (`500`) when bootstrap has failed and a restart is actually the right call. Process supervisors that don't probe HTTP at all (`brew services`, `systemd`, NSSM / the Windows service, launchd) are unaffected either way — they restart on exit.
-
-**Point "wait until it's serving" checks at `/health/ready`** — Kubernetes `readinessProbe`s, load balancers that should hold traffic until the UI is up, and scripts that need to call GraphQL right after startup. If you must use `/health` for that, key on the JSON body (`"status":"ok"`), not on the HTTP status. A Kubernetes `startupProbe`, if you use one, belongs on `/health` as well — a `startupProbe` on `/health/ready` with a short `failureThreshold` would kill the pod during a long migration, which is exactly what this split avoids.
+`/health/ready` exists for automation that needs the **API** (GraphQL) to be up before it proceeds — CI, seed/provisioning scripts, `depends_on` for a sidecar that calls Scryer on boot. It answers `503` until the full application is serving. Don't wire a Kubernetes `startupProbe` or a restart-on-unhealthy check to it: with a short `failureThreshold` that would kill the pod during a long migration, which is exactly what `/health` avoids. If a script must use `/health` for the same purpose, key on the JSON body (`"status":"ok"`), not on the HTTP status.
 
 ```yaml
 # Kubernetes
@@ -281,7 +279,7 @@ livenessProbe:
   httpGet: { path: /health, port: 8080 }
   periodSeconds: 10
 readinessProbe:
-  httpGet: { path: /health/ready, port: 8080 }
+  httpGet: { path: /health, port: 8080 }
   periodSeconds: 5
 ```
 

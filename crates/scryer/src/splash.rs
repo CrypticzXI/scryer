@@ -22,19 +22,24 @@ pub(crate) struct SplashState {
     pub(crate) status_rx: watch::Receiver<BootstrapStatus>,
 }
 
-/// Liveness: `GET /health`.
+/// `GET /health` — the health check for every orchestrator probe (liveness,
+/// readiness, startup, reverse-proxy upstream checks).
 ///
 /// Reports HTTP 200 for the whole time the process is alive and making
-/// progress — including while migrations run — so orchestrator liveness probes
-/// (Docker/Compose healthchecks, Kubernetes `livenessProbe`) never recycle the
-/// container in the middle of a long migration. The JSON body still carries the
-/// bootstrap phase (`"migrating"` / `"ok"`) plus a `ready` flag, and every
-/// in-tree poller (splash page, web client restart overlay, xtask, seed) keys
-/// on `status == "ok"`, not on the HTTP status. Only a failed bootstrap returns a
+/// progress — including while migrations run — so Docker/Compose healthchecks,
+/// Kubernetes probes, autoheal, etc. never recycle the container in the middle
+/// of a long migration. User traffic does not need to be held back during that
+/// window either: the splash fallback serves the "Upgrading database…" page on
+/// every route and it reloads into the app the moment bootstrap finishes, so a
+/// readiness probe here is correct too. The JSON body carries the bootstrap
+/// phase (`"migrating"` / `"ok"`) plus a `ready` flag, and every in-tree poller
+/// (splash page, web client restart overlay, xtask, seed) keys on
+/// `status == "ok"`, not on the HTTP status. Only a failed bootstrap returns a
 /// non-2xx code, because a process that will never become ready *should* be
 /// recycled.
 ///
-/// Readiness lives at `GET /health/ready` (see [`splash_ready_handler`]).
+/// Automation that needs the *API* up (not just the process) uses
+/// `GET /health/ready` (see [`splash_ready_handler`]).
 pub(crate) async fn splash_health_handler(State(state): State<SplashState>) -> Response {
     let status = state.status_rx.borrow().clone();
     match status {
@@ -52,12 +57,15 @@ pub(crate) async fn splash_health_handler(State(state): State<SplashState>) -> R
     }
 }
 
-/// Readiness: `GET /health/ready`.
+/// `GET /health/ready` — "is the application (GraphQL/UI) serving yet?"
 ///
 /// Returns 503 until the full application router is serving, 200 afterwards,
-/// and 500 if bootstrap failed. Point Kubernetes `readinessProbe`s, load
-/// balancer health checks, and "wait for scryer" scripts here when they need
-/// the HTTP status code (rather than the JSON body) to reflect readiness.
+/// and 500 if bootstrap failed. This is for automation that must not call the
+/// API before bootstrap completes (CI, seed/provisioning scripts, e2e, boot-time
+/// sidecars) and wants the HTTP status code rather than the JSON body to say
+/// so. It is *not* the orchestrator health check — a restart-on-unhealthy or
+/// `startupProbe` pointed here would kill a long migration; those belong on
+/// `/health`.
 pub(crate) async fn splash_ready_handler(State(state): State<SplashState>) -> Response {
     let status = state.status_rx.borrow().clone();
     match status {
