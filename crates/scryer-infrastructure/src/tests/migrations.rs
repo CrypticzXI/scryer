@@ -2559,3 +2559,149 @@ async fn migration_0156_queues_tvdb_titles_without_clearing_last_fetch() {
     drop(services);
     let _ = std::fs::remove_file(db);
 }
+
+#[tokio::test]
+async fn quarantined_0157_is_recorded_without_running_and_0160_normalizes_without_deleting() {
+    // A pre-0157 database (0.18.11 and earlier) upgraded by the current binary:
+    // 0157 must be recorded as applied — same version and checksum as the
+    // catalog, so ledger validation stays green forever — without executing,
+    // and 0160 must set unambiguous folders while touching no media_files row.
+    crate::spellfix::register_spellfix_auto_extension()
+        .expect("spellfix auto-extension should register");
+    let db = std::env::temp_dir().join(format!(
+        "scryer_migration_0157_quarantine_{}.db",
+        chrono::Utc::now().timestamp_micros()
+    ));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_with_create(db.to_string_lossy().as_ref()))
+        .await
+        .expect("pre-0157 database should open");
+    crate::migrations::replay_source_catalog_for_fresh_install(&pool, Some(156), true)
+        .await
+        .expect("migrations through 0156 should apply");
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let library_id =
+        scryer_domain::default_library_id_for_facet(&scryer_domain::MediaFacet::Series);
+    let (root_folder_id, root_path): (String, String) = sqlx::query_as(
+        "SELECT id, path FROM library_roots
+          WHERE library_id = ?1
+          ORDER BY is_default DESC, path
+          LIMIT 1",
+    )
+    .bind(&library_id)
+    .fetch_one(&pool)
+    .await
+    .expect("default series root should exist");
+    let root = root_path.trim_end_matches('/').to_string();
+
+    // "split": media in two folders — 0157 would keep the bigger folder and
+    // DELETE the other row. "single": one folder, no stored folder_path.
+    for id in ["split", "single"] {
+        sqlx::query(
+            "INSERT INTO titles (
+                id, name, name_normalized, library_id, root_folder_id, facet, created_at
+             ) VALUES (?1, ?1, ?1, ?2, ?3, 'series', ?4)",
+        )
+        .bind(id)
+        .bind(&library_id)
+        .bind(&root_folder_id)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("title fixture should insert");
+    }
+    for (id, title_id, path) in [
+        (
+            "split-a1",
+            "split",
+            format!("{root}/Split Show/Season 1/e1.mkv"),
+        ),
+        (
+            "split-a2",
+            "split",
+            format!("{root}/Split Show/Season 1/e2.mkv"),
+        ),
+        (
+            "split-b1",
+            "split",
+            format!("{root}/Split Show (2019)/e1.mkv"),
+        ),
+        ("single-1", "single", format!("{root}/Single Show/e1.mkv")),
+    ] {
+        sqlx::query(
+            "INSERT INTO media_files (
+                id, title_id, file_path, size_bytes, scan_status, created_at
+             ) VALUES (?1, ?2, ?3, 100, 'complete', ?4)",
+        )
+        .bind(id)
+        .bind(title_id)
+        .bind(&path)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .expect("media file fixture should insert");
+    }
+
+    crate::migrations::run_migrations(&pool, crate::types::MigrationMode::Apply)
+        .await
+        .expect("upgrade to head should apply");
+
+    // Nothing was deleted.
+    let media_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media_files")
+        .fetch_one(&pool)
+        .await
+        .expect("count media files");
+    assert_eq!(media_count, 4, "0160 must never delete media_files rows");
+
+    // 0157 is in the ledger with the catalog's own checksum, marked successful,
+    // and 0160 ran after it.
+    let catalog = crate::migrations::embedded_catalog().expect("embedded catalog");
+    let expected_157 = catalog
+        .migrations
+        .iter()
+        .find(|migration| migration.version == 157)
+        .expect("0157 stays in the catalog");
+    let (checksum_157, success_157): (Vec<u8>, i64) =
+        sqlx::query_as("SELECT checksum, success FROM _sqlx_migrations WHERE version = 157")
+            .fetch_one(&pool)
+            .await
+            .expect("0157 ledger row");
+    assert_eq!(success_157, 1);
+    assert_eq!(checksum_157, expected_157.checksum);
+    let applied_160: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE version = 160")
+            .fetch_one(&pool)
+            .await
+            .expect("0160 ledger row");
+    assert_eq!(applied_160, 1);
+
+    // The unambiguous title got its folder; the split one was left for repair.
+    let single_folder: Option<String> =
+        sqlx::query_scalar("SELECT folder_path FROM titles WHERE id = 'single'")
+            .fetch_one(&pool)
+            .await
+            .expect("single title");
+    assert_eq!(
+        single_folder.as_deref(),
+        Some(format!("{root}/Single Show").as_str())
+    );
+    let split_folder: Option<String> =
+        sqlx::query_scalar("SELECT folder_path FROM titles WHERE id = 'split'")
+            .fetch_one(&pool)
+            .await
+            .expect("split title");
+    assert_eq!(
+        split_folder, None,
+        "ambiguous ownership is not resolved by guessing"
+    );
+
+    // A second boot is a no-op: the ledger validates and nothing is pending.
+    crate::migrations::run_migrations(&pool, crate::types::MigrationMode::ValidateOnly)
+        .await
+        .expect("ledger with the recorded 0157 must validate");
+
+    drop(pool);
+    let _ = std::fs::remove_file(db);
+}

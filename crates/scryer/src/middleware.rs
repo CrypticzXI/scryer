@@ -2110,7 +2110,7 @@ fn is_local_network_ip(ip: IpAddr) -> bool {
 }
 
 pub(crate) async fn health_handler() -> impl IntoResponse {
-    Json(serde_json::json!({"status": "ok"}))
+    Json(serde_json::json!({"status": "ok", "ready": true}))
 }
 
 pub(crate) async fn rate_limit_http_api(

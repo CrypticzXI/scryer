@@ -12,9 +12,14 @@ export type InteractiveSearchPresentation = {
   showResults: boolean;
   showProgress: boolean;
   showFinalSummary: boolean;
+  /** Indexers that have finished, whichever way (completed, failed, or skipped). */
   completedIndexerCount: number;
+  /** Indexers that actually ran a search and answered. */
+  searchedIndexerCount: number;
   totalIndexerCount: number;
   failedIndexerNames: string[];
+  /** Indexers the run never queried (routing/scope/capability), with the reason when known. */
+  skippedIndexers: Array<{ name: string; reason: string | null }>;
 };
 
 export function deriveInteractiveSearchPresentation({
@@ -29,6 +34,9 @@ export function deriveInteractiveSearchPresentation({
       indexer.status === "FAILED" ||
       indexer.status === "SKIPPED",
   ).length;
+  const searchedIndexerCount = indexers.filter(
+    (indexer) => indexer.status === "COMPLETED",
+  ).length;
 
   return {
     showInitialLoader: loading && resultCount === 0,
@@ -36,9 +44,13 @@ export function deriveInteractiveSearchPresentation({
     showProgress: loading,
     showFinalSummary: hasSnapshot && !loading,
     completedIndexerCount,
+    searchedIndexerCount,
     totalIndexerCount: indexers.length,
     failedIndexerNames: indexers
       .filter((indexer) => indexer.status === "FAILED")
       .map((indexer) => indexer.name),
+    skippedIndexers: indexers
+      .filter((indexer) => indexer.status === "SKIPPED")
+      .map((indexer) => ({ name: indexer.name, reason: indexer.failureReason })),
   };
 }

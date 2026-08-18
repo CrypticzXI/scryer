@@ -4409,6 +4409,29 @@ async fn fail_closed_pack_fixture() -> FailClosedPackFixture {
 /// record the durable Scryer grab (release title + scope) behind a download.
 async fn fail_closed_pack_fixture_with_submissions()
 -> (FailClosedPackFixture, Arc<TrackingDownloadSubmissionRepo>) {
+    build_fail_closed_pack_fixture(FailClosedPackFixtureOptions::default()).await
+}
+
+struct FailClosedPackFixtureOptions {
+    file_importer: Arc<dyn FileImporter>,
+    /// Register the fixture's temp library dir as the series library root
+    /// (needed by upgrades, which recycle the old file under a configured
+    /// root) — before the title is created, so the title's root id matches.
+    series_root_at_library_dir: bool,
+}
+
+impl Default for FailClosedPackFixtureOptions {
+    fn default() -> Self {
+        Self {
+            file_importer: Arc::new(CopyingFileImporter),
+            series_root_at_library_dir: false,
+        }
+    }
+}
+
+async fn build_fail_closed_pack_fixture(
+    options: FailClosedPackFixtureOptions,
+) -> (FailClosedPackFixture, Arc<TrackingDownloadSubmissionRepo>) {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -4419,11 +4442,12 @@ async fn fail_closed_pack_fixture_with_submissions()
     );
     let import_repo = Arc::new(TrackingImportRepo::default());
     let import_artifacts = Arc::new(RecordingImportArtifactRepo::default());
+    let file_importer = options.file_importer.clone();
     let app = base_app.with_test_overrides(|services| {
         services
             .with_imports(import_repo.clone())
             .with_import_artifacts(import_artifacts.clone())
-            .with_file_importer(Arc::new(CopyingFileImporter))
+            .with_file_importer(file_importer)
             .with_media_files(Arc::new(MockMediaFileRepo::default()))
     });
     app.services
@@ -4434,6 +4458,19 @@ async fn fail_closed_pack_fixture_with_submissions()
         .expect("seed import actor");
 
     let library_dir = tempfile::tempdir().expect("library tempdir");
+    if options.series_root_at_library_dir {
+        let current_paths = app.get_library_paths(&user).await.expect("library paths");
+        app.update_library_paths(
+            &user,
+            UpdateLibraryPaths {
+                movie_path: current_paths.movie_path.clone(),
+                series_path: library_dir.path().to_string_lossy().into_owned(),
+                anime_path: Some(current_paths.anime_path.clone()),
+            },
+        )
+        .await
+        .expect("point the series library root at the fixture dir");
+    }
     let title_folder = library_dir.path().join("Fail Closed Pack");
     let title = app
         .add_title(
@@ -4907,6 +4944,136 @@ async fn manual_import_of_a_file_already_in_place_is_satisfied_not_failed() {
         media_files.len(),
         1,
         "the re-run must not duplicate the catalog row: {media_files:?}"
+    );
+}
+
+#[tokio::test]
+async fn manual_import_upgrade_reports_transfer_progress_on_its_record() {
+    // Prod 2026-08-18: every manual import that replaced an existing episode
+    // file finished with NULL `import_transfer_*` columns — the upgrade path
+    // copied through the raw importer, so the row never showed "Copying".
+    // A replacement must go through the record-progress importer exactly like
+    // a first import.
+    let (
+        FailClosedPackFixture {
+            app,
+            user,
+            title,
+            episode,
+            import_repo,
+            ..
+        },
+        _submissions,
+    ) = build_fail_closed_pack_fixture(FailClosedPackFixtureOptions {
+        file_importer: Arc::new(ProgressReportingFileImporter),
+        series_root_at_library_dir: true,
+    })
+    .await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let source_root =
+        Some(std::fs::canonicalize(source_dir.path()).expect("canonical source root"));
+    let source_identity =
+        DownloadSourceIdentity::new(Some("weaver-client"), "weaver", "pack-upgrade-progress");
+    let manual_import = |release_name: &str| {
+        let source_file = write_pack_video(source_dir.path(), &format!("{release_name}.mkv"));
+        let completed = series_pack_completed_download(
+            "pack-upgrade-progress",
+            &title.id,
+            release_name,
+            source_dir.path(),
+        );
+        (
+            completed,
+            vec![ManualImportFileMapping {
+                file_path: source_file.to_string_lossy().into_owned(),
+                episode_id: Some(episode.id.clone()),
+                series_movie_link_id: None,
+            }],
+        )
+    };
+
+    // First import lands a 720p file.
+    let (completed, mappings) = manual_import("Fail.Closed.Pack.S01E01.720p.WEB-DL");
+    let first_id = app
+        .services
+        .workflow
+        .imports
+        .queue_import_request(
+            source_identity.clone(),
+            ImportType::ManualImport.as_str().to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("queue first manual import record");
+    let first = crate::import_workflow::execute_manual_import(
+        &app,
+        &user,
+        &first_id,
+        &title.id,
+        Some(&completed),
+        mappings,
+        source_root.clone(),
+    )
+    .await
+    .expect("first manual import");
+    assert!(first.iter().all(|result| result.success), "{first:?}");
+
+    // Second import of a better release replaces it (the upgrade path).
+    let (completed, mappings) = manual_import("Fail.Closed.Pack.S01E01.1080p.WEB-DL");
+    let second_id = app
+        .services
+        .workflow
+        .imports
+        .queue_import_request(
+            source_identity,
+            ImportType::ManualImport.as_str().to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("queue second manual import record");
+    let second = crate::import_workflow::execute_manual_import(
+        &app,
+        &user,
+        &second_id,
+        &title.id,
+        Some(&completed),
+        mappings,
+        source_root,
+    )
+    .await
+    .expect("second manual import");
+    assert!(second.iter().all(|result| result.success), "{second:?}");
+    let media_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(media_files.len(), 1, "{media_files:?}");
+    assert!(
+        media_files[0].file_path.contains("1080p"),
+        "the second import must have replaced the 720p file: {media_files:?}"
+    );
+
+    let record = import_repo
+        .get_import_by_id(&second_id)
+        .await
+        .expect("read second import record")
+        .expect("second import record exists");
+    assert!(
+        record.import_transfer_updated_at.is_some(),
+        "the upgrade copy must report transfer progress on its import record: {record:?}"
+    );
+    assert_eq!(
+        record.import_transfer_total_bytes,
+        Some(51 * 1024 * 1024),
+        "{record:?}"
+    );
+    assert_eq!(
+        record.import_transfer_bytes,
+        record.import_transfer_total_bytes
     );
 }
 

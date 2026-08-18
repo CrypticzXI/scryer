@@ -7,6 +7,7 @@
       Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer version of Scryer is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="ScryerCrabIcon" SourceFile="$(var.StageDir)\scryer.ico" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="ScryerMediaFolder" Name="Scryer Media">
@@ -29,7 +30,9 @@
               Name="Scryer"
               Description="Open Scryer"
               Target="[#ScryerTrayExe]"
-              WorkingDirectory="INSTALLFOLDER" />
+              WorkingDirectory="INSTALLFOLDER"
+              Icon="ScryerCrabIcon"
+              IconIndex="0" />
           <RemoveFolder Id="RemoveScryerStartMenuFolder" On="uninstall" />
           <RegistryValue
               Root="HKLM"

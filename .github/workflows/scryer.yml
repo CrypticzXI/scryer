@@ -1318,6 +1318,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
           $version = ($metadata.packages | Where-Object { $_.name -eq "scryer" } | Select-Object -First 1).version
+          Copy-Item crates\scryer\resources\windows\scryer.ico "${{ matrix.artifact_name }}-stage\scryer.ico" -Force
           .\packaging\windows\build-msi.ps1 `
             -Architecture ${{ matrix.msi_arch }} `
             -StageDir "${{ matrix.artifact_name }}-stage" `

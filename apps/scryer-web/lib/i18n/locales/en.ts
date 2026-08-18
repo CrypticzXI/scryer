@@ -1229,8 +1229,12 @@ const en: LocaleDictionary = {
     "{{releaseCount}} releases · {{indexerCount}} indexers searched",
   "title.contextReleaseSearchProgress":
     "{{releaseCount}} releases · {{done}}/{{total}} indexers",
+  "title.contextReleaseSearchSummaryDetailed":
+    "{{releaseCount}} releases · {{searched}}/{{total}} indexers searched",
   "title.contextReleaseSearchIndexerFailures":
     "{{count}} indexer(s) failed: {{names}}",
+  "title.contextReleaseSearchIndexerSkipped":
+    "{{count}} indexer(s) skipped: {{names}}",
   "title.noReleasesFound": "No releases found for {{name}}.",
   "title.searchNeedsDownloadClientTitle": "Search requires a download client",
   "title.searchNeedsDownloadClientDescription":

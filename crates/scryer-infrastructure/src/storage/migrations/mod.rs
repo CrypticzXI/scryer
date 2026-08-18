@@ -1,9 +1,11 @@
 pub mod assets;
 pub mod hook_ids;
+pub mod known_bad;
 pub(crate) mod notification_targets;
 pub(crate) mod post_0_16_6_prerelease;
 pub(crate) mod title_catalog_sort_keys;
 pub(crate) mod title_folder_ownership;
+pub(crate) mod title_folder_ownership_safe;
 pub(crate) mod title_image_blobs;
 pub(crate) mod title_root_folder_ids;
 
@@ -644,6 +646,23 @@ async fn apply_single_migration(
         .await
         .map_err(|error| AppError::Repository(error.to_string()))?;
 
+    if let Some(quarantined) = known_bad::known_bad_migration(migration.version) {
+        // Recorded exactly as if it had run (same version/description/checksum,
+        // so ledger validation on every later boot is unchanged), but none of
+        // its steps execute. The replacement version carries the safe work.
+        tracing::warn!(
+            version = migration.version,
+            replacement_version = quarantined.replacement_version,
+            reason = quarantined.reason,
+            "skipping quarantined migration; recording it as applied without executing its steps"
+        );
+        insert_applied_migration(&mut tx, migration, 0).await?;
+        tx.commit()
+            .await
+            .map_err(|error| AppError::Repository(error.to_string()))?;
+        return Ok(());
+    }
+
     for step in &migration.steps {
         if !step.engine().applies_to(EngineScope::Sqlite) {
             continue;
@@ -740,6 +759,9 @@ async fn run_rust_hook(
         }
         "migrate_title_folder_ownership" => {
             title_folder_ownership::migrate_title_folder_ownership_sqlite(tx).await
+        }
+        "migrate_title_folder_ownership_safe" => {
+            title_folder_ownership_safe::migrate_title_folder_ownership_safe_sqlite(tx).await
         }
         "migrate_title_image_blobs" => {
             title_image_blobs::migrate_title_image_blobs_sqlite(tx).await

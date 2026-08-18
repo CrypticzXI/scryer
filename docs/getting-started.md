@@ -260,6 +260,40 @@ resources {
 }
 ```
 
+### Health Checks (Liveness vs. Readiness)
+
+Scryer exposes two probe endpoints (both honor `SCRYER_BASE_PATH`, e.g. `/scryer/health`):
+
+| Endpoint | Purpose | Booting / migrating | Serving | Bootstrap failed |
+|---|---|---|---|---|
+| `GET /health` | **Liveness** — "is the process alive and making progress?" | `200` `{"status":"migrating","ready":false}` | `200` `{"status":"ok","ready":true}` | `500` `{"status":"error",...}` |
+| `GET /health/ready` | **Readiness** — "can it serve the app right now?" | `503` `{"status":"migrating","ready":false}` | `200` `{"status":"ok","ready":true}` | `500` `{"status":"error",...}` |
+
+Both answer `GET` and `HEAD` with a small JSON body, so `curl -f`, `wget --spider`, Kubernetes `httpGet`, and any HTTP-status-based checker work without special headers.
+
+**Point restart-on-unhealthy checks at `/health`.** Database migrations run at startup and can take a while on large libraries; `/health` stays `200` for the entire migration so Docker `HEALTHCHECK`s, Unraid, autoheal, Swarm, Kubernetes `livenessProbe`s, and reverse-proxy health checks never recycle Scryer part-way through one. It only goes non-2xx (`500`) when bootstrap has failed and a restart is actually the right call. Process supervisors that don't probe HTTP at all (`brew services`, `systemd`, NSSM / the Windows service, launchd) are unaffected either way — they restart on exit.
+
+**Point "wait until it's serving" checks at `/health/ready`** — Kubernetes `readinessProbe`s, load balancers that should hold traffic until the UI is up, and scripts that need to call GraphQL right after startup. If you must use `/health` for that, key on the JSON body (`"status":"ok"`), not on the HTTP status. A Kubernetes `startupProbe`, if you use one, belongs on `/health` as well — a `startupProbe` on `/health/ready` with a short `failureThreshold` would kill the pod during a long migration, which is exactly what this split avoids.
+
+```yaml
+# Kubernetes
+livenessProbe:
+  httpGet: { path: /health, port: 8080 }
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /health/ready, port: 8080 }
+  periodSeconds: 5
+```
+
+```yaml
+# Docker Compose
+healthcheck:
+  test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+  interval: 30s
+  timeout: 5s
+  retries: 3
+```
+
 ## Upgrading
 
 Pull the latest image and recreate the container:

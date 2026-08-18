@@ -122,6 +122,7 @@ fn configured_roots_match(left: &Path, right: &Path) -> bool {
 pub(crate) async fn execute_upgrade(
     app: &AppUseCase,
     actor: &User,
+    import_id: &str,
     title: &Title,
     existing_file: &TitleMediaFile,
     source_path: &std::path::Path,
@@ -160,6 +161,7 @@ pub(crate) async fn execute_upgrade(
 
     let replacement = prepare_replacement_before_old_removal(
         app,
+        import_id,
         title,
         existing_file,
         source_path,
@@ -954,6 +956,7 @@ fn upgrade_scoring_log(
 )]
 async fn prepare_replacement_before_old_removal(
     app: &AppUseCase,
+    import_id: &str,
     title: &Title,
     existing_file: &TitleMediaFile,
     source_path: &Path,
@@ -970,22 +973,28 @@ async fn prepare_replacement_before_old_removal(
     import_mode: ImportMode,
 ) -> AppResult<PreparedUpgradeReplacement> {
     let import_path_string = path_to_stored_string(import_path);
-    let file_result = app
-        .services
-        .workflow
-        .file_importer
-        .import_file(
-            source_path,
-            import_path,
-            import_mode,
-            Some(&prepared.source_snapshot),
-        )
-        .await
-        .map_err(|err| {
-            AppError::Repository(format!(
-                "upgrade import failed before old file removal: {err}"
-            ))
-        })?;
+    // The replacement is transferred exactly like a first import: through the
+    // record-progress importer, so the copy reports `import_transfer_*` on the
+    // import record (the row shows "Copying x / y" instead of nothing — every
+    // upgrade used the raw importer and never wrote progress) and the
+    // library's resolved file permissions are applied instead of the
+    // importer defaults.
+    let file_result = crate::import_workflow::import_file_with_record_progress(
+        app,
+        import_id,
+        &title.library_id,
+        &title.facet,
+        source_path,
+        import_path,
+        import_mode,
+        Some(&prepared.source_snapshot),
+    )
+    .await
+    .map_err(|err| {
+        AppError::Repository(format!(
+            "upgrade import failed before old file removal: {err}"
+        ))
+    })?;
 
     let media_file_input = InsertMediaFileInput {
         title_id: title.id.clone(),

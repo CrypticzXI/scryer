@@ -1210,6 +1210,7 @@ async fn import_movie_download(
             match crate::upgrade::execute_upgrade(
                 app,
                 actor,
+                import_id,
                 title,
                 existing_file,
                 &source_video,
@@ -1903,6 +1904,7 @@ async fn import_series_movie_download(
             match crate::upgrade::execute_upgrade(
                 app,
                 actor,
+                import_id,
                 title,
                 existing_file,
                 &source_video,

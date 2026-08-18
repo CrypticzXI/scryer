@@ -350,11 +350,15 @@ function SearchResultRow({
           <div className="mb-2 flex flex-wrap items-center gap-x-[7px] gap-y-1 text-[11px] text-[var(--scry-faint)]">
             <Database className="h-3 w-3 shrink-0" />
             <span>{result.source ?? t("label.unknown")}</span>
-            <span
-              aria-hidden="true"
-              className="h-[3px] w-[3px] rounded-full bg-[var(--scry-faint4)]"
-            />
-            <span>{result.publishedAt ?? t("label.unknown")}</span>
+            {result.publishedAt ? (
+              <>
+                <span
+                  aria-hidden="true"
+                  className="h-[3px] w-[3px] rounded-full bg-[var(--scry-faint4)]"
+                />
+                <span>{result.publishedAt}</span>
+              </>
+            ) : null}
             {approvedBadge}
             {rejectionBadge}
           </div>
@@ -490,8 +494,12 @@ function SearchResultRow({
           </p>
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <span>{result.source ?? t("label.unknown")}</span>
-            <span aria-hidden="true">•</span>
-            <span>{result.publishedAt ?? t("label.unknown")}</span>
+            {result.publishedAt ? (
+              <>
+                <span aria-hidden="true">•</span>
+                <span>{result.publishedAt}</span>
+              </>
+            ) : null}
             <span aria-hidden="true">•</span>
             <span className="font-[var(--font-code)] font-medium text-foreground/80">
               {bytesToWholeReadable(result.sizeBytes)}
@@ -604,8 +612,12 @@ function SearchResultRow({
             </p>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <span>{result.source ?? t("label.unknown")}</span>
-              <span aria-hidden="true">•</span>
-              <span>{result.publishedAt ?? t("label.unknown")}</span>
+              {result.publishedAt ? (
+                <>
+                  <span aria-hidden="true">•</span>
+                  <span>{result.publishedAt}</span>
+                </>
+              ) : null}
               {rejectionBadge}
             </div>
             {parsedBits.length > 0 ? (

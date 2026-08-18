@@ -98,6 +98,16 @@ export const EpisodePanelContent = React.memo(function EpisodePanelContent({
       });
     }
 
+    // Report what the run did, not which sources happened to return
+    // results: an indexer that answered with nothing still searched, and one
+    // that failed or was skipped is called out on its own line below.
+    if (searchPresentation.totalIndexerCount > 0) {
+      return t("title.contextReleaseSearchSummaryDetailed", {
+        releaseCount: episodeResults.length,
+        searched: searchPresentation.searchedIndexerCount,
+        total: searchPresentation.totalIndexerCount,
+      });
+    }
     const sourceCount = new Set(
       episodeResults
         .map((release) => release.source?.trim())
@@ -169,8 +179,18 @@ export const EpisodePanelContent = React.memo(function EpisodePanelContent({
             <div className="mb-2 flex items-start gap-4">
               {searchPresentation.showProgress || searchPresentation.showFinalSummary ? (
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[11.5px] text-[var(--scry-faint)]">
-                    {searchDescription}
+                  <p
+                    className="flex items-center gap-1.5 truncate text-[11.5px] text-[var(--scry-faint)]"
+                    data-ui="episode-release-search-summary"
+                    data-search-state={searchPresentation.showProgress ? "searching" : "done"}
+                  >
+                    {searchPresentation.showProgress ? (
+                      <Loader2
+                        className="h-3 w-3 shrink-0 animate-spin"
+                        aria-label={t("label.searching")}
+                      />
+                    ) : null}
+                    <span className="truncate">{searchDescription}</span>
                   </p>
                   {searchPresentation.showFinalSummary &&
                   searchPresentation.failedIndexerNames.length > 0 ? (
@@ -178,6 +198,24 @@ export const EpisodePanelContent = React.memo(function EpisodePanelContent({
                       {t("title.contextReleaseSearchIndexerFailures", {
                         count: searchPresentation.failedIndexerNames.length,
                         names: searchPresentation.failedIndexerNames.join(", "),
+                      })}
+                    </p>
+                  ) : null}
+                  {searchPresentation.showFinalSummary &&
+                  searchPresentation.skippedIndexers.length > 0 ? (
+                    <p
+                      className="mt-0.5 truncate text-[11.5px] text-[var(--scry-faint)]"
+                      title={searchPresentation.skippedIndexers
+                        .map((indexer) =>
+                          indexer.reason ? `${indexer.name}: ${indexer.reason}` : indexer.name,
+                        )
+                        .join("\n")}
+                    >
+                      {t("title.contextReleaseSearchIndexerSkipped", {
+                        count: searchPresentation.skippedIndexers.length,
+                        names: searchPresentation.skippedIndexers
+                          .map((indexer) => indexer.name)
+                          .join(", "),
                       })}
                     </p>
                   ) : null}

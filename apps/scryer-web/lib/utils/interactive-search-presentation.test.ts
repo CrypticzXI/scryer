@@ -59,7 +59,7 @@ test("completed search shows results and the final summary", () => {
   assert.equal(presentation.showFinalSummary, true);
 });
 
-test("failed and skipped indexers count as finished while only failures are reported", () => {
+test("failed and skipped indexers count as finished and are each reported", () => {
   const presentation = deriveInteractiveSearchPresentation({
     hasSnapshot: true,
     loading: false,
@@ -70,4 +70,30 @@ test("failed and skipped indexers count as finished while only failures are repo
   assert.equal(presentation.completedIndexerCount, 2);
   assert.equal(presentation.totalIndexerCount, 2);
   assert.deepEqual(presentation.failedIndexerNames, ["Broken"]);
+  assert.deepEqual(presentation.skippedIndexers, [{ name: "Disabled", reason: null }]);
+});
+
+test("the final summary counts indexers that searched, not sources that returned results", () => {
+  // Four indexers ran: two answered (one of them with nothing), one failed,
+  // one was skipped. "2 sources in the results" is not the story — 2/4
+  // searched, 1 failed, 1 skipped is.
+  const presentation = deriveInteractiveSearchPresentation({
+    hasSnapshot: true,
+    loading: false,
+    resultCount: 15,
+    indexers: [
+      indexer("Fast", "COMPLETED"),
+      indexer("Empty", "COMPLETED"),
+      indexer("Broken", "FAILED"),
+      { ...indexer("Cooling", "SKIPPED"), failureReason: "temporarily disabled" },
+    ],
+  });
+
+  assert.equal(presentation.searchedIndexerCount, 2);
+  assert.equal(presentation.completedIndexerCount, 4);
+  assert.equal(presentation.totalIndexerCount, 4);
+  assert.deepEqual(presentation.failedIndexerNames, ["Broken"]);
+  assert.deepEqual(presentation.skippedIndexers, [
+    { name: "Cooling", reason: "temporarily disabled" },
+  ]);
 });

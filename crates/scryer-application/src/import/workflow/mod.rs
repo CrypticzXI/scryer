@@ -62,7 +62,7 @@ fn should_persist_import_transfer_heartbeat(last_emit: Option<Instant>) -> bool 
     clippy::too_many_arguments,
     reason = "import progress wiring carries source, destination, library, and source validation context"
 )]
-async fn import_file_with_record_progress(
+pub(crate) async fn import_file_with_record_progress(
     app: &AppUseCase,
     import_id: &str,
     library_id: &str,

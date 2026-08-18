@@ -44,11 +44,11 @@ mod windows {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
         DispatchMessageW, FindWindowW, GWLP_USERDATA, GetCursorPos, GetMessageW, GetWindowLongPtrW,
-        HMENU, IDI_APPLICATION, KillTimer, LoadIconW, MB_ICONERROR, MB_OK, MF_CHECKED,
-        MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSG, MessageBoxW, PostMessageW, PostQuitMessage,
-        RegisterClassW, SW_SHOWNORMAL, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
-        TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_DESTROY,
-        WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+        HMENU, KillTimer, LoadIconW, MB_ICONERROR, MB_OK, MF_CHECKED, MF_SEPARATOR, MF_STRING,
+        MF_UNCHECKED, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
+        SW_SHOWNORMAL, SetForegroundWindow, SetTimer, SetWindowLongPtrW, TPM_RETURNCMD,
+        TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_DESTROY, WM_LBUTTONUP,
+        WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
     };
 
     const DEFAULT_PORT: u16 = 8080;
@@ -60,6 +60,7 @@ mod windows {
     const OPEN_WINDOW_MESSAGE: u32 = WM_APP + 2;
     const SHUTDOWN_MESSAGE: u32 = WM_APP + 3;
     const ICON_RETRY_TIMER_ID: usize = 1;
+    const SCRYER_ICON_RESOURCE_ID: usize = 1;
 
     const MENU_OPEN: u32 = 1;
     const MENU_START: u32 = 2;
@@ -346,14 +347,26 @@ mod windows {
         }
 
         unsafe fn add_icon(&mut self, window: HWND) -> Result<(), String> {
+            // SAFETY: Resource ID 1 is the application-owned multi-resolution crab icon.
+            let icon = unsafe {
+                LoadIconW(
+                    GetModuleHandleW(ptr::null()),
+                    SCRYER_ICON_RESOURCE_ID as *const u16,
+                )
+            };
+            if icon == 0 {
+                return Err(format!(
+                    "failed to load Scryer tray icon: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
             let mut data = NOTIFYICONDATAW {
                 cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
                 hWnd: window,
                 uID: 1,
                 uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
                 uCallbackMessage: TRAY_CALLBACK_MESSAGE,
-                // SAFETY: Loading the system application icon requires no owned resource.
-                hIcon: unsafe { LoadIconW(ptr::null_mut(), IDI_APPLICATION) },
+                hIcon: icon,
                 ..Default::default()
             };
             write_wide_buffer(&mut data.szTip, "Scryer");
