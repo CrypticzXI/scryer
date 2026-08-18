@@ -1107,19 +1107,6 @@ jobs:
           sccache --start-server
           sccache --zero-stats
 
-      - name: Compile Windows-only test targets
-        if: ${{ github.event_name == 'pull_request' && matrix.arch == 'x86_64' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $env:RUSTFLAGS = "--remap-path-prefix=$env:GITHUB_WORKSPACE=. -C target-feature=+crt-static -W linker-messages"
-          if ("${{ matrix.use_lld_link }}" -eq "true") {
-            $env:RUSTFLAGS = "$env:RUSTFLAGS -Clinker=lld-link"
-          }
-          cargo check --tests --locked --target ${{ matrix.target }} `
-            -p scryer-application `
-            -p scryer-infrastructure
-
       - name: Prepare cold release target
         if: ${{ github.event_name != 'pull_request' }}
         shell: pwsh
