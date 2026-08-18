@@ -14,8 +14,8 @@ fn normalize_title_key(name: &str) -> String {
 /// Every existing title (and alias) under one normalized name key. A name is
 /// not an identity — remakes and originals share it — so a lookup by name must
 /// see ALL same-name titles and pick by year; a single slot per key hid every
-/// title but the last inserted (release-gate/#148: `Total Recall (2012)` could
-/// only ever be compared with the 1990 title).
+/// title but the last inserted (#148: a remake's folder could only ever be
+/// compared with the original's title, or the other way round).
 pub(crate) type TitleNameIndex = HashMap<String, Vec<usize>>;
 
 fn index_title_name(existing_titles_by_name: &mut TitleNameIndex, name: &str, index: usize) {
@@ -258,8 +258,8 @@ pub(crate) fn build_movie_probe_path_indexes(
 /// canonical (tvdb) id, else a same-name title whose year agrees with the
 /// match. A same-name title with a *different* year is a different film (the
 /// remake vs the original) and must not absorb the match — that misbinding is
-/// what left `The Lion King (1994)` refused as "already owns another folder"
-/// against the 2019 title.
+/// what left an original's folder refused as "already owns another folder"
+/// against the remake's title (#148).
 pub(crate) fn find_existing_title_index_for_metadata_match(
     selected: &MetadataSearchItem,
     existing_titles: &[Title],

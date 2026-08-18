@@ -311,12 +311,45 @@ fn find_existing_movie_title_index(
 
     candidate.query_variants.iter().find_map(|query_variant| {
         let normalized = crate::title_matching::canonical_lookup_key(query_variant);
-        existing_titles_by_name
-            .get(&normalized)?
-            .iter()
-            .copied()
-            .find(|index| title_year_compatible(&existing_titles[*index], candidate.year_hint))
+        pick_same_name_title_index(
+            existing_titles_by_name.get(&normalized)?,
+            existing_titles,
+            candidate.year_hint,
+            |title| title_folder_contains_stored_path(title, &candidate.file.path),
+        )
     })
+}
+
+/// Among the same-name titles under one name key, the one a scanned path
+/// belongs to: it must be year-compatible, and when several are, the title
+/// whose owned folder already contains the path wins — a title owns exactly one
+/// folder, so binding to a same-name sibling could only end as "already owns
+/// another folder". Otherwise the first compatible title.
+fn pick_same_name_title_index(
+    indexes: &[usize],
+    existing_titles: &[Title],
+    year_hint: Option<u32>,
+    owns_scanned_path: impl Fn(&Title) -> bool,
+) -> Option<usize> {
+    let mut first_compatible = None;
+    for &index in indexes {
+        let Some(title) = existing_titles.get(index) else {
+            continue;
+        };
+        if !title_year_compatible(title, year_hint) {
+            continue;
+        }
+        if owns_scanned_path(title) {
+            return Some(index);
+        }
+        first_compatible.get_or_insert(index);
+    }
+    first_compatible
+}
+
+fn title_folder_contains_stored_path(title: &Title, path: &str) -> bool {
+    normalize_title_folder_path(title.folder_path.clone())
+        .is_some_and(|folder| crate::stored_paths::stored_path_is_within_folder(&folder, path))
 }
 
 fn find_existing_series_title_index(
@@ -383,11 +416,12 @@ fn find_existing_series_title_index(
         .title_match_candidates
         .iter()
         .find_map(|name_key| {
-            existing_titles_by_name
-                .get(name_key)?
-                .iter()
-                .copied()
-                .find(|index| title_year_compatible(&existing_titles[*index], candidate.year_hint))
+            pick_same_name_title_index(
+                existing_titles_by_name.get(name_key)?,
+                existing_titles,
+                candidate.year_hint,
+                |title| crate::folder_ownership::title_owns_folder(title, &candidate.folder_path),
+            )
         })
 }
 
@@ -2119,20 +2153,38 @@ mod tests {
         }
     }
 
+    fn series_candidate(query: &str, year_hint: Option<u32>) -> PreparedSeriesLibraryScanCandidate {
+        PreparedSeriesLibraryScanCandidate {
+            folder_path: std::path::PathBuf::from(format!("/library/{query}")),
+            folder_name: Some(query.to_string()),
+            nfo_meta: None,
+            identity_hint: None,
+            query: query.to_string(),
+            year_hint,
+            search_candidates: Vec::new(),
+            title_match_candidates: crate::library_scan_metadata::build_title_match_candidates(&[
+                query.to_string(),
+            ]),
+            metadata_lookup_attempted: true,
+        }
+    }
+
     #[test]
     fn same_name_titles_stay_distinct_by_year_in_the_scan_index() {
-        // Remake and original share a name (#148: Total Recall 1990 / 2012).
-        // Every by-name lookup must see both and pick by year, and a folder
-        // year the catalog does not have must resolve to nothing rather than to
-        // the other year's title.
+        // A remake and its original share a name (#148). Every by-name lookup
+        // must see both and pick by year, and a folder year the catalog does
+        // not have must resolve to nothing rather than to the other year's
+        // title.
         let existing_titles = vec![
-            build_movie_title_named("recall-1990", "Total Recall", Some(1990)),
-            build_movie_title_named("recall-2012", "Total Recall", Some(2012)),
+            build_movie_title_named("namesake-1990", "Namesake Film", Some(1990)),
+            build_movie_title_named("namesake-2012", "Namesake Film", Some(2012)),
         ];
         let (by_name, by_tvdb, by_imdb, by_tmdb) = build_movie_title_indexes(&existing_titles);
         assert_eq!(
             by_name
-                .get(&crate::title_matching::canonical_lookup_key("Total Recall"))
+                .get(&crate::title_matching::canonical_lookup_key(
+                    "Namesake Film"
+                ))
                 .map(Vec::len),
             Some(2),
             "both same-name titles are indexed"
@@ -2141,7 +2193,7 @@ mod tests {
         for (year, expected) in [(1990, Some(0)), (2012, Some(1)), (2024, None)] {
             assert_eq!(
                 find_existing_movie_title_index(
-                    &movie_candidate("Total Recall", Some(year)),
+                    &movie_candidate("Namesake Film", Some(year)),
                     &existing_titles,
                     &by_name,
                     &by_tvdb,
@@ -2149,13 +2201,13 @@ mod tests {
                     &by_tmdb,
                 ),
                 expected,
-                "Total Recall ({year})"
+                "Namesake Film ({year})"
             );
         }
         // No year on the folder: any same-name title is acceptable (first wins).
         assert_eq!(
             find_existing_movie_title_index(
-                &movie_candidate("Total Recall", None),
+                &movie_candidate("Namesake Film", None),
                 &existing_titles,
                 &by_name,
                 &by_tvdb,
@@ -2167,21 +2219,121 @@ mod tests {
     }
 
     #[test]
+    fn same_name_lookup_prefers_the_title_that_owns_the_scanned_folder() {
+        // Both same-name titles accept a yearless folder; the one whose owned
+        // folder already contains the scanned path must win, or a new file
+        // dropped into a title's own folder binds to its sibling and is refused
+        // as "already owns another folder". Year still rules the ownership
+        // signal out when they disagree.
+        let mut original = build_movie_title_named("namesake-1990", "Namesake Film", Some(1990));
+        original.folder_path = Some("/library/Namesake Film".to_string());
+        let mut remake = build_movie_title_named("namesake-2012", "Namesake Film", Some(2012));
+        remake.folder_path = Some("/library/Namesake Film (2012)".to_string());
+        // Ordered so the plain "first compatible" answer is the wrong one.
+        let existing_titles = vec![remake, original];
+        let (by_name, by_tvdb, by_imdb, by_tmdb) = build_movie_title_indexes(&existing_titles);
+
+        let mut in_original_folder = movie_candidate("Namesake Film", None);
+        in_original_folder.file.path = "/library/Namesake Film/Namesake.Film.1080p.mkv".to_string();
+        assert_eq!(
+            find_existing_movie_title_index(
+                &in_original_folder,
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+                &by_imdb,
+                &by_tmdb,
+            ),
+            Some(1),
+            "the folder owner beats the first same-name title"
+        );
+
+        let mut in_neither_folder = movie_candidate("Namesake Film", None);
+        in_neither_folder.file.path =
+            "/library/Namesake Film - Extended/Namesake.Film.mkv".to_string();
+        assert_eq!(
+            find_existing_movie_title_index(
+                &in_neither_folder,
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+                &by_imdb,
+                &by_tmdb,
+            ),
+            Some(0),
+            "no owner among the candidates: first compatible"
+        );
+
+        let mut wrong_year_in_original_folder = movie_candidate("Namesake Film", Some(2012));
+        wrong_year_in_original_folder.file.path =
+            "/library/Namesake Film/Namesake.Film.2012.mkv".to_string();
+        assert_eq!(
+            find_existing_movie_title_index(
+                &wrong_year_in_original_folder,
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+                &by_imdb,
+                &by_tmdb,
+            ),
+            Some(0),
+            "ownership never overrides a year mismatch"
+        );
+
+        // Series: the candidate is the folder itself.
+        let mut original_show = build_series_title("show-2004");
+        original_show.name = "Namesake Show".to_string();
+        original_show.year = Some(2004);
+        original_show.folder_path = Some("/library/Namesake Show".to_string());
+        let mut revival_show = build_series_title("show-2021");
+        revival_show.name = "Namesake Show".to_string();
+        revival_show.year = Some(2021);
+        revival_show.folder_path = Some("/library/Namesake Show (2021)".to_string());
+        let existing_series = vec![revival_show, original_show];
+        let (by_name, by_tvdb, by_imdb, by_tmdb) = build_series_title_indexes(&existing_series);
+        assert_eq!(
+            find_existing_series_title_index(
+                &series_candidate("Namesake Show", None),
+                &existing_series,
+                &by_name,
+                &by_tvdb,
+                &by_imdb,
+                &by_tmdb,
+            ),
+            Some(1),
+            "the series that owns the scanned folder wins"
+        );
+        assert_eq!(
+            find_existing_series_title_index(
+                &series_candidate("Namesake Show", Some(2021)),
+                &existing_series,
+                &by_name,
+                &by_tvdb,
+                &by_imdb,
+                &by_tmdb,
+            ),
+            Some(0),
+            "year rules the folder owner out"
+        );
+    }
+
+    #[test]
     fn metadata_match_maps_onto_an_existing_title_only_when_the_year_agrees() {
-        // The Lion King (1994) folder, catalog holds only The Lion King (2019):
-        // the SMG match for 1994 must NOT be absorbed by the 2019 title (which
-        // then refuses the folder as "already owns another folder"); it is a new
-        // title. The same-year match and the canonical-id match still map.
-        let mut lion_king_2019 = build_movie_title_named("lion-2019", "The Lion King", Some(2019));
-        lion_king_2019.external_ids = vec![scryer_domain::ExternalId {
+        // A "Remade Film (1994)" folder while the catalog holds only the 2019
+        // remake: the metadata match for 1994 must NOT be absorbed by the 2019
+        // title (which then refuses the folder as "already owns another
+        // folder"); it is a new title. The same-year match and the canonical-id
+        // match still map.
+        let mut remake_2019 = build_movie_title_named("remade-2019", "Remade Film", Some(2019));
+        remake_2019.external_ids = vec![scryer_domain::ExternalId {
             source: "tvdb".to_string(),
             value: "tvdb-2019".to_string(),
         }];
-        let existing_titles = vec![lion_king_2019];
+        let existing_titles = vec![remake_2019];
         let (by_name, by_tvdb, _, _) = build_movie_title_indexes(&existing_titles);
         let selected = |tvdb_id: &str, year: Option<i32>| MetadataSearchItem {
             tvdb_id: tvdb_id.to_string(),
-            name: "The Lion King".to_string(),
+            name: "Remade Film".to_string(),
             year,
             auto_match_safe: true,
             auto_match_signals: Vec::new(),
