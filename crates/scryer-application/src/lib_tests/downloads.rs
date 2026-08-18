@@ -3364,6 +3364,204 @@ async fn blocked_import_outcome_is_persisted_durably() {
 }
 
 #[tokio::test]
+async fn queued_manual_import_on_blocked_bridged_row_renders_as_importing() {
+    // Prod 2026-08-18: five Shōgun manual imports queued against blocked Weaver
+    // rows ran for minutes while every row still read "Import Blocked" with all
+    // actions live — the operator could re-queue or cancel an import that was
+    // copying. Two gaps: bridged (Weaver) rows never received import-record
+    // state, and the ImportBlocked projection dropped whatever import status
+    // the row had. A live (pending/running) manual import must win the display
+    // over the block; a finished (failed) one must not.
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let (base_app, user) = bootstrap_with_cleanup_tracking(
+        download_client.clone(),
+        download_submissions.clone(),
+        pending_releases,
+    );
+    let import_repo = Arc::new(TrackingImportRepo::default());
+    let app = base_app.with_test_overrides(|services| services.with_imports(import_repo.clone()));
+    let config =
+        create_enabled_download_client_config(&app, &user, "Primary Weaver", "weaver").await;
+    let (command_tx, tracked_download_rx) = tokio::sync::mpsc::channel(8);
+    let _tracked_handle = crate::tracked_downloads::TrackedDownloadHandle::new(command_tx);
+    let (snapshot_tx, snapshot_rx) = tokio::sync::mpsc::channel(8);
+    let ingest = crate::tracked_downloads::TrackedDownloadSnapshotIngestHandle::new(snapshot_tx);
+    let token = tokio_util::sync::CancellationToken::new();
+    let poller = tokio::spawn(
+        crate::integration::start_download_queue_poller_with_options(
+            app.clone(),
+            token.child_token(),
+            tracked_download_rx,
+            snapshot_rx,
+            crate::integration::DownloadQueuePollerOptions {
+                interval: Duration::from_secs(60),
+                excluded_client_types: vec!["weaver".to_string()],
+                ..Default::default()
+            },
+        ),
+    );
+
+    let item_id = "weaver-blocked-manual-queued-1";
+    let download_id = "ext-dl-manual-queued-1";
+    let mut item = queue_history_fixture_item(item_id, DownloadQueueState::Completed, 40);
+    item.client_id = config.id.clone();
+    item.client_name = config.name.clone();
+    item.client_type = "weaver".to_string();
+    item.download_id = Some(download_id.to_string());
+    item.title_id = None;
+    item.title_name = "Zxqv Unknown Show S01E01".to_string();
+    item.facet = None;
+    item.is_scryer_origin = false;
+    let tracked_id = crate::tracked_downloads::tracked_download_id_for_item(&item);
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    std::fs::write(source_dir.path().join("fixture.mkv"), b"video").expect("write fixture video");
+    let mut completed = completed_download_fixture_item(
+        item_id,
+        "",
+        item.title_name.as_str(),
+        source_dir.path().to_string_lossy().as_ref(),
+    );
+    completed.client_id = config.id.clone();
+    completed.client_type = "weaver".to_string();
+    completed.download_id = Some(download_id.to_string());
+    completed.parameters.clear();
+    let bridge_scope =
+        || crate::tracked_downloads::TrackedDownloadSnapshotScope::AuthoritativeForClient {
+            client_id: Some(config.id.clone()),
+            client_type: "weaver".to_string(),
+        };
+
+    ingest
+        .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+            scope: crate::tracked_downloads::TrackedDownloadSnapshotScope::Delta,
+            items: vec![item.clone()],
+            completed_downloads: vec![completed],
+            actor_id: None,
+        })
+        .await
+        .expect("publish unmatched completed update");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if app
+                .runtime
+                .acquisition
+                .tracked_download_snapshot
+                .read()
+                .await
+                .get(&tracked_id)
+                .is_some_and(|metadata| metadata.state == TrackedDownloadState::ImportBlocked)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("unmatched observed completion should block for manual review");
+
+    // The operator queues a manual import for the blocked row.
+    let source_identity = DownloadSourceIdentity::new(Some(config.id.as_str()), "weaver", item_id);
+    let manual_import_id = app
+        .services
+        .workflow
+        .imports
+        .queue_import_request(
+            source_identity.clone(),
+            ImportType::ManualImport.as_str().to_string(),
+            "{}".to_string(),
+        )
+        .await
+        .expect("queue manual import record");
+
+    // The bridge's next authoritative snapshot must render the queued import.
+    ingest
+        .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+            scope: bridge_scope(),
+            items: vec![item.clone()],
+            completed_downloads: Vec::new(),
+            actor_id: None,
+        })
+        .await
+        .expect("publish bridge snapshot with the blocked row");
+    let queued_row = timeout(Duration::from_secs(5), async {
+        loop {
+            let page = app
+                .list_download_import_page(&user, 50, 0, DownloadImportFilter::All)
+                .await
+                .expect("import page while a manual import is queued");
+            if let Some(row) = page.items.iter().find(|row| {
+                row.download_client_item_id == item_id
+                    && row.import_status == Some(ImportStatus::Pending)
+            }) {
+                break row.clone();
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("a queued manual import must reach the bridged row");
+    assert_eq!(
+        crate::integration::derive_download_queue_display_state(&queued_row),
+        DownloadDisplayState::Importing,
+        "a live manual import wins the display over the block: {queued_row:?}"
+    );
+
+    // A finished import record is not live state: the row must stop rendering
+    // as Importing (the tracker may meanwhile re-evaluate the re-published
+    // completed item, so only the import-side outcome is asserted here; the
+    // block-vs-status precedence itself is pinned by
+    // `import_blocked_projection_keeps_a_live_manual_import_and_drops_a_finished_one`).
+    app.services
+        .workflow
+        .imports
+        .update_import_status(&manual_import_id, ImportStatus::Failed, None)
+        .await
+        .expect("fail the manual import record");
+    ingest
+        .publish(crate::tracked_downloads::TrackedDownloadSnapshotUpdate {
+            scope: bridge_scope(),
+            items: vec![item],
+            completed_downloads: Vec::new(),
+            actor_id: None,
+        })
+        .await
+        .expect("publish bridge snapshot after the manual import finished");
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let page = app
+                .list_download_import_page(&user, 50, 0, DownloadImportFilter::All)
+                .await
+                .expect("import page after the manual import finished");
+            if page.items.iter().any(|row| {
+                row.download_client_item_id == item_id
+                    && !matches!(
+                        row.import_status,
+                        Some(
+                            ImportStatus::Pending
+                                | ImportStatus::Running
+                                | ImportStatus::Processing
+                        )
+                    )
+                    && crate::integration::derive_download_queue_display_state(row)
+                        != DownloadDisplayState::Importing
+            }) {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("a finished manual import must not keep the row in Importing");
+
+    token.cancel();
+    poller
+        .await
+        .expect("download queue poller should stop cleanly");
+}
+
+#[tokio::test]
 async fn external_weaver_idless_missing_history_retries_and_dispatches_without_second_delta() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());

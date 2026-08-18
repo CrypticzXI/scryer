@@ -305,7 +305,19 @@ fn apply_tracked_download_activity_projection(
             item.progress_percent = 100;
             item.remaining_seconds = Some(0);
             item.attention_required = true;
-            item.import_status = None;
+            // The block is authoritative over any *finished* import record
+            // (a stale Failed/Skipped/Completed must not repaint the row), but
+            // a manual import the operator just queued or that is copying
+            // right now is live state the row has to show: keeping it is what
+            // turns the display into `Importing`, greys the actions, and lets
+            // the transfer phase render. Dropping it left blocked rows fully
+            // interactive while a manual import was in flight.
+            if !matches!(
+                item.import_status,
+                Some(ImportStatus::Pending | ImportStatus::Running | ImportStatus::Processing)
+            ) {
+                item.import_status = None;
+            }
         }
         TrackedDownloadState::Downloading
         | TrackedDownloadState::FailedPending
@@ -718,8 +730,16 @@ async fn process_tracked_download_snapshot(
     let cycle_started_at = Instant::now();
 
     enrich_download_queue_items_from_submissions(app, &mut items).await;
-
     if let TrackedDownloadSnapshotProjection::Publish { source } = &projection {
+        // Poller items already carry import-record state (the poller loads
+        // them through `enrich_download_queue_items`). Bridged clients (Weaver)
+        // do not: their rows arrive straight from the subscription, so a manual
+        // import the operator queued against a blocked download stayed
+        // invisible and the row stayed fully interactive. Overlay the same
+        // import/delete state here so every source renders the same way.
+        if matches!(source, DownloadQueueProjectionSource::AuthoritativeBridge { .. }) {
+            enrich_queue_item_import_states(app, &mut items).await;
+        }
         publish_download_queue_source_projection(app, runtime, source.clone(), &items).await;
     }
 

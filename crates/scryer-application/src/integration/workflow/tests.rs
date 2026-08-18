@@ -2,7 +2,8 @@
 mod tests {
     use super::{
         DownloadQueueBucket, TrackedDownloadBackgroundWorkKind, TrackedDownloadWorkDrain,
-        apply_manual_import_record_to_queue_item, apply_tracked_download_queue_metadata,
+        apply_manual_import_record_to_queue_item, apply_tracked_download_activity_projection,
+        apply_tracked_download_queue_metadata,
         canonicalize_download_queue_item_clients, classify_download_queue_item,
         collect_download_client_filter_options, dedupe_download_queue_items,
         derive_download_queue_display_state, derive_indexer_base_url_from_config_fields,
@@ -595,6 +596,75 @@ mod tests {
             queue_item.tracked_match_type,
             Some(TitleMatchType::TitleParse)
         );
+    }
+
+    #[test]
+    fn import_blocked_projection_keeps_a_live_manual_import_and_drops_a_finished_one() {
+        // A queued/running manual import on a blocked row is live state the
+        // row must render (Importing, actions greyed); a finished record is
+        // not — the block stays authoritative over stale Failed/Skipped/
+        // Completed statuses.
+        fn blocked_tracked(queue_item: &DownloadQueueItem) -> crate::tracked_downloads::TrackedDownload {
+            crate::tracked_downloads::TrackedDownload {
+                id: "weaver:job-1".to_string(),
+                client_id: "client-1".to_string(),
+                client_type: "weaver".to_string(),
+                client_item: queue_item.clone(),
+                completed_source: None,
+                state: TrackedDownloadState::ImportBlocked,
+                status: TrackedDownloadStatus::Warning,
+                status_messages: vec!["needs manual import".to_string()],
+                title_id: Some("title-1".to_string()),
+                facet: Some("series".to_string()),
+                source_title: None,
+                indexer: None,
+                added_at: None,
+                notified_manual_interaction: false,
+                match_type: TitleMatchType::TitleParse,
+                is_trackable: true,
+                import_attempted: false,
+                waiting_for_completed_history: false,
+                path_missing_since: None,
+                no_video_import_retry: None,
+                import_execution_retry: None,
+                import_hold: None,
+                skip_reacquire_on_failure: false,
+                snapshot_missing_since: None,
+            }
+        }
+
+        for live in [
+            ImportStatus::Pending,
+            ImportStatus::Running,
+            ImportStatus::Processing,
+        ] {
+            let mut queue_item = item("job-1", DownloadQueueState::Completed);
+            queue_item.import_status = Some(live);
+            let metadata = tracked_download_queue_snapshot(&blocked_tracked(&queue_item));
+            apply_tracked_download_activity_projection(&mut queue_item, &metadata);
+            assert_eq!(queue_item.import_status, Some(live), "{live:?} must survive the block");
+            assert_eq!(
+                derive_download_queue_display_state(&queue_item),
+                DownloadDisplayState::Importing,
+                "{live:?} renders as Importing"
+            );
+        }
+
+        for finished in [
+            ImportStatus::Failed,
+            ImportStatus::Skipped,
+            ImportStatus::Completed,
+        ] {
+            let mut queue_item = item("job-1", DownloadQueueState::Completed);
+            queue_item.import_status = Some(finished);
+            let metadata = tracked_download_queue_snapshot(&blocked_tracked(&queue_item));
+            apply_tracked_download_activity_projection(&mut queue_item, &metadata);
+            assert_eq!(queue_item.import_status, None, "{finished:?} is cleared by the block");
+            assert_eq!(
+                derive_download_queue_display_state(&queue_item),
+                DownloadDisplayState::ImportBlocked
+            );
+        }
     }
 
     #[test]
