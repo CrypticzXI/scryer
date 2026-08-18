@@ -533,3 +533,78 @@ async fn pipeline_error_before_result_schedules_automatic_retry_instead_of_block
         "no attempt row exists, so nothing is recorded as failed"
     );
 }
+
+#[tokio::test]
+async fn execution_error_after_the_attempt_row_exists_never_writes_failed() {
+    // A pipeline error once the import row exists (`finalize_completed_import_error`)
+    // must decide retryability BEFORE the status write: a `Failed` write emits
+    // an `ImportRejected` domain event on every automatic re-attempt.
+    let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+    submission_repo
+        .record_submission(submission_row(
+            "title-a",
+            crate::SubmissionScope::Title,
+            Some(PAPER_LANTERN_RELEASE),
+        ))
+        .await
+        .expect("record submission");
+    let import_repo = Arc::new(TestImportRepo::default());
+    let app = app_for_import(submission_repo, import_repo.clone());
+    let dir = tempfile::tempdir().expect("completed dir");
+    // A real video makes the import execute; the fixture app has no root
+    // folder configured for the title, so execution errs after the row exists.
+    std::fs::write(
+        dir.path().join("Paper.Lantern.2012.1080p.WEB-DL.mkv"),
+        vec![0u8; 4096],
+    )
+    .expect("write video");
+    let mut completed = build_completed_download(
+        "downloader display label",
+        dir.path().to_string_lossy().as_ref(),
+        Some("movie"),
+    );
+    completed.release_name = Some(PAPER_LANTERN_RELEASE.to_string());
+    let lookup =
+        index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
+    let mut td = build_tracked_download("title-a", "movie", PAPER_LANTERN_RELEASE);
+    td.state = TrackedDownloadState::ImportPending;
+
+    assert!(!import_with_lookup(&app, &import_actor(), &mut td, &lookup).await);
+
+    assert_eq!(
+        td.state,
+        TrackedDownloadState::ImportPending,
+        "{:?}",
+        td.status_messages
+    );
+    assert!(
+        td.import_execution_retry.is_some(),
+        "{:?}",
+        td.status_messages
+    );
+    let updates = import_repo.status_updates.lock().await.clone();
+    let statuses = updates
+        .iter()
+        .map(|(_, status, _)| *status)
+        .collect::<Vec<_>>();
+    assert!(
+        statuses.contains(&ImportStatus::Processing) && statuses.contains(&ImportStatus::Pending),
+        "{statuses:?}"
+    );
+    assert!(
+        !statuses.contains(&ImportStatus::Failed),
+        "an automatically retried attempt must not be recorded as failed: {statuses:?}"
+    );
+    let result = import_repo
+        .last_import_result()
+        .await
+        .expect("the attempt records its result");
+    assert_eq!(result.decision, ImportDecision::Failed);
+    assert!(
+        result
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("root folder")),
+        "{result:?}"
+    );
+}

@@ -1527,6 +1527,67 @@ pub(crate) fn download_observation_is_admitted(
             .is_some_and(|(category, snapshot)| snapshot.knows_category(category))
 }
 
+/// Whether a completed download declares itself another manager's work: the
+/// `drone` parameter Sonarr/Radarr stamp on their own grabs.
+pub(crate) fn completed_download_claims_external_manager(
+    completed: &scryer_domain::CompletedDownload,
+) -> bool {
+    completed
+        .parameters
+        .iter()
+        .any(|(key, _)| key.trim().eq_ignore_ascii_case("drone"))
+}
+
+/// The one admission decision for a completed download entering any Scryer
+/// surface (automatic import, manual-import source lookup, retained manual
+/// source), so the tracked check, the manual-import resolvers, and the queue
+/// filter cannot disagree about it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CompletedDownloadAdmission {
+    Admitted,
+    /// Claimed by another manager (`drone` parameter) and not a Scryer grab.
+    ExternalManager,
+    /// A downloader observation whose category Scryer never configured (or
+    /// blank), or admission is not ready yet.
+    NotAdmitted {
+        category: Option<String>,
+        admission_snapshot_missing: bool,
+    },
+}
+
+impl AppUseCase {
+    /// `fallback_category` is the queue item's category when the completed
+    /// history entry carries none.
+    pub(crate) async fn completed_download_admission(
+        &self,
+        has_scryer_submission: bool,
+        completed: &scryer_domain::CompletedDownload,
+        fallback_category: Option<&str>,
+    ) -> CompletedDownloadAdmission {
+        if has_scryer_submission {
+            return CompletedDownloadAdmission::Admitted;
+        }
+        if completed_download_claims_external_manager(completed) {
+            return CompletedDownloadAdmission::ExternalManager;
+        }
+        let category = completed
+            .category
+            .as_deref()
+            .or(fallback_category)
+            .map(str::trim)
+            .filter(|category| !category.is_empty());
+        let snapshot = self.download_client_category_admission_snapshot().await;
+        if download_observation_is_admitted(false, category, snapshot.as_deref()) {
+            CompletedDownloadAdmission::Admitted
+        } else {
+            CompletedDownloadAdmission::NotAdmitted {
+                category: category.map(str::to_string),
+                admission_snapshot_missing: snapshot.is_none(),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod download_client_category_admission_tests {
     use super::*;

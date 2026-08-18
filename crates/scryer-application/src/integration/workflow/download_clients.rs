@@ -169,21 +169,11 @@ impl AppUseCase {
         else {
             return Ok(None);
         };
-        if completed
-            .parameters
-            .iter()
-            .any(|(key, _)| key.trim().eq_ignore_ascii_case("drone"))
-            && !has_scryer_submission
-        {
-            return Ok(None);
-        }
-        let category_admission = self.download_client_category_admission_snapshot().await;
-        Ok(crate::services::download_observation_is_admitted(
-            has_scryer_submission,
-            completed.category.as_deref(),
-            category_admission.as_deref(),
-        )
-        .then_some(completed))
+        Ok((self
+            .completed_download_admission(has_scryer_submission, &completed, None)
+            .await
+            == crate::services::CompletedDownloadAdmission::Admitted)
+            .then_some(completed))
     }
 }
 impl AppUseCase {

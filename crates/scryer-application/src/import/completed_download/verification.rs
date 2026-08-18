@@ -1,6 +1,5 @@
 use super::lookup::find_completed_download;
 use super::*;
-use crate::SubmissionScope;
 
 pub(super) enum ExpectedEpisodeResolution {
     NotApplicable,
@@ -280,53 +279,17 @@ async fn expected_episode_units_with_release_evidence(
         return ExpectedEpisodeResolution::Unresolved;
     };
 
-    if let Some(scope) = release_evidence.and_then(crate::import_workflow::ReleaseEvidence::scope) {
-        match scope {
-            SubmissionScope::Episode { episode_id } => {
-                return ExpectedEpisodeResolution::Resolved(HashSet::from([episode_id.clone()]));
-            }
-            SubmissionScope::EpisodeSet { episode_ids } => {
-                return ExpectedEpisodeResolution::Resolved(episode_ids.iter().cloned().collect());
-            }
-            SubmissionScope::Collection { collection_id } => {
-                let episodes = match app
-                    .services
-                    .catalog
-                    .shows
-                    .list_episodes_for_collection(collection_id)
-                    .await
-                {
-                    Ok(episodes) => episodes,
-                    Err(_) => return ExpectedEpisodeResolution::Unresolved,
-                };
-                let all_ids = episodes
-                    .iter()
-                    .filter(|episode| episode.title_id == title.id)
-                    .map(|episode| episode.id.clone())
-                    .collect::<HashSet<_>>();
-                let monitored_ids = episodes
-                    .into_iter()
-                    .filter(|episode| episode.title_id == title.id && episode.monitored)
-                    .map(|episode| episode.id)
-                    .collect::<HashSet<_>>();
-                let expected = if monitored_ids.is_empty() {
-                    all_ids
-                } else {
-                    monitored_ids
-                };
-                return if expected.is_empty() {
-                    ExpectedEpisodeResolution::Unresolved
-                } else {
-                    ExpectedEpisodeResolution::Resolved(expected)
-                };
-            }
-            SubmissionScope::Title
-            | SubmissionScope::SeriesMovie { .. }
-            | SubmissionScope::Orphan => {}
-        }
+    if let Some(scope) = release_evidence.and_then(crate::import_workflow::ReleaseEvidence::scope)
+        && let Some(expected) =
+            crate::import_workflow::expected_episode_ids_from_submission_scope(app, &title, scope)
+                .await
+    {
+        return ExpectedEpisodeResolution::Resolved(expected);
     }
 
-    let release_title = expected_episode_release_title(td, release_evidence);
+    let Some(release_title) = expected_episode_release_title(td, release_evidence) else {
+        return ExpectedEpisodeResolution::NotApplicable;
+    };
     let parse_context = crate::build_release_parse_context(&title, None, None, td.facet.as_deref());
     let parsed = crate::parse_release_metadata_for_target(&release_title, &parse_context);
     let Some(ep_meta) = parsed.episode.as_ref() else {
@@ -401,18 +364,16 @@ async fn expected_episode_units_with_release_evidence(
 }
 
 /// The release name used to derive the expected episode units when the
-/// submission scope does not name them outright.
-///
-/// Preference order: the grab-history release name on the tracked download,
-/// then the durable release evidence (the indexer release title for a Scryer
-/// grab, or the client's original artifact name), and only last the download
-/// client's mutable display label — the same precedence import parsing uses,
-/// so verification never expects episodes a relabelled item merely appears to
-/// hold.
+/// submission scope does not name them outright: the grab-history name on the
+/// tracked download, then the durable release evidence (the indexer release
+/// title for a Scryer grab, else the client's release name). Never the download
+/// client's mutable display label — verification must not expect episodes a
+/// relabelled item merely appears to hold; with no real name it is simply not
+/// applicable.
 fn expected_episode_release_title(
     td: &TrackedDownload,
     release_evidence: Option<&crate::import_workflow::ReleaseEvidence>,
-) -> String {
+) -> Option<String> {
     td.source_title
         .as_deref()
         .map(str::trim)
@@ -424,7 +385,6 @@ fn expected_episode_release_title(
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
         })
-        .unwrap_or_else(|| td.client_item.title_name.clone())
 }
 
 pub(super) async fn current_visible_video_file_count(
@@ -776,13 +736,13 @@ mod expected_episode_release_title_tests {
         };
 
         assert_eq!(
-            expected_episode_release_title(&td, Some(&evidence)),
-            "Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb"
+            expected_episode_release_title(&td, Some(&evidence)).as_deref(),
+            Some("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb")
         );
     }
 
     #[test]
-    fn expected_episode_release_title_keeps_grab_history_first_and_display_label_last() {
+    fn expected_episode_release_title_keeps_grab_history_first_and_never_uses_display_label() {
         let td = tracked_download(
             Some("Harbor.Pals.S01E02.1080p.WEB-DL.H264-GRP"),
             "Renamed by the user in the client",
@@ -791,20 +751,19 @@ mod expected_episode_release_title_tests {
             release_name: Some("Harbor.Pals.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string()),
         };
         assert_eq!(
-            expected_episode_release_title(&td, Some(&evidence)),
-            "Harbor.Pals.S01E02.1080p.WEB-DL.H264-GRP"
+            expected_episode_release_title(&td, Some(&evidence)).as_deref(),
+            Some("Harbor.Pals.S01E02.1080p.WEB-DL.H264-GRP")
         );
 
+        // No grab history and no release evidence: the display label is not a
+        // release name, so the expectation is simply not applicable.
         let no_evidence = tracked_download(Some("  "), "Renamed by the user in the client");
         let empty_evidence =
             crate::import_workflow::ReleaseEvidence::DownloaderObservation { release_name: None };
         assert_eq!(
             expected_episode_release_title(&no_evidence, Some(&empty_evidence)),
-            "Renamed by the user in the client"
+            None
         );
-        assert_eq!(
-            expected_episode_release_title(&no_evidence, None),
-            "Renamed by the user in the client"
-        );
+        assert_eq!(expected_episode_release_title(&no_evidence, None), None);
     }
 }

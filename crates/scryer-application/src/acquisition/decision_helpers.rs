@@ -19,13 +19,16 @@ pub(crate) fn extract_grabbed_release_title(raw: Option<&str>) -> Option<String>
         })
 }
 
-/// Returns true if the error indicates all prioritized download clients failed.
-pub(crate) fn is_all_clients_failed_error(err: &AppError) -> bool {
-    matches!(err, AppError::Repository(msg) if msg.contains("all prioritized download clients failed"))
-}
-
+/// The one retryability decision every acquisition path (pending processing,
+/// RSS, both task-runner submissions, catalog queueing) makes about a failed
+/// download submission: retry later without burning the release only for the
+/// typed `DownloadSubmitUnavailable` / `DownloadSubmitFailoverExhausted`
+/// failures. Message text is never inspected — an old
+/// "all prioritized download clients failed" repository string, a rendered
+/// typed error wrapped in another error, or any near-match is a definitive
+/// failure, not failover evidence.
 pub(crate) fn is_download_submit_unavailable_error(err: &AppError) -> bool {
-    err.is_download_submit_unavailable() || is_all_clients_failed_error(err)
+    err.is_retryable_download_submit_failure()
 }
 
 /// Blocklist entry `data` attribution in the shape every failure writer

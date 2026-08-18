@@ -829,9 +829,11 @@ fn episode_identity_season_pack_member_with_obfuscated_name_gets_no_episode() {
 }
 
 #[test]
-fn episode_identity_sole_video_keeps_release_numbering_over_its_own_name() {
-    // The single-video rule is unchanged: the release name is the better
-    // episode evidence than a file that names some other episode.
+fn episode_identity_sole_scene_titled_video_identifies_itself() {
+    // Sonarr `SceneChecker.IsSceneTitle`: a sole video that is itself a proper
+    // scene release name (dotted, grouped, quality-tagged, numbered) keeps its
+    // own numbering; the release name is not applied over it. The grabbed
+    // release gate then decides whether E02 belongs to the E01 grab.
     let dir = tempfile::tempdir().expect("tempdir");
     let file_path = write_video(dir.path(), "Bluey.S01E02.720p.WEB-DL.AV1.AAC2.0-NTb.mkv");
     let evidence = bluey_submission_evidence(
@@ -841,26 +843,49 @@ fn episode_identity_sole_video_keeps_release_numbering_over_its_own_name() {
         },
     );
 
-    let parsed = build_augmented_episode_import_metadata_for_title(
-        &file_path,
-        &evidence,
-        &bluey_title(),
-        false,
-    );
+    for other_video_files in [false, true] {
+        let parsed = build_augmented_episode_import_metadata_for_title(
+            &file_path,
+            &evidence,
+            &bluey_title(),
+            other_video_files,
+        );
+        let episode = parsed.episode.as_ref().expect("episode from the file name");
+        assert_eq!(
+            episode.episode_numbers,
+            vec![2],
+            "other_video_files={other_video_files}"
+        );
+        assert_release_scored_facts(&parsed, BLUEY_EPISODE_RELEASE);
+    }
+}
 
-    let episode = parsed
-        .episode
-        .as_ref()
-        .expect("episode from the release title");
-    assert_eq!(episode.episode_numbers, vec![1]);
-    let parsed = build_augmented_episode_import_metadata_for_title(
-        &file_path,
-        &evidence,
-        &bluey_title(),
-        true,
+#[test]
+fn episode_identity_sole_non_scene_video_takes_release_numbering() {
+    // Not scene-titled (spaces, no group/quality): the release name remains
+    // the better evidence for a sole video, even when the file names another
+    // episode.
+    let evidence = bluey_submission_evidence(
+        BLUEY_EPISODE_RELEASE,
+        SubmissionScope::Episode {
+            episode_id: "ep-1".to_string(),
+        },
     );
-    let episode = parsed.episode.as_ref().expect("episode from the file name");
-    assert_eq!(episode.episode_numbers, vec![2]);
+    let dir = tempfile::tempdir().expect("tempdir");
+    for file_name in ["bluey - s01e02.mkv", "Bluey.S01E02.mkv", "episode 2.mkv"] {
+        let file_path = write_video(dir.path(), file_name);
+        let parsed = build_augmented_episode_import_metadata_for_title(
+            &file_path,
+            &evidence,
+            &bluey_title(),
+            false,
+        );
+        let episode = parsed
+            .episode
+            .as_ref()
+            .unwrap_or_else(|| panic!("{file_name}: episode from the release title"));
+        assert_eq!(episode.episode_numbers, vec![1], "{file_name}");
+    }
 }
 
 #[test]
@@ -2378,12 +2403,12 @@ async fn completed_manual_import_recovery_decides_each_record_once_and_only_mark
         "manual_import_recovery_test",
         tokio_util::sync::CancellationToken::new(),
     );
-    let mut reconciled = HashSet::new();
+    let mut memo = std::collections::HashMap::new();
 
     let before = chrono::Utc::now();
-    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
-    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
-    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
+    recover_completed_manual_imports(&app, &worker, &mut memo).await;
+    recover_completed_manual_imports(&app, &worker, &mut memo).await;
+    recover_completed_manual_imports(&app, &worker, &mut memo).await;
 
     let asked = asked.lock().await.clone();
     let mut asked_items = asked
@@ -2419,11 +2444,20 @@ async fn completed_manual_import_recovery_decides_each_record_once_and_only_mark
         "selections are cleaned up only for the source that was actually marked"
     );
     assert_eq!(
-        reconciled,
-        HashSet::from([
-            "import-marked".to_string(),
-            "import-already-imported".to_string(),
-            "import-fresh-download".to_string(),
+        memo,
+        std::collections::HashMap::from([
+            (
+                "import-marked".to_string(),
+                ManualImportRecoveryMemo::Settled
+            ),
+            (
+                "import-already-imported".to_string(),
+                ManualImportRecoveryMemo::Settled
+            ),
+            (
+                "import-fresh-download".to_string(),
+                ManualImportRecoveryMemo::Settled
+            ),
         ])
     );
     let windows = repo.windows.lock().await.clone();
@@ -2480,14 +2514,45 @@ async fn completed_manual_import_recovery_retries_busy_and_untracked_sources_on_
         "manual_import_recovery_retry_test",
         tokio_util::sync::CancellationToken::new(),
     );
-    let mut reconciled = HashSet::new();
+    let mut memo = std::collections::HashMap::new();
+    let rewind_untracked = |memo: &mut std::collections::HashMap<String, ManualImportRecoveryMemo>,
+                            expected_attempts: u32| {
+        // The loop backs off untracked records (30 s, 2 m, …); the tests do not
+        // wait, they move the clock: the deferral must exist with the expected
+        // attempt count, then it is made due.
+        let Some(ManualImportRecoveryMemo::RetryAfter {
+            next_check_at,
+            attempts,
+        }) = memo.get_mut("import-untracked")
+        else {
+            panic!("untracked record must be deferred, got {memo:?}");
+        };
+        assert_eq!(*attempts, expected_attempts);
+        assert!(*next_check_at > chrono::Utc::now());
+        *next_check_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+    };
 
-    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
-    assert!(reconciled.is_empty(), "busy/untracked sources are not decided");
-    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
-    assert_eq!(reconciled, HashSet::from(["import-busy".to_string()]));
-    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
-    recover_completed_manual_imports(&app, &worker, &mut reconciled).await;
+    recover_completed_manual_imports(&app, &worker, &mut memo).await;
+    assert!(
+        !memo.contains_key("import-busy"),
+        "a busy source is asked again next tick, not remembered: {memo:?}"
+    );
+    rewind_untracked(&mut memo, 1);
+    recover_completed_manual_imports(&app, &worker, &mut memo).await;
+    assert_eq!(
+        memo.get("import-busy"),
+        Some(&ManualImportRecoveryMemo::Settled)
+    );
+    // Still untracked on its second (due) check: deferred again, longer.
+    rewind_untracked(&mut memo, 2);
+    recover_completed_manual_imports(&app, &worker, &mut memo).await;
+    assert_eq!(
+        memo.get("import-untracked"),
+        Some(&ManualImportRecoveryMemo::Settled),
+        "{memo:?}"
+    );
+    // A further tick asks nothing: both records are settled.
+    recover_completed_manual_imports(&app, &worker, &mut memo).await;
 
     let asked = asked.lock().await.clone();
     assert_eq!(
@@ -2504,11 +2569,17 @@ async fn completed_manual_import_recovery_retries_busy_and_untracked_sources_on_
             .filter(|(item, _)| item.as_str() == "hash-untracked")
             .count(),
         3,
-        "an untracked source is retried until the runtime knows it"
+        "an untracked source is retried on its backoff until the runtime knows it"
     );
     assert_eq!(
-        reconciled,
-        HashSet::from(["import-busy".to_string(), "import-untracked".to_string()])
+        memo,
+        std::collections::HashMap::from([
+            ("import-busy".to_string(), ManualImportRecoveryMemo::Settled),
+            (
+                "import-untracked".to_string(),
+                ManualImportRecoveryMemo::Settled
+            ),
+        ])
     );
     let mut deleted = repo.deleted_sources.lock().await.clone();
     deleted.sort_by(|left, right| left.item_id.cmp(&right.item_id));
@@ -2539,19 +2610,28 @@ async fn manual_import_preview_excludes_samples_for_movies_but_keeps_them_for_se
     std::fs::write(&named_sample, b"sample").expect("write sample");
     let tiny_extra = dir.path().join("Manual.Movie.2024.Making.Of.mkv");
     std::fs::write(&tiny_extra, b"extra").expect("write extra");
-    let completed = test_completed_download("Manual.Movie.2024.1080p.WEB-DL", dir.path());
+    let mut completed = test_completed_download("Manual.Movie.2024.1080p.WEB-DL", dir.path());
+    completed.release_name = Some("Manual.Movie.2024.1080p.WEB-DL".to_string());
     let evidence = observation_evidence(&completed);
+    let mut movie_title = titled(MediaFacet::Movie, "Manual Movie", Some(2024));
+    movie_title.id = "title-1".to_string();
+    let mut series_title = titled(MediaFacet::Series, "Manual Movie", Some(2024));
+    series_title.id = "title-1".to_string();
 
-    let movie_preview = preview_manual_import(
-        &app,
-        &completed,
-        "title-1",
-        &MediaFacet::Movie,
-        &evidence,
-        &[],
-    )
-    .await
-    .expect("movie preview");
+    let movie_preview = preview_manual_import(&app, &completed, &movie_title, &evidence, &[])
+        .await
+        .expect("movie preview");
+    // The preview shows the quality the import will score — the release
+    // evidence parsed with the title's context — for every file, including a
+    // sibling whose own name carries no quality token.
+    for file in &movie_preview.files {
+        assert_eq!(
+            file.quality.as_deref(),
+            Some("1080p"),
+            "{}: preview quality comes from the release evidence, not the file name",
+            file.file_name
+        );
+    }
     let mut movie_files = movie_preview
         .files
         .iter()
@@ -2567,16 +2647,9 @@ async fn manual_import_preview_excludes_samples_for_movies_but_keeps_them_for_se
         "movie previews drop sample-named files but never size-filter (a small movie stays importable)"
     );
 
-    let series_preview = preview_manual_import(
-        &app,
-        &completed,
-        "title-1",
-        &MediaFacet::Series,
-        &evidence,
-        &[],
-    )
-    .await
-    .expect("series preview");
+    let series_preview = preview_manual_import(&app, &completed, &series_title, &evidence, &[])
+        .await
+        .expect("series preview");
     let mut series_files = series_preview
         .files
         .iter()

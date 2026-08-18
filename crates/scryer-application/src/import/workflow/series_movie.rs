@@ -335,11 +335,15 @@ async fn resolve_completed_import_target(
             .titles
             .list_for_matching(None, None)
             .await?;
+        // Without a client-reported release name the largest non-sample video
+        // (never an arbitrary first file) is the release claim.
         let release_title = release_evidence.release_title(None).or_else(|| {
-            find_video_files(dest_dir, false)
+            let files = find_video_files(dest_dir, true)
                 .ok()
-                .and_then(|files| files.into_iter().next())
-                .and_then(|file| release_evidence.release_title(Some(&file)))
+                .filter(|files| !files.is_empty())
+                .or_else(|| find_video_files(dest_dir, false).ok())?;
+            let file = pick_largest_file(&files).ok()?;
+            release_evidence.release_title(Some(&file))
         });
         if let Some(release_title) = release_title {
             let parsed_release_title = normalize_release_title_signal(parse_release_metadata(&release_title));

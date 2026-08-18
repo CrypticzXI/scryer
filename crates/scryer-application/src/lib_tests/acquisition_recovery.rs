@@ -7681,3 +7681,386 @@ async fn dismissing_needs_review_pending_release_records_failed_attempt() {
         Some("dismissed from review: ambiguous identity")
     );
 }
+
+// ── TYPE-001: typed download-failover exhaustion ─────────────────────────────
+//
+// Retry-later is decided by the error TYPE alone. Every acquisition path below
+// is exercised with the typed `DownloadSubmitFailoverExhausted` (defer: Pending
+// attempt, no blocklist) and with the exact repository message the router used
+// to emit before the variant existed (definitive: Failed attempt + blocklist),
+// proving text no longer controls the outcome.
+
+#[test]
+fn download_submit_retryability_is_decided_by_type_not_text() {
+    use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
+
+    // Typed failover exhaustion: arbitrary, renamed, and prefixed payloads.
+    for payload in [
+        "",
+        LEGACY_FAILOVER_REPOSITORY_MESSAGE,
+        "renamed: every route was tried",
+        "context: all prioritized download clients failed to enqueue this release; last client error: repository: boom",
+    ] {
+        assert!(
+            is_download_submit_unavailable_error(&AppError::download_submit_failover_exhausted(
+                payload
+            )),
+            "{payload:?}"
+        );
+    }
+    assert!(is_download_submit_unavailable_error(
+        &AppError::download_submit_unavailable("client submit unavailable")
+    ));
+
+    // The former repository message, wrapped renderings, and near-matches are
+    // definitive failures.
+    let typed_rendering =
+        AppError::download_submit_failover_exhausted(LEGACY_FAILOVER_REPOSITORY_MESSAGE)
+            .to_string();
+    for text in [
+        LEGACY_FAILOVER_REPOSITORY_MESSAGE.to_string(),
+        format!("wrapped: {typed_rendering}"),
+        format!("prefix {LEGACY_FAILOVER_REPOSITORY_MESSAGE}"),
+        format!("{LEGACY_FAILOVER_REPOSITORY_MESSAGE} suffix"),
+        "all prioritised download clients failed to enqueue this release".to_string(),
+        "unrelated repository failure".to_string(),
+    ] {
+        assert!(
+            !is_download_submit_unavailable_error(&AppError::Repository(text.clone())),
+            "{text:?}"
+        );
+    }
+    for other in [
+        AppError::DownloadSubmitRejected(LEGACY_FAILOVER_REPOSITORY_MESSAGE.into()),
+        AppError::DownloadSubmitAmbiguous(LEGACY_FAILOVER_REPOSITORY_MESSAGE.into()),
+        AppError::Validation(LEGACY_FAILOVER_REPOSITORY_MESSAGE.into()),
+        AppError::NotFound(LEGACY_FAILOVER_REPOSITORY_MESSAGE.into()),
+    ] {
+        assert!(!is_download_submit_unavailable_error(&other), "{other:?}");
+    }
+
+    // The variant survives the generic downgrade helper.
+    assert!(matches!(
+        AppError::download_submit_failover_exhausted("x").into_download_submit_unavailable(),
+        AppError::DownloadSubmitFailoverExhausted(_)
+    ));
+}
+
+/// Runs the auto-search (task-runner regular submission) path with the given
+/// submit error and asserts the retry/blocklist decision.
+async fn assert_auto_search_submit_decision(submit_error: StubSubmitError, expect_deferred: bool) {
+    let release_title = "Typed.Failover.Movie.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client.set_submit_error(Some(submit_error)).await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+    let (title, _) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Typed Failover Movie", 2024)
+            .await;
+
+    app.run_convergence_cycle_once().await;
+
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &[release_title.to_string()]
+    );
+    assert_typed_submit_decision(
+        &app,
+        &release_attempts,
+        &title.id,
+        release_title,
+        expect_deferred,
+    )
+    .await;
+}
+
+/// Runs the season-pack (task-runner pack submission) path.
+async fn assert_season_pack_submit_decision(submit_error: StubSubmitError, expect_deferred: bool) {
+    let release_title = "Typed.Failover.Pack.S01.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client.set_submit_error(Some(submit_error)).await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+    let (title, _) = seed_anime_season_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Typed Failover Pack",
+        1,
+    )
+    .await;
+
+    app.run_convergence_cycle_once().await;
+
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .iter()
+            .any(|title| title == release_title),
+        "season-pack branch should submit the pack title"
+    );
+    assert_typed_submit_decision(
+        &app,
+        &release_attempts,
+        &title.id,
+        release_title,
+        expect_deferred,
+    )
+    .await;
+}
+
+/// Runs the pending-release (force grab) path.
+async fn assert_pending_release_submit_decision(
+    submit_error: StubSubmitError,
+    expect_deferred: bool,
+) {
+    let release_title = "Typed.Failover.Pending.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client.set_submit_error(Some(submit_error)).await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions,
+            pending_releases.clone(),
+            wanted_items.clone(),
+            Arc::new(MockIndexerClient),
+        );
+    let (title, wanted_id) = seed_movie_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Typed Failover Pending",
+        2024,
+    )
+    .await;
+    let pending_id = Id::new().0;
+    let now = Utc::now().to_rfc3339();
+    pending_releases
+        .insert_pending_release(&PendingRelease {
+            id: pending_id.clone(),
+            wanted_item_id: wanted_id,
+            title_id: title.id.clone(),
+            release_title: release_title.to_string(),
+            release_url: Some("https://example.invalid/typed-failover.nzb".to_string()),
+            source_kind: Some(DownloadSourceKind::NzbUrl),
+            release_size_bytes: Some(1_000),
+            release_score: 1000,
+            scoring_log_json: None,
+            indexer_source: Some("test-indexer".to_string()),
+            indexer_id: None,
+            release_guid: Some("typed-failover-guid".to_string()),
+            added_at: now.clone(),
+            delay_until: now.clone(),
+            status: PendingReleaseStatus::Waiting,
+            grabbed_at: None,
+            source_password: None,
+            published_at: Some(now),
+            info_hash: None,
+        })
+        .await
+        .expect("seed pending release");
+
+    let grabbed = app
+        .force_grab_pending_release(&user, &pending_id)
+        .await
+        .expect("force grab pending release");
+    assert!(!grabbed);
+
+    let status = pending_releases
+        .get_pending_release(&pending_id)
+        .await
+        .expect("load pending release")
+        .expect("pending release exists")
+        .status;
+    if expect_deferred {
+        assert_eq!(
+            status,
+            PendingReleaseStatus::Waiting,
+            "typed failover exhaustion keeps the release waiting for the next cycle"
+        );
+    }
+    assert_typed_submit_decision(
+        &app,
+        &release_attempts,
+        &title.id,
+        release_title,
+        expect_deferred,
+    )
+    .await;
+}
+
+/// Runs the RSS sync path.
+async fn assert_rss_submit_decision(submit_error: StubSubmitError, expect_deferred: bool) {
+    let release_title = "Typed.Failover.Rss.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client.set_submit_error(Some(submit_error)).await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+    let title = add_rss_target_movie(&app, &user, &wanted_items, "Typed Failover Rss").await;
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(report.releases_fetched, 1);
+    assert_eq!(report.releases_matched, 1);
+    assert_eq!(report.releases_grabbed, 0);
+    assert!(download_submissions.store.lock().await.is_empty());
+    assert_typed_submit_decision(
+        &app,
+        &release_attempts,
+        &title.id,
+        release_title,
+        expect_deferred,
+    )
+    .await;
+}
+
+/// The shared decision every path must reach: deferred → a `Pending` attempt,
+/// nothing failed, nothing blocklisted; definitive → a `Failed` signature and a
+/// blocklist entry for the release.
+async fn assert_typed_submit_decision(
+    app: &AppUseCase,
+    release_attempts: &MockReleaseAttemptRepo,
+    title_id: &str,
+    release_title: &str,
+    expect_deferred: bool,
+) {
+    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    let attempts = release_attempts.attempts.lock().await.clone();
+    // Paths record the title raw or normalized; readers normalize, so do we.
+    let outcomes = attempts
+        .iter()
+        .filter(|attempt| {
+            crate::normalize_release_attempt_title(attempt.source_title.as_deref())
+                == normalized_release_title
+        })
+        .map(|attempt| attempt.outcome.clone())
+        .collect::<Vec<_>>();
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(title_id, 10)
+        .await
+        .expect("list failed signatures");
+    let blocklist = title_blocklist_entries(app, title_id).await;
+    if expect_deferred {
+        assert!(
+            !outcomes.is_empty()
+                && outcomes
+                    .iter()
+                    .all(|outcome| *outcome == ReleaseDownloadAttemptOutcome::Pending),
+            "typed failover exhaustion must record Pending only: {outcomes:?}"
+        );
+        assert!(failed.is_empty(), "{failed:?}");
+        assert!(
+            blocklist.is_empty(),
+            "typed failover exhaustion must never blocklist: {blocklist:?}"
+        );
+    } else {
+        assert!(
+            outcomes.contains(&ReleaseDownloadAttemptOutcome::Failed),
+            "the legacy failover text is a definitive failure: {outcomes:?}"
+        );
+        assert!(
+            failed.iter().any(|entry| {
+                crate::normalize_release_attempt_title(entry.source_title.as_deref())
+                    == normalized_release_title
+            }),
+            "{failed:?}"
+        );
+        assert!(
+            blocklist.iter().any(|entry| {
+                crate::normalize_release_attempt_title(entry.source_title.as_deref())
+                    == normalized_release_title
+            }),
+            "the legacy failover text must blocklist like any definitive failure: {blocklist:?}"
+        );
+    }
+}
+
+fn typed_failover_exhausted() -> StubSubmitError {
+    StubSubmitError::FailoverExhausted(
+        "all prioritized download clients failed to enqueue this release; last client error: repository: client enqueue failed"
+            .to_string(),
+    )
+}
+
+fn legacy_failover_repository_text() -> StubSubmitError {
+    StubSubmitError::Repository(LEGACY_FAILOVER_REPOSITORY_MESSAGE.to_string())
+}
+
+#[tokio::test]
+async fn auto_search_defers_typed_failover_exhaustion() {
+    assert_auto_search_submit_decision(typed_failover_exhausted(), true).await;
+}
+
+#[tokio::test]
+async fn auto_search_treats_legacy_failover_text_as_definitive() {
+    assert_auto_search_submit_decision(legacy_failover_repository_text(), false).await;
+}
+
+#[tokio::test]
+async fn season_pack_defers_typed_failover_exhaustion() {
+    assert_season_pack_submit_decision(typed_failover_exhausted(), true).await;
+}
+
+#[tokio::test]
+async fn season_pack_treats_legacy_failover_text_as_definitive() {
+    assert_season_pack_submit_decision(legacy_failover_repository_text(), false).await;
+}
+
+#[tokio::test]
+async fn pending_release_defers_typed_failover_exhaustion() {
+    assert_pending_release_submit_decision(typed_failover_exhausted(), true).await;
+}
+
+#[tokio::test]
+async fn pending_release_treats_legacy_failover_text_as_definitive() {
+    assert_pending_release_submit_decision(legacy_failover_repository_text(), false).await;
+}
+
+#[tokio::test]
+async fn rss_defers_typed_failover_exhaustion() {
+    assert_rss_submit_decision(typed_failover_exhausted(), true).await;
+}
+
+#[tokio::test]
+async fn rss_treats_legacy_failover_text_as_definitive() {
+    assert_rss_submit_decision(legacy_failover_repository_text(), false).await;
+}

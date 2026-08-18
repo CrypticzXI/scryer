@@ -62,6 +62,11 @@ async fn import_inner(
                     "import: completed download origin resolution failed, will retry"
                 );
                 td.state = TrackedDownloadState::ImportPending;
+                td.status = TrackedDownloadStatus::Warning;
+                td.status_messages = vec![
+                    "Download origin could not be resolved yet; retrying automatically."
+                        .to_string(),
+                ];
                 return false;
             }
         };

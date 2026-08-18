@@ -22,7 +22,8 @@ pub async fn start_background_manual_import_poller(
     ));
     // Completed manual-import records already reconciled against their
     // tracked download in this process; each record is decided once.
-    let mut reconciled_manual_import_ids: HashSet<String> = HashSet::new();
+    let mut manual_import_recovery_memo: HashMap<String, ManualImportRecoveryMemo> =
+        HashMap::new();
     loop {
         if !worker.wait_for_tick(&mut interval).await {
             return;
@@ -47,7 +48,7 @@ pub async fn start_background_manual_import_poller(
             _ => {}
         }
 
-        recover_completed_manual_imports(&app, &worker, &mut reconciled_manual_import_ids).await;
+        recover_completed_manual_imports(&app, &worker, &mut manual_import_recovery_memo).await;
 
         let pending = match app
             .services
@@ -354,7 +355,7 @@ pub(crate) async fn resolve_current_manual_import_source(
 
 struct AuthorizedManualImportSource {
     identity: DownloadSourceIdentity,
-    facet: MediaFacet,
+    title: scryer_domain::Title,
 }
 
 async fn authorize_manual_import_source(
@@ -400,7 +401,7 @@ async fn authorize_manual_import_source(
 
     Ok(AuthorizedManualImportSource {
         identity: source_identity,
-        facet: title.facet,
+        title,
     })
 }
 
@@ -445,20 +446,10 @@ async fn retained_manual_import_source_is_admitted(
         .await?
         .as_ref()
         .is_some_and(crate::import_parameters::submission_has_scryer_origin);
-    if completed
-        .parameters
-        .iter()
-        .any(|(key, _)| key.trim().eq_ignore_ascii_case("drone"))
-        && !has_scryer_submission
-    {
-        return Ok(false);
-    }
-    let category_admission = app.download_client_category_admission_snapshot().await;
-    Ok(crate::services::download_observation_is_admitted(
-        has_scryer_submission,
-        completed.category.as_deref(),
-        category_admission.as_deref(),
-    ))
+    Ok(app
+        .completed_download_admission(has_scryer_submission, completed, None)
+        .await
+        == crate::services::CompletedDownloadAdmission::Admitted)
 }
 
 async fn resolve_live_manual_import_source(
@@ -534,7 +525,7 @@ async fn manual_import_source_was_already_imported(
     {
         return Ok(true);
     }
-    if source.facet != MediaFacet::Movie {
+    if source.title.facet != MediaFacet::Movie {
         return Ok(false);
     }
 
@@ -615,11 +606,12 @@ pub(crate) fn validate_manual_import_source_under_trusted_root(
 async fn preview_manual_import(
     app: &AppUseCase,
     completed: &CompletedDownload,
-    title_id: &str,
-    facet: &MediaFacet,
+    title: &scryer_domain::Title,
     release_evidence: &ReleaseEvidence,
     available_episodes: &[scryer_domain::Episode],
 ) -> AppResult<ManualImportPreview> {
+    let title_id = title.id.as_str();
+    let facet = &title.facet;
     // Series/anime: recursive, no sample filtering — the user maps every file
     // explicitly and small specials are legitimate. Movies: a movie import
     // lands exactly one primary file, so sample-named files never become
@@ -680,6 +672,10 @@ async fn preview_manual_import(
         // File parsing is only for user-facing episode suggestions. It must
         // not become release/quality evidence for the later import.
         let parsed = parsed_release_from_file_stem(path);
+        // The quality shown is the one the import will score: the release
+        // evidence parsed with the title's canonical context, never the file
+        // name.
+        let quality = release_evidence_quality_for_title(path, release_evidence, title);
 
         let mut suggested_episode_id = None;
         let mut suggested_episode_label = None;
@@ -770,7 +766,7 @@ async fn preview_manual_import(
             file_path: path_to_stored_string(path),
             file_name,
             size_bytes: size,
-            quality: None,
+            quality,
             parsed_season,
             parsed_episodes,
             suggested_episode_id,
@@ -910,8 +906,7 @@ pub async fn begin_manual_import_selection(
     let preview = preview_manual_import(
         app,
         &completed,
-        title_id,
-        &authorized.facet,
+        &authorized.title,
         &release_evidence,
         &all_episodes,
     )
@@ -2227,14 +2222,38 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
 /// the client finished before the record completed and that is waiting on
 /// import (a fresh download reusing an old item id is left alone). Busy or
 /// not-yet-tracked sources are retried on a later tick without logging.
+/// Per-process memory of what the recovery loop already decided about a
+/// completed manual-import record, so a 2 s tick does not re-ask the tracked
+/// download service the same question for 24 h.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ManualImportRecoveryMemo {
+    /// Marked, already imported, or can never recover — never revisit.
+    Settled,
+    /// The tracked download was not known (not yet tracked, or its client
+    /// history entry is gone); ask again after this instant, on a growing
+    /// backoff.
+    RetryAfter {
+        next_check_at: DateTime<Utc>,
+        attempts: u32,
+    },
+}
+
+/// Backoff for an untracked record: a just-completed download may not be
+/// tracked for a tick or two, but one whose history entry is gone will never
+/// be, so the cadence grows quickly to the same cap the import retry uses.
+fn manual_import_recovery_retry_delay(attempts: u32) -> chrono::Duration {
+    crate::tracked_downloads::import_execution_retry_delay(attempts)
+}
+
 async fn recover_completed_manual_imports(
     app: &AppUseCase,
     worker: &PollingWorker,
-    reconciled_import_ids: &mut HashSet<String>,
+    memo: &mut HashMap<String, ManualImportRecoveryMemo>,
 ) {
     use crate::tracked_downloads::ManualImportRecoveryOutcome;
 
-    let updated_after = Utc::now() - chrono::Duration::hours(MANUAL_IMPORT_RECOVERY_WINDOW_HOURS);
+    let now = Utc::now();
+    let updated_after = now - chrono::Duration::hours(MANUAL_IMPORT_RECOVERY_WINDOW_HOURS);
     let records = match app
         .services
         .workflow
@@ -2248,17 +2267,33 @@ async fn recover_completed_manual_imports(
             return;
         }
     };
+    // Records that aged out of the window never come back; forget them.
+    let live_ids = records
+        .iter()
+        .map(|record| record.id.as_str())
+        .collect::<HashSet<_>>();
+    memo.retain(|id, _| live_ids.contains(id.as_str()));
     let Some(handle) = app.runtime.acquisition.tracked_download_handle.as_ref() else {
         return;
     };
 
     for record in records {
-        if reconciled_import_ids.contains(&record.id) {
-            continue;
-        }
+        let attempts = match memo.get(&record.id) {
+            Some(ManualImportRecoveryMemo::Settled) => continue,
+            Some(ManualImportRecoveryMemo::RetryAfter {
+                next_check_at,
+                attempts,
+            }) => {
+                if *next_check_at > now {
+                    continue;
+                }
+                *attempts
+            }
+            None => 0,
+        };
         let Some(recovery) = completed_manual_import_recovery(&record) else {
             // Partial, malformed, or identity-less: it will never recover.
-            reconciled_import_ids.insert(record.id);
+            memo.insert(record.id, ManualImportRecoveryMemo::Settled);
             continue;
         };
         let source_identity = recovery.source_identity;
@@ -2267,7 +2302,7 @@ async fn recover_completed_manual_imports(
             .await
         {
             Ok(ManualImportRecoveryOutcome::Marked) => {
-                reconciled_import_ids.insert(record.id);
+                memo.insert(record.id, ManualImportRecoveryMemo::Settled);
                 if let Err(error) = app
                     .services
                     .workflow
@@ -2279,9 +2314,20 @@ async fn recover_completed_manual_imports(
                 }
             }
             Ok(ManualImportRecoveryOutcome::Unchanged) => {
-                reconciled_import_ids.insert(record.id);
+                memo.insert(record.id, ManualImportRecoveryMemo::Settled);
             }
-            Ok(ManualImportRecoveryOutcome::Untracked | ManualImportRecoveryOutcome::Busy) => {}
+            Ok(ManualImportRecoveryOutcome::Untracked) => {
+                let attempts = attempts.saturating_add(1);
+                memo.insert(
+                    record.id,
+                    ManualImportRecoveryMemo::RetryAfter {
+                        next_check_at: now + manual_import_recovery_retry_delay(attempts),
+                        attempts,
+                    },
+                );
+            }
+            // Busy is momentary: ask again next tick.
+            Ok(ManualImportRecoveryOutcome::Busy) => {}
             Err(error) => worker.warn_error("recover_completed_manual_import", &error),
         }
     }

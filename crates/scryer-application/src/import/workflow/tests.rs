@@ -1,18 +1,18 @@
 #[cfg(test)]
 mod tests {
     use super::{
-        CompletedDownloadOriginResolution, CompletedDownloadSubmissionMatch,
+        CompletedDownloadSubmissionMatch,
         CompletedDownloadSubmissionResolution, CompletedImportEvidenceInputs,
         CompletedImportEvidenceSource, CompletedImportIdentityPolicy,
         CompletedImportRequestPayload, ReleaseEvidence, SelectedCompletedImportEvidence,
         StoredCompletedImportRequestPayload,
         IMPORT_TRANSFER_HEARTBEAT_INTERVAL, ManualImportCandidateMapping,
         completed_import_status_for_result, download_submission_persistence_may_be_in_flight,
-        manual_episode_suggestion_for_grabbed_scope, resolve_completed_download_origin,
-        resolved_episode_ids_are_within_expected,
+        manual_episode_suggestion_for_grabbed_scope, resolved_episode_ids_are_within_expected,
+        stamp_scryer_submission_origin, submission_has_scryer_origin,
         sanitized_title_folder_component, select_completed_import_evidence,
         should_persist_import_transfer_heartbeat,
-        skip_reason_for_import_check_code, terminal_tracked_state_for_import_result,
+        skip_reason_for_import_check_code,
         validate_manual_import_candidate_mapping_targets,
         validate_manual_import_source_under_trusted_root,
     };
@@ -23,10 +23,34 @@ mod tests {
     use chrono::Utc;
     use scryer_domain::{
         CompletedDownload, ImportDecision, ImportResult, ImportSkipReason, ImportStatus,
-        TrackedDownloadState,
     };
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
+
+    /// Test-side view of the stamp step: what the provenance resolver does with
+    /// a live submission lookup for a Scryer-origin row (stamped copy) versus
+    /// anything else (no Scryer origin).
+    #[derive(Clone, Debug)]
+    enum CompletedDownloadOriginResolution {
+        Ready(Box<CompletedDownload>),
+        NoScryerOrigin,
+    }
+
+    fn resolve_completed_download_origin(
+        completed: &CompletedDownload,
+        resolution: &CompletedDownloadSubmissionResolution,
+    ) -> CompletedDownloadOriginResolution {
+        match resolution {
+            CompletedDownloadSubmissionResolution::Matched(matched)
+                if submission_has_scryer_origin(&matched.submission) =>
+            {
+                CompletedDownloadOriginResolution::Ready(Box::new(
+                    stamp_scryer_submission_origin(completed, &matched.submission),
+                ))
+            }
+            _ => CompletedDownloadOriginResolution::NoScryerOrigin,
+        }
+    }
 
     #[test]
     fn title_folder_component_falls_back_when_sanitized_empty() {
@@ -1102,35 +1126,11 @@ mod tests {
             ImportStatus::Pending
         );
 
-        result.error_message = Some(
-            "failed to remove source: The process cannot access the file because it is being used by another process. (os error 32)"
-                .to_string(),
-        );
-        assert_eq!(
-            completed_import_status_for_result(&result, ImportStatus::Failed),
-            ImportStatus::Pending
-        );
-
-        // Transient OS-level transfer failures Sonarr retries as `Skipped`
-        // (glibc/BSD strerror and Windows FormatMessage texts).
+        // Scryer's own transient markers are the only message-based hint.
         for transient in [
-            "failed to move file: Device or resource busy (os error 16)",
-            "failed to copy file: Resource busy (os error 16)",
-            "failed to move file: Text file busy (os error 26)",
-            "failed to move file: Interrupted system call (os error 4)",
-            "failed to copy file: Input/output error (os error 5)",
-            "failed to move file: Stale file handle (os error 116)",
-            "failed to move file: Transport endpoint is not connected (os error 107)",
-            "failed to copy file: No space left on device (os error 28)",
-            "failed to copy file: Disk quota exceeded (os error 122)",
-            "failed to open source: Too many open files (os error 24)",
-            "failed to move file: Permission denied (os error 13)",
-            "failed to move file: No such file or directory (os error 2)",
-            "failed to move file: The process cannot access the file because another process has locked a portion of the file. (os error 33)",
-            "failed to remove source: The requested operation cannot be performed on a file with a user-mapped section open. (os error 1224)",
-            "failed to move file: The specified network name is no longer available. (os error 64)",
-            "failed to move file: There is not enough space on the disk. (os error 112)",
-            "failed to move file: Access is denied. (os error 5)",
+            "source is still being unpacked by the client",
+            "active-download marker present",
+            "destination temporarily unavailable",
         ] {
             result.error_message = Some(transient.to_string());
             assert_eq!(
@@ -1140,11 +1140,13 @@ mod tests {
             );
         }
 
-        // Decision-phase skips with an unrecognised message stay terminal: the
-        // allowlist is only a hint for non-`Failed` decisions.
+        // Decision-phase skips stay terminal whatever the text — there is no OS
+        // error catalogue any more; execution failures are retried by phase.
         for permanent in [
             "failed to move file: Invalid argument (os error 22)",
             "failed to move file: Is a directory (os error 21)",
+            "failed to move file: Device or resource busy (os error 16)",
+            "failed to remove source: The process cannot access the file because it is being used by another process. (os error 32)",
             "archive requires a password",
         ] {
             result.error_message = Some(permanent.to_string());
@@ -1161,6 +1163,7 @@ mod tests {
         result.skip_reason = None;
         for execution_failure in [
             "failed to move file: Invalid argument (os error 22)",
+            "failed to remove source: The process cannot access the file because it is being used by another process. (os error 32)",
             "0 imported, 0 skipped, 0 rejected, 1 failed. Last error: something novel",
             "database is locked",
         ] {
@@ -1206,46 +1209,6 @@ mod tests {
         assert_eq!(
             completed_import_status_for_result(&result, ImportStatus::Failed),
             ImportStatus::Failed
-        );
-    }
-
-    #[test]
-    fn rejected_and_skipped_import_results_are_not_terminal_cleanup_candidates() {
-        let mut result = ImportResult {
-            import_id: "import-1".to_string(),
-            decision: ImportDecision::Imported,
-            skip_reason: None,
-            title_id: Some("title-1".to_string()),
-            source_system: Some("nzbget".to_string()),
-            source_ref: Some("item-1".to_string()),
-            source_title: Some("Release".to_string()),
-            source_path: "/downloads/Release".to_string(),
-            dest_path: None,
-            quality: None,
-            episode_ids: Vec::new(),
-            file_size_bytes: None,
-            link_type: None,
-            error_message: None,
-            started_at: Utc::now(),
-            completed_at: Utc::now(),
-        };
-
-        assert_eq!(
-            terminal_tracked_state_for_import_result(&result),
-            Some(TrackedDownloadState::Imported)
-        );
-
-        result.decision = ImportDecision::Rejected;
-        result.skip_reason = Some(ImportSkipReason::AlreadyImported);
-        assert_eq!(terminal_tracked_state_for_import_result(&result), None);
-
-        result.decision = ImportDecision::Skipped;
-        assert_eq!(terminal_tracked_state_for_import_result(&result), None);
-
-        result.decision = ImportDecision::Failed;
-        assert_eq!(
-            terminal_tracked_state_for_import_result(&result),
-            Some(TrackedDownloadState::Failed)
         );
     }
 

@@ -1759,32 +1759,6 @@ pub(super) async fn create_enabled_download_client_config(
     .expect("create download client config")
 }
 
-pub(super) async fn seed_download_client_config(
-    app: &AppUseCase,
-    id: &str,
-    name: &str,
-    client_type: &str,
-) -> DownloadClientConfig {
-    app.services
-        .integrations
-        .download_client_configs
-        .create(DownloadClientConfig {
-            id: id.to_string(),
-            name: name.to_string(),
-            client_type: client_type.to_string(),
-            config_json: "{}".to_string(),
-            is_enabled: true,
-            status: scryer_domain::DownloadClientStatus::Healthy,
-            last_error: None,
-            last_seen_at: None,
-            client_priority: 1,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        })
-        .await
-        .expect("seed download client config")
-}
-
 pub(super) async fn set_download_client_cleanup_routing(
     app: &AppUseCase,
     user: &User,

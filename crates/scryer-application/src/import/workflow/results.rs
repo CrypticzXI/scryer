@@ -23,60 +23,36 @@ pub async fn retry_failed_import(
 
     let payload: StoredCompletedImportRequestPayload = serde_json::from_str(&record.payload_json)
         .map_err(|e| AppError::Repository(format!("failed to deserialize import payload: {e}")))?;
-    let (mut completed, persisted_release_evidence, persisted_target_title_id) = match payload {
-        StoredCompletedImportRequestPayload::Current(payload) => (
-            payload.completed,
-            Some(payload.release_evidence),
-            payload.target_title_id,
-        ),
-        StoredCompletedImportRequestPayload::Legacy(completed) => (completed, None, None),
+    let (mut completed, persisted) = match payload {
+        StoredCompletedImportRequestPayload::Current(payload) => {
+            (payload.completed.clone(), Some(payload))
+        }
+        StoredCompletedImportRequestPayload::Legacy(completed) => (completed, None),
     };
     remap_completed_download_for_client(app, &mut completed).await;
 
     // A live submission row is authoritative over what the failed attempt
-    // persisted (an operator may have reassigned the download since). The
+    // persisted (an operator may have reassigned the download since); the
     // persisted evidence is the fallback for a lost row or a transient lookup
     // failure only.
-    let fresh_resolution = match resolve_completed_download_submission(app, &completed, None).await
-    {
-        Ok(resolution) => Some(match resolution {
-            CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
-            | CompletedDownloadSubmissionResolution::MissingDownloadId { .. } => {
-                CompletedDownloadSubmissionResolution::DownloaderObservation
-            }
-            resolution => resolution,
-        }),
-        Err(error) => {
-            if persisted_release_evidence.is_none() {
-                return Err(error);
-            }
-            tracing::warn!(
-                import_id,
-                error = %error,
-                "retry import: live submission lookup failed; retrying with the persisted release evidence"
-            );
-            None
-        }
-    };
-    let SelectedCompletedImportEvidence {
+    let ImportProvenance {
+        completed,
         release_evidence,
         target_title_id,
-        source: _,
-    } = select_completed_import_evidence(CompletedImportEvidenceInputs {
-        identity_policy: CompletedImportIdentityPolicy::RequireSubmission,
-        fresh_resolution: fresh_resolution.as_ref(),
-        release_evidence_override: None,
-        persisted_release_evidence: persisted_release_evidence.as_ref(),
-        persisted_target_title_id: persisted_target_title_id.as_deref(),
-        requested_target_title_id: None,
-        completed: &completed,
-    });
-    if let Some(CompletedDownloadSubmissionResolution::Matched(matched)) = fresh_resolution.as_ref()
-        && submission_has_scryer_origin(&matched.submission)
-    {
-        completed.parameters =
-            authoritative_scryer_origin_parameters(&completed.parameters, &matched.submission);
-    }
+        ..
+    } = resolve_import_provenance(
+        app,
+        completed,
+        ImportProvenanceRequest {
+            identity_policy: CompletedImportIdentityPolicy::RequireSubmission,
+            queue_item: None,
+            requested_target_title_id: None,
+            release_evidence_override: None,
+            persisted: persisted.as_ref(),
+            tolerate_lookup_failure: true,
+        },
+    )
+    .await?;
 
     let authorization_title_id = release_evidence
         .title_id()
@@ -250,13 +226,6 @@ async fn reconcile_terminal_download_cleanup(
                 TerminalDownloadCleanupOutcome::RetryableFailure
             }
         }
-    }
-}
-fn terminal_tracked_state_for_import_result(result: &ImportResult) -> Option<TrackedDownloadState> {
-    match result.decision {
-        ImportDecision::Imported => Some(TrackedDownloadState::Imported),
-        ImportDecision::Failed => Some(TrackedDownloadState::Failed),
-        _ => None,
     }
 }
 fn skip_reason_for_import_check_code(code: &str) -> ImportSkipReason {

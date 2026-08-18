@@ -318,7 +318,11 @@ async fn expected_episode_ids_for_completed_download(
     let release_title = release_evidence.release_title(None)?;
     expected_episode_ids_from_release_title(app, title, &release_title).await
 }
-async fn expected_episode_ids_from_submission_scope(
+/// The episodes a grab's submission scope names outright — the one derivation
+/// both the import's grabbed-release gate and the post-import verification use.
+/// A collection (season) scope expects its monitored episodes, or every episode
+/// when none is monitored; title/series-movie/orphan scopes name none.
+pub(crate) async fn expected_episode_ids_from_submission_scope(
     app: &AppUseCase,
     title: &scryer_domain::Title,
     scope: &SubmissionScope,
@@ -327,7 +331,10 @@ async fn expected_episode_ids_from_submission_scope(
         SubmissionScope::Episode { episode_id } => Some(HashSet::from([episode_id.clone()])),
         SubmissionScope::EpisodeSet { episode_ids } => Some(episode_ids.iter().cloned().collect()),
         SubmissionScope::Collection { collection_id } => {
-            episode_ids_for_collection(app, title, collection_id, true).await
+            match episode_ids_for_collection(app, title, collection_id, true).await {
+                Some(monitored) => Some(monitored),
+                None => episode_ids_for_collection(app, title, collection_id, false).await,
+            }
         }
         SubmissionScope::Title | SubmissionScope::SeriesMovie { .. } | SubmissionScope::Orphan => None,
     }
@@ -1620,6 +1627,14 @@ fn build_augmented_episode_import_metadata_for_title(
     });
     parsed.episode = if other_video_files || release_is_season_pack {
         file_episode_identity_for_title(source_video, title)
+    } else if let Some(scene_episode) = scene_titled_file_episode(source_video) {
+        // Sonarr's `!SceneChecker.IsSceneTitle(fileName)` guard: a sole video
+        // that is itself a properly named scene release (dotted, grouped,
+        // quality-tagged, episode-numbered) identifies itself; the release
+        // name's numbering is not applied over it. A disagreement with the
+        // grabbed release then surfaces through the grabbed-release gate
+        // rather than being papered over.
+        Some(scene_episode)
     } else {
         // Sole video of a non-pack release: the release name is the best
         // episode evidence, and only after it the file name — which may locate
@@ -1627,6 +1642,29 @@ fn build_augmented_episode_import_metadata_for_title(
         release_episode.or_else(|| file_episode_identity_for_title(source_video, title))
     };
     parsed
+}
+
+/// The episode a sole video names when its stem is a scene-style release name
+/// (Sonarr `SceneChecker.IsSceneTitle`): dotted, no spaces, and a context-free
+/// parse yields a release group, a quality, a title, and episode numbering.
+/// Anything less (obfuscated, renamed, "episode 2.mkv") is not scene-titled
+/// and does not override the release name.
+fn scene_titled_file_episode(source_video: &Path) -> Option<crate::ParsedEpisodeMetadata> {
+    let stem = source_video_stem(Some(source_video))?;
+    if !stem.contains('.') || stem.contains(' ') {
+        return None;
+    }
+    let parsed = normalize_release_title_signal(parse_release_metadata(&stem));
+    if parsed
+        .release_group
+        .as_deref()
+        .is_none_or(|group| group.trim().is_empty())
+        || parsed.quality.is_none()
+        || parsed.normalized_title.trim().is_empty()
+    {
+        return None;
+    }
+    parsed.episode
 }
 
 /// The episode a video file names on its own: its stem parsed with the

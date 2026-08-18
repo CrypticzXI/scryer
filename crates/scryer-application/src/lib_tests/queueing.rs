@@ -3332,3 +3332,129 @@ async fn coverage_records_only_indexers_that_fired() {
         "a routed indexer that did not fire leaves the scope unconverged"
     );
 }
+
+// ── TYPE-001: catalog queueing decides retry-later by error type only ────────
+
+async fn assert_queue_existing_title_submit_decision(
+    submit_error: StubSubmitError,
+    expect_deferred: bool,
+) {
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client.set_submit_error(Some(submit_error)).await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items,
+            Arc::new(MockIndexerClient),
+        );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Typed Failover Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+    let source_title = "Typed.Failover.Queue.2026.1080p.WEB-DL";
+
+    let error = app
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                indexer_id: None,
+                source_hint: Some(
+                    "https://example.invalid/releases/typed-failover.nzb".to_string(),
+                ),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some(source_title.to_string()),
+                source_password: None,
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect_err("the submit failure surfaces to the caller");
+    assert_eq!(
+        error.is_retryable_download_submit_failure(),
+        expect_deferred
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+
+    let attempts = release_attempts.attempts.lock().await.clone();
+    let outcomes = attempts
+        .iter()
+        .filter(|attempt| attempt.source_title.as_deref() == Some(source_title))
+        .map(|attempt| attempt.outcome.clone())
+        .collect::<Vec<_>>();
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    let blocklist = app
+        .services
+        .workflow
+        .blocklist_repo
+        .list_for_title(&title.id, 10)
+        .await
+        .expect("list blocklist");
+    if expect_deferred {
+        assert!(
+            !outcomes.is_empty()
+                && outcomes
+                    .iter()
+                    .all(|outcome| *outcome == ReleaseDownloadAttemptOutcome::Pending),
+            "typed failover exhaustion must record Pending only: {outcomes:?}"
+        );
+        assert!(failed.is_empty(), "{failed:?}");
+        assert!(blocklist.is_empty(), "{blocklist:?}");
+    } else {
+        assert!(
+            outcomes.contains(&ReleaseDownloadAttemptOutcome::Failed),
+            "{outcomes:?}"
+        );
+        assert!(
+            !failed.is_empty(),
+            "the legacy failover text is a definitive failure"
+        );
+        assert!(
+            blocklist
+                .iter()
+                .any(|entry| entry.source_title.as_deref() == Some(source_title)),
+            "{blocklist:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_defers_typed_failover_exhaustion() {
+    assert_queue_existing_title_submit_decision(
+        StubSubmitError::FailoverExhausted(
+            "all prioritized download clients failed to enqueue this release; last client error: client submit unavailable"
+                .to_string(),
+        ),
+        true,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_treats_legacy_failover_text_as_definitive() {
+    assert_queue_existing_title_submit_decision(
+        StubSubmitError::Repository(LEGACY_FAILOVER_REPOSITORY_MESSAGE.to_string()),
+        false,
+    )
+    .await;
+}

@@ -641,7 +641,7 @@ impl AppUseCase {
         client_type: &str,
         download_client_item_id: &str,
         title_id: &str,
-        _scope: SubmissionScope,
+        scope: SubmissionScope,
     ) -> AppResult<()> {
         let title = self
             .services
@@ -667,9 +667,11 @@ impl AppUseCase {
             source_provider_id: None,
             source_provider_name: None,
             source_kind: None,
+            // Filled from the existing row by the assignment command: the
+            // grab-time indexer release name survives a reassignment.
             source_title: None,
             request_signature: None,
-            scope: SubmissionScope::Orphan,
+            scope,
         };
         let actor_snapshot = crate::domain_events::DomainEventActor::from(actor)
             .into_download_submission_actor_snapshot();
@@ -1255,9 +1257,27 @@ pub(crate) async fn assign_tracked_download_title_command(
         )));
     }
 
-    submission.source_title = None;
-    submission.scope = SubmissionScope::Orphan;
+    // An assignment is an operator's explicit identity for the download and is
+    // recorded like a grab (the store reads any titled row back as a Scryer
+    // submission anyway). It names the requested scope, and it must not throw
+    // away the grab-time indexer release name — that is still the best
+    // release evidence for parsing and scoring, whatever title it lands in.
     let source_identity = DownloadSourceIdentity::from_submission(&submission);
+    if submission
+        .source_title
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+        && let Some(existing) = app
+            .services
+            .workflow
+            .download_submissions
+            .find_by_client_item_id(&source_identity)
+            .await?
+    {
+        submission.source_title = existing
+            .source_title
+            .filter(|value| !value.trim().is_empty());
+    }
     app.services
         .workflow
         .download_submissions

@@ -14,7 +14,7 @@ It owns:
 Start here when you are changing one of these areas:
 
 - `src/lib.rs`: crate index, public re-exports, and `AppError`
-- `src/lib_tests.rs`: root test harness and shared crate-level test doubles
+- `src/lib_tests/`: crate-level test harness and shared test doubles
 - `src/ports.rs`: repository/client/provider traits
 - `src/services.rs`: `AppServices` and `AppUseCase`
 - `src/contracts.rs`: shared request/response DTOs and cross-domain structs
@@ -47,6 +47,6 @@ When a workflow file is still large, start with the nearby helper files before o
 
 ## Notes
 
-- `src/lib.rs` is intentionally small again; crate-level tests now live in `src/lib_tests.rs`.
-- Physical files are grouped by domain directory, and the main workflow modules now use descriptive internal names for the largest domains.
-- A few path-based compatibility declarations still exist for smaller domains; start with the directory `mod.rs` guide when choosing where to read next.
+- `src/lib.rs` stays small: it re-exports the public surface and defines `AppError`; crate-level tests live in `src/lib_tests/`.
+- Files are grouped by domain directory; start with a directory's `mod.rs` when choosing where to read next.
+- Some large workflow files are `include!`d/`#[path]`-declared submodules of a domain `mod.rs`; `cargo fmt` does not see those, so format such hunks by hand.

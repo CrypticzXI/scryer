@@ -77,7 +77,7 @@ pub(crate) enum ReleaseEvidence {
         scope: SubmissionScope,
     },
     DownloaderObservation {
-        #[serde(default, alias = "nzb_name")]
+        #[serde(default)]
         release_name: Option<String>,
     },
 }
@@ -254,62 +254,8 @@ fn completed_download_observed_identity(
     })
 }
 
-fn download_queue_item_observed_identity(item: &DownloadQueueItem) -> DownloadSubmissionIdentity {
-    crate::observed_download_identity(crate::ObservedDownloadIdentityInput {
-        download_id: item.download_id.as_deref(),
-        parameters: &[],
-        info_hash_hint: None,
-    })
-}
 
-fn identity_field(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
-}
 
-fn find_completed_download_for_queue_item(
-    completed_downloads: &[CompletedDownload],
-    item: &DownloadQueueItem,
-) -> Option<CompletedDownload> {
-    let item_identity = download_queue_item_observed_identity(item);
-    if let Some(download_id) = identity_field(item_identity.download_id.as_deref()) {
-        let matches = completed_downloads
-            .iter()
-            .filter(|completed| {
-                let completed_identity = completed_download_observed_identity(completed);
-                identity_field(completed_identity.download_id.as_deref()) == Some(download_id)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if matches.is_empty() {
-            return None;
-        }
-        if let Some(completed) =
-            crate::download_identity::coalesce_completed_downloads_by_release_observation(&matches)
-        {
-            return Some(completed);
-        }
-        if matches.len() > 1 {
-            tracing::warn!(
-                source_ref = %item.download_client_item_id,
-                download_id,
-                "import: queue item download id matched multiple completed downloads"
-            );
-        }
-        return None;
-    }
-
-    completed_downloads
-        .iter()
-        .find(|completed| {
-            completed_download_identity(completed)
-                == DownloadSourceIdentity::new(
-                    Some(item.client_id.as_str()),
-                    &item.client_type,
-                    &item.download_client_item_id,
-                )
-        })
-        .cloned()
-}
 
 fn download_submission_identity_is_empty(identity: &DownloadSubmissionIdentity) -> bool {
     identity
@@ -465,21 +411,29 @@ pub(crate) async fn resolve_completed_download_origin_for_import(
     completed: &CompletedDownload,
     item: Option<&DownloadQueueItem>,
 ) -> AppResult<ResolvedCompletedDownloadOriginForImport> {
-    let submission_resolution = resolve_completed_download_submission(app, completed, item).await?;
-    let release_evidence = release_evidence_for_resolution(completed, &submission_resolution);
-    Ok(
-        match resolve_completed_download_origin(completed, &submission_resolution) {
-            CompletedDownloadOriginResolution::Ready(completed) => {
-                ResolvedCompletedDownloadOriginForImport::Ready {
-                    completed,
-                    release_evidence,
-                }
-            }
-            CompletedDownloadOriginResolution::NoScryerOrigin => {
-                ResolvedCompletedDownloadOriginForImport::NoScryerOrigin
-            }
+    let provenance = resolve_import_provenance(
+        app,
+        completed.clone(),
+        ImportProvenanceRequest {
+            identity_policy: CompletedImportIdentityPolicy::RequireSubmission,
+            queue_item: item,
+            requested_target_title_id: None,
+            release_evidence_override: None,
+            // The tracked path decides its import target from the LIVE row
+            // only; a lost row is replayed by the import request itself.
+            persisted: None,
+            tolerate_lookup_failure: false,
         },
     )
+    .await?;
+    Ok(if provenance.release_evidence.title_id().is_some() {
+        ResolvedCompletedDownloadOriginForImport::Ready {
+            completed: Box::new(provenance.completed),
+            release_evidence: provenance.release_evidence,
+        }
+    } else {
+        ResolvedCompletedDownloadOriginForImport::NoScryerOrigin
+    })
 }
 
 async fn completed_download_already_imported_for_current_attempt(
@@ -586,547 +540,7 @@ fn completed_download_import_identity_for_resolution(
     }
 }
 
-async fn block_download_queue_item_identity_for_manual_review(
-    app: &AppUseCase,
-    item: &DownloadQueueItem,
-    reason: &str,
-    detail: &str,
-) {
-    let observed_identity = download_queue_item_observed_identity(item);
-    if download_submission_identity_is_empty(&observed_identity) {
-        return;
-    }
-    tracing::warn!(
-        client_id = item.client_id.as_str(),
-        client_type = item.client_type.as_str(),
-        download_client_item_id = item.download_client_item_id.as_str(),
-        reason,
-        detail,
-        "import: queue item DownloadId is unresolved; blocking import for manual review"
-    );
-    let source_identity = DownloadSourceIdentity::new(
-        Some(item.client_id.as_str()),
-        &item.client_type,
-        &item.download_client_item_id,
-    );
-    if let Err(error) = app
-        .services
-        .workflow
-        .download_submissions
-        .record_identity_tracked_state(
-            &observed_identity,
-            Some(&source_identity),
-            TrackedDownloadState::ImportBlocked.as_str(),
-            Some(reason),
-            Some(detail),
-        )
-        .await
-    {
-        tracing::warn!(
-            error = %error,
-            client_id = item.client_id.as_str(),
-            client_type = item.client_type.as_str(),
-            download_client_item_id = item.download_client_item_id.as_str(),
-            reason,
-            "failed to persist durable queue item manual-review state"
-        );
-    }
-}
 
-enum CompletedDownloadFetchPolicy {
-    Full,
-    Recent { limit: usize },
-    Provided {
-        downloads: Vec<CompletedDownload>,
-    },
-}
-
-impl CompletedDownloadFetchPolicy {
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Full => "full",
-            Self::Recent { .. } => "recent",
-            Self::Provided { .. } => "provided",
-        }
-    }
-
-    fn recent_limit(&self) -> Option<usize> {
-        match self {
-            Self::Recent { limit } => Some(*limit),
-            _ => None,
-        }
-    }
-}
-
-/// Attempts to import completed items from the current queue/history snapshot.
-/// Returns the set of `download_client_item_id`s that were conclusively processed
-/// (imported, failed permanently, or intentionally ignored). Temporary defer
-/// conditions (e.g. no matching CompletedDownload yet, empty dest_dir) are NOT
-/// included so they can be retried on the next snapshot.
-pub async fn try_import_completed_downloads(
-    app: &AppUseCase,
-    actor: &User,
-    items: &[DownloadQueueItem],
-) -> HashSet<String> {
-    try_import_completed_downloads_with_policy(app, actor, items, CompletedDownloadFetchPolicy::Full)
-        .await
-}
-
-pub async fn try_import_recent_completed_downloads(
-    app: &AppUseCase,
-    actor: &User,
-    items: &[DownloadQueueItem],
-) -> HashSet<String> {
-    try_import_completed_downloads_with_policy(
-        app,
-        actor,
-        items,
-        CompletedDownloadFetchPolicy::Recent {
-            limit: crate::DOWNLOAD_QUEUE_RECENT_COMPLETED_LIMIT,
-        },
-    )
-    .await
-}
-
-pub async fn try_import_provided_completed_downloads(
-    app: &AppUseCase,
-    actor: &User,
-    items: &[DownloadQueueItem],
-    completed_downloads: Vec<CompletedDownload>,
-) -> HashSet<String> {
-    try_import_completed_downloads_with_policy(
-        app,
-        actor,
-        items,
-        CompletedDownloadFetchPolicy::Provided {
-            downloads: completed_downloads,
-        },
-    )
-    .await
-}
-
-async fn try_import_completed_downloads_with_policy(
-    app: &AppUseCase,
-    actor: &User,
-    items: &[DownloadQueueItem],
-    fetch_policy: CompletedDownloadFetchPolicy,
-) -> HashSet<String> {
-    match app
-        .services
-        .workflow
-        .imports
-        .recover_stale_processing_imports(IMPORT_STALE_RECOVERY_SECONDS)
-        .await
-    {
-        Ok(recovered) if recovered > 0 => {
-            tracing::warn!(recovered, "recovered stale processing imports → failed");
-            app.emit_import_recovery_completed_event(
-                actor,
-                i64::try_from(recovered).unwrap_or(i64::MAX),
-            )
-            .await;
-        }
-        Err(error) => {
-            tracing::warn!(error = %error, "failed to recover stale processing imports");
-        }
-        _ => {}
-    }
-
-    let completed_items: Vec<&DownloadQueueItem> = items
-        .iter()
-        .filter(|item| item.state == DownloadQueueState::Completed)
-        .filter(|item| {
-            item.import_status.is_none() || item.import_status == Some(ImportStatus::Failed)
-        })
-        .collect();
-
-    if completed_items.is_empty() {
-        return HashSet::new();
-    }
-
-    let mut processed_ids: HashSet<String> = HashSet::new();
-
-    tracing::info!(
-        count = completed_items.len(),
-        items = %completed_items.iter().map(|i| format!("{}({})", i.title_name, i.download_client_item_id)).collect::<Vec<_>>().join(", "),
-        "import: found completed items to evaluate"
-    );
-
-    let completed_downloads = match completed_downloads_for_import(app, &fetch_policy).await {
-        Ok(downloads) => {
-                tracing::debug!(
-                    count = downloads.len(),
-                    ids = %downloads.iter().map(|d| d.download_client_item_id.as_str()).collect::<Vec<_>>().join(", "),
-                    fetch_policy = fetch_policy.label(),
-                    fetch_policy_recent_limit = ?fetch_policy.recent_limit(),
-                    "import: fetched completed downloads from client"
-                );
-            downloads
-        }
-        Err(error) => {
-            tracing::warn!(error = %error, "failed to fetch completed downloads for import");
-            return HashSet::new();
-        }
-    };
-
-    for item in completed_items {
-        let source_ref = &item.download_client_item_id;
-
-        // Find the matching CompletedDownload
-        let completed = match find_completed_download_for_queue_item(&completed_downloads, item) {
-            Some(completed) => completed,
-            None => {
-                tracing::debug!(
-                    source_ref = %source_ref,
-                    title = %item.title_name,
-                    fetch_policy = fetch_policy.label(),
-                    fetch_policy_recent_limit = ?fetch_policy.recent_limit(),
-                    "import: no matching CompletedDownload from client history (item may still be processing, outside recent window, or status != Completed)"
-                );
-                if matches!(&fetch_policy, CompletedDownloadFetchPolicy::Full)
-                    && !download_submission_identity_is_empty(&download_queue_item_observed_identity(
-                        item,
-                    ))
-                {
-                    block_download_queue_item_identity_for_manual_review(
-                        app,
-                        item,
-                        "missing_completed_history_identity",
-                        "completed queue item carried DownloadId but completed history did not contain a matching DownloadId",
-                    )
-                    .await;
-                }
-                continue;
-            }
-        };
-
-        // Resolve durable submission provenance before considering category.
-        let submission_resolution =
-            match resolve_completed_download_submission(app, &completed, Some(item)).await {
-                Ok(resolution) => resolution,
-                Err(error) => {
-                    tracing::debug!(
-                        source_ref = %source_ref,
-                        title = %item.title_name,
-                        error = %error,
-                        "import: download_submissions lookup failed"
-                    );
-                    continue;
-                }
-            };
-        let has_scryer_submission = matches!(
-            &submission_resolution,
-            CompletedDownloadSubmissionResolution::Matched(matched)
-                if submission_has_scryer_origin(&matched.submission)
-        );
-        // For a downloader observation the queue item's title is the validated
-        // import target (its category must match that title's route); it is
-        // threaded into the import so the target is not re-derived from a
-        // context-free parse of the release name.
-        let mut observation_target_title_id: Option<String> = None;
-        if !has_scryer_submission {
-            if completed
-                .parameters
-                .iter()
-                .any(|(key, _)| key.trim().eq_ignore_ascii_case("drone"))
-            {
-                continue;
-            }
-            let category_admission = app.download_client_category_admission_snapshot().await;
-            if !crate::services::download_observation_is_admitted(
-                false,
-                completed.category.as_deref().or(item.category.as_deref()),
-                category_admission.as_deref(),
-            ) {
-                continue;
-            }
-            let Some(title_id) = item
-                .title_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|title_id| !title_id.is_empty())
-            else {
-                continue;
-            };
-            let Ok(Some(title)) = app.services.catalog.titles.get_by_id(title_id).await else {
-                continue;
-            };
-            let Ok(Some(expected_category)) = app
-                .effective_download_client_category_for_title(&title, &completed.client_id)
-                .await
-            else {
-                continue;
-            };
-            let observed_category = completed
-                .category
-                .as_deref()
-                .or(item.category.as_deref())
-                .unwrap_or_default();
-            if crate::services::normalize_download_client_category(observed_category)
-                != crate::services::normalize_download_client_category(&expected_category)
-            {
-                continue;
-            }
-            observation_target_title_id = Some(title_id.to_string());
-        }
-
-        if let Ok(Some(state)) =
-            completed_download_terminal_state_for_resolution(app, &completed, &submission_resolution)
-                .await
-            && matches!(
-                state,
-                TrackedDownloadState::Imported | TrackedDownloadState::Failed
-            )
-        {
-            tracing::debug!(
-                source_ref = %source_ref,
-                title = %item.title_name,
-                state = state.as_str(),
-                "import: DownloadId already has terminal state"
-            );
-            match resolve_completed_download_origin(&completed, &submission_resolution) {
-                CompletedDownloadOriginResolution::Ready(cleanup_completed) => {
-                    let cleanup = reconcile_terminal_download_cleanup_for_completed(
-                        app,
-                        &cleanup_completed,
-                        state,
-                    )
-                    .await;
-                    if terminal_download_cleanup_is_complete(cleanup) {
-                        processed_ids.insert(source_ref.clone());
-                    }
-                }
-                CompletedDownloadOriginResolution::NoScryerOrigin => {
-                    tracing::debug!(
-                        source_ref = %source_ref,
-                        title = %item.title_name,
-                        client_type = %completed.client_type,
-                        "import: terminal download state found but no scryer origin was available for cleanup"
-                    );
-                    processed_ids.insert(source_ref.clone());
-                }
-            }
-            continue;
-        }
-
-        if let CompletedDownloadSubmissionResolution::AmbiguousDownloadId {
-            download_id,
-            matches,
-        } = &submission_resolution
-        {
-            tracing::warn!(
-                source_ref = %source_ref,
-                download_id,
-                matches,
-                "import: ambiguous submission identity; treating completed download as a downloader observation"
-            );
-        }
-        if let CompletedDownloadSubmissionResolution::MissingDownloadId { identity } =
-            &submission_resolution
-        {
-            if download_submission_persistence_may_be_in_flight(
-                &completed,
-                &submission_resolution,
-                Utc::now(),
-            ) {
-                tracing::info!(
-                    source_ref = %source_ref,
-                    title = %item.title_name,
-                    download_id = ?identity.download_id,
-                    "import: waiting for recent download submission identity to become durable"
-                );
-                continue;
-            }
-            tracing::warn!(
-                source_ref = %source_ref,
-                download_id = ?identity.download_id,
-                "import: submission identity did not become durable; treating completed download as a downloader observation"
-            );
-        }
-
-        let already_imported = match completed_download_already_imported_for_current_attempt(
-            app,
-            &completed,
-            &submission_resolution,
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                tracing::warn!(error = %error, source_ref = %source_ref, "import dedup check failed");
-                continue;
-            }
-        };
-
-        if already_imported {
-            tracing::debug!(
-                source_ref = %source_ref,
-                title = %item.title_name,
-                "import: treating already-imported download as terminal imported for cleanup"
-            );
-            match resolve_completed_download_origin(&completed, &submission_resolution) {
-                CompletedDownloadOriginResolution::Ready(cleanup_completed) => {
-                    let cleanup = reconcile_terminal_download_cleanup_for_completed(
-                        app,
-                        &cleanup_completed,
-                        TrackedDownloadState::Imported,
-                    )
-                    .await;
-                    if terminal_download_cleanup_is_complete(cleanup) {
-                        processed_ids.insert(source_ref.clone());
-                    }
-                }
-                CompletedDownloadOriginResolution::NoScryerOrigin => {
-                    tracing::debug!(
-                        source_ref = %source_ref,
-                        title = %item.title_name,
-                        client_type = %completed.client_type,
-                        "import: already-imported download had no scryer origin for cleanup"
-                    );
-                    processed_ids.insert(source_ref.clone());
-                }
-            }
-            continue;
-        }
-
-        let completed = match resolve_completed_download_origin(&completed, &submission_resolution)
-        {
-            CompletedDownloadOriginResolution::Ready(completed) => *completed,
-            CompletedDownloadOriginResolution::NoScryerOrigin => {
-                tracing::debug!(
-                    source_ref = %source_ref,
-                    title = %item.title_name,
-                    client_type = %completed.client_type,
-                    "import: no durable Scryer submission; importing as a downloader observation"
-                );
-                completed.clone()
-            }
-        };
-
-        // Skip if dest_dir is empty for fresh import attempts.
-        if completed.dest_dir.is_empty() {
-            tracing::info!(
-                source_ref = %source_ref,
-                title = %item.title_name,
-                "import: skipping download with empty dest_dir"
-            );
-            continue;
-        }
-
-        let facet_label = extract_parameter(&completed.parameters, "*scryer_facet")
-            .unwrap_or_else(|| "unknown".to_string());
-        tracing::info!(
-            source_ref = %source_ref,
-            title = %item.title_name,
-            dest_dir = %completed.dest_dir,
-            facet = %facet_label,
-            "import: triggering import for completed download"
-        );
-        let import_start = std::time::Instant::now();
-        let import = match observation_target_title_id.as_deref() {
-            Some(target_title_id) => {
-                import_completed_download_with_target_title(
-                    app,
-                    actor,
-                    &completed,
-                    target_title_id,
-                )
-                .await
-            }
-            None => import_completed_download(app, actor, &completed).await,
-        };
-        match import {
-            Ok(result) => {
-                if matches!(
-                    result.decision,
-                    ImportDecision::Failed | ImportDecision::Rejected
-                ) {
-                    tracing::warn!(
-                        decision = ?result.decision,
-                        title_id = ?result.title_id,
-                        error_message = ?result.error_message,
-                        source_path = %result.source_path,
-                        "import failed for {}",
-                        completed.name
-                    );
-                } else if matches!(result.decision, ImportDecision::Unmatched) {
-                    tracing::debug!(
-                        decision = ?result.decision,
-                        error_message = ?result.error_message,
-                        source_path = %result.source_path,
-                        "import unmatched for {}",
-                        completed.name
-                    );
-                } else {
-                    tracing::info!(
-                        decision = ?result.decision,
-                        title_id = ?result.title_id,
-                        dest_path = ?result.dest_path,
-                        "import completed for {}",
-                        completed.name
-                    );
-                }
-                metrics::counter!("scryer_imports_total", "decision" => result.decision.as_str(), "facet" => facet_label.clone()).increment(1);
-                metrics::histogram!("scryer_import_duration_seconds", "facet" => facet_label)
-                    .record(import_start.elapsed().as_secs_f64());
-
-                if let Some(state) = terminal_tracked_state_for_import_result(&result) {
-                    persist_completed_download_tracked_state(
-                        app,
-                        &completed,
-                        &submission_resolution,
-                        state,
-                    )
-                    .await;
-                    let cleanup =
-                        reconcile_terminal_download_cleanup_for_completed(app, &completed, state)
-                            .await;
-                    if terminal_download_cleanup_is_complete(cleanup) {
-                        processed_ids.insert(source_ref.clone());
-                    }
-                } else {
-                    processed_ids.insert(source_ref.clone());
-                }
-            }
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    name = %completed.name,
-                    "import failed for completed download"
-                );
-                metrics::counter!("scryer_imports_total", "decision" => "error", "facet" => facet_label.clone()).increment(1);
-                metrics::histogram!("scryer_import_duration_seconds", "facet" => facet_label)
-                    .record(import_start.elapsed().as_secs_f64());
-                processed_ids.insert(source_ref.clone());
-            }
-        }
-    }
-
-    processed_ids
-}
-
-async fn completed_downloads_for_import(
-    app: &AppUseCase,
-    fetch_policy: &CompletedDownloadFetchPolicy,
-) -> AppResult<Vec<CompletedDownload>> {
-    match fetch_policy {
-        CompletedDownloadFetchPolicy::Full => {
-            app.services
-                .integrations
-                .download_client
-                .list_completed_downloads()
-                .await
-        }
-        CompletedDownloadFetchPolicy::Recent { limit } => {
-            app.services
-                .integrations
-                .download_client
-                .list_recent_completed_downloads(*limit)
-                .await
-        }
-        CompletedDownloadFetchPolicy::Provided { downloads } => Ok(downloads.clone()),
-    }
-}
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -1204,6 +618,44 @@ pub(crate) fn find_video_files(dir: &Path, filter_samples: bool) -> AppResult<Ve
         .filter(|path| is_video_file(path))
         .filter(|path| !filter_samples || !is_sample_file(path))
         .collect())
+}
+
+/// The release-name claims a completed download makes about its own identity,
+/// most authoritative first: the client-reported release name when the client
+/// exposes one, else the stems of its video files — non-sample files largest
+/// first (sample-only downloads fall back to every video, largest first). Never
+/// the downloader display label or the destination folder. Shared by the
+/// completion-time re-resolution and the identity proof so they cannot drift.
+pub(crate) fn completed_download_release_claims(completed: &CompletedDownload) -> Vec<String> {
+    if let Some(release_name) = completed
+        .release_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return vec![release_name.to_string()];
+    }
+    let dest_dir = Path::new(&completed.dest_dir);
+    let mut video_files = find_video_files(dest_dir, true).unwrap_or_default();
+    if video_files.is_empty() {
+        video_files = find_video_files(dest_dir, false).unwrap_or_default();
+    }
+    video_files.sort_by_cached_key(|file| {
+        std::cmp::Reverse(std::fs::metadata(file).map(|metadata| metadata.len()).unwrap_or(0))
+    });
+    let mut claims = Vec::new();
+    for stem in video_files.iter().filter_map(|file| {
+        file.file_stem()
+            .and_then(|name| name.to_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    }) {
+        if !claims.contains(&stem) {
+            claims.push(stem);
+        }
+    }
+    claims
 }
 
 pub(crate) fn pick_largest_file(files: &[PathBuf]) -> AppResult<PathBuf> {

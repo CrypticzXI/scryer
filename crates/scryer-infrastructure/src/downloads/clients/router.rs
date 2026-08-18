@@ -969,27 +969,9 @@ impl PrioritizedDownloadClientRouter {
         {
             return Ok(request.clone());
         }
-        let Some(indexer) = indexer else {
-            let fetched = self
-                .fetch_download_artifact_direct(
-                    "indexer",
-                    download_url,
-                    &[],
-                    DIRECT_DOWNLOAD_ARTIFACT_TIMEOUT,
-                )
-                .await?;
-            return self.prepare_resolved_request(
-                request,
-                Self::classify_resolved_download_artifact(
-                    "indexer",
-                    fetched.final_url.as_deref(),
-                    fetched.headers.as_ref(),
-                    fetched.bytes,
-                    request.info_hash_hint.clone(),
-                )?,
-            );
-        };
-        let Some(proxy_config_id) = has_proxy else {
+        // No indexer, or an indexer without an assigned solver: fetch the
+        // artifact directly and classify it.
+        let Some((indexer, proxy_config_id)) = indexer.zip(has_proxy) else {
             let fetched = self
                 .fetch_download_artifact_direct(
                     "indexer",
@@ -2906,13 +2888,18 @@ impl DownloadClient for PrioritizedDownloadClientRouter {
         )
         .await;
 
-        Err(last_error
-            .unwrap_or_else(|| {
-                AppError::Repository(
-                    "all prioritized download clients failed to enqueue this release".to_string(),
-                )
-            })
-            .into_download_submit_unavailable())
+        // Every eligible client in the routing order was tried (or none was
+        // eligible). The typed variant is what the acquisition layer keys its
+        // retry-later decision on; the final client error rides along as
+        // display-only context.
+        Err(match last_error {
+            Some(error) => AppError::download_submit_failover_exhausted(format!(
+                "all prioritized download clients failed to enqueue this release; last client error: {error}"
+            )),
+            None => AppError::download_submit_failover_exhausted(
+                "all prioritized download clients failed to enqueue this release",
+            ),
+        })
     }
 
     async fn list_queue(&self) -> AppResult<Vec<DownloadQueueItem>> {
@@ -6176,7 +6163,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_download_all_failover_clients_failed_returns_submit_unavailable() {
+    async fn submit_download_all_failover_clients_failed_returns_failover_exhausted() {
         let primary = Arc::new(MockDownloadClient::default());
         *primary.submit_error.lock().unwrap() = Some(MockSubmitError::Repository);
         let secondary = Arc::new(MockDownloadClient::default());
@@ -6234,7 +6221,17 @@ mod tests {
             .await
             .expect_err("exhausted failover clients should fail");
 
-        assert!(matches!(error, AppError::DownloadSubmitUnavailable(_)));
+        // The typed variant is the decision; the final client's error is only
+        // human-readable context inside it.
+        let AppError::DownloadSubmitFailoverExhausted(message) = &error else {
+            panic!("expected DownloadSubmitFailoverExhausted, got {error:?}");
+        };
+        assert!(
+            message.contains("all prioritized download clients failed")
+                && message.contains("client submit unavailable"),
+            "{message}"
+        );
+        assert!(error.is_retryable_download_submit_failure());
         assert_eq!(primary.submissions.lock().unwrap().len(), 1);
         assert_eq!(secondary.submissions.lock().unwrap().len(), 1);
     }

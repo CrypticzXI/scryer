@@ -14,6 +14,23 @@ fn parse_import_release_for_title(
     crate::parse_release_metadata_for_target(release_title, &evidence.parse_context)
 }
 
+/// The quality the import will score for a file — the release evidence parsed
+/// with the title's canonical context — for surfaces that must show it before
+/// the import runs (the manual-import preview). Never the file name's own
+/// tokens, which are not score evidence.
+fn release_evidence_quality_for_title(
+    source_video: &Path,
+    release_evidence: &ReleaseEvidence,
+    title: &scryer_domain::Title,
+) -> Option<String> {
+    release_evidence
+        .release_title(Some(source_video))
+        .and_then(|release_title| {
+            normalize_release_title_signal(parse_import_release_for_title(&release_title, title))
+                .quality
+        })
+}
+
 /// Canonical import-time release metadata for a movie file: the release
 /// evidence (never the downloader display label or destination folder) parsed
 /// with the title's canonical grab-time context.

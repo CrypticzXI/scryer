@@ -22,12 +22,12 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use scryer_domain::{
-    Collection, CollectionType, CompletedDownload, DomainEventPayload, DownloadQueueItem,
-    DownloadQueueState, Id, ImportCompletedEventData, ImportDecision, ImportErrorCode,
-    ImportRecord, ImportResult, ImportSkipReason, ImportStatus, ImportType, MediaFacet, Title,
-    TrackedDownloadState, User, is_video_file,
+    Collection, CollectionType, CompletedDownload, DomainEventPayload, DownloadQueueItem, Id,
+    ImportCompletedEventData, ImportDecision, ImportErrorCode, ImportRecord, ImportResult,
+    ImportSkipReason, ImportStatus, ImportType, MediaFacet, Title, TrackedDownloadState, User,
+    is_video_file,
 };
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 

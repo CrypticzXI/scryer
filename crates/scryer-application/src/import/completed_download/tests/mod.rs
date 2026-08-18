@@ -7,6 +7,7 @@ mod lookup_identity;
 mod notifications;
 mod path_state;
 mod result_state;
+mod route_gate;
 mod snapshot_resolution;
 mod verification;
 

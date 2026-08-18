@@ -205,12 +205,12 @@ fn non_empty_title_id(value: Option<&str>) -> Option<&str> {
 /// Chooses the release evidence and target title for an import attempt.
 ///
 /// A live `download_submissions` row is authoritative over anything an earlier
-/// attempt persisted: after an operator reassignment the row is rewritten (to
-/// an orphan row naming the new title), and a retry that replayed the stale
-/// persisted `ScryerSubmission` would import into the old title. Persisted
-/// evidence is used only when the row is gone (lost) or the live lookup failed
+/// attempt persisted: after an operator reassignment the row is rewritten to
+/// name the new title, and a retry that replayed the stale persisted
+/// `ScryerSubmission` would import into the old title. Persisted evidence is
+/// used only when the row is gone (lost) or the live lookup failed
 /// transiently. The persisted target follows the same rule: a live row that
-/// names a title (a Scryer submission or an operator assignment) supersedes it.
+/// names a title supersedes it.
 fn select_completed_import_evidence(
     inputs: CompletedImportEvidenceInputs<'_>,
 ) -> SelectedCompletedImportEvidence {
@@ -261,8 +261,9 @@ fn select_completed_import_evidence(
         None => requested_target_title_id
             .map(str::to_string)
             .or_else(|| {
-                // An operator assignment rewrites the row as an orphan naming
-                // the chosen title; that live choice outranks a stale target.
+                // A live titled row without Scryer origin (defensive: a titled
+                // orphan seen before it round-trips through the store) still
+                // names the operator's choice, which outranks a stale target.
                 fresh_match
                     .and_then(|matched| non_empty_title_id(Some(&matched.submission.title_id)))
                     .map(str::to_string)
@@ -298,6 +299,136 @@ enum StoredCompletedImportRequestPayload {
     Legacy(CompletedDownload),
 }
 
+/// One provenance resolution for an import attempt, however it was reached
+/// (tracked auto-import, poller/manual import, retry of a failed record).
+struct ImportProvenanceRequest<'a> {
+    identity_policy: CompletedImportIdentityPolicy,
+    /// The live queue item when the caller has one (tracked auto-import); it
+    /// sharpens the submission lookup by download id.
+    queue_item: Option<&'a DownloadQueueItem>,
+    requested_target_title_id: Option<&'a str>,
+    release_evidence_override: Option<&'a ReleaseEvidence>,
+    /// What an earlier attempt persisted for this identity, if any.
+    persisted: Option<&'a CompletedImportRequestPayload>,
+    /// Retry: a transient live-lookup failure falls back to the persisted
+    /// evidence instead of failing the attempt.
+    tolerate_lookup_failure: bool,
+}
+
+struct ImportProvenance {
+    /// The completed download with its Scryer-origin parameters made
+    /// authoritative (from the live submission, or the replayed attempt).
+    completed: CompletedDownload,
+    /// The live submission lookup, ambiguity/missing-id already downgraded to
+    /// an observation; `None` only when the lookup failed transiently and the
+    /// persisted evidence carried the attempt.
+    submission_resolution: Option<CompletedDownloadSubmissionResolution>,
+    release_evidence: ReleaseEvidence,
+    target_title_id: Option<String>,
+}
+
+/// The single resolve → downgrade → select → stamp sequence every import
+/// entry point runs; keeping it in one place is what stops the tracked path,
+/// the poller path, and the retry path from disagreeing about where a
+/// download came from.
+async fn resolve_import_provenance(
+    app: &AppUseCase,
+    mut completed: CompletedDownload,
+    request: ImportProvenanceRequest<'_>,
+) -> AppResult<ImportProvenance> {
+    let submission_resolution =
+        match resolve_completed_download_submission(app, &completed, request.queue_item).await {
+            Ok(resolution) => Some(downgrade_unresolved_submission_identity(
+                &completed, resolution,
+            )),
+            Err(error) => {
+                if !request.tolerate_lookup_failure || request.persisted.is_none() {
+                    return Err(error);
+                }
+                tracing::warn!(
+                    client_id = %completed.client_id,
+                    client_type = %completed.client_type,
+                    download_client_item_id = %completed.download_client_item_id,
+                    error = %error,
+                    "import: live submission lookup failed; continuing with the persisted release evidence"
+                );
+                None
+            }
+        };
+    let SelectedCompletedImportEvidence {
+        release_evidence,
+        target_title_id,
+        source: evidence_source,
+    } = select_completed_import_evidence(CompletedImportEvidenceInputs {
+        identity_policy: request.identity_policy,
+        fresh_resolution: submission_resolution.as_ref(),
+        release_evidence_override: request.release_evidence_override,
+        persisted_release_evidence: request.persisted.map(|payload| &payload.release_evidence),
+        persisted_target_title_id: request
+            .persisted
+            .and_then(|payload| payload.target_title_id.as_deref()),
+        requested_target_title_id: request.requested_target_title_id,
+        completed: &completed,
+    });
+    // The Scryer origin parameters follow the evidence: a live Scryer submission
+    // stamps its own (authoritative, idempotent with what callers already
+    // applied); evidence replayed from an earlier attempt because the row is
+    // gone brings that attempt's parameters along.
+    if let Some(CompletedDownloadSubmissionResolution::Matched(matched)) =
+        submission_resolution.as_ref()
+        && submission_has_scryer_origin(&matched.submission)
+    {
+        completed = stamp_scryer_submission_origin(&completed, &matched.submission);
+    } else if let Some(payload) = request.persisted
+        && evidence_source == CompletedImportEvidenceSource::Persisted
+        && matches!(release_evidence, ReleaseEvidence::ScryerSubmission { .. })
+    {
+        completed.parameters = payload.completed.parameters.clone();
+    }
+    Ok(ImportProvenance {
+        completed,
+        submission_resolution,
+        release_evidence,
+        target_title_id,
+    })
+}
+
+/// A completion that cannot resolve a durable Scryer submission is an
+/// observation, not another application's property. It remains eligible for
+/// the normal import flow using canonical NZB evidence.
+fn downgrade_unresolved_submission_identity(
+    completed: &CompletedDownload,
+    resolution: CompletedDownloadSubmissionResolution,
+) -> CompletedDownloadSubmissionResolution {
+    match resolution {
+        CompletedDownloadSubmissionResolution::AmbiguousDownloadId {
+            download_id,
+            matches,
+        } => {
+            tracing::warn!(
+                client_id = %completed.client_id,
+                client_type = %completed.client_type,
+                download_client_item_id = %completed.download_client_item_id,
+                download_id,
+                matches,
+                "import: ambiguous submission identity; importing as a downloader observation"
+            );
+            CompletedDownloadSubmissionResolution::DownloaderObservation
+        }
+        CompletedDownloadSubmissionResolution::MissingDownloadId { identity } => {
+            tracing::debug!(
+                client_id = %completed.client_id,
+                client_type = %completed.client_type,
+                download_client_item_id = %completed.download_client_item_id,
+                download_id = ?identity.download_id,
+                "import: no durable submission for the download id; importing as a downloader observation"
+            );
+            CompletedDownloadSubmissionResolution::DownloaderObservation
+        }
+        resolution => resolution,
+    }
+}
+
 enum CompletedImportProgress {
     Ready(CompletedImportRequest),
     Finished(ImportResult),
@@ -326,57 +457,30 @@ async fn prepare_completed_import_request(
                 .ok()
                 .and_then(|payload| match payload {
                     StoredCompletedImportRequestPayload::Current(payload) => Some(payload),
-                    StoredCompletedImportRequestPayload::Legacy(completed) => {
-                        let _ = completed;
-                        None
-                    }
+                    // A 0.18.12 payload carries no evidence to replay.
+                    StoredCompletedImportRequestPayload::Legacy(_) => None,
                 })
         });
-    let mut submission_resolution =
-        resolve_completed_download_submission(app, &completed, None).await?;
-
-    // A completion that cannot resolve a durable Scryer submission is an
-    // observation, not another application's property. It remains eligible
-    // for the normal import flow using canonical NZB evidence.
-    if matches!(
+    let ImportProvenance {
+        completed,
         submission_resolution,
-        CompletedDownloadSubmissionResolution::AmbiguousDownloadId { .. }
-            | CompletedDownloadSubmissionResolution::MissingDownloadId { .. }
-    ) {
-        submission_resolution = CompletedDownloadSubmissionResolution::DownloaderObservation;
-    }
-    let SelectedCompletedImportEvidence {
         release_evidence,
         target_title_id: resolved_target_title_id,
-        source: evidence_source,
-    } = select_completed_import_evidence(CompletedImportEvidenceInputs {
-        identity_policy,
-        fresh_resolution: Some(&submission_resolution),
-        release_evidence_override,
-        persisted_release_evidence: persisted_request
-            .as_ref()
-            .map(|request| &request.release_evidence),
-        persisted_target_title_id: persisted_request
-            .as_ref()
-            .and_then(|request| request.target_title_id.as_deref()),
-        requested_target_title_id: target_title_id,
-        completed: &completed,
-    });
-    // The Scryer origin parameters follow the evidence: a live Scryer submission
-    // stamps its own (authoritative, idempotent with what the tracked and
-    // untracked callers already applied); evidence replayed from an earlier
-    // attempt because the row is gone brings that attempt's parameters along.
-    if let CompletedDownloadSubmissionResolution::Matched(matched) = &submission_resolution
-        && submission_has_scryer_origin(&matched.submission)
-    {
-        completed.parameters =
-            authoritative_scryer_origin_parameters(&completed.parameters, &matched.submission);
-    } else if let Some(request) = persisted_request.as_ref()
-        && evidence_source == CompletedImportEvidenceSource::Persisted
-        && matches!(release_evidence, ReleaseEvidence::ScryerSubmission { .. })
-    {
-        completed.parameters = request.completed.parameters.clone();
-    }
+    } = resolve_import_provenance(
+        app,
+        completed,
+        ImportProvenanceRequest {
+            identity_policy,
+            queue_item: None,
+            requested_target_title_id: target_title_id,
+            release_evidence_override,
+            persisted: persisted_request.as_ref(),
+            tolerate_lookup_failure: false,
+        },
+    )
+    .await?;
+    let submission_resolution = submission_resolution
+        .unwrap_or(CompletedDownloadSubmissionResolution::DownloaderObservation);
     // 1. DEDUP CHECK
     if completed_download_already_imported_for_current_attempt(app, &completed, &submission_resolution)
         .await?
@@ -513,8 +617,12 @@ async fn finalize_completed_import_error(
         )
     };
     let result_json = serde_json::to_string(&result).ok();
+    // Decide retryability BEFORE the status write: a `Failed` write emits an
+    // `ImportRejected` domain event (history + notifications), which must not
+    // fire for an attempt the tracked layer is about to re-run automatically.
+    let status = completed_import_status_for_result(&result, ImportStatus::Failed);
     let _ = app
-        .update_import_status_and_notify(&request.import_id, ImportStatus::Failed, result_json)
+        .update_import_status_and_notify(&request.import_id, status, result_json)
         .await;
     Ok(result)
 }

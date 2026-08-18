@@ -546,31 +546,9 @@ pub(super) async fn maybe_resolve_title_from_completed_download(
         return;
     };
 
-    let mut release_candidates = completed
-        .release_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .into_iter()
-        .collect::<Vec<_>>();
-    // A downloader observation without a canonical NZB name may use the
-    // actual media filename as its release claim. Never use a display label or
-    // destination folder as a substitute.
-    if release_candidates.is_empty()
-        && let Ok(video_files) =
-            crate::import_workflow::find_video_files(Path::new(&completed.dest_dir), false)
-    {
-        release_candidates.extend(video_files.into_iter().filter_map(|file| {
-            file.file_stem()
-                .and_then(|name| name.to_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        }));
-    }
-
-    for release_title in release_candidates {
+    // The client-reported release name, else the media file names (non-sample,
+    // largest first). Never a display label or destination folder.
+    for release_title in crate::import_workflow::completed_download_release_claims(completed) {
         let parsed = crate::parse_release_metadata(&release_title);
         let resolved = if parsed.episode.is_some() {
             matcher.resolve_episode(

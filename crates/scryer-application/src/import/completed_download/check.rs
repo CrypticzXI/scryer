@@ -91,27 +91,30 @@ pub(crate) async fn check_with_lookup(
     let first_completed_sighting = td.completed_source.is_none();
     td.completed_source = Some(completed.clone());
 
-    if !tracked_download_has_scryer_submission(td) {
-        if completed
-            .parameters
-            .iter()
-            .any(|(key, _)| key.trim().eq_ignore_ascii_case("drone"))
-        {
+    match app
+        .completed_download_admission(
+            tracked_download_is_scryer_origin(td),
+            &completed,
+            td.client_item.category.as_deref(),
+        )
+        .await
+    {
+        crate::services::CompletedDownloadAdmission::Admitted => {
+            if matches!(
+                td.import_hold,
+                Some(crate::tracked_downloads::ImportHold::ExternalManager)
+            ) {
+                td.import_hold = None;
+            }
+        }
+        crate::services::CompletedDownloadAdmission::ExternalManager => {
             td.import_hold = Some(crate::tracked_downloads::ImportHold::ExternalManager);
             return;
         }
-        if matches!(
-            td.import_hold,
-            Some(crate::tracked_downloads::ImportHold::ExternalManager)
-        ) {
-            td.import_hold = None;
-        }
-        let snapshot = app.download_client_category_admission_snapshot().await;
-        if !crate::services::download_observation_is_admitted(
-            false,
-            observed_download_category(td, &completed),
-            snapshot.as_deref(),
-        ) {
+        crate::services::CompletedDownloadAdmission::NotAdmitted {
+            category,
+            admission_snapshot_missing,
+        } => {
             // Nothing is persisted, no status message is set, and the queue
             // filter hides the row from every user-facing surface, so a
             // misclassification is observable ONLY as an absence. This single
@@ -122,10 +125,10 @@ pub(crate) async fn check_with_lookup(
                     id = %td.id,
                     client_id = %td.client_id,
                     client_type = %td.client_type,
-                    category = ?observed_download_category(td, &completed),
+                    category = ?category,
                     is_scryer_origin = td.client_item.is_scryer_origin,
                     match_type = ?td.match_type,
-                    admission_snapshot_missing = snapshot.is_none(),
+                    admission_snapshot_missing,
                     "check: completed observation is not admitted by download client category; held from import and hidden from download activity"
                 );
             }
@@ -276,7 +279,9 @@ pub(crate) async fn check_with_lookup(
     td.status_messages.clear();
 }
 
-pub(super) fn tracked_download_has_scryer_submission(td: &TrackedDownload) -> bool {
+/// Whether the tracked download is a Scryer grab (queue item enriched from a
+/// Scryer-origin submission row or Scryer's own client parameters).
+pub(super) fn tracked_download_is_scryer_origin(td: &TrackedDownload) -> bool {
     td.client_item.is_scryer_origin
 }
 
@@ -297,7 +302,7 @@ async fn completed_download_allows_automatic_import(
     td: &TrackedDownload,
     completed: &CompletedDownload,
 ) -> bool {
-    if tracked_download_has_scryer_submission(td) {
+    if tracked_download_is_scryer_origin(td) {
         return true;
     }
     let Some(category) = observed_download_category(td, completed) else {
@@ -558,28 +563,9 @@ pub(super) async fn completed_download_proves_assigned_title(
         })
     };
 
-    let mut completion_sources = Vec::<String>::new();
-    for raw_title in [completed.release_name.as_deref()].into_iter().flatten() {
-        let raw_title = raw_title.trim();
-        if !raw_title.is_empty() && !completion_sources.iter().any(|source| source == raw_title) {
-            completion_sources.push(raw_title.to_string());
-        }
-    }
-    // A downloader observation without a canonical NZB name may use the
-    // actual media filename as its release claim. Never use a display label or
-    // destination folder as a substitute.
-    if completion_sources.is_empty()
-        && let Ok(video_files) =
-            crate::import_workflow::find_video_files(Path::new(&completed.dest_dir), false)
-    {
-        completion_sources.extend(video_files.into_iter().filter_map(|file| {
-            file.file_stem()
-                .and_then(|name| name.to_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        }));
-    }
+    // The client-reported release name, else the media file names (non-sample,
+    // largest first) — the same claims the completion-time re-resolution used.
+    let completion_sources = crate::import_workflow::completed_download_release_claims(completed);
 
     // For a parse-matched observation, what actually finished on disk outranks
     // the provisional match: a completion name that positively asserts a
