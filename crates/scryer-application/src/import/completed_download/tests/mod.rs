@@ -524,6 +524,9 @@ impl ShowRepository for TestShowRepo {
 struct TestImportRepo {
     records: Arc<Mutex<Vec<scryer_domain::ImportRecord>>>,
     status_updates: Arc<Mutex<Vec<(String, ImportStatus, Option<String>)>>>,
+    /// When set, `queue_import_request` fails with a repository error — the
+    /// shape of a DB hiccup that surfaces before an attempt can be recorded.
+    fail_queue: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TestImportRepo {
@@ -531,7 +534,13 @@ impl TestImportRepo {
         Self {
             records: Arc::new(Mutex::new(records)),
             status_updates: Arc::new(Mutex::new(Vec::new())),
+            fail_queue: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    fn fail_queueing(&self) {
+        self.fail_queue
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The most recent `ImportResult` recorded through a status update.
@@ -597,6 +606,11 @@ impl crate::ImportRepository for TestImportRepo {
         import_type: String,
         payload_json: String,
     ) -> AppResult<String> {
+        if self.fail_queue.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(AppError::Repository(
+                "simulated import queue failure".to_string(),
+            ));
+        }
         let import_id = Id::new().0;
         let import_type = scryer_domain::ImportType::parse(&import_type)
             .unwrap_or(scryer_domain::ImportType::MovieDownload);
@@ -1676,6 +1690,7 @@ fn build_tracked_download(title_id: &str, facet: &str, release_title: &str) -> T
         waiting_for_completed_history: false,
         path_missing_since: None,
         no_video_import_retry: None,
+        import_execution_retry: None,
         import_hold: None,
         skip_reacquire_on_failure: false,
         snapshot_missing_since: None,

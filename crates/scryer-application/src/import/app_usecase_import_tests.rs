@@ -347,6 +347,7 @@ fn build_augmented_episode_import_metadata_prefers_download_title_for_single_obf
         &file_path,
         &observation_evidence(&completed),
         &titled(MediaFacet::Series, "Harbor Pals", Some(2024)),
+        false,
     );
     let episode = parsed.episode.expect("episode metadata");
 
@@ -367,11 +368,49 @@ fn ambiguous_obfuscated_episode_message_explains_season_assignment() {
     );
 
     assert_eq!(
-        ambiguous_obfuscated_episode_message(&file_path, &observation_evidence(&completed))
+        ambiguous_obfuscated_episode_message(&file_path, &observation_evidence(&completed), 1)
             .as_deref(),
         Some(
             "Automatic import could not choose a season for episode 9: the release name does not include a season and the downloaded filename is obfuscated. Open Manual Import and assign the correct season and episode."
         )
+    );
+}
+
+#[test]
+fn ambiguous_obfuscated_episode_message_names_the_video_file_count_for_multi_file_downloads() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("7b2c41d8e5f609aa.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let mut completed = test_completed_download("downloader display label", dir.path());
+    completed.release_name = Some("Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string());
+
+    // With other video files present the release name's numbering is never
+    // applied, so the season-less/season-ful distinction of the release name
+    // is irrelevant: the file had to identify itself and could not.
+    assert_eq!(
+        ambiguous_obfuscated_episode_message(&file_path, &observation_evidence(&completed), 2)
+            .as_deref(),
+        Some(
+            "Automatic import could not identify the episode for this file: this download contains 2 video files and this file's name is obfuscated. Open Manual Import and assign the correct season and episode."
+        )
+    );
+}
+
+#[test]
+fn ambiguous_obfuscated_episode_message_stays_silent_for_self_identifying_multi_file_member() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir
+        .path()
+        .join("Bluey.S01E02.720p.WEB-DL.AV1.AAC2.0-NTb.mkv");
+    std::fs::write(&file_path, b"episode").expect("write file");
+    let mut completed = test_completed_download("downloader display label", dir.path());
+    completed.release_name = Some("Bluey.S01.720p.WEB-DL.AV1.AAC2.0-NTb".to_string());
+
+    // A member whose own name is usable is not obfuscated; whatever went wrong
+    // with it is not explained by this message.
+    assert!(
+        ambiguous_obfuscated_episode_message(&file_path, &observation_evidence(&completed), 2)
+            .is_none()
     );
 }
 
@@ -386,7 +425,7 @@ fn ambiguous_obfuscated_episode_message_ignores_release_with_explicit_season() {
     );
 
     assert!(
-        ambiguous_obfuscated_episode_message(&file_path, &observation_evidence(&completed))
+        ambiguous_obfuscated_episode_message(&file_path, &observation_evidence(&completed), 1)
             .is_none()
     );
 }
@@ -405,6 +444,7 @@ fn build_augmented_episode_import_metadata_does_not_use_parent_for_obfuscated_fi
         &file_path,
         &observation_evidence(&completed),
         &titled(MediaFacet::Series, "Harbor Pals", Some(2024)),
+        false,
     );
     assert!(parsed.episode.is_none());
     assert_ne!(parsed.normalized_title, "HARBOR PALS");
@@ -424,6 +464,7 @@ fn build_augmented_episode_import_metadata_keeps_file_episode_when_other_files_e
         &file_path,
         &observation_evidence(&completed),
         &titled(MediaFacet::Series, "Harbor Pals", Some(2024)),
+        true,
     );
     let episode = parsed.episode.expect("episode metadata");
 
@@ -445,6 +486,7 @@ fn build_augmented_episode_import_metadata_treats_dotted_hyphen_split_episode_as
         &file_path,
         &observation_evidence(&completed),
         &titled(MediaFacet::Series, "Harbor Pals", Some(2024)),
+        false,
     );
     let episode = parsed.episode.expect("episode metadata");
 
@@ -474,6 +516,7 @@ fn build_augmented_episode_import_metadata_does_not_score_downloader_display_tit
         &file_path,
         &observation_evidence(&completed),
         &titled(MediaFacet::Series, "Harbor Pals", Some(2024)),
+        true,
     );
 
     assert!(parsed.episode.is_none());
@@ -526,6 +569,7 @@ fn canonical_episode_import_parse_matches_grab_time_parse_for_aliased_title() {
         &file_path,
         &observation_evidence(&completed),
         &title,
+        false,
     );
 
     let expected = grab_time_parse(release_title, &title);
@@ -558,6 +602,7 @@ fn canonical_import_parse_derives_title_facet_guide_facts() {
         &file_path,
         &observation_evidence(&completed),
         &title,
+        false,
     );
     assert!(
         parsed
@@ -589,6 +634,7 @@ fn episode_import_parse_keeps_release_name_episode_when_title_context_does_not_m
         &file_path,
         &observation_evidence(&completed),
         &title,
+        false,
     );
 
     assert_eq!(parsed.quality.as_deref(), Some("720p"));
@@ -596,6 +642,261 @@ fn episode_import_parse_keeps_release_name_episode_when_title_context_does_not_m
     let episode = parsed.episode.expect("episode from the release name");
     assert_eq!(episode.season, Some(1));
     assert_eq!(episode.episode_numbers, vec![1]);
+}
+
+// ── episode identity: Sonarr's OtherVideoFiles rule ─────────────────────────
+
+const BLUEY_EPISODE_RELEASE: &str = "Bluey.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb";
+const BLUEY_PACK_RELEASE: &str = "Bluey.S01.720p.WEB-DL.AV1.AAC2.0-NTb";
+
+fn bluey_title() -> Title {
+    titled(MediaFacet::Series, "Bluey", Some(2018))
+}
+
+fn bluey_submission_evidence(release_title: &str, scope: SubmissionScope) -> ReleaseEvidence {
+    ReleaseEvidence::ScryerSubmission {
+        title_id: "t1".to_string(),
+        facet: "series".to_string(),
+        source_title: Some(release_title.to_string()),
+        observed_release_name: None,
+        purpose: crate::DownloadSubmissionPurpose::Standard,
+        scope,
+    }
+}
+
+fn write_video(dir: &std::path::Path, file_name: &str) -> std::path::PathBuf {
+    let path = dir.join(file_name);
+    std::fs::write(&path, b"episode").expect("write file");
+    path
+}
+
+/// Score-bearing facts must come from the release title parsed with the
+/// canonical title context — never from the file name — whichever way the
+/// episode identity was decided.
+fn assert_release_scored_facts(parsed: &crate::ParsedReleaseMetadata, release_title: &str) {
+    assert_score_bearing_facts_match(parsed, &grab_time_parse(release_title, &bluey_title()));
+    assert_eq!(parsed.quality.as_deref(), Some("720p"), "quality");
+    assert_eq!(
+        parsed.source.as_ref().map(|source| source.as_str()),
+        Some("WEB-DL"),
+        "source"
+    );
+    assert_eq!(
+        parsed.release_group.as_deref(),
+        Some("NTb"),
+        "release group"
+    );
+}
+
+#[test]
+fn episode_identity_sole_obfuscated_video_takes_single_episode_release_numbering() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = write_video(dir.path(), "4f8e2c7a91b6d3e0.mkv");
+    let evidence = bluey_submission_evidence(
+        BLUEY_EPISODE_RELEASE,
+        SubmissionScope::Episode {
+            episode_id: "ep-1".to_string(),
+        },
+    );
+
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &evidence,
+        &bluey_title(),
+        false,
+    );
+
+    let episode = parsed
+        .episode
+        .as_ref()
+        .expect("episode from the release title");
+    assert_eq!(episode.season, Some(1));
+    assert_eq!(episode.episode_numbers, vec![1]);
+    assert_release_scored_facts(&parsed, BLUEY_EPISODE_RELEASE);
+}
+
+#[test]
+fn episode_identity_obfuscated_video_among_others_gets_no_episode_from_release_numbering() {
+    // Release-gate regression: `Bluey.S01E01…` extracted to two identical
+    // obfuscated videos and S01E01 was applied to both, importing whichever
+    // came first in directory order. With other video files present the file
+    // must identify itself, and an obfuscated name cannot.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let first = write_video(dir.path(), "4f8e2c7a91b6d3e0.mkv");
+    let second = write_video(dir.path(), "7b2c41d8e5f609aa.mkv");
+    let evidence = bluey_submission_evidence(
+        BLUEY_EPISODE_RELEASE,
+        SubmissionScope::Episode {
+            episode_id: "ep-1".to_string(),
+        },
+    );
+
+    for file_path in [&first, &second] {
+        let parsed = build_augmented_episode_import_metadata_for_title(
+            file_path,
+            &evidence,
+            &bluey_title(),
+            true,
+        );
+
+        assert!(
+            parsed.episode.is_none(),
+            "{} must not inherit the release numbering: {:?}",
+            file_path.display(),
+            parsed.episode
+        );
+        assert_release_scored_facts(&parsed, BLUEY_EPISODE_RELEASE);
+    }
+}
+
+#[test]
+fn episode_identity_season_pack_member_uses_its_own_numbering_regardless_of_sibling_count() {
+    // Release-gate regression: the pack title parsed to a whole-season episode
+    // and every member resolved to all 52 episodes. A season pack has no
+    // episode numbers to hand out, so a member's own name governs even when it
+    // is the only video (the rest of the pack may still be extracting).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let season_dir = dir.path().join("Season 01");
+    std::fs::create_dir_all(&season_dir).expect("create season dir");
+    let file_path = write_video(&season_dir, "Bluey.S01E02.720p.WEB-DL.AV1.AAC2.0-NTb.mkv");
+    let evidence = bluey_submission_evidence(
+        BLUEY_PACK_RELEASE,
+        SubmissionScope::Collection {
+            collection_id: "season-1".to_string(),
+        },
+    );
+    let pack_parse = grab_time_parse(BLUEY_PACK_RELEASE, &bluey_title());
+    let pack_episode = pack_parse
+        .episode
+        .as_ref()
+        .expect("pack parse names a season");
+    assert!(
+        pack_episode.full_season
+            && pack_episode.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
+            && pack_episode.episode_numbers.is_empty(),
+        "fixture must exercise the season-pack rule: {pack_episode:?}"
+    );
+
+    for other_video_files in [false, true] {
+        let parsed = build_augmented_episode_import_metadata_for_title(
+            &file_path,
+            &evidence,
+            &bluey_title(),
+            other_video_files,
+        );
+
+        let episode = parsed
+            .episode
+            .as_ref()
+            .unwrap_or_else(|| panic!("member episode (other_video_files={other_video_files})"));
+        assert_eq!(episode.season, Some(1));
+        assert_eq!(episode.episode_numbers, vec![2]);
+        assert_eq!(
+            episode.release_type,
+            crate::ParsedEpisodeReleaseType::SingleEpisode
+        );
+        assert!(!episode.full_season);
+        assert_release_scored_facts(&parsed, BLUEY_PACK_RELEASE);
+    }
+}
+
+#[test]
+fn episode_identity_season_pack_member_with_obfuscated_name_gets_no_episode() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = write_video(dir.path(), "4f8e2c7a91b6d3e0.mkv");
+    let evidence = bluey_submission_evidence(
+        BLUEY_PACK_RELEASE,
+        SubmissionScope::Collection {
+            collection_id: "season-1".to_string(),
+        },
+    );
+
+    for other_video_files in [false, true] {
+        let parsed = build_augmented_episode_import_metadata_for_title(
+            &file_path,
+            &evidence,
+            &bluey_title(),
+            other_video_files,
+        );
+
+        assert!(
+            parsed.episode.is_none(),
+            "a pack must never be applied to a member (other_video_files={other_video_files}): {:?}",
+            parsed.episode
+        );
+        assert_release_scored_facts(&parsed, BLUEY_PACK_RELEASE);
+    }
+}
+
+#[test]
+fn episode_identity_sole_video_keeps_release_numbering_over_its_own_name() {
+    // The single-video rule is unchanged: the release name is the better
+    // episode evidence than a file that names some other episode.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = write_video(dir.path(), "Bluey.S01E02.720p.WEB-DL.AV1.AAC2.0-NTb.mkv");
+    let evidence = bluey_submission_evidence(
+        BLUEY_EPISODE_RELEASE,
+        SubmissionScope::Episode {
+            episode_id: "ep-1".to_string(),
+        },
+    );
+
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &evidence,
+        &bluey_title(),
+        false,
+    );
+
+    let episode = parsed
+        .episode
+        .as_ref()
+        .expect("episode from the release title");
+    assert_eq!(episode.episode_numbers, vec![1]);
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        &file_path,
+        &evidence,
+        &bluey_title(),
+        true,
+    );
+    let episode = parsed.episode.as_ref().expect("episode from the file name");
+    assert_eq!(episode.episode_numbers, vec![2]);
+}
+
+#[test]
+fn episode_identity_pack_member_resolves_anime_absolute_numbering_with_title_context() {
+    // A member's own name is parsed with the title's canonical context so an
+    // absolute-numbered anime member resolves the way the grab path parses it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = write_video(
+        dir.path(),
+        "[SubsPlease] Harbor Pals - 03 (1080p) [F00DBABE].mkv",
+    );
+    let release_title = "[SubsPlease] Harbor Pals (01-12) (1080p) [Batch]";
+    let title = titled(MediaFacet::Anime, "Harbor Pals", Some(2024));
+    let evidence = ReleaseEvidence::ScryerSubmission {
+        title_id: "t1".to_string(),
+        facet: "anime".to_string(),
+        source_title: Some(release_title.to_string()),
+        observed_release_name: None,
+        purpose: crate::DownloadSubmissionPurpose::Standard,
+        scope: SubmissionScope::Collection {
+            collection_id: "season-1".to_string(),
+        },
+    };
+
+    let parsed =
+        build_augmented_episode_import_metadata_for_title(&file_path, &evidence, &title, true);
+
+    let episode = parsed.episode.as_ref().expect("member episode");
+    assert_eq!(episode.absolute_episode, Some(3));
+    assert_eq!(episode.absolute_episode_numbers, vec![3]);
+    assert_eq!(
+        episode.release_type,
+        crate::ParsedEpisodeReleaseType::SingleEpisode
+    );
+    assert_score_bearing_facts_match(&parsed, &grab_time_parse(release_title, &title));
+    assert_eq!(parsed.quality.as_deref(), Some("1080p"));
 }
 
 #[test]

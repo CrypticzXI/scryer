@@ -229,3 +229,134 @@ async fn apply_result_resets_no_video_retry_when_source_signature_changes() {
     assert_eq!(td.state, TrackedDownloadState::ImportPending);
     assert_eq!(td.no_video_import_retry.as_ref().unwrap().attempts, 1);
 }
+
+fn failed_execution_result(error_message: &str) -> ImportResult {
+    ImportResult {
+        import_id: "import-1".to_string(),
+        decision: ImportDecision::Failed,
+        skip_reason: None,
+        title_id: Some("title-1".to_string()),
+        source_system: Some("nzbget".to_string()),
+        source_ref: Some("dl-1".to_string()),
+        source_title: Some("Show.S01E01.1080p.WEB-DL".to_string()),
+        source_path: "/downloads/Show.S01E01.1080p.WEB-DL".to_string(),
+        dest_path: None,
+        quality: None,
+        episode_ids: vec![],
+        file_size_bytes: None,
+        link_type: None,
+        error_message: Some(error_message.to_string()),
+        started_at: Utc::now(),
+        completed_at: Utc::now(),
+    }
+}
+
+#[tokio::test]
+async fn apply_result_retries_failed_execution_with_capped_backoff_and_never_blocks() {
+    let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    // Deliberately NOT one of the allow-listed transient phrases: the phase
+    // rule (approved import failed to execute) is what makes this retryable.
+    let result = failed_execution_result(
+        "0 imported, 0 skipped, 0 rejected, 1 failed. Last error: unexpected hardlink failure",
+    );
+
+    let expected_delays = [30i64, 120, 300, 900, 900];
+    for (index, expected_delay_secs) in expected_delays.into_iter().enumerate() {
+        let attempt = index as u32 + 1;
+        let before = Utc::now();
+        assert!(!apply_import_result(&app, &mut td, result.clone(), 0).await);
+        assert_eq!(
+            td.state,
+            TrackedDownloadState::ImportPending,
+            "attempt {attempt}"
+        );
+        assert_eq!(
+            td.status,
+            TrackedDownloadStatus::Warning,
+            "attempt {attempt}"
+        );
+        let retry = td
+            .import_execution_retry
+            .as_ref()
+            .unwrap_or_else(|| panic!("attempt {attempt} must schedule a retry"));
+        assert_eq!(retry.attempts, attempt);
+        let delay = (retry.next_retry_at - before).num_seconds();
+        assert!(
+            (expected_delay_secs..=expected_delay_secs + 5).contains(&delay),
+            "attempt {attempt}: expected ~{expected_delay_secs}s backoff, got {delay}s"
+        );
+        assert!(
+            td.status_messages[0].contains(&format!("Retrying automatically (attempt {attempt})")),
+            "attempt {attempt}: {:?}",
+            td.status_messages
+        );
+        assert!(td.status_messages[0].starts_with("0 imported, 0 skipped"));
+        assert!(td.no_video_import_retry.is_none());
+    }
+}
+
+#[tokio::test]
+async fn apply_result_blocks_password_required_failure_without_retry() {
+    let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let mut result = failed_execution_result("archive requires a password");
+    result.skip_reason = Some(ImportSkipReason::PasswordRequired);
+
+    assert!(!apply_import_result(&app, &mut td, result, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+    assert_eq!(td.status, TrackedDownloadStatus::Error);
+    assert!(td.import_execution_retry.is_none());
+    assert_eq!(
+        td.status_messages,
+        vec!["archive requires a password".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn apply_result_retries_disk_full_skip_and_clears_counter_on_import() {
+    let title = build_title("title-1", "Show", MediaFacet::Series);
+    let collection = build_collection("season-1", "title-1", "1");
+    let episode = build_episode("ep-1", "title-1", "season-1", "1", "1", None);
+    let app = build_app(
+        vec![title],
+        vec![collection],
+        vec![episode],
+        vec![build_artifact_with_result(
+            "dl-1",
+            Some("ep-1"),
+            "Show.S01E01.mkv",
+            "already_present",
+        )],
+    );
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    let mut disk_full = failed_execution_result("insufficient disk space for import");
+    disk_full.decision = ImportDecision::Skipped;
+    disk_full.skip_reason = Some(ImportSkipReason::DiskFull);
+
+    assert!(!apply_import_result(&app, &mut td, disk_full, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::ImportPending);
+    assert_eq!(td.import_execution_retry.as_ref().unwrap().attempts, 1);
+
+    let mut imported = failed_execution_result("episode already imported");
+    imported.decision = ImportDecision::Skipped;
+    imported.skip_reason = Some(ImportSkipReason::AlreadyImported);
+    assert!(apply_import_result(&app, &mut td, imported, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::Imported);
+    assert!(td.import_execution_retry.is_none());
+}
+
+#[tokio::test]
+async fn apply_result_clears_execution_retry_when_a_later_attempt_is_rejected() {
+    let app = build_app(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut td = build_tracked_download("title-1", "series", "Show.S01E01.1080p.WEB-DL");
+    assert!(!apply_import_result(&app, &mut td, failed_execution_result("io failure"), 0).await);
+    assert_eq!(td.import_execution_retry.as_ref().unwrap().attempts, 1);
+
+    let mut rejected = failed_execution_result("existing episode file is equal or better");
+    rejected.decision = ImportDecision::Rejected;
+    rejected.skip_reason = Some(ImportSkipReason::PolicyMismatch);
+    assert!(!apply_import_result(&app, &mut td, rejected, 0).await);
+    assert_eq!(td.state, TrackedDownloadState::ImportBlocked);
+    assert!(td.import_execution_retry.is_none());
+}

@@ -1611,11 +1611,7 @@ fn prepare_tracked_download_background_work_dispatch(
             if td.waiting_for_completed_history {
                 return None;
             }
-            if td
-                .no_video_import_retry
-                .as_ref()
-                .is_some_and(|retry| retry.next_retry_at > chrono::Utc::now())
-            {
+            if td.import_retry_deferred(chrono::Utc::now()) {
                 return None;
             }
             crate::completed_download_handler::mark_importing(td);
@@ -1640,10 +1636,7 @@ fn trackable_import_work_completed_lookup_items(
         .filter_map(|id| {
             tracker.find(id).and_then(|td| {
                 if td.state == TrackedDownloadState::ImportPending
-                    && td
-                        .no_video_import_retry
-                        .as_ref()
-                        .is_none_or(|retry| retry.next_retry_at <= now)
+                    && !td.import_retry_deferred(now)
                 {
                     Some(td.client_item.clone())
                 } else {
@@ -1710,10 +1703,7 @@ fn tracked_download_ready_for_retry_dispatch(
         && td.state == TrackedDownloadState::ImportPending
         && !td.waiting_for_completed_history
         && !td.import_attempted
-        && td
-            .no_video_import_retry
-            .as_ref()
-            .is_none_or(|retry| retry.next_retry_at <= now)
+        && !td.import_retry_deferred(now)
 }
 
 struct TrackedDownloadHistoryRetryDrain {

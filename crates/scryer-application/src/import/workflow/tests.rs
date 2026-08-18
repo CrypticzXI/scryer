@@ -448,6 +448,7 @@ mod tests {
             std::path::Path::new("/downloads/Shogun.S01E03.2160p.WEB-DL.mkv"),
             &evidence,
             &title,
+            false,
         );
         assert_eq!(
             evidence.release_title(None).as_deref(),
@@ -1108,6 +1109,103 @@ mod tests {
         assert_eq!(
             completed_import_status_for_result(&result, ImportStatus::Failed),
             ImportStatus::Pending
+        );
+
+        // Transient OS-level transfer failures Sonarr retries as `Skipped`
+        // (glibc/BSD strerror and Windows FormatMessage texts).
+        for transient in [
+            "failed to move file: Device or resource busy (os error 16)",
+            "failed to copy file: Resource busy (os error 16)",
+            "failed to move file: Text file busy (os error 26)",
+            "failed to move file: Interrupted system call (os error 4)",
+            "failed to copy file: Input/output error (os error 5)",
+            "failed to move file: Stale file handle (os error 116)",
+            "failed to move file: Transport endpoint is not connected (os error 107)",
+            "failed to copy file: No space left on device (os error 28)",
+            "failed to copy file: Disk quota exceeded (os error 122)",
+            "failed to open source: Too many open files (os error 24)",
+            "failed to move file: Permission denied (os error 13)",
+            "failed to move file: No such file or directory (os error 2)",
+            "failed to move file: The process cannot access the file because another process has locked a portion of the file. (os error 33)",
+            "failed to remove source: The requested operation cannot be performed on a file with a user-mapped section open. (os error 1224)",
+            "failed to move file: The specified network name is no longer available. (os error 64)",
+            "failed to move file: There is not enough space on the disk. (os error 112)",
+            "failed to move file: Access is denied. (os error 5)",
+        ] {
+            result.error_message = Some(transient.to_string());
+            assert_eq!(
+                completed_import_status_for_result(&result, ImportStatus::Failed),
+                ImportStatus::Pending,
+                "{transient}"
+            );
+        }
+
+        // Decision-phase skips with an unrecognised message stay terminal: the
+        // allowlist is only a hint for non-`Failed` decisions.
+        for permanent in [
+            "failed to move file: Invalid argument (os error 22)",
+            "failed to move file: Is a directory (os error 21)",
+            "archive requires a password",
+        ] {
+            result.error_message = Some(permanent.to_string());
+            assert_eq!(
+                completed_import_status_for_result(&result, ImportStatus::Failed),
+                ImportStatus::Failed,
+                "{permanent}"
+            );
+        }
+
+        // Sonarr's phase rule: an approved import that failed to *execute* is
+        // retried regardless of the error text — no catalogue can be complete.
+        result.decision = ImportDecision::Failed;
+        result.skip_reason = None;
+        for execution_failure in [
+            "failed to move file: Invalid argument (os error 22)",
+            "0 imported, 0 skipped, 0 rejected, 1 failed. Last error: something novel",
+            "database is locked",
+        ] {
+            result.error_message = Some(execution_failure.to_string());
+            assert_eq!(
+                completed_import_status_for_result(&result, ImportStatus::Failed),
+                ImportStatus::Pending,
+                "{execution_failure}"
+            );
+        }
+        result.error_message = None;
+        assert_eq!(
+            completed_import_status_for_result(&result, ImportStatus::Failed),
+            ImportStatus::Pending
+        );
+
+        // ...except a password-protected archive, which cannot succeed without
+        // operator input.
+        result.skip_reason = Some(ImportSkipReason::PasswordRequired);
+        result.error_message = Some("archive requires a password".to_string());
+        assert_eq!(
+            completed_import_status_for_result(&result, ImportStatus::Failed),
+            ImportStatus::Failed
+        );
+
+        // Environmental skips clear on their own and are retried.
+        result.decision = ImportDecision::Skipped;
+        result.error_message = Some("not enough room".to_string());
+        for environmental in [ImportSkipReason::DiskFull, ImportSkipReason::PermissionDenied] {
+            result.skip_reason = Some(environmental);
+            assert_eq!(
+                completed_import_status_for_result(&result, ImportStatus::Skipped),
+                ImportStatus::Pending,
+                "{}",
+                result.skip_reason.as_ref().map(ImportSkipReason::as_str).unwrap_or("none")
+            );
+        }
+
+        // Rejections are decision-phase and stay terminal.
+        result.decision = ImportDecision::Rejected;
+        result.skip_reason = Some(ImportSkipReason::PolicyMismatch);
+        result.error_message = Some("existing file is equal or better".to_string());
+        assert_eq!(
+            completed_import_status_for_result(&result, ImportStatus::Failed),
+            ImportStatus::Failed
         );
     }
 

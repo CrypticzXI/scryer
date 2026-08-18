@@ -316,11 +316,31 @@ async fn finalize_import_source_cleanup(
 
     Ok(scryer_domain::ImportStrategy::Move)
 }
+/// Sonarr's phase rule, not an error-string catalogue: an import that was
+/// approved but failed while *executing* (`ImportDecision::Failed` — locked or
+/// still-growing files, IO, network shares, DB hiccups) is transient by
+/// construction and is re-attempted automatically at a capped cadence.
+/// Decision-phase outcomes (rejections, policy skips, unmatched identity) are
+/// permanent and stay blocked for review. Two exceptions in each direction:
+/// a password-protected archive can never succeed without operator input, and
+/// disk-full / permission-denied skips are environmental and clear on their own.
+/// The message allowlist remains as belt-and-braces for Scryer's own transient
+/// markers that surface on non-`Failed` decisions.
 pub(crate) fn completed_import_result_is_retryable(result: &ImportResult) -> bool {
-    result
-        .error_message
-        .as_deref()
-        .is_some_and(completed_import_error_message_is_retryable)
+    match result.decision {
+        ImportDecision::Failed => {
+            result.skip_reason != Some(ImportSkipReason::PasswordRequired)
+        }
+        _ => {
+            matches!(
+                result.skip_reason,
+                Some(ImportSkipReason::DiskFull | ImportSkipReason::PermissionDenied)
+            ) || result
+                .error_message
+                .as_deref()
+                .is_some_and(completed_import_error_message_is_retryable)
+        }
+    }
 }
 
 fn completed_import_status_for_result(

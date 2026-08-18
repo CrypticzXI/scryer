@@ -478,3 +478,58 @@ async fn manual_selection_evidence_for_scryer_submission_without_source_title_do
         Some(PAPER_LANTERN_RELEASE)
     );
 }
+
+// ── Execution failure before a result exists: automatic retry, never a sticky block ──
+
+#[tokio::test]
+async fn pipeline_error_before_result_schedules_automatic_retry_instead_of_blocking() {
+    let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
+    submission_repo
+        .record_submission(submission_row(
+            "title-a",
+            crate::SubmissionScope::Title,
+            Some(PAPER_LANTERN_RELEASE),
+        ))
+        .await
+        .expect("record submission");
+    let import_repo = Arc::new(TestImportRepo::default());
+    // The attempt cannot even be recorded: the shape of a DB hiccup mid-refresh.
+    import_repo.fail_queueing();
+    let app = app_for_import(submission_repo, import_repo.clone());
+    let (_dir, completed) = completed_without_video(Some(PAPER_LANTERN_RELEASE));
+    let lookup =
+        index_completed_downloads(vec![completed], CompletedDownloadLookupCoverage::Recent);
+    let mut td = build_tracked_download("title-a", "movie", PAPER_LANTERN_RELEASE);
+    td.state = TrackedDownloadState::ImportPending;
+
+    let before = Utc::now();
+    assert!(!import_with_lookup(&app, &import_actor(), &mut td, &lookup).await);
+
+    // Sonarr leaves the item in place and re-processes it on the next refresh;
+    // Scryer does the same behind the capped execution backoff.
+    assert_eq!(
+        td.state,
+        TrackedDownloadState::ImportPending,
+        "{:?}",
+        td.status_messages
+    );
+    assert_eq!(td.status, TrackedDownloadStatus::Warning);
+    let retry = td
+        .import_execution_retry
+        .as_ref()
+        .expect("pipeline error must schedule an execution retry");
+    assert_eq!(retry.attempts, 1);
+    assert!(retry.next_retry_at >= before + chrono::Duration::seconds(30));
+    assert!(td.import_retry_deferred(Utc::now()));
+    assert!(
+        td.status_messages[0].starts_with("Import failed: ")
+            && td.status_messages[0].contains("simulated import queue failure")
+            && td.status_messages[0].contains("Retrying automatically (attempt 1)"),
+        "{:?}",
+        td.status_messages
+    );
+    assert!(
+        import_repo.last_import_result().await.is_none(),
+        "no attempt row exists, so nothing is recorded as failed"
+    );
+}

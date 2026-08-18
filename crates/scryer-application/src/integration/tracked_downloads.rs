@@ -62,6 +62,11 @@ pub struct TrackedDownload {
     pub path_missing_since: Option<DateTime<Utc>>,
     /// Runtime-only retry state for completed imports that temporarily contain no videos.
     pub no_video_import_retry: Option<NoVideoImportRetryState>,
+    /// Runtime-only backoff for an approved import whose *execution* failed
+    /// (transfer/IO/permissions/root missing). Sonarr treats every such
+    /// failure as `Skipped` and re-attempts on its refresh cadence; this state
+    /// gives Scryer's faster poller a capped backoff instead of a hot loop.
+    pub import_execution_retry: Option<ImportExecutionRetryState>,
     /// Runtime-only reason this completed download is held back and hidden.
     /// Never persisted as a tracked-download outcome.
     pub import_hold: Option<ImportHold>,
@@ -94,6 +99,27 @@ pub struct NoVideoImportRetryState {
     pub signature: NoVideoImportSourceSignature,
     pub attempts: u8,
     pub next_retry_at: DateTime<Utc>,
+}
+
+/// Backoff for an approved import whose execution failed (Sonarr's `Skipped`).
+/// Attempts are never capped: like Sonarr, the retry continues until the
+/// import succeeds or the operator removes/ignores/marks the download failed;
+/// only the delay between attempts grows (see `import_execution_retry_delay`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportExecutionRetryState {
+    pub attempts: u32,
+    pub next_retry_at: DateTime<Utc>,
+}
+
+/// Delay before the next automatic re-attempt of an import whose execution
+/// failed: 30 s, then 2 min, then 5 min, then 15 min for every later attempt.
+pub fn import_execution_retry_delay(attempts: u32) -> chrono::Duration {
+    match attempts {
+        0 | 1 => chrono::Duration::seconds(30),
+        2 => chrono::Duration::minutes(2),
+        3 => chrono::Duration::minutes(5),
+        _ => chrono::Duration::minutes(15),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -168,6 +194,7 @@ impl TrackedDownload {
         self.waiting_for_completed_history = finished.waiting_for_completed_history;
         self.path_missing_since = finished.path_missing_since;
         self.no_video_import_retry = finished.no_video_import_retry;
+        self.import_execution_retry = finished.import_execution_retry;
         self.import_hold = finished.import_hold;
         self.completed_source = finished.completed_source;
     }
@@ -180,8 +207,49 @@ impl TrackedDownload {
         self.waiting_for_completed_history = false;
         self.path_missing_since = None;
         self.no_video_import_retry = None;
+        self.import_execution_retry = None;
         self.import_hold = None;
         self.skip_reacquire_on_failure = false;
+    }
+
+    /// Whether an automatic import re-attempt is still inside its backoff
+    /// window (either the no-video probe or an execution-failure retry).
+    pub(crate) fn import_retry_deferred(&self, now: DateTime<Utc>) -> bool {
+        self.no_video_import_retry
+            .as_ref()
+            .is_some_and(|retry| retry.next_retry_at > now)
+            || self
+                .import_execution_retry
+                .as_ref()
+                .is_some_and(|retry| retry.next_retry_at > now)
+    }
+
+    /// Schedules the next automatic re-attempt after an approved import failed
+    /// to execute; returns the attempt number just recorded.
+    pub(crate) fn schedule_import_execution_retry(
+        &mut self,
+        now: DateTime<Utc>,
+        message: impl FnOnce(u32, DateTime<Utc>) -> String,
+    ) -> u32 {
+        let attempts = self
+            .import_execution_retry
+            .as_ref()
+            .map(|retry| retry.attempts.saturating_add(1))
+            .unwrap_or(1);
+        let next_retry_at = now + import_execution_retry_delay(attempts);
+        self.import_execution_retry = Some(ImportExecutionRetryState {
+            attempts,
+            next_retry_at,
+        });
+        self.state = TrackedDownloadState::ImportPending;
+        self.waiting_for_completed_history = false;
+        self.status = TrackedDownloadStatus::Warning;
+        self.status_messages = vec![message(attempts, next_retry_at)];
+        attempts
+    }
+
+    pub(crate) fn clear_import_execution_retry(&mut self) {
+        self.import_execution_retry = None;
     }
 
     pub(crate) fn schedule_no_video_import_retry(
@@ -293,6 +361,7 @@ impl TrackedDownloadService {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -2712,6 +2781,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -2748,6 +2818,11 @@ mod tests {
         finished.import_attempted = true;
         finished.path_missing_since = Some(Utc::now());
         finished.no_video_import_retry = Some(retry.clone());
+        let execution_retry = ImportExecutionRetryState {
+            attempts: 3,
+            next_retry_at: Utc::now() + Duration::minutes(5),
+        };
+        finished.import_execution_retry = Some(execution_retry.clone());
 
         tracked.merge_background_work_state_from(finished);
 
@@ -2759,6 +2834,7 @@ mod tests {
         assert!(tracked.import_attempted);
         assert!(tracked.path_missing_since.is_some());
         assert_eq!(tracked.no_video_import_retry, Some(retry));
+        assert_eq!(tracked.import_execution_retry, Some(execution_retry));
     }
 
     #[test]
@@ -2771,6 +2847,10 @@ mod tests {
         tracked.path_missing_since = Some(Utc::now());
         tracked.no_video_import_retry =
             Some(no_video_retry_state(1, Utc::now() + Duration::seconds(30)));
+        tracked.import_execution_retry = Some(ImportExecutionRetryState {
+            attempts: 2,
+            next_retry_at: Utc::now() + Duration::minutes(2),
+        });
         tracked.skip_reacquire_on_failure = true;
 
         tracked.reset_for_import_retry();
@@ -2781,7 +2861,60 @@ mod tests {
         assert!(!tracked.import_attempted);
         assert!(tracked.path_missing_since.is_none());
         assert!(tracked.no_video_import_retry.is_none());
+        assert!(tracked.import_execution_retry.is_none());
         assert!(!tracked.skip_reacquire_on_failure);
+    }
+
+    #[test]
+    fn import_execution_retry_defers_dispatch_until_next_retry_at_and_backs_off() {
+        let mut tracked = build_tracked_download("dl-1");
+        let now = Utc::now();
+        assert!(!tracked.import_retry_deferred(now));
+
+        let attempts = tracked.schedule_import_execution_retry(now, |attempts, next_retry_at| {
+            format!(
+                "boom (attempt {attempts}) at {}",
+                next_retry_at.to_rfc3339()
+            )
+        });
+        assert_eq!(attempts, 1);
+        assert_eq!(tracked.state, TrackedDownloadState::ImportPending);
+        assert_eq!(tracked.status, TrackedDownloadStatus::Warning);
+        assert!(!tracked.waiting_for_completed_history);
+        assert!(tracked.status_messages[0].starts_with("boom (attempt 1) at "));
+        let first = tracked
+            .import_execution_retry
+            .clone()
+            .expect("retry scheduled");
+        assert_eq!(first.next_retry_at, now + Duration::seconds(30));
+        assert!(tracked.import_retry_deferred(now));
+        assert!(tracked.import_retry_deferred(now + Duration::seconds(29)));
+        assert!(!tracked.import_retry_deferred(now + Duration::seconds(30)));
+
+        for (attempt, expected_delay) in [
+            (2u32, Duration::minutes(2)),
+            (3, Duration::minutes(5)),
+            (4, Duration::minutes(15)),
+            (5, Duration::minutes(15)),
+        ] {
+            let attempts = tracked.schedule_import_execution_retry(now, |_, _| String::new());
+            assert_eq!(attempts, attempt);
+            assert_eq!(
+                tracked
+                    .import_execution_retry
+                    .as_ref()
+                    .map(|retry| retry.next_retry_at),
+                Some(now + expected_delay),
+                "attempt {attempt}"
+            );
+        }
+
+        // Either retry family defers dispatch on its own.
+        tracked.clear_import_execution_retry();
+        assert!(!tracked.import_retry_deferred(now));
+        tracked.no_video_import_retry = Some(no_video_retry_state(1, now + Duration::seconds(30)));
+        assert!(tracked.import_retry_deferred(now));
+        assert!(!tracked.import_retry_deferred(now + Duration::seconds(30)));
     }
 
     #[test]
@@ -3848,6 +3981,7 @@ mod tests {
                     waiting_for_completed_history: false,
                     path_missing_since: None,
                     no_video_import_retry: None,
+                    import_execution_retry: None,
                     import_hold: None,
                     skip_reacquire_on_failure: false,
                     snapshot_missing_since: None,
@@ -4170,6 +4304,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -4208,6 +4343,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -4289,6 +4425,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -4498,6 +4635,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,

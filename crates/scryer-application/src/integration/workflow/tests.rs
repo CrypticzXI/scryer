@@ -93,6 +93,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -133,6 +134,40 @@ mod tests {
             .find_mut(id)
             .expect("tracked download should remain cached")
             .no_video_import_retry = Some(no_video_retry_state(Utc::now() - Duration::seconds(1)));
+
+        let dispatched = prepare_tracked_download_background_work_dispatch(&mut tracker, id);
+
+        assert!(dispatched.is_some());
+        assert_eq!(
+            tracker.find(id).map(|tracked| tracked.state),
+            Some(TrackedDownloadState::Importing)
+        );
+    }
+
+    #[test]
+    fn import_dispatch_respects_execution_retry_gate() {
+        let id = "nzbget:job-2";
+        let mut tracker = crate::tracked_downloads::TrackedDownloadService::new();
+        let mut tracked = tracked_for_dispatch(id);
+        tracked.import_execution_retry = Some(crate::tracked_downloads::ImportExecutionRetryState {
+            attempts: 1,
+            next_retry_at: Utc::now() + Duration::seconds(30),
+        });
+        tracker.insert_for_tests(tracked);
+
+        assert!(prepare_tracked_download_background_work_dispatch(&mut tracker, id).is_none());
+        assert_eq!(
+            tracker.find(id).map(|tracked| tracked.state),
+            Some(TrackedDownloadState::ImportPending)
+        );
+
+        tracker
+            .find_mut(id)
+            .expect("tracked download should remain cached")
+            .import_execution_retry = Some(crate::tracked_downloads::ImportExecutionRetryState {
+            attempts: 1,
+            next_retry_at: Utc::now() - Duration::seconds(1),
+        });
 
         let dispatched = prepare_tracked_download_background_work_dispatch(&mut tracker, id);
 
@@ -494,6 +529,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -536,6 +572,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,
@@ -640,6 +677,7 @@ mod tests {
             waiting_for_completed_history: false,
             path_missing_since: None,
             no_video_import_retry: None,
+            import_execution_retry: None,
             import_hold: None,
             skip_reacquire_on_failure: false,
             snapshot_missing_since: None,

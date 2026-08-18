@@ -2059,9 +2059,15 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
             continue;
         }
 
-        // Parse release metadata for quality/codec tokens
-        let parsed =
-            build_augmented_episode_import_metadata_for_title(&source, release_evidence, &title);
+        // Parse release metadata for quality/codec tokens. The operator's
+        // mapping decides the episode; the parse still honours the multi-file
+        // rule so the release-type/coverage facts it carries stay honest.
+        let parsed = build_augmented_episode_import_metadata_for_title(
+            &source,
+            release_evidence,
+            &title,
+            files.len() > 1,
+        );
 
         let season_num: u32 = episode
             .season_number

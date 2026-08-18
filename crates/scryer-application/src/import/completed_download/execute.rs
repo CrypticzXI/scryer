@@ -145,15 +145,24 @@ async fn import_inner(
             .await
         }
         Err(error) => {
+            // The pipeline itself erred before it could produce a result
+            // (repository/DB failure while queueing or resolving the attempt).
+            // That is an execution failure of an approved import, so it gets
+            // the same automatic re-attempt as a `Failed` result — Sonarr
+            // leaves the item in place and re-processes it on the next
+            // refresh; nothing here warrants a sticky manual-review block.
             tracing::warn!(
                 id = %td.id,
                 error = %error,
                 dest_dir = %completed.dest_dir,
-                "import: pipeline returned error"
+                "import: pipeline returned error; scheduling automatic retry"
             );
-            td.state = TrackedDownloadState::ImportBlocked;
-            td.status = TrackedDownloadStatus::Error;
-            td.status_messages = vec![format!("Import failed: {error}")];
+            td.schedule_import_execution_retry(Utc::now(), |attempts, next_retry_at| {
+                format!(
+                    "Import failed: {error} Retrying automatically (attempt {attempts}) at {}.",
+                    next_retry_at.to_rfc3339()
+                )
+            });
             false
         }
     }

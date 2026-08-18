@@ -140,6 +140,7 @@ pub(super) async fn apply_import_result_with_completed(
         && result.skip_reason == Some(ImportSkipReason::AlreadyImported);
     if result.decision == ImportDecision::Imported || already_imported {
         td.clear_no_video_import_retry();
+        td.clear_import_execution_retry();
         if verify_import_inner_with_release_evidence(
             app,
             td,
@@ -184,11 +185,24 @@ pub(super) async fn apply_import_result_with_completed(
                 "failed to restore retryable import attempt to pending status"
             );
         }
-        td.state = TrackedDownloadState::ImportPending;
-        td.status = TrackedDownloadStatus::Warning;
-        td.status_messages = vec![retryable_import_result_message(&result)];
+        // Sonarr re-attempts an approved-but-failed import on every refresh
+        // and never gives up; Scryer does the same behind a capped backoff so
+        // a stuck share or a slow unpack does not hammer the pipeline.
+        let attempts = td.schedule_import_execution_retry(Utc::now(), |attempts, next_retry_at| {
+            retryable_import_result_message(&result, attempts, next_retry_at)
+        });
+        tracing::info!(
+            id = %td.id,
+            import_id = result.import_id.as_str(),
+            decision = ?result.decision,
+            skip_reason = ?result.skip_reason,
+            attempts,
+            "import: execution failed; scheduled automatic retry"
+        );
         return false;
     }
+
+    td.clear_import_execution_retry();
 
     match result.decision {
         ImportDecision::Failed => {
@@ -206,9 +220,16 @@ pub(super) async fn apply_import_result_with_completed(
     }
 }
 
-fn retryable_import_result_message(result: &ImportResult) -> String {
+fn retryable_import_result_message(
+    result: &ImportResult,
+    attempts: u32,
+    next_retry_at: DateTime<Utc>,
+) -> String {
     let detail = import_result_message(result, ImportStatus::Skipped);
-    format!("{detail} Retrying automatically.")
+    format!(
+        "{detail} Retrying automatically (attempt {attempts}) at {}.",
+        next_retry_at.to_rfc3339()
+    )
 }
 
 fn import_result_message(result: &ImportResult, fallback_status: ImportStatus) -> String {

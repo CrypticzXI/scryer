@@ -101,6 +101,9 @@ async fn import_series_download(
     let mut imported_link_type: Option<scryer_domain::ImportStrategy> = None;
     let expected_episode_ids =
         expected_episode_ids_for_completed_download(app, title, release_evidence).await;
+    // `video_files` came from `find_video_files(dir, true)`: samples are already
+    // excluded, so this is the count Sonarr's `OtherVideoFiles` rule wants.
+    let video_file_count = video_files.len();
 
     for source_video in video_files {
         match import_single_episode_file(
@@ -119,6 +122,7 @@ async fn import_series_download(
             &quality_profile,
             nfo_enabled,
             expected_episode_ids.as_ref(),
+            video_file_count,
         )
         .await
         {
@@ -591,13 +595,26 @@ async fn cleanup_superseded_episode_incumbents(
         }
     }
 }
+/// Why an obfuscated video file's episode identity could not be trusted, as an
+/// actionable operator message; `None` when the file name carries usable
+/// release signal of its own (the generic message then applies).
 fn ambiguous_obfuscated_episode_message(
     source_video: &Path,
     release_evidence: &ReleaseEvidence,
+    video_file_count: usize,
 ) -> Option<String> {
     let file_info = parsed_release_from_file_stem(source_video);
     if has_usable_release_title_signal(&file_info) {
         return None;
+    }
+
+    if video_file_count > 1 {
+        // With other video files in the download each member must identify
+        // itself (`build_augmented_episode_import_metadata_for_title`); the
+        // release name's numbering was never applied to this file.
+        return Some(format!(
+            "Automatic import could not identify the episode for this file: this download contains {video_file_count} video files and this file's name is obfuscated. Open Manual Import and assign the correct season and episode."
+        ));
     }
 
     let release_title = release_evidence.release_title(Some(source_video))?;
@@ -638,9 +655,17 @@ async fn import_single_episode_file(
     quality_profile: &crate::QualityProfile,
     nfo_enabled: bool,
     expected_episode_ids: Option<&HashSet<String>>,
+    video_file_count: usize,
 ) -> AppResult<EpisodeImportOutcome> {
-    let parsed =
-        build_augmented_episode_import_metadata_for_title(source_video, release_evidence, title);
+    // Sonarr's `OtherVideoFiles`: with more than one (non-sample) video in the
+    // download, each file must identify itself.
+    let other_video_files = video_file_count > 1;
+    let parsed = build_augmented_episode_import_metadata_for_title(
+        source_video,
+        release_evidence,
+        title,
+        other_video_files,
+    );
 
     // Must have episode info to proceed
     let ep_meta = match parsed.episode.as_ref() {
@@ -655,14 +680,19 @@ async fn import_single_episode_file(
         _ => {
             tracing::debug!(
                 file = %source_video.display(),
+                other_video_files,
                 "skipping file with no parseable episode info"
             );
             return Ok(EpisodeImportOutcome::Skipped {
-                message: ambiguous_obfuscated_episode_message(source_video, release_evidence)
-                    .unwrap_or_else(|| {
-                        "Automatic import could not determine a season and episode from the downloaded file. Open Manual Import and assign the correct season and episode."
-                            .to_string()
-                    }),
+                message: ambiguous_obfuscated_episode_message(
+                    source_video,
+                    release_evidence,
+                    video_file_count,
+                )
+                .unwrap_or_else(|| {
+                    "Automatic import could not determine a season and episode from the downloaded file. Open Manual Import and assign the correct season and episode."
+                        .to_string()
+                }),
                 reason_code: None,
                 skip_reason: Some(ImportSkipReason::UnparseableEpisode),
                 episode_ids: Vec::new(),
@@ -721,13 +751,20 @@ async fn import_single_episode_file(
     if let Some(expected_episode_ids) = expected_episode_ids
         && !resolved_episode_ids_are_within_expected(&target_episode_ids, expected_episode_ids)
     {
+        // The obfuscation explainer describes a season guessed from the
+        // release name; a file in a multi-video download identified itself,
+        // so it simply resolved outside the grabbed release.
+        let obfuscated_message = if other_video_files {
+            None
+        } else {
+            ambiguous_obfuscated_episode_message(source_video, release_evidence, video_file_count)
+        };
         return Ok(EpisodeImportOutcome::Rejected {
             rejection: crate::post_download_gate::ImportedFileRejection {
-                message: ambiguous_obfuscated_episode_message(source_video, release_evidence)
-                    .unwrap_or_else(|| {
-                        "Automatic import resolved the downloaded file to episode(s) outside the grabbed release. Open Manual Import and assign the correct season and episode."
-                            .to_string()
-                    }),
+                message: obfuscated_message.unwrap_or_else(|| {
+                    "Automatic import resolved the downloaded file to episode(s) outside the grabbed release. Open Manual Import and assign the correct season and episode."
+                        .to_string()
+                }),
                 recycle_reason: "episode_outside_grabbed_release",
                 skip_reason: Some(ImportSkipReason::PolicyMismatch),
                 blocking_rule_codes: vec!["episode_outside_grabbed_release".to_string()],
@@ -1547,12 +1584,21 @@ fn resolve_title_from_release_candidate(
 }
 /// Canonical import-time release metadata for an episode file: the release
 /// evidence parsed with the title's canonical grab-time context (see
-/// `parse_import_release_for_title`), plus episode numbering from the release
-/// name itself and then the file stem when the canonical parse names none.
+/// `parse_import_release_for_title`) supplies every score-bearing fact; the
+/// episode identity follows Sonarr's `OtherVideoFiles` rule
+/// (`AggregateEpisodes.GetBestEpisodeInfo`).
+///
+/// The release name's numbering is applied to a file only when that file is
+/// the download's sole video and the release names concrete episodes. When
+/// the download holds other video files, or the release is a season pack
+/// (whole or partial — it has no episode numbers to hand out), every file must
+/// identify itself from its own name; a file that cannot gets no episode at
+/// all, so the caller parks it for manual import instead of guessing.
 fn build_augmented_episode_import_metadata_for_title(
     source_video: &Path,
     release_evidence: &ReleaseEvidence,
     title: &scryer_domain::Title,
+    other_video_files: bool,
 ) -> ParsedReleaseMetadata {
     let Some(release_title) = release_evidence.release_title(Some(source_video)) else {
         return ParsedReleaseMetadata::default();
@@ -1560,16 +1606,38 @@ fn build_augmented_episode_import_metadata_for_title(
 
     let mut parsed =
         normalize_release_title_signal(parse_import_release_for_title(&release_title, title));
-    if parsed.episode.is_none() {
-        // The title-anchored parse keeps score-bearing facts but drops the
-        // release name's own numbering when that name does not match the
-        // title's canonical identity (a user-assigned or parameter-matched
-        // download). The release name is still the best episode evidence, and
-        // only after it the file name — which may locate an episode but cannot
-        // supplement score-bearing release metadata.
-        parsed.episode = parse_release_metadata(&release_title)
-            .episode
-            .or_else(|| parsed_release_from_file_stem(source_video).episode);
-    }
+    // The title-anchored parse keeps score-bearing facts but drops the release
+    // name's own numbering when that name does not match the title's canonical
+    // identity (a user-assigned or parameter-matched download); the release
+    // name's context-free numbering is still what the release claims.
+    let release_episode = parsed
+        .episode
+        .take()
+        .or_else(|| parse_release_metadata(&release_title).episode);
+    let release_is_season_pack = release_episode.as_ref().is_some_and(|episode| {
+        episode.full_season
+            || episode.release_type == crate::ParsedEpisodeReleaseType::SeasonPack
+    });
+    parsed.episode = if other_video_files || release_is_season_pack {
+        file_episode_identity_for_title(source_video, title)
+    } else {
+        // Sole video of a non-pack release: the release name is the best
+        // episode evidence, and only after it the file name — which may locate
+        // an episode but cannot supplement score-bearing release metadata.
+        release_episode.or_else(|| file_episode_identity_for_title(source_video, title))
+    };
     parsed
+}
+
+/// The episode a video file names on its own: its stem parsed with the
+/// title's canonical context (so absolute/anime numbering resolves the way
+/// the grab path resolves it), then the context-free stem parse the manual
+/// preview and obfuscation checks use.
+fn file_episode_identity_for_title(
+    source_video: &Path,
+    title: &scryer_domain::Title,
+) -> Option<crate::ParsedEpisodeMetadata> {
+    source_video_stem(Some(source_video))
+        .and_then(|stem| parse_import_release_for_title(&stem, title).episode)
+        .or_else(|| parsed_release_from_file_stem(source_video).episode)
 }

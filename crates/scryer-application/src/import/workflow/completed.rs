@@ -392,21 +392,87 @@ pub(crate) async fn reconcile_terminal_download_cleanup_for_tracked(
 fn media_file_score(file: &crate::TitleMediaFile) -> i32 {
     file.acquisition_score.unwrap_or(0)
 }
+/// Whether a completed-import failure is a transient condition worth retrying
+/// automatically instead of blocking the download until an operator retries.
+///
+/// Sonarr has no allowlist here: `ImportApprovedEpisodes` turns every
+/// transfer-time exception (locked file, permissions, root folder missing,
+/// destination exists, any IO error) into a `Skipped` result and re-attempts on
+/// the next refresh; `IsFileLocked` and `NotUnpackingSpecification` are its
+/// only transient-specific detectors. Scryer's importer stringifies IO errors
+/// (`AppError::Repository(format!("… {io_error}"))`), so the OS `Display` text
+/// — "`… (os error N)`" — is what is matchable here. The phrases below are the
+/// glibc/BSD `strerror` and Windows `FormatMessage` (English) texts for the
+/// conditions Sonarr retries; the numeric fallback covers localized Windows
+/// messages.
 fn completed_import_error_message_is_retryable(message: &str) -> bool {
     let normalized = message.to_ascii_lowercase();
-    [
+    // Scryer's own transient signals and Sonarr's locked / still-unpacking detectors.
+    const SCRYER_TRANSIENT_PHRASES: &[&str] = &[
         "active-download marker",
         "still being unpacked",
         "still_unpacking",
         "source changed",
         "locked",
-        "being used by another process",
-        "os error 32",
         "temporarily",
         "not found or inaccessible",
-    ]
-    .iter()
-    .any(|needle| normalized.contains(needle))
+    ];
+    // OS-level transient IO conditions (io::Error Display text).
+    const IO_TRANSIENT_PHRASES: &[&str] = &[
+        // Windows FormatMessage
+        "being used by another process",       // 32 ERROR_SHARING_VIOLATION
+        "has locked a portion of the file",     // 33 ERROR_LOCK_VIOLATION
+        "user-mapped section open",            // 1224 ERROR_USER_MAPPED_FILE (Plex/indexer mmap)
+        "requested resource is in use",        // 170 ERROR_BUSY
+        "network name is no longer available", // 64 ERROR_NETNAME_DELETED (SMB hiccup)
+        "unexpected network error",            // 59 ERROR_UNEXP_NET_ERR
+        "semaphore timeout period has expired", // 121 ERROR_SEM_TIMEOUT
+        "network location cannot be reached",  // 1231/1232 network unreachable
+        "not enough space on the disk",        // 112 ERROR_DISK_FULL
+        "access is denied",                    // 5 ERROR_ACCESS_DENIED (AV/indexer holds; Sonarr retries)
+        // glibc / BSD strerror
+        "device or resource busy",             // EBUSY (Linux)
+        "resource busy",                       // EBUSY (BSD/macOS)
+        "text file busy",                      // ETXTBSY
+        "interrupted system call",             // EINTR
+        "input/output error",                  // EIO (NFS/USB hiccup)
+        "stale file handle",                   // ESTALE (Linux)
+        "stale nfs file handle",               // ESTALE (BSD/macOS)
+        "transport endpoint is not connected", // ENOTCONN (Linux)
+        "socket is not connected",             // ENOTCONN (BSD/macOS)
+        "connection timed out",                // ETIMEDOUT (Linux)
+        "operation timed out",                 // ETIMEDOUT (BSD/macOS)
+        "host is down",                        // EHOSTDOWN
+        "no route to host",                    // EHOSTUNREACH
+        "software caused connection abort",    // ECONNABORTED
+        "no space left on device",             // ENOSPC
+        "disk quota exceeded",                 // EDQUOT
+        "too many open files",                 // EMFILE
+        "permission denied",                   // EACCES (Sonarr retries UnauthorizedAccess)
+        "no such file or directory",           // ENOENT mid-transfer (unmounted root / unpacker rename)
+    ];
+    if SCRYER_TRANSIENT_PHRASES
+        .iter()
+        .chain(IO_TRANSIENT_PHRASES)
+        .any(|needle| normalized.contains(needle))
+    {
+        return true;
+    }
+    // Numeric fallback for localized Windows messages, keyed on the exact
+    // "(os error N)" token Rust appends to raw OS errors.
+    const WINDOWS_TRANSIENT_OS_ERRORS: &[u32] = &[5, 32, 33, 59, 64, 112, 121, 170, 1224, 1231, 1232];
+    cfg!(windows)
+        && raw_os_error_code(&normalized)
+            .is_some_and(|code| WINDOWS_TRANSIENT_OS_ERRORS.contains(&code))
+}
+
+/// Extracts `N` from the first "(os error N)" token in an IO error message.
+fn raw_os_error_code(normalized_message: &str) -> Option<u32> {
+    let rest = normalized_message.split("(os error ").nth(1)?;
+    let digits = rest.chars().take_while(char::is_ascii_digit).collect::<String>();
+    (!digits.is_empty() && rest[digits.len()..].starts_with(')'))
+        .then(|| digits.parse().ok())
+        .flatten()
 }
 async fn resolve_import_quality_profile(
     app: &AppUseCase,
