@@ -4979,6 +4979,13 @@
         "name": {
           "type": "string"
         },
+        "release_name": {
+          "description": "The original release name of the downloaded artifact, when the client\nexposes one that is more stable than its mutable display `name` (for\nexample the original upload filename, or the torrent's metainfo name\nwhen it differs from a user-renamed display name). Scryer only relies\non this for downloads it did not grab itself; for its own grabs it uses\nthe indexer release title it persisted at grab time. Optional for\ncompatibility with older download-client plugins.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "dest_dir": {
           "type": "string"
         },

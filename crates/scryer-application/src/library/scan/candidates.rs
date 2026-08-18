@@ -236,7 +236,7 @@ fn sync_existing_title_folder_path_in_memory(existing_titles: &mut [Title], titl
 fn find_existing_movie_title_index(
     candidate: &PreparedMovieLibraryScanCandidate,
     existing_titles: &[Title],
-    existing_titles_by_name: &HashMap<String, usize>,
+    existing_titles_by_name: &TitleNameIndex,
     existing_titles_by_tvdb_id: &HashMap<String, usize>,
     existing_titles_by_imdb_id: &HashMap<String, usize>,
     existing_titles_by_tmdb_id: &HashMap<String, usize>,
@@ -312,21 +312,17 @@ fn find_existing_movie_title_index(
     candidate.query_variants.iter().find_map(|query_variant| {
         let normalized = crate::title_matching::canonical_lookup_key(query_variant);
         existing_titles_by_name
-            .get(&normalized)
+            .get(&normalized)?
+            .iter()
             .copied()
-            .filter(|index| {
-                let title = &existing_titles[*index];
-                candidate.year_hint.is_none()
-                    || title.year.map(|value| value as u32) == candidate.year_hint
-                    || title.year.is_none()
-            })
+            .find(|index| title_year_compatible(&existing_titles[*index], candidate.year_hint))
     })
 }
 
 fn find_existing_series_title_index(
     candidate: &PreparedSeriesLibraryScanCandidate,
     existing_titles: &[Title],
-    existing_titles_by_name: &HashMap<String, usize>,
+    existing_titles_by_name: &TitleNameIndex,
     existing_titles_by_tvdb_id: &HashMap<String, usize>,
     existing_titles_by_imdb_id: &HashMap<String, usize>,
     existing_titles_by_tmdb_id: &HashMap<String, usize>,
@@ -388,14 +384,10 @@ fn find_existing_series_title_index(
         .iter()
         .find_map(|name_key| {
             existing_titles_by_name
-                .get(name_key)
+                .get(name_key)?
+                .iter()
                 .copied()
-                .filter(|index| {
-                    let title = &existing_titles[*index];
-                    candidate.year_hint.is_none()
-                        || title.year.map(|value| value as u32) == candidate.year_hint
-                        || title.year.is_none()
-                })
+                .find(|index| title_year_compatible(&existing_titles[*index], candidate.year_hint))
         })
 }
 
@@ -588,7 +580,7 @@ async fn append_series_title_and_merge_work(
     app: &AppUseCase,
     executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -621,7 +613,7 @@ async fn append_series_title_and_merge_work(
 async fn resolve_movie_scan_candidate(
     candidate: PreparedMovieLibraryScanCandidate,
     existing_titles: &mut [Title],
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -658,7 +650,7 @@ async fn resolve_movie_metadata_match(
     candidate: &PreparedMovieLibraryScanCandidate,
     batch_search_results: &MetadataSearchResults,
     existing_titles: &mut Vec<Title>,
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -671,6 +663,7 @@ async fn resolve_movie_metadata_match(
 
     if let Some(index) = find_existing_title_index_for_metadata_match(
         &selected,
+        existing_titles,
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
     ) {
@@ -726,7 +719,7 @@ pub(super) async fn process_movie_full_scan_candidate(
     candidate: PreparedMovieLibraryScanCandidate,
     executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut [Title],
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -939,7 +932,7 @@ pub(super) async fn process_series_full_scan_candidate(
     coordinator: &LibraryScanCoordinator,
     candidate: PreparedSeriesLibraryScanCandidate,
     existing_titles: &mut [Title],
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -1100,7 +1093,7 @@ pub(super) async fn process_resolved_movie_full_scan_candidate(
     batch_search_results: &MetadataSearchResults,
     executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -1253,7 +1246,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
     batch_search_results: &MetadataSearchResults,
     executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -1318,6 +1311,7 @@ pub(super) async fn process_resolved_series_full_scan_candidate(
 
     if let Some(index) = find_existing_title_index_for_metadata_match(
         &selected,
+        existing_titles,
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
     ) {
@@ -1485,7 +1479,7 @@ pub(super) async fn process_series_refresh_candidate(
     candidate: PreparedSeriesLibraryScanCandidate,
     executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut [Title],
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -1545,7 +1539,7 @@ pub(super) async fn process_resolved_series_refresh_candidate(
     batch_search_results: &MetadataSearchResults,
     executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -1566,6 +1560,7 @@ pub(super) async fn process_resolved_series_refresh_candidate(
 
     if let Some(index) = find_existing_title_index_for_metadata_match(
         &selected,
+        existing_titles,
         existing_titles_by_name,
         existing_titles_by_tvdb_id,
     ) {
@@ -1658,7 +1653,7 @@ pub(super) async fn process_movie_refresh_candidate(
     candidate: PreparedMovieLibraryScanCandidate,
     executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut [Title],
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -1752,7 +1747,7 @@ pub(super) async fn process_resolved_movie_refresh_candidate(
     batch_search_results: &MetadataSearchResults,
     executor: &mut dyn LibraryScanTitleWorkQueue,
     existing_titles: &mut Vec<Title>,
-    existing_titles_by_name: &mut HashMap<String, usize>,
+    existing_titles_by_name: &mut TitleNameIndex,
     existing_titles_by_tvdb_id: &mut HashMap<String, usize>,
     existing_titles_by_imdb_id: &mut HashMap<String, usize>,
     existing_titles_by_tmdb_id: &mut HashMap<String, usize>,
@@ -2091,6 +2086,146 @@ mod tests {
                 &by_tmdb,
             ),
             Some(1)
+        );
+    }
+
+    fn build_movie_title_named(id: &str, name: &str, year: Option<i32>) -> Title {
+        let mut title = build_movie_title(id);
+        title.name = name.to_string();
+        title.year = year;
+        title
+    }
+
+    fn movie_candidate(query: &str, year_hint: Option<u32>) -> PreparedMovieLibraryScanCandidate {
+        PreparedMovieLibraryScanCandidate {
+            file: LibraryFile {
+                path: format!("/library/{query}/{query}.mkv"),
+                display_name: query.to_string(),
+                nfo_path: None,
+                size_bytes: None,
+                source_signature_scheme: None,
+                source_signature_value: None,
+            },
+            representative_is_directory: false,
+            discovered_files: Vec::new(),
+            parsed_release: crate::ParsedReleaseMetadata::default(),
+            nfo_meta: None,
+            identity_hint: None,
+            query: query.to_string(),
+            year_hint,
+            query_variants: vec![query.to_string()],
+            search_candidates: Vec::new(),
+            metadata_lookup_attempted: true,
+        }
+    }
+
+    #[test]
+    fn same_name_titles_stay_distinct_by_year_in_the_scan_index() {
+        // Remake and original share a name (#148: Total Recall 1990 / 2012).
+        // Every by-name lookup must see both and pick by year, and a folder
+        // year the catalog does not have must resolve to nothing rather than to
+        // the other year's title.
+        let existing_titles = vec![
+            build_movie_title_named("recall-1990", "Total Recall", Some(1990)),
+            build_movie_title_named("recall-2012", "Total Recall", Some(2012)),
+        ];
+        let (by_name, by_tvdb, by_imdb, by_tmdb) = build_movie_title_indexes(&existing_titles);
+        assert_eq!(
+            by_name
+                .get(&crate::title_matching::canonical_lookup_key("Total Recall"))
+                .map(Vec::len),
+            Some(2),
+            "both same-name titles are indexed"
+        );
+
+        for (year, expected) in [(1990, Some(0)), (2012, Some(1)), (2024, None)] {
+            assert_eq!(
+                find_existing_movie_title_index(
+                    &movie_candidate("Total Recall", Some(year)),
+                    &existing_titles,
+                    &by_name,
+                    &by_tvdb,
+                    &by_imdb,
+                    &by_tmdb,
+                ),
+                expected,
+                "Total Recall ({year})"
+            );
+        }
+        // No year on the folder: any same-name title is acceptable (first wins).
+        assert_eq!(
+            find_existing_movie_title_index(
+                &movie_candidate("Total Recall", None),
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+                &by_imdb,
+                &by_tmdb,
+            ),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn metadata_match_maps_onto_an_existing_title_only_when_the_year_agrees() {
+        // The Lion King (1994) folder, catalog holds only The Lion King (2019):
+        // the SMG match for 1994 must NOT be absorbed by the 2019 title (which
+        // then refuses the folder as "already owns another folder"); it is a new
+        // title. The same-year match and the canonical-id match still map.
+        let mut lion_king_2019 = build_movie_title_named("lion-2019", "The Lion King", Some(2019));
+        lion_king_2019.external_ids = vec![scryer_domain::ExternalId {
+            source: "tvdb".to_string(),
+            value: "tvdb-2019".to_string(),
+        }];
+        let existing_titles = vec![lion_king_2019];
+        let (by_name, by_tvdb, _, _) = build_movie_title_indexes(&existing_titles);
+        let selected = |tvdb_id: &str, year: Option<i32>| MetadataSearchItem {
+            tvdb_id: tvdb_id.to_string(),
+            name: "The Lion King".to_string(),
+            year,
+            auto_match_safe: true,
+            auto_match_signals: Vec::new(),
+        };
+
+        assert_eq!(
+            find_existing_title_index_for_metadata_match(
+                &selected("tvdb-1994", Some(1994)),
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+            ),
+            None,
+            "a different year is a different film"
+        );
+        assert_eq!(
+            find_existing_title_index_for_metadata_match(
+                &selected("tvdb-unknown", Some(2019)),
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+            ),
+            Some(0),
+            "same name, same year"
+        );
+        assert_eq!(
+            find_existing_title_index_for_metadata_match(
+                &selected("tvdb-2019", Some(1994)),
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+            ),
+            Some(0),
+            "the canonical id always wins"
+        );
+        assert_eq!(
+            find_existing_title_index_for_metadata_match(
+                &selected("tvdb-unknown", None),
+                &existing_titles,
+                &by_name,
+                &by_tvdb,
+            ),
+            Some(0),
+            "an unknown year cannot contradict"
         );
     }
 

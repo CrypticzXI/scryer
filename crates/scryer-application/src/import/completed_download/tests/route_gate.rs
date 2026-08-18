@@ -12,10 +12,13 @@ use crate::{
 };
 use std::collections::HashMap;
 
+type RoutingSettingKey = (String, String, Option<String>);
+type RoutingSettingValues = Arc<Mutex<HashMap<RoutingSettingKey, String>>>;
+
 /// Scoped settings values keyed by (scope, key, scope_id).
 #[derive(Default)]
 struct RoutingSettingsRepo {
-    values: Arc<Mutex<HashMap<(String, String, Option<String>), String>>>,
+    values: RoutingSettingValues,
 }
 
 impl RoutingSettingsRepo {

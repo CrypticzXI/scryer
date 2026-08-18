@@ -2330,11 +2330,14 @@ fn completed_manual_import_record_for(import_id: &str, item_id: &str) -> scryer_
 /// A scripted tracked-download runtime: answers `MarkImportedIfAwaitingImport`
 /// per item id from `script` (falling back to `Unchanged`) and records every
 /// (item id, record completion time) it was asked about.
+type TrackedDownloadImportRequests =
+    Arc<Mutex<Vec<(String, chrono::DateTime<chrono::Utc>)>>>;
+
 fn scripted_tracked_download_runtime(
     script: Vec<(&'static str, Vec<crate::tracked_downloads::ManualImportRecoveryOutcome>)>,
 ) -> (
     crate::tracked_downloads::TrackedDownloadHandle,
-    Arc<Mutex<Vec<(String, chrono::DateTime<chrono::Utc>)>>>,
+    TrackedDownloadImportRequests,
 ) {
     use crate::tracked_downloads::{ManualImportRecoveryOutcome, TrackedDownloadCommand};
 

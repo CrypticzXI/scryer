@@ -519,12 +519,14 @@ impl ShowRepository for TestShowRepo {
     }
 }
 
+type ImportStatusUpdates = Arc<Mutex<Vec<(String, ImportStatus, Option<String>)>>>;
+
 /// In-memory `imports` table: queued requests are appended (newest first on
 /// listing, like the store), status updates are recorded per import id.
 #[derive(Default)]
 struct TestImportRepo {
     records: Arc<Mutex<Vec<scryer_domain::ImportRecord>>>,
-    status_updates: Arc<Mutex<Vec<(String, ImportStatus, Option<String>)>>>,
+    status_updates: ImportStatusUpdates,
     /// When set, `queue_import_request` fails with a repository error — the
     /// shape of a DB hiccup that surfaces before an attempt can be recorded.
     fail_queue: Arc<std::sync::atomic::AtomicBool>,

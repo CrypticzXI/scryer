@@ -7852,6 +7852,10 @@ type ManualImportFilePreviewPayload {
 	Label for the suggested episode, or null when no suggestion exists.
 	"""
 	suggestedEpisodeLabel: String
+	"""
+	Suggested series-movie link, or null when this is not a grabbed series movie.
+	"""
+	suggestedSeriesMovieLinkId: String
 }
 
 """

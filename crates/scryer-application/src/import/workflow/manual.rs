@@ -3015,7 +3015,7 @@ mod manual_movie_primary_selection_tests {
         // stay importable by hand.
         let dir = tempfile::tempdir().expect("tempdir");
         let root = std::fs::canonicalize(dir.path()).expect("canonical root");
-        assert!(1024 * 1024 < SAMPLE_SIZE_THRESHOLD);
+        const { assert!(1024 * 1024 < SAMPLE_SIZE_THRESHOLD) };
         let small_movie = write_video(&root, "Short.Film.1998.480p.DVDRip.mkv", 1024 * 1024);
         assert!(is_sample_file(Path::new(&small_movie.file_path)));
         assert!(!is_sample_named_file(Path::new(&small_movie.file_path)));

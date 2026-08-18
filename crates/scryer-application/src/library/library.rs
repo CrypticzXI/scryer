@@ -27,11 +27,11 @@ use crate::library_scan_metadata::{
     series_candidate_batch_search_keys,
 };
 use crate::library_scan_titles::{
-    append_movie_title, append_series_title, build_movie_probe_path_indexes,
+    TitleNameIndex, append_movie_title, append_series_title, build_movie_probe_path_indexes,
     build_movie_title_indexes, build_new_title_from_metadata_match,
     build_series_title_folder_path_index, build_series_title_indexes,
-    find_existing_title_index_for_metadata_match, update_movie_probe_path_index,
-    update_series_title_folder_path_index,
+    find_existing_title_index_for_metadata_match, title_year_compatible,
+    update_movie_probe_path_index, update_series_title_folder_path_index,
 };
 use crate::library_scan_unmatched::{
     build_movie_unmatched_scan_item, build_series_unmatched_scan_item,

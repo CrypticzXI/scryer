@@ -153,6 +153,14 @@ export const PendingImportCard = React.memo(function PendingImportCard({
             )}
           </div>
         ) : null}
+        {isOwnershipConflict ? (
+          <p
+            className="rounded-lg border border-border/80 bg-background/60 p-3 text-sm text-muted-foreground"
+            data-ui="pending-import-ownership-conflict-help"
+          >
+            {t("pendingImports.ownershipConflictHelp")}
+          </p>
+        ) : null}
         {isActive && canSearchOrBind ? (
           <div className="space-y-3 rounded-lg border border-border/80 bg-background/60 p-3">
             {item.titleId ? (
