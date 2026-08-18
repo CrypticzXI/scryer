@@ -300,7 +300,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
             episode_number: Some("29".to_string()),
             season_number: Some("4".to_string()),
             episode_label: Some("S04E29".to_string()),
-            title: Some("The Final Chapters Special 1".to_string()),
+            title: Some("The Last Signal Special 1".to_string()),
             air_date: None,
             duration_seconds: Some(1440),
             has_multi_audio: false,
@@ -326,7 +326,7 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
             episode_number: Some("30".to_string()),
             season_number: Some("4".to_string()),
             episode_label: Some("S04E30".to_string()),
-            title: Some("The Final Chapters Special 2".to_string()),
+            title: Some("The Last Signal Special 2".to_string()),
             air_date: None,
             duration_seconds: Some(1440),
             has_multi_audio: false,
@@ -346,10 +346,10 @@ async fn graphql_scan_title_library_keeps_standard_episode_titles_with_special_i
     let season_dir = media_root.path().join(&title.name).join("Season 04");
     std::fs::create_dir_all(&season_dir).expect("create season dir");
     let file_path_29 =
-        season_dir.join("Attack.on.Titan.S04E29.The.Final.Chapters.Special.1.1080p.WEB-DL.mkv");
+        season_dir.join("Stoneguard.S04E29.The.Last.Signal.Special.1.1080p.WEB-DL.mkv");
     std::fs::write(&file_path_29, b"not-a-real-video").expect("write episode 29");
     let file_path_30 =
-        season_dir.join("Attack.on.Titan.S04E30.The.Final.Chapters.Special.2.1080p.WEB-DL.mkv");
+        season_dir.join("Stoneguard.S04E30.The.Last.Signal.Special.2.1080p.WEB-DL.mkv");
     std::fs::write(&file_path_30, b"not-a-real-video").expect("write episode 30");
 
     let body = gql(
@@ -508,7 +508,7 @@ async fn graphql_scan_title_library_matches_daily_episodes_by_air_date() {
     let ctx = TestContext::new().await;
     let media_root = tempfile::tempdir().expect("media root tempdir");
     let (title, collection) =
-        create_series_scan_title(&ctx, media_root.path(), "Daily Show", vec![]).await;
+        create_series_scan_title(&ctx, media_root.path(), "Harbor Report", vec![]).await;
     let episode = Episode {
         id: Id::new().0,
         title_id: title.id.clone(),
@@ -539,7 +539,7 @@ async fn graphql_scan_title_library_matches_daily_episodes_by_air_date() {
 
     let season_dir = media_root.path().join(&title.name).join("Season 01");
     std::fs::create_dir_all(&season_dir).expect("create season dir");
-    let file_path = season_dir.join("Daily.Show.2024.03.15.1080p.WEB-DL.mkv");
+    let file_path = season_dir.join("Harbor.Report.2024.03.15.1080p.WEB-DL.mkv");
     std::fs::write(&file_path, b"not-a-real-video").expect("write fake video");
 
     let body = gql(

@@ -286,7 +286,7 @@ function validateFolderTemplate(
 }
 
 const RENAME_PREVIEW_MOVIE_SAMPLE: Record<string, string> = {
-  title: "The Dark Knight", year: "2008", quality: "2160p", edition: "IMAX",
+  title: "The Grey Harbor", year: "2008", quality: "2160p", edition: "IMAX",
   source: "BluRay", video_codec: "x265", audio_codec: "DTS-HD MA",
   audio_channels: "5.1", group: "FraMeSToR", ext: "mkv",
   imdb_id: "tt0468569", tmdb_id: "155", tvdb_id: "123456",
@@ -295,7 +295,7 @@ const RENAME_PREVIEW_MOVIE_SAMPLE: Record<string, string> = {
 };
 
 const RENAME_PREVIEW_SERIES_SAMPLE: Record<string, string> = {
-  title: "Friends", year: "1994", quality: "1080p", edition: "Director's Cut",
+  title: "Harbor Lights", year: "1994", quality: "1080p", edition: "Director's Cut",
   source: "WEB-DL", video_codec: "x264", audio_codec: "AAC",
   audio_channels: "2.0", group: "NTb", ext: "mkv",
   imdb_id: "tt0108778", tmdb_id: "1668", tvdb_id: "79168",

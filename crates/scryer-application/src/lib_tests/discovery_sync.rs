@@ -1934,7 +1934,7 @@ async fn catalog_discovery_excludes_public_rows_owned_by_normalized_external_id(
     );
     let mut owned_movie = test_title(
         "owned-matrix",
-        "The Matrix",
+        "The Meridian",
         MediaFacet::Movie,
         vec![("tmdb_movie", "603")],
     );

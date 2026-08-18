@@ -81,21 +81,21 @@ async fn verify_manual_import_terminalizes_after_successful_retry_for_any_client
 
 #[tokio::test]
 async fn verify_manual_import_terminalizes_complete_series_movie_source() {
-    let title = build_title("title-1", "DuckTales", MediaFacet::Series);
+    let title = build_title("title-1", "HarborTales", MediaFacet::Series);
     let artifacts = vec![build_artifact(
         "dl-1",
         "movie-file",
-        "DuckTales.The.Movie.mkv",
+        "HarborTales.The.Movie.mkv",
     )];
     let app = build_app(vec![title], vec![], vec![], artifacts);
-    let td = build_tracked_download("title-1", "series", "DuckTales.The.Movie.1990");
+    let td = build_tracked_download("title-1", "series", "HarborTales.The.Movie.1990");
 
     assert!(verify_manual_import(&app, &td, 1, Some(1)).await);
 }
 
 #[tokio::test]
 async fn verify_import_requires_full_season_pack_coverage() {
-    let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+    let title = build_title("title-1", "Lantern Watch Legacy", MediaFacet::Series);
     let collection = build_collection("season-2", "title-1", "2");
     let episodes = vec![
         build_episode("ep-201", "title-1", "season-2", "2", "1", None),
@@ -110,11 +110,11 @@ async fn verify_import_requires_full_season_pack_coverage() {
     let td = build_tracked_download(
         "title-1",
         "series",
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
     );
 
     let parsed = crate::parse_release_metadata(
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
     );
     assert_eq!(
         parsed.episode.as_ref().and_then(|episode| episode.season),
@@ -132,17 +132,19 @@ async fn verify_import_requires_full_season_pack_coverage() {
 #[tokio::test]
 async fn verify_import_accepts_resolved_season_pack_when_visible_source_units_are_imported() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let first_video = std::fs::File::create(temp_dir.path().join("Star.Trek.Picard.S02E01.mkv"))
-        .expect("create first video");
+    let first_video =
+        std::fs::File::create(temp_dir.path().join("Lantern.Watch.Legacy.S02E01.mkv"))
+            .expect("create first video");
     first_video
         .set_len(60 * 1024 * 1024)
         .expect("size first video");
-    let second_video = std::fs::File::create(temp_dir.path().join("Star.Trek.Picard.S02E02.mkv"))
-        .expect("create second video");
+    let second_video =
+        std::fs::File::create(temp_dir.path().join("Lantern.Watch.Legacy.S02E02.mkv"))
+            .expect("create second video");
     second_video
         .set_len(60 * 1024 * 1024)
         .expect("size second video");
-    let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+    let title = build_title("title-1", "Lantern Watch Legacy", MediaFacet::Series);
     let collection = build_collection("season-2", "title-1", "2");
     let episodes = vec![
         build_episode("ep-201", "title-1", "season-2", "2", "1", None),
@@ -157,10 +159,10 @@ async fn verify_import_accepts_resolved_season_pack_when_visible_source_units_ar
     let td = build_tracked_download(
         "title-1",
         "series",
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
     );
     let completed = build_completed_download(
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
         temp_dir.path().to_string_lossy().as_ref(),
         Some("series"),
     );
@@ -173,25 +175,25 @@ async fn verify_import_accepts_resolved_season_pack_when_visible_source_units_ar
 async fn verify_import_accepts_resolved_pack_when_move_removed_source_but_artifacts_cover_source_units()
  {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+    let title = build_title("title-1", "Lantern Watch Legacy", MediaFacet::Series);
     let collection = build_collection("season-2", "title-1", "2");
     let episodes = vec![
         build_episode("ep-201", "title-1", "season-2", "2", "1", None),
         build_episode("ep-202", "title-1", "season-2", "2", "2", None),
         build_episode("ep-203", "title-1", "season-2", "2", "3", None),
     ];
-    let mut first = build_artifact("dl-1", "ep-201", "Star.Trek.Picard.S02E01.mkv");
-    first.relative_path = Some("Season 02/Star.Trek.Picard.S02E01.mkv".to_string());
-    let mut second = build_artifact("dl-1", "ep-202", "Star.Trek.Picard.S02E02.mkv");
-    second.relative_path = Some("Season 02/Star.Trek.Picard.S02E02.mkv".to_string());
+    let mut first = build_artifact("dl-1", "ep-201", "Lantern.Watch.Legacy.S02E01.mkv");
+    first.relative_path = Some("Season 02/Lantern.Watch.Legacy.S02E01.mkv".to_string());
+    let mut second = build_artifact("dl-1", "ep-202", "Lantern.Watch.Legacy.S02E02.mkv");
+    second.relative_path = Some("Season 02/Lantern.Watch.Legacy.S02E02.mkv".to_string());
     let app = build_app(vec![title], vec![collection], episodes, vec![first, second]);
     let td = build_tracked_download(
         "title-1",
         "series",
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
     );
     let completed = build_completed_download(
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
         temp_dir.path().to_string_lossy().as_ref(),
         Some("series"),
     );
@@ -202,24 +204,24 @@ async fn verify_import_accepts_resolved_pack_when_move_removed_source_but_artifa
 #[tokio::test]
 async fn verify_import_rejects_artifact_manifest_when_source_episode_lacks_successful_coverage() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+    let title = build_title("title-1", "Lantern Watch Legacy", MediaFacet::Series);
     let collection = build_collection("season-2", "title-1", "2");
     let episodes = vec![
         build_episode("ep-201", "title-1", "season-2", "2", "1", None),
         build_episode("ep-202", "title-1", "season-2", "2", "2", None),
         build_episode("ep-203", "title-1", "season-2", "2", "3", None),
     ];
-    let mut first = build_artifact("dl-1", "ep-201", "Star.Trek.Picard.S02E01.mkv");
-    first.relative_path = Some("Season 02/Star.Trek.Picard.S02E01.mkv".to_string());
-    let mut second = build_artifact("dl-1", "ep-202", "Star.Trek.Picard.S02E02.mkv");
-    second.relative_path = Some("Season 02/Star.Trek.Picard.S02E02.mkv".to_string());
+    let mut first = build_artifact("dl-1", "ep-201", "Lantern.Watch.Legacy.S02E01.mkv");
+    first.relative_path = Some("Season 02/Lantern.Watch.Legacy.S02E01.mkv".to_string());
+    let mut second = build_artifact("dl-1", "ep-202", "Lantern.Watch.Legacy.S02E02.mkv");
+    second.relative_path = Some("Season 02/Lantern.Watch.Legacy.S02E02.mkv".to_string());
     let mut third = build_artifact_with_result(
         "dl-1",
         Some("ep-203"),
-        "Star.Trek.Picard.S02E03.mkv",
+        "Lantern.Watch.Legacy.S02E03.mkv",
         "rejected",
     );
-    third.relative_path = Some("Season 02/Star.Trek.Picard.S02E03.mkv".to_string());
+    third.relative_path = Some("Season 02/Lantern.Watch.Legacy.S02E03.mkv".to_string());
     let app = build_app(
         vec![title],
         vec![collection],
@@ -229,10 +231,10 @@ async fn verify_import_rejects_artifact_manifest_when_source_episode_lacks_succe
     let td = build_tracked_download(
         "title-1",
         "series",
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
     );
     let completed = build_completed_download(
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
         temp_dir.path().to_string_lossy().as_ref(),
         Some("series"),
     );
@@ -243,24 +245,25 @@ async fn verify_import_rejects_artifact_manifest_when_source_episode_lacks_succe
 #[tokio::test]
 async fn verify_import_rejects_artifact_manifest_with_unmapped_source_group() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+    let title = build_title("title-1", "Lantern Watch Legacy", MediaFacet::Series);
     let collection = build_collection("season-2", "title-1", "2");
     let episodes = vec![
         build_episode("ep-201", "title-1", "season-2", "2", "1", None),
         build_episode("ep-202", "title-1", "season-2", "2", "2", None),
         build_episode("ep-203", "title-1", "season-2", "2", "3", None),
     ];
-    let mut first = build_artifact("dl-1", "ep-201", "Star.Trek.Picard.S02E01.mkv");
-    first.relative_path = Some("Season 02/Star.Trek.Picard.S02E01.mkv".to_string());
-    let mut second = build_artifact("dl-1", "ep-202", "Star.Trek.Picard.S02E02.mkv");
-    second.relative_path = Some("Season 02/Star.Trek.Picard.S02E02.mkv".to_string());
+    let mut first = build_artifact("dl-1", "ep-201", "Lantern.Watch.Legacy.S02E01.mkv");
+    first.relative_path = Some("Season 02/Lantern.Watch.Legacy.S02E01.mkv".to_string());
+    let mut second = build_artifact("dl-1", "ep-202", "Lantern.Watch.Legacy.S02E02.mkv");
+    second.relative_path = Some("Season 02/Lantern.Watch.Legacy.S02E02.mkv".to_string());
     let mut unmapped = build_artifact_with_result(
         "dl-1",
         None,
-        "Star.Trek.Picard.Special.Featurette.mkv",
+        "Lantern.Watch.Legacy.Special.Featurette.mkv",
         "rejected",
     );
-    unmapped.relative_path = Some("Season 02/Star.Trek.Picard.Special.Featurette.mkv".to_string());
+    unmapped.relative_path =
+        Some("Season 02/Lantern.Watch.Legacy.Special.Featurette.mkv".to_string());
     let app = build_app(
         vec![title],
         vec![collection],
@@ -270,10 +273,10 @@ async fn verify_import_rejects_artifact_manifest_with_unmapped_source_group() {
     let td = build_tracked_download(
         "title-1",
         "series",
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
     );
     let completed = build_completed_download(
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
         temp_dir.path().to_string_lossy().as_ref(),
         Some("series"),
     );
@@ -293,7 +296,7 @@ async fn verify_import_does_not_over_credit_duplicate_visible_basenames_from_fil
         let video = std::fs::File::create(path).expect("create source video");
         video.set_len(60 * 1024 * 1024).expect("size source video");
     }
-    let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+    let title = build_title("title-1", "Lantern Watch Legacy", MediaFacet::Series);
     let collection = build_collection("season-2", "title-1", "2");
     let episodes = vec![
         build_episode("ep-201", "title-1", "season-2", "2", "1", None),
@@ -304,10 +307,10 @@ async fn verify_import_does_not_over_credit_duplicate_visible_basenames_from_fil
     let td = build_tracked_download(
         "title-1",
         "series",
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
     );
     let completed = build_completed_download(
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
         temp_dir.path().to_string_lossy().as_ref(),
         Some("series"),
     );
@@ -319,15 +322,15 @@ async fn verify_import_does_not_over_credit_duplicate_visible_basenames_from_fil
 async fn verify_import_rejects_resolved_pack_when_visible_source_episode_is_not_imported() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     for file_name in [
-        "Star.Trek.Picard.S02E01.mkv",
-        "Star.Trek.Picard.S02E02.mkv",
-        "Star.Trek.Picard.S02E03.mkv",
+        "Lantern.Watch.Legacy.S02E01.mkv",
+        "Lantern.Watch.Legacy.S02E02.mkv",
+        "Lantern.Watch.Legacy.S02E03.mkv",
     ] {
         let video =
             std::fs::File::create(temp_dir.path().join(file_name)).expect("create source video");
         video.set_len(60 * 1024 * 1024).expect("size source video");
     }
-    let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+    let title = build_title("title-1", "Lantern Watch Legacy", MediaFacet::Series);
     let collection = build_collection("season-2", "title-1", "2");
     let episodes = vec![
         build_episode("ep-201", "title-1", "season-2", "2", "1", None),
@@ -342,10 +345,10 @@ async fn verify_import_rejects_resolved_pack_when_visible_source_episode_is_not_
     let td = build_tracked_download(
         "title-1",
         "series",
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
     );
     let completed = build_completed_download(
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
         temp_dir.path().to_string_lossy().as_ref(),
         Some("series"),
     );
@@ -357,15 +360,15 @@ async fn verify_import_rejects_resolved_pack_when_visible_source_episode_is_not_
 async fn verify_import_rejects_resolved_pack_with_unmapped_visible_source_video() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     for file_name in [
-        "Star.Trek.Picard.S02E01.mkv",
-        "Star.Trek.Picard.S02E02.mkv",
+        "Lantern.Watch.Legacy.S02E01.mkv",
+        "Lantern.Watch.Legacy.S02E02.mkv",
         "Behind.The.Scenes.mkv",
     ] {
         let video =
             std::fs::File::create(temp_dir.path().join(file_name)).expect("create source video");
         video.set_len(60 * 1024 * 1024).expect("size source video");
     }
-    let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+    let title = build_title("title-1", "Lantern Watch Legacy", MediaFacet::Series);
     let collection = build_collection("season-2", "title-1", "2");
     let episodes = vec![
         build_episode("ep-201", "title-1", "season-2", "2", "1", None),
@@ -380,10 +383,10 @@ async fn verify_import_rejects_resolved_pack_with_unmapped_visible_source_video(
     let td = build_tracked_download(
         "title-1",
         "series",
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
     );
     let completed = build_completed_download(
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
         temp_dir.path().to_string_lossy().as_ref(),
         Some("series"),
     );
@@ -393,7 +396,7 @@ async fn verify_import_rejects_resolved_pack_with_unmapped_visible_source_video(
 
 #[tokio::test]
 async fn verify_import_accepts_full_season_pack_coverage() {
-    let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+    let title = build_title("title-1", "Lantern Watch Legacy", MediaFacet::Series);
     let collection = build_collection("season-2", "title-1", "2");
     let episodes = vec![
         build_episode("ep-201", "title-1", "season-2", "2", "1", None),
@@ -409,7 +412,7 @@ async fn verify_import_accepts_full_season_pack_coverage() {
     let td = build_tracked_download(
         "title-1",
         "series",
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
     );
 
     assert!(verify_import(&app, &td, 0).await);
@@ -417,7 +420,7 @@ async fn verify_import_accepts_full_season_pack_coverage() {
 
 #[tokio::test]
 async fn verify_import_ignores_rejected_extras_when_expected_units_are_satisfied() {
-    let title = build_title("title-1", "Star Trek Picard", MediaFacet::Series);
+    let title = build_title("title-1", "Lantern Watch Legacy", MediaFacet::Series);
     let collection = build_collection("season-2", "title-1", "2");
     let episodes = vec![
         build_episode("ep-201", "title-1", "season-2", "2", "1", None),
@@ -434,7 +437,7 @@ async fn verify_import_ignores_rejected_extras_when_expected_units_are_satisfied
     let td = build_tracked_download(
         "title-1",
         "series",
-        "Star.Trek.Picard.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
+        "Lantern.Watch.Legacy.S02.2022.Complete.1080p.Amazon.WEB-DL.AVC.DDP.5.1-DBTV",
     );
 
     assert!(verify_import(&app, &td, 0).await);
@@ -547,7 +550,7 @@ async fn verify_import_absolute_range_blocks_when_monitored_episode_missing() {
 async fn verify_import_partial_pack_accepts_one_monitored_episode() {
     let title = build_title(
         "title-1",
-        "Nightfall!! Heavy Metal, Dark Fantasy",
+        "Nightfall!! Heavy Chorus, Dark Lantern",
         MediaFacet::Anime,
     );
     let collection = build_collection("season-1", "title-1", "1");
@@ -560,7 +563,7 @@ async fn verify_import_partial_pack_accepts_one_monitored_episode() {
     let td = build_tracked_download(
         "title-1",
         "anime",
-        "[EMBER] NIGHTFALL‼ Heavy Metal, Dark Fantasy (2022) (Season 1 | Part 02) [1080p] [Dual Audio HEVC 10 bits WEBRip AAC] (Batch)",
+        "[EMBER] NIGHTFALL‼ Heavy Chorus, Dark Lantern (2022) (Season 1 | Part 02) [1080p] [Dual Audio HEVC 10 bits WEBRip AAC] (Batch)",
     );
     match expected_episode_units(&app, &td).await {
         ExpectedEpisodeResolution::AtLeastOne(expected) => {

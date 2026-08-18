@@ -4622,6 +4622,97 @@ async fn manual_import_still_accepts_file_whose_name_matches_no_episode() {
 }
 
 #[tokio::test]
+async fn manual_import_of_a_file_already_in_place_is_satisfied_not_failed() {
+    // Prod 2026-08-18: an operator re-ran a manual import whose file an earlier
+    // import had already landed byte-for-byte; the mapping came back as a
+    // failed import ("destination exists with identical size", code unknown),
+    // so the download stayed blocked in Activity and every retry failed the
+    // same way. The identical file being in place IS the import: the mapping
+    // is satisfied, recorded as `already_present` like the automatic path, and
+    // the manual import completes.
+    let FailClosedPackFixture {
+        app,
+        user,
+        title,
+        episode,
+        import_artifacts,
+        ..
+    } = fail_closed_pack_fixture().await;
+
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let release_name = "Fail.Closed.Pack.S01E01.1080p.WEB-DL";
+    let source_file = write_pack_video(source_dir.path(), &format!("{release_name}.mkv"));
+    let completed = series_pack_completed_download(
+        "pack-already-in-place",
+        &title.id,
+        release_name,
+        source_dir.path(),
+    );
+    let mappings = vec![ManualImportFileMapping {
+        file_path: source_file.to_string_lossy().into_owned(),
+        episode_id: Some(episode.id.clone()),
+        series_movie_link_id: None,
+    }];
+    let source_root =
+        Some(std::fs::canonicalize(source_dir.path()).expect("canonical source root"));
+
+    let first = crate::import_workflow::execute_manual_import(
+        &app,
+        &user,
+        "manual-import-lands-the-file",
+        &title.id,
+        Some(&completed),
+        mappings.clone(),
+        source_root.clone(),
+    )
+    .await
+    .expect("first manual import");
+    assert!(first.iter().all(|result| result.success), "{first:?}");
+
+    // The copying importer leaves the source in place; importing the same
+    // mapping again finds the identical file already at the destination.
+    let second = crate::import_workflow::execute_manual_import(
+        &app,
+        &user,
+        "manual-import-already-in-place",
+        &title.id,
+        Some(&completed),
+        mappings,
+        source_root,
+    )
+    .await
+    .expect("second manual import");
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert!(
+        second[0].success && !second[0].skipped && second[0].error_code.is_none(),
+        "an identical file already in place must satisfy the mapping: {second:?}"
+    );
+
+    let artifacts = import_artifacts
+        .artifacts_for_file(&format!("{release_name}.mkv"))
+        .await;
+    assert!(
+        artifacts
+            .iter()
+            .any(|artifact| artifact.result == "already_present"),
+        "the re-run must record the unit as already present: {artifacts:?}"
+    );
+
+    let media_files = app
+        .services
+        .library
+        .media_files
+        .list_media_files_for_title(&title.id)
+        .await
+        .expect("list media files");
+    assert_eq!(
+        media_files.len(),
+        1,
+        "the re-run must not duplicate the catalog row: {media_files:?}"
+    );
+}
+
+#[tokio::test]
 async fn scryer_manual_import_defaults_to_grabbed_scope_but_accepts_same_title_override() {
     let FailClosedPackFixture {
         app,
@@ -4665,7 +4756,7 @@ async fn scryer_manual_import_defaults_to_grabbed_scope_but_accepts_same_title_o
         .await
         .expect("create selected episode");
     let source_dir = tempfile::tempdir().expect("source tempdir");
-    let source_file = write_pack_video(source_dir.path(), "Shogun — S01E03 2160p WEB-DL.mkv");
+    let source_file = write_pack_video(source_dir.path(), "Tokan — S01E03 2160p WEB-DL.mkv");
     let evidence = crate::import_workflow::ReleaseEvidence::ScryerSubmission {
         title_id: title.id.clone(),
         facet: "series".to_string(),

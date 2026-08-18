@@ -17,7 +17,7 @@ use std::collections::HashSet;
 /// Identity ambiguity for a canonical title (Pillar A tier 0): lookup keys that
 /// cannot identify this title on their own. This includes keys shared with
 /// another library title and the bare form of an explicitly year-qualified
-/// canonical title such as `One Piece (2023)`.
+/// canonical title such as `Tide Chart (2023)`.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TitleIdentityAmbiguity {
     pub(crate) shared_lookup_keys: Vec<String>,
@@ -508,8 +508,8 @@ pub(crate) fn context_free_identity_anchor_keys(raw_title: &str) -> Vec<String> 
     extracted.push(neutral.normalized_title.clone());
 
     // Year tokens in the raw name re-attach to the extraction: a boundary
-    // heuristic reads `Blade.Runner.2049.2160p` as title `Blade Runner`, but
-    // the subject's key is `blade runner 2049`.
+    // heuristic reads `Signal.Runner.2049.2160p` as title `Signal Runner`, but
+    // the subject's key is `signal runner 2049`.
     let mut year_tokens = Vec::<String>::new();
     for digits in raw_title.split(|ch: char| !ch.is_ascii_digit()) {
         if digits.len() == 4
@@ -972,7 +972,7 @@ pub(crate) fn serialize_decision_explanation(candidate: &IndexerSearchResult) ->
 /// Sonarr-style episode anchoring for numbering-scoped subjects: an episode or
 /// season search must not auto-grab a release whose parse carries no episode
 /// identity at all (movie-shaped bare-title junk survives the title guard for
-/// generic names like "Friends"), or whose numbering contradicts the target.
+/// generic names like "Pals"), or whose numbering contradicts the target.
 /// Absent parse data stays permissive — the ambiguous/unparseable handling in
 /// `evaluate_auto_candidate` owns that case. Daily (air-date) and season-pack
 /// parses carry an episode identity and are only checked for fields both
@@ -1788,7 +1788,7 @@ mod tests {
             country: None,
             aliases: vec![],
             tagged_aliases: vec![TaggedAlias {
-                name: "Nightfall Heavy Metal Dark Fantasy".to_string(),
+                name: "Nightfall Heavy Chorus Dark Lantern".to_string(),
                 language: "eng".to_string(),
             }],
             metadata_language: None,
@@ -1937,18 +1937,18 @@ mod tests {
         assert!(keys.iter().any(|key| key == "nightfall"));
         assert!(
             keys.iter()
-                .any(|key| key == "nightfall heavy metal dark fantasy")
+                .any(|key| key == "nightfall heavy chorus dark lantern")
         );
     }
 
     #[test]
     fn upstream_validation_cannot_bypass_raw_title_proof() {
         let mut title = make_title();
-        title.name = "Resident Evil".to_string();
+        title.name = "Amber Circuit".to_string();
         title.facet = MediaFacet::Movie;
         title.year = Some(2026);
         let candidate = make_candidate(
-            "Resident.Evil.2002.1080p.WEB-DL",
+            "Amber.Circuit.2002.1080p.WEB-DL",
             Some(ReleaseCandidateProvenance {
                 search_subject_kind: ReleaseSearchSubjectKind::Episode,
                 strategy_kind: ReleaseStrategyKind::IdBacked,
@@ -1965,12 +1965,12 @@ mod tests {
     #[test]
     fn text_title_matching_rejects_only_mismatched_parsed_years() {
         let mut title = make_title();
-        title.name = "Resident Evil".to_string();
+        title.name = "Amber Circuit".to_string();
         title.facet = MediaFacet::Movie;
         title.year = Some(2026);
         let evidence = canonical_title_evidence(&title);
 
-        let mismatched = crate::parse_release_metadata("Resident.Evil.2002.1080p.WEB-DL");
+        let mismatched = crate::parse_release_metadata("Amber.Circuit.2002.1080p.WEB-DL");
         assert_eq!(mismatched.year, Some(2002));
         assert!(!parsed_release_matches_title_evidence(
             &mismatched,
@@ -1992,15 +1992,15 @@ mod tests {
     #[test]
     fn automatic_text_candidate_with_mismatched_year_is_not_eligible() {
         let mut title = make_title();
-        title.name = "Resident Evil".to_string();
+        title.name = "Amber Circuit".to_string();
         title.facet = MediaFacet::Movie;
         title.year = Some(2026);
-        let candidate = make_candidate("Resident.Evil.2002.1080p.WEB-DL", None);
+        let candidate = make_candidate("Amber.Circuit.2002.1080p.WEB-DL", None);
         let subject = ResolvedReleaseSearchSubject {
             title_id: title.id.clone(),
             title_tags: title.tags.clone(),
             title_evidence: canonical_title_evidence(&title),
-            queries: vec!["Resident Evil 2026".to_string()],
+            queries: vec!["Amber Circuit 2026".to_string()],
             imdb_id: None,
             tmdb_id: None,
             tvdb_id: None,
@@ -2081,15 +2081,15 @@ mod tests {
 
     #[test]
     fn episode_subject_rejects_candidates_without_episode_identity() {
-        // Bare-title junk for a generic name ("Friends") carries neither a
+        // Bare-title junk for a generic name ("Pals") carries neither a
         // contradicting year nor episode numbering — the movie-shaped parse is
         // the only signal, and an episode-scoped subject must refuse it.
         let mut title = make_title();
-        title.name = "Friends".to_string();
+        title.name = "Pals".to_string();
         title.facet = MediaFacet::Series;
         title.year = Some(1994);
         let subject = numbering_scoped_subject(&title, Some(9), Some(23));
-        let candidate = make_candidate("Friends.1080p.BluRay.x264-GRP", None);
+        let candidate = make_candidate("Pals.1080p.BluRay.x264-GRP", None);
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
@@ -2119,11 +2119,11 @@ mod tests {
     #[test]
     fn episode_subject_rejects_contradicting_season_numbering() {
         let mut title = make_title();
-        title.name = "Friends".to_string();
+        title.name = "Pals".to_string();
         title.facet = MediaFacet::Series;
         title.year = Some(1994);
         let subject = numbering_scoped_subject(&title, Some(9), Some(23));
-        let candidate = make_candidate("Friends.S05E01.1080p.WEB-DL", None);
+        let candidate = make_candidate("Pals.S05E01.1080p.WEB-DL", None);
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
@@ -2152,15 +2152,15 @@ mod tests {
 
     #[test]
     fn episode_subject_accepts_matching_numbering() {
-        // A real multi-episode release (Friends.S09E23E24) agrees on season
+        // A real multi-episode release (Pals.S09E23E24) agrees on season
         // and contains the wanted episode; it must clear the numbering gate
         // and fall through to the quality decision (absent here → blocked).
         let mut title = make_title();
-        title.name = "Friends".to_string();
+        title.name = "Pals".to_string();
         title.facet = MediaFacet::Series;
         title.year = Some(1994);
         let subject = numbering_scoped_subject(&title, Some(9), Some(23));
-        let candidate = make_candidate("Friends.S09E23E24.1080p.BluRay.x264-TENEIGHTY", None);
+        let candidate = make_candidate("Pals.S09E23E24.1080p.BluRay.x264-TENEIGHTY", None);
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
@@ -2188,45 +2188,45 @@ mod tests {
     }
 
     #[test]
-    fn friends_year_bearing_junk_is_vetoed_but_bare_releases_match() {
+    fn pals_year_bearing_junk_is_vetoed_but_bare_releases_match() {
         // Pins the intent of the unconditional year veto: wrong-property junk
-        // that carries its own year (the Korean "Friends" class) must never
+        // that carries its own year (a same-name twin) must never
         // match the 1994 series, while the real scene releases — which are
         // bare-titled — must keep matching.
         let mut title = make_title();
-        title.name = "Friends".to_string();
+        title.name = "Pals".to_string();
         title.facet = MediaFacet::Series;
         title.year = Some(1994);
         let evidence = canonical_title_evidence(&title);
 
-        let mut junk = crate::parse_release_metadata("Friends.S01E01.1080p.WEB-DL");
+        let mut junk = crate::parse_release_metadata("Pals.S01E01.1080p.WEB-DL");
         junk.year = Some(2002);
         assert!(!parsed_release_matches_title_evidence(&junk, &evidence));
 
         let legit =
-            crate::parse_release_metadata("Friends.S09E23E24.1080p.NF.WEB-DL.DDP5.1.x264-PRAGMA");
+            crate::parse_release_metadata("Pals.S09E23E24.1080p.NF.WEB-DL.DDP5.1.x264-PRAGMA");
         assert_eq!(legit.year, None);
         assert!(parsed_release_matches_title_evidence(&legit, &evidence));
     }
 
     // ── Pillar A: identity ambiguity + required disambiguators ───────────────
 
-    /// The incident pair: a live-action `One Piece` (2023, series) and the
-    /// anime `One Piece` (1999) in the same library, both claiming the bare
-    /// canonical key `one piece`. `aliases` is applied to the live-action title
+    /// The incident pair: a live-action `Tide Chart` (2023, series) and the
+    /// anime `Tide Chart` (1999) in the same library, both claiming the bare
+    /// canonical key `tide chart`. `aliases` is applied to the live-action title
     /// so a unique-alias hit can be exercised.
-    fn one_piece_library(aliases: Vec<String>) -> (Title, Vec<Title>) {
+    fn tide_chart_library(aliases: Vec<String>) -> (Title, Vec<Title>) {
         let mut live_action = make_title();
-        live_action.id = "title-one-piece-live".to_string();
-        live_action.name = "One Piece".to_string();
+        live_action.id = "title-tide-chart-live".to_string();
+        live_action.name = "Tide Chart".to_string();
         live_action.facet = MediaFacet::Series;
         live_action.year = Some(2023);
         live_action.aliases = aliases;
         live_action.tagged_aliases = Vec::new();
 
         let mut anime = make_title();
-        anime.id = "title-one-piece-anime".to_string();
-        anime.name = "One Piece".to_string();
+        anime.id = "title-tide-chart-anime".to_string();
+        anime.name = "Tide Chart".to_string();
         anime.facet = MediaFacet::Anime;
         anime.year = Some(1999);
         anime.aliases = Vec::new();
@@ -2287,22 +2287,22 @@ mod tests {
 
     #[test]
     fn library_local_collision_flags_shared_bare_key() {
-        let (live_action, library) = one_piece_library(vec!["One Piece Live Action".to_string()]);
+        let (live_action, library) = tide_chart_library(vec!["Tide Chart Live Action".to_string()]);
         let ambiguity = library_local_ambiguity(&live_action, &library);
 
         assert!(ambiguity.requires_disambiguator());
-        assert_eq!(ambiguity.shared_lookup_keys, vec!["one piece".to_string()]);
-        assert!(!ambiguity.key_is_unique_to_title("one piece"));
-        assert!(ambiguity.key_is_unique_to_title("one piece live action"));
+        assert_eq!(ambiguity.shared_lookup_keys, vec!["tide chart".to_string()]);
+        assert!(!ambiguity.key_is_unique_to_title("tide chart"));
+        assert!(ambiguity.key_is_unique_to_title("tide chart live action"));
     }
 
     #[test]
     fn ambiguous_title_rejects_bare_candidate_without_disambiguator() {
-        // The driving incident: a bare `One.Piece.S02E01` names both library
+        // The driving incident: a bare `Tide.Chart.S02E01` names both library
         // titles equally well, so it is not identity evidence for either.
-        let (live_action, library) = one_piece_library(Vec::new());
+        let (live_action, library) = tide_chart_library(Vec::new());
         let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
-        let candidate = make_candidate("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", None);
+        let candidate = make_candidate("Tide.Chart.S02E01.1080p.WEB-DL.x264-GRP", None);
 
         assert_eq!(
             decision_for(&live_action, &subject, &candidate),
@@ -2314,9 +2314,9 @@ mod tests {
     fn ambiguous_title_accepts_year_disambiguator() {
         // A2(1): the release carries the live-action title's year, so it names
         // one of the two colliding titles and clears the identity gate.
-        let (live_action, library) = one_piece_library(Vec::new());
+        let (live_action, library) = tide_chart_library(Vec::new());
         let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
-        let candidate = make_candidate("One.Piece.2023.S02E01.1080p.WEB-DL.x264-GRP", None);
+        let candidate = make_candidate("Tide.Chart.2023.S02E01.1080p.WEB-DL.x264-GRP", None);
 
         assert_eq!(
             decision_for(&live_action, &subject, &candidate),
@@ -2327,9 +2327,9 @@ mod tests {
     #[test]
     fn ambiguous_title_accepts_unique_alias_disambiguator() {
         // A2(3): the matched key is an alias only the live-action title claims.
-        let (live_action, library) = one_piece_library(vec!["One Piece Live Action".to_string()]);
+        let (live_action, library) = tide_chart_library(vec!["Tide Chart Live Action".to_string()]);
         let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
-        let candidate = make_candidate("One.Piece.Live.Action.S02E01.1080p.WEB-DL.x264-GRP", None);
+        let candidate = make_candidate("Tide.Chart.Live.Action.S02E01.1080p.WEB-DL.x264-GRP", None);
 
         assert_eq!(
             decision_for(&live_action, &subject, &candidate),
@@ -2339,10 +2339,10 @@ mod tests {
 
     #[test]
     fn ambiguous_title_rejects_upstream_provenance_without_release_id() {
-        let (live_action, library) = one_piece_library(Vec::new());
+        let (live_action, library) = tide_chart_library(Vec::new());
         let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
         let candidate = make_candidate(
-            "One.Piece.S02E01.1080p.WEB-DL.x264-GRP",
+            "Tide.Chart.S02E01.1080p.WEB-DL.x264-GRP",
             Some(ReleaseCandidateProvenance {
                 search_subject_kind: ReleaseSearchSubjectKind::Episode,
                 strategy_kind: ReleaseStrategyKind::IdBacked,
@@ -2356,10 +2356,10 @@ mod tests {
         );
     }
 
-    fn year_qualified_one_piece() -> Title {
+    fn year_qualified_tide_chart() -> Title {
         let mut title = make_title();
-        title.id = "title-one-piece-live".to_string();
-        title.name = "One Piece (2023)".to_string();
+        title.id = "title-tide-chart-live".to_string();
+        title.name = "Tide Chart (2023)".to_string();
         title.facet = MediaFacet::Series;
         title.year = Some(2023);
         title.external_ids = vec![
@@ -2377,9 +2377,9 @@ mod tests {
 
     #[test]
     fn year_qualified_title_is_ambiguous_without_a_local_collider() {
-        let live_action = year_qualified_one_piece();
+        let live_action = year_qualified_tide_chart();
         let subject = numbering_scoped_subject(&live_action, Some(2), Some(7));
-        let candidate = make_candidate("One.Piece.S02E07.1080p.WEB-DL.x264-GRP", None);
+        let candidate = make_candidate("Tide.Chart.S02E07.1080p.WEB-DL.x264-GRP", None);
 
         assert!(subject.title_evidence.ambiguity.requires_disambiguator());
         assert_eq!(
@@ -2390,25 +2390,25 @@ mod tests {
 
     #[test]
     fn year_qualified_title_accepts_positive_identity_evidence() {
-        let mut live_action = year_qualified_one_piece();
-        live_action.aliases = vec!["One Piece Live Action".to_string()];
+        let mut live_action = year_qualified_tide_chart();
+        live_action.aliases = vec!["Tide Chart Live Action".to_string()];
         let mut subject = numbering_scoped_subject(&live_action, Some(2), Some(7));
         subject.tvdb_id = Some("392276".to_string());
         subject.tmdb_id = Some("111110".to_string());
 
-        let by_year = make_candidate("One.Piece.2023.S02E07.1080p.WEB-DL.x264-GRP", None);
+        let by_year = make_candidate("Tide.Chart.2023.S02E07.1080p.WEB-DL.x264-GRP", None);
         assert_eq!(
             decision_for(&live_action, &subject, &by_year),
             ReleaseAutoDecisionCode::QualityBlocked
         );
 
-        let by_alias = make_candidate("One.Piece.Live.Action.S02E07.1080p.WEB-DL.x264-GRP", None);
+        let by_alias = make_candidate("Tide.Chart.Live.Action.S02E07.1080p.WEB-DL.x264-GRP", None);
         assert_eq!(
             decision_for(&live_action, &subject, &by_alias),
             ReleaseAutoDecisionCode::QualityBlocked
         );
 
-        let mut by_id = make_candidate("One.Piece.S02E07.1080p.WEB-DL.x264-GRP", None);
+        let mut by_id = make_candidate("Tide.Chart.S02E07.1080p.WEB-DL.x264-GRP", None);
         by_id.response_attributes.tvdb_id = Some("392276".to_string());
         assert_eq!(
             decision_for(&live_action, &subject, &by_id),
@@ -2418,12 +2418,12 @@ mod tests {
 
     #[test]
     fn ordinary_title_year_metadata_does_not_require_release_year() {
-        let mut friends = make_title();
-        friends.name = "Friends".to_string();
-        friends.year = Some(1994);
+        let mut pals = make_title();
+        pals.name = "Pals".to_string();
+        pals.year = Some(1994);
 
         assert!(
-            !canonical_title_evidence(&friends)
+            !canonical_title_evidence(&pals)
                 .ambiguity
                 .requires_disambiguator()
         );
@@ -2431,11 +2431,11 @@ mod tests {
 
     #[test]
     fn conflicting_response_id_is_a_title_mismatch_even_when_another_id_agrees() {
-        let live_action = year_qualified_one_piece();
+        let live_action = year_qualified_tide_chart();
         let mut subject = numbering_scoped_subject(&live_action, Some(2), Some(7));
         subject.tvdb_id = Some("392276".to_string());
         subject.tmdb_id = Some("111110".to_string());
-        let mut candidate = make_candidate("One.Piece.S02E07.1080p.WEB-DL.x264-GRP", None);
+        let mut candidate = make_candidate("Tide.Chart.S02E07.1080p.WEB-DL.x264-GRP", None);
         candidate.response_attributes.tvdb_id = Some("392276".to_string());
         candidate.response_attributes.tmdb_id = Some("999999".to_string());
 
@@ -2447,13 +2447,13 @@ mod tests {
 
     #[test]
     fn year_suffixed_title_pair_still_collides_and_bare_release_is_ambiguous() {
-        // Adversarial-review regression: `One Piece` vs `One Piece (2023)` is
+        // Adversarial-review regression: `Tide Chart` vs `Tide Chart (2023)` is
         // the commonest real collision shape; byte-equality collision
         // detection missed it, and the with_year matching bridge then
-        // laundered the synthesized `one piece 2023` key into a "unique
+        // laundered the synthesized `tide chart 2023` key into a "unique
         // alias" disambiguator for a bare release.
-        let (mut live_action, mut library) = one_piece_library(Vec::new());
-        live_action.name = "One Piece (2023)".to_string();
+        let (mut live_action, mut library) = tide_chart_library(Vec::new());
+        live_action.name = "Tide Chart (2023)".to_string();
         library[0] = live_action.clone();
 
         let ambiguity = library_local_ambiguity(&live_action, &library);
@@ -2464,7 +2464,7 @@ mod tests {
 
         let mut subject = numbering_scoped_subject(&live_action, Some(2), Some(1));
         subject.title_evidence = subject.title_evidence.with_ambiguity(ambiguity);
-        let candidate = make_candidate("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", None);
+        let candidate = make_candidate("Tide.Chart.S02E01.1080p.WEB-DL.x264-GRP", None);
         assert_eq!(
             decision_for(&live_action, &subject, &candidate),
             ReleaseAutoDecisionCode::AmbiguousIdentity,
@@ -2476,14 +2476,14 @@ mod tests {
     fn blocklisted_release_reports_blocklisted_not_ambiguous() {
         // A burned release must never be re-parked for review: DbBlocklisted
         // outranks AmbiguousIdentity in the decision order.
-        let (live_action, library) = one_piece_library(Vec::new());
+        let (live_action, library) = tide_chart_library(Vec::new());
         let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
-        let candidate = make_candidate("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", None);
+        let candidate = make_candidate("Tide.Chart.S02E01.1080p.WEB-DL.x264-GRP", None);
 
         let profile = QualityProfile::default();
         let thresholds = AcquisitionThresholds::default();
         let now = Utc::now();
-        let db_blocklist = HashSet::from(["one.piece.s02e01.1080p.web-dl.x264-grp".to_string()]);
+        let db_blocklist = HashSet::from(["tide.chart.s02e01.1080p.web-dl.x264-grp".to_string()]);
         let context = AutoCandidateEvaluationContext {
             title: &live_action,
             subject: &subject,
@@ -2507,11 +2507,11 @@ mod tests {
 
     #[test]
     fn unambiguous_title_demands_no_disambiguator() {
-        // Friends is alone on its canonical key, so a bare scene release keeps
+        // Pals is alone on its canonical key, so a bare scene release keeps
         // clearing the identity gate untouched.
         let mut title = make_title();
-        title.id = "title-friends".to_string();
-        title.name = "Friends".to_string();
+        title.id = "title-pals".to_string();
+        title.name = "Pals".to_string();
         title.facet = MediaFacet::Series;
         title.year = Some(1994);
         title.aliases = Vec::new();
@@ -2520,7 +2520,7 @@ mod tests {
         let subject = ambiguous_episode_subject(&title, &library, Some(9), Some(23));
         assert!(!subject.title_evidence.ambiguity.requires_disambiguator());
 
-        let candidate = make_candidate("Friends.S09E23E24.1080p.BluRay.x264-TENEIGHTY", None);
+        let candidate = make_candidate("Pals.S09E23E24.1080p.BluRay.x264-TENEIGHTY", None);
         assert_eq!(
             decision_for(&title, &subject, &candidate),
             ReleaseAutoDecisionCode::QualityBlocked
@@ -2550,12 +2550,12 @@ mod tests {
         // D2 on the response lane: the indexer filed this under anime only, and
         // the wanted item is a plain series episode.
         let mut title = make_title();
-        title.name = "Friends".to_string();
+        title.name = "Pals".to_string();
         title.facet = MediaFacet::Series;
         title.year = Some(1994);
         let subject = numbering_scoped_subject(&title, Some(9), Some(23));
         let candidate = series_episode_candidate(
-            "Friends.S09E23E24.1080p.BluRay.x264-TENEIGHTY",
+            "Pals.S09E23E24.1080p.BluRay.x264-TENEIGHTY",
             response_categories(&["5070"]),
         );
 
@@ -2570,12 +2570,12 @@ mod tests {
         // The set rule: `5000` is a plain-TV assertion the series subject
         // satisfies, so the additional `5070` is not a contradiction.
         let mut title = make_title();
-        title.name = "Friends".to_string();
+        title.name = "Pals".to_string();
         title.facet = MediaFacet::Series;
         title.year = Some(1994);
         let subject = numbering_scoped_subject(&title, Some(9), Some(23));
         let candidate = series_episode_candidate(
-            "Friends.S09E23E24.1080p.BluRay.x264-TENEIGHTY",
+            "Pals.S09E23E24.1080p.BluRay.x264-TENEIGHTY",
             response_categories(&["5000", "5070"]),
         );
 
@@ -2589,11 +2589,11 @@ mod tests {
     fn ambiguous_title_accepts_response_id_disambiguator() {
         // A2(2): the indexer asserts the live-action title's own TVDB id, which
         // per §9 decision 3 suffices on its own for a bare release name.
-        let (live_action, library) = one_piece_library(Vec::new());
+        let (live_action, library) = tide_chart_library(Vec::new());
         let mut subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
         subject.tvdb_id = Some("393199".to_string());
         let candidate = series_episode_candidate(
-            "One.Piece.S02E01.1080p.WEB-DL.x264-GRP",
+            "Tide.Chart.S02E01.1080p.WEB-DL.x264-GRP",
             IndexerResponseAttributes {
                 tvdb_id: Some("393199".to_string()),
                 ..Default::default()
@@ -2610,10 +2610,10 @@ mod tests {
     fn ambiguous_title_without_response_ids_stays_ambiguous() {
         // Same subject, same release name — only the indexer's id assertion is
         // missing, and absence is not a disambiguator.
-        let (live_action, library) = one_piece_library(Vec::new());
+        let (live_action, library) = tide_chart_library(Vec::new());
         let mut subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
         subject.tvdb_id = Some("393199".to_string());
-        let candidate = make_candidate("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", None);
+        let candidate = make_candidate("Tide.Chart.S02E01.1080p.WEB-DL.x264-GRP", None);
 
         assert_eq!(
             decision_for(&live_action, &subject, &candidate),
@@ -2626,10 +2626,10 @@ mod tests {
         // The incident release is both anime-categorized and identity-ambiguous.
         // The category is the sharper, more actionable reason, so it reports
         // first.
-        let (live_action, library) = one_piece_library(Vec::new());
+        let (live_action, library) = tide_chart_library(Vec::new());
         let subject = ambiguous_episode_subject(&live_action, &library, Some(2), Some(1));
         let candidate = series_episode_candidate(
-            "One.Piece.S02E01.1080p.WEB-DL.x264-GRP",
+            "Tide.Chart.S02E01.1080p.WEB-DL.x264-GRP",
             response_categories(&["5070"]),
         );
 

@@ -223,14 +223,14 @@ fn normalize_imdb_id_no_digits() {
 fn find_monitored_movie_title_from_release_matches_alias_variant() {
     let titles = vec![test_movie_title_with_aliases_and_ids(
         "movie-1",
-        "My Cousin",
+        "My Lighthouse",
         Some(2020),
-        vec!["Mon Cousin"],
+        vec!["Mon Phare"],
         vec![],
     )];
 
     let parsed =
-        crate::parse_release_metadata("Mon.Cousin.A.K.A.My.Cousin.2020.1080p.BluRay.x264-GRP");
+        crate::parse_release_metadata("Mon.Phare.A.K.A.My.Lighthouse.2020.1080p.BluRay.x264-GRP");
 
     let matched = find_monitored_movie_title_from_release(&titles, &parsed)
         .expect("movie should resolve through alias/title variants");
@@ -243,12 +243,12 @@ fn find_monitored_movie_title_from_release_matches_tagged_alias_variant() {
     let mut title =
         test_movie_title_with_aliases_and_ids("movie-1", "Nightfall!!", Some(2022), vec![], vec![]);
     title.tagged_aliases = vec![scryer_domain::TaggedAlias {
-        name: "Nightfall Heavy Metal Dark Fantasy".to_string(),
+        name: "Nightfall Heavy Chorus Dark Lantern".to_string(),
         language: "eng".to_string(),
     }];
 
     let parsed =
-        crate::parse_release_metadata("NIGHTFALL.Heavy.Metal.Dark.Fantasy.2022.1080p.WEB-DL");
+        crate::parse_release_metadata("NIGHTFALL.Heavy.Chorus.Dark.Lantern.2022.1080p.WEB-DL");
 
     let matched = find_monitored_movie_title_from_release(&[title], &parsed)
         .expect("movie should resolve through tagged alias variants");
@@ -363,7 +363,7 @@ fn ambiguous_obfuscated_episode_message_explains_season_assignment() {
     std::fs::write(&file_path, b"episode").expect("write file");
     let mut completed = test_completed_download("downloader display label", dir.path());
     completed.release_name = Some(
-        "[Erai-raws].Hime-sama.Goumon.no.Jikan.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]"
+        "[Erai-raws].Yuki-sama.Kagami.no.Toki.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]"
             .to_string(),
     );
 
@@ -420,7 +420,7 @@ fn ambiguous_obfuscated_episode_message_ignores_release_with_explicit_season() {
     let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
     std::fs::write(&file_path, b"episode").expect("write file");
     let completed = test_completed_download(
-        "Hime-sama.Goumon.no.Jikan.Desu.S02E09.1080p.WEB-DL",
+        "Yuki-sama.Kagami.no.Toki.Desu.S02E09.1080p.WEB-DL",
         dir.path(),
     );
 
@@ -559,11 +559,11 @@ fn canonical_episode_import_parse_matches_grab_time_parse_for_aliased_title() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file_path = dir.path().join("4f8e2c7a91b6d3e0.mkv");
     std::fs::write(&file_path, b"episode").expect("write file");
-    let release_title = "Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb";
+    let release_title = "Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb";
     let mut completed = test_completed_download("downloader display label", dir.path());
     completed.release_name = Some(release_title.to_string());
     let mut title = titled(MediaFacet::Series, "Sh\u{14d}gun", Some(2024));
-    title.aliases = vec!["Shogun".to_string()];
+    title.aliases = vec!["Tokan".to_string()];
 
     let parsed = build_augmented_episode_import_metadata_for_title(
         &file_path,
@@ -928,7 +928,7 @@ fn episode_identity_pack_member_resolves_anime_absolute_numbering_with_title_con
 fn title_evidence_candidates_from_video_files_uses_immediate_parent_for_obfuscated_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let release_dir = dir.path().join(
-        "Harry.Potter.And.The.Deathly.Hallows.Part1.2010.720p.BluRay.DTS.x264-LEGION-Obfuscated",
+        "Harbor.Pilot.And.The.Silent.Harbors.Part1.2010.720p.BluRay.DTS.x264-LEGION-Obfuscated",
     );
     std::fs::create_dir_all(&release_dir).expect("create release dir");
     let file_path =
@@ -940,7 +940,7 @@ fn title_evidence_candidates_from_video_files_uses_immediate_parent_for_obfuscat
     assert_eq!(candidates.len(), 1);
     assert_eq!(
         candidates[0].normalized_title,
-        "HARRY POTTER AND THE DEATHLY HALLOWS PART 1"
+        "HARBOR PILOT AND THE SILENT HARBORS PART 1"
     );
     assert_eq!(candidates[0].year, Some(2010));
 }
@@ -1763,7 +1763,7 @@ fn scoped_media_file(
 fn build_episode_upgrade_plan_replaces_different_filename_when_new_score_is_higher() {
     let incumbents = vec![scoped_media_file(
         "file-1",
-        "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 720p.mkv",
+        "/data/TV/Quiet Orbit/Season 01/Quiet Orbit - S01E01 - 720p.mkv",
         510,
         &["ep-1"],
     )];
@@ -1780,7 +1780,7 @@ fn build_episode_upgrade_plan_replaces_different_filename_when_new_score_is_high
 fn build_episode_upgrade_plan_rejects_when_existing_episode_file_scores_higher() {
     let incumbents = vec![scoped_media_file(
         "file-1",
-        "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 1080p.mkv",
+        "/data/TV/Quiet Orbit/Season 01/Quiet Orbit - S01E01 - 1080p.mkv",
         820,
         &["ep-1"],
     )];
@@ -1799,7 +1799,7 @@ fn build_episode_upgrade_plan_rejects_when_existing_episode_file_scores_higher()
 fn manual_replacement_bypasses_equal_or_lower_score_comparison() {
     let incumbents = vec![scoped_media_file(
         "file-1",
-        "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 1080p.mkv",
+        "/data/TV/Quiet Orbit/Season 01/Quiet Orbit - S01E01 - 1080p.mkv",
         820,
         &["ep-1"],
     )];
@@ -1825,7 +1825,7 @@ fn manual_replacement_bypasses_equal_or_lower_score_comparison() {
 fn build_episode_upgrade_plan_rejects_when_existing_file_covers_broader_episode_set() {
     let incumbents = vec![scoped_media_file(
         "file-pack",
-        "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01-E02.mkv",
+        "/data/TV/Quiet Orbit/Season 01/Quiet Orbit - S01E01-E02.mkv",
         400,
         &["ep-1", "ep-2"],
     )];
@@ -1862,13 +1862,13 @@ fn build_episode_upgrade_plan_supersedes_all_duplicate_incumbents_for_same_targe
     let incumbents = vec![
         scoped_media_file(
             "file-1",
-            "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 720p.mkv",
+            "/data/TV/Quiet Orbit/Season 01/Quiet Orbit - S01E01 - 720p.mkv",
             300,
             &["ep-1"],
         ),
         scoped_media_file(
             "file-2",
-            "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01 - 1080p.mkv",
+            "/data/TV/Quiet Orbit/Season 01/Quiet Orbit - S01E01 - 1080p.mkv",
             500,
             &["ep-1"],
         ),
@@ -1887,13 +1887,13 @@ fn build_episode_upgrade_plan_allows_pack_to_replace_singles_when_it_beats_all_o
     let incumbents = vec![
         scoped_media_file(
             "file-1",
-            "/data/TV/Resident Alien/Season 01/Resident Alien - S01E01.mkv",
+            "/data/TV/Quiet Orbit/Season 01/Quiet Orbit - S01E01.mkv",
             300,
             &["ep-1"],
         ),
         scoped_media_file(
             "file-2",
-            "/data/TV/Resident Alien/Season 01/Resident Alien - S01E02.mkv",
+            "/data/TV/Quiet Orbit/Season 01/Quiet Orbit - S01E02.mkv",
             450,
             &["ep-2"],
         ),

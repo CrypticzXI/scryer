@@ -1142,7 +1142,7 @@ mod tests {
         }
 
         scryer_plugin_sdk::PluginSearchResult {
-            title: "One.Piece.S02E01.1080p.WEB-DL.x264-GRP".to_string(),
+            title: "Tide.Chart.S02E01.1080p.WEB-DL.x264-GRP".to_string(),
             provider_categories: categories.iter().map(|value| value.to_string()).collect(),
             provider_extra,
             ..scryer_plugin_sdk::PluginSearchResult::default()

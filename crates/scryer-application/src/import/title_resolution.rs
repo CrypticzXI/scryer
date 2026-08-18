@@ -33,7 +33,7 @@ pub(crate) struct MonitoredTitleMatcher {
     tmdb_index: HashMap<String, Vec<usize>>,
     /// Pillar A tier 0 collision index over ALL library titles (monitored or
     /// not — an unmonitored collider is still a collider), keyed by the
-    /// year-stripped lookup key so `one piece` and `one piece 2023` are the
+    /// year-stripped lookup key so `tide chart` and `tide chart 2023` are the
     /// same identity shape. Values are title ids, not `titles` indexes,
     /// because unmonitored titles are not resolvable and live only here.
     ambiguity_index: HashMap<String, Vec<String>>,
@@ -817,11 +817,11 @@ mod tests {
 
     #[test]
     fn strip_trailing_year_key_strips_only_plausible_year_suffixes() {
-        assert_eq!(strip_trailing_year_key("one piece 2023"), "one piece");
-        assert_eq!(strip_trailing_year_key("one piece"), "one piece");
+        assert_eq!(strip_trailing_year_key("tide chart 2023"), "tide chart");
+        assert_eq!(strip_trailing_year_key("tide chart"), "tide chart");
         assert_eq!(
-            strip_trailing_year_key("blade runner 2049 2017"),
-            "blade runner 2049"
+            strip_trailing_year_key("signal runner 2049 2017"),
+            "signal runner 2049"
         );
         assert_eq!(strip_trailing_year_key("2023"), "2023");
         assert_eq!(strip_trailing_year_key("area 5150"), "area 5150");
@@ -829,13 +829,13 @@ mod tests {
 
     #[test]
     fn shared_lookup_keys_bridges_year_suffixed_titles_and_sees_unmonitored_colliders() {
-        let mut anime = test_title("One Piece", MediaFacet::Anime, Some(1999), &[]);
+        let mut anime = test_title("Tide Chart", MediaFacet::Anime, Some(1999), &[]);
         anime.monitored = false;
         let live_action = test_title(
-            "One Piece",
+            "Tide Chart",
             MediaFacet::Series,
             Some(2023),
-            &["One Piece (2023)"],
+            &["Tide Chart (2023)"],
         );
         let matcher = MonitoredTitleMatcher::new(vec![anime, live_action.clone()]);
 
@@ -848,7 +848,7 @@ mod tests {
         // The year-suffixed alias itself is a shared shape — this is what kills
         // the synthesized-unique-alias laundering in the matching loop.
         assert!(
-            shared.iter().any(|key| key == "one piece 2023"),
+            shared.iter().any(|key| key == "tide chart 2023"),
             "year-suffixed key must be recognized as shared: {shared:?}"
         );
     }

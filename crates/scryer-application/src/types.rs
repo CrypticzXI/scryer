@@ -2831,23 +2831,23 @@ mod tests {
     #[test]
     fn library_scan_leaf_keys_ignore_root_and_separator_style() {
         let unix = library_scan_file_leaf_key(
-            "/mnt/media/Foundation (2021)/Season 01/Foundation.S01E01.mkv",
+            "/mnt/media/Fathomline (2021)/Season 01/Fathomline.S01E01.mkv",
         );
         let windows = library_scan_file_leaf_key(
-            r"D:\Series\Foundation (2021)\Season 01\Foundation.S01E01.mkv",
+            r"D:\Series\Fathomline (2021)\Season 01\Fathomline.S01E01.mkv",
         );
         assert_eq!(unix, windows);
 
         assert_eq!(
-            library_scan_folder_leaf_key("/mnt/media/Foundation (2021)"),
-            library_scan_folder_leaf_key(r"D:\Series\Foundation (2021)")
+            library_scan_folder_leaf_key("/mnt/media/Fathomline (2021)"),
+            library_scan_folder_leaf_key(r"D:\Series\Fathomline (2021)")
         );
     }
 
     #[test]
     fn library_scan_hint_set_resolves_conflicting_leaf_key_by_full_path() {
-        let first_path = "/mnt/media/Foundation (2021)/Season 01/Foundation.S01E01.mkv";
-        let second_path = "/other/Foundation (2021)/Season 01/Foundation.S01E01.mkv";
+        let first_path = "/mnt/media/Fathomline (2021)/Season 01/Fathomline.S01E01.mkv";
+        let second_path = "/other/Fathomline (2021)/Season 01/Fathomline.S01E01.mkv";
         let path_key = library_scan_file_leaf_key(first_path).expect("leaf key");
         let mut hints = LibraryScanHintSet::new();
         hints.push(LibraryScanHint {

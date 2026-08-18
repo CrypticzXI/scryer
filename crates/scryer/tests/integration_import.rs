@@ -1063,7 +1063,7 @@ async fn import_movie_decypharr_symlink_release_folder_succeeds() {
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let release_name =
-        "Harry.Potter.and.the.Prisoner.of.Azkaban.2004.BluRay.1080p.AV1.Opus-nAV1gator";
+        "Harbor.Pilot.and.the.Keeper.of.Portmere.2004.BluRay.1080p.AV1.Opus-nAV1gator";
     let file_name = format!("{release_name}.mkv");
 
     let backing_dir = tempfile::tempdir().expect("backing tempdir");
@@ -1079,7 +1079,7 @@ async fn import_movie_decypharr_symlink_release_folder_succeeds() {
     let title = add_movie_title(
         &ctx,
         "title-movie-decypharr-1",
-        "Harry Potter and the Prisoner of Azkaban",
+        "Harbor Pilot and the Keeper of Portmere",
         dest_root.path().to_str().unwrap(),
     )
     .await;
@@ -1127,7 +1127,7 @@ async fn import_movie_decypharr_symlink_release_folder_uses_remote_path_mapping(
     let user = ctx.app.find_or_create_default_user().await.unwrap();
 
     let release_name =
-        "Harry.Potter.and.the.Prisoner.of.Azkaban.2004.BluRay.1080p.AV1.Opus-nAV1gator";
+        "Harbor.Pilot.and.the.Keeper.of.Portmere.2004.BluRay.1080p.AV1.Opus-nAV1gator";
     let file_name = format!("{release_name}.mkv");
 
     let backing_dir = tempfile::tempdir().expect("backing tempdir");
@@ -1168,7 +1168,7 @@ async fn import_movie_decypharr_symlink_release_folder_uses_remote_path_mapping(
     let title = add_movie_title(
         &ctx,
         "title-movie-decypharr-2",
-        "Harry Potter and the Prisoner of Azkaban",
+        "Harbor Pilot and the Keeper of Portmere",
         dest_root.path().to_str().unwrap(),
     )
     .await;

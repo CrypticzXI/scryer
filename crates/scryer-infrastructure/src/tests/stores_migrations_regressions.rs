@@ -645,7 +645,7 @@ async fn review_regression_release_name_blocklist_watershed_resets_legacy_failed
     sqlx::query(
         "INSERT INTO blocklist
          (id, title_id, source_title, created_at)
-         VALUES ('block-1', 'title-1', 'friends.s05.720p.bluray.dd5.1.x264-ntb', '2025-01-01T00:00:00Z')",
+         VALUES ('block-1', 'title-1', 'pals.s05.720p.bluray.dd5.1.x264-ntb', '2025-01-01T00:00:00Z')",
     )
     .execute(&pool)
     .await
@@ -654,8 +654,8 @@ async fn review_regression_release_name_blocklist_watershed_resets_legacy_failed
         "INSERT INTO release_download_attempts
          (id, title_id, source_hint, source_title, outcome, attempted_at)
          VALUES
-         ('failed-1', 'title-1', 'weaver-1', 'friends.s05.720p.bluray.dd5.1.x264-ntb', 'failed', '2025-01-01T00:00:00Z'),
-         ('success-1', 'title-1', 'weaver-1', 'friends.s05.720p.bluray.dd5.1.x264-ntb', 'success', '2025-01-01T01:00:00Z')",
+         ('failed-1', 'title-1', 'weaver-1', 'pals.s05.720p.bluray.dd5.1.x264-ntb', 'failed', '2025-01-01T00:00:00Z'),
+         ('success-1', 'title-1', 'weaver-1', 'pals.s05.720p.bluray.dd5.1.x264-ntb', 'success', '2025-01-01T01:00:00Z')",
     )
     .execute(&pool)
     .await
@@ -665,7 +665,7 @@ async fn review_regression_release_name_blocklist_watershed_resets_legacy_failed
          (id, title_id, facet, download_client_id, download_client_type, download_client_item_id, source_title, submitted_at, tracked_state, tracked_state_at, source_hint, request_signature)
          VALUES
          ('stub-failed', '', '', 'primary', 'weaver', 'job-1', NULL, '2025-01-01T00:00:00Z', 'failed', '2025-01-01T00:05:00Z', NULL, NULL),
-         ('rich-failed', 'title-1', 'series', 'primary', 'weaver', 'job-2', 'Friends.S05.720p.BluRay.DD5.1.x264-NTb', '2025-01-01T00:00:00Z', 'failed', '2025-01-01T00:05:00Z', 'weaver://job-2', 'sig-2')",
+         ('rich-failed', 'title-1', 'series', 'primary', 'weaver', 'job-2', 'Pals.S05.720p.BluRay.DD5.1.x264-NTb', '2025-01-01T00:00:00Z', 'failed', '2025-01-01T00:05:00Z', 'weaver://job-2', 'sig-2')",
     )
     .execute(&pool)
     .await

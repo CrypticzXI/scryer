@@ -281,11 +281,11 @@ async fn title_search_matches_aliases_slug_and_typos_with_direct_priority() {
     let catalog = title_store(&services);
 
     let mut direct_title = make_test_title("title-search-direct", None);
-    direct_title.name = "Schoolhouse Rock! Earth".to_string();
-    direct_title.slug = Some("schoolhouse-rock-earth".to_string());
-    direct_title.aliases = vec!["School House Rock".to_string()];
+    direct_title.name = "Lanternhouse Rock! Earth".to_string();
+    direct_title.slug = Some("lanternhouse-rock-earth".to_string());
+    direct_title.aliases = vec!["Lantern House Rock".to_string()];
     direct_title.tagged_aliases = vec![TaggedAlias {
-        name: "Schoolhouse Planet Earth".to_string(),
+        name: "Lanternhouse Planet Earth".to_string(),
         language: "eng".to_string(),
     }];
     TitleRepository::create(&catalog, direct_title.clone())
@@ -293,12 +293,12 @@ async fn title_search_matches_aliases_slug_and_typos_with_direct_priority() {
         .expect("direct title should insert");
 
     let mut typo_title = make_test_title("title-search-typo", None);
-    typo_title.name = "Schoolhouze Rock Earth".to_string();
+    typo_title.name = "Lanternhouze Rock Earth".to_string();
     TitleRepository::create(&catalog, typo_title.clone())
         .await
         .expect("typo title should insert");
 
-    let alias_hits = TitleRepository::list(&catalog, None, Some("school house rock".to_string()))
+    let alias_hits = TitleRepository::list(&catalog, None, Some("lantern house rock".to_string()))
         .await
         .expect("alias search should load");
     assert_eq!(
@@ -307,7 +307,7 @@ async fn title_search_matches_aliases_slug_and_typos_with_direct_priority() {
     );
 
     let slug_hits =
-        TitleRepository::list(&catalog, None, Some("schoolhouse rock earth".to_string()))
+        TitleRepository::list(&catalog, None, Some("lanternhouse rock earth".to_string()))
             .await
             .expect("slug search should load");
     assert_eq!(
@@ -316,7 +316,7 @@ async fn title_search_matches_aliases_slug_and_typos_with_direct_priority() {
     );
 
     let typo_hits =
-        TitleRepository::list(&catalog, None, Some("scholhouse rock earth".to_string()))
+        TitleRepository::list(&catalog, None, Some("lanterhouse rock earth".to_string()))
             .await
             .expect("typo search should load");
     assert_eq!(
@@ -333,37 +333,37 @@ async fn title_search_short_typo_does_not_return_loose_spellfix_neighbors() {
     let (services, db) = temp_services("scryer_catalog_title_search_short_typo").await;
     let catalog = title_store(&services);
 
-    let mut aoashi = make_test_title("title-search-aoashi", None);
-    aoashi.name = "Aoashi".to_string();
-    aoashi.facet = MediaFacet::Anime;
-    aoashi.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
-    TitleRepository::create(&catalog, aoashi.clone())
+    let mut aokumo = make_test_title("title-search-aokumo", None);
+    aokumo.name = "Aokumo".to_string();
+    aokumo.facet = MediaFacet::Anime;
+    aokumo.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
+    TitleRepository::create(&catalog, aokumo.clone())
         .await
         .expect("close typo target should insert");
 
-    let mut ranma = make_test_title("title-search-ranma", None);
-    ranma.name = "Ranma 1/2 (2024)".to_string();
-    ranma.facet = MediaFacet::Anime;
-    ranma.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
-    TitleRepository::create(&catalog, ranma.clone())
+    let mut nagami = make_test_title("title-search-nagami", None);
+    nagami.name = "Nagami 1/2 (2024)".to_string();
+    nagami.facet = MediaFacet::Anime;
+    nagami.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
+    TitleRepository::create(&catalog, nagami.clone())
         .await
         .expect("loose neighbor should insert");
 
-    let mut blue_box = make_test_title("title-search-blue-box", None);
-    blue_box.name = "Blue Box".to_string();
-    blue_box.facet = MediaFacet::Anime;
-    blue_box.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
-    TitleRepository::create(&catalog, blue_box.clone())
+    let mut azure_crate = make_test_title("title-search-azure-crate", None);
+    azure_crate.name = "Azure Crate".to_string();
+    azure_crate.facet = MediaFacet::Anime;
+    azure_crate.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
+    TitleRepository::create(&catalog, azure_crate.clone())
         .await
         .expect("loose neighbor should insert");
 
-    let mut her_blue_sky = make_test_title("title-search-her-blue-sky", None);
-    her_blue_sky.name = "Her Blue Sky".to_string();
-    TitleRepository::create(&catalog, her_blue_sky.clone())
+    let mut her_quiet_sky = make_test_title("title-search-her-quiet-sky", None);
+    her_quiet_sky.name = "Her Quiet Sky".to_string();
+    TitleRepository::create(&catalog, her_quiet_sky.clone())
         .await
         .expect("movie loose neighbor should insert");
 
-    let hits = TitleRepository::list(&catalog, None, Some("aashi".to_string()))
+    let hits = TitleRepository::list(&catalog, None, Some("akumo".to_string()))
         .await
         .expect("short typo search should load");
     let hit_ids = hits
@@ -371,27 +371,27 @@ async fn title_search_short_typo_does_not_return_loose_spellfix_neighbors() {
         .map(|title| title.id)
         .collect::<HashSet<_>>();
 
-    assert!(hit_ids.contains(&aoashi.id));
-    assert!(!hit_ids.contains(&ranma.id));
-    assert!(!hit_ids.contains(&blue_box.id));
-    assert!(!hit_ids.contains(&her_blue_sky.id));
+    assert!(hit_ids.contains(&aokumo.id));
+    assert!(!hit_ids.contains(&nagami.id));
+    assert!(!hit_ids.contains(&azure_crate.id));
+    assert!(!hit_ids.contains(&her_quiet_sky.id));
 
     let _ = std::fs::remove_file(db);
 }
 
 #[tokio::test]
-async fn title_search_returns_valid_single_substitution_typo_for_frieren() {
-    let (services, db) = temp_services("scryer_catalog_title_search_frieren_typo").await;
+async fn title_search_returns_valid_single_substitution_typo_for_frielen() {
+    let (services, db) = temp_services("scryer_catalog_title_search_frielen_typo").await;
     let catalog = title_store(&services);
 
-    let mut frieren = make_test_title("title-search-frieren", None);
-    frieren.name = "Silver Horizon: Beyond Journey's End".to_string();
-    frieren.facet = MediaFacet::Anime;
-    frieren.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
-    frieren.aliases = vec!["Sora no Vale".to_string(), "Frieren".to_string()];
-    TitleRepository::create(&catalog, frieren.clone())
+    let mut frielen = make_test_title("title-search-frielen", None);
+    frielen.name = "Silver Horizon: Beyond Harbor's End".to_string();
+    frielen.facet = MediaFacet::Anime;
+    frielen.library_id = scryer_domain::default_library_id_for_facet(&MediaFacet::Anime);
+    frielen.aliases = vec!["Sora no Vale".to_string(), "Frielen".to_string()];
+    TitleRepository::create(&catalog, frielen.clone())
         .await
-        .expect("frieren should insert");
+        .expect("frielen should insert");
 
     let mut friend = make_test_title("title-search-friend", None);
     friend.name = "Friend".to_string();
@@ -399,22 +399,22 @@ async fn title_search_returns_valid_single_substitution_typo_for_frieren() {
         .await
         .expect("friend should insert");
 
-    let mut firefly = make_test_title("title-search-firefly", None);
-    firefly.name = "Signal Run".to_string();
-    TitleRepository::create(&catalog, firefly.clone())
+    let mut signal_run = make_test_title("title-search-signal-run", None);
+    signal_run.name = "Signal Run".to_string();
+    TitleRepository::create(&catalog, signal_run.clone())
         .await
-        .expect("firefly should insert");
+        .expect("signal_run should insert");
 
     let hits = TitleRepository::list(&catalog, None, Some("friefen".to_string()))
         .await
-        .expect("frieren typo search should load");
+        .expect("frielen typo search should load");
 
     assert_eq!(
         hits.first().map(|title| title.id.as_str()),
-        Some(frieren.id.as_str())
+        Some(frielen.id.as_str())
     );
     assert!(!hits.iter().any(|title| title.id == friend.id));
-    assert!(!hits.iter().any(|title| title.id == firefly.id));
+    assert!(!hits.iter().any(|title| title.id == signal_run.id));
 
     let _ = std::fs::remove_file(db);
 }
@@ -482,8 +482,8 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
     let now = Utc::now();
 
     let mut title = make_test_title("title-search-match", None);
-    title.name = "Schoolhouse Rock! Earth".to_string();
-    title.aliases = vec!["School House Rock".to_string()];
+    title.name = "Lanternhouse Rock! Earth".to_string();
+    title.aliases = vec!["Lantern House Rock".to_string()];
     TitleRepository::create(&catalog, title.clone())
         .await
         .expect("matching title should insert");
@@ -496,7 +496,7 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
     let wanted_match = AcquisitionScopeState {
         id: "wanted-search-match".to_string(),
         title_id: title.id.clone(),
-        title_name: Some("Schoolhouse Rock! Earth".to_string()),
+        title_name: Some("Lanternhouse Rock! Earth".to_string()),
         title_slug: None,
         title_facet: None,
         library_id: None,
@@ -535,7 +535,7 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
 
     let items = workflow
         .list_acquisition_scope_states(AcquisitionScopeStatesQuery {
-            title_search: Some("scholhouse erth".into()),
+            title_search: Some("lanterhouse erth".into()),
             limit: 50,
             ..AcquisitionScopeStatesQuery::default()
         })
@@ -543,7 +543,7 @@ async fn list_wanted_items_filters_with_fuzzy_title_search() {
         .expect("filtered wanted items should load");
     let count = workflow
         .count_acquisition_scope_states(AcquisitionScopeStatesQuery {
-            title_search: Some("scholhouse erth".into()),
+            title_search: Some("lanterhouse erth".into()),
             ..AcquisitionScopeStatesQuery::default()
         })
         .await

@@ -749,7 +749,7 @@ mod tests {
             episode_number: Some("29".into()),
             season_number: Some("4".into()),
             episode_label: Some("S04E29".into()),
-            title: Some("The Final Chapters Special 1".into()),
+            title: Some("The Last Signal Special 1".into()),
             air_date: None,
             duration_seconds: None,
             has_multi_audio: false,

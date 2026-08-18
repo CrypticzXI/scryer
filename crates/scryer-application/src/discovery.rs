@@ -1882,7 +1882,7 @@ fn label_affinity_sections(
 
 /// Animation is a medium; anime is a tradition. Metadata sources tag anime with
 /// the same canonical `animation` genre facet as Western animation, so an
-/// unguarded "Because You Like Animation" rail comingles Zootopia with Frieren.
+/// unguarded "Because You Like Animation" rail comingles Paperman with Silver Horizon.
 /// This is a deliberate two-label special case at the point where items are
 /// matched to a label, not a general taxonomy: the animation rail drops anime
 /// items, an anime rail keeps only anime items, and every other label is
@@ -4711,14 +4711,14 @@ mod tests {
     #[test]
     fn discovery_home_public_sections_filter_owned_catalog_titles() {
         let owned_visibility = CatalogOwnedVisibility::from_titles(&[test_title(
-            "house-of-the-dragon",
-            "House of the Dragon",
+            "house-of-ravens",
+            "House of Ravens",
             MediaFacet::Series,
             vec![("tvdb", "371572")],
         )]);
         let mut owned_item = test_discovery_item("owned", "series", Some("series"));
         owned_item.target_key = "tvdb:series:371572".to_string();
-        owned_item.display_title = "House of the Dragon".to_string();
+        owned_item.display_title = "House of Ravens".to_string();
         let mut visible_item = test_discovery_item("visible", "series", Some("series"));
         visible_item.target_key = "tmdb:series:100".to_string();
         visible_item.display_title = "Visible".to_string();

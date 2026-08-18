@@ -2480,7 +2480,7 @@ async fn queue_best_release_supports_series_movie_scope() {
 async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metadata() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
-        "Mugen.Train.2020.1080p.WEB-DL",
+        "Iron.Rail.2020.1080p.WEB-DL",
     ));
     let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
 
@@ -2488,7 +2488,7 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
         .add_title(
             &user,
             NewTitle {
-                name: "Demon Slayer".into(),
+                name: "Ember Saga".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec![],
@@ -2499,11 +2499,11 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
         )
         .await
         .expect("create anime title");
-    title.aliases = vec!["Kimetsu no Yaiba".to_string()];
+    title.aliases = vec!["Kage no Kotoba".to_string()];
 
     let mut link_input = test_series_movie_link(
         &title.id,
-        "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+        "Ember Saga -Kage no Kotoba- The Movie: Iron Rail",
         Some(2020),
         Some("tt11032374"),
         Some("12345"),
@@ -2526,7 +2526,7 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
 
     assert_eq!(
         search_title.name,
-        "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train"
+        "Ember Saga -Kage no Kotoba- The Movie: Iron Rail"
     );
     assert_eq!(search_title.year, Some(2020));
     assert_eq!(search_title.imdb_id.as_deref(), Some("tt11032374"));
@@ -2534,7 +2534,7 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
     assert!(
         subject.queries[0]
             .to_ascii_lowercase()
-            .contains("mugen train"),
+            .contains("iron rail"),
         "unexpected queries: {:?}",
         subject.queries
     );
@@ -2543,13 +2543,13 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
         search_title
             .aliases
             .iter()
-            .any(|alias| alias.to_ascii_lowercase().contains("mugen train"))
+            .any(|alias| alias.to_ascii_lowercase().contains("iron rail"))
     );
     assert!(
         search_title
             .tagged_aliases
             .iter()
-            .any(|alias| alias.name.contains("The Movie: Mugen Train"))
+            .any(|alias| alias.name.contains("The Movie: Iron Rail"))
     );
     assert_eq!(subject.category, "movie");
     assert_eq!(subject.owner_facet, MediaFacet::Anime);
@@ -2576,7 +2576,7 @@ async fn resolve_release_search_subject_for_series_movie_uses_movie_entity_metad
 async fn series_movie_wanted_subject_uses_parent_owner_when_title_facet_is_missing() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
-        "Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL",
+        "Ember.Saga.Iron.Rail.2020.1080p.WEB-DL",
     ));
     let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
 
@@ -2584,7 +2584,7 @@ async fn series_movie_wanted_subject_uses_parent_owner_when_title_facet_is_missi
         .add_title(
             &user,
             NewTitle {
-                name: "Demon Slayer".into(),
+                name: "Ember Saga".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec!["anime-hd".to_string()],
@@ -2598,7 +2598,7 @@ async fn series_movie_wanted_subject_uses_parent_owner_when_title_facet_is_missi
 
     let link_input = test_series_movie_link(
         &title.id,
-        "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+        "Ember Saga -Kage no Kotoba- The Movie: Iron Rail",
         Some(2020),
         Some("tt11032374"),
         Some("12345"),
@@ -2707,7 +2707,7 @@ async fn resolve_release_search_subject_for_series_owned_movie_keeps_movie_searc
 async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_title_release() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let recording_client = Arc::new(RecordingCategoriesIndexerClient::new(
-        "Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL",
+        "Ember.Saga.Iron.Rail.2020.1080p.WEB-DL",
     ));
     let (app, user) =
         bootstrap_with_search_settings_and_indexer(settings, recording_client.clone());
@@ -2728,7 +2728,7 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
         .add_title(
             &user,
             NewTitle {
-                name: "Demon Slayer".into(),
+                name: "Ember Saga".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 ..Default::default()
@@ -2739,7 +2739,7 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
 
     let mut link_input = test_series_movie_link(
         &title.id,
-        "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+        "Ember Saga -Kage no Kotoba- The Movie: Iron Rail",
         Some(2020),
         Some("tt11032374"),
         Some("12345"),
@@ -2766,10 +2766,7 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
         .expect("series movie search should succeed");
 
     assert_eq!(results.len(), 1);
-    assert_eq!(
-        results[0].title,
-        "Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL"
-    );
+    assert_eq!(results[0].title, "Ember.Saga.Iron.Rail.2020.1080p.WEB-DL");
 
     let calls = recording_client.calls.lock().await.clone();
     let facets = calls
@@ -2798,7 +2795,7 @@ async fn search_indexers_for_series_movie_merges_categories_and_accepts_short_ti
     assert!(
         calls
             .iter()
-            .any(|call| call.query.to_ascii_lowercase().contains("mugen train 2020"))
+            .any(|call| call.query.to_ascii_lowercase().contains("iron rail 2020"))
     );
 }
 
@@ -2900,7 +2897,7 @@ async fn convergence_test_title_and_subject(
         .add_title(
             user,
             NewTitle {
-                name: "Demon Slayer".into(),
+                name: "Ember Saga".into(),
                 facet: MediaFacet::Anime,
                 monitored: true,
                 tags: vec!["anime-hd".to_string()],
@@ -2917,7 +2914,7 @@ async fn convergence_test_title_and_subject(
         .shows
         .upsert_series_movie_link(test_series_movie_link(
             &title.id,
-            "Demon Slayer -Kimetsu no Yaiba- The Movie: Mugen Train",
+            "Ember Saga -Kage no Kotoba- The Movie: Iron Rail",
             Some(2020),
             Some("tt11032374"),
             Some("12345"),
@@ -3098,7 +3095,7 @@ async fn every_scoped_search_records_coverage_including_interactive() {
         synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
     ];
     let indexer_client = Arc::new(
-        FixedReleaseIndexerClient::new("Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL")
+        FixedReleaseIndexerClient::new("Ember.Saga.Iron.Rail.2020.1080p.WEB-DL")
             .with_fired_indexers(["indexer-a", "indexer-b"]),
     );
     let (app, user) =
@@ -3148,7 +3145,7 @@ async fn empty_response_from_fired_indexer_counts_as_coverage() {
         synthetic_direct_nab_indexer_config("indexer-b", "newznab"),
     ];
     let indexer_client = Arc::new(
-        FixedReleaseIndexerClient::new("Demon.Slayer.Mugen.Train.2020.1080p.WEB-DL")
+        FixedReleaseIndexerClient::new("Ember.Saga.Iron.Rail.2020.1080p.WEB-DL")
             .with_fired_indexers(["indexer-a", "indexer-b"])
             .with_empty_response(),
     );

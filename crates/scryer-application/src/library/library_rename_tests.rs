@@ -48,44 +48,44 @@ fn render_rename_template_literal_braces_around_resolved_token() {
 
 #[test]
 fn render_rename_template_replaces_token_spaces_with_underscore() {
-    let t = tokens(&[("title", "12 Years a Slave"), ("ext", "mkv")]);
+    let t = tokens(&[("title", "12 Tides a Shore"), ("ext", "mkv")]);
     let result = render_rename_template("{title|space:_}.{ext}", &t);
-    assert_eq!(result, "12_Years_a_Slave.mkv");
+    assert_eq!(result, "12_Tides_a_Shore.mkv");
 }
 
 #[test]
 fn render_rename_template_replaces_token_spaces_with_dot() {
-    let t = tokens(&[("title", "12 Years a Slave"), ("ext", "mkv")]);
+    let t = tokens(&[("title", "12 Tides a Shore"), ("ext", "mkv")]);
     let result = render_rename_template("{title|space:.}.{ext}", &t);
-    assert_eq!(result, "12.Years.a.Slave.mkv");
+    assert_eq!(result, "12.Tides.a.Shore.mkv");
 }
 
 #[test]
 fn render_rename_template_replaces_token_spaces_with_dash() {
-    let t = tokens(&[("title", "12 Years a Slave"), ("ext", "mkv")]);
+    let t = tokens(&[("title", "12 Tides a Shore"), ("ext", "mkv")]);
     let result = render_rename_template("{title|space:-}.{ext}", &t);
-    assert_eq!(result, "12-Years-a-Slave.mkv");
+    assert_eq!(result, "12-Tides-a-Shore.mkv");
 }
 
 #[test]
 fn render_rename_template_removes_token_spaces() {
-    let t = tokens(&[("title", "12 Years a Slave"), ("ext", "mkv")]);
+    let t = tokens(&[("title", "12 Tides a Shore"), ("ext", "mkv")]);
     let result = render_rename_template("{title|space:}.{ext}", &t);
-    assert_eq!(result, "12YearsaSlave.mkv");
+    assert_eq!(result, "12TidesaShore.mkv");
 }
 
 #[test]
 fn render_rename_template_truncates_token_chars() {
-    let t = tokens(&[("title", "Twelve Monkeys"), ("ext", "mkv")]);
+    let t = tokens(&[("title", "Harbor Kestrels"), ("ext", "mkv")]);
     let result = render_rename_template("{title|truncate:6}.{ext}", &t);
-    assert_eq!(result, "Twelve.mkv");
+    assert_eq!(result, "Harbor.mkv");
 }
 
 #[test]
 fn render_rename_template_applies_truncate_before_later_filters() {
-    let t = tokens(&[("title", "12 Years a Slave"), ("ext", "mkv")]);
+    let t = tokens(&[("title", "12 Tides a Shore"), ("ext", "mkv")]);
     let result = render_rename_template("{title|truncate:8|space:}.{ext}", &t);
-    assert_eq!(result, "12Years.mkv");
+    assert_eq!(result, "12Tides.mkv");
 }
 
 #[test]
@@ -216,16 +216,16 @@ fn render_title_folder_template_trims_empty_literal_brace_group() {
 
 #[test]
 fn render_title_folder_template_replaces_token_spaces() {
-    let t = tokens(&[("title", "12 Years a Slave"), ("year", "2013")]);
+    let t = tokens(&[("title", "12 Tides a Shore"), ("year", "2013")]);
     let result = render_title_folder_template("{title|space:_} ({year})", &t);
-    assert_eq!(result, "12_Years_a_Slave (2013)");
+    assert_eq!(result, "12_Tides_a_Shore (2013)");
 }
 
 #[test]
 fn render_title_folder_template_truncates_before_replacing_spaces() {
-    let t = tokens(&[("title", "12 Years a Slave"), ("year", "2013")]);
+    let t = tokens(&[("title", "12 Tides a Shore"), ("year", "2013")]);
     let result = render_title_folder_template("{title|truncate:8|space:_} ({year})", &t);
-    assert_eq!(result, "12_Years (2013)");
+    assert_eq!(result, "12_Tides (2013)");
 }
 
 #[test]
@@ -1054,13 +1054,13 @@ fn movie_rename_items_render_external_id_tokens() {
 #[test]
 fn movie_rename_items_use_saved_hydrated_localized_title_name() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let current_path = dir.path().join("Dune.2021.1080p.BluRay.x264-GROUP.mkv");
+    let current_path = dir.path().join("Sandline.2021.1080p.BluRay.x264-GROUP.mkv");
     std::fs::write(&current_path, b"movie").expect("seed movie file");
     let current_path = current_path.to_string_lossy().to_string();
 
-    let mut title = test_movie_title("デューン");
+    let mut title = test_movie_title("サンドライン");
     title.year = Some(2021);
-    title.aliases = vec!["Dune".to_string()];
+    title.aliases = vec!["Sandline".to_string()];
     title.metadata_language = Some("jpn".to_string());
     let collection = test_movie_collection(&current_path);
     let media_file = test_media_file(&current_path);
@@ -1080,13 +1080,13 @@ fn movie_rename_items_use_saved_hydrated_localized_title_name() {
     assert_eq!(items.len(), 1);
     assert_eq!(
         items[0].normalized_filename.as_deref(),
-        Some("デューン.mkv")
+        Some("サンドライン.mkv")
     );
     assert!(
         items[0]
             .proposed_path
             .as_deref()
-            .is_some_and(|path| path.ends_with("/デューン.mkv"))
+            .is_some_and(|path| path.ends_with("/サンドライン.mkv"))
     );
 }
 

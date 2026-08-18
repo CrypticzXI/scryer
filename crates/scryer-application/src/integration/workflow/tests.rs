@@ -655,7 +655,7 @@ mod tests {
     #[test]
     fn apply_tracked_download_queue_metadata_prefers_source_release_title() {
         let mut queue_item = item("job-1", DownloadQueueState::Downloading);
-        queue_item.title_name = "Titanic".to_string();
+        queue_item.title_name = "Ironclad".to_string();
         let tracked = crate::tracked_downloads::TrackedDownload {
             id: "nzbget:job-1".to_string(),
             client_id: "client-1".to_string(),
@@ -667,7 +667,7 @@ mod tests {
             status_messages: Vec::new(),
             title_id: Some("title-1".to_string()),
             facet: Some("movie".to_string()),
-            source_title: Some("Titanic.1997.2160p.UHD.BluRay.x265-GRP".to_string()),
+            source_title: Some("Ironclad.1997.2160p.UHD.BluRay.x265-GRP".to_string()),
             indexer: None,
             added_at: None,
             notified_manual_interaction: false,
@@ -688,7 +688,7 @@ mod tests {
 
         assert_eq!(
             queue_item.title_name,
-            "Titanic.1997.2160p.UHD.BluRay.x265-GRP"
+            "Ironclad.1997.2160p.UHD.BluRay.x265-GRP"
         );
     }
 }

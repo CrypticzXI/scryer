@@ -831,7 +831,7 @@ mod tests {
         let backdrops_dir = show_dir.join("backdrops");
         let theme_music_dir = show_dir.join("theme_music");
         let trailers_dir = show_dir.join("trailers");
-        let titled_trailers_dir = show_dir.join("12 Years a Slave (Trailers)");
+        let titled_trailers_dir = show_dir.join("12 Tides a Shore (Trailers)");
         tokio::fs::create_dir_all(&season_dir)
             .await
             .expect("season dir");

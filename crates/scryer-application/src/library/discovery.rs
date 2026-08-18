@@ -774,17 +774,17 @@ mod tests {
 
     #[test]
     fn library_title_walk_preserves_max_inside_title() {
-        let walk = library_title_walk("Mad Max Fury Road (2015) 2160p").expect("title walk");
+        let walk = library_title_walk("Sand Kettle Fury Road (2015) 2160p").expect("title walk");
 
-        assert_eq!(walk.title.as_deref(), Some("Mad Max Fury Road"));
+        assert_eq!(walk.title.as_deref(), Some("Sand Kettle Fury Road"));
         assert_eq!(walk.year, Some(2015));
     }
 
     #[test]
     fn library_title_walk_extracts_tvdb_uri_from_series_folder() {
-        let walk = library_title_walk("Foundation (2021) tvdb://366972").expect("title walk");
+        let walk = library_title_walk("Fathomline (2021) tvdb://366972").expect("title walk");
 
-        assert_eq!(walk.title.as_deref(), Some("Foundation"));
+        assert_eq!(walk.title.as_deref(), Some("Fathomline"));
         assert_eq!(walk.year, Some(2021));
         assert_eq!(walk.tvdb_id.as_deref(), Some("366972"));
     }
@@ -971,7 +971,7 @@ mod tests {
             Path::new("/library/Movie Title/theme_music/foo.mkv"),
             Path::new("/library/Movie Title/Trailers/foo.mkv"),
             Path::new("/library/Movie Title/Movie Trailers/foo.mkv"),
-            Path::new("/library/Movie Title/12 Years a Slave (Trailers)/foo.mkv"),
+            Path::new("/library/Movie Title/12 Tides a Shore (Trailers)/foo.mkv"),
         ] {
             assert!(
                 should_skip_movie_library_subpath(root, path, false),
@@ -989,7 +989,7 @@ mod tests {
             Path::new("/library/Anime Show/extras/foo.mkv"),
             Path::new("/library/Anime Show/Featurettes/foo.mkv"),
             Path::new("/library/Anime Show/Movie Trailers/foo.mkv"),
-            Path::new("/library/Anime Show/12 Years a Slave (Trailers)/foo.mkv"),
+            Path::new("/library/Anime Show/12 Tides a Shore (Trailers)/foo.mkv"),
             Path::new("/library/Anime Show/theme.music/foo.mkv"),
             Path::new("/library/Anime Show/theme-music/foo.mkv"),
             Path::new("/library/Anime Show/theme_music/foo.mkv"),

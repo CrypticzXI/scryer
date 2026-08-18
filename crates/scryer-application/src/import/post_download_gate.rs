@@ -1522,7 +1522,7 @@ mod tests {
 
     #[test]
     fn automatic_import_rejects_anime_length_file_for_live_action_episode() {
-        // One Piece incident: a 24:55 anime episode imported against the ~55-minute
+        // Tide Chart incident: a 24:55 anime episode imported against the ~55-minute
         // live-action episode. Well clear of the sample threshold, far below the band.
         let rejection = runtime_sample_rejection(automatic(Some(3300)), Some(1495))
             .expect("45%-of-expected runtime should reject");
@@ -1611,7 +1611,7 @@ mod tests {
 
     #[test]
     fn replace_guard_blocks_anime_length_file_over_live_action_incumbent() {
-        // One Piece incident with no catalog runtime: the band cannot run against
+        // Tide Chart incident with no catalog runtime: the band cannot run against
         // metadata, so the 24:55 file is measured against the ~55-minute file it
         // would overwrite.
         let message = replace_runtime_band_block(

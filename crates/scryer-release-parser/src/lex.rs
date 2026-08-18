@@ -272,7 +272,7 @@ fn build_cst(tokens: &[Token]) -> ReleaseCst {
 }
 
 pub(crate) fn normalize_token(raw: &str) -> String {
-    // Accent-fold so "Pokémon" in a target context matches "Pokemon" in a
+    // Accent-fold so "Kelúne" in a target context matches "Kelune" in a
     // release name (and vice versa) without needing an ASCII alias: NFKD
     // splits accents into combining marks, which the alphanumeric filter
     // drops. A handful of letters have no decomposition and fold manually.

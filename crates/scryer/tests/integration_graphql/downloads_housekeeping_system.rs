@@ -263,12 +263,12 @@ fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title() {
 
 async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title_impl() {
     let ctx = TestContext::new().await;
-    let title_id = add_test_title(&ctx, "Friends", "SERIES").await;
+    let title_id = add_test_title(&ctx, "Pals", "SERIES").await;
 
     scryer_infrastructure::BlocklistStore::new(ctx.db.datastore())
         .add(&scryer_application::NewBlocklistEntry {
             title_id: title_id.clone(),
-            source_title: Some("friends.s05.720p.bluray.dd5.1.x264-ntb".to_string()),
+            source_title: Some("pals.s05.720p.bluray.dd5.1.x264-ntb".to_string()),
             source_hint: Some("weaver://job-1".to_string()),
             quality: None,
             download_id: Some("job-1".to_string()),
@@ -284,7 +284,7 @@ async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title_i
         &release_store,
         Some(title_id.clone()),
         Some("weaver://job-1".to_string()),
-        Some("friends".to_string()),
+        Some("pals".to_string()),
         scryer_application::ReleaseDownloadAttemptOutcome::Failed,
         Some("legacy weak title".to_string()),
         None,
@@ -311,7 +311,7 @@ async fn graphql_title_release_blocklist_uses_persisted_blocklist_source_title_i
         .as_array()
         .expect("blocklist entries array");
     assert!(entries.iter().any(|entry| {
-        entry["sourceTitle"].as_str() == Some("friends.s05.720p.bluray.dd5.1.x264-ntb")
+        entry["sourceTitle"].as_str() == Some("pals.s05.720p.bluray.dd5.1.x264-ntb")
             && entry["sourceHint"].as_str() == Some("weaver://job-1")
     }));
 }

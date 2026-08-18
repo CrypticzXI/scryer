@@ -127,7 +127,7 @@ async fn apply_result_does_not_verify_unresolved_identity_rejection_as_imported(
 async fn apply_result_keeps_ambiguous_obfuscated_episode_blocked_with_actionable_reason() {
     let app = build_app(vec![], vec![], vec![], vec![]);
     let release =
-        "[Erai-raws].Hime-sama.Goumon.no.Jikan.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]";
+        "[Erai-raws].Yuki-sama.Kagami.no.Toki.Desu-09.[1080p][Multiple.Subtitle][AA7AC7E5]";
     let reason = "Automatic import could not choose a season for episode 9: the release name does not include a season and the downloaded filename is obfuscated. Open Manual Import and assign the correct season and episode.";
     let mut td = build_tracked_download("title-1", "anime", release);
     let result = ImportResult {

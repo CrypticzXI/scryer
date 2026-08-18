@@ -4263,7 +4263,7 @@ mod tests {
         let mut ids = HashMap::new();
         ids.insert("tmdb".to_string(), "123".to_string());
         let id_strategy = SearchStrategy {
-            request_query: "Resident Evil 2026".to_string(),
+            request_query: "Amber Circuit 2026".to_string(),
             request_facet: "movie".to_string(),
             ids,
             season: None,
@@ -4273,7 +4273,7 @@ mod tests {
             label: "ids_tmdb".to_string(),
         };
         let text_strategy = SearchStrategy {
-            request_query: "Resident Evil 2026".to_string(),
+            request_query: "Amber Circuit 2026".to_string(),
             request_facet: "movie".to_string(),
             ids: HashMap::new(),
             season: None,
@@ -6272,7 +6272,7 @@ mod tests {
         let calls = StdArc::new(StdMutex::new(Vec::new()));
         let client = Arc::new(ScriptedIndexerClient {
             calls: calls.clone(),
-            responder: StdArc::new(|_| response_with_titles(&["Demon.Slayer.Mugen.Train.2020"])),
+            responder: StdArc::new(|_| response_with_titles(&["Ember.Saga.Iron.Rail.2020"])),
         });
         let multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
@@ -6287,7 +6287,7 @@ mod tests {
 
         let _response = multi
             .search(
-                "Demon Slayer Mugen Train 2020".to_string(),
+                "Ember Saga Iron Rail 2020".to_string(),
                 HashMap::from([("imdb_id".to_string(), "tt11032374".to_string())]),
                 Some("anime".to_string()),
                 Some("movie".to_string()),
@@ -6376,7 +6376,7 @@ mod tests {
         let calls = StdArc::new(StdMutex::new(Vec::new()));
         let client = Arc::new(ScriptedIndexerClient {
             calls: calls.clone(),
-            responder: StdArc::new(|_| response_with_titles(&["Jujutsu.Kaisen.0.2021.1080p"])),
+            responder: StdArc::new(|_| response_with_titles(&["Nebula.Circuit.0.2021.1080p"])),
         });
         let multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
@@ -6398,7 +6398,7 @@ mod tests {
 
         let response = multi
             .search(
-                "JUJUTSU KAISEN 0".to_string(),
+                "NEBULA CIRCUIT 0".to_string(),
                 HashMap::from([("imdb_id".to_string(), "tt14331144".to_string())]),
                 Some("movie".to_string()),
                 Some("movie".to_string()),
@@ -6418,7 +6418,7 @@ mod tests {
         let recorded = calls.lock().expect("calls").clone();
         assert_eq!(recorded.len(), 1);
         assert!(recorded[0].ids.is_empty());
-        assert_eq!(recorded[0].query, "JUJUTSU KAISEN 0");
+        assert_eq!(recorded[0].query, "NEBULA CIRCUIT 0");
         assert_eq!(recorded[0].category.as_deref(), Some("movie"));
         assert_eq!(recorded[0].facet.as_deref(), Some("movie"));
         assert_eq!(recorded[0].categories, vec!["2000".to_string()]);
@@ -6444,7 +6444,7 @@ mod tests {
 
         let response = multi
             .search(
-                "JUJUTSU KAISEN 0".to_string(),
+                "NEBULA CIRCUIT 0".to_string(),
                 HashMap::from([("imdb_id".to_string(), "tt14331144".to_string())]),
                 Some("movie".to_string()),
                 Some("movie".to_string()),
@@ -6476,7 +6476,7 @@ mod tests {
         let calls = StdArc::new(StdMutex::new(Vec::new()));
         let client = Arc::new(ScriptedIndexerClient {
             calls: calls.clone(),
-            responder: StdArc::new(|_| response_with_titles(&["Naruto.Shippuuden.09.1080p"])),
+            responder: StdArc::new(|_| response_with_titles(&["Harbor.Tempest.09.1080p"])),
         });
         let multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
@@ -6491,7 +6491,7 @@ mod tests {
 
         let _response = multi
             .search(
-                "Naruto Shippuuden 09".to_string(),
+                "Harbor Tempest 09".to_string(),
                 HashMap::from([("anidb_id".to_string(), "1234".to_string())]),
                 Some("anime".to_string()),
                 Some("anime".to_string()),
@@ -6596,7 +6596,7 @@ mod tests {
         let calls = StdArc::new(StdMutex::new(Vec::new()));
         let client = Arc::new(ScriptedIndexerClient {
             calls: calls.clone(),
-            responder: StdArc::new(|_| response_with_titles(&["Naruto.Shippuuden.09.1080p"])),
+            responder: StdArc::new(|_| response_with_titles(&["Harbor.Tempest.09.1080p"])),
         });
         let multi = MultiIndexerSearchClient::new(
             Arc::new(MockIndexerConfigRepository {
@@ -6625,7 +6625,7 @@ mod tests {
 
         let _response = multi
             .search(
-                "Naruto Shippuuden 09".to_string(),
+                "Harbor Tempest 09".to_string(),
                 HashMap::from([("anidb_id".to_string(), "1234".to_string())]),
                 Some("anime".to_string()),
                 Some("anime".to_string()),
@@ -7109,7 +7109,7 @@ mod tests {
         let caps = movie_caps();
         let ids = HashMap::from([("imdb_id".to_string(), "tt11032374".to_string())]);
         let strategies = build_strategies(&StrategyParams {
-            query: "Mugen Train 2020",
+            query: "Iron Rail 2020",
             query_facet: "anime",
             id_facet: "movie",
             ids: &ids,
@@ -7171,7 +7171,7 @@ mod tests {
 
         let error = client
             .search(
-                "Mugen Train 2020".into(),
+                "Iron Rail 2020".into(),
                 HashMap::from([("imdb_id".to_string(), "tt11032374".to_string())]),
                 Some("movie".into()),
                 Some("movie".into()),
@@ -7208,7 +7208,7 @@ mod tests {
 
         let error = client
             .search(
-                "Mugen Train 2020".into(),
+                "Iron Rail 2020".into(),
                 HashMap::from([("imdb_id".to_string(), "tt11032374".to_string())]),
                 Some("movie".into()),
                 Some("movie".into()),
@@ -7357,7 +7357,7 @@ mod tests {
             } else if call.ids.contains_key("anidb_id") {
                 response_with_titles(&[])
             } else {
-                response_with_titles(&["Demon.Slayer.S02E03.720p.WEB-DL"])
+                response_with_titles(&["Ember.Saga.S02E03.720p.WEB-DL"])
             }
         });
 
@@ -7680,12 +7680,12 @@ mod tests {
             response_with_titles(&[
                 "Signal.Run.S01E12.720p.WEB-DL",
                 "Signal.Road.2021.S01E12.2160p.WEB-DL",
-                "Friends.Like.These.S01E12.720p.WEB-DL",
-                "Smiling.Friends.S01E12.1080p.WEB-DL",
+                "Pals.Like.These.S01E12.720p.WEB-DL",
+                "Smiling.Pals.S01E12.1080p.WEB-DL",
             ])
         });
 
-        let firefly = client
+        let signal_run = client
             .search(
                 "Signal Run S01E12".into(),
                 HashMap::new(),
@@ -7701,13 +7701,13 @@ mod tests {
                 vec![],
             )
             .await
-            .expect("firefly search should succeed");
-        assert_eq!(firefly.results.len(), 1);
-        assert_eq!(firefly.results[0].title, "Signal.Run.S01E12.720p.WEB-DL");
+            .expect("signal_run search should succeed");
+        assert_eq!(signal_run.results.len(), 1);
+        assert_eq!(signal_run.results[0].title, "Signal.Run.S01E12.720p.WEB-DL");
 
-        let friends = client
+        let pals = client
             .search(
-                "Friends S01E12".into(),
+                "Pals S01E12".into(),
                 HashMap::new(),
                 Some("series".into()),
                 Some("series".into()),
@@ -7721,8 +7721,8 @@ mod tests {
                 vec![],
             )
             .await
-            .expect("friends search should succeed");
-        assert!(friends.results.is_empty());
+            .expect("pals search should succeed");
+        assert!(pals.results.is_empty());
     }
 
     #[tokio::test]
@@ -7817,7 +7817,7 @@ mod tests {
 
         let ids = HashMap::from([("anidb_id".to_string(), "18886".to_string())]);
         let strategies = build_strategies(&StrategyParams {
-            query: "Silver Horizon: Beyond Journey's End S02E05",
+            query: "Silver Horizon: Beyond Harbor's End S02E05",
             query_facet: "anime",
             id_facet: "anime",
             ids: &ids,
@@ -7867,7 +7867,7 @@ mod tests {
 
         let ids = HashMap::from([("anidb_id".to_string(), "18886".to_string())]);
         let strategies = build_strategies(&StrategyParams {
-            query: "Silver Horizon: Beyond Journey's End S02E05",
+            query: "Silver Horizon: Beyond Harbor's End S02E05",
             query_facet: "anime",
             id_facet: "anime",
             ids: &ids,
@@ -8465,7 +8465,7 @@ mod tests {
     #[test]
     fn preferred_anime_alias_query_strips_episode_context() {
         let alias = preferred_anime_alias_query(
-            "Silver Horizon: Beyond Journey's End S02E05",
+            "Silver Horizon: Beyond Harbor's End S02E05",
             &[scryer_domain::TaggedAlias {
                 name: "Sora no Vale".into(),
                 language: "jpn".into(),
@@ -8478,10 +8478,10 @@ mod tests {
     #[test]
     fn preferred_anime_alias_query_skips_canonical_alias_and_uses_distinct_romanized_alias() {
         let alias = preferred_anime_alias_query(
-            "Silver Horizon: Beyond Journey's End S02E05",
+            "Silver Horizon: Beyond Harbor's End S02E05",
             &[
                 scryer_domain::TaggedAlias {
-                    name: "Silver Horizon: Beyond Journey's End".into(),
+                    name: "Silver Horizon: Beyond Harbor's End".into(),
                     language: "jpn".into(),
                 },
                 scryer_domain::TaggedAlias {

@@ -516,9 +516,9 @@ async fn set_title_sort_title(ctx: &TestContext, title_id: &str, sort_title: &st
 #[tokio::test]
 async fn graphql_title_sort_uses_visible_name_ignoring_multilingual_articles_and_cjk_width() {
     let ctx = TestContext::new().await;
-    let akira_id = add_test_title_with_tvdb_id(&ctx, "ＡＫＩＲＡ", "ANIME", "900000").await;
-    let apothecary_id =
-        add_test_title_with_tvdb_id(&ctx, "The Apothecary Diaries", "ANIME", "900001").await;
+    let anchor_id = add_test_title_with_tvdb_id(&ctx, "ＡＮＣＨＯＲ", "ANIME", "900000").await;
+    let apiary_id =
+        add_test_title_with_tvdb_id(&ctx, "The Apiary Almanac", "ANIME", "900001").await;
     let arc_id = add_test_title_with_tvdb_id(&ctx, "L’Arc-en-Ciel", "MOVIE", "900002").await;
     let auto_id =
         add_test_title_with_tvdb_id(&ctx, "O Auto da Compadecida", "MOVIE", "900003").await;
@@ -527,14 +527,14 @@ async fn graphql_title_sort_uses_visible_name_ignoring_multilingual_articles_and
     let cercle_id = add_test_title_with_tvdb_id(&ctx, "Le Cercle Rouge", "MOVIE", "900006").await;
     let dorado_id = add_test_title_with_tvdb_id(&ctx, "El Dorado", "MOVIE", "900007").await;
     let education_id = add_test_title_with_tvdb_id(&ctx, "An Education", "MOVIE", "900008").await;
-    let fullmetal_id =
-        add_test_title_with_tvdb_id(&ctx, "Fullmetal Alchemist: Brotherhood", "ANIME", "900009")
-            .await;
+    let forgeheart_id =
+        add_test_title_with_tvdb_id(&ctx, "Forgeheart Alchemy: Kinship", "ANIME", "900009").await;
     let himmel_id = add_test_title_with_tvdb_id(&ctx, "Der Himmel", "MOVIE", "900010").await;
     let jetee_id = add_test_title_with_tvdb_id(&ctx, "La Jetée", "MOVIE", "900011").await;
-    let matrix_id = add_test_title_with_tvdb_id(&ctx, "Ｔｈｅ　Matrix", "MOVIE", "900012").await;
-    set_title_sort_title(&ctx, &akira_id, "zzzzzz").await;
-    set_title_sort_title(&ctx, &apothecary_id, "zzzz").await;
+    let meridian_id =
+        add_test_title_with_tvdb_id(&ctx, "Ｔｈｅ　Meridian", "MOVIE", "900012").await;
+    set_title_sort_title(&ctx, &anchor_id, "zzzzzz").await;
+    set_title_sort_title(&ctx, &apiary_id, "zzzz").await;
     set_title_sort_title(&ctx, &arc_id, "yyyy").await;
     set_title_sort_title(&ctx, &auto_id, "xxxx").await;
     set_title_sort_title(&ctx, &avventura_id, "wwww").await;
@@ -542,10 +542,10 @@ async fn graphql_title_sort_uses_visible_name_ignoring_multilingual_articles_and
     set_title_sort_title(&ctx, &cercle_id, "llll").await;
     set_title_sort_title(&ctx, &dorado_id, "kkkk").await;
     set_title_sort_title(&ctx, &education_id, "aaaa").await;
-    set_title_sort_title(&ctx, &fullmetal_id, "鋼の錬金術師 fullmetal alchemist").await;
+    set_title_sort_title(&ctx, &forgeheart_id, "鍛心 forgeheart alchemy").await;
     set_title_sort_title(&ctx, &himmel_id, "iiii").await;
     set_title_sort_title(&ctx, &jetee_id, "hhhh").await;
-    set_title_sort_title(&ctx, &matrix_id, "gggg").await;
+    set_title_sort_title(&ctx, &meridian_id, "gggg").await;
 
     let body = gql(
         &ctx,
@@ -572,8 +572,8 @@ async fn graphql_title_sort_uses_visible_name_ignoring_multilingual_articles_and
     assert_eq!(
         names,
         vec![
-            "ＡＫＩＲＡ",
-            "The Apothecary Diaries",
+            "ＡＮＣＨＯＲ",
+            "The Apiary Almanac",
             "L’Arc-en-Ciel",
             "O Auto da Compadecida",
             "L'Avventura",
@@ -581,10 +581,10 @@ async fn graphql_title_sort_uses_visible_name_ignoring_multilingual_articles_and
             "Le Cercle Rouge",
             "El Dorado",
             "An Education",
-            "Fullmetal Alchemist: Brotherhood",
+            "Forgeheart Alchemy: Kinship",
             "Der Himmel",
             "La Jetée",
-            "Ｔｈｅ　Matrix",
+            "Ｔｈｅ　Meridian",
         ]
     );
 }
@@ -1258,7 +1258,7 @@ async fn graphql_titles_by_external_ids_returns_catalog_titles() {
     .await;
     let duplicate = create_catalog_title(
         &ctx,
-        "Mario Duplicate",
+        "Comet Duplicate",
         MediaFacet::Series,
         vec![ExternalId {
             source: "tvdb".to_string(),
@@ -1270,7 +1270,7 @@ async fn graphql_titles_by_external_ids_returns_catalog_titles() {
     .await;
     let second = create_catalog_title(
         &ctx,
-        "The Super Mario Galaxy Movie",
+        "The Super Comet Galaxy Movie",
         MediaFacet::Movie,
         vec![ExternalId {
             source: "tvdb".to_string(),

@@ -2126,9 +2126,36 @@ pub(crate) async fn execute_manual_import_with_release_evidence(
             }
             Ok(EpisodeImportOutcome::Skipped {
                 message,
+                reason_code,
                 skip_reason,
                 ..
             }) => {
+                if episode_skip_is_already_present(reason_code.as_deref(), skip_reason.as_ref())
+                {
+                    // The identical file already sits at the destination (an
+                    // earlier import landed it): the operator's mapping is
+                    // satisfied, not failed. Record it like the automatic path
+                    // so verification counts the unit and the tracked download
+                    // finalizes as imported instead of re-offering an import
+                    // that can never succeed.
+                    if let Some(completed) = completed {
+                        persist_file_import_artifact(
+                            app,
+                            import_id,
+                            completed,
+                            title.id.as_str(),
+                            &source,
+                            "episode",
+                            "already_present",
+                            reason_code.as_deref(),
+                            None,
+                            std::slice::from_ref(&episode),
+                        )
+                        .await;
+                    }
+                    results.push(manual_import_file_result(mapping, true, None, None, None));
+                    continue;
+                }
                 results.push(manual_import_file_result(
                     mapping,
                     false,

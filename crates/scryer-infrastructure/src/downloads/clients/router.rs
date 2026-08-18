@@ -5932,10 +5932,10 @@ mod tests {
     const ANIME_CATEGORY_NZB: &[u8] = br#"<?xml version="1.0" encoding="iso-8859-1" ?>
 <nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
 <head>
- <meta type="name">One.Piece.S02.DANiSH.JAPANESE.1080p.WEB.H264</meta>
+ <meta type="name">Tide.Chart.S02.DANiSH.JAPANESE.1080p.WEB.H264</meta>
  <meta type="category">TV &gt; Anime</meta>
 </head>
-<file poster="poster@example.invalid" date="1700000000" subject="[1/1] - &quot;one.piece.par2&quot;"></file>
+<file poster="poster@example.invalid" date="1700000000" subject="[1/1] - &quot;tide.chart.par2&quot;"></file>
 </nzb>"#;
 
     fn nzb_bytes_router(client: Arc<MockDownloadClient>) -> PrioritizedDownloadClientRouter {
@@ -5969,7 +5969,7 @@ mod tests {
                 content_type: Some("application/x-nzb".to_string()),
             }),
             source_kind: Some(DownloadSourceKind::NzbUrl),
-            source_title: Some("One.Piece.S02.DANiSH.JAPANESE.1080p.WEB.H264".to_string()),
+            source_title: Some("Tide.Chart.S02.DANiSH.JAPANESE.1080p.WEB.H264".to_string()),
             source_password: None,
             category: None,
             queue_priority: None,

@@ -601,7 +601,7 @@ async fn search_indexers_anime_required_english_accepts_dual_audio_release() {
 async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
     let settings = Arc::new(StoredSettingsRepo::default());
     let indexer_client = Arc::new(FixedReleaseIndexerClient::new(
-        "Nightfall.Heavy.Metal.Dark.Fantasy.S01E01.1080p.NF.WEB-DL",
+        "Nightfall.Heavy.Chorus.Dark.Lantern.S01E01.1080p.NF.WEB-DL",
     ));
     let (app, user) = bootstrap_with_search_settings_and_indexer(settings, indexer_client);
 
@@ -666,7 +666,7 @@ async fn search_indexers_for_title_uses_tagged_aliases_for_auto_evaluation() {
             &title.id,
             TitleMetadataUpdate {
                 tagged_aliases: vec![scryer_domain::TaggedAlias {
-                    name: "Nightfall Heavy Metal Dark Fantasy".to_string(),
+                    name: "Nightfall Heavy Chorus Dark Lantern".to_string(),
                     language: "eng".to_string(),
                 }],
                 ..Default::default()

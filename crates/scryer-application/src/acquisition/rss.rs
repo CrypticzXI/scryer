@@ -87,7 +87,7 @@ fn build_title_context_bank(titles: &[Title]) -> TitleContextBank {
 
     // Pillar A tier 0 on the RSS path: collisions are grouped over ALL input
     // titles (an unmonitored collider is still a collider) on the
-    // year-stripped key shape, so `One Piece` and `One Piece (2023)` collide.
+    // year-stripped key shape, so `Tide Chart` and `Tide Chart (2023)` collide.
     // The bank itself stays monitored-only — no extra queries either way.
     let mut titles_per_stripped_key: HashMap<&str, HashSet<&str>> = HashMap::new();
     let all_title_keys = titles
@@ -268,7 +268,7 @@ fn match_release_to_title_context<'a>(
             continue;
         };
         // The target-biased parse supplies year/projection semantics (it knows
-        // when a year token is part of the title, as in `Blade Runner 2049`);
+        // when a year token is part of the title, as in `Signal Runner 2049`);
         // identity still anchors on the context-free extraction inside
         // `match_parsed_release_to_title_evidence`.
         let parsed =
@@ -286,7 +286,7 @@ fn match_release_to_title_context<'a>(
 
         // The matched key's specificity ranks colliding candidates: a longer
         // key names the release more precisely than a shared bare key. Score
-        // the year-stripped shape — a year-suffixed twin (`DuckTales (2017)`)
+        // the year-stripped shape — a year-suffixed twin (`HarborTales (2017)`)
         // is not more specific than its bare twin when the release itself
         // carries no year, and an undisambiguated twin tie must keep the
         // deterministic title-id winner so ambiguity parking downstream has a
@@ -2214,10 +2214,10 @@ mod tests {
             "t1",
             "Lantern Tide",
             Some(2001),
-            vec!["Sen to Chihiro no Kamikakushi"],
+            vec!["Hoshi to Kaze no Shirabe"],
         )];
         let bank = build_title_context_bank(&titles);
-        let result = match_release("Sen.to.Chihiro.no.Kamikakushi", &bank);
+        let result = match_release("Hoshi.to.Kaze.no.Shirabe", &bank);
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
     }
@@ -2226,13 +2226,13 @@ mod tests {
     fn match_via_release_aka_title_variant() {
         let titles = vec![make_title_with_aliases(
             "t1",
-            "My Cousin",
+            "My Lighthouse",
             Some(2020),
-            vec!["Mon Cousin"],
+            vec!["Mon Phare"],
         )];
         let bank = build_title_context_bank(&titles);
         let result = match_release(
-            "Mon.Cousin.A.K.A.My.Cousin.2020.1080p.BluRay.x264-GRP",
+            "Mon.Phare.A.K.A.My.Lighthouse.2020.1080p.BluRay.x264-GRP",
             &bank,
         );
         assert!(result.is_some());
@@ -2243,17 +2243,20 @@ mod tests {
     fn match_via_release_slash_title_variant() {
         let titles = vec![make_title_with_aliases(
             "t1",
-            "My Cousin",
+            "My Lighthouse",
             Some(2020),
-            vec!["Mon Cousin"],
+            vec!["Mon Phare"],
         )];
         let bank = build_title_context_bank(&titles);
-        let result = match_release("Mon Cousin / My Cousin 2020 1080p BluRay x264-GRP", &bank);
+        let result = match_release(
+            "Mon Phare / My Lighthouse 2020 1080p BluRay x264-GRP",
+            &bank,
+        );
         assert!(result.is_some());
         assert_eq!(result.unwrap().title_id, "t1");
     }
 
-    // ── single-token containment junk (prod regression: title "Friends") ──
+    // ── single-token containment junk (prod regression: title "Pals") ──
 
     fn make_series_title(id: &str, name: &str, year: Option<i32>) -> Title {
         let mut t = make_title(id, name, year);
@@ -2264,14 +2267,14 @@ mod tests {
 
     #[test]
     fn single_token_title_rejects_mid_name_containment_junk() {
-        let titles = vec![make_series_title("friends", "Friends", Some(1994))];
+        let titles = vec![make_series_title("pals", "Pals", Some(1994))];
         let bank = build_title_context_bank(&titles);
         for junk in [
-            "Cliffords.Puppy.Days.S02E23E24.Heroes.and.Friends.The.Cookie.Crumbles.1080p.PMTP.WEB-DL.AAC2.0.x264-AndreMor",
-            "Daemons.of.the.Shadow.Realm.S01E14.Family.and.Friends.1080p.CR.WEB-DL.MULTi.AAC2.0.H264.Msubs-ToonsHub",
-            "American.Dad.S09E05.Why.Cant.We.Be.Friends.1080p.DSNP.WEB-DL.DDP5.1.H.264-AndreMor",
-            "Caillou.S01E10.Caillous.Friends.720p.PLUTO.WEB-DL.AAC2.0.x264-AndreMor",
-            "ToonsHub.My.Friends.Little.Sister.Has.It.In.for.Me.S01E09.1080p.CR.WEB-DL.AAC2.0.H264",
+            "Puppy.Harbor.Days.S02E23E24.Heroes.and.Pals.The.Cookie.Crumbles.1080p.PMTP.WEB-DL.AAC2.0.x264-AndreMor",
+            "Wardens.of.the.Shadow.Reef.S01E14.Family.and.Pals.1080p.CR.WEB-DL.MULTi.AAC2.0.H264.Msubs-ToonsHub",
+            "Suburban.Dad.S09E05.Why.Cant.We.Be.Pals.1080p.DSNP.WEB-DL.DDP5.1.H.264-AndreMor",
+            "Kalou.S01E10.Kalous.Pals.720p.PLUTO.WEB-DL.AAC2.0.x264-AndreMor",
+            "ToonsHub.My.Pals.Little.Cousin.Has.A.Grudge.S01E09.1080p.CR.WEB-DL.AAC2.0.H264",
         ] {
             assert!(
                 match_release(junk, &bank).is_none(),
@@ -2282,33 +2285,33 @@ mod tests {
 
     #[test]
     fn single_token_title_still_matches_head_anchored_release() {
-        let titles = vec![make_series_title("friends", "Friends", Some(1994))];
+        let titles = vec![make_series_title("pals", "Pals", Some(1994))];
         let bank = build_title_context_bank(&titles);
         let result = match_release(
-            "Friends.S01E10.The.One.With.The.Monkey.1080p.BluRay.x264-GRP",
+            "Pals.S01E10.The.One.With.The.Parrot.1080p.BluRay.x264-GRP",
             &bank,
         );
         assert!(result.is_some(), "head-anchored release must still match");
-        assert_eq!(result.unwrap().title_id, "friends");
+        assert_eq!(result.unwrap().title_id, "pals");
     }
 
     #[test]
     fn single_token_title_matches_with_year_corroboration() {
-        let titles = vec![make_series_title("friends", "Friends", Some(1994))];
+        let titles = vec![make_series_title("pals", "Pals", Some(1994))];
         let bank = build_title_context_bank(&titles);
-        let result = match_release("Friends.1994.S02E14.1080p.WEB-DL.x264-GRP", &bank);
+        let result = match_release("Pals.1994.S02E14.1080p.WEB-DL.x264-GRP", &bank);
         assert!(result.is_some(), "year-corroborated release must match");
     }
 
     // ── Pillar A3: RSS collision conservatism (Sonarr parity) ────────────────
 
-    /// The incident pair on the RSS path: the live-action `One Piece` (2023)
+    /// The incident pair on the RSS path: the live-action `Tide Chart` (2023)
     /// and the anime (1999) share the bare canonical key in one library.
-    fn one_piece_rss_bank() -> TitleContextBank {
-        let mut anime = make_series_title("one-piece-anime", "One Piece", Some(1999));
+    fn tide_chart_rss_bank() -> TitleContextBank {
+        let mut anime = make_series_title("tide-chart-anime", "Tide Chart", Some(1999));
         anime.facet = MediaFacet::Anime;
         build_title_context_bank(&[
-            make_series_title("one-piece-live", "One Piece", Some(2023)),
+            make_series_title("tide-chart-live", "Tide Chart", Some(2023)),
             anime,
         ])
     }
@@ -2317,9 +2320,9 @@ mod tests {
     fn shared_bare_key_collision_skips_release_without_disambiguator() {
         // Two library titles answer to the same bare key and nothing separates
         // them, so assigning by score/title-id tiebreak would be a coin flip.
-        let bank = one_piece_rss_bank();
+        let bank = tide_chart_rss_bank();
         assert!(
-            match_release("One.Piece.S02E01.1080p.WEB-DL.x264-GRP", &bank).is_none(),
+            match_release("Tide.Chart.S02E01.1080p.WEB-DL.x264-GRP", &bank).is_none(),
             "colliding bare key with no disambiguator must skip the release"
         );
     }
@@ -2328,17 +2331,17 @@ mod tests {
     fn shared_bare_key_collision_assigns_when_a_response_id_disambiguates() {
         // A2(2) on the RSS lane: the release name is the same coin flip, but the
         // indexer asserted the live-action title's own TVDB id.
-        let mut live_action = make_series_title("one-piece-live", "One Piece", Some(2023));
+        let mut live_action = make_series_title("tide-chart-live", "Tide Chart", Some(2023));
         live_action.external_ids = vec![scryer_domain::ExternalId {
             source: "tvdb".to_string(),
             value: "393199".to_string(),
         }];
-        let mut anime = make_series_title("one-piece-anime", "One Piece", Some(1999));
+        let mut anime = make_series_title("tide-chart-anime", "Tide Chart", Some(1999));
         anime.facet = MediaFacet::Anime;
         let bank = build_title_context_bank(&[live_action, anime]);
 
         let result = match_release_to_title_context(
-            "One.Piece.S02E01.1080p.WEB-DL.x264-GRP",
+            "Tide.Chart.S02E01.1080p.WEB-DL.x264-GRP",
             &IndexerResponseAttributes {
                 tvdb_id: Some("393199".to_string()),
                 ..Default::default()
@@ -2348,30 +2351,30 @@ mod tests {
 
         assert_eq!(
             result.map(|info| info.title_id.as_str()),
-            Some("one-piece-live"),
+            Some("tide-chart-live"),
             "an indexer-asserted id resolves the collision instead of skipping"
         );
     }
 
     #[test]
     fn shared_bare_key_collision_assigns_when_year_disambiguates() {
-        let bank = one_piece_rss_bank();
-        let result = match_release("One.Piece.2023.S02E01.1080p.WEB-DL.x264-GRP", &bank);
+        let bank = tide_chart_rss_bank();
+        let result = match_release("Tide.Chart.2023.S02E01.1080p.WEB-DL.x264-GRP", &bank);
         assert_eq!(
             result.map(|info| info.title_id.as_str()),
-            Some("one-piece-live"),
+            Some("tide-chart-live"),
             "a year-stamped release names exactly one of the colliding titles"
         );
     }
 
     #[test]
     fn validator_rejects_target_biased_containment_projection() {
-        // The target-biased parse projects "FRIENDS" out of this name even
+        // The target-biased parse projects "PALS" out of this name even
         // though the release is a different show whose episode title merely
         // contains the word; the validator must not accept that projection.
-        let title = make_series_title("friends", "Friends", Some(1994));
+        let title = make_series_title("pals", "Pals", Some(1994));
         let evidence = canonical_title_evidence(&title);
-        let junk = "Cliffords.Puppy.Days.S02E23E24.Heroes.and.Friends.The.Cookie.Crumbles.1080p.PMTP.WEB-DL.AAC2.0.x264-AndreMor";
+        let junk = "Puppy.Harbor.Days.S02E23E24.Heroes.and.Pals.The.Cookie.Crumbles.1080p.PMTP.WEB-DL.AAC2.0.x264-AndreMor";
         let parsed = crate::parse_release_metadata_for_target(junk, &evidence.parse_context);
         assert!(!parsed_release_matches_title_evidence(&parsed, &evidence));
     }
@@ -2379,8 +2382,8 @@ mod tests {
     #[test]
     fn electric_bloom_cannot_prove_the_bloom_alias() {
         let titles = vec![make_title_with_aliases(
-            "fragrant-flower",
-            "The Fragrant Flower Blooms with Dignity",
+            "quiet-meadow",
+            "The Quiet Meadow Blooms with Splendor",
             Some(2025),
             vec!["BLOOM"],
         )];
@@ -2396,8 +2399,8 @@ mod tests {
     #[test]
     fn one_word_alias_requires_year_or_external_id() {
         let titles = vec![make_title_with_aliases(
-            "fragrant-flower",
-            "The Fragrant Flower Blooms with Dignity",
+            "quiet-meadow",
+            "The Quiet Meadow Blooms with Splendor",
             Some(2025),
             vec!["BLOOM"],
         )];
@@ -2407,15 +2410,15 @@ mod tests {
         assert_eq!(
             match_release("Bloom.2025.S01E01.1080p.WEB-DL", &bank)
                 .map(|info| info.title_id.as_str()),
-            Some("fragrant-flower")
+            Some("quiet-meadow")
         );
     }
 
     #[test]
     fn validator_accepts_head_anchored_release_without_year() {
-        let title = make_series_title("friends", "Friends", Some(1994));
+        let title = make_series_title("pals", "Pals", Some(1994));
         let evidence = canonical_title_evidence(&title);
-        let legit = "Friends.S05E03.The.One.Hundredth.1080p.BluRay.x264-GRP";
+        let legit = "Pals.S05E03.The.Hundredth.One.1080p.BluRay.x264-GRP";
         let parsed = crate::parse_release_metadata_for_target(legit, &evidence.parse_context);
         assert!(parsed_release_matches_title_evidence(&parsed, &evidence));
     }
@@ -2424,10 +2427,10 @@ mod tests {
     fn multi_token_title_matches_with_unbracketed_group_prefix() {
         // One leading release-group token before the title, no year in the
         // release name — must still head-anchor within the tolerance window.
-        let titles = vec![make_series_title("spyxfamily", "Spy x Family", None)];
+        let titles = vec![make_series_title("cookxfamily", "Cook x Family", None)];
         let bank = build_title_context_bank(&titles);
         let parsed = crate::parse_release_metadata_for_target(
-            "ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
+            "ToonsHub.Cook.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
             &bank[0].evidence.parse_context,
         );
         assert!(parsed_release_matches_title_evidence(
@@ -2435,21 +2438,21 @@ mod tests {
             &bank[0].evidence
         ));
         let result = match_release(
-            "ToonsHub.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
+            "ToonsHub.Cook.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
             &bank,
         );
         assert!(result.is_some(), "group-prefixed release must still match");
-        assert_eq!(result.unwrap().title_id, "spyxfamily");
+        assert_eq!(result.unwrap().title_id, "cookxfamily");
     }
 
     #[test]
     fn unknown_unbracketed_prefix_does_not_count_as_a_release_group() {
-        let titles = vec![make_series_title("spyxfamily", "Spy x Family", None)];
+        let titles = vec![make_series_title("cookxfamily", "Cook x Family", None)];
         let bank = build_title_context_bank(&titles);
 
         assert!(
             match_release(
-                "RandomTag.Spy.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
+                "RandomTag.Cook.x.Family.S03E07.1080p.AMZN.WEB-DL.DDP2.0.H264",
                 &bank,
             )
             .is_none()
@@ -2459,90 +2462,90 @@ mod tests {
     #[test]
     fn title_matches_with_bracketed_group_prefix() {
         let titles = vec![make_series_title(
-            "tongari",
-            "Tongari Boushi no Atelier",
+            "kagerou",
+            "Kagerou Kanmuri no Koubou",
             None,
         )];
         let bank = build_title_context_bank(&titles);
         let result = match_release(
-            "[SubsPlease] Tongari Boushi no Atelier - 12 (720p) [53B226F0]",
+            "[SubsPlease] Kagerou Kanmuri no Koubou - 12 (720p) [53B226F0]",
             &bank,
         );
         assert!(
             result.is_some(),
             "bracket-group release must strip to a head-anchored title"
         );
-        assert_eq!(result.unwrap().title_id, "tongari");
+        assert_eq!(result.unwrap().title_id, "kagerou");
     }
 
     #[test]
     fn hyphenated_bracket_group_prefix_matches() {
         let titles = vec![make_series_title(
-            "mushoku",
-            "Mushoku Tensei Jobless Reincarnation",
+            "hoshiba",
+            "Hoshiba Kaisei Nameless Wanderer",
             None,
         )];
         let bank = build_title_context_bank(&titles);
         let result = match_release(
-            "[Erai-raws] Mushoku Tensei Jobless Reincarnation S03E05 [1080p CR WEB-DL AVC AAC][MultiSub]",
+            "[Erai-raws] Hoshiba Kaisei Nameless Wanderer S03E05 [1080p CR WEB-DL AVC AAC][MultiSub]",
             &bank,
         );
         assert!(
             result.is_some(),
             "multi-token bracket group must strip out of the title span"
         );
-        assert_eq!(result.unwrap().title_id, "mushoku");
+        assert_eq!(result.unwrap().title_id, "hoshiba");
     }
 
     #[test]
     fn two_token_bracket_group_prefix_matches() {
         let titles = vec![make_series_title(
-            "frieren",
-            "Frieren Beyond Journeys End",
+            "silver-vale",
+            "Silver Horizon Distant Vale",
             None,
         )];
         let bank = build_title_context_bank(&titles);
         let result = match_release(
-            "[Anime Time] Frieren Beyond Journeys End - 05 [1080p][HEVC 10bit x265][AAC][Multi Sub]",
+            "[Anime Time] Silver Horizon Distant Vale - 05 [1080p][HEVC 10bit x265][AAC][Multi Sub]",
             &bank,
         );
         assert!(
             result.is_some(),
             "space-separated bracket group must strip out of the title span"
         );
-        assert_eq!(result.unwrap().title_id, "frieren");
+        assert_eq!(result.unwrap().title_id, "silver-vale");
     }
 
     #[test]
     fn known_release_group_dotted_prefix_matches() {
         let titles = vec![make_series_title(
-            "mushoku",
-            "Mushoku Tensei Jobless Reincarnation",
+            "hoshiba",
+            "Hoshiba Kaisei Nameless Wanderer",
             None,
         )];
         let bank = build_title_context_bank(&titles);
         let result = match_release(
-            "Erai-raws.Mushoku.Tensei.Jobless.Reincarnation.S03E05.1080p.CR.WEB-DL",
+            "Erai-raws.Hoshiba.Kaisei.Nameless.Wanderer.S03E05.1080p.CR.WEB-DL",
             &bank,
         );
         assert!(
             result.is_some(),
             "an unbracketed known release-group run must anchor past the prefix"
         );
-        assert_eq!(result.unwrap().title_id, "mushoku");
+        assert_eq!(result.unwrap().title_id, "hoshiba");
     }
 
     #[test]
     fn unknown_multi_token_prefix_still_rejects() {
         let titles = vec![make_series_title(
-            "mushoku",
-            "Mushoku Tensei Jobless Reincarnation",
+            "hoshiba",
+            "Hoshiba Kaisei Nameless Wanderer",
             None,
         )];
         let bank = build_title_context_bank(&titles);
         assert!(
             match_release(
-                "Totally.Unknown.Grp.Mushoku.Tensei.Jobless.Reincarnation.S03E05.1080p.WEB-DL",
+                "Totally.Unknown.Grp.Hoshiba.Kaisei.Nameless.Wanderer.S03E05.1080p.WEB-DL",
                 &bank,
             )
             .is_none(),
@@ -2557,40 +2560,40 @@ mod tests {
         // parking downstream has a stable subject. The year-suffixed lookup
         // key must not make one twin "more specific" than the other when the
         // release itself carries no year.
-        let classic = make_series_title("ducktales-1987", "DuckTales", Some(1987));
-        let reboot = make_series_title("ducktales-2017", "DuckTales (2017)", Some(2017));
+        let classic = make_series_title("harbortales-1987", "HarborTales", Some(1987));
+        let reboot = make_series_title("harbortales-2017", "HarborTales (2017)", Some(2017));
         for titles in [
             vec![classic.clone(), reboot.clone()],
             vec![reboot.clone(), classic.clone()],
         ] {
             let bank = build_title_context_bank(&titles);
-            let result = match_release("DuckTales.S01E01.1080p.WEB-DL.AAC2.0.H.264", &bank);
+            let result = match_release("HarborTales.S01E01.1080p.WEB-DL.AAC2.0.H.264", &bank);
             assert_eq!(
                 result.map(|info| info.title_id.as_str()),
-                Some("ducktales-1987"),
+                Some("harbortales-1987"),
                 "bare twin release must keep the deterministic title-id tiebreak"
             );
         }
 
         // The year-stamped control still resolves by year, not by tiebreak.
         let bank = build_title_context_bank(&[classic, reboot]);
-        let result = match_release("DuckTales.2017.S01E03.1080p.WEB-DL", &bank);
+        let result = match_release("HarborTales.2017.S01E03.1080p.WEB-DL", &bank);
         assert_eq!(
             result.map(|info| info.title_id.as_str()),
-            Some("ducktales-2017"),
+            Some("harbortales-2017"),
         );
     }
 
     #[test]
     fn bracket_styled_title_matches() {
-        let titles = vec![make_series_title("oshi-no-ko", "Oshi no Ko", None)];
+        let titles = vec![make_series_title("nagi-no-ko", "Nagi no Ko", None)];
         let bank = build_title_context_bank(&titles);
-        let result = match_release("[Oshi no Ko].S02E01.1080p.WEB-DL.AAC2.0.H.264", &bank);
+        let result = match_release("[Nagi no Ko].S02E01.1080p.WEB-DL.AAC2.0.H.264", &bank);
         assert!(
             result.is_some(),
             "a bracket-styled title with no title text after the brackets must match"
         );
-        assert_eq!(result.unwrap().title_id, "oshi-no-ko");
+        assert_eq!(result.unwrap().title_id, "nagi-no-ko");
     }
 
     #[test]
@@ -2621,18 +2624,22 @@ mod tests {
 
     #[test]
     fn trailing_year_title_matches_with_and_without_release_year() {
-        let titles = vec![make_series_title("br2049", "Blade Runner 2049", Some(2017))];
+        let titles = vec![make_series_title(
+            "sr2049",
+            "Signal Runner 2049",
+            Some(2017),
+        )];
         let bank = build_title_context_bank(&titles);
         for release in [
-            "Blade.Runner.2049.2017.2160p.WEB-DL.DDP5.1.HDR.HEVC",
-            "Blade.Runner.2049.1080p.BluRay.x264",
+            "Signal.Runner.2049.2017.2160p.WEB-DL.DDP5.1.HDR.HEVC",
+            "Signal.Runner.2049.1080p.BluRay.x264",
         ] {
             let result = match_release(release, &bank);
             assert!(
                 result.is_some(),
                 "year-suffixed title must anchor even when the boundary heuristic splits it: {release}"
             );
-            assert_eq!(result.unwrap().title_id, "br2049");
+            assert_eq!(result.unwrap().title_id, "sr2049");
         }
     }
 
@@ -2648,7 +2655,7 @@ mod tests {
     fn parsed_release_does_not_match_unrelated_series_title() {
         let title = make_title("t1", "Harbor Pals (2018)", Some(2018));
         let parsed =
-            crate::parse_release_metadata("Blue.Exorcist.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
+            crate::parse_release_metadata("Azure.Warden.S01E01.720p.WEB-DL.AV1.AAC2.0-NTb");
 
         assert!(!parsed_release_matches_title(&parsed, &title));
     }
@@ -2657,22 +2664,22 @@ mod tests {
 
     #[test]
     fn extract_title_normalizes() {
-        let parsed = crate::parse_release_metadata("The.Dark.Knight.2008.1080p.BluRay");
+        let parsed = crate::parse_release_metadata("The.Grey.Harbor.2008.1080p.BluRay");
         let title = extract_title_from_release(&parsed);
-        assert_eq!(title, "the dark knight");
+        assert_eq!(title, "the grey harbor");
     }
 
     #[test]
     fn extract_title_variants_returns_canonical_then_alternates() {
         let parsed =
-            crate::parse_release_metadata("Sydney.A.K.A.Hard.Eight.1996.1080p.WEB-DL.H.264");
+            crate::parse_release_metadata("Portmere.A.K.A.Hard.Nine.1996.1080p.WEB-DL.H.264");
         let titles = extract_titles_from_release(&parsed);
         assert_eq!(
             titles,
             vec![
-                "sydney aka hard eight".to_string(),
-                "sydney".to_string(),
-                "hard eight".to_string()
+                "portmere aka hard nine".to_string(),
+                "portmere".to_string(),
+                "hard nine".to_string()
             ]
         );
     }

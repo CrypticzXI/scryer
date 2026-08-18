@@ -1149,7 +1149,7 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
         .add_title(
             &user,
             NewTitle {
-                name: "Friends".into(),
+                name: "Pals".into(),
                 facet: MediaFacet::Series,
                 monitored: true,
                 tags: vec![],
@@ -1165,12 +1165,12 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
         (
             "weaver-1",
             "weaver://job/weaver-1",
-            "Friends.S05.720p.BluRay.DD5.1.x264-NTb",
+            "Pals.S05.720p.BluRay.DD5.1.x264-NTb",
         ),
         (
             "weaver-2",
             "weaver://job/weaver-2",
-            " friends.s05.720p.bluray.dd5.1.x264-ntb ",
+            " pals.s05.720p.bluray.dd5.1.x264-ntb ",
         ),
     ] {
         download_submissions
@@ -1202,7 +1202,7 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
             client_type: "weaver".to_string(),
             client_name: Some("Primary".to_string()),
             client_item_id: "weaver-1".to_string(),
-            release_title: "Friends".to_string(),
+            release_title: "Pals".to_string(),
             reason: "download failed".to_string(),
             remove_from_client_if_configured: false,
             skip_reacquire: false,
@@ -1224,7 +1224,7 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
             client_type: "weaver".to_string(),
             client_name: Some("Primary".to_string()),
             client_item_id: "weaver-2".to_string(),
-            release_title: "Friends".to_string(),
+            release_title: "Pals".to_string(),
             reason: "download failed".to_string(),
             remove_from_client_if_configured: false,
             skip_reacquire: false,
@@ -1247,7 +1247,7 @@ async fn process_download_failure_dedupes_same_release_title_across_client_item_
     assert_eq!(blocklist.len(), 1);
     assert_eq!(
         blocklist[0].source_title.as_deref(),
-        Some("friends.s05.720p.bluray.dd5.1.x264-ntb")
+        Some("pals.s05.720p.bluray.dd5.1.x264-ntb")
     );
 
     let failed_attempts = app
@@ -1277,7 +1277,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
         .add_title(
             &user,
             NewTitle {
-                name: "Friends".into(),
+                name: "Pals".into(),
                 facet: MediaFacet::Series,
                 monitored: true,
                 tags: vec![],
@@ -1301,7 +1301,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
             source_provider_id: None,
             source_provider_name: None,
             source_kind: None,
-            source_title: Some("Friends.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
+            source_title: Some("Pals.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
             request_signature: None,
             scope: SubmissionScope::Title,
         })
@@ -1312,14 +1312,14 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
         id: "weaver:job-1".to_string(),
         client_id: "primary".to_string(),
         client_type: "weaver".to_string(),
-        client_item: failed_history_item("job-1", "Friends"),
+        client_item: failed_history_item("job-1", "Pals"),
         completed_source: None,
         state: scryer_domain::TrackedDownloadState::FailedPending,
         status: scryer_domain::TrackedDownloadStatus::Error,
         status_messages: Vec::new(),
         title_id: Some(title.id.clone()),
         facet: Some("series".to_string()),
-        source_title: Some("Friends.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
+        source_title: Some("Pals.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
         indexer: None,
         added_at: None,
         notified_manual_interaction: false,
@@ -1352,7 +1352,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
     assert_eq!(blocklist.len(), 1);
     assert_eq!(
         blocklist[0].source_title.as_deref(),
-        Some("friends.s05.720p.bluray.dd5.1.x264-ntb")
+        Some("pals.s05.720p.bluray.dd5.1.x264-ntb")
     );
 
     let failed_attempts = app
@@ -1365,7 +1365,7 @@ async fn tracked_download_failure_prefers_tracked_source_title_for_blocklist_ide
     assert_eq!(failed_attempts.len(), 1);
     assert_eq!(
         failed_attempts[0].source_title.as_deref(),
-        Some("friends.s05.720p.bluray.dd5.1.x264-ntb")
+        Some("pals.s05.720p.bluray.dd5.1.x264-ntb")
     );
 }
 
@@ -3079,7 +3079,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
         .add_title(
             &user,
             NewTitle {
-                name: "Friends".into(),
+                name: "Pals".into(),
                 facet: MediaFacet::Series,
                 monitored: true,
                 tags: vec![],
@@ -3161,7 +3161,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             status: AcquisitionScopeStatus::Grabbed,
             grabbed_release: Some(
                 serde_json::json!({
-                    "title": "Friends.S05.720p.BluRay.DD5.1.x264-NTb",
+                    "title": "Pals.S05.720p.BluRay.DD5.1.x264-NTb",
                     "score": 100,
                     "grabbed_at": Utc::now().to_rfc3339(),
                     "season_pack": true,
@@ -3193,9 +3193,9 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             source_provider_id: None,
             source_provider_name: None,
             source_kind: None,
-            source_title: Some("Friends.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
+            source_title: Some("Pals.S05.720p.BluRay.DD5.1.x264-NTb".to_string()),
             request_signature: Some(
-                "nzb_url|https://example.com/friends-s05.nzb|Friends.S05.720p.BluRay.DD5.1.x264-NTb"
+                "nzb_url|https://example.com/pals-s05.nzb|Pals.S05.720p.BluRay.DD5.1.x264-NTb"
                     .to_string(),
             ),
             scope: SubmissionScope::Collection {
@@ -3224,7 +3224,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
             client_type: "weaver".to_string(),
             client_name: Some("Primary".to_string()),
             client_item_id: "weaver-season-pack-1".to_string(),
-            release_title: "Friends".to_string(),
+            release_title: "Pals".to_string(),
             reason: "download failed".to_string(),
             remove_from_client_if_configured: false,
             skip_reacquire: false,
@@ -3248,7 +3248,7 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_from_submission_rel
     assert_eq!(blocklist.len(), 1);
     assert_eq!(
         blocklist[0].source_title.as_deref(),
-        Some("friends.s05.720p.bluray.dd5.1.x264-ntb")
+        Some("pals.s05.720p.bluray.dd5.1.x264-ntb")
     );
 
     app.run_convergence_cycle_once().await;
@@ -3705,12 +3705,12 @@ async fn acquisition_cycle_category_mismatch_veto_burns_the_release_without_subm
 #[tokio::test]
 async fn acquisition_cycle_allows_anime_categorized_nzb_for_a_movie_subject() {
     // Post-review fix: `TV > Anime` is how indexers legitimately file anime
-    // FILMS — the gate must not burn One Piece Film Red for being anime.
-    let release_title = "One.Piece.Film.Red.2024.1080p.WEB-DL-GRP";
+    // FILMS — the gate must not burn Tide Chart Film Gold for being anime.
+    let release_title = "Tide.Chart.Film.Gold.2024.1080p.WEB-DL-GRP";
     let anime_categorized_nzb = br#"<?xml version="1.0" encoding="iso-8859-1" ?>
 <nzb xmlns="http://www.newzbin.com/DTD/2003/nzb">
 <head>
- <meta type="name">One.Piece.Film.Red.2024.1080p.WEB-DL-GRP</meta>
+ <meta type="name">Tide.Chart.Film.Gold.2024.1080p.WEB-DL-GRP</meta>
  <meta type="category">TV &gt; Anime</meta>
 </head>
 <file poster="poster@example.invalid" date="1700000000" subject="[1/1]"></file>
@@ -3733,7 +3733,7 @@ async fn acquisition_cycle_allows_anime_categorized_nzb_for_a_movie_subject() {
         );
 
     let (title, _) =
-        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "One Piece Film Red", 2024)
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Tide Chart Film Gold", 2024)
             .await;
 
     app.run_convergence_cycle_once().await;
@@ -7316,8 +7316,8 @@ impl IndexerClient for AmbiguousIdentityIndexerClient {
     }
 }
 
-/// Seeds the One Piece incident pair — two monitored library titles sharing the
-/// canonical key `one piece` — and returns the app plus the wanted scope for the
+/// Seeds the Tide Chart incident pair — two monitored library titles sharing the
+/// canonical key `tide chart` — and returns the app plus the wanted scope for the
 /// live-action title.
 async fn ambiguous_identity_fixture() -> (
     AppUseCase,
@@ -7329,7 +7329,7 @@ async fn ambiguous_identity_fixture() -> (
     Arc<StubDownloadClient>,
 ) {
     let (app, user, title, wanted_id, pending_releases, release_attempts, download_client, _) =
-        ambiguous_identity_fixture_with_releases(&["One.Piece.1080p.WEB-DL.x264-GRP"]).await;
+        ambiguous_identity_fixture_with_releases(&["Tide.Chart.1080p.WEB-DL.x264-GRP"]).await;
     (
         app,
         user,
@@ -7373,17 +7373,17 @@ async fn ambiguous_identity_fixture_with_releases(
         );
 
     let (title, wanted_id) =
-        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "One Piece", 2023).await;
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Tide Chart", 2023).await;
     // The collider: same canonical key, different work, no wanted row of its
     // own — it exists purely as library-local evidence that the name is shared.
     app.add_title(
         &user,
         NewTitle {
-            name: "One Piece".into(),
+            name: "Tide Chart".into(),
             facet: MediaFacet::Movie,
             monitored: true,
             year: Some(1999),
-            slug: Some("one-piece-anime".into()),
+            slug: Some("tide-chart-anime".into()),
             content_status: Some("Released".to_string()),
             min_availability: Some("released".to_string()),
             ..Default::default()
@@ -7422,7 +7422,7 @@ async fn convergence_cycle_parks_ambiguous_best_candidate_for_review() {
     );
     assert_eq!(parked[0].status, PendingReleaseStatus::NeedsReview);
     assert_eq!(parked[0].wanted_item_id, wanted_id);
-    assert_eq!(parked[0].release_title, "One.Piece.1080p.WEB-DL.x264-GRP");
+    assert_eq!(parked[0].release_title, "Tide.Chart.1080p.WEB-DL.x264-GRP");
     assert!(
         download_client
             .submitted_release_titles
@@ -7446,8 +7446,8 @@ async fn convergence_cycle_parks_ambiguous_best_candidate_for_review() {
 
 #[tokio::test]
 async fn convergence_cycle_parks_ambiguous_candidate_without_skipping_eligible_release() {
-    let eligible = "One.Piece.2023.720p.WEB-DL.AV1.AAC2.0-NTb";
-    let ambiguous = "One.Piece.1080p.WEB-DL.x264-GRP";
+    let eligible = "Tide.Chart.2023.720p.WEB-DL.AV1.AAC2.0-NTb";
+    let ambiguous = "Tide.Chart.1080p.WEB-DL.x264-GRP";
 
     for release_titles in [[eligible, ambiguous], [ambiguous, eligible]] {
         let (
@@ -7508,8 +7508,8 @@ async fn convergence_cycle_parks_ambiguous_candidate_without_skipping_eligible_r
 
 #[tokio::test]
 async fn queue_best_release_parks_ambiguous_candidate_while_queuing_eligible_release() {
-    let eligible = "One.Piece.2023.720p.WEB-DL.AV1.AAC2.0-NTb";
-    let ambiguous = "One.Piece.1080p.WEB-DL.x264-GRP";
+    let eligible = "Tide.Chart.2023.720p.WEB-DL.AV1.AAC2.0-NTb";
+    let ambiguous = "Tide.Chart.1080p.WEB-DL.x264-GRP";
 
     for release_titles in [[eligible, ambiguous], [ambiguous, eligible]] {
         let (app, user, title, wanted_id, pending_releases, _release_attempts, download_client, _) =
@@ -7543,7 +7543,7 @@ async fn queue_best_release_parks_ambiguous_candidate_while_queuing_eligible_rel
                 .lock()
                 .await
                 .as_slice(),
-            ["One Piece"],
+            ["Tide Chart"],
             "the eligible candidate remains the queued release"
         );
     }
@@ -7560,7 +7560,7 @@ async fn queue_best_release_materializes_missing_scope_before_parking_ambiguity(
         _release_attempts,
         _download_client,
         wanted_items,
-    ) = ambiguous_identity_fixture_with_releases(&["One.Piece.1080p.WEB-DL.x264-GRP"]).await;
+    ) = ambiguous_identity_fixture_with_releases(&["Tide.Chart.1080p.WEB-DL.x264-GRP"]).await;
     wanted_items.store.lock().await.clear();
 
     for _ in 0..2 {
@@ -7663,7 +7663,7 @@ async fn dismissing_needs_review_pending_release_records_failed_attempt() {
         .expect("list failed signatures");
     assert!(
         failed.iter().any(|attempt| {
-            attempt.source_title.as_deref() == Some("One.Piece.1080p.WEB-DL.x264-GRP")
+            attempt.source_title.as_deref() == Some("Tide.Chart.1080p.WEB-DL.x264-GRP")
         }),
         "dismissing a review row must burn the release signature"
     );
@@ -7672,7 +7672,7 @@ async fn dismissing_needs_review_pending_release_records_failed_attempt() {
     let blocklist = title_blocklist_entries(&app, &title.id).await;
     let entry = blocklist
         .iter()
-        .find(|entry| entry.source_title.as_deref() == Some("One.Piece.1080p.WEB-DL.x264-GRP"))
+        .find(|entry| entry.source_title.as_deref() == Some("Tide.Chart.1080p.WEB-DL.x264-GRP"))
         .unwrap_or_else(|| {
             panic!("dismissing a review row must blocklist the release: {blocklist:?}")
         });

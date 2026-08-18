@@ -154,7 +154,7 @@ mod tests {
             release_evidence: ReleaseEvidence::ScryerSubmission {
                 title_id: "title-1".to_string(),
                 facet: "series".to_string(),
-                source_title: Some("Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb".to_string()),
+                source_title: Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb".to_string()),
                 observed_release_name: None,
                 purpose: DownloadSubmissionPurpose::Standard,
                 scope: SubmissionScope::Episode {
@@ -184,7 +184,7 @@ mod tests {
         assert_eq!(title_id, "title-1");
         assert_eq!(
             source_title.as_deref(),
-            Some("Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
         );
         assert!(matches!(
             scope,
@@ -247,7 +247,7 @@ mod tests {
             title_id,
             facet,
             scope,
-            Some("Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb"),
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb"),
         )
     }
 
@@ -462,21 +462,21 @@ mod tests {
     fn qbit_scryer_submission_uses_durable_release_not_display_label() {
         let mut completed = completed_download_with_parameters(vec![]);
         completed.client_type = "qbittorrent".to_string();
-        completed.name = "Shogun — S01E03 2160p WEB-DL".to_string();
+        completed.name = "Tokan — S01E03 2160p WEB-DL".to_string();
 
         let resolution = matched_submission("title-1", "series", SubmissionScope::Title);
         let evidence = super::release_evidence_for_resolution(&completed, &resolution);
 
-        let title = series_title("title-1", "Shōgun", &["Shogun"], Some(2024));
+        let title = series_title("title-1", "Tōkan", &["Tokan"], Some(2024));
         let parsed = super::build_augmented_episode_import_metadata_for_title(
-            std::path::Path::new("/downloads/Shogun.S01E03.2160p.WEB-DL.mkv"),
+            std::path::Path::new("/downloads/Tokan.S01E03.2160p.WEB-DL.mkv"),
             &evidence,
             &title,
             false,
         );
         assert_eq!(
             evidence.release_title(None).as_deref(),
-            Some("Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
         );
         assert_eq!(parsed.quality.as_deref(), Some("1080p"));
     }
@@ -577,7 +577,7 @@ mod tests {
         let evidence = super::release_evidence_for_resolution(&completed, &persisted);
         assert_eq!(
             evidence.release_title(None).as_deref(),
-            Some("Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
         );
     }
 
@@ -613,7 +613,7 @@ mod tests {
                 "ScryerSubmission": {
                     "title_id": "title-1",
                     "facet": "series",
-                    "source_title": "Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb",
+                    "source_title": "Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb",
                     "purpose": serde_json::to_value(DownloadSubmissionPurpose::Standard).unwrap(),
                     "scope": serde_json::to_value(SubmissionScope::Episode {
                         episode_id: "episode-3".to_string(),
@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(title_id, "title-1");
         assert_eq!(
             source_title.as_deref(),
-            Some("Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
         );
         assert_eq!(observed_release_name, None);
 
@@ -652,7 +652,7 @@ mod tests {
             "ScryerSubmission": {
                 "title_id": "title-1",
                 "facet": "series",
-                "source_title": "Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb",
+                "source_title": "Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb",
                 "purpose": serde_json::to_value(DownloadSubmissionPurpose::Standard).unwrap(),
                 "scope": serde_json::to_value(SubmissionScope::Title).unwrap(),
             }
@@ -660,7 +660,7 @@ mod tests {
         .expect("legacy evidence snapshot must deserialize");
         assert_eq!(
             evidence.release_title(None).as_deref(),
-            Some("Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
         );
     }
 
@@ -690,7 +690,7 @@ mod tests {
         };
         assert_eq!(
             resolved.release_name.as_deref(),
-            Some("Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb"),
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb"),
             "the persisted indexer release title is THE name for a Scryer grab"
         );
     }
@@ -749,7 +749,7 @@ mod tests {
         assert_eq!(selected.release_evidence.title_id(), Some("title-fresh"));
         assert_eq!(
             selected.release_evidence.release_title(None).as_deref(),
-            Some("Shogun.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
+            Some("Tokan.2024.S01E03.1080p.WEB-DL.DDP5.1.H.264-NTb")
         );
         assert_eq!(selected.target_title_id, None, "the submission is the target");
     }
