@@ -1,6 +1,6 @@
 [package]
 name = "scryer-infrastructure"
-version = "0.18.14"
+version = "0.18.15"
 edition.workspace = true
 
 [features]
