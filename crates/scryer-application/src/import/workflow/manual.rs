@@ -2980,7 +2980,7 @@ mod manual_movie_primary_selection_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = std::fs::canonicalize(dir.path()).expect("canonical root");
         let missing = ManualImportFileMapping {
-            file_path: path_to_stored_string(&root.join("gone.mkv")),
+            file_path: path_to_stored_string(root.join("gone.mkv")),
             episode_id: None,
             series_movie_link_id: None,
         };

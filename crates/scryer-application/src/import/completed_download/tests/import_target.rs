@@ -161,8 +161,9 @@ async fn assert_lands_in(import_repo: &TestImportRepo, expected_title_id: &str) 
 #[tokio::test]
 async fn operator_assigned_observation_imports_into_the_assigned_title() {
     // The release name parses to "Paper Lantern" (title-a), but the operator
-    // assigned the download to title-b: an orphan row naming title-b, tracked
-    // as a Submission match without Scryer origin.
+    // assigned the download to title-b: a titled row for title-b that carries
+    // no Scryer origin, tracked as a Submission match. (Assignments are
+    // recorded like grabs; this shape guards the observation path.)
     let submission_repo = Arc::new(TestDownloadSubmissionRepo::default());
     submission_repo
         .record_submission(submission_row(

@@ -755,9 +755,11 @@ mod tests {
     }
 
     #[test]
-    fn live_operator_assignment_row_beats_persisted_scryer_submission_and_target() {
-        // assign_tracked_download_title_command rewrites the row as an orphan
-        // naming the new title; a retry must land there, not in the old title.
+    fn live_titled_row_without_scryer_origin_beats_persisted_scryer_submission_and_target() {
+        // A live titled row that carries no Scryer origin (defensive: the store
+        // reads titled rows back with a real scope, so this only occurs before
+        // a round trip) still names the operator's choice; a retry must land
+        // there, not in the old title the persisted evidence remembers.
         let mut completed = completed_download_with_parameters(vec![]);
         completed.release_name = Some("Client.Release.Name".to_string());
         let reassigned =
@@ -915,7 +917,7 @@ mod tests {
         );
         assert_eq!(selected.target_title_id.as_deref(), Some("title-tracked"));
 
-        // … a live orphan row naming a title (operator assignment) …
+        // … a live titled row without Scryer origin …
         let reassigned =
             matched_submission_with_source_title("title-b", "movie", SubmissionScope::Orphan, None);
         let selected = select(
