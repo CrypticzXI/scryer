@@ -2875,8 +2875,10 @@ async fn acquisition_cycle_falls_back_to_episode_grabs_when_season_pack_is_not_s
     }
 }
 
-#[tokio::test]
-async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episodes() {
+/// Anime title with two due Season 7 episodes (so the cycle attempts a season
+/// pack first) and a tracking indexer that answers every query.
+async fn seed_recent_failed_season_pack_fixture() -> (AppUseCase, Title, Arc<TrackingIndexerClient>)
+{
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
     let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
@@ -2985,6 +2987,50 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
             .expect("seed due episode wanted item");
     }
 
+    (app, title, indexer_client)
+}
+
+#[tokio::test]
+async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episodes() {
+    let (app, title, indexer_client) = seed_recent_failed_season_pack_fixture().await;
+
+    // A recent hard failure of the pack is a per-title blocklist entry (every
+    // hard failure writes one); the cooldown reads that entry's age.
+    app.services
+        .workflow
+        .blocklist_repo
+        .add(&NewBlocklistEntry {
+            title_id: title.id.clone(),
+            source_title: Some("recent.failed.season.pack.s07.1080p.web-dl".to_string()),
+            source_hint: None,
+            quality: None,
+            download_id: None,
+            reason: Some("download client failure: corrupt archive".to_string()),
+            data: HashMap::new(),
+        })
+        .await
+        .expect("record failed season pack blocklist entry");
+
+    app.run_convergence_cycle_once().await;
+
+    let searches = indexer_client.searches.lock().await.clone();
+    assert!(!searches.is_empty());
+    assert!(searches.iter().all(|search| search.season == Some(7)));
+    assert!(searches.iter().all(|search| search.episode.is_some()));
+    assert!(
+        !searches
+            .iter()
+            .any(|search| search.season == Some(7) && search.episode.is_none())
+    );
+}
+
+#[tokio::test]
+async fn acquisition_cycle_failed_attempt_history_alone_does_not_cool_down_season_packs() {
+    // The failed-attempt log is history/audit only. A Failed attempt with no
+    // blocklist entry (e.g. one whose entry the operator removed) must not put
+    // the season pack on cooldown: the pack search runs as usual.
+    let (app, title, indexer_client) = seed_recent_failed_season_pack_fixture().await;
+
     app.services
         .workflow
         .release_attempts
@@ -3002,13 +3048,11 @@ async fn acquisition_cycle_skips_recently_failed_season_pack_and_searches_episod
     app.run_convergence_cycle_once().await;
 
     let searches = indexer_client.searches.lock().await.clone();
-    assert!(!searches.is_empty());
-    assert!(searches.iter().all(|search| search.season == Some(7)));
-    assert!(searches.iter().all(|search| search.episode.is_some()));
     assert!(
-        !searches
+        searches
             .iter()
-            .any(|search| search.season == Some(7) && search.episode.is_none())
+            .any(|search| search.season == Some(7) && search.episode.is_none()),
+        "without a blocklist entry the season pack must be searched: {searches:?}"
     );
 }
 
@@ -3276,6 +3320,10 @@ async fn acquisition_cycle_submit_unavailable_records_pending_without_failed_sig
         .await
         .expect("list failed signatures");
     assert!(failed.is_empty());
+    assert!(
+        title_blocklist_entries(&app, &title.id).await.is_empty(),
+        "a transient submit failure must never blocklist the release"
+    );
 }
 
 #[tokio::test]
@@ -3347,6 +3395,151 @@ async fn season_pack_submit_unavailable_records_pending_without_failed_signature
         .await
         .expect("list failed signatures");
     assert!(failed.is_empty());
+    assert!(
+        title_blocklist_entries(&app, &title.id).await.is_empty(),
+        "a transient season-pack submit failure must never blocklist the pack"
+    );
+}
+
+#[tokio::test]
+async fn season_pack_definitive_submit_error_records_failed_signature_and_blocklist_entry() {
+    let release_title = "Rejected.Season.Pack.S01.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_error(Some(StubSubmitError::Rejected(
+            "sabnzbd rejected the nzb: Duplicate NZB".to_string(),
+        )))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+
+    let (title, _) = seed_anime_season_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Rejected Season Pack",
+        1,
+    )
+    .await;
+
+    app.run_convergence_cycle_once().await;
+
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .iter()
+            .any(|title| title == release_title),
+        "season-pack branch should submit the pack title"
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+
+    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert!(
+        failed
+            .iter()
+            .any(|entry| entry.source_title.as_deref() == normalized_release_title.as_deref()),
+        "a definitive season-pack submit failure records a Failed attempt: {failed:?}"
+    );
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    let entry = blocklist
+        .iter()
+        .find(|entry| entry.source_title.as_deref() == normalized_release_title.as_deref())
+        .unwrap_or_else(|| {
+            panic!("a definitive season-pack submit failure must blocklist the pack: {blocklist:?}")
+        });
+    assert!(
+        entry.reason.as_deref().is_some_and(|reason| {
+            reason.starts_with("season pack grab failed:") && reason.contains("Duplicate NZB")
+        }),
+        "the entry must say what happened: {:?}",
+        entry.reason
+    );
+    assert!(
+        entry.source_hint.is_some(),
+        "the entry must carry the pack's download source hint"
+    );
+}
+
+#[tokio::test]
+async fn season_pack_ambiguous_submit_error_defers_without_blocklist_entry() {
+    // An ambiguous submit may have been accepted: the pack is treated as
+    // possibly grabbed for this cycle, recorded Pending, and never blocklisted.
+    let release_title = "Ambiguous.Season.Pack.S01.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_error(Some(StubSubmitError::Ambiguous(
+            "sabnzbd addfile response was lost after the upload was sent".to_string(),
+        )))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+
+    let (title, _) = seed_anime_season_wanted_for_acquisition(
+        &app,
+        &user,
+        &wanted_items,
+        "Ambiguous Season Pack",
+        1,
+    )
+    .await;
+
+    app.run_convergence_cycle_once().await;
+
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .iter()
+            .any(|title| title == release_title),
+        "season-pack branch should submit the pack title"
+    );
+    let attempts = release_attempts.attempts.lock().await.clone();
+    assert!(
+        attempts
+            .iter()
+            .all(|attempt| attempt.outcome != ReleaseDownloadAttemptOutcome::Failed),
+        "an ambiguous season-pack submit must not be recorded as failed: {:?}",
+        attempts
+            .iter()
+            .map(|attempt| (&attempt.source_title, &attempt.outcome))
+            .collect::<Vec<_>>()
+    );
+    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    assert!(attempts.iter().any(|attempt| {
+        attempt.source_title.as_deref() == normalized_release_title.as_deref()
+            && attempt.outcome == ReleaseDownloadAttemptOutcome::Pending
+    }));
+    assert!(
+        title_blocklist_entries(&app, &title.id).await.is_empty(),
+        "an ambiguous season-pack submit must never blocklist the pack"
+    );
 }
 
 #[tokio::test]
@@ -3384,6 +3577,26 @@ async fn acquisition_cycle_non_unavailable_submit_error_still_records_failed_sig
     assert_eq!(
         failed[0].source_title.as_deref(),
         Some("rejected.movie.2024.1080p.web-dl-grp")
+    );
+    // The definitive grab failure also burns the release for this title: the
+    // blocklist entry (not the attempt) is what gates search, and it says why.
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    assert_eq!(
+        blocklist.len(),
+        1,
+        "expected one blocklist entry: {blocklist:?}"
+    );
+    assert_eq!(
+        blocklist[0].source_title.as_deref(),
+        Some("rejected.movie.2024.1080p.web-dl-grp")
+    );
+    assert!(
+        blocklist[0].reason.as_deref().is_some_and(|reason| {
+            reason.starts_with("grab failed:")
+                && reason.contains("release rejected by client routing")
+        }),
+        "the entry must say what happened: {:?}",
+        blocklist[0].reason
     );
 }
 
@@ -3449,6 +3662,26 @@ async fn acquisition_cycle_category_mismatch_veto_burns_the_release_without_subm
         failed.len(),
         1,
         "the vetoed release signature must be burned so it is never re-grabbed"
+    );
+    // The per-title blocklist entry is what actually burns the release for
+    // search-time exclusion; the Failed attempt is the audit record.
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    assert_eq!(
+        blocklist.len(),
+        1,
+        "the vetoed release must be blocklisted for this title: {blocklist:?}"
+    );
+    assert_eq!(
+        blocklist[0].source_title.as_deref(),
+        Some("counterfeit.feature.2024.1080p.web-dl-grp")
+    );
+    assert!(
+        blocklist[0]
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("category_mismatch")),
+        "the entry must tell operators why: {:?}",
+        blocklist[0].reason
     );
 
     assert!(
@@ -3558,6 +3791,19 @@ async fn acquisition_cycle_rejected_submit_error_records_failed_signature_not_de
     assert_eq!(
         failed[0].source_title.as_deref(),
         Some("rejected.movie.2024.1080p.web-dl-grp")
+    );
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    assert_eq!(
+        blocklist.len(),
+        1,
+        "a rejected submit must blocklist the release for this title: {blocklist:?}"
+    );
+    assert!(
+        blocklist[0].reason.as_deref().is_some_and(|reason| {
+            reason.starts_with("grab failed:") && reason.contains("Duplicate NZB")
+        }),
+        "the entry must say what happened: {:?}",
+        blocklist[0].reason
     );
     // A definitive rejection records no download submission.
     assert!(
@@ -3901,6 +4147,10 @@ async fn pending_release_submit_unavailable_records_pending_without_failed_signa
         .await
         .expect("list failed signatures");
     assert!(failed.is_empty());
+    assert!(
+        title_blocklist_entries(&app, &title.id).await.is_empty(),
+        "a transient pending-release submit failure must never blocklist the release"
+    );
 }
 
 struct PendingStatusAssertingIndexerClient {
@@ -4220,6 +4470,10 @@ async fn expired_pending_release_ambiguous_error_stays_waiting_and_retries() {
         .await
         .expect("list failed signatures");
     assert!(failed.is_empty());
+    assert!(
+        title_blocklist_entries(&app, &title.id).await.is_empty(),
+        "an ambiguous submit must never blocklist the release"
+    );
 
     download_client.set_submit_error(None).await;
     let grabbed = app
@@ -4300,6 +4554,144 @@ async fn expired_pending_release_non_unavailable_error_expires_release() {
         .expect("list failed signatures");
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].source_title.as_deref(), Some(release_title));
+    // The definitive failure also burns the release for this title: the
+    // blocklist entry (not the attempt) is what gates search, and it says why.
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    assert_eq!(
+        blocklist.len(),
+        1,
+        "expected one blocklist entry: {blocklist:?}"
+    );
+    assert_eq!(blocklist[0].source_title.as_deref(), Some(release_title));
+    assert!(
+        blocklist[0].reason.as_deref().is_some_and(|reason| {
+            reason.starts_with("grab failed:")
+                && reason.contains("release rejected by client routing")
+        }),
+        "the entry must say what happened: {:?}",
+        blocklist[0].reason
+    );
+    assert!(
+        blocklist[0].data_json.is_none(),
+        "a movie-scoped failure carries no episode/collection attribution: {:?}",
+        blocklist[0].data_json
+    );
+}
+
+#[tokio::test]
+async fn pending_release_grab_is_gated_by_the_blocklist_until_the_entry_is_cleared() {
+    // A parked release whose title has a blocklist entry for it is rejected by
+    // the pending grab gate; clearing the entry re-allows the grab immediately.
+    let release_title = "Gated.Pending.Movie.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, _release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases.clone(),
+            wanted_items.clone(),
+            Arc::new(MockIndexerClient),
+        );
+    let (title, wanted_id) =
+        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Gated Pending Movie", 2024)
+            .await;
+    let pending = pending_movie_release(
+        &wanted_id,
+        &title,
+        release_title,
+        PendingReleaseStatus::Waiting,
+    );
+    let pending_id = pending.id.clone();
+    pending_releases
+        .insert_pending_release(&pending)
+        .await
+        .expect("seed pending release");
+    // Grab-path writers keep the indexer casing; the gate normalizes.
+    let entry_id = app
+        .services
+        .workflow
+        .blocklist_repo
+        .add(&NewBlocklistEntry {
+            title_id: title.id.clone(),
+            source_title: Some(release_title.to_ascii_uppercase()),
+            source_hint: None,
+            quality: None,
+            download_id: None,
+            reason: Some("download client failure: corrupt archive".to_string()),
+            data: HashMap::new(),
+        })
+        .await
+        .expect("seed blocklist entry");
+
+    let grabbed = app
+        .force_grab_pending_release(&user, &pending_id)
+        .await
+        .expect("force grab pending release");
+    assert!(!grabbed, "a blocklisted release must not be grabbed");
+    assert!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .is_empty(),
+        "the download client must never receive a blocklisted release"
+    );
+
+    app.clear_title_release_blocklist_entry(&user, &entry_id)
+        .await
+        .expect("clear blocklist entry");
+
+    let grabbed = app
+        .force_grab_pending_release(&user, &pending_id)
+        .await
+        .expect("force grab pending release after clearing the entry");
+    assert!(
+        grabbed,
+        "clearing the entry must re-allow the grab immediately"
+    );
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &[release_title.to_string()]
+    );
+}
+
+/// A monitored, missing movie that RSS sync treats as an active target: no
+/// pre-seeded wanted row (RSS derives target-ness from library state) and
+/// `announced` availability so the undated title is not skipped as unreleased.
+async fn add_rss_target_movie(
+    app: &AppUseCase,
+    user: &User,
+    wanted_items: &Arc<TrackingAcquisitionScopeStateRepo>,
+    name: &str,
+) -> Title {
+    let title = app
+        .add_title(
+            user,
+            NewTitle {
+                name: name.into(),
+                sort_title: Some(name.into()),
+                slug: Some(name.to_ascii_lowercase().replace(' ', "-")),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                year: Some(2024),
+                content_status: Some("Released".into()),
+                min_availability: Some("announced".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create monitored movie");
+    wanted_items
+        .remember_title_facet(&title.id, MediaFacet::Movie)
+        .await;
+    title
 }
 
 #[tokio::test]
@@ -4323,9 +4715,7 @@ async fn rss_submit_unavailable_records_pending_without_failed_signature() {
             wanted_items.clone(),
             indexer_client,
         );
-    let (title, _) =
-        seed_movie_wanted_for_acquisition(&app, &user, &wanted_items, "Rss Deferred Movie", 2024)
-            .await;
+    let title = add_rss_target_movie(&app, &user, &wanted_items, "Rss Deferred Movie").await;
 
     let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
 
@@ -4337,13 +4727,226 @@ async fn rss_submit_unavailable_records_pending_without_failed_signature() {
     assert!(
         attempts
             .iter()
-            .all(|attempt| attempt.outcome != ReleaseDownloadAttemptOutcome::Failed)
+            .all(|attempt| attempt.outcome != ReleaseDownloadAttemptOutcome::Failed),
+        "a transient RSS submit failure must not be recorded as failed: {:?}",
+        attempts
+            .iter()
+            .map(|attempt| (&attempt.source_title, &attempt.outcome))
+            .collect::<Vec<_>>()
+    );
+    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    assert!(
+        attempts.iter().any(|attempt| {
+            attempt.source_title.as_deref() == normalized_release_title.as_deref()
+                && attempt.outcome == ReleaseDownloadAttemptOutcome::Pending
+                && attempt
+                    .error_message
+                    .as_deref()
+                    .is_some_and(|message| message.contains("download client api unavailable"))
+        }),
+        "the RSS grab must have been attempted and recorded Pending: {:?}",
+        attempts
+            .iter()
+            .map(|attempt| (&attempt.source_title, &attempt.outcome))
+            .collect::<Vec<_>>()
     );
     let failed = release_attempts
         .list_failed_release_signatures_for_title(&title.id, 10)
         .await
         .expect("list failed signatures");
     assert!(failed.is_empty());
+    assert!(
+        title_blocklist_entries(&app, &title.id).await.is_empty(),
+        "a transient RSS submit failure must never blocklist the release"
+    );
+}
+
+#[tokio::test]
+async fn rss_ambiguous_submit_error_defers_without_failed_signature_or_blocklist_entry() {
+    // An ambiguous submit may have been accepted: Pending attempt, never
+    // blocklisted — the same policy as the pending-release and auto-search paths.
+    let release_title = "Rss.Ambiguous.Movie.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_error(Some(StubSubmitError::Ambiguous(
+            "sabnzbd addfile response was lost after the upload was sent".to_string(),
+        )))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+    let title = add_rss_target_movie(&app, &user, &wanted_items, "Rss Ambiguous Movie").await;
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(report.releases_matched, 1);
+    assert_eq!(report.releases_grabbed, 0);
+    assert!(download_submissions.store.lock().await.is_empty());
+    let attempts = release_attempts.attempts.lock().await.clone();
+    assert!(
+        attempts
+            .iter()
+            .all(|attempt| attempt.outcome != ReleaseDownloadAttemptOutcome::Failed),
+        "an ambiguous RSS submit must not be recorded as failed: {:?}",
+        attempts
+            .iter()
+            .map(|attempt| (&attempt.source_title, &attempt.outcome))
+            .collect::<Vec<_>>()
+    );
+    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    assert!(attempts.iter().any(|attempt| {
+        attempt.source_title.as_deref() == normalized_release_title.as_deref()
+            && attempt.outcome == ReleaseDownloadAttemptOutcome::Pending
+    }));
+    assert!(
+        title_blocklist_entries(&app, &title.id).await.is_empty(),
+        "an ambiguous RSS submit must never blocklist the release"
+    );
+}
+
+#[tokio::test]
+async fn rss_definitive_submit_error_records_failed_signature_and_blocklist_entry() {
+    let release_title = "Rss.Rejected.Movie.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_error(Some(StubSubmitError::Rejected(
+            "sabnzbd rejected the nzb: Duplicate NZB".to_string(),
+        )))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+    let title = add_rss_target_movie(&app, &user, &wanted_items, "Rss Rejected Movie").await;
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(report.releases_matched, 1);
+    assert_eq!(report.releases_grabbed, 0);
+    assert!(download_submissions.store.lock().await.is_empty());
+    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert_eq!(
+        failed.len(),
+        1,
+        "a definitive RSS submit failure records a Failed attempt"
+    );
+    assert_eq!(
+        failed[0].source_title.as_deref(),
+        normalized_release_title.as_deref()
+    );
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    assert_eq!(
+        blocklist.len(),
+        1,
+        "a definitive RSS submit failure must blocklist the release: {blocklist:?}"
+    );
+    assert_eq!(
+        blocklist[0].source_title.as_deref(),
+        normalized_release_title.as_deref()
+    );
+    assert!(
+        blocklist[0].reason.as_deref().is_some_and(|reason| {
+            reason.starts_with("grab failed:") && reason.contains("Duplicate NZB")
+        }),
+        "the entry must say what happened: {:?}",
+        blocklist[0].reason
+    );
+    assert!(
+        blocklist[0].source_hint.is_some(),
+        "the entry must carry the release's download source hint"
+    );
+}
+
+#[tokio::test]
+async fn rss_grab_whose_submission_tracking_fails_burns_the_release() {
+    // The client accepted the job but the download submission could not be
+    // persisted: Scryer can no longer track it, so the release is recorded
+    // Failed and blocklisted for this title (visible and removable) instead of
+    // being re-grabbed into an untracked duplicate.
+    let release_title = "Rss.Untracked.Movie.2024.1080p.WEB-DL-GRP";
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    *download_submissions.record_submission_error.lock().await =
+        Some("download_submissions write failed".to_string());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let indexer_client = Arc::new(FixedReleaseIndexerClient::new(release_title));
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items.clone(),
+            indexer_client,
+        );
+    let title = add_rss_target_movie(&app, &user, &wanted_items, "Rss Untracked Movie").await;
+
+    let report = app.run_scheduled_rss_sync().await.expect("run RSS sync");
+
+    assert_eq!(report.releases_matched, 1);
+    assert_eq!(
+        report.releases_grabbed, 0,
+        "an untracked grab is not reported as grabbed"
+    );
+    assert_eq!(
+        download_client
+            .submitted_release_titles
+            .lock()
+            .await
+            .as_slice(),
+        &[release_title.to_string()],
+        "the client did accept the job"
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+    let normalized_release_title = crate::normalize_release_attempt_title(Some(release_title));
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0].source_title.as_deref(),
+        normalized_release_title.as_deref()
+    );
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    assert_eq!(
+        blocklist.len(),
+        1,
+        "an untracked grab must blocklist the release for this title: {blocklist:?}"
+    );
+    assert_eq!(
+        blocklist[0].source_title.as_deref(),
+        normalized_release_title.as_deref()
+    );
+    assert!(
+        blocklist[0].reason.as_deref().is_some_and(|reason| {
+            reason.starts_with("grab accepted but download tracking could not be persisted:")
+                && reason.contains("download_submissions write failed")
+        }),
+        "the entry must say what happened: {:?}",
+        blocklist[0].reason
+    );
 }
 
 #[tokio::test]
@@ -7059,5 +7662,18 @@ async fn dismissing_needs_review_pending_release_records_failed_attempt() {
             attempt.source_title.as_deref() == Some("One.Piece.1080p.WEB-DL.x264-GRP")
         }),
         "dismissing a review row must burn the release signature"
+    );
+    // The verdict is a hard failure: it also writes the per-title blocklist
+    // entry that search-time exclusion consults (and the operator can remove).
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    let entry = blocklist
+        .iter()
+        .find(|entry| entry.source_title.as_deref() == Some("One.Piece.1080p.WEB-DL.x264-GRP"))
+        .unwrap_or_else(|| {
+            panic!("dismissing a review row must blocklist the release: {blocklist:?}")
+        });
+    assert_eq!(
+        entry.reason.as_deref(),
+        Some("dismissed from review: ambiguous identity")
     );
 }

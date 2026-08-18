@@ -574,32 +574,14 @@ impl AppUseCase {
         episode: Option<u32>,
         absolute_episode: Option<u32>,
     ) -> Vec<IndexerSearchResult> {
-        let failed_signatures = match self
-            .services
-            .workflow
-            .release_attempts
-            .list_failed_release_signatures(5000)
-            .await
-        {
-            Ok(items) => items,
-            Err(error) => {
-                warn!(error = %error, "failed to load failed release blocklist signatures");
-                Vec::new()
-            }
-        };
-
-        let failed_source_hints: std::collections::HashSet<String> = failed_signatures
-            .iter()
-            .filter_map(|signature| {
-                normalize_release_attempt_hint(signature.source_hint.as_deref())
-            })
-            .collect();
-        let failed_source_titles: std::collections::HashSet<String> = failed_signatures
-            .iter()
-            .filter_map(|signature| {
-                normalize_release_attempt_title(signature.source_title.as_deref())
-            })
-            .collect();
+        // Search-time exclusion reads the per-title blocklist only: an entry
+        // for one title never hides the same release from another title, and
+        // removing the entry re-allows the release immediately. The
+        // `release_download_attempts` log is history/audit and never gates.
+        let TitleReleaseBlocklistSignatures {
+            source_hints: blocklisted_source_hints,
+            source_titles: blocklisted_source_titles,
+        } = self.load_title_release_blocklist_signatures(title_id).await;
 
         let (has_usenet_client, has_torrent_client, preferred_source_kind) =
             self.download_source_capabilities().await;
@@ -714,7 +696,11 @@ impl AppUseCase {
                 continue;
             }
 
-            if is_release_blocklisted(&result, &failed_source_hints, &failed_source_titles) {
+            if is_release_blocklisted(
+                &result,
+                &blocklisted_source_hints,
+                &blocklisted_source_titles,
+            ) {
                 continue;
             }
 
@@ -1574,6 +1560,70 @@ impl AppUseCase {
 
         Ok(results)
     }
+}
+
+/// Upper bound on blocklist entries read per title for search-time exclusion.
+const TITLE_RELEASE_BLOCKLIST_READ_LIMIT: usize = 1_000;
+
+/// A title's blocklisted release signatures, normalized exactly the way
+/// [`is_release_blocklisted`] normalizes candidates (hints trimmed, titles
+/// trimmed + lowercased). The per-title `blocklist` table is the single
+/// search-time exclusion source; `release_download_attempts` is history only.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TitleReleaseBlocklistSignatures {
+    pub(crate) source_hints: HashSet<String>,
+    pub(crate) source_titles: HashSet<String>,
+}
+
+impl AppUseCase {
+    /// Loads and normalizes the title's blocklist entries. Entries are stored
+    /// with mixed casing (grab-time writers keep the indexer casing, failure
+    /// writers lowercase), so both sides normalize here. A repository error
+    /// warns and yields an empty set: a storage hiccup degrades to "nothing
+    /// excluded" rather than failing the search.
+    pub(crate) async fn load_title_release_blocklist_signatures(
+        &self,
+        title_id: &str,
+    ) -> TitleReleaseBlocklistSignatures {
+        let entries = match self
+            .services
+            .workflow
+            .blocklist_repo
+            .list_for_title(title_id, TITLE_RELEASE_BLOCKLIST_READ_LIMIT)
+            .await
+        {
+            Ok(entries) => entries,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    title_id,
+                    "failed to load title release blocklist; excluding nothing this search"
+                );
+                Vec::new()
+            }
+        };
+
+        let mut signatures = TitleReleaseBlocklistSignatures::default();
+        for entry in &entries {
+            if let Some(hint) = normalize_release_attempt_hint(entry.source_hint.as_deref()) {
+                signatures.source_hints.insert(hint);
+            }
+            if let Some(title) = normalize_release_attempt_title(entry.source_title.as_deref()) {
+                signatures.source_titles.insert(title);
+            }
+        }
+        signatures
+    }
+}
+
+/// Whether a release title matches a normalized per-title blocklist title set
+/// (see [`TitleReleaseBlocklistSignatures::source_titles`]).
+pub(crate) fn is_release_title_blocklisted(
+    release_title: &str,
+    blocklisted_source_titles: &HashSet<String>,
+) -> bool {
+    normalize_release_attempt_title(Some(release_title))
+        .is_some_and(|title| blocklisted_source_titles.contains(&title))
 }
 
 pub(crate) fn is_release_blocklisted(

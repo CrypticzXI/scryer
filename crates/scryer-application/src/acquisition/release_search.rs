@@ -1051,10 +1051,10 @@ pub(crate) fn evaluate_auto_candidate(
 
     // Burned releases report as blocklisted BEFORE the ambiguity gate runs: a
     // release that already failed must never be re-parked for review.
-    if context
-        .db_blocklist
-        .contains(&candidate.title.to_ascii_lowercase())
-    {
+    if crate::app_usecase_discovery::is_release_title_blocklisted(
+        &candidate.title,
+        context.db_blocklist,
+    ) {
         return ReleaseAutoDecisionCode::DbBlocklisted;
     }
 
@@ -1294,17 +1294,12 @@ impl AppUseCase {
         subject: &ResolvedReleaseSearchSubject,
         mut results: Vec<IndexerSearchResult>,
     ) -> Vec<IndexerSearchResult> {
-        let db_blocklist: HashSet<String> = self
-            .services
-            .workflow
-            .release_attempts
-            .list_failed_release_signatures_for_title(&title.id, 200)
+        // `DbBlocklisted` reads the per-title blocklist (the single, removable
+        // exclusion source), never the failed-attempt history.
+        let db_blocklist = self
+            .load_title_release_blocklist_signatures(&title.id)
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|entry| entry.source_title)
-            .map(|value| value.to_ascii_lowercase())
-            .collect();
+            .source_titles;
 
         let dl_snapshot = crate::acquisition_workflow::DownloadClientSnapshot::fetch(self).await;
         let existing_files = self

@@ -34,7 +34,7 @@ fn effective_auto_decision_code_for_route(
     failed_routes: &[DownloadRouteKey],
     db_blocklist: &std::collections::HashSet<String>,
 ) -> ReleaseAutoDecisionCode {
-    if db_blocklist.contains(&candidate.title.to_ascii_lowercase()) {
+    if crate::app_usecase_discovery::is_release_title_blocklisted(&candidate.title, db_blocklist) {
         return ReleaseAutoDecisionCode::DbBlocklisted;
     }
 

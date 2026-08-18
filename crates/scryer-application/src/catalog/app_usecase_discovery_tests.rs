@@ -203,6 +203,32 @@ fn release_blocklist_matches_magnet_and_legacy_http_aliases_without_changing_sea
 }
 
 #[test]
+fn release_title_blocklist_check_normalizes_case_and_whitespace_on_both_sides() {
+    // Blocklist source titles are stored with mixed casing (grab paths keep the
+    // indexer casing, failure paths lowercase); the read side must compare
+    // trimmed + lowercased on both sides.
+    let blocklisted = HashSet::from(["signal.run.s01e12.1080p.web-dl.x265-ntb".to_string()]);
+    assert!(is_release_title_blocklisted(
+        "Signal.Run.S01E12.1080p.WEB-DL.x265-NTb",
+        &blocklisted
+    ));
+    assert!(is_release_title_blocklisted(
+        "  signal.run.s01e12.1080p.web-dl.x265-ntb\n",
+        &blocklisted
+    ));
+    assert!(!is_release_title_blocklisted(
+        "Signal.Run.S01E13.1080p.WEB-DL.x265-NTb",
+        &blocklisted
+    ));
+    assert!(!is_release_title_blocklisted("", &blocklisted));
+    assert!(!is_release_title_blocklisted("   ", &blocklisted));
+    assert!(!is_release_title_blocklisted(
+        "Signal.Run.S01E12.1080p.WEB-DL.x265-NTb",
+        &HashSet::new()
+    ));
+}
+
+#[test]
 fn structured_dispatch_queries_collapse_equivalent_episode_variants() {
     let queries = vec![
         "Synthetic Atlas 035".to_string(),

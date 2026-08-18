@@ -1111,17 +1111,12 @@ async fn recover_from_standby_candidates(
         .list_standby_pending_releases_for_wanted_item(&item.id)
         .await
         .unwrap_or_default();
-    let db_blocklist: std::collections::HashSet<String> = app
-        .services
-        .workflow
-        .release_attempts
-        .list_failed_release_signatures_for_title(&item.title_id, 200)
+    // Standby candidates are re-checked against the per-title blocklist (the
+    // single, removable exclusion source), never the failed-attempt history.
+    let db_blocklist = app
+        .load_title_release_blocklist_signatures(&item.title_id)
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|entry| entry.source_title)
-        .map(|title| title.to_ascii_lowercase())
-        .collect();
+        .source_titles;
 
     for standby in standby_releases {
         let mut effective_wanted = item.clone();
@@ -1144,7 +1139,10 @@ async fn recover_from_standby_candidates(
             continue;
         }
 
-        if db_blocklist.contains(&standby.release_title.to_ascii_lowercase()) {
+        if crate::app_usecase_discovery::is_release_title_blocklisted(
+            &standby.release_title,
+            &db_blocklist,
+        ) {
             let _ = app
                 .services
                 .workflow

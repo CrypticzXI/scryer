@@ -243,6 +243,19 @@ impl BlocklistRepository for MockBlocklistRepo {
     }
 }
 
+/// The title's per-title release blocklist entries as the app sees them.
+pub(super) async fn title_blocklist_entries(
+    app: &AppUseCase,
+    title_id: &str,
+) -> Vec<BlocklistEntry> {
+    app.services
+        .workflow
+        .blocklist_repo
+        .list_for_title(title_id, 50)
+        .await
+        .expect("list title blocklist entries")
+}
+
 #[derive(Default, Clone)]
 pub(super) struct TrackingDownloadSubmissionRepo {
     pub(super) store: Arc<Mutex<Vec<DownloadSubmission>>>,

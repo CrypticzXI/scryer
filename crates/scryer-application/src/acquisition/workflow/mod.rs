@@ -1,6 +1,6 @@
 use super::*;
 use crate::acquisition_decision_helpers::{
-    FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES, extract_grabbed_release_title,
+    FAILED_GRAB_RESEARCH_COOLDOWN_MINUTES, blocklist_entry_data, extract_grabbed_release_title,
     is_download_submit_unavailable_error,
 };
 use crate::acquisition_release_search::{

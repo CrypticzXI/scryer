@@ -1,5 +1,7 @@
 use super::*;
-use crate::acquisition_decision_helpers::is_download_submit_unavailable_error;
+use crate::acquisition_decision_helpers::{
+    blocklist_entry_data, is_download_submit_unavailable_error,
+};
 use crate::acquisition_release_search::{
     AutoCandidateEvaluationContext, CandidateTitleMatch, ReleaseAutoDecisionCode,
     annotate_auto_decision, candidate_presents_identity_disambiguator, canonical_title_evidence,
@@ -1336,17 +1338,12 @@ impl AppUseCase {
         now: &DateTime<Utc>,
     ) {
         let mut wanted = wanted.clone();
-        let db_blocklist: HashSet<String> = self
-            .services
-            .workflow
-            .release_attempts
-            .list_failed_release_signatures_for_title(&title.id, 200)
+        // `DbBlocklisted` reads the per-title blocklist (the single, removable
+        // exclusion source), never the failed-attempt history.
+        let db_blocklist = self
+            .load_title_release_blocklist_signatures(&title.id)
             .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|e| e.source_title)
-            .map(|t| t.to_ascii_lowercase())
-            .collect();
+            .source_titles;
         let episode = match wanted.episode_id.as_deref() {
             Some(episode_id) => self
                 .services
@@ -1667,6 +1664,13 @@ impl AppUseCase {
         };
         grabbed_episode_ids.sort();
         grabbed_episode_ids.dedup();
+        // Blocklist attribution for a definitive failure below; captured before
+        // the submission scope moves into the persisted download submission.
+        let blocklist_data = blocklist_entry_data(
+            &grabbed_episode_ids,
+            submission_scope.collection_id(),
+            submission_scope.series_movie_link_id(),
+        );
 
         let grab_result = self
             .services
@@ -1760,13 +1764,40 @@ impl AppUseCase {
                         .release_attempts
                         .record_release_attempt(
                             Some(title.id.clone()),
-                            source_hint_for_attempt,
-                            source_title_for_attempt,
+                            source_hint_for_attempt.clone(),
+                            source_title_for_attempt.clone(),
                             ReleaseDownloadAttemptOutcome::Failed,
                             Some(error.to_string()),
                             source_password,
                         )
                         .await;
+                    // The client accepted a job Scryer can no longer track, so
+                    // burn the release for this title (visible and removable in
+                    // the blocklist) rather than re-grabbing it into a duplicate.
+                    if let Err(blocklist_error) = self
+                        .services
+                        .workflow
+                        .blocklist_repo
+                        .add(&NewBlocklistEntry {
+                            title_id: title.id.clone(),
+                            source_title: source_title_for_attempt,
+                            source_hint: source_hint_for_attempt,
+                            quality: None,
+                            download_id: None,
+                            reason: Some(format!(
+                                "grab accepted but download tracking could not be persisted: {error}"
+                            )),
+                            data: blocklist_data,
+                        })
+                        .await
+                    {
+                        warn!(
+                            error = %blocklist_error,
+                            title_id = title.id.as_str(),
+                            release = best.title.as_str(),
+                            "failed to persist blocklist entry for untracked RSS grab"
+                        );
+                    }
                     return;
                 }
 
@@ -1829,15 +1860,21 @@ impl AppUseCase {
                     "RSS sync: download submission failed"
                 );
 
+                // Transient (client unavailable) and ambiguous (request may have
+                // been accepted, response lost) submits are deferred: Pending
+                // attempt, never blocklisted. Only a definitive failure burns
+                // the release for this title.
+                let defer = is_download_submit_unavailable_error(&err)
+                    || err.is_download_submit_ambiguous();
                 let _ = self
                     .services
                     .workflow
                     .release_attempts
                     .record_release_attempt(
                         Some(title.id.clone()),
-                        source_hint_for_attempt,
-                        source_title_for_attempt,
-                        if is_download_submit_unavailable_error(&err) {
+                        source_hint_for_attempt.clone(),
+                        source_title_for_attempt.clone(),
+                        if defer {
                             ReleaseDownloadAttemptOutcome::Pending
                         } else {
                             ReleaseDownloadAttemptOutcome::Failed
@@ -1846,6 +1883,31 @@ impl AppUseCase {
                         source_password,
                     )
                     .await;
+                if defer {
+                    return;
+                }
+                if let Err(error) = self
+                    .services
+                    .workflow
+                    .blocklist_repo
+                    .add(&NewBlocklistEntry {
+                        title_id: title.id.clone(),
+                        source_title: source_title_for_attempt,
+                        source_hint: source_hint_for_attempt,
+                        quality: None,
+                        download_id: None,
+                        reason: Some(format!("grab failed: {err}")),
+                        data: blocklist_data,
+                    })
+                    .await
+                {
+                    warn!(
+                        error = %error,
+                        title_id = title.id.as_str(),
+                        release = best.title.as_str(),
+                        "failed to persist blocklist entry for failed RSS grab"
+                    );
+                }
             }
         }
     }

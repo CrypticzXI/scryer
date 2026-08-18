@@ -678,6 +678,186 @@ async fn queue_existing_title_download_submit_unavailable_records_pending_withou
 }
 
 #[tokio::test]
+async fn queue_existing_title_download_definitive_submit_error_records_failed_and_blocklists() {
+    let download_client = Arc::new(StubDownloadClient::default());
+    download_client
+        .set_submit_error(Some(StubSubmitError::Rejected(
+            "sabnzbd rejected the nzb: Duplicate NZB".to_string(),
+        )))
+        .await;
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client,
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items,
+            Arc::new(MockIndexerClient),
+        );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Manual Rejected Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let error = app
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                indexer_id: None,
+                source_hint: Some(
+                    "https://example.invalid/releases/manual-rejected.nzb".to_string(),
+                ),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Manual.Rejected.Queue.2026.1080p.WEB-DL".to_string()),
+                source_password: None,
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect_err("a rejected submit should return an error to the caller");
+    assert!(error.to_string().contains("Duplicate NZB"));
+    assert!(download_submissions.store.lock().await.is_empty());
+
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0].source_title.as_deref(),
+        Some("Manual.Rejected.Queue.2026.1080p.WEB-DL")
+    );
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    assert_eq!(
+        blocklist.len(),
+        1,
+        "a definitive interactive submit failure must blocklist the release: {blocklist:?}"
+    );
+    assert_eq!(
+        blocklist[0].source_title.as_deref(),
+        Some("Manual.Rejected.Queue.2026.1080p.WEB-DL")
+    );
+    assert_eq!(
+        blocklist[0].source_hint.as_deref(),
+        Some("https://example.invalid/releases/manual-rejected.nzb")
+    );
+    assert!(
+        blocklist[0]
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Duplicate NZB")),
+        "the entry must say what happened: {:?}",
+        blocklist[0].reason
+    );
+}
+
+#[tokio::test]
+async fn queue_existing_title_download_whose_submission_tracking_fails_burns_the_release() {
+    // The client accepted the job but the download submission could not be
+    // persisted: Scryer can no longer track it, so the release is recorded
+    // Failed and blocklisted for this title (visible and removable) instead of
+    // being re-grabbed into an untracked duplicate.
+    let download_client = Arc::new(StubDownloadClient::default());
+    let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
+    *download_submissions.record_submission_error.lock().await =
+        Some("download_submissions write failed".to_string());
+    let pending_releases = Arc::new(TrackingPendingReleaseRepo::default());
+    let wanted_items = Arc::new(TrackingAcquisitionScopeStateRepo::default());
+    let (app, user, release_attempts) =
+        bootstrap_with_acquisition_tracking_and_indexer_and_release_attempts(
+            download_client.clone(),
+            download_submissions.clone(),
+            pending_releases,
+            wanted_items,
+            Arc::new(MockIndexerClient),
+        );
+    let title = app
+        .add_title(
+            &user,
+            NewTitle {
+                name: "Manual Untracked Queue".into(),
+                facet: MediaFacet::Movie,
+                monitored: true,
+                tags: vec![],
+                external_ids: vec![],
+                min_availability: None,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("create title");
+
+    let error = app
+        .queue_existing_title_download(
+            &user,
+            &title.id,
+            QueuedReleaseSelection {
+                indexer_id: None,
+                source_hint: Some(
+                    "https://example.invalid/releases/manual-untracked.nzb".to_string(),
+                ),
+                source_kind: Some(DownloadSourceKind::NzbUrl),
+                source_title: Some("Manual.Untracked.Queue.2026.1080p.WEB-DL".to_string()),
+                source_password: None,
+            },
+            SubmissionScope::Title,
+            SubmissionConflictPolicy::Abort,
+        )
+        .await
+        .expect_err("a persistence failure should surface to the caller");
+    assert!(
+        error
+            .to_string()
+            .contains("download_submissions write failed")
+    );
+    assert_eq!(
+        download_client.submitted_release_titles.lock().await.len(),
+        1,
+        "the client did accept the job"
+    );
+    assert!(download_submissions.store.lock().await.is_empty());
+
+    let failed = release_attempts
+        .list_failed_release_signatures_for_title(&title.id, 10)
+        .await
+        .expect("list failed signatures");
+    assert_eq!(failed.len(), 1);
+    let blocklist = title_blocklist_entries(&app, &title.id).await;
+    assert_eq!(
+        blocklist.len(),
+        1,
+        "an untracked interactive grab must blocklist the release: {blocklist:?}"
+    );
+    assert_eq!(
+        blocklist[0].source_title.as_deref(),
+        Some("Manual.Untracked.Queue.2026.1080p.WEB-DL")
+    );
+    assert!(
+        blocklist[0].reason.as_deref().is_some_and(|reason| {
+            reason.starts_with("grab accepted but download tracking could not be persisted:")
+                && reason.contains("download_submissions write failed")
+        }),
+        "the entry must say what happened: {:?}",
+        blocklist[0].reason
+    );
+}
+
+#[tokio::test]
 async fn queue_existing_title_download_ignores_stale_matching_submission() {
     let download_client = Arc::new(StubDownloadClient::default());
     let download_submissions = Arc::new(TrackingDownloadSubmissionRepo::default());
